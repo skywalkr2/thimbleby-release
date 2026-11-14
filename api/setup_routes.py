@@ -1,0 +1,2762 @@
+"""API routes for settings and the first-run setup (design 4.0, 7.8, 7.9)."""
+
+from __future__ import annotations
+
+import copy
+import logging
+import os
+import re
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit
+
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import ValidationError
+
+from api.pack_routes import entry_in
+from api.schemas import (
+    AiAccountAdd,
+    AiAccountAdded,
+    AiAccountChange,
+    AiAccountCheck,
+    AiAccountChecked,
+    AiAccountRemove,
+    AiAccountSkills,
+    AiAccountView,
+    AiBorrowAnswer,
+    AiBorrowed,
+    AiCheckSize,
+    AiKindFit,
+    AiMeasureEstimate,
+    AiMeasureIn,
+    AiMeasureStarted,
+    AiModelsAsk,
+    AiModelSkills,
+    AiModelsView,
+    AiModelView,
+    AiMoved,
+    AiMoveReadback,
+    AiPricesAsk,
+    AiPricesMissing,
+    AiRouteRuleView,
+    AiRoutingView,
+    AiRuleSuggestion,
+    AiSkillsView,
+    AiSkillView,
+    AiSwitched,
+    AiSwitchEstimate,
+    AiTestResult,
+    AiTierView,
+    AiWorkKindView,
+    BackupFolderAdd,
+    BackupFolderRemove,
+    BusinessIn,
+    BusinessState,
+    BusinessView,
+    CatalogAddress,
+    CloudFolderChoice,
+    CloudFoldersView,
+    CloudFolderView,
+    DataLevelAllowed,
+    EndpointView,
+    FingerprintIn,
+    FolderCheckView,
+    FolderListView,
+    FolderMade,
+    FolderMake,
+    FolderRenamed,
+    FolderRenameIn,
+    FolderStepView,
+    LocalServerView,
+    LogoUploaded,
+    MailFoldersView,
+    MailServiceView,
+    MeIn,
+    MeView,
+    Ok,
+    PackTierPick,
+    PackTiersView,
+    PackTierView,
+    PackTokenIn,
+    ProjectEndingDone,
+    RestartAsked,
+    SentFolderIn,
+    SettingChangeView,
+    SettingItem,
+    SettingsSave,
+    SettingsSaved,
+    SettingsView,
+    SetupStepView,
+    SetupView,
+    SideRemoveIn,
+    SideRestoreIn,
+    SideView,
+    SortingRuleIn,
+    TemplateApplied,
+    TemplateApply,
+    TemplateView,
+    WalkthroughIn,
+    WalkthroughView,
+    WatchKindView,
+    WatchSourceChange,
+    WatchSourceIn,
+    WorkIn,
+)
+from engine import (
+    act_accounts,
+    audit,
+    kept_secrets,
+    mail_services,
+    references,
+    setup,
+    sides,
+    source_trial,
+    templates,
+    understand,
+    watch,
+)
+from engine import set_aside as set_aside_mail
+from engine import settings as config_screens
+from engine import sorting_rules as sorting
+from engine.config import Config, ConfigError, load_config
+from engine.config.schema import WatchSource, WorkspaceFile
+from engine.connectors import declared_reads, reads
+from engine.drop_notes import dropped_actions, note_the_drops
+from engine.language_words import language_words
+from engine.legacy_names import private_dir
+from engine.money import usd
+from engine.names import People
+from engine.organizations import own_organization
+from engine.sign_in_sources import accounts_of
+from engine.state_file import write_whole
+from engine.storage import Store, StoreError
+from engine.worker import Events, Worker
+from engine.workspace import Workspace
+
+log = logging.getLogger(__name__)
+
+#: The header that names the setting a refused source is about, so the screen shows the reason beside that field.
+FIELD = "X-Cockpit-Field"
+#: What a hosted app says to a pasted key: keys stay in the app's own environment, given by their reference.
+HOSTED_FILE = "A hosted app can't read a file on your computer. Give the calendar's link instead."
+#: The longest a request waits for the first backup it started, so a slow drive never holds the screen.
+FIRST_BACKUP_WAIT_SECONDS = 20
+HOSTED_KEY = "On a hosted app, a key can't be pasted: keep it in the app's environment and give where it is instead."
+
+#: Why a measuring failed, in words.
+MEASURE_WHY = {
+    "no-answer": "The account didn't take any of the cases (it asked to slow down or its plan was used up), so nothing "
+    "was measured.",
+    "unfinished": "Measuring couldn't finish; nothing was added.",
+    "limit-day": "It stopped at your daily spending limit. What was measured is kept; test again when the limit "
+    "allows.",
+    "limit-month": "It stopped at your monthly spending limit. What was measured is kept; test again when the limit "
+    "allows.",
+}
+
+#: Settings an add-on's setup step may never suggest: where keys come from and which accounts get the work.
+#: How many confirmed senders on one domain make the screen offer a rule for the whole domain.
+NEVER_SUGGESTED = ("ai.providers", "ai.tiers", "workspace.plugins.secrets", "workspace.plugins.enabled", "server.")
+#: Keys the guided steps write that no form shows: an AI account, the tiers it does, a model's price, the backup
+#: folders.
+#: The keys the guided routes write (an AI account, a backup folder, the sources, sorting rules, add-ons on or off, the
+#: catalogs listed, a release's read token, an add-on's secret, the person's own name). The general save accepts them
+#: too, because a screen's Undo saves the values from before there.
+GUIDED = (
+    "ai.providers.",
+    "ai.tiers.",
+    "ai.prices.",
+    "storage.backups.",
+    "watch.sources",
+    "watch.triage",
+    "workspace.plugins.enabled",
+    "workspace.plugins.catalog.feeds",
+    "workspace.plugins.catalog.own_feeds",
+    "workspace.plugins.catalog.release_tokens",
+    "workspace.plugins.secrets.",
+    "workspace.user.",
+)
+
+
+#: The workspace's name until someone names it: a person's name saved at setup replaces only this.
+WORKSPACE_DEFAULT_NAME = WorkspaceFile.model_fields["name"].get_default()
+
+#: How the first read of a source added from the screen goes: the source setting's own default, which the add route
+#: leaves untouched.
+NEW_SOURCE_FIRST_RUN = WatchSource.model_fields["first_run"].get_default()
+
+
+def _defaults(model: Any) -> dict[str, Any]:
+    """A settings model's defaults where every field has one; empty where a field must be filled in."""
+    values = {}
+    for key, info in model.model_fields.items():
+        if not info.is_required():
+            default = info.get_default(call_default_factory=True)
+            values[key] = default.model_dump(mode="json") if hasattr(default, "model_dump") else default
+    return values
+
+
+def asked_reference(typed: str) -> str:
+    """A place a secret is kept, as the person typed it: a bare name is the name of an environment variable."""
+    text = typed.strip()
+    return text if ":" in text else f"env:{text}"
+
+
+def _nested(values: dict[str, Any], dotted: str) -> Any:
+    """The value at a dotted name in nested settings, or None where there is none or it is empty."""
+    at: Any = values
+    for part in dotted.split("."):
+        if not isinstance(at, dict) or part not in at:
+            return None
+        at = at[part]
+    return at or None
+
+
+def _put(values: dict[str, Any], dotted: str, value: Any) -> None:
+    """Set the value at a dotted name in nested settings, making the objects on the way."""
+    *parents, last = dotted.split(".")
+    at = values
+    for part in parents:
+        child = at.get(part)
+        if not isinstance(child, dict):
+            child = at[part] = {}
+        at = child
+    at[last] = value
+
+
+def _merged(current: Any, suggested: Any) -> Any:
+    """A suggested value laid over the current one: a mapping adds the keys it suggests and keeps every key the
+    person already has, with their own values, nested mappings included; anything that isn't a mapping is
+    replaced."""
+    if isinstance(current, dict) and isinstance(suggested, dict):
+        out = dict(current)
+        for key, value in suggested.items():
+            if key not in current:
+                out[key] = value
+            elif isinstance(current[key], dict) and isinstance(value, dict):
+                out[key] = _merged(current[key], value)
+        return out
+    return suggested
+
+
+def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events, worker: Worker) -> APIRouter:
+    r = APIRouter(prefix="/api")
+    local = cfg.server.mode == "local"
+
+    def current() -> Config:
+        """The settings as the files hold them now; the running app may have started with older ones."""
+        try:
+            return load_config(ws.config_dir, env=dict(os.environ))
+        except ConfigError:
+            return cfg
+
+    def saved(result: config_screens.Saved, released: kept_secrets.Released | None = None) -> SettingsSaved:
+        events.changed()
+        return SettingsSaved(
+            changes=[SettingChangeView(**c) for c in result.changes],
+            fingerprint=result.fingerprint,
+            needs_restart=bool(result.changes) and worker.needs_restart(),
+            kept_secrets_going=(released.going or None) if released else None,
+            kept_secrets_undo_minutes=released.undo_minutes if released and released.going else None,
+        )
+
+    def let_go(owner: str, before: Any) -> kept_secrets.Released:
+        """The secrets kept for what was just removed go once no Undo points at them (design 12.3)."""
+        return kept_secrets.release(ws, store, current(), owner=owner, before=before)
+
+    def save(
+        changes: dict[str, Any],
+        reset: list[str],
+        fingerprint: str,
+        allow: tuple[str, ...] = (),
+        by_setup: bool = False,
+    ) -> Any:
+        try:
+            done = config_screens.save(
+                ws,
+                cfg,
+                store,
+                changes=changes,
+                reset=reset,
+                read_fingerprint=fingerprint,
+                env=dict(os.environ),
+                allow=allow,
+            )
+            # What a setup step wrote reads as set up in Settings; what the person saves themselves reads as theirs.
+            setup.forget_set_by_setup(ws, [c["key"] for c in done.changes])
+            if by_setup:
+                setup.note_set_by_setup(ws, {c["key"]: c["after"] for c in done.changes if not c["is_default"]})
+            return done
+        except config_screens.SettingsConflict as err:
+            raise HTTPException(status_code=409, detail=str(err)) from None
+        except config_screens.SettingsRefused as err:
+            # One setting changed: the field it was typed in names it, so the reason alone is said beside it.
+            alone = len({*changes, *reset}) == 1
+            raise HTTPException(
+                status_code=400,
+                detail=err.reason if alone else str(err),
+                headers={FIELD: next(iter({*changes, *reset}))} if alone else None,
+            ) from None
+        except StoreError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from None
+
+    # ---- settings ------------------------------------------------------------------------------------------------
+
+    def _live_lists() -> dict[str, list[str]]:
+        """The choices of the settings that pick from a list the person keeps (a value list), as it stands now."""
+        lists = {v.data["name"]: v.data["values"] for v in store.read().list("value_list")}
+        return {
+            "project_status": list(lists.get("project-status", [])),
+            "projects": list(sides.project_names(store.read(), current())),
+            # Personal and each job or business: groups that hold projects, picked from where a setting names a side.
+            "sides": sides.side_ids(store.read(), current()),
+            # The people there are and the tiers the AI settings define: lists their own records and settings keep.
+            "people": [p.id for p in store.read().list("person") if p.data.get("status", "active") != "left"],
+            "tiers": list(current().ai.tiers),
+            # The accounts an act can go through, picked from (never typed) where the person lets the assistant act.
+            "acting_accounts": [a.id for a in act_accounts.known(store, current())],
+        }
+
+    @r.get("/settings")
+    def settings_view() -> SettingsView:
+        # A value a setup step wrote and nobody has changed since reads as set up, not as changed.
+        set_up = setup.set_by_setup(ws)
+        return SettingsView(
+            fingerprint=config_screens.fingerprint(ws.config_dir),
+            changed_at=config_screens.changed_at(ws.config_dir),
+            items=[
+                SettingItem(**{**vars(s), "by_setup": s.key in set_up and set_up[s.key] == s.value})
+                for s in config_screens.describe(current(), store.plugins, ws.config_dir, _live_lists())
+            ],
+            search_words=language_words(current().language, "settings_search_words"),
+        )
+
+    @r.post("/brand/logo")
+    async def brand_logo_upload(request: Request) -> LogoUploaded:
+        """Keep a picture as the workspace's logo: the body is the picture's bytes. It is stored in the configuration
+        folder under a name made from its content, and the name is returned to be saved as `ui.brand.logo`, which this
+        does not change. A picture that can't be shown, or is too large, is refused with the reason."""
+        from engine.brand import LogoRefused, save_logo
+
+        limit = current().ui.brand.logo_max_kb * 1024
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > limit * 2:
+            raise HTTPException(status_code=413, detail="That picture is too large for a logo.")
+        data = await request.body()
+        try:
+            return LogoUploaded(name=save_logo(ws.config_dir, data, current().ui.brand.logo_max_kb))
+        except LogoRefused as err:
+            raise HTTPException(status_code=400, detail=str(err), headers={FIELD: "ui.brand.logo"}) from None
+
+    @r.post("/restart")
+    def restart() -> RestartAsked:
+        """Restart now, because the person chose to (never on its own). It starts between pieces of work."""
+        if not worker.can_restart:
+            raise HTTPException(
+                status_code=409, detail="This copy of the app can't restart itself. Close it and start it again."
+            )
+        worker.request_restart()
+        return RestartAsked(restarting=True)
+
+    @r.post("/settings")
+    def settings_save(body: SettingsSave) -> SettingsSaved:
+        # The keys the guided steps write are accepted here too, so their Undo (the values from before) works.
+        # What a setup step wrote can be undone here too, though no screen lists it.
+        allow = (*GUIDED, *setup.set_by_setup(ws))
+        result = saved(save(body.changes, body.reset, body.fingerprint, allow=allow, by_setup=body.by_setup is True))
+        if "workspace.user.person" in body.changes:
+            person_named()
+        return result
+
+    def person_named() -> None:
+        """Work that waited for the workspace to have a person is queued again by itself."""
+        from engine.dispatcher import requeue_waiting_for_person
+        from engine.sign_in_sources import start_signed_in
+
+        if requeue_waiting_for_person(store):
+            events.changed()
+            worker.poke()
+        # A mail account signed in before the person was named gets its sent mail read now.
+        try:
+            if start_signed_in(ws, current(), store):
+                worker.read_sources_now()
+                events.changed()
+        except Exception as err:  # the person is named either way; the sources can be started from their sign-in
+            log.warning("Couldn't start the sent-mail sources of sign-ins made earlier: %s", err)
+
+    # ---- the person the app is for --------------------------------------------------------------------------------
+
+    def me_now() -> MeView:
+        pid = current().workspace.user.person
+        person = store.read().get("person", pid) if pid else None
+        return MeView(person=person.id if person else None, full_name=person.data["full_name"] if person else "")
+
+    @r.get("/me")
+    def me() -> MeView:
+        return me_now()
+
+    @r.post("/me")
+    def me_save(body: MeIn) -> MeView:
+        """Name the person the app is for: renames their person record, or makes one and links it in the settings."""
+        from engine.storage import WriteContext
+
+        name = " ".join(body.full_name.split())
+        found = me_now()
+        clash = [
+            p
+            for p in store.read().list("person")
+            if p.id != found.person and p.data["full_name"].lower() == name.lower()
+        ]
+        if clash:
+            raise HTTPException(status_code=409, detail=f"{name} is already someone else in People.")
+        ctx = WriteContext(actor="pm", trust="trusted", op="person.edit" if found.person else "person.add")
+        with store.transaction() as tx:
+            if found.person:
+                current_person = tx.get("person", found.person)
+                tx.update(
+                    "person",
+                    found.person,
+                    {"full_name": name, "name_verified": True},
+                    ctx,
+                    read_version=current_person.version,
+                )
+                pid = found.person
+            else:
+                pid = tx.create("person", {"full_name": name, "name_verified": True}, ctx).id
+        events.changed()
+        if not found.person:
+            save(
+                {"workspace.user.person": pid},
+                [],
+                config_screens.fingerprint(ws.config_dir),
+                allow=("workspace.user.",),
+            )
+            worker.apply_live()  # the person is a live setting: every screen knows them at once, without a restart
+            person_named()
+            # A business added before the person was named: they work for it.
+            with store.transaction() as tx:
+                own_organization(tx, current(), pid)
+        workspace_name = " ".join((body.workspace_name or "").split())
+        if workspace_name and current().workspace.name == WORKSPACE_DEFAULT_NAME:
+            try:
+                save(
+                    {"workspace.name": workspace_name},
+                    [],
+                    config_screens.fingerprint(ws.config_dir),
+                    by_setup=True,
+                )
+                worker.apply_live()  # the name is a live setting: the header shows it at once
+            except HTTPException as err:  # a name fixed by the environment stays; the person is named either way
+                log.info("The workspace wasn't named after the person: %s", err.detail)
+        return MeView(person=pid, full_name=name)
+
+    @r.get("/setup/business")
+    def business_state() -> BusinessState:
+        """Whether the person has a business and what it is called, for the Personal / business filter, and what they
+        said about their work at setup. A business whose project was undone or removed counts as none."""
+        from engine import sides
+
+        now, view = current(), store.read()
+        listed = sides.side_list(view, now)
+        open_to_change = not setup.walkthrough_ended(ws)
+        return BusinessState(
+            business=bool(listed),
+            name=listed[0].name if listed else None,
+            personal=sides.personal_project(view, now),
+            sides=[
+                SideView(
+                    project=s.project,
+                    kind=s.kind,
+                    name=s.name,
+                    summary=(view.get("project", s.project).data.get("summary") or None),
+                    organization=s.organization,
+                    removable=open_to_change and sides.removable_side(view, s.project),
+                    filed=sides.filed_under(view, s.project),
+                )
+                for s in listed
+            ],
+            chosen=setup.work_choice(ws, now, view),
+        )
+
+    def save_work(name: str, kind: str = "business", summary: str | None = None) -> BusinessView:
+        from engine import sides
+
+        try:
+            made = sides.set_business(ws, store, current(), name, kind=kind, summary=summary, env=dict(os.environ))
+        except config_screens.SettingsConflict as err:
+            raise HTTPException(status_code=409, detail=str(err)) from None
+        except StoreError as err:
+            raise HTTPException(status_code=409, detail=str(err)) from None
+        setup.keep_work_choice(ws, "work")
+        worker.apply_live()  # the sides are a live setting: Today and Follow-ups read them at once
+        events.changed()
+        return BusinessView(
+            project=made.project,
+            name=" ".join(name.split()),
+            kind=made.kind,
+            created=made.created,
+            changeset=made.changeset,
+        )
+
+    @r.post("/setup/business")
+    def business_save(body: BusinessIn) -> BusinessView:
+        """Add a side beside the person's own life: makes its top-level project and appends it to `project.sides`
+        with its kind (a business unless `kind` says job). A name a side already has is that side, and nothing
+        changes. With Undo."""
+        return save_work(body.name, body.kind or "business", body.summary)
+
+    @r.post("/setup/work")
+    def work_save(body: WorkIn) -> BusinessState:
+        """Answer the work question: Just me keeps nothing but the answer; Me and my work adds a side named by
+        `name` (as `POST /setup/business` does). Once a work side exists it stays; the answer can't go back to Just
+        me."""
+        from engine import sides
+
+        view, now = store.read(), current()
+        if body.choice == "work":
+            if not (body.name or "").strip():
+                raise HTTPException(status_code=422, detail="Say what your work is called.")
+            save_work(body.name or "", body.kind or "business", body.summary)
+        elif sides.business_project(view, now) is not None:
+            raise HTTPException(status_code=409, detail="Your work is already part of this; it stays.")
+        else:
+            setup.keep_work_choice(ws, "me")
+            events.changed()
+        return business_state()
+
+    @r.post("/setup/sides/{project}/remove")
+    def side_remove(project: str) -> BusinessState:
+        """Take a side back out while setup is still open: its project and the projects inside it go, and so does its
+        place in the sides' list. Refused once setup is finished or when anything is filed under it."""
+        from engine import sides
+
+        if setup.walkthrough_ended(ws):
+            raise HTTPException(status_code=409, detail="Setup is finished, so a side is changed under Projects now.")
+        try:
+            sides.remove_side(ws, store, current(), project, env=dict(os.environ))
+        except config_screens.SettingsConflict as err:
+            raise HTTPException(status_code=409, detail=str(err)) from None
+        except StoreError as err:
+            raise HTTPException(status_code=409, detail=str(err)) from None
+        worker.apply_live()
+        if sides.business_project(store.read(), current()) is None:
+            setup.clear_work_choice(ws)
+        events.changed()
+        return business_state()
+
+    @r.post("/sides/{project}/remove")
+    def side_remove_after_setup(project: str, body: SideRemoveIn) -> ProjectEndingDone:
+        """Remove a side whenever the person asks, with what is filed under it moved to Personal or ended with it,
+        as one changeset with Undo. A removal that touches many records makes a backup first. Ending it with the side
+        also drafts one note to each person told about a to-do it dropped, as an outward act that waits for the
+        person's yes; Undo takes the notes and the removal back together."""
+        from engine import sides
+
+        try:
+            removal = sides.remove_with_work(
+                store, current(), project, body.where, ws=ws, organization=body.organization
+            )
+        except StoreError as err:
+            raise HTTPException(status_code=409, detail=str(err)) from None
+        changeset = removal.changeset
+        drafted = note_the_drops(store, current(), changeset, dropped_actions(store, changeset))
+        events.changed()
+        names = People(store, current())
+        return ProjectEndingDone(
+            changeset=changeset,
+            drafts=drafted.changesets,
+            acts=drafted.acts,
+            names=[names.name(person) for person in drafted.people],
+            companions=list(removal.companions),
+        )
+
+    @r.post("/setup/sides/{project}/restore")
+    def side_restore(project: str, body: SideRestoreIn) -> BusinessState:
+        """Undo of taking a side back out: its project and the projects that were inside it come back, and it is
+        listed again with its kind at its old place."""
+        from engine import sides
+
+        try:
+            sides.restore_side(
+                ws, store, current(), project, kind=body.kind, position=body.position, env=dict(os.environ)
+            )
+        except config_screens.SettingsConflict as err:
+            raise HTTPException(status_code=409, detail=str(err)) from None
+        except StoreError as err:
+            raise HTTPException(status_code=409, detail=str(err)) from None
+        setup.keep_work_choice(ws, "work")
+        worker.apply_live()
+        events.changed()
+        return business_state()
+
+    # ---- setup steps ---------------------------------------------------------------------------------------------
+
+    @r.get("/setup")
+    def setup_view() -> SetupView:
+        now = current()
+        steps = setup.steps(ws, now, store)
+        counted = [s for s in steps if s.counted]
+        places = {s.id: n for n, s in enumerate(counted, start=1)}
+        return SetupView(
+            steps=[SetupStepView(**vars(s), place=places.get(s.id)) for s in steps],
+            finished=setup.finished(steps),
+            total=len(counted),
+            settled=sum(1 for s in counted if s.done or s.skipped),
+            local=local,
+            walkthrough=WalkthroughView(**vars(setup.walkthrough(ws, now, steps))),
+            first_go_waiting=setup.first_go_waiting(store),
+        )
+
+    @r.post("/setup/walkthrough")
+    def walkthrough_keep(body: WalkthroughIn) -> WalkthroughView:
+        """Keep where the walkthrough stands: its screen, that it was closed, or that it was finished."""
+        setup.keep_walkthrough(ws, body.step, body.closed, body.finished)
+        events.changed()
+        now = current()
+        return WalkthroughView(**vars(setup.walkthrough(ws, now, setup.steps(ws, now, store))))
+
+    @r.post("/setup/{step:path}/apply-settings")
+    def setup_apply_settings(step: str, body: FingerprintIn) -> SettingsSaved:
+        found = next((s for s in setup.steps(ws, current(), store) if s.id == step), None)
+        if found is None or not (found.settings or found.adds):
+            raise HTTPException(status_code=404, detail="That step suggests no settings.")
+        barred = [k for k in (*found.settings, *found.adds) if k.startswith(NEVER_SUGGESTED)]
+        if barred:
+            log.warning("A setup step suggested settings it may not: %s", ", ".join(barred))
+            raise HTTPException(
+                status_code=400,
+                detail="An add-on can't suggest where keys come from, which accounts get the work, or the server's "
+                "own settings.",
+            )
+        now = current()
+        changes = {key: _merged(now.value(key), value) for key, value in found.settings.items()}
+        for key, values in found.adds.items():
+            mine = now.value(key)
+            mine = list(mine) if isinstance(mine, list) else []
+            changes[key] = [*mine, *(v for v in values if v not in mine)]
+        return saved(save(changes, [], body.fingerprint, allow=("",), by_setup=True))
+
+    @r.post("/setup/{step:path}/skip")
+    def setup_skip(step: str) -> Ok:
+        setup.skip(ws, step)
+        events.changed()
+        return Ok(ok=step)
+
+    @r.post("/setup/{step:path}/reopen")
+    def setup_reopen(step: str) -> Ok:
+        setup.skip(ws, step, skipped=False)
+        events.changed()
+        return Ok(ok=step)
+
+    # ---- templates -----------------------------------------------------------------------------------------------
+
+    @r.get("/templates")
+    def template_list() -> list[TemplateView]:
+        try:
+            set_up = templates.in_use(ws, list(current().workspace.plugins.enabled))
+        except templates.TemplateError:
+            set_up = None
+        return [
+            TemplateView(
+                id=t["id"],
+                name=t["name"],
+                description=t["description"],
+                adds=t["adds"],
+                set_up=t["id"] == set_up,
+                audience=t["audience"],
+            )
+            for t in templates.shipped()
+        ]
+
+    @r.post("/templates/apply")
+    def template_apply(body: TemplateApply) -> TemplateApplied:
+        if body.id not in {t["id"] for t in templates.shipped()}:
+            raise HTTPException(status_code=404, detail=f"there is no template {body.id}")
+        before = list(current().workspace.plugins.enabled)
+        try:
+            plugins = templates.apply(ws, body.id)
+        except (templates.TemplateError, ConfigError) as err:
+            log.warning("A template couldn't be applied: %s", err)
+            raise HTTPException(status_code=400, detail=err.plain) from None
+        with store.transaction() as tx:
+            audit.plugin_changes(tx, before, list(current().workspace.plugins.enabled))
+        setup.template_applied(ws, body.id)
+        events.changed()
+        return TemplateApplied(plugins=plugins, needs_restart=worker.needs_restart())
+
+    # ---- folders -------------------------------------------------------------------------------------------------
+
+    @r.get("/setup/folder-check")
+    def folder_check(path: str) -> FolderCheckView:
+        return FolderCheckView(**vars(setup.check_backup_folder(ws, path)))
+
+    @r.get("/setup/folders")
+    def folders(path: str | None = None, files: str | None = None) -> FolderListView:
+        if not local:
+            raise HTTPException(status_code=403, detail="Folders on the server can't be browsed; type the path.")
+        try:
+            listed = setup.list_folders(path, files)
+        except StoreError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from None
+        fields = {**vars(listed), "trail": [FolderStepView(name=n, path=p, home=h) for n, p, h in listed.trail]}
+        return FolderListView(**fields)
+
+    @r.post("/setup/folders/new")
+    def folder_new(body: FolderMake) -> FolderMade:
+        """Make a folder inside the one the chooser is showing, so a place for backups can be made while choosing it."""
+        if not local:
+            raise HTTPException(status_code=403, detail="Folders on the server can't be made from here; type the path.")
+        try:
+            return FolderMade(path=str(setup.make_folder(body.inside, body.name)))
+        except StoreError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from None
+
+    @r.get("/setup/backup-folders")
+    def cloud_backup_folders() -> CloudFoldersView:
+        """The cloud drives found on this computer, by name, for the backup step: the first is recommended. None when
+        the app isn't on the person's own computer, which has no drive folders to look at."""
+        from engine import cloud_folders
+
+        backups = current().storage.backups
+        drives = cloud_folders.found(backups.cloud_folders, Path.home()) if local else []
+        return CloudFoldersView(
+            folders=[CloudFolderView(name=d.name, recommended=n == 0) for n, d in enumerate(drives)],
+            names=[d.name for d in backups.cloud_folders],
+            shown=cloud_folders.shown(backups.cloud_path),
+        )
+
+    @r.post("/setup/backup-folder/cloud")
+    def backup_to_cloud_folder(body: CloudFolderChoice) -> SettingsSaved:
+        """Back up to a cloud drive found on this computer: its backup folder is made, saved as a target, and the first
+        backup is made before the answer, so the reminder to back up is gone when the person goes on."""
+        from engine import cloud_folders
+
+        backups = current().storage.backups
+        drive = next((d for d in cloud_folders.found(backups.cloud_folders, Path.home()) if d.name == body.name), None)
+        if not local or drive is None:
+            raise HTTPException(status_code=400, detail="That drive isn't on this computer. Choose another folder.")
+        try:
+            made = cloud_folders.make_backup_folder(drive.root, backups.cloud_path)
+        except OSError as err:
+            raise HTTPException(
+                status_code=400, detail=f"A folder couldn't be made there: {err.strerror or err}"
+            ) from None
+        check = setup.check_backup_folder(ws, str(made))
+        if not check.ok:
+            raise HTTPException(status_code=400, detail=check.problem)
+        # Choosing where backups go replaces where they went: one place, never two by accident.
+        targets = [{"path": check.path, "label": drive.name}]
+        result = saved(save({"storage.backups.targets": targets}, [], body.fingerprint, allow=("storage.backups.",)))
+        thread = worker.first_backup_soon()
+        if thread is not None:
+            thread.join(timeout=FIRST_BACKUP_WAIT_SECONDS)
+        return result
+
+    @r.post("/setup/backup-folder")
+    def backup_folder(body: BackupFolderAdd) -> SettingsSaved:
+        check = setup.check_backup_folder(ws, body.path)
+        if not check.ok:
+            raise HTTPException(status_code=400, detail=check.problem)
+        # Choosing where backups go replaces where they went: one place, never two by accident.
+        targets = [{"path": check.path, "label": body.label.strip()}]
+        result = saved(save({"storage.backups.targets": targets}, [], body.fingerprint, allow=("storage.backups.",)))
+        # The first backup is made now, in the background, so choosing where doesn't leave a request to back up.
+        worker.first_backup_soon()
+        return result
+
+    @r.delete("/setup/backup-folder")
+    def backup_folder_remove(body: BackupFolderRemove) -> SettingsSaved:
+        """Stop backing up to one place. The copies already there are left alone."""
+        targets = [t.model_dump() for t in current().storage.backups.targets]
+        kept = [t for t in targets if t["path"] != body.path]
+        if len(kept) == len(targets):
+            raise HTTPException(status_code=404, detail="Backups don't go to that folder.")
+        return saved(save({"storage.backups.targets": kept}, [], body.fingerprint, allow=("storage.backups.",)))
+
+    # ---- AI accounts ---------------------------------------------------------------------------------------------
+
+    @r.get("/ai/endpoints")
+    def endpoints() -> list[EndpointView]:
+        import shutil
+
+        found = []
+        for e in setup.known_endpoints():
+            installed = (shutil.which(e["program"]) is not None) if (e["program"] and local) else None
+            found.append(EndpointView(**e, installed=installed))
+        return found
+
+    # ---- watched sources ----------------------------------------------------------------------------------------
+
+    def source_kinds() -> dict[str, Any]:
+        from engine import watch
+
+        return watch.connectors(store)
+
+    @r.get("/watch/kinds")
+    def watch_kinds() -> list[WatchKindView]:
+        """The kinds of source the assistant can keep reading: the core's and running add-ons', each with the form
+        its settings take. Kinds made only for tests are left out."""
+        found = []
+        for name, connector in sorted(source_kinds().items()):
+            if connector.test_only:
+                continue
+            items: list = []
+            defaults = _defaults(connector.settings)
+            config_screens._walk(connector.settings, ["source"], defaults, defaults, {}, items)
+            for item in items:
+                item.key = item.key.removeprefix("source.")
+                item.group = item.group.removeprefix("source.").removeprefix("source")
+                item.source = "default"
+            plugin = name.split("/", 1)[0] if "/" in name else None
+            found.append(
+                WatchKindView(
+                    name=name,
+                    label=connector.label,
+                    plugin=plugin,
+                    accounts=accounts_of(ws, store, plugin) if plugin else None,
+                    first_run=NEW_SOURCE_FIRST_RUN,
+                    reads=reads(name, declared_reads(source_kinds())),
+                    default_stance=understand.default_stance(name, reads(name, declared_reads(source_kinds()))),
+                    items=[SettingItem(**vars(i)) for i in items],
+                )
+            )
+        return found
+
+    def sources_now() -> list[dict[str, Any]]:
+        return [s.model_dump(mode="json") for s in current().watch.sources]
+
+    def checked_source(kind: str, settings: dict[str, Any]) -> dict[str, Any]:
+        connector = source_kinds().get(kind)
+        if connector is None:
+            raise HTTPException(status_code=404, detail=f"There is no kind of source called {kind} running now.")
+        try:
+            # Settings that refer to records hold their ids; a name typed for one is resolved or refused.
+            settings = references.join_settings(connector.settings, settings, store.read())
+            checked = connector.settings.model_validate(settings).model_dump(mode="json", exclude_defaults=True)
+            if not local and any(_nested(checked, f) for f in config_screens.picked_fields(connector.settings, "file")):
+                raise HTTPException(status_code=400, detail=HOSTED_FILE)
+            return checked
+        except StoreError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from None
+        except ValueError as err:
+            first = err.errors()[0] if hasattr(err, "errors") else {"loc": (), "msg": str(err), "type": "value_error"}
+            field = ".".join(map(str, first["loc"])) or None
+            if first.get("type") in ("missing", "string_too_short"):
+                text = watch.advice_sentence("sources.refuse.fill_in")
+            elif first.get("type") == "value_error":
+                said = str(first["msg"]).removeprefix("Value error, ").strip()
+                text = said[:1].upper() + said[1:] + ("" if said.endswith((".", "!", "?")) else ".")
+            else:
+                text = watch.advice_sentence("sources.refuse.not_allowed")
+            raise HTTPException(status_code=400, detail=text, headers={FIELD: field} if field else None) from None
+
+    def checked_project(project: str) -> str:
+        """A project's id from its id or its name; the source follows the id, so a rename never detaches it."""
+        try:
+            return references.resolve(store.read(), "project", project)
+        except StoreError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from None
+
+    def checked_holds(connector: str, holds: str) -> str:
+        """What a calendar's entries are. Only a source that reads a calendar can hold who is away."""
+        if holds == "absence" and "calendar" not in reads(connector, declared_reads(source_kinds())):
+            raise HTTPException(status_code=400, detail="Only a calendar can hold who is away.")
+        return holds
+
+    def checked_author(author: str) -> str:
+        view = store.read()
+        if view.get("person", author) is None and view.get("team", author) is None:
+            raise HTTPException(status_code=400, detail="Choose a person or a team from the list.")
+        return author
+
+    def checked_sides(wanted: list[str]) -> list[str]:
+        """The sides a source serves, from the sides that exist (Personal and each job or business), in their order."""
+        known = sides.side_ids(store.read(), current())
+        unknown = [w for w in wanted if w not in known]
+        if unknown:
+            raise HTTPException(status_code=400, detail="Choose a side from the list.")
+        return [k for k in known if k in set(wanted)]
+
+    def checked_capture(connector: str, capture: bool | None, address: str | None) -> dict[str, Any]:
+        """What a mail source holds of the person's own capture: whether everything in it is, and an address mail to
+        which is. Only a source that reads mail takes either; the address must be one (a name, an @ and a domain)."""
+        from engine.connectors import declared_reads, reads
+
+        wanted = (address or "").strip()
+        if (capture or wanted) and "mail" not in reads(connector, declared_reads(source_kinds())):
+            raise HTTPException(status_code=400, detail="Only a source that reads mail can hold your own capture.")
+        if wanted and not re.fullmatch(r"[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+", wanted):
+            raise HTTPException(status_code=400, detail="That doesn't look like an email address.")
+        return {"capture": bool(capture), "capture_address": wanted or None}
+
+    def checked_account(connector: str, account: str | None) -> str | None:
+        """The account a source of this kind reads: one signed in (by address, in any case), else the only one when
+        none is named. Several signed in and none named is refused, as is an account that isn't signed in."""
+        accounts = accounts_of(ws, store, connector.split("/", 1)[0]) if "/" in connector else None
+        wanted = (account or "").strip()
+        if accounts is None:
+            if wanted:
+                raise HTTPException(status_code=400, detail="This kind of source has no account to choose.")
+            return None
+        if wanted:
+            found = next((a for a in accounts if a.lower() == wanted.lower()), None)
+            if found is None:
+                raise HTTPException(
+                    status_code=400, detail="That account isn't signed in. Sign in to it first, then choose it."
+                )
+            return found
+        if len(accounts) > 1:
+            raise HTTPException(status_code=400, detail="Choose which account this source reads.")
+        return accounts[0] if accounts else None
+
+    def with_secrets(
+        kind: str, source_id: str, settings: dict[str, Any], pasted: dict[str, str], supplied: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, str]]:
+        """The settings with a reference to each pasted secret written in, and what to keep, by file name. `supplied`
+        is what the person sent as settings: a field can't be both typed and given as a reference. Nothing is written
+        here: a source that fails its checks leaves what was kept before untouched."""
+        if not pasted:
+            return settings, {}
+        if not local:
+            raise HTTPException(status_code=400, detail=HOSTED_KEY)
+        connector = source_kinds().get(kind)
+        if connector is None:
+            raise HTTPException(status_code=404, detail=f"There is no kind of source called {kind} running now.")
+        allowed = config_screens.secret_fields(connector.settings)
+        merged = copy.deepcopy(settings)
+        to_keep: dict[str, str] = {}
+        for field, value in pasted.items():
+            if field not in allowed:
+                raise HTTPException(status_code=400, detail="That isn't a setting this kind of source keeps secret.")
+            if not value.strip():
+                raise HTTPException(status_code=400, detail="Type or paste it, or give where it is kept instead.")
+            if _nested(supplied, field):
+                raise HTTPException(status_code=400, detail="Type it or give where it is kept, not both.")
+            name = setup.unused_secret_name(ws, setup.secret_name("source", source_id, field))
+            _put(merged, field, setup.secret_reference(ws, name))
+            to_keep[name] = value
+        return merged, to_keep
+
+    def keep_all(to_keep: dict[str, str], owner: str) -> list[Path]:
+        """Keep each pasted secret; returns the files that didn't exist before, to remove if the save is refused."""
+        fresh = [setup.secret_path(ws, name) for name in to_keep if not setup.secret_path(ws, name).exists()]
+        try:
+            for name, value in to_keep.items():
+                setup.keep_secret(ws, name, value, owner=owner)
+        except StoreError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from None
+        return fresh
+
+    def unused_id(label: str, taken: set[str]) -> str:
+        base = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")[:40] or "source"
+        return base if base not in taken else next(f"{base}-{n}" for n in range(2, 999) if f"{base}-{n}" not in taken)
+
+    def default_sent(new: dict[str, Any], taken: set[str], listed: Any = None) -> dict[str, Any] | None:
+        """The source that also reads the sent folder of a mailbox being connected, so promises made in mail the person
+        sent are found with no folder to choose: the folder the server marks as sent mail, else one of the usual names.
+        None when the mailbox is read already, the person isn't known (their sent mail can't be credited to them yet),
+        the mailbox can't be reached now, or it has no such folder; the person can still add it from Connections."""
+        from engine.connectors import ConnectorError
+        from engine.connectors.mailbox import MailboxSettings, find_sent, list_folders
+
+        settings = MailboxSettings.model_validate(new["settings"])
+        if taken_folders(settings):
+            return None  # the mailbox is read already: a folder the person took out or left out isn't brought back
+        try:
+            listed = listed or list_folders(settings)
+        except ConnectorError:
+            return None
+        folder = find_sent(listed, current().watch.sent_folder_names)
+        if folder is None or folder == settings.folder:
+            return None
+        wanted = sent_source(new, folder, f"{new['label']} ({folder})")
+        return {"id": unused_id(wanted["label"], taken | {new["id"]}), **wanted}
+
+    @r.get("/watch/mail-services")
+    def watch_mail_services() -> list[MailServiceView]:
+        """The mail services offered by name for connecting a mailbox with an app password: the shipped list, then the
+        workspace's own (`watch.mail_services_extra`), each with its plain steps."""
+        return [
+            MailServiceView(
+                id=s.id,
+                name=s.name,
+                user_hint=s.user_hint,
+                app_password_steps=s.app_password_steps,
+                app_password_page=s.page_url,
+                calendar_steps=s.calendar_steps,
+            )
+            for s in mail_services.offered(current())
+        ]
+
+    def tried_sign_in(service: Any, settings: dict[str, Any]) -> Any:
+        """The folders of a mailbox connected through a mail service, which tries its sign-in. A refusal is a 400 in
+        words: what the server said and, for a sign-in it did not accept, the steps of the service picked."""
+        from engine import watch
+        from engine.connectors import ConnectorError
+        from engine.connectors.mailbox import MailboxSettings, list_folders
+
+        try:
+            return list_folders(MailboxSettings.model_validate(settings))
+        except ConnectorError as err:
+            what = err.detail or err.kind
+            what = what if what.endswith((".", "!", "?")) else what + "."
+            advice = (
+                watch.advice_sentence("sources.advice.service_app_password")
+                if err.kind == "auth"
+                else watch.advice_for(err.kind, err.advice_key)
+            )
+            said = watch.advice_sentence("sources.guide.failed").format(service=service.name, what=what)
+            raise HTTPException(
+                status_code=400, detail=f"{said} {advice.format(service=service.name)}".strip()
+            ) from None
+
+    @r.post("/watch/sources")
+    def watch_add(body: WatchSourceIn) -> SettingsSaved:
+        """Start reading a new source, with Undo. Its id comes from its label. A mailbox with no author also reads its
+        sent folder, as the person's own mail, when it can be found."""
+        return add_source(body, with_sent=True)
+
+    def add_source(body: WatchSourceIn, *, with_sent: bool) -> SettingsSaved:
+        sources = sources_now()
+        taken = {s["id"] for s in sources}
+        source_id = unused_id(body.label or body.connector, taken)
+        service = None
+        supplied = body.settings
+        if body.service:
+            service = mail_services.find(current(), body.service)
+            if service is None:
+                raise HTTPException(status_code=404, detail=f"There is no mail service called {body.service}.")
+            if body.connector != "mailbox":
+                raise HTTPException(status_code=400, detail="A mail service is for a mailbox.")
+            if "host" in supplied or "port" in supplied:
+                raise HTTPException(status_code=400, detail="Pick a mail service or give the server, not both.")
+            supplied = mail_services.settings_for(service, supplied)
+        given, to_keep = with_secrets(body.connector, source_id, supplied, body.secrets, body.settings)
+        settings = checked_source(body.connector, given)
+        wanted_account = checked_account(body.connector, body.account)
+        refuse_a_twin(body.connector, wanted_account, settings)
+        refuse_a_missing_folder(body.connector, wanted_account, settings)
+        new = {
+            "id": source_id,
+            "connector": body.connector,
+            "label": body.label.strip(),
+            "every_minutes": body.every_minutes,
+            "settings": settings,
+        }
+        if body.project:
+            new["project"] = checked_project(body.project)
+        capture_on = bool(body.capture or body.capture_address)
+        new["stance"] = body.stance or understand.default_stance(
+            body.connector, reads(body.connector, declared_reads(source_kinds())), capture_on
+        )
+        if body.holds:
+            new["holds"] = checked_holds(body.connector, body.holds)
+        if body.author:
+            new["author"] = checked_author(body.author)
+        if wanted_account:
+            new["account"] = wanted_account
+        if body.color:
+            new["color"] = body.color
+        capture = checked_capture(body.connector, body.capture, body.capture_address)
+        new.update({k: v for k, v in capture.items() if v})
+        if own := sides.alone_with_personal(current()):
+            # With nothing beside the person's own life, a new connection serves it, so it takes that side's level.
+            new["sides"] = [own]
+        fresh = keep_all(to_keep, f"source:{source_id}")
+        if not new["label"]:
+            # Named after what it reads; a typed link is read from where it was just kept.
+            new["label"] = source_trial.default_label(body.connector, settings, source_kinds()[body.connector].label)
+        listed = None
+        if service is None:
+            try:
+                refuse_an_unreadable_source(body.connector, settings)
+            except HTTPException:
+                for path in fresh:
+                    path.unlink(missing_ok=True)
+                raise
+        if service is not None:
+            # The sign-in is tried before anything is saved, so a refusal is said here, naming the service's steps.
+            try:
+                listed = tried_sign_in(service, settings)
+            except HTTPException:
+                for path in fresh:
+                    path.unlink(missing_ok=True)
+                raise
+        sent = None
+        if with_sent and body.connector == "mailbox" and not body.author and current().workspace.user.person:
+            sent = default_sent(new, taken, listed)
+        added = [new, *([sent] if sent else [])]
+        try:
+            done = saved(save({"watch.sources": [*sources, *added]}, [], body.fingerprint, allow=("watch.sources",)))
+        except HTTPException:
+            for path in fresh:
+                path.unlink(missing_ok=True)
+            raise
+        worker.read_sources_now()  # its first read happens now, not at the next minute's check
+        return done
+
+    def mailbox_of(source_id: str) -> tuple[dict[str, Any], Any]:
+        """A mailbox source as the files hold it, and its settings; anything else has no folders to list."""
+        from engine.connectors.mailbox import MailboxSettings
+
+        found = next((s for s in sources_now() if s["id"] == source_id), None)
+        if found is None:
+            raise HTTPException(status_code=404, detail=f"There is no source {source_id}.")
+        if found["connector"] != "mailbox":
+            raise HTTPException(status_code=409, detail="That source isn't a mailbox.")
+        try:
+            return found, MailboxSettings.model_validate(found["settings"])
+        except ValidationError:
+            raise HTTPException(
+                status_code=409,
+                detail="This mailbox isn't set up fully, so its folders can't be listed. Open it and fill in its "
+                "server, user name and password.",
+            ) from None
+
+    def read_folders(settings: Any) -> Any:
+        from engine.connectors import ConnectorError
+        from engine.connectors.mailbox import list_folders
+
+        try:
+            return list_folders(settings)
+        except ConnectorError as err:
+            raise HTTPException(status_code=409, detail=source_trial.plain_reason(err, settings.host)) from None
+
+    def taken_folders(settings: Any) -> list[str]:
+        from engine.connectors.mailbox import MailboxSettings
+
+        held: set[str] = set()
+        for s in sources_now():
+            if s["connector"] != "mailbox" or s["settings"].get("host") != settings.host:
+                continue
+            if s["settings"].get("user") != settings.user:
+                continue
+            try:
+                held.add(MailboxSettings.model_validate(s["settings"]).folder)
+            except ValidationError:  # a mailbox that isn't set up fully reads no folder
+                continue
+        return sorted(held)
+
+    def source_now(source_id: str) -> dict[str, Any]:
+        found = next((s for s in sources_now() if s["id"] == source_id), None)
+        if found is None:
+            raise HTTPException(status_code=404, detail=f"There is no source {source_id}.")
+        return found
+
+    def folder_setting(connector: str) -> tuple[str, bool] | None:
+        """The setting of a plugin's kind of source that names the folder of mail it reads (by the kind's own settings),
+        and whether it holds a list of folders, when the kind has one."""
+        kind = source_kinds().get(connector)
+        if kind is None or "/" not in connector:
+            return None
+        for name, field in kind.settings.model_fields.items():
+            if "folder" in name.lower():
+                return name, "list" in str(field.annotation).lower()
+        return None
+
+    def folder_taken(found: dict[str, Any], name: str) -> list[str]:
+        """The folders sources of this kind and account already read, for a plugin's kind of source."""
+        kind = source_kinds()[found["connector"]]
+        held: set[str] = set()
+        for other in sources_now():
+            if other["connector"] != found["connector"] or other.get("account") != found.get("account"):
+                continue
+            value = getattr(kind.settings.model_validate(other["settings"]), name, None)
+            held.update(str(v) for v in (value if isinstance(value, list) else [value]) if v)
+        return sorted(held)
+
+    def reading_as(connector: str, account: str | None) -> str | None:
+        """The account a source reads as: the one it names, else the only one signed in."""
+        if not account and "/" in connector:
+            signed = accounts_of(ws, store, connector.split("/", 1)[0]) or []
+            return signed[0] if len(signed) == 1 else None
+        return account
+
+    def twin_of(
+        connector: str, account: str | None, settings: dict[str, Any], *, except_id: str | None = None
+    ) -> dict[str, Any] | None:
+        """The source that already reads what this one would: the same kind, for the same account, of the same
+        folder (a mailbox's own server and user count as its account), or with the same settings where the kind has no
+        folder. None when nothing does."""
+        kind = source_kinds().get(connector)
+        if kind is None:
+            return None
+        where = folder_setting(connector) or (("folder", False) if connector == "mailbox" else None)
+
+        def alike(a: Any, b: Any) -> bool:
+            """The same settings, a folder's path being the same with or without a slash at the end."""
+            x, y = a.model_dump(), b.model_dump()
+            for key in ("path",):
+                if isinstance(x.get(key), str) and isinstance(y.get(key), str):
+                    x[key], y[key] = x[key].strip().rstrip("/") or "/", y[key].strip().rstrip("/") or "/"
+            return x == y
+
+        def held(model: Any) -> set[str]:
+            value = getattr(model, where[0], None) if where else None
+            # A folder is the same folder with or without a slash at the end, and with stray spaces around it.
+            return {str(v).strip().rstrip("/") or "/" for v in (value if isinstance(value, list) else [value]) if v}
+
+        try:
+            mine = kind.settings.model_validate(settings)
+        except ValueError:
+            return None
+        as_account = reading_as(connector, account)
+        for other in sources_now():
+            if other["id"] == except_id or other["connector"] != connector:
+                continue
+            if reading_as(connector, other.get("account")) != as_account:
+                continue
+            try:
+                theirs = kind.settings.model_validate(other["settings"])
+            except ValueError:
+                continue
+            if connector == "mailbox" and (theirs.host, theirs.user) != (mine.host, mine.user):
+                continue
+            if where is not None:
+                if held(mine) & held(theirs):
+                    return other
+            elif alike(mine, theirs):
+                return other
+        return None
+
+    def refuse_a_twin(
+        connector: str, account: str | None, settings: dict[str, Any], *, except_id: str | None = None
+    ) -> None:
+        """A second source for what one already reads is refused in the screen's own words; it would only read the
+        same messages again and add them twice."""
+        from engine import watch
+
+        found = twin_of(connector, account, settings, except_id=except_id)
+        if found is not None:
+            raise HTTPException(
+                status_code=400,
+                detail=watch.advice_sentence("sources.refuse.same_folder").format(label=found["label"]),
+            )
+
+    def refuse_a_missing_folder(connector: str, account: str | None, settings: dict[str, Any]) -> None:
+        """A folder the account doesn't have is refused before anything is saved, said in plain words. The add-on's
+        own read is tried once (reading changes nothing); only its answer that there is no such thing refuses, so a
+        service that is down or a sign-in to renew never blocks adding a source, and the read says so when it runs."""
+        from datetime import UTC, datetime
+
+        from engine import watch
+        from engine.connectors import ConnectorError
+
+        setting = folder_setting(connector)
+        found = watch.connectors(store).get(connector)
+        if setting is None or found is None:
+            return
+        try:
+            checked = found.settings.model_validate(settings)
+            watch._poll(store, found, checked, {}, ws, current(), datetime.now(UTC), account)
+        except ConnectorError as err:
+            if err.kind == "not_found":
+                value = getattr(checked, setting[0], "")
+                folder = ", ".join(value) if isinstance(value, list) else str(value)
+                raise HTTPException(
+                    status_code=400,
+                    detail=watch.advice_sentence("sources.refuse.no_such_folder").format(folder=folder),
+                ) from None
+        except ValueError:
+            return
+
+    def refuse_an_unreadable_source(connector: str, settings: dict[str, Any]) -> None:
+        """A source of a core kind that its first read couldn't get through is refused before it is kept, in plain
+        words beside the setting it is about (`engine/source_trial.py`)."""
+        found = source_trial.refusal_for(connector, settings, ws=ws, cfg=current(), store=store)
+        if found is not None:
+            raise HTTPException(
+                status_code=400, detail=found.text, headers={FIELD: found.field} if found.field else None
+            )
+
+    @r.get("/watch/{source_id}/folders")
+    def watch_folders(source_id: str) -> MailFoldersView:
+        """The folders of a mailbox source, and which the server marks as sent mail, for offering the sent folder as a
+        source of its own. Reads the mailbox; nothing there changes. An add-on's mail can't be asked for its folders:
+        it gets the usual names for sent mail, the likeliest first, and the person may name another."""
+        from engine.connectors.mailbox import MailboxSettings, find_sent
+
+        found = source_now(source_id)
+        if found["connector"] != "mailbox":
+            setting = folder_setting(found["connector"])
+            if setting is None:
+                raise HTTPException(status_code=409, detail="That source has no folder to choose.")
+            taken = folder_taken(found, setting[0])
+            usual = [n for n in current().watch.sent_folder_names if n not in taken]
+            return MailFoldersView(folders=usual, sent=usual[0] if usual else None, taken=taken, listed=False)
+        try:
+            settings = MailboxSettings.model_validate(found["settings"])
+        except ValidationError:  # settings the mailbox can't be read with: no list, and the screen says so
+            return MailFoldersView(folders=[], listed=True, reason="unavailable")
+        taken = taken_folders(settings)
+        listed = read_folders(settings)
+        sent = find_sent(listed, current().watch.sent_folder_names)
+        return MailFoldersView(folders=list(listed.names), sent=sent, taken=taken)
+
+    def sent_source(found: dict[str, Any], folder: str, label: str) -> dict[str, Any]:
+        """The source that reads a mailbox's sent folder: the same mailbox and sign-in, the folder as given, and the
+        person as its author, since what is in it is their own mail."""
+        person = current().workspace.user.person
+        return {
+            "connector": "mailbox",
+            "label": label,
+            "every_minutes": found["every_minutes"],
+            **({"author": person} if person else {}),
+            "settings": {**found["settings"], "folder": folder},
+        }
+
+    def add_sent_of_plugin(found: dict[str, Any], body: SentFolderIn) -> SettingsSaved:
+        """A plugin's mail source's sent folder as a source of its own: the same kind and account, the setting that
+        names the folder set to the one the person chose, and the person as its author."""
+        setting = folder_setting(found["connector"])
+        if setting is None:
+            raise HTTPException(status_code=409, detail="That source has no folder to choose.")
+        name, is_list = setting
+        folder = (body.folder or "").strip()
+        if not folder or folder in folder_taken(found, name):
+            raise HTTPException(status_code=400, detail="Choose a folder that isn't read yet.")
+        person = current().workspace.user.person
+        return add_source(
+            WatchSourceIn(
+                connector=found["connector"],
+                label=(body.label or f"{found['label']} ({folder})").strip(),
+                every_minutes=found["every_minutes"],
+                author=person,
+                account=found.get("account"),
+                settings={**found["settings"], name: [folder] if is_list else folder},
+                fingerprint=body.fingerprint,
+            ),
+            with_sent=False,
+        )
+
+    @r.post("/watch/{source_id}/sent-folder")
+    def watch_sent_folder(source_id: str, body: SentFolderIn) -> SettingsSaved:
+        """Read a mailbox's sent folder as a source of its own, with Undo: the same mailbox, the same sign-in, the
+        folder picked from its list (else the one the server marks, else one of the usual names), and the person as its
+        author, since what is in it is their own mail. An add-on's mail takes the folder the person names, set in the
+        kind's own folder setting. It is taken in quietly like any new source."""
+        from engine.connectors.mailbox import find_sent
+
+        found = source_now(source_id)
+        if found["connector"] != "mailbox":
+            return add_sent_of_plugin(found, body)
+        found, settings = mailbox_of(source_id)
+        listed = read_folders(settings)
+        folder = body.folder if body.folder is not None else find_sent(listed, current().watch.sent_folder_names)
+        if folder is None:
+            raise HTTPException(status_code=409, detail="The mail server doesn't say which folder holds sent mail.")
+        if folder not in listed.names or folder in taken_folders(settings):
+            raise HTTPException(status_code=400, detail="Choose a folder from the list.")
+        wanted = sent_source(found, folder, body.label or f"{found['label']} ({folder})")
+        return add_source(
+            WatchSourceIn(
+                connector="mailbox",
+                label=wanted["label"],
+                every_minutes=wanted["every_minutes"],
+                author=wanted.get("author"),
+                settings=wanted["settings"],
+                fingerprint=body.fingerprint,
+            ),
+            with_sent=False,
+        )
+
+    @r.post("/watch/{source_id}/sent-folder/dismiss")
+    def watch_sent_folder_dismiss(source_id: str) -> Ok:
+        """Dismiss, for good, Today's line about the mailbox this source reads having no sent folder."""
+        from engine import sent_folders
+
+        source_now(source_id)
+        sent_folders.dismiss(ws.private_dir, source_id)
+        events.changed()
+        return Ok(ok=source_id)
+
+    @r.post("/watch/{source_id}/sent-folder/dismiss/undo")
+    def watch_sent_folder_dismiss_undo(source_id: str) -> Ok:
+        """Take the dismissal back: the line is on Today again while the mailbox reads no sent folder."""
+        from engine import sent_folders
+
+        sent_folders.dismiss(ws.private_dir, source_id, on=False)
+        events.changed()
+        return Ok(ok=source_id)
+
+    def folder_offer(which: str) -> None:
+        from engine import folder_rename
+
+        if which not in (folder_rename.BACKUPS, folder_rename.WORKSPACE):
+            raise HTTPException(status_code=404, detail="There is no such folder to rename.")
+
+    @r.post("/folder-offers/{which}/keep")
+    def folder_offer_keep(which: str) -> Ok:
+        """Keep a folder under its earlier name: Today never offers to rename it again."""
+        from engine import folder_rename
+
+        folder_offer(which)
+        folder_rename.keep(ws.private_dir, which)
+        events.changed()
+        return Ok(ok=which)
+
+    @r.post("/folder-offers/{which}/keep/undo")
+    def folder_offer_keep_undo(which: str) -> Ok:
+        """Take Keep back: the offer is on Today again while the folder is still under its earlier name."""
+        from engine import folder_rename
+
+        folder_offer(which)
+        folder_rename.unkeep(ws.private_dir, which)
+        events.changed()
+        return Ok(ok=which)
+
+    @r.post("/folder-offers/{which}/rename")
+    def folder_offer_rename(which: str, body: FolderRenameIn) -> FolderRenamed:
+        """The person's yes to renaming a folder made under the product's earlier name. The backup folders found are
+        renamed now and the backup targets that sat in them follow, as one settings change with Undo. The workspace
+        folder is open, so the yes is remembered and the rename is made the next time the app starts."""
+        from engine import folder_rename
+
+        folder_offer(which)
+        if which == folder_rename.WORKSPACE:
+            if folder_rename.workspace_pending(ws.root, Path.home()) is None:
+                raise HTTPException(status_code=409, detail="That folder isn't there to rename any more.")
+            folder_rename.agree(ws.private_dir)
+            events.changed()
+            return FolderRenamed(state=which, renamed=1, saved=None)
+        done = folder_rename.rename_backups(current(), Path.home())
+        if not done:
+            raise HTTPException(status_code=409, detail="That folder isn't there to rename any more.")
+        targets = [t.model_dump() for t in current().storage.backups.targets]
+        moved = folder_rename.retarget(targets, done)
+        result = None
+        try:
+            if moved != targets:
+                result = saved(
+                    save({"storage.backups.targets": moved}, [], body.fingerprint, allow=("storage.backups.",))
+                )
+        except HTTPException:
+            folder_rename.undo_backups(done)
+            raise
+        events.changed()
+        return FolderRenamed(state=which, renamed=len(done), saved=result)
+
+    @r.post("/folder-offers/workspace/rename/undo")
+    def folder_offer_rename_undo() -> Ok:
+        """Take the yes to renaming the workspace folder back, before the next start."""
+        from engine import folder_rename
+
+        folder_rename.agree(ws.private_dir, on=False)
+        events.changed()
+        return Ok(ok="workspace")
+
+    @r.post("/watch/sources/{source_id}")
+    def watch_change(source_id: str, body: WatchSourceChange) -> SettingsSaved:
+        """Change a source's name, how often it is read, whether it is read, or its settings, with Undo."""
+        sources = sources_now()
+        found = next((s for s in sources if s["id"] == source_id), None)
+        if found is None:
+            raise HTTPException(status_code=404, detail=f"There is no source {source_id}.")
+        base = found["settings"] if body.settings is None else body.settings
+        given, to_keep = with_secrets(found["connector"], source_id, base, body.secrets, body.settings or {})
+        if body.settings is not None or body.secrets:
+            found["settings"] = checked_source(found["connector"], given)
+            if body.settings is not None:
+                changed_account = (
+                    checked_account(found["connector"], body.account) if "account" in body.model_fields_set else None
+                )
+                refuse_a_twin(
+                    found["connector"],
+                    changed_account or found.get("account"),
+                    found["settings"],
+                    except_id=source_id,
+                )
+        for key in ("label", "every_minutes", "enabled"):
+            value = getattr(body, key)
+            if value is not None:
+                found[key] = value
+        if "author" in body.model_fields_set:
+            found["author"] = checked_author(body.author) if body.author else None
+        if "account" in body.model_fields_set:
+            found["account"] = checked_account(found["connector"], body.account)
+        if "color" in body.model_fields_set:
+            found["color"] = body.color
+        if body.stance is not None:
+            found["stance"] = body.stance
+        if body.holds is not None:
+            found["holds"] = checked_holds(found["connector"], body.holds)
+        if "sides" in body.model_fields_set:
+            found["sides"] = checked_sides(body.sides or [])
+        if "capture" in body.model_fields_set or "capture_address" in body.model_fields_set:
+            asked = checked_capture(
+                found["connector"],
+                found.get("capture", False) if body.capture is None else body.capture,
+                found.get("capture_address")
+                if "capture_address" not in body.model_fields_set
+                else body.capture_address,
+            )
+            found["capture"] = asked["capture"]
+            found["capture_address"] = asked["capture_address"]
+        if "data_level" in body.model_fields_set:
+            found["data_level"] = body.data_level
+        fresh = keep_all(to_keep, f"source:{source_id}")
+        try:
+            if body.settings is not None or body.secrets:
+                refuse_an_unreadable_source(found["connector"], found["settings"])
+            return saved(save({"watch.sources": sources}, [], body.fingerprint, allow=("watch.sources",)))
+        except HTTPException:
+            for path in fresh:
+                path.unlink(missing_ok=True)
+            raise
+
+    @r.post("/watch/sources/{source_id}/remove")
+    def watch_remove(source_id: str, body: FingerprintIn) -> SettingsSaved:
+        """Stop reading a source and take it off the list, with Undo; what it already handed in stays."""
+        sources = sources_now()
+        if not any(s["id"] == source_id for s in sources):
+            raise HTTPException(status_code=404, detail=f"There is no source {source_id}.")
+        rest = [s for s in sources if s["id"] != source_id]
+        done = save({"watch.sources": rest}, [], body.fingerprint, allow=("watch.sources",))
+        gone = next(s for s in sources if s["id"] == source_id)
+        return saved(done, let_go(f"source:{source_id}", gone))
+
+    # ---- sorting mail: the person's own rules, and confirming set-aside mail ----------------------------------
+
+    def triage_now() -> list[dict[str, Any]]:
+        return [r.model_dump(mode="json", exclude_defaults=True) for r in current().watch.triage]
+
+    @r.post("/watch/sorting")
+    def sorting_rule(body: SortingRuleIn) -> SettingsSaved:
+        """Always set aside mail from these senders and domains as sales or notices, or never set it aside, as the
+        person's own rule, with Undo. Keeping mail goes first in the list; the rule applies to the next mail."""
+        if not body.senders and not body.domains:
+            raise HTTPException(status_code=400, detail="Name a sender or a domain.")
+        public = next((d for d in body.domains if set_aside_mail.is_public_domain(d, current())), None)
+        if public is not None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{public} is a mail service anyone can have an address at, so a rule for all of it would set "
+                "aside mail from people you know. Choose the sender instead.",
+            )
+        rules = sorting.with_sender_rules(triage_now(), body.choice, body.senders, body.domains)
+        result = saved(save({"watch.triage": rules}, [], body.fingerprint, allow=("watch.triage",)))
+        if body.mail and body.choice != "never" and store.read().get("snapshot", body.mail) is not None:
+            from engine.dispatcher import signal
+
+            signal(store, "set_aside", [body.mail], f"Always set aside mail like this ({body.choice})")
+        return result
+
+    # ---- turning add-ons on and off -------------------------------------------------------------------------------
+
+    @r.post("/packs/{name}/on")
+    def pack_on(name: str, body: FingerprintIn) -> SettingsSaved:
+        """Turn on an add-on installed on this computer: it is added to the add-ons that run, with Undo. Its code
+        runs after the restart the person chooses."""
+        from engine.plugin_manifest import declared_plugins
+
+        if name not in {m.name for m in declared_plugins(ws.config_dir, None)}:
+            raise HTTPException(status_code=404, detail=f"No add-on called {name} is installed on this computer.")
+        enabled = list(current().workspace.plugins.enabled)
+        if name in enabled:
+            raise HTTPException(status_code=409, detail=f"{name} is on already.")
+        changes = {"workspace.plugins.enabled": [*enabled, name]}
+        done = saved(save(changes, [], body.fingerprint, allow=("workspace.plugins.enabled",)))
+        setup.decide_addons(ws, [name])
+        return done
+
+    @r.post("/packs/{name}/off")
+    def pack_off(name: str, body: FingerprintIn) -> SettingsSaved:
+        """Turn an add-on off, with Undo: it stops after the restart the person chooses; its records and settings
+        stay."""
+        enabled = list(current().workspace.plugins.enabled)
+        setup.decide_addons(ws, [name])
+        if name not in enabled:
+            # Off already: leaving it off is the person's choice, so the setup step stops asking about it.
+            return SettingsSaved(changes=[], fingerprint=body.fingerprint, needs_restart=False)
+        changes = {"workspace.plugins.enabled": [n for n in enabled if n != name]}
+        return saved(save(changes, [], body.fingerprint, allow=("workspace.plugins.enabled",)))
+
+    # ---- catalogs and the read tokens for private release files ---------------------------------------------------
+
+    @r.post("/packs/catalogs")
+    def catalog_add(body: CatalogAddress) -> SettingsSaved:
+        """List another catalog of add-ons, by its address, with Undo. It is read when the screen asks to refresh."""
+        address = body.address.strip()
+        parts = urlsplit(address)
+        if parts.scheme != "https" or not parts.hostname or parts.username or parts.password or " " in address:
+            raise HTTPException(
+                status_code=400, detail="Give the catalog's address, starting with https:// and no spaces."
+            )
+        listed = list(current().workspace.plugins.catalog.feeds)
+        if address in listed:
+            raise HTTPException(status_code=409, detail="That catalog is listed already.")
+        key = "workspace.plugins.catalog.feeds"
+        own_key = "workspace.plugins.catalog.own_feeds"
+        changes: dict[str, Any] = {key: [*listed, address]}
+        if body.own:
+            changes[own_key] = [*current().workspace.plugins.catalog.own_feeds, address]
+        return saved(save(changes, [], body.fingerprint, allow=(key, own_key)))
+
+    @r.post("/packs/catalogs/remove")
+    def catalog_remove(body: CatalogAddress) -> SettingsSaved:
+        """Take a catalog the person listed off the list, with Undo. The add-ons already installed stay."""
+        listed = list(current().workspace.plugins.catalog.feeds)
+        if body.address not in listed:
+            raise HTTPException(status_code=404, detail="That catalog isn't in the list you added.")
+        key = "workspace.plugins.catalog.feeds"
+        own_key = "workspace.plugins.catalog.own_feeds"
+        changes: dict[str, Any] = {key: [a for a in listed if a != body.address]}
+        own = current().workspace.plugins.catalog.own_feeds
+        if body.address in own:
+            changes[own_key] = [a for a in own if a != body.address]
+        return saved(save(changes, [], body.fingerprint, allow=(key, own_key)))
+
+    @r.post("/packs/{pack_id}/token")
+    def pack_token(pack_id: str, body: PackTokenIn) -> SettingsSaved:
+        """Give the read token for the place an add-on's release file is kept, with Undo. A local app keeps a typed
+        token in its private folder and the settings hold only where; the token is sent only to that place."""
+        if bool(body.token and body.token.strip()) == bool(body.reference and body.reference.strip()):
+            raise HTTPException(status_code=400, detail="Type the token, or give where it is kept: one of the two.")
+        if body.token and not local:
+            raise HTTPException(status_code=400, detail=HOSTED_KEY)
+        entry = entry_in(ws, current(), pack_id)
+        host = urlsplit(entry.release.url).hostname if entry.release else None
+        if not host:
+            raise HTTPException(status_code=409, detail=f"{entry.name} has no release file that needs a token.")
+        name = setup.unused_secret_name(ws, setup.secret_name("release-token", host))
+        fresh = body.token is not None
+        try:
+            reference = setup.keep_secret(ws, name, body.token) if body.token else asked_reference(body.reference or "")
+        except StoreError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from None
+        tokens = {**current().workspace.plugins.catalog.release_tokens, host: reference}
+        try:
+            return saved(
+                save(
+                    {"workspace.plugins.catalog.release_tokens": tokens},
+                    [],
+                    body.fingerprint,
+                    allow=("workspace.plugins.catalog.release_tokens",),
+                )
+            )
+        except HTTPException:
+            if fresh:
+                setup.secret_path(ws, name).unlink(missing_ok=True)
+            raise
+
+    @r.post("/setup/addons/leave-off")
+    def addons_leave_off() -> Ok:
+        """Leave every add-on that is off now off: the setup step counts as done until another is installed."""
+        setup.decide_addons(ws, setup.addons_off(ws, current()))
+        return Ok(ok="addons")
+
+    @r.get("/ai/accounts")
+    def ai_accounts() -> list[AiAccountView]:
+        """The AI accounts in the settings, as they are on disk now; never a key."""
+
+        from engine.ai import check_cost
+        from engine.ai.account_state import AccountState, account_states
+        from engine.ai.catalog import Catalogs
+        from engine.secrets import SecretError, describe_secret, resolve_secret
+        from engine.today import zone
+
+        ai = current().ai
+        states = account_states(ws, store, current(), worker.now())
+        catalogs = Catalogs(private_dir(store.path.parent) / "ai-catalog.json", ai.catalog_refresh_hours)
+        today = worker.now().astimezone(zone(current())).date()
+
+        def key_state(ref: str | None) -> tuple[str, str | None]:
+            if not ref:
+                return "none", None
+            try:
+                return ("saved", None) if resolve_secret(ref) else ("missing", describe_secret(ref))
+            except SecretError:
+                return "missing", describe_secret(ref)
+
+        found = []
+        for name, p in ai.providers.items():
+            state, where = key_state(p.auth)
+            now_state = states.get(name, AccountState())
+            found.append(
+                AiAccountView(
+                    name=name,
+                    label=p.label,
+                    kind=p.kind,
+                    adapter=p.adapter,
+                    base_url=p.base_url,
+                    models=dict(p.models),
+                    # The core's tiers only: an add-on's own tiers are mapped and listed under the add-on.
+                    used_for=[
+                        t for t, tier in ai.tiers.items() if "/" not in t and (tier.use or "").split("/", 1)[0] == name
+                    ],
+                    backup_for=[
+                        t
+                        for t, tier in ai.tiers.items()
+                        if "/" not in t and any(f.split("/", 1)[0] == name for f in tier.fallback)
+                    ],
+                    has_key=bool(p.auth),
+                    key_state=state,
+                    key_where=where,
+                    credential_expires=p.credential_expires,
+                    key_ending=p.credential_expires is not None
+                    and (p.credential_expires - today).days <= ai.credential_warn_days,
+                    answered_at=now_state.answered_at,
+                    spent_today_usd=now_state.spent_today_usd,
+                    checked_for=now_state.checked_for,
+                    check_failed_for=now_state.check_failed_for,
+                    checked_at=now_state.checked_at,
+                    paused_until=now_state.paused_until,
+                    runs_as=now_state.identity.recorded.account if now_state.identity.recorded else None,
+                    runs_as_how=now_state.identity.recorded.how_read if now_state.identity.recorded else None,
+                    identity_unknown=now_state.identity.unknown,
+                    identity_changed_to=now_state.identity.changed_to,
+                    identity_level=p.identity_level,
+                    accepted_unchecked=p.accepted_unchecked,
+                    check_usd=check_cost.cost(current(), name, catalogs, ws),
+                )
+            )
+        return found
+
+    @r.get("/ai/routing")
+    def ai_routing() -> AiRoutingView:
+        """Which model does what (design 7.9): each kind of work (the core's and every running add-on's) with the tier
+        it uses now, what was measured for the model each tier uses, the cheapest tier that passed, each tier with its
+        account and second try, the routing rules in the order they are checked, and the rules the measurements back."""
+        from datetime import UTC
+
+        from engine.ai import matrix, suggest, tier_costs
+        from engine.ai.adapters import make_adapter
+        from engine.skills import skills as skill_list
+        from engine.tasks import default_tier
+        from engine.tasks import settings as task_settings
+
+        cfg_now = current()
+        ai = cfg_now.ai
+        today = worker.now().astimezone(UTC).date()
+        sets, needed = skill_needs()
+        # The measurements of the model each tier uses, by tier; a tier with no account has none. An add-on's own tiers
+        # are mapped under the add-on (GET /api/ai/pack-tiers), not here.
+        standings: dict[str, list[Any]] = {}
+        for tier_name, tier in ai.tiers.items():
+            if "/" in tier_name:
+                continue
+            account, _, short = tier.use.partition("/")
+            provider = ai.providers.get(account) if tier.use else None
+            if provider is None:
+                continue
+            version = matrix.current_program_version(cfg_now, account, make_adapter)
+            standings[tier_name] = matrix.standing(
+                ws,
+                cfg_now,
+                f"{account}/{provider.models.get(short, short)}",
+                program_version=version,
+                current_sets=sets,
+                today=today,
+            )
+        labels = {s.id: s.label for s in skill_list()}
+        route_when = {s.id: s.route_when for s in skill_list() if s.route_when}
+        kinds = []
+        suggestions = []
+        for name, kind in sorted(store.plugins.tasks.items(), key=lambda pair: (("/" in pair[0]), pair[0])):
+            if "/" in name and not store.plugins.active(name.split("/", 1)[0]):
+                continue
+            configured = ai.tasks.get(name)
+            tier_now = task_settings(cfg_now, kind).tier
+            ids = needed.get(name, [])
+            fits = [suggest.fit(tier_name, ids, held) for tier_name, held in standings.items()]
+            chosen = suggest.suggest_tier(fits, tier_now)
+            kinds.append(
+                AiWorkKindView(
+                    name=name,
+                    label=kind.label or name.rsplit("/", 1)[-1].replace("-", " ").capitalize(),
+                    tier=tier_now,
+                    default_tier=default_tier(cfg_now, kind),
+                    custom=configured is not None and "tier" in configured.model_fields_set,
+                    source=config_screens.source_of(cfg_now, f"ai.tasks.{name}.tier"),
+                    fits=[AiKindFit(**vars(f)) for f in fits],
+                    suggested_tier=chosen.tier,
+                    suggestion_why_not=chosen.why_not,
+                )
+            )
+            tier_cfg = ai.tiers.get(tier_now)
+            rule = suggest.suggest_rule(
+                name,
+                tier_now,
+                ids,
+                {t: held for t, held in standings.items()},
+                escalate_to=tier_cfg.escalate_to if tier_cfg else None,
+                route_when=route_when,
+                existing=ai.routing,
+            )
+            if rule is not None:
+                suggestions.append(
+                    AiRuleSuggestion(
+                        rule=AiRouteRuleView(
+                            task=rule.task,
+                            tier=rule.tier,
+                            input_chars_over=rule.when.get("input_chars_over"),
+                            quoted_messages_over=rule.when.get("quoted_messages_over"),
+                        ),
+                        skills=[labels.get(i, i) for i in rule.skills],
+                    )
+                )
+        costs = tier_costs.per_tier(store.read(), cfg_now, worker.now())
+        tiers = [
+            AiTierView(
+                name=name,
+                account=(tier.use.split("/", 1)[0] or None) if tier.use else None,
+                escalate_to=tier.escalate_to,
+                escalate_source=config_screens.source_of(cfg_now, f"ai.tiers.{name}.escalate_to"),
+                runs=costs[name].runs,
+                unpriced_runs=costs[name].unpriced,
+                cost_days=costs[name].days,
+                cost_per_day_usd=costs[name].per_day_usd,
+            )
+            for name, tier in ai.tiers.items()
+            if "/" not in name
+        ]
+        return AiRoutingView(
+            kinds=kinds,
+            tiers=tiers,
+            rules=[AiRouteRuleView(tier=rule.tier, **rule.when.model_dump()) for rule in ai.routing],
+            rules_source=config_screens.source_of(cfg_now, "ai.routing"),
+            rule_suggestions=suggestions,
+            min_score=ai.skills.min_score,
+            confirm_above_usd=ai.budgets.confirm_above_usd,
+            per_run_usd=ai.budgets.per_run_usd,
+        )
+
+    def skill_needs() -> tuple[dict[str, dict[str, str]], dict[str, list[str]]]:
+        """The sets of cases the measurements were made on, and the skills each kind of work needs."""
+        from engine.ai import matrix
+        from engine.shipped import DEMOS, demo
+
+        sets: dict[str, dict[str, str]] = {}
+        needed: dict[str, list[str]] = {}
+        for demo_name in DEMOS:
+            sets |= matrix.case_sets(demo(demo_name), ws.root)
+            for kind_name, ids in matrix.skills_by_kind(demo(demo_name), ws.root).items():
+                needed[kind_name] = [
+                    *needed.get(kind_name, []),
+                    *(i for i in ids if i not in needed.get(kind_name, [])),
+                ]
+        return sets, needed
+
+    @r.get("/ai/pack-tiers")
+    def ai_pack_tiers() -> PackTiersView:
+        """The tiers the running add-ons declare for their own work, each with where it stands (mapped to an account
+        and model, or running on the core tier it falls back to) and, when the capability measurements back one, the
+        account and model to map it to. Mapping is the account's own change (POST /api/ai/accounts/{name} with `use`
+        naming the tier's id). Nothing here picks an account."""
+        from datetime import UTC
+
+        from engine import pack_tiers
+        from engine.ai import matrix, suggest
+        from engine.ai.adapters import make_adapter
+
+        cfg_now = current()
+        ai = cfg_now.ai
+        today = worker.now().astimezone(UTC).date()
+        sets, needed = skill_needs()
+        standings: dict[str, list[Any]] = {}
+        for account, provider in ai.providers.items():
+            version = matrix.current_program_version(cfg_now, account, make_adapter)
+            for short, model_id in provider.models.items():
+                standings[f"{account}/{short}"] = matrix.standing(
+                    ws,
+                    cfg_now,
+                    f"{account}/{model_id}",
+                    program_version=version,
+                    current_sets=sets,
+                    today=today,
+                )
+        found = []
+        for tier in pack_tiers.declared(cfg_now, store.plugins):
+            ids = list(dict.fromkeys(i for kind in tier.used_by for i in needed.get(kind, [])))
+            pick = suggest.suggest_tier([suggest.fit(ref, ids, held) for ref, held in standings.items()], "")
+            use = ai.tiers[tier.id].use if tier.mapped else ""
+            account, _, short = use.partition("/")
+            account_pick, _, model_pick = (pick.tier or "").partition("/")
+            found.append(
+                PackTierView(
+                    id=tier.id,
+                    plugin=tier.plugin,
+                    label=tier.label,
+                    description=tier.description,
+                    falls_back_to=tier.falls_back_to,
+                    mapped=tier.mapped,
+                    account=account or None,
+                    model=short or None,
+                    used_by=[
+                        store.plugins.tasks[k].label or k.rsplit("/", 1)[-1].replace("-", " ").capitalize()
+                        for k in tier.used_by
+                    ],
+                    recommended=PackTierPick(account=account_pick, model=model_pick) if pick.tier else None,
+                    recommended_why_not=pick.why_not,
+                )
+            )
+        return PackTiersView(tiers=found)
+
+    @r.get("/ai/check-size")
+    def ai_check_size() -> AiCheckSize:
+        """What one account's connection check involves (calls and tokens), so a screen can price it with the price of
+        the model the person picks."""
+        from engine.ai import check_cost
+
+        found = check_cost.size(current())
+        return AiCheckSize(calls=found.calls, input_tokens=found.input_tokens, output_tokens=found.output_tokens)
+
+    @r.get("/ai/skills")
+    def ai_skills() -> AiSkillsView:
+        """What each account's models can do, from the evaluation runs kept in this workspace: per model and skill the
+        pass rate, the runs, the age of the last one, the cost of a passing run and whether it is stale or under the
+        minimum score (design 6.16). A skill nobody measured is listed as not measured."""
+        from datetime import UTC
+
+        from engine.ai import matrix, measure
+        from engine.ai.adapters import make_adapter
+        from engine.shipped import DEMOS, demo
+
+        now = current()
+        today = worker.now().astimezone(UTC).date()
+        asked = measure.read(ws)
+        sets: dict[str, dict[str, str]] = {}
+        for name in DEMOS:
+            sets |= matrix.case_sets(demo(name), ws.root)
+        accounts = []
+        for name, provider in now.ai.providers.items():
+            version = matrix.current_program_version(now, name, make_adapter)
+            models = []
+            for short, model_id in provider.models.items():
+                held = matrix.standing(
+                    ws, now, f"{name}/{model_id}", program_version=version, current_sets=sets, today=today
+                )
+                asked_now = asked.get(f"{name}/{short}") or {}
+                models.append(
+                    AiModelSkills(
+                        model=short,
+                        measure=asked_now.get("state"),
+                        measure_why=MEASURE_WHY.get(asked_now.get("why") or ""),
+                        skills=[
+                            AiSkillView(
+                                id=s.skill.id,
+                                label=s.skill.label,
+                                description=s.skill.description,
+                                measured=s.measured,
+                                runs=s.runs,
+                                passes=s.passes,
+                                pass_rate=s.pass_rate,
+                                age_days=s.age_days(today),
+                                cost_per_pass_usd=s.cost_per_pass_usd,
+                                stale=s.stale,
+                                below_min=s.below_min,
+                            )
+                            for s in held
+                        ],
+                    )
+                )
+            accounts.append(AiAccountSkills(name=name, models=models))
+        return AiSkillsView(min_score=now.ai.skills.min_score, stale_days=now.ai.skills.stale_days, accounts=accounts)
+
+    measure_estimates: dict[tuple[Any, ...], Any] = {}
+
+    def measure_plan(name: str, model: str | None) -> tuple[Config, Any]:
+        """What measuring an account would run and cost. Pricing builds a few packets, so the answer is kept for as
+        long as the accounts file, the account and the number of runs stay."""
+        from engine.ai import measure
+
+        now = current()
+        key = ((ws.config_dir / "ai.yaml").read_text(encoding="utf-8"), name, model, now.ai.evaluation.runs)
+        if key not in measure_estimates:
+            try:
+                measure_estimates[key] = measure.estimate(now, ws, name, model)
+            except measure.MeasureError as err:
+                raise HTTPException(status_code=404, detail=str(err)) from None
+            if len(measure_estimates) > 50:
+                measure_estimates.pop(next(iter(measure_estimates)))
+        return now, measure_estimates[key]
+
+    def measure_view(now: Config, plan: Any) -> AiMeasureEstimate:
+        from engine.ai import measure
+
+        room = measure.left(store, now)
+        return AiMeasureEstimate(
+            models=plan.models,
+            level=plan.level,
+            cases=plan.cases,
+            skipped=plan.skipped,
+            runs=plan.runs,
+            usd=plan.usd,
+            confirm_above_usd=now.ai.budgets.confirm_above_usd,
+            per_day_usd=now.ai.budgets.per_day_usd,
+            left_today_usd=room.today_usd,
+            passes_limit=room.passed_by(plan),
+            needs_go=measure.needs_go(now, plan, room),
+        )
+
+    @r.post("/ai/skills/{account}/estimate")
+    def ai_measure_estimate(account: str, body: AiMeasureIn | None = None) -> AiMeasureEstimate:
+        """What measuring this account would cost: its models (or the one named) on the golden cases, the add-ons'
+        cases and the learning pairs, only those whose material the account is allowed to see, each as many times as
+        the configured number of runs. Nothing is run or spent."""
+        now, plan = measure_plan(account, body.model if body else None)
+        return measure_view(now, plan)
+
+    @r.post("/ai/skills/{account}/measure")
+    def ai_measure(account: str, body: AiMeasureIn | None = None) -> AiMeasureStarted:
+        """Measure this account in the background, filling what it can do (`GET /api/ai/skills`). A cost above the
+        amount the person asked to be asked about is refused unless `confirmed` is sent; an account that may see none
+        of the cases has nothing to measure."""
+        from engine.ai import measure
+
+        body = body or AiMeasureIn()
+        now, plan = measure_plan(account, body.model)
+        if not plan.cases:
+            raise HTTPException(
+                status_code=409,
+                detail="Nothing to measure: this account isn't allowed to see the material of any case.",
+            )
+        budgets = now.ai.budgets
+        reached = measure.limit_reached(store, now)
+        if reached == measure.LIMIT_MONTH:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Paused: this month's AI budget ({usd(budgets.per_month_usd)}) is used up, and testing is "
+                "paid for out of it.",
+            )
+        if reached == measure.LIMIT_DAY:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Paused until tomorrow: today's AI budget ({usd(budgets.per_day_usd)}) is used up, and "
+                "testing is paid for out of it.",
+            )
+        room = measure.left(store, now)
+        if measure.needs_go(now, plan, room) and not body.confirmed:
+            if room.passed_by(plan):
+                detail = (
+                    f"Testing needs your confirmation first: it would cost about {usd(plan.usd or 0.0)}, more than "
+                    f"the {usd(room.today_usd)} left of your daily limit. It stops when the limit is reached and "
+                    "keeps what it measured."
+                )
+            else:
+                cost = "its cost can't be estimated" if plan.usd is None else f"it would cost about {usd(plan.usd)}"
+                detail = f"Testing needs your confirmation first: {cost}, and you asked to be asked about that."
+            raise HTTPException(status_code=409, detail=detail)
+        refs = [f"{account}/{short}" for short in plan.models]
+        already = measure.begin(ws, refs)
+        worker.measure_soon()
+        events.changed()
+        return AiMeasureStarted(
+            started=[r.partition("/")[2] for r in refs if r not in already],
+            already=[r.partition("/")[2] for r in already],
+            estimate=measure_view(now, plan),
+        )
+
+    @r.post("/ai/accounts/{name}/test")
+    def ai_account_test(name: str, tier: str | None = None, model: str | None = None) -> list[AiTestResult]:
+        """Test one account, whether or not any kind of work uses it yet: on the model named, else its first. With a
+        tier, the test uses that tier's kinds of work and their exact parameters, which is what lets the account be
+        added to that tier's fallbacks."""
+        from engine.ai.checked import remember
+        from engine.ai.smoke import account_test, lift_pauses
+
+        try:
+            now = load_config(ws.config_dir)
+        except ConfigError as err:
+            log.warning("The settings couldn't be loaded: %s", err)
+            raise HTTPException(status_code=400, detail=err.plain) from None
+        if name not in now.ai.providers:
+            raise HTTPException(status_code=404, detail=f"There is no account called {name}.")
+        results = account_test(now, os.environ, name, tier=tier, model=model, store=store)
+        remember(ws, now, results)
+        lift_pauses(ws, results)
+        release_identity_waits()
+        line = AiTestResult(tier="account", account=name, main=True, ok=True, detail="answered")
+        for x in results:
+            if not x.ok and line.ok:
+                line.ok, line.detail = False, x.detail
+                if x.error_kind == "model_retired":
+                    retired_by_check(now, name, tier, x, line)
+        return [line]
+
+    def retired_by_check(now: Config, name: str, tier: str | None, result: Any, line: AiTestResult) -> None:
+        """A check that stopped on a model the service no longer offers: the refusal is remembered on the account, and
+        the line carries the kind of work, the model's short name and the next model the service's own listing says
+        fits that work (never the refused one or one refused before)."""
+        from engine.ai import model_watch
+        from engine.ai.adapters import make_adapter
+        from engine.ai.presets import suggest_models
+        from engine.ai.task import RETIRED_PLAIN, work_in_words
+
+        provider = now.ai.providers[name]
+        short = result.ref.partition("/")[2]
+        gone = provider.models.get(short, short)
+        refused = [*provider.refused_models, *([gone] if gone not in provider.refused_models else [])]
+        if refused != list(provider.refused_models):
+            try:
+                save(
+                    {f"ai.providers.{name}.refused_models": refused},
+                    [],
+                    config_screens.fingerprint(ws.config_dir),
+                    allow=("ai.providers.",),
+                )
+            except HTTPException:
+                log.warning("A refused model couldn't be remembered on account %s.", name)
+        work = tier or next((t for t, s in now.ai.tiers.items() if s.use == f"{name}/{short}"), None)
+        listing = model_watch.listing_of(now, name, os.environ, make_adapter)
+        entry = model_watch.entry_of(provider, setup.known_endpoints())
+        easy, hard = suggest_models(entry, listing, avoid=frozenset(refused))
+        line.reason, line.work, line.model_short = "model_retired", work, short
+        line.next_model = hard if work == "deep" else easy
+        # In the person's words: which work, never the model's name.
+        line.detail = RETIRED_PLAIN.format(work=work_in_words(work))
+
+    def release_identity_waits() -> None:
+        """After a check or an answer: work that waited on an agent's sign-in tries again unless that sign-in still
+        waits for the person."""
+        from engine.ai import identity
+        from engine.worker import release_identity
+
+        if release_identity(store, unless=set(identity.held(ws))):
+            worker.poke()
+
+    @r.post("/ai/accounts/{name}/identity/keep")
+    def ai_identity_keep(name: str) -> Ok:
+        """Keep the sign-in an agent account now runs as: it is recorded in place of the earlier one, the line on Today
+        goes, and the work that waited on it tries again."""
+        from engine.ai import identity
+
+        if name not in current().ai.providers:
+            raise HTTPException(status_code=404, detail=f"There is no account called {name}.")
+        if not identity.keep(ws, name):
+            raise HTTPException(
+                status_code=409, detail="This account's sign-in hasn't changed, so there is nothing to keep."
+            )
+        release_identity_waits()
+        events.changed()
+        return Ok(ok=name)
+
+    def native_move_of(name: str) -> tuple[Config, Any, Any]:
+        """The settings, the account and the catalog entry of its service's own connection, or 404 when the account has
+        none to move to (or it was put off)."""
+        from engine.ai import native_move
+
+        now = current()
+        provider = now.ai.providers.get(name)
+        if provider is None:
+            raise HTTPException(status_code=404, detail=f"There is no account called {name}.")
+        entry = native_move.service_of(provider, setup.known_endpoints())
+        if entry is None:
+            raise HTTPException(status_code=404, detail="This account has no connection of its own to move to.")
+        return now, provider, entry
+
+    @r.get("/ai/accounts/{name}/move")
+    def ai_account_move_readback(name: str) -> AiMoveReadback:
+        """Which identity the account's service's own connection would sign in as: its key (its last four characters,
+        and whether it is the one in use now), its address and its name. Nothing is called or changed."""
+        from engine.ai import native_move
+
+        now, provider, entry = native_move_of(name)
+        found = native_move.readback(provider, name, entry, os.environ)
+        return AiMoveReadback(
+            account=found.account,
+            service=found.service,
+            key_ending=found.key_ending,
+            key_known=found.key_known,
+            key_differs=found.key_differs,
+            address=found.address,
+            address_was=found.address_was,
+            address_differs=found.address_differs,
+        )
+
+    @r.post("/ai/accounts/{name}/move")
+    def ai_account_move(name: str, body: FingerprintIn) -> AiMoved:
+        """Move the account to its service's own connection, on the person's yes: the account check (one call per tier
+        and kind of work with its exact parameters) runs on the new connection first, and only a check that passed
+        writes the change, through the settings save, with Undo. A failed check leaves the account as it was."""
+        from engine.ai import native_move
+        from engine.ai.checked import remember
+
+        now, provider, entry = native_move_of(name)
+        checked = native_move.check(now, os.environ, name, entry, store)
+        if not checked.ok:
+            return AiMoved(moved=False, detail=checked.detail)
+        changes = {f"ai.providers.{name}.{key}": value for key, value in native_move.planned(provider, entry).items()}
+        done = save(changes, [], body.fingerprint, allow=("ai.providers.",))
+        remember(ws, checked.cfg, checked.results)
+        return AiMoved(moved=True, saved=saved(done))
+
+    @r.post("/ai/accounts/{name}/move/not-now")
+    def ai_account_move_not_now(name: str) -> Ok:
+        """Put the move off for good: its line on Today never comes back unasked."""
+        from engine.ai import native_move
+
+        native_move_of(name)
+        native_move.not_now(store, name)
+        events.changed()
+        return Ok(ok=name)
+
+    @r.post("/ai/model-watch/{account}/{state}/not-now")
+    def ai_model_watch_not_now(account: str, state: str) -> Ok:
+        """Put off what a line about an account's models says (`state` newer or price), until a different newer model
+        or a different price rise appears."""
+        from engine.ai import model_watch
+
+        if not model_watch.not_now(store, current(), account, state):
+            raise HTTPException(status_code=404, detail="There is nothing about this account's models to put off.")
+        events.changed()
+        return Ok(ok=account)
+
+    switch_estimates: dict[tuple[Any, ...], tuple[float | None, int]] = {}
+
+    def account_plan(name: str, body: AiAccountChange) -> tuple[dict[str, Any], list[str], tuple[str, str] | None]:
+        """The settings an account change writes and resets, refusing what can't be done, and the pasted key still
+        to keep (its name and value): nothing is written here."""
+        provider = current().ai.providers.get(name)
+        if provider is None:
+            raise HTTPException(status_code=404, detail=f"There is no account called {name}.")
+        if body.key and body.key_ref:
+            raise HTTPException(status_code=400, detail="Paste a key or give where it is, not both.")
+        if body.key and not local:
+            raise HTTPException(status_code=400, detail=HOSTED_KEY)
+        changes: dict[str, Any] = {}
+        pending: tuple[str, str] | None = None
+        if body.key:
+            try:
+                kept_as = setup.key_name(ws, name)
+            except StoreError as err:
+                raise HTTPException(status_code=400, detail=str(err)) from None
+            changes[f"ai.providers.{name}.auth"] = setup.secret_reference(ws, kept_as)
+            pending = (kept_as, body.key)
+        elif body.key_ref:
+            changes[f"ai.providers.{name}.auth"] = body.key_ref.strip()
+        reset: list[str] = []
+        if body.label is not None:
+            if body.label.strip():
+                changes[f"ai.providers.{name}.label"] = body.label.strip()
+            else:
+                reset.append(f"ai.providers.{name}.label")
+        if body.credential_expires is not None:
+            changes[f"ai.providers.{name}.credential_expires"] = body.credential_expires.isoformat()
+        elif body.clear_credential_expires:
+            reset.append(f"ai.providers.{name}.credential_expires")
+        models = body.models if body.models is not None else dict(provider.models)
+        if body.models is not None:
+            if not body.models:
+                raise HTTPException(status_code=400, detail="Name at least one model the account uses.")
+            changes[f"ai.providers.{name}.models"] = body.models
+        for tier, short in body.use.items():
+            if short not in models:
+                raise HTTPException(status_code=400, detail=f"{short} isn't one of this account's models.")
+            changes[f"ai.tiers.{tier}.use"] = f"{name}/{short}"
+        tiers = current().ai.tiers
+        for tier, short in body.backup.items():
+            if short not in models:
+                raise HTTPException(status_code=400, detail=f"{short} isn't one of this account's models.")
+            ref, settings = f"{name}/{short}", tiers.get(tier)
+            if settings is None:
+                raise HTTPException(status_code=400, detail=f"There is no kind of work called {tier}.")
+            if settings.use == ref or ref in settings.fallback:
+                raise HTTPException(status_code=400, detail=f"{name} already does that work or stands in for it.")
+            chain = list(changes.get(f"ai.tiers.{tier}.fallback", settings.fallback))
+            mine = [i for i, other in enumerate(chain) if other.split("/", 1)[0] == name]
+            if mine:  # it already stands in with another of its models: that entry moves, keeping its place
+                chain[mine[0]] = ref
+                chain = [other for i, other in enumerate(chain) if i not in mine[1:]]
+            else:
+                chain.append(ref)
+            changes[f"ai.tiers.{tier}.fallback"] = chain
+        if body.stop_backup:
+            for tier, settings in tiers.items():
+                kept = [other for other in settings.fallback if other.split("/", 1)[0] != name]
+                if kept != list(settings.fallback):
+                    changes[f"ai.tiers.{tier}.fallback"] = kept
+        if not changes and not reset:
+            raise HTTPException(status_code=400, detail="Nothing to change.")
+        return changes, reset, pending
+
+    def change_account(name: str, body: AiAccountChange, *, check: bool) -> tuple[SettingsSaved, bool]:
+        """Save an account change. When it switches a tier's account or model, the switch is kept, with a check to run
+        when asked for (and the setting for checks is on); any earlier entry of that tier is superseded. Returns what
+        was saved and whether a check was started."""
+        from engine.ai import switch_check
+
+        changes, reset, pending = account_plan(name, body)
+        before = current()
+        if pending is not None:
+            setup.keep_secret(ws, *pending, owner=f"ai:{name}")
+        try:
+            done = save(changes, reset, body.fingerprint, allow=("ai.providers.", "ai.tiers."))
+        except HTTPException:
+            if pending is not None:
+                setup.secret_path(ws, pending[0]).unlink(missing_ok=True)
+            raise
+        after = current()
+        found = switch_check.switches(before, after)
+        checking = check and after.dispatch.knowledge.check_on_switch
+        if found:
+            switch_check.begin(store, found, done.changes, check=checking)
+        return saved(done), bool(found) and checking
+
+    @r.post("/ai/accounts/{name}")
+    def ai_account_change(name: str, body: AiAccountChange) -> SettingsSaved:
+        """Give an account a new key, other models or other work, with Undo. A switch of a tier's account or model
+        made this way is made at once, without the check."""
+        return change_account(name, body, check=False)[0]
+
+    @r.post("/ai/accounts/{name}/switch-estimate")
+    def ai_switch_estimate(name: str, body: AiAccountChange) -> AiSwitchEstimate:
+        """What the check that comes with this change would cost, and whether one is offered: only a change that
+        switches a tier's account or model, while checks on a switch are on. Nothing is saved."""
+        import tempfile
+        from pathlib import Path
+
+        from engine.ai import switch_check
+        from engine.config.yaml_edit import set_key
+
+        changes, _reset, _pending = account_plan(name, body)
+        now = current()
+        if not now.dispatch.knowledge.check_on_switch:
+            return AiSwitchEstimate(offered=False)
+        try:
+            after = load_config(ws.config_dir, env=dict(os.environ), flags=dict(changes))
+        except ConfigError as err:
+            raise HTTPException(status_code=400, detail=err.plain) from None
+        found = switch_check.switches(now, after)
+        if not found:
+            return AiSwitchEstimate(offered=False)
+        text = (ws.config_dir / "ai.yaml").read_text(encoding="utf-8")
+        for key, value in changes.items():
+            if key.startswith("ai."):
+                text = set_key(text, key.split(".")[1:], value)
+        runs = after.ai.evaluation.runs
+        # Pricing builds a few packets, so the answer is kept for as long as the accounts file and the choices stay.
+        key = (text, tuple((x.tier, x.after) for x in found), runs)
+        if key not in switch_estimates:
+            total: float | None = 0.0
+            cases = 0
+            with tempfile.TemporaryDirectory() as tmp:
+                aside = Path(tmp) / "ai.yaml"
+                write_whole(aside, text)
+                for switch in found:
+                    usd, cases = switch_check.estimate(after, ws, switch.after, ai_config=aside)
+                    total = None if usd is None or total is None else total + usd
+            if len(switch_estimates) > 50:
+                switch_estimates.clear()
+            switch_estimates[key] = (total, cases)
+        usd, cases = switch_estimates[key]
+        return AiSwitchEstimate(offered=True, usd=usd, cases=cases, runs=runs)
+
+    @r.post("/ai/accounts/{name}/switch-check")
+    def ai_switch_check(name: str, body: AiAccountChange) -> AiSwitched:
+        """Make the change and check it: when it switches a tier's account or model, the golden cases and the add-ons'
+        own cases run on the new choice in the background, and a failure comes to Today with Switch back."""
+        done, started = change_account(name, body, check=True)
+        if started:
+            worker.check_switch_soon()
+        return AiSwitched(saved=done, checking=started)
+
+    @r.post("/ai/switch/{tier}/back")
+    def ai_switch_back(tier: str, body: FingerprintIn) -> SettingsSaved:
+        """Put a tier back as it was before the switch whose check didn't pass, or before a move made on its own, with
+        Undo."""
+        from engine.ai import switch_check
+
+        entry = switch_check.failed(store).get(tier) or switch_check.moved(store).get(tier)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="There is no switch to go back on.")
+        restore = entry["restore"]
+        done = saved(save(restore["changes"], restore["reset"], body.fingerprint, allow=("ai.providers.", "ai.tiers.")))
+        switch_check.clear(store, tier)
+        events.changed()
+        return done
+
+    @r.post("/ai/switch/{tier}/keep")
+    def ai_switch_keep(tier: str) -> Ok:
+        """Keep a switch whose check didn't pass, or a move made on its own: the line goes."""
+        from engine.ai import switch_check
+
+        if switch_check.failed(store).get(tier) is None and switch_check.moved(store).get(tier) is None:
+            raise HTTPException(status_code=404, detail="There is no switch to keep.")
+        switch_check.clear(store, tier)
+        events.changed()
+        return Ok(ok=tier)
+
+    @r.post("/requests/{request_id}/allow-data")
+    def request_allow_data(request_id: str) -> DataLevelAllowed:
+        """Let the account that would take a stopped request see its material's level, at once and with Undo, then
+        queue the request again. Only a request stopped because no account may see its level."""
+        from engine.ai.router import LEVELS
+        from engine.dispatcher import retry
+
+        req = store.read().get("request", request_id)
+        if req is None:
+            raise HTTPException(status_code=404, detail="There is no such request.")
+        cause = req.data.get("cause") or {}
+        if req.data["state"] not in ("needs_you", "failed") or cause.get("kind") != "data_level":
+            raise HTTPException(status_code=409, detail="This isn't waiting for an account to be allowed more.")
+        level = cause["level"]
+        providers = current().ai.providers
+        name = next(
+            (ref.partition("/")[0] for ref in cause.get("accounts") or [] if ref.partition("/")[0] in providers), None
+        )
+        if name is None:
+            raise HTTPException(status_code=409, detail="The account that would take this isn't set up any more.")
+        have = set(providers[name].allowed_data)
+        allowed = [lv for lv in LEVELS if lv in have or LEVELS.index(lv) <= LEVELS.index(level)]
+        fingerprint = config_screens.fingerprint(ws.config_dir)
+        if allowed == sorted(have, key=LEVELS.index):
+            done = SettingsSaved(changes=[], fingerprint=fingerprint, needs_restart=False)
+        else:
+            done = saved(
+                save({f"ai.providers.{name}.allowed_data": allowed}, [], fingerprint, allow=("ai.providers.",))
+            )
+        try:
+            retry(store, request_id)
+        except (ValueError, StoreError) as err:
+            raise HTTPException(status_code=409, detail=str(err)) from None
+        events.changed()
+        worker.poke()
+        return DataLevelAllowed(request=request_id, account=name, level=level, saved=done)
+
+    @r.post("/ai/accounts/{name}/allow-work")
+    def ai_account_allow_work(name: str, body: FingerprintIn) -> SettingsSaved:
+        """The person's yes to an account reading their mail, notes and calendar, the private ones too (the same yes the
+        AI step asks, said the same way): it may see every level, and Today stops asking. One settings change, so Undo
+        puts the answer back."""
+        from engine.ai.router import LEVELS
+
+        provider = current().ai.providers.get(name)
+        if provider is None:
+            raise HTTPException(status_code=404, detail="There is no such account.")
+        have = set(provider.allowed_data)
+        allowed = list(LEVELS)
+        changes: dict[str, Any] = {}
+        reset: list[str] = []
+        if allowed != sorted(have, key=LEVELS.index):
+            changes[f"ai.providers.{name}.allowed_data"] = allowed
+        if provider.work_data:
+            reset.append(f"ai.providers.{name}.work_data")
+        done = save(changes, reset, body.fingerprint, allow=("ai.providers.",))
+        return saved(done)
+
+    @r.post("/ai/accounts/{name}/remove")
+    def ai_account_remove(name: str, body: AiAccountRemove) -> SettingsSaved:
+        """Remove an account, with Undo. The work it did goes to the backup named in `take_over` (the backup's own entry
+        for that kind of work becomes its main one), or, with none named, has no account until one is chosen. Its kept
+        key stays on this computer, so Undo brings the account back whole."""
+        ai = current().ai
+        if name not in ai.providers:
+            raise HTTPException(status_code=404, detail=f"There is no account called {name}.")
+        if body.take_over is not None and body.take_over not in ai.providers:
+            raise HTTPException(status_code=404, detail=f"There is no account called {body.take_over}.")
+        reset = [f"ai.providers.{name}"]
+        changes: dict[str, Any] = {}
+        for tier_name, tier in ai.tiers.items():
+            kept = [ref for ref in tier.fallback if ref.split("/", 1)[0] != name]
+            if (tier.use or "").split("/", 1)[0] == name:
+                heir = next((ref for ref in kept if ref.split("/", 1)[0] == body.take_over), None)
+                if heir is None:
+                    reset.append(f"ai.tiers.{tier_name}.use")
+                else:
+                    changes[f"ai.tiers.{tier_name}.use"] = heir
+                    kept = [ref for ref in kept if ref != heir]
+            if kept != list(tier.fallback):
+                changes[f"ai.tiers.{tier_name}.fallback"] = kept
+        done = save(changes, reset, body.fingerprint, allow=("ai.providers.", "ai.tiers."))
+        return saved(done, let_go(f"ai:{name}", ai.providers[name].model_dump(mode="json")))
+
+    @r.post("/ai/accounts")
+    def ai_account_add(body: AiAccountAdd) -> AiAccountAdded:
+        from engine.ai.adapters import ADAPTERS
+        from engine.ai.presets import TierPlan, plan_tiers
+        from engine.secrets import SecretError, resolve_secret
+
+        if body.adapter not in ADAPTERS or body.adapter == "stub":
+            raise HTTPException(status_code=400, detail=f"There is no kind of account called {body.adapter}.")
+        if body.name in current().ai.providers:
+            raise HTTPException(status_code=409, detail=f"There is already an account called {body.name}.")
+        kind = setup.endpoint(body.endpoint) if body.endpoint else None
+        if body.endpoint and kind is None:
+            raise HTTPException(status_code=400, detail=f"There is no kind of account called {body.endpoint}.")
+        models = dict(body.models)
+        if not models and kind is not None and kind.get("model_optional"):
+            models = {"default": "default"}  # the program picks its own model; the id is passed nowhere
+        if not models:
+            raise HTTPException(status_code=400, detail="Name at least one model the account uses.")
+        if body.key and body.key_ref:
+            raise HTTPException(status_code=400, detail="Paste a key or give where it is, not both.")
+        if body.key and not local:
+            raise HTTPException(status_code=400, detail=HOSTED_KEY)
+        now = current().ai
+        chosen = bool(body.use_for or body.use)
+        stand_in = {
+            name
+            for name, tier in now.tiers.items()
+            if (on := now.providers.get(tier.use.split("/", 1)[0])) is not None and on.adapter == "stub"
+        }
+
+        def listed_prices() -> dict[str, Any]:
+            """What the service says its models cost, asked with the key given here; nothing when it can't be read."""
+            address = (kind["base_url"] or body.base_url or "").strip()
+            try:
+                key = body.key.strip() if body.key else (resolve_secret(body.key_ref) if body.key_ref else None)
+                found, problem = setup.list_models(kind, address, key) if address else ([], "no address")
+            except SecretError:
+                return {}
+            return dict(found) if problem is None else {}
+
+        # Unless the person said what it is for, the service's recommended setup (or, with none, a split by price)
+        # fills the tiers still on the stand-in.
+        plan = (
+            plan_tiers(kind, models, now.tiers, stand_in, listed_prices, listed_prices)
+            if kind is not None and not chosen
+            else TierPlan()
+        )
+        models.update(plan.new_models)
+        provider: dict[str, Any] = {
+            **(kind["settings"] if kind else {}),
+            **({"kind": kind["id"]} if kind else {}),
+            "adapter": body.adapter,
+            "models": models,
+            "allowed_data": list(body.allowed_data),
+        }
+        if body.work_data:
+            provider["work_data"] = body.work_data
+        if body.label and body.label.strip():
+            provider["label"] = body.label.strip()
+        if body.base_url:
+            provider["base_url"] = body.base_url.strip()
+        if body.agent is not None:
+            provider["agent"] = body.agent
+        kept = None
+        if body.key:
+            try:
+                kept = setup.key_name(ws, body.name)
+                provider["auth"] = setup.keep_secret(ws, kept, body.key, owner=f"ai:{body.name}")
+            except StoreError as err:
+                raise HTTPException(status_code=400, detail=str(err)) from None
+        elif body.key_ref:
+            provider["auth"] = body.key_ref.strip()
+        if body.credential_expires is not None:
+            provider["credential_expires"] = body.credential_expires.isoformat()
+        if body.flat_rate is not None:
+            provider["flat_rate"] = body.flat_rate
+        first = next(iter(models))
+        changes: dict[str, Any] = {f"ai.providers.{body.name}": provider}
+        for tier in body.use_for:
+            changes[f"ai.tiers.{tier}.use"] = f"{body.name}/{first}"
+        for tier, short in body.use.items():
+            if short not in models:
+                raise HTTPException(status_code=400, detail=f"{short} isn't one of this account's models.")
+            changes[f"ai.tiers.{tier}.use"] = f"{body.name}/{short}"
+        for tier_name, short in plan.use.items():
+            changes[f"ai.tiers.{tier_name}.use"] = f"{body.name}/{short}"
+        for tier_name, effort in plan.effort.items():
+            changes[f"ai.tiers.{tier_name}.effort"] = effort
+        for tier_name, higher in plan.escalate_to.items():
+            changes[f"ai.tiers.{tier_name}.escalate_to"] = higher
+        for short, price in body.prices.items():
+            if short not in models:
+                raise HTTPException(status_code=400, detail=f"{short} isn't one of this account's models.")
+            changes[f"ai.prices.{body.name}/{short}"] = price.model_dump()
+        # Unless the person said what it is for, a real account takes over every tier still on the stand-in, so the
+        # assistant does real work once one is added; tiers on another real account stay where the person put them.
+        for tier_name in stand_in if not chosen else ():
+            key = f"ai.tiers.{tier_name}.use"
+            if key not in changes:
+                changes[key] = f"{body.name}/{first}"
+        try:
+            result = save(changes, [], body.fingerprint, allow=("ai.providers.", "ai.tiers.", "ai.prices."))
+        except HTTPException:
+            if kept is not None:
+                setup.secret_path(ws, kept).unlink(missing_ok=True)
+            raise
+        return AiAccountAdded(
+            **saved(result).model_dump(), unmatched_tiers=plan.unmatched, price_filled_tiers=plan.by_price
+        )
+
+    @r.post("/ai/models")
+    def ai_models(body: AiModelsAsk) -> AiModelsView:
+        """The models a service offers, read with a key that isn't saved, so the person picks from a list."""
+        from engine.secrets import SecretError, resolve_secret
+
+        kind = setup.endpoint(body.endpoint)
+        if kind is None:
+            raise HTTPException(status_code=400, detail=f"There is no kind of account called {body.endpoint}.")
+        base_url = kind["base_url"] or (body.base_url or "").strip()
+        if not kind["base_url"] and not local:
+            raise HTTPException(status_code=400, detail="On a hosted app, models are listed only for known services.")
+        if not base_url:
+            return AiModelsView(problem="Enter the service's address first.")
+        if not kind["base_url"] and (bad := setup.address_problem(base_url)):
+            return AiModelsView(problem=bad)
+        if body.key and body.key_ref:
+            raise HTTPException(status_code=400, detail="Paste a key or give where it is, not both.")
+        if body.key and not local:
+            raise HTTPException(status_code=400, detail=HOSTED_KEY)
+        try:
+            key = body.key.strip() if body.key else resolve_secret(body.key_ref)
+        except SecretError as err:
+            return AiModelsView(problem=str(err))
+        found, problem = setup.list_models(kind, base_url, key)
+        from engine.ai.presets import suggest_models, usable_models
+        from engine.ai.shipped_prices import with_prices
+
+        found = list(with_prices(kind.get("id"), dict(found)).items())
+        usable = usable_models(dict(found))
+        easy, hard = suggest_models(kind, usable)
+        models = [(name, info) for name, info in found if name in usable]
+        return AiModelsView(
+            suggested=easy,
+            suggested_harder=hard,
+            models=[
+                AiModelView(
+                    id=name,
+                    context_tokens=info.context_tokens,
+                    input_per_million=info.input_per_million,
+                    output_per_million=info.output_per_million,
+                )
+                for name, info in models
+            ],
+            problem=problem,
+        )
+
+    def on_this_computer(address: str | None) -> bool:
+        """Whether a typed address is a server on this computer, whose models cost nothing by the token."""
+        import ipaddress
+
+        host = (urlsplit(address or "").hostname or "").lower()
+        if host == "localhost":
+            return True
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
+
+    @r.post("/ai/prices/missing")
+    def ai_prices_missing(body: AiPricesAsk) -> AiPricesMissing:
+        """Which of the models the person picked has no price the app knows (the service's own list is read where the
+        models are listed; this is the app's shipped table). The form asks the person for the price of each, since
+        without one the spending limits can't count its runs. A service on this computer is never asked."""
+        from engine.ai.shipped_prices import price_for
+
+        kind = setup.endpoint(body.endpoint)
+        if kind is None:
+            raise HTTPException(status_code=400, detail=f"There is no kind of account called {body.endpoint}.")
+        if kind["local"] or kind["program"] or on_this_computer(body.base_url):
+            return AiPricesMissing(unpriced=[])
+        return AiPricesMissing(unpriced=[m for m in body.models if price_for(kind["id"], m) is None])
+
+    @r.post("/ai/account-check")
+    def ai_account_check(body: AiAccountCheck) -> AiAccountChecked:
+        """Check a new account before it is saved, the moment its key is pasted: every kind of work is tried with the
+        exact settings it will use, and the answer says in words that fit the kind of account what to do when it fails.
+        Nothing is kept: the key is used for this request only."""
+        from engine.ai import key_check
+        from engine.config.schema import ProviderSettings
+        from engine.secrets import SecretError, resolve_secret
+
+        kind = setup.endpoint(body.endpoint)
+        if kind is None:
+            raise HTTPException(status_code=400, detail=f"There is no kind of account called {body.endpoint}.")
+        if body.key and body.key_ref:
+            raise HTTPException(status_code=400, detail="Paste a key or give where it is, not both.")
+        if body.key and not local:
+            raise HTTPException(status_code=400, detail=HOSTED_KEY)
+        base_url = kind["base_url"] or (body.base_url or "").strip()
+        if not kind["base_url"] and not kind["program"] and not base_url and body.agent is None:
+            return AiAccountChecked(ok=False, reason="failed", message="Enter the service's address first.")
+        if base_url and not kind["base_url"] and (bad := setup.address_problem(base_url)):
+            return AiAccountChecked(ok=False, reason="failed", message=bad)
+        try:
+            key = body.key.strip() if body.key else (resolve_secret(body.key_ref) if body.key_ref else None)
+        except SecretError as err:
+            return AiAccountChecked(ok=False, reason="key_missing", message=str(err))
+        if kind["needs_key"] and not key:
+            return AiAccountChecked(ok=False, reason="key_missing", message="Paste your key to go on.")
+        settings: dict[str, Any] = {**kind["settings"], "adapter": kind["adapter"], "models": dict(body.models)}
+        if base_url:
+            settings["base_url"] = base_url
+        if body.agent is not None:
+            settings["agent"] = body.agent
+        try:
+            provider = ProviderSettings.model_validate(settings)
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=f"That account can't be checked: {err}") from None
+        try:
+            now = load_config(ws.config_dir)
+        except ConfigError as err:
+            log.warning("The settings couldn't be loaded: %s", err)
+            raise HTTPException(status_code=400, detail=err.plain) from None
+
+        def listing() -> dict[str, Any]:
+            """Asked only when a model was refused as retired: the listing says which models fit in its place."""
+            listed, _ = setup.list_models(kind, base_url, key) if base_url else ([], None)
+            return dict(listed)
+
+        found = key_check.check_account(
+            now, os.environ, provider, key, use=body.use, store=store, listed=listing, entry=kind
+        )
+        return AiAccountChecked(
+            ok=found.ok,
+            reason=found.reason,
+            message=found.message,
+            model=found.model,
+            next_model=found.next_model,
+            identity=found.identity,
+            identity_unknown=found.identity_unknown,
+        )
+
+    @r.get("/ai/local")
+    def ai_local() -> list[LocalServerView]:
+        """Model servers running on this computer now, with their models; none on a hosted app."""
+        if not local:
+            return []
+        found = []
+        for kind in setup.known_endpoints():
+            if not kind["local"] or not kind["base_url"]:
+                continue
+            models, problem = setup.list_models(kind, kind["base_url"], None)
+            if problem is None and models:
+                found.append(LocalServerView(endpoint=kind["id"], name=kind["name"], models=[m for m, _ in models]))
+        return found
+
+    @r.post("/ai/borrow")
+    def ai_borrow(body: AiBorrowAnswer) -> AiBorrowed:
+        """Answer the question of using another kind of work's account until the paused account's limit resets. A yes
+        lets the waiting work run on that account at once and lasts until the reset; a no keeps it waiting."""
+        from engine.ai.borrow import BorrowError, answer
+
+        try:
+            released = answer(ws, store, current(), body.tier, f"{body.account}/{body.model}", body.use, worker.now())
+        except BorrowError as err:
+            raise HTTPException(status_code=409, detail=str(err)) from None
+        if released:
+            worker.poke()
+        events.changed()
+        return AiBorrowed(released=released)
+
+    @r.post("/ai/test")
+    def ai_test() -> list[AiTestResult]:
+        from engine.ai.checked import remember
+        from engine.ai.smoke import lift_pauses, record, smoke_test
+
+        try:
+            current = load_config(ws.config_dir)
+        except ConfigError as err:
+            log.warning("The settings couldn't be loaded: %s", err)
+            raise HTTPException(status_code=400, detail=err.plain) from None
+        results = smoke_test(current, os.environ, store=store)
+        record(ws, results, current)
+        remember(ws, current, results)
+        lift_pauses(ws, results)
+        release_identity_waits()
+        events.changed()
+        # One line per kind of work and account, in plain words: the run's own details are for `thimbleby ai test`.
+        lines: dict[tuple[str, str], AiTestResult] = {}
+        for x in results:
+            account = x.account.split("/", 1)[0].split(" ", 1)[0]
+            line = lines.setdefault(
+                (x.tier, account), AiTestResult(tier=x.tier, account=account, main=x.main, ok=True, detail="answered")
+            )
+            if not x.ok and line.ok:
+                line.ok, line.detail = False, x.detail
+        return list(lines.values())
+
+    return r

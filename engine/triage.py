@@ -1,0 +1,286 @@
+"""Triage (design 6.5): rules in `watch.yaml` close a watched change before it reaches the assistant, with the rule
+and a readable reason. Closed changes are kept and listed as Auto-closed, where the person can take a closer look,
+which hands them in after all.
+
+A rule names a matcher: the core's are below; plugins add theirs (`registrar.triage_matcher`). A matcher gets the
+change (source, key, title, change, author, before, now, and the added and removed lines) and the rule's parameters,
+and returns a reason in plain words, or None. Matchers are deterministic and never call AI.
+
+A rule with `set_aside` puts mail in the Set aside folder (sales and promotions, or automated notices) instead of
+plainly closing it; `never` keeps mail with the assistant, over every set-aside rule after it and over the built-in
+sorting that follows the list (`watch.set_aside_defaults`). `personal` sets nothing aside: the mail is handed in and
+filed under the Personal project. A match returns `{rule, reason}`, with `section` when the mail is set aside.
+
+The built-in sorting after the list runs in this order: an automated one-time-code or security mail from an automated
+sender (notices); a bill, an order or a delivery (kept with the assistant); bulk mail from an automated sender or in the
+mail service's updates category (notices, never sales, unless the service files it under promotions, social or forums;
+never when it is addressed to the person alone); then bulk mail, and mail in promotions, social or forums (sales).
+"""
+
+from __future__ import annotations
+
+import fnmatch
+import re
+from collections.abc import Callable
+from email.utils import parseaddr
+from typing import Any
+
+from engine.mail_kinds import kind_of_change
+from engine.references import names_for
+
+Matcher = Callable[[dict[str, Any], dict[str, Any]], str | None]
+_NOT_WORDS = re.compile(r"[\W_]+")
+
+
+def _letters(text: str) -> str:
+    return _NOT_WORDS.sub("", text).lower()
+
+
+def cosmetic(change: dict[str, Any], params: dict[str, Any]) -> str | None:
+    """Only spacing, punctuation or capitals changed."""
+    if change["change"] != "changed":
+        return None
+    if _letters(change["before"]) == _letters(change["now"]):
+        return "only spacing, punctuation or capitals changed"
+    return None
+
+
+def by_us(change: dict[str, Any], params: dict[str, Any]) -> str | None:
+    """The change was made by one of the workspace's own accounts (`workspace.our_accounts`)."""
+    author = (change.get("author") or "").strip().lower()
+    ours = {a.strip().lower() for a in change.get("our_accounts", [])}
+    if author and author in ours:
+        return f"it was changed by {change['author']}, one of our own accounts"
+    return None
+
+
+def _names(params: dict[str, Any]) -> list[str]:
+    """The current names of the projects and people the rule holds by id (`names`, filled in by `classify`)."""
+    return [str(n).lower() for n in params.get("names", []) if str(n).strip()]
+
+
+def terms_absent(change: dict[str, Any], params: dict[str, Any]) -> str | None:
+    """None of the rule's `terms`, nor the names of the projects and people it holds by id, appears in what changed
+    (the added and removed lines, or a new item's text). A rule with nothing to look for closes nothing."""
+    terms = [str(t).lower() for t in params.get("terms", []) if str(t).strip()] + _names(params)
+    if not terms:
+        return None
+    changed = "\n".join(change["added"] + change["removed"]) if change["change"] == "changed" else change["now"]
+    if not any(term in changed.lower() for term in terms):
+        return f"none of {', '.join(terms)} appears in what changed"
+    return None
+
+
+def name_matches(change: dict[str, Any], params: dict[str, Any]) -> str | None:
+    """The item's key or title matches one of the rule's `patterns` (like *.tmp or Draft*), or holds the name of one of
+    the projects or people the rule holds by id."""
+    for pattern in params.get("patterns", []):
+        if fnmatch.fnmatch(change["key"], pattern) or fnmatch.fnmatch(change["title"], pattern):
+            return f"its name matches {pattern}"
+    for name in _names(params):
+        if name in str(change["key"]).lower() or name in str(change["title"]).lower():
+            return f"its name holds {name}"
+    return None
+
+
+def _message(change: dict[str, Any]) -> dict[str, Any]:
+    return change.get("message") or {}
+
+
+def sender_address(change: dict[str, Any]) -> str:
+    """The mail item's sender address in lower case: from the message's sender, else its author, else the text's
+    first From line; empty when none holds an address."""
+    candidates = [_message(change).get("sender"), change.get("author")]
+    candidates += [line[5:] for line in str(change.get("now") or "").splitlines()[:6] if line[:5].lower() == "from:"]
+    for candidate in candidates:
+        address = parseaddr(str(candidate or ""))[1].strip().lower()
+        if "@" in address:
+            return address
+    return ""
+
+
+def bulk_mail(change: dict[str, Any], params: dict[str, Any]) -> str | None:
+    """The message says it was sent to many (a list-unsubscribe address, or a bulk or list precedence)."""
+    if _message(change).get("bulk") is True:
+        return "it was sent to many people, as a mailing list or bulk mail"
+    return None
+
+
+def automated_code_mail(change: dict[str, Any], params: dict[str, Any]) -> str | None:
+    """An automated one-time-code mail: the sender's address starts with one of the `senders` words (no-reply and the
+    like), and the subject or text holds one of the `words` (a verification code, say). Both are needed, so a bill or
+    an order from a no-reply address stays with the assistant."""
+    address = sender_address(change)
+    local = address.partition("@")[0]
+    if not local or not any(
+        local.startswith(str(w).strip().lower()) for w in params.get("senders", []) if str(w).strip()
+    ):
+        return None
+    text = f"{change.get('title') or ''}\n{change.get('now') or ''}".lower()
+    if any(str(w).strip().lower() in text for w in params.get("words", []) if str(w).strip()):
+        return "it is an automated notice, such as a one-time code or a sign-in alert"
+    return None
+
+
+def service_category(change: dict[str, Any], params: dict[str, Any]) -> str | None:
+    """One of the mail service's own categories for the message is among the rule's `categories`."""
+    wanted = {str(c).strip().lower() for c in params.get("categories", []) if str(c).strip()}
+    found = sorted(wanted & {str(c).strip().lower() for c in _message(change).get("categories") or []})
+    if found:
+        return f"your mail service files it under {', '.join(found)}"
+    return None
+
+
+#: The mail service's own categories that mean the message is promotional or social: they keep it in sales.
+SALES_CATEGORIES = ("promotions", "social", "forums")
+#: The category the mail service files notifications under.
+NOTICE_CATEGORY = "updates"
+
+
+def automated_bulk_notice(change: dict[str, Any], params: dict[str, Any]) -> str | None:
+    """Mail that is bulk but is an automated notice rather than sales: the sender's address starts with one of the
+    `senders` words (no-reply, notifications and the like), or the mail service files it under its updates category.
+    Mail the service files under promotions, social or forums stays sales. Not bulk, nothing here."""
+    if _message(change).get("bulk") is not True:
+        return None
+    seen = {str(c).strip().lower() for c in _message(change).get("categories") or []}
+    if seen & set(SALES_CATEGORIES):
+        return None
+    local = sender_address(change).partition("@")[0]
+    if local and any(local.startswith(str(w).strip().lower()) for w in params.get("senders", []) if str(w).strip()):
+        return "it is an automated notice, not a sales mailing"
+    if NOTICE_CATEGORY in seen:
+        return f"your mail service files it under {NOTICE_CATEGORY}"
+    return None
+
+
+def addressed_to_one(change: dict[str, Any]) -> bool:
+    """The message names exactly one other address on it (its To and Cc), so it was written to one person and not to
+    a list. No participants (a blind copy, or a service that doesn't say) is not known to be one person."""
+    found = {
+        parseaddr(str(p))[1].strip().lower() or str(p).strip().lower()
+        for p in _message(change).get("participants") or []
+    }
+    return len({f for f in found if f}) == 1
+
+
+def _domain(text: Any) -> str:
+    return str(text).strip().lower().removeprefix("*.").lstrip("@").strip(".")
+
+
+def sender_rule(change: dict[str, Any], params: dict[str, Any]) -> str | None:
+    """The sender's address is one of the rule's `senders`, or its domain (or a domain it is inside) is one of the
+    rule's `domains`. Case doesn't matter."""
+    address = sender_address(change)
+    if not address:
+        return None
+    senders = {str(s).strip().lower() for s in params.get("senders", []) if str(s).strip()}
+    if address in senders:
+        return f"it is from {address}"
+    host = address.rpartition("@")[2]
+    for domain in (_domain(d) for d in params.get("domains", [])):
+        if domain and (host == domain or host.endswith("." + domain)):
+            return f"it is from {domain}"
+    return None
+
+
+CORE: dict[str, Matcher] = {
+    "cosmetic": cosmetic,
+    "by-us": by_us,
+    "terms-absent": terms_absent,
+    "name-matches": name_matches,
+    "bulk-mail": bulk_mail,
+    "service-category": service_category,
+    "automated-code-mail": automated_code_mail,
+    "sender-rule": sender_rule,
+}
+
+#: The sorting built in after the workspace's own rules: matcher, its settings, the rule's name and the section.
+BUILT_IN_SET_ASIDE: tuple[tuple[str, dict[str, Any], str, str], ...] = (
+    ("bulk-mail", {}, "Bulk mail", "sales"),
+    ("service-category", {"categories": ["promotions", "social", "forums"]}, "Promotions and social", "sales"),
+)
+
+
+def matchers(store: Any) -> dict[str, Matcher]:
+    return {**CORE, **store.plugins.triage_matchers()}
+
+
+def first_match(store: Any, cfg: Any, change: dict[str, Any]) -> dict[str, str] | None:
+    """The first rule that closes this change: {rule, reason}, plus `section` (sales or notices) when the rule sets
+    mail aside, or None. A matching `never` rule keeps the mail with the assistant against every later set-aside rule
+    and the built-in sorting; other rules still apply."""
+    return classify(store, cfg, change)[0]
+
+
+def classify(store: Any, cfg: Any, change: dict[str, Any]) -> tuple[dict[str, str] | None, bool]:
+    """What the rules and the built-in sorting make of this change: the match `first_match` gives, and whether a
+    `never` rule keeps the mail with the assistant (so no later sorting, the assistant's included, may set it aside)."""
+    closed, kept, _personal = classify_placed(store, cfg, change)
+    return closed, kept
+
+
+def classify_placed(store: Any, cfg: Any, change: dict[str, Any]) -> tuple[dict[str, str] | None, bool, bool]:
+    """`classify`, and whether a rule says the mail is personal. Personal mail is never set aside: such a rule closes
+    nothing and keeps the mail with the assistant (so no later sorting sets it aside), and the caller files the mail
+    under the Personal project."""
+    found = matchers(store)
+    kept = False
+    for rule in cfg.watch.triage:
+        if rule.sources and change["source"] not in rule.sources:
+            continue
+        match = found.get(rule.kind)
+        if match is None:
+            continue
+        if kept and rule.set_aside and rule.set_aside != "personal":
+            continue
+        params = dict(rule.params)
+        if rule.projects or rule.people:
+            view = store.read()
+            params["names"] = [*names_for(view, "project", rule.projects), *names_for(view, "person", rule.people)]
+        reason = (
+            store.plugins.run_matcher(rule.kind, match, change, params) if "/" in rule.kind else match(change, params)
+        )
+        if not reason:
+            continue
+        if rule.set_aside == "never":
+            kept = True
+            continue
+        if rule.set_aside == "personal":
+            if change.get("message"):
+                return None, True, True
+            continue
+        why = rule.why.format(reason=reason) if rule.why else reason
+        closed = {"rule": rule.name, "reason": why}
+        if rule.set_aside:
+            closed["section"] = rule.set_aside
+        return closed, kept, False
+    if kept or not change.get("message"):
+        return None, kept, False
+    auto = cfg.watch.automated_mail
+    if cfg.watch.set_aside_defaults and auto.set_aside:
+        reason = automated_code_mail(change, {"senders": auto.senders, "words": auto.words})
+        if reason:
+            return {"rule": "Automated notices", "reason": reason, "section": "notices"}, kept, False
+    if kind_of_change(cfg.watch.mail_kinds, change):
+        # The words only hint that this is a bill, an order or a delivery. With the assistant's sorting on, the mail
+        # goes to that run unplaced (no later rule sets it aside) and the run's kind decides; mail the run says is of a
+        # kind is never set aside. With no sorting to ask, the words stand in and keep the mail with the assistant.
+        return None, cfg.watch.sorting != "ai", False
+    if not cfg.watch.set_aside_defaults:
+        return None, kept, False
+    if cfg.watch.set_aside_defaults and auto.set_aside:
+        reason = automated_bulk_notice(change, {"senders": auto.senders})
+        if reason and addressed_to_one(change):
+            # A notice written to the person alone (a new subscriber, a reply to their post) is information for them:
+            # nothing here sets it aside, and the assistant's sorting or its run places it. A notice to a list is
+            # set aside as before.
+            return None, kept, False
+        if reason:
+            return {"rule": "Automated notices", "reason": reason, "section": "notices"}, kept, False
+    built_in = BUILT_IN_SET_ASIDE
+    for kind, params, name, section in built_in:
+        reason = CORE[kind](change, params)
+        if reason:
+            return {"rule": name, "reason": reason, "section": section}, kept, False
+    return None, kept, False

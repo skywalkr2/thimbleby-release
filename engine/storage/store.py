@@ -1,0 +1,1073 @@
+"""The record store.
+
+Every write happens in a transaction, states the record version it read, and writes one ledger entry per field it
+changes in the same transaction. A write against an older version is merged field by field when the fields differ and
+refused when the same field changed in between. Ids come from per-kind sequences and are never reused.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import sqlite3
+import threading
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Literal
+
+from pydantic import ValidationError
+
+from engine.records import REGISTRY
+from engine.storage.db import FLAGGED, MARKED, connect
+
+Trust = Literal["trusted", "untrusted"]
+_ID = re.compile(r"^(?P<prefix>[A-Z]+)-(?P<n>[1-9][0-9]*)$")
+
+
+#: The ops by which the person edits a record's fields on screen; an edit of a field the assistant set is a correction.
+PERSON_EDIT_OPS = ("record.edit", "record.set", "event.set", "action.move")
+
+
+class StoreError(Exception):
+    """A write can't be made as asked. A failure the plugin API raises carries a stable `code` (the plugin guide's
+    table of failure codes); callers and tests match the code, never the text, which keeps being reworded. A failure
+    with no code has an empty one."""
+
+    code: str = ""
+
+    def __init__(self, *args: object, code: str | None = None) -> None:
+        super().__init__(*args)
+        if code is not None:
+            self.code = code
+
+
+#: What a person is told when what they acted on had changed since the screen read it (their own second press, or
+#: another writer): plain words, never the record's id or fields. The API sends it with the `look-again` need.
+CONFLICT_WORDS = "That changed since you last looked. It is up to date now, so look again and choose again."
+
+
+class ConflictError(StoreError):
+    """Another write changed the same field since this one read the record."""
+
+    code = "conflict"
+
+    def __init__(self, kind: str, record_id: str, fields: list[str]):
+        self.kind, self.record_id, self.fields = kind, record_id, fields
+        super().__init__(CONFLICT_WORDS)
+
+
+class InvalidRecord(StoreError):
+    """The record would not be valid for its kind."""
+
+    code = "invalid_record"
+
+
+@dataclass(frozen=True)
+class Stored:
+    """A record as read: its kind, id, current version (state it when updating), whether it is deleted, and its
+    fields in `data`."""
+
+    kind: str
+    id: str
+    version: int
+    deleted: bool
+    data: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class WriteContext:
+    """Who is writing and on what grounds; copied into every ledger entry."""
+
+    actor: str
+    trust: Trust
+    op: str
+    changeset: str | None = None
+    request: str | None = None
+    evidence: dict[str, Any] | None = None
+
+
+#: What takes the place of an evidence quote in the ledger once it was given up.
+FORGOTTEN_QUOTE = "quote forgotten"
+
+
+def utc_now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def dumps(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def id_number(record_id: str) -> int | None:
+    match = _ID.match(record_id)
+    return int(match["n"]) if match else None
+
+
+class ReadMemo:
+    """What one read scope has already read, so a request that asks for the same record or list again gets it without
+    another query. It holds the rows as the database returned them, never the parsed records, so every caller still gets
+    a record of its own. It is emptied the moment any transaction starts or ends, in this process, so it never answers
+    from before a write; it lives for one scope, which is one request."""
+
+    def __init__(self, writes: Callable[[], int]):
+        self._writes = writes
+        self._seen = writes()
+        self._rows: dict[Any, Any] = {}
+
+    def table(self) -> dict[Any, Any]:
+        """The rows read so far; empty again when a write has happened since they were read."""
+        now = self._writes()
+        if now != self._seen:
+            self._rows.clear()
+            self._seen = now
+        return self._rows
+
+
+class Store:
+    """Access to a workspace's records, sequences and ledger.
+
+    Each thread gets its own connection, so a reader sees committed data only, never another thread's open
+    transaction. Writes from one Store are serialized; SQLite serializes writes between processes."""
+
+    def __init__(self, path: Path, *, clock: Callable[[], str] = utc_now, cfg: Any = None):
+        self.path = path
+        self.clock = clock
+        self._lock = threading.RLock()
+        #: Called before every write begins (not for writes it makes itself); it may raise to refuse the write.
+        self.write_guard: Callable[[], None] | None = None
+        # The list of open connections has its own lock, so a thread opening its first connection while another holds
+        # a transaction (a plugin's validator reading during an apply) never waits on that transaction.
+        self._conns_lock = threading.Lock()
+        self._local = threading.local()
+        #: Counts the transactions begun and ended in this process; a read scope's memo is only good while it holds.
+        self._writes = 0
+        self._all: list[sqlite3.Connection] = []
+        self._closed = False
+        _ = self._conn  # open the first connection now so a bad path fails here
+        try:
+            from engine.storage import migrations
+
+            migrations.run(self)  # records saved by an earlier build are carried forward before anything reads them
+        except BaseException:
+            for conn in self._all:
+                conn.close()
+            self._all.clear()
+            self._closed = True
+            raise
+        from engine.config import load_config
+        from engine.plugin_host import PluginHost
+
+        try:
+            self.plugins = PluginHost(self, cfg or load_config(path.parent / "config"))
+        except BaseException:
+            for conn in self._all:
+                conn.close()
+            self._all.clear()
+            self._closed = True
+            raise
+
+    @property
+    def _conn(self) -> sqlite3.Connection:
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            if self._closed:
+                raise StoreError("the store is closed")
+            conn = connect(self.path)
+            self._local.conn = conn
+            with self._conns_lock:
+                self._all.append(conn)
+        return conn
+
+    def close(self) -> None:
+        with self._lock:
+            self.plugins.close()
+            with self._conns_lock:
+                self._closed = True
+                for conn in self._all:
+                    conn.close()
+                self._all.clear()
+
+    @contextmanager
+    def read_scope(self) -> Iterator[None]:
+        """Reads made with `read()` on this thread inside the block share one memo: the same record, list or lookup is
+        read from the database once. A transaction begun or ended anywhere in this process empties it, and a thread
+        inside a transaction of its own reads without it, so a scope never answers from before a write. Use it around
+        one request's reads."""
+        if getattr(self._local, "memo", None) is not None:
+            yield
+            return
+        self._local.memo = ReadMemo(lambda: self._writes)
+        try:
+            yield
+        finally:
+            self._local.memo = None
+
+    @contextmanager
+    def unguarded(self) -> Iterator[None]:
+        """Writes made on this thread inside the block skip `write_guard` (the guard's own renewal, and closing)."""
+        before = getattr(self._local, "guarding", False)
+        self._local.guarding = True
+        try:
+            yield
+        finally:
+            self._local.guarding = before
+
+    @contextmanager
+    def transaction(self, *, notify: bool = True) -> Iterator[Tx]:
+        with self._lock:
+            guard = self.write_guard
+            if guard is not None and not getattr(self._local, "guarding", False):
+                self._local.guarding = True
+                try:
+                    guard()
+                finally:
+                    self._local.guarding = False
+            # A write is under way: reads on this thread skip the memo, and what any scope has read is dropped now and
+            # again once the transaction has ended.
+            self._writes += 1
+            self._local.writing = getattr(self._local, "writing", 0) + 1
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                tx = Tx(self._conn, self.clock, self.plugins.records)
+                try:
+                    yield tx
+                    cfg = getattr(getattr(self, "plugins", None), "cfg", None)
+                    if cfg is not None:
+                        if tx.person_edits:
+                            from engine import learn
+
+                            learn.record_edits(tx, cfg, self.clock())
+                        if tx.pending:
+                            from engine import follow_on
+
+                            follow_on.queue(tx, cfg, self.clock())
+                except BaseException:
+                    self._conn.execute("ROLLBACK")
+                    raise
+                else:
+                    self._conn.execute("COMMIT")
+            finally:
+                self._local.writing -= 1
+                self._writes += 1
+        if notify:
+            for event, payload in tx.events():
+                self.plugins.publish(event, payload, follows=tx.changeset)
+
+    @contextmanager
+    def snapshot(self) -> Iterator[Tx]:
+        """A consistent read-only view: every read on this thread inside the block sees the database as it was when
+        the first one ran, whatever other threads write meanwhile."""
+        conn = self._conn
+        conn.execute("BEGIN")
+        try:
+            yield Tx(conn, self.clock, self.plugins.records)
+        finally:
+            conn.execute("ROLLBACK")
+
+    def read(self) -> Tx:
+        """A read-only view outside a transaction, for simple lookups. While the plugins are still loading it sees
+        only the core's record kinds."""
+        plugins = getattr(self, "plugins", None)
+        memo = None if getattr(self._local, "writing", 0) else getattr(self._local, "memo", None)
+        return Tx(self._conn, self.clock, plugins.records if plugins is not None else None, memo=memo)
+
+
+class Tx:
+    """Operations inside one transaction."""
+
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        clock: Callable[[], str],
+        models: dict | None = None,
+        memo: ReadMemo | None = None,
+    ):
+        self._c = conn
+        self._memo = memo  # set only on a read view made inside a read scope
+        self._clock = clock
+        self.models = REGISTRY if models is None else models
+        self.pending: list[tuple] = []
+        self.emitted: list[tuple[str, dict[str, Any]]] = []  # interface events raised by ops in this transaction
+        self.changeset: str | None = None  # the changeset whose ops this transaction wrote, if any
+        #: The person's edits of fields the assistant had set: (kind, id, field, before, after, the setter's change).
+        self.person_edits: list[tuple[str, str, str, Any, Any, str | None]] = []
+        #: The records a signal written in this transaction names.
+        self.signalled: set[str] = set()
+        #: Every (kind, record id, field) whose earlier ledger values this transaction gave up, in the order given. A
+        #: field named "evidence quote" (no record has one) stands for the evidence quotes of the record's entries; a
+        #: "source" record with the field "quoted from" stands for every entry whose evidence quotes that source.
+        self.redactions: list[tuple[str, str, str]] = []
+        #: When set, every ledger entry whose values are given up also loses its evidence quote.
+        self.blank_evidence = False
+
+    def events(self) -> list[tuple[str, dict[str, Any]]]:
+        grouped = {}
+        special = []
+        for kind, rid, version, field, before, after, op in self.pending:
+            key = kind, rid, version, op
+            data = grouped.setdefault(key, {"kind": kind, "id": rid, "version": version, "op": op, "fields": []})
+            data["fields"].append(field or "_deleted")
+            if field == "stage" and before != after:
+                special.append(
+                    (
+                        "stage.moved",
+                        {"kind": kind, "id": rid, "version": version, "from": before, "to": after, "op": op},
+                    )
+                )
+            if kind == "request" and field == "state" and after == "queued" and before != after:
+                special.append(("request.queued", {"id": rid}))
+            if kind == "question" and field == "status" and after == "answered" and before != after:
+                special.append(("question.answered", {"id": rid}))
+            if kind == "file" and field == "file_kind" and version == 1:
+                special.append(("file.added", {"id": rid, "kind": after}))
+            if kind == "changeset" and field == "reviewed" and after is True and before is False:
+                special.append(("changeset.reviewed", _reviewed(rid, "accepted", self)))
+            if kind == "signal" and field == "kind" and after == "sent_back" and version == 1:
+                sent = self.get("signal", rid)
+                for cs_id in (sent.data.get("refs") or [])[:1] if sent is not None else []:
+                    special.append(("changeset.reviewed", _reviewed(cs_id, "sent_back", self)))
+            if kind == "text_version" and field == "status" and after == "accepted" and before != after:
+                accepted = self.get("text_version", rid)
+                if accepted is not None:
+                    special.append(("text.accepted", _text_accepted(accepted, self)))
+        return [("record.changed", data) for data in grouped.values()] + special + list(self.emitted)
+
+    def sql(self, query: str, args: tuple[Any, ...] = ()) -> sqlite3.Cursor:
+        """Run a statement in this transaction, for storage modules that own their own tables (leases)."""
+        return self._c.execute(query, args)
+
+    # ---- reading -----------------------------------------------------------------------------------------------------
+
+    def get(self, kind: str, record_id: str, *, include_deleted: bool = False) -> Stored | None:
+        row = self._remembered_row(kind, record_id)
+        if row is None or (row["deleted"] and not include_deleted):
+            return None
+        return _stored(row)
+
+    def versions(self) -> dict[tuple[str, str], int]:
+        """The version of every live record, in one read: what a run's packet is later held against."""
+        rows = self._c.execute("SELECT kind, id, version FROM records WHERE deleted=0").fetchall()
+        return {(r["kind"], r["id"]): r["version"] for r in rows}
+
+    def _remembered_row(self, kind: str, record_id: str) -> sqlite3.Row | None:
+        """The stored row of one record. A kind the read scope has already listed is answered from that list."""
+        if self._memo is None:
+            return self._c.execute("SELECT * FROM records WHERE kind=? AND id=?", (kind, record_id)).fetchone()
+        table = self._memo.table()
+        if (listed := table.get(("list", kind))) is not None:
+            if (index := table.get(("by id", kind))) is None:
+                index = table[("by id", kind)] = {r["id"]: r for r in listed}
+            return index.get(record_id)
+        seen = table.get(("seen", kind))
+        if seen is not None and record_id in seen:
+            return seen[record_id]
+        return self._remembered(
+            ("get", kind, record_id),
+            lambda: self._c.execute("SELECT * FROM records WHERE kind=? AND id=?", (kind, record_id)).fetchone(),
+        )
+
+    def _seen(self, kind: str, rows: Iterable[sqlite3.Row]) -> None:
+        """Note rows a narrow read returned, so a read of one of them by id, in the same read scope, needs no query."""
+        if self._memo is not None:
+            seen = self._memo.table().setdefault(("seen", kind), {})
+            for row in rows:
+                seen[row["id"]] = row
+
+    def _remembered(self, key: Any, read: Callable[[], Any]) -> Any:
+        """What `read` returns, from the read scope's memo when this view has one and it already holds the key."""
+        if self._memo is None:
+            return read()
+        table = self._memo.table()
+        if key not in table:
+            table[key] = read()
+        return table[key]
+
+    def list(self, kind: str, *, include_deleted: bool = False) -> list[Stored]:
+        rows = self._remembered(
+            ("list", kind), lambda: self._c.execute("SELECT * FROM records WHERE kind=?", (kind,)).fetchall()
+        )
+        items = [_stored(r) for r in rows if include_deleted or not r["deleted"]]
+        return sorted(items, key=lambda s: (id_number(s.id) or 0, s.id))
+
+    def get_many(self, kind: str, ids: Iterable[str]) -> dict[str, Stored]:
+        """The live records of a kind with these ids, by id, in a few reads however many ids there are (ids no record
+        has are left out). Later `get`s of them in the same read scope are answered from here."""
+        wanted = sorted(set(ids))
+        found: dict[str, Stored] = {}
+        for start in range(0, len(wanted), 500):
+            chunk = wanted[start : start + 500]
+            marks = ",".join("?" for _ in chunk)
+            rows = self._remembered(
+                ("get many", kind, tuple(chunk)),
+                lambda marks=marks, chunk=chunk: self._c.execute(
+                    f"SELECT * FROM records WHERE kind=? AND deleted=0 AND id IN ({marks})", (kind, *chunk)
+                ).fetchall(),
+            )
+            self._seen(kind, rows)
+            found.update({r["id"]: _stored(r) for r in rows})
+        return found
+
+    def runs_of(self, request_ids: Iterable[str]) -> dict[str, list[Stored]]:
+        """The live runs of each of these requests, by request id, in a few reads however many requests there are
+        (through the index on a run's request)."""
+        wanted = sorted(set(request_ids))
+        found: dict[str, list[Stored]] = {}
+        for start in range(0, len(wanted), 500):
+            chunk = wanted[start : start + 500]
+            marks = ",".join("?" for _ in chunk)
+            rows = self._remembered(
+                ("runs of", tuple(chunk)),
+                lambda marks=marks, chunk=chunk: self._c.execute(
+                    "SELECT * FROM records INDEXED BY run_request WHERE kind='run' AND deleted=0 "
+                    f"AND json_extract(data, '$.request') IN ({marks})",
+                    chunk,
+                ).fetchall(),
+            )
+            self._seen("run", rows)
+            for stored in sorted((_stored(r) for r in rows), key=lambda s: (id_number(s.id) or 0, s.id)):
+                found.setdefault(stored.data["request"], []).append(stored)
+        return found
+
+    def snapshots_by_key(self, pairs: Iterable[tuple[str, str]]) -> dict[tuple[str, str], list[Stored]]:
+        """The live snapshots of each (source, key) pair, in a few reads however many pairs there are (through the
+        index on a snapshot's source and key). A pair no snapshot has is left out."""
+        by_source: dict[str, list[str]] = {}
+        for source, key in set(pairs):
+            by_source.setdefault(source, []).append(key)
+        found: dict[tuple[str, str], list[Stored]] = {}
+        for source, keys in sorted(by_source.items()):
+            keys.sort()
+            for start in range(0, len(keys), 500):
+                chunk = keys[start : start + 500]
+                marks = ",".join("?" for _ in chunk)
+                rows = self._remembered(
+                    ("snapshots by key", source, tuple(chunk)),
+                    lambda marks=marks, chunk=chunk, source=source: self._c.execute(
+                        "SELECT * FROM records INDEXED BY snapshot_key WHERE kind='snapshot' AND deleted=0 "
+                        f"AND json_extract(data, '$.source') = ? AND json_extract(data, '$.key') IN ({marks})",
+                        [source, *chunk],
+                    ).fetchall(),
+                )
+                self._seen("snapshot", rows)
+                for stored in sorted((_stored(r) for r in rows), key=lambda s: (id_number(s.id) or 0, s.id)):
+                    found.setdefault((source, stored.data["key"]), []).append(stored)
+        return found
+
+    def has(self, kind: str) -> bool:
+        """Whether any live record of the kind exists."""
+        row = self._remembered(
+            ("has", kind),
+            lambda: self._c.execute("SELECT 1 FROM records WHERE kind=? AND deleted=0 LIMIT 1", (kind,)).fetchone(),
+        )
+        return row is not None
+
+    def find(self, kind: str, equals: dict[str, Any]) -> list[Stored]:
+        """Live records of a kind whose top-level fields equal the given values, matched in the database."""
+        index = _FIND_INDEXES.get((kind, frozenset(equals))) if None not in equals.values() else None
+        sql = (
+            f"SELECT * FROM records{f' INDEXED BY {index}' if index else ''} WHERE kind={_literal(kind)} AND deleted=0"
+        )
+        args: list[Any] = []
+        model = self.models.get(kind)
+        for field, value in equals.items():
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", field) or (
+                model is not None and field not in model.model_fields
+            ):
+                raise StoreError(f"{kind} has no field {field!r} to look up by")
+            if isinstance(value, (list, tuple, set, dict)):
+                raise StoreError(f"look up {field!r} by one value, not a list")
+            if value is None:
+                sql += f" AND json_extract(data, '$.{field}') IS NULL"
+            else:
+                sql += f" AND json_extract(data, '$.{field}') = ?"
+                args.append(int(value) if isinstance(value, bool) else value)
+        rows = self._remembered(("find", sql, tuple(args)), lambda: self._c.execute(sql, args).fetchall())
+        self._seen(kind, rows)
+        return sorted((_stored(r) for r in rows), key=lambda s: (id_number(s.id) or 0, s.id))
+
+    def since(self, kind: str, field: str, date: str) -> list[Stored]:
+        """Live records of a kind whose time field starts on or after a yyyy-mm-dd date (as written, so a time with an
+        offset can be a day off at the edge: the caller checks the exact moment), found in the database."""
+        self._timestamp_field(kind, field)
+        index = " INDEXED BY request_created" if (kind, field) == ("request", "created_at") else ""
+        rows = self._c.execute(
+            f"SELECT * FROM records{index} WHERE kind={_literal(kind)} AND deleted=0 "
+            f"AND substr(json_extract(data, '$.{field}'), 1, 10) >= ?",
+            (date,),
+        ).fetchall()
+        return sorted((_stored(r) for r in rows), key=lambda s: (id_number(s.id) or 0, s.id))
+
+    def marked(self, kind: str, field: str) -> list[Stored]:
+        """Live records of a kind whose top-level field holds a value (is not null), found through an index, so a
+        kind with many records and a few marked ones is read in proportion to the marked ones. Only the pairs in
+        `engine.storage.db.MARKED` can be asked for; any other is refused, never answered with a scan."""
+        if (kind, field) not in MARKED:
+            raise StoreError(f"{kind}.{field} has no index to look up marked records by")
+        rows = self._remembered(
+            ("marked", kind, field),
+            lambda: self._c.execute(
+                f"SELECT * FROM records INDEXED BY marked_{kind}_{field} WHERE kind='{kind}' AND deleted=0 "
+                f"AND json_extract(data, '$.{field}') IS NOT NULL"
+            ).fetchall(),
+        )
+        self._seen(kind, rows)
+        return sorted((_stored(r) for r in rows), key=lambda s: (id_number(s.id) or 0, s.id))
+
+    def flagged(self, kind: str, field: str, key: str) -> list[Stored]:
+        """Live records of a kind whose `field.key` is true, found through an index (only the triples in
+        `engine.storage.db.FLAGGED`; any other is refused, never answered with a scan)."""
+        if (kind, field, key) not in FLAGGED:
+            raise StoreError(f"{kind}.{field}.{key} has no index to look up flagged records by")
+        rows = self._remembered(
+            ("flagged", kind, field, key),
+            lambda: self._c.execute(
+                f"SELECT * FROM records INDEXED BY flagged_{kind}_{field}_{key} WHERE kind='{kind}' AND deleted=0 "
+                f"AND json_extract(data, '$.{field}.{key}') = 1"
+            ).fetchall(),
+        )
+        self._seen(kind, rows)
+        return sorted((_stored(r) for r in rows), key=lambda s: (id_number(s.id) or 0, s.id))
+
+    def requests_unfinished(self) -> list[Stored]:
+        """Live requests in any state but done (waiting, running, in review, stopped or failed), found through an
+        index."""
+        rows = self._remembered(
+            ("requests unfinished",),
+            lambda: self._c.execute(
+                "SELECT * FROM records INDEXED BY request_unfinished WHERE kind='request' AND deleted=0 "
+                "AND json_extract(data, '$.state') != 'done'"
+            ).fetchall(),
+        )
+        self._seen("request", rows)
+        return sorted((_stored(r) for r in rows), key=lambda s: (id_number(s.id) or 0, s.id))
+
+    def requests_in_play(self) -> list[Stored]:
+        """Live requests that aren't finished (any state but done), those that have a change, and the person's
+        questions to the assistant (task `ask`, which stay on Today until read): what the queue and the lists of work in
+        progress read, in place of every request ever made."""
+        found = {r.id: r for r in self.requests_unfinished()}
+        for request in self.marked("request", "changeset"):
+            found.setdefault(request.id, request)
+        asked = self._remembered(
+            ("requests asked",),
+            lambda: self._c.execute(
+                "SELECT * FROM records INDEXED BY request_asked WHERE kind='request' AND deleted=0 "
+                "AND json_extract(data, '$.task') = 'ask'"
+            ).fetchall(),
+        )
+        self._seen("request", asked)
+        for row in asked:
+            found.setdefault(row["id"], _stored(row))
+        return sorted(found.values(), key=lambda s: (id_number(s.id) or 0, s.id))
+
+    def latest(self, kind: str, field: str, limit: int) -> list[Stored]:
+        """The newest live records of a kind by a time field, newest first, at most `limit`."""
+        self._timestamp_field(kind, field)
+        rows = self._c.execute(
+            f"SELECT * FROM records WHERE kind=? AND deleted=0 ORDER BY json_extract(data, '$.{field}') DESC, id DESC "
+            "LIMIT ?",
+            (kind, limit),
+        ).fetchall()
+        return [_stored(r) for r in rows]
+
+    def _timestamp_field(self, kind: str, field: str) -> None:
+        model = self.models.get(kind)
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", field) or (
+            model is not None and field not in model.model_fields
+        ):
+            raise StoreError(f"{kind} has no field {field!r} to look up by")
+
+    def kinds(self) -> list[str]:
+        return [r[0] for r in self._c.execute("SELECT DISTINCT kind FROM records ORDER BY kind")]
+
+    def sequences(self) -> dict[str, int]:
+        return {r["kind"]: r["next"] for r in self._c.execute("SELECT kind, next FROM sequences ORDER BY kind")}
+
+    def ledger(
+        self,
+        *,
+        kind: str | None = None,
+        record_id: str | None = None,
+        op: str | None = None,
+        fields: Iterable[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """The ledger's entries, oldest first: all of them, or those of a kind, of one record, written by one op and
+        changing one of these fields. The database picks them, so only the ones asked for are read and parsed."""
+        sql, args = "SELECT * FROM ledger", []
+        where: list[str] = []
+        if kind is not None:
+            where.append("kind=?")
+            args.append(kind)
+            if record_id:
+                where.append("record_id=?")
+                args.append(record_id)
+        if op is not None:
+            where.append("op=?")
+            args.append(op)
+        if fields is not None:
+            names = list(fields)
+            where.append(f"field IN ({','.join('?' for _ in names)})")
+            args += names
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        rows = self._remembered(
+            ("ledger", sql, tuple(args)), lambda: self._c.execute(sql + " ORDER BY seq", args).fetchall()
+        )
+        return [_ledger_row(r) for r in rows]
+
+    def changes_of(self, changeset: str) -> list[dict[str, Any]]:
+        """The ledger entries a change wrote, oldest first."""
+        rows = self._remembered(
+            ("changes", changeset),
+            lambda: self._c.execute("SELECT * FROM ledger WHERE changeset=? ORDER BY seq", (changeset,)).fetchall(),
+        )
+        return [_ledger_row(r) for r in rows]
+
+    def creations(self, kind: str) -> dict[str, tuple[str | None, str | None]]:
+        """For every record of a kind, the change and the request named on the first ledger entry it ever got (the one
+        that created it), keyed by record id. Either is None when the entry names none."""
+        rows = self._remembered(
+            ("creations", kind),
+            lambda: self._c.execute(
+                "SELECT record_id, changeset, request FROM ledger WHERE kind=? AND seq IN "
+                "(SELECT MIN(seq) FROM ledger WHERE kind=? GROUP BY record_id)",
+                (kind, kind),
+            ).fetchall(),
+        )
+        return {r["record_id"]: (r["changeset"], r["request"]) for r in rows}
+
+    def creators(self, kind: str) -> dict[str, tuple[str, str]]:
+        """For every record of a kind, the actor and the time on the first ledger entry it ever got (who created it,
+        and when), keyed by record id."""
+        rows = self._remembered(
+            ("creators", kind),
+            lambda: self._c.execute(
+                "SELECT record_id, actor, at FROM ledger WHERE kind=? AND seq IN "
+                "(SELECT MIN(seq) FROM ledger WHERE kind=? GROUP BY record_id)",
+                (kind, kind),
+            ).fetchall(),
+        )
+        return {r["record_id"]: (r["actor"], str(r["at"])) for r in rows}
+
+    def field_changes(self, kind: str, fields: Iterable[str]) -> dict[str, list[dict[str, Any]]]:
+        """The ledger's changes to these fields of every record of a kind, oldest first, keyed by record id. Each is
+        the record's version, the field, its value before and after, and when it changed (`at`)."""
+        names = list(fields)
+        marks = ",".join("?" for _ in names)
+        rows = self._remembered(
+            ("field changes", kind, tuple(names)),
+            lambda: self._c.execute(
+                f"SELECT record_id, version, field, before, after, at FROM ledger WHERE kind=? AND field IN ({marks}) "
+                "ORDER BY seq",
+                [kind, *names],
+            ).fetchall(),
+        )
+        out: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            entry = {
+                "version": row["version"],
+                "field": row["field"],
+                "before": json.loads(row["before"]) if row["before"] is not None else None,
+                "after": json.loads(row["after"]) if row["after"] is not None else None,
+                "at": str(row["at"]),
+            }
+            out.setdefault(row["record_id"], []).append(entry)
+        return out
+
+    def last_changes(self, kind: str) -> dict[str, str]:
+        """For every record of a kind, the time of the latest ledger entry it got (when it last changed), keyed by
+        record id."""
+        rows = self._remembered(
+            ("last changes", kind),
+            lambda: self._c.execute(
+                "SELECT record_id, MAX(at) AS at FROM ledger WHERE kind=? GROUP BY record_id", (kind,)
+            ).fetchall(),
+        )
+        return {r["record_id"]: str(r["at"]) for r in rows}
+
+    def changed_kinds(self, after: int) -> tuple[int, list[str]]:
+        """The ledger's last position, and the record kinds written after position `after` (for live updates)."""
+        last = self._c.execute("SELECT COALESCE(MAX(seq), 0) AS n FROM ledger").fetchone()["n"]
+        rows = self._c.execute("SELECT DISTINCT kind FROM ledger WHERE seq > ? ORDER BY kind", (after,)).fetchall()
+        return int(last), [r["kind"] for r in rows]
+
+    # ---- ids ---------------------------------------------------------------------------------------------------------
+
+    def new_id(self, kind: str) -> str:
+        prefix = self.models[kind].prefix
+        row = self._c.execute("SELECT next FROM sequences WHERE kind=?", (kind,)).fetchone()
+        n = row["next"] if row else 1
+        self._c.execute(
+            "INSERT INTO sequences(kind, next) VALUES(?, ?) ON CONFLICT(kind) DO UPDATE SET next=excluded.next",
+            (kind, n + 1),
+        )
+        return f"{prefix}-{n}"
+
+    def _reserve(self, kind: str, record_id: str) -> None:
+        """Make sure a given id is never handed out again."""
+        prefix = self.models[kind].prefix
+        match = _ID.match(record_id)
+        if not match or match["prefix"] != prefix:
+            raise InvalidRecord(f"{record_id!r} is not a {kind} id (expected {prefix}-<number>)")
+        n = int(match["n"])
+        self._c.execute(
+            "INSERT INTO sequences(kind, next) VALUES(?, ?) "
+            "ON CONFLICT(kind) DO UPDATE SET next=MAX(next, excluded.next)",
+            (kind, n + 1),
+        )
+
+    def set_sequence(self, kind: str, next_value: int) -> None:
+        self._c.execute(
+            "INSERT INTO sequences(kind, next) VALUES(?, ?) "
+            "ON CONFLICT(kind) DO UPDATE SET next=MAX(next, excluded.next)",
+            (kind, next_value),
+        )
+
+    # ---- writing -----------------------------------------------------------------------------------------------------
+
+    def create(self, kind: str, data: dict[str, Any], ctx: WriteContext, *, record_id: str | None = None) -> Stored:
+        """Add a new record. Without an id, the next one in the kind's sequence is used."""
+        if record_id is None:
+            record_id = self.new_id(kind)
+        else:
+            if self._c.execute("SELECT 1 FROM records WHERE kind=? AND id=?", (kind, record_id)).fetchone():
+                raise StoreError(f"{kind} {record_id} already exists (ids are never reused)")
+            self._reserve(kind, record_id)
+        clean = _validate(self.models[kind], {**data, "id": record_id})
+        self._check_lists(kind, record_id, clean, set(clean), {})
+        if kind == "signal":
+            self.signalled.update(clean.get("refs") or [])
+        self._c.execute(
+            "INSERT INTO records(kind, id, version, deleted, data) VALUES(?, ?, 1, 0, ?)",
+            (kind, record_id, dumps(clean)),
+        )
+        at = self._clock()
+        for field in sorted(k for k in clean if k != "id"):
+            self._log(at, ctx, kind, record_id, 1, field, None, clean[field])
+        return Stored(kind, record_id, 1, False, clean)
+
+    def update(
+        self, kind: str, record_id: str, changes: dict[str, Any], ctx: WriteContext, *, read_version: int
+    ) -> Stored:
+        """Change fields of a record, stating the version that was read before deciding on the change."""
+        current = self.get(kind, record_id)
+        if current is None:
+            raise StoreError(f"{kind} {record_id} doesn't exist")
+        if "id" in changes and changes["id"] != record_id:
+            raise StoreError("a record's id can't change")
+        if read_version > current.version or read_version < 1:
+            raise StoreError(f"{kind} {record_id} has no version {read_version}")
+        if read_version < current.version:
+            changed_since = self._fields_changed_since(kind, record_id, read_version)
+            clash = sorted(changed_since & set(changes))
+            if clash:
+                raise ConflictError(kind, record_id, clash)
+        merged = _validate(self.models[kind], {**current.data, **changes})
+        diff = {k: merged.get(k) for k in set(merged) | set(current.data) if merged.get(k) != current.data.get(k)}
+        if not diff:
+            return current
+        self._check_lists(kind, record_id, merged, set(diff), current.data)
+        version = current.version + 1
+        self._c.execute(
+            "UPDATE records SET version=?, data=? WHERE kind=? AND id=?", (version, dumps(merged), kind, record_id)
+        )
+        at = self._clock()
+        if ctx.actor == "pm" and ctx.op.split("#", 1)[0] in PERSON_EDIT_OPS:
+            self._note_person_edits(kind, record_id, current.version, diff, current.data)
+        for field in sorted(diff):
+            self._log(at, ctx, kind, record_id, version, field, current.data.get(field), merged.get(field))
+        return Stored(kind, record_id, version, False, merged)
+
+    def _note_person_edits(
+        self, kind: str, record_id: str, version: int, diff: dict[str, Any], before: dict[str, Any]
+    ) -> None:
+        """Keep each field of the person's edit whose value the assistant had set, with the change that set it."""
+        for field, after in diff.items():
+            row = self._c.execute(
+                "SELECT actor, changeset FROM ledger WHERE kind=? AND record_id=? AND field=? AND version<=? "
+                "ORDER BY seq DESC LIMIT 1",
+                (kind, record_id, field, version),
+            ).fetchone()
+            if row is not None and row["actor"] == "assistant":
+                self.person_edits.append((kind, record_id, field, before.get(field), after, row["changeset"]))
+
+    def _check_lists(
+        self, kind: str, record_id: str, data: dict[str, Any], changed: set[str], before: dict[str, Any]
+    ) -> None:
+        """Refuse a value not on its field's value list. A value the record already held stays valid (it may have
+        been retired since); a list that doesn't exist yet (while a workspace is being loaded) checks nothing."""
+        from engine.records import list_fields
+
+        bound = [b for b in list_fields(self.models[kind]) if b[0] in changed]
+        if not bound:
+            return
+        lists = {r.data["name"]: r.data for r in self.list("value_list")}
+        for field, name, many in bound:
+            value_list = lists.get(name)
+            if value_list is None:
+                continue
+            values = data.get(field)
+            held = before.get(field)
+            for value in (values or []) if many else [values]:
+                if value is None or value in value_list["values"]:
+                    continue
+                if value == held or (many and value in (held or [])):
+                    continue
+                offered = ", ".join(value_list["values"]) or "nothing yet"
+                raise InvalidRecord(
+                    f"{kind} {record_id}: {field}: {value!r} isn't on the list {value_list['label']} ({offered}); "
+                    "add it to the list first"
+                )
+
+    def delete(self, kind: str, record_id: str, ctx: WriteContext, *, read_version: int) -> None:
+        """Mark a record deleted. Its id stays retired and its history stays in the ledger."""
+        current = self.get(kind, record_id)
+        if current is None:
+            raise StoreError(f"{kind} {record_id} doesn't exist")
+        if read_version != current.version:
+            raise ConflictError(kind, record_id, ["(record changed since it was read)"])
+        version = current.version + 1
+        self._c.execute("UPDATE records SET version=?, deleted=1 WHERE kind=? AND id=?", (version, kind, record_id))
+        self._log(self._clock(), ctx, kind, record_id, version, None, None, None)
+
+    def undelete(self, kind: str, record_id: str, ctx: WriteContext, *, read_version: int) -> None:
+        """Bring back a deleted record under its own id; the ledger records it like any other write."""
+        current = self.get(kind, record_id, include_deleted=True)
+        if current is None or not current.deleted:
+            raise StoreError(f"{kind} {record_id} isn't deleted")
+        if read_version != current.version:
+            raise ConflictError(kind, record_id, ["(record changed since it was read)"])
+        version = current.version + 1
+        self._c.execute("UPDATE records SET version=?, deleted=0 WHERE kind=? AND id=?", (version, kind, record_id))
+        self._log(self._clock(), ctx, kind, record_id, version, None, None, None)
+
+    def redact_ledger(self, kind: str, record_id: str, fields: list[str]) -> int:
+        """Blank the before and after values of these fields in every ledger entry of one record, the entries of this
+        transaction included, so a write that removes content leaves no copy of it in the history. The entries stay,
+        with their fields, versions and who made them. When `blank_evidence` is set, those entries' evidence quotes
+        go too. Returns how many entries changed."""
+        if not fields:
+            return 0
+        marks = ",".join("?" for _ in fields)
+        where, args = f"kind=? AND record_id=? AND field IN ({marks})", (kind, record_id, *fields)
+        cursor = self._c.execute(
+            "UPDATE ledger SET before = CASE WHEN before IS NULL THEN NULL ELSE 'null' END, "
+            f"after = CASE WHEN after IS NULL THEN NULL ELSE 'null' END WHERE {where}",
+            args,
+        )
+        if self.blank_evidence:
+            self._blank_quotes(where, args)
+        self.redactions.extend((kind, record_id, field) for field in fields)
+        return cursor.rowcount
+
+    def redact_evidence(self, kind: str, record_id: str) -> int:
+        """Blank the evidence quote of every ledger entry of one record (entries whose values stay)."""
+        self.redactions.append((kind, record_id, "evidence quote"))
+        return self._blank_quotes("kind=? AND record_id=?", (kind, record_id))
+
+    def redact_quotes_from(self, source_id: str) -> int:
+        """Blank the evidence quote of every ledger entry, of any record, whose evidence is taken from this source."""
+        self.redactions.append(("source", source_id, "quoted from"))
+        return self._blank_quotes("evidence IS NOT NULL", (), source=source_id)
+
+    def _blank_quotes(self, where: str, args: tuple, *, source: str | None = None) -> int:
+        changed = 0
+        for row in self._c.execute(
+            f"SELECT seq, evidence FROM ledger WHERE evidence IS NOT NULL AND {where}", args
+        ).fetchall():
+            evidence = json.loads(row["evidence"])
+            if not isinstance(evidence, dict) or evidence.get("quote") in (None, FORGOTTEN_QUOTE):
+                continue
+            if source is not None and evidence.get("source") != source:
+                continue
+            evidence["quote"] = FORGOTTEN_QUOTE
+            self._c.execute("UPDATE ledger SET evidence=? WHERE seq=?", (dumps(evidence), row["seq"]))
+            changed += 1
+        return changed
+
+    def note_ledger(self, ctx: WriteContext, kind: str, record_id: str, version: int, field: str, after: Any) -> None:
+        """Add a ledger entry that changes no record: a note kept with the history (the forget's list of what it gave
+        up)."""
+        self._log(self._clock(), ctx, kind, record_id, version, field, None, after)
+
+    # ---- import support ----------------------------------------------------------------------------------------------
+
+    def restore_record(self, stored: Stored) -> None:
+        """Put a record back exactly as exported (used by import only; writes no ledger entries)."""
+        clean = _validate(self.models[stored.kind], {**stored.data, "id": stored.id})
+        self._reserve(stored.kind, stored.id)
+        self._c.execute(
+            "INSERT INTO records(kind, id, version, deleted, data) VALUES(?, ?, ?, ?, ?)",
+            (stored.kind, stored.id, stored.version, int(stored.deleted), dumps(clean)),
+        )
+
+    def restore_ledger(self, entry: dict[str, Any]) -> None:
+        """Append an exported ledger entry as it was (used by import only)."""
+        self._c.execute(
+            "INSERT INTO ledger(seq, at, changeset, request, op, kind, record_id, version, field, before, after, "
+            "actor, trust, evidence) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                entry["seq"],
+                entry["at"],
+                entry.get("changeset"),
+                entry.get("request"),
+                entry["op"],
+                entry["kind"],
+                entry["record_id"],
+                entry["version"],
+                entry.get("field"),
+                _opt_dumps(entry, "before"),
+                _opt_dumps(entry, "after"),
+                entry["actor"],
+                entry["trust"],
+                _opt_dumps(entry, "evidence"),
+            ),
+        )
+
+    # ---- internals ---------------------------------------------------------------------------------------------------
+
+    def _fields_changed_since(self, kind: str, record_id: str, version: int) -> set[str]:
+        rows = self._c.execute(
+            "SELECT field FROM ledger WHERE kind=? AND record_id=? AND version>? AND field IS NOT NULL",
+            (kind, record_id, version),
+        ).fetchall()
+        return {r["field"] for r in rows}
+
+    def _log(
+        self,
+        at: str,
+        ctx: WriteContext,
+        kind: str,
+        record_id: str,
+        version: int,
+        field: str | None,
+        before: Any,
+        after: Any,
+    ) -> None:
+        self.pending.append((kind, record_id, version, field, before, after, ctx.op))
+        if ctx.changeset and self.changeset is None:
+            self.changeset = ctx.changeset
+        self._c.execute(
+            "INSERT INTO ledger(at, changeset, request, op, kind, record_id, version, field, before, after, actor, "
+            "trust, evidence) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                at,
+                ctx.changeset,
+                ctx.request,
+                ctx.op,
+                kind,
+                record_id,
+                version,
+                field,
+                None if field is None else dumps(before),
+                None if field is None else dumps(after),
+                ctx.actor,
+                ctx.trust,
+                None if ctx.evidence is None else dumps(ctx.evidence),
+            ),
+        )
+
+
+def _reviewed(cs_id: str, outcome: str, view: Any) -> dict[str, Any]:
+    """The changeset.reviewed payload: which answer, to which request and part, and what the person did."""
+    cs = view.get("changeset", cs_id)
+    request = view.get("request", cs.data["request"]) if cs is not None else None
+    data = request.data if request is not None else {}
+    about = data.get("about")
+    return {
+        "id": cs_id,
+        "outcome": outcome,
+        "request": request.id if request is not None else None,
+        "task": data.get("task"),
+        "part": data.get("part"),
+        "tag": data.get("tag"),
+        "about": {"kind": about["kind"], "id": about["id"]} if isinstance(about, dict) else None,
+    }
+
+
+def _text_accepted(version: Stored, view: Any) -> dict[str, Any]:
+    """The text.accepted payload: which field got which version, from what, its authorship in words, and the request
+    (with the part it named) whose run drafted it, when a run did."""
+    run = view.get("run", version.data["run"]) if version.data.get("run") else None
+    request = view.get("request", run.data["request"]) if run is not None and run.data.get("request") else None
+    counts = {"person": 0, "assistant": 0, "assistant_edit": 0}
+    for span in version.data.get("authorship", []):
+        counts[span["kind"]] = counts.get(span["kind"], 0) + int(span.get("words", 0))
+    return {
+        "kind": version.data["owner_kind"],
+        "id": version.data["owner_id"],
+        "field": version.data["field"],
+        "version": version.data["number"],
+        "previous": version.data.get("replaces"),
+        "source": version.data["source"],
+        "authorship": counts,
+        "request": request.id if request is not None else None,
+        "part": request.data.get("part") if request is not None else None,
+        "tag": request.data.get("tag") if request is not None else None,
+    }
+
+
+def _validate(model: type, data: dict[str, Any]) -> dict[str, Any]:
+    kind = model.record_kind
+    try:
+        return model.model_validate(data).model_dump(mode="json", exclude_defaults=False)
+    except ValidationError as err:
+        from engine.text_shape import error_problem
+
+        problems = "; ".join(
+            error_problem(e) or f"{'.'.join(map(str, e['loc'])) or kind}: {e['msg']}" for e in err.errors()
+        )
+        raise InvalidRecord(f"{kind} {data.get('id', '(new)')}: {problems}") from None
+
+
+#: The lookups by equality that have an index of their own (`engine.storage.db.INDEXES`), by kind and fields.
+_FIND_INDEXES = {
+    ("snapshot", frozenset({"source", "key"})): "snapshot_key",
+    ("run", frozenset({"request"})): "run_request",
+}
+
+
+class ByIdData:
+    """The fields of the records of one kind, looked up by id, each read the first time it is asked for (through the
+    read scope's memo, so asking again costs nothing). For a screen that needs the few records its rows name, not all of
+    a kind that grows with the mail. Only `get` is offered, like a dict's."""
+
+    def __init__(self, view: Tx, kind: str):
+        self._view, self._kind = view, kind
+
+    def get(self, record_id: str | None, default: Any = None) -> Any:
+        found = self._view.get(self._kind, record_id) if record_id else None
+        return found.data if found is not None else default
+
+
+def _literal(kind: str) -> str:
+    """A record kind written into a statement as a quoted word, so the database can match it with an index whose
+    condition names the same kind (a bound value can't be matched that way). Only plain kind names are allowed."""
+    if not re.fullmatch(r"[A-Za-z0-9_./-]+", kind):
+        raise StoreError(f"{kind!r} is not a record kind")
+    return f"'{kind}'"
+
+
+def _stored(row: sqlite3.Row) -> Stored:
+    return Stored(row["kind"], row["id"], row["version"], bool(row["deleted"]), json.loads(row["data"]))
+
+
+def _ledger_row(row: sqlite3.Row) -> dict[str, Any]:
+    entry = dict(row)
+    for key in ("before", "after", "evidence"):
+        if entry[key] is not None:
+            entry[key] = json.loads(entry[key])
+    return entry
+
+
+def _opt_dumps(entry: dict[str, Any], key: str) -> str | None:
+    if key not in entry:
+        return None
+    if key in ("before", "after") and entry.get("field") is None:
+        return None
+    if key == "evidence" and entry.get("evidence") is None:
+        return None
+    return dumps(entry[key])

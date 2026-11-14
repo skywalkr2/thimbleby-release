@@ -1,0 +1,14 @@
+# The languages (and varieties) a setting that holds a language tag offers as a list: how the assistant spells and
+# writes. Only the varieties of languages the app can read notes in are listed (the word lists in the workspace's
+# language settings), so today English only; another language is listed once its word lists exist. The screens' own
+# language is a separate matter: they are in English. A tag outside the list that a workspace already uses is added to
+# the list it sees, so the screen never shows a value that isn't the setting's.
+languages:
+  - en-US
+  - en-GB
+  - en-CA
+  - en-AU
+  - en-IE
+  - en-NZ
+  - en-IN
+  - en-ZA

@@ -1,0 +1,64 @@
+// Today's rail (design 7.7): at most three cards beside the queue (below it under 1100px, and on the phone each folded to one
+// line): Schedule, Came in and the Briefing (which sits under the queue on a wide window). The Schedule card is always drawn, so the side column is never blank; the others are
+// drawn when they have something. When nothing but the Schedule's own "nothing today" is there and the queue is empty, one line
+// says so. What needs the person is the queue, not the rail, and a to-do is acted on in To-dos and questions, so
+// neither the priorities nor the to-dos are cards. An add-on's Today panels follow the cards, each folded to one line.
+import { useState } from "react";
+import { createPortal } from "react-dom";
+import { useSetupOpen } from "../lib/setup-open";
+import { useWords } from "../lib/wording";
+import { settingsView, viewHref, type View } from "../lib/views";
+import { BriefCard, briefClosed, hasBrief, useBrief, useBriefClosings } from "./BriefCard";
+import { useCameInCard } from "./CameInCard";
+import { PluginPanels } from "./PluginPanels";
+import { RailFolds } from "./RailPanel";
+import { useScheduleCard } from "./ScheduleCard";
+import styles from "./Today.module.css";
+
+/** The rail's cards. `onAddSource` opens Sources with the add form open; it is offered only once setup is finished (while it is
+ * open the setup line offers it). With a `workspace` the Briefing card is the form that is due. `queueEmpty` is whether the
+ * queue has nothing for the person, which is when an empty rail says so. */
+export function TodayRail(props: {
+  onView: (view: View) => void;
+  onAddSource?: () => void;
+  workspace?: string;
+  onOpenRecord?: (kind: string, id: string) => void;
+  queueEmpty?: boolean;
+  /** Where the Briefing card goes when it is not the rail's last card (under the queue, on a wide window); the card is drawn there
+   * instead of in the rail. */
+  briefSlot?: HTMLElement | null;
+}) {
+  const { t } = useWords();
+  const setupOpen = useSetupOpen();
+  const add = setupOpen ? undefined : (props.onAddSource ?? (() => props.onView(settingsView("connections"))));
+  const open = props.onOpenRecord ?? (() => {});
+  // The Briefing card closing for the day changes what is drawn, so the rail draws again.
+  const [, closed] = useState(0);
+  useBriefClosings();
+  const brief = useBrief(null);
+  const briefing = props.workspace ? { settled: !brief.isPending, drawn: hasBrief(brief.data, props.workspace) } : { settled: true, drawn: false };
+  // The Schedule card is always drawn and, with no calendar connected, links to Connections while setup is open too.
+  const schedule = useScheduleCard(add, viewHref(settingsView("connections")));
+  const cameIn = useCameInCard(add);
+  const settled = briefing.settled && schedule.settled && cameIn.settled;
+  const nothing = settled && !briefing.drawn && !schedule.drawn && !cameIn.drawn;
+  const briefCard =
+    (briefing.drawn || (props.workspace && briefClosed(brief.data, props.workspace))) && props.workspace ? (
+      <BriefCard workspace={props.workspace} onOpenRecord={open} onOpenView={props.onView} onClosed={() => closed((n) => n + 1)} />
+    ) : null;
+  return (
+    <div className={styles.rail} role="group" aria-label={t("today.rail.label")} data-region="">
+      <RailFolds>
+        {schedule.card}
+        {cameIn.drawn && cameIn.card}
+        {props.briefSlot ? briefCard && createPortal(briefCard, props.briefSlot) : briefCard}
+      </RailFolds>
+      {nothing && props.queueEmpty && (
+        <p className={styles.railNothing} data-rail-nothing="">
+          {t("today.rail.nothing_else")}
+        </p>
+      )}
+      <PluginPanels onOpenRecord={open} />
+    </div>
+  );
+}

@@ -1,0 +1,407 @@
+import "@testing-library/jest-dom/vitest";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { vi } from "vitest";
+import type { S } from "../lib/api";
+import { actFixture } from "../lib/acts-fixtures";
+import { forgetLine } from "../lib/today";
+import { RestartProvider } from "../lib/restart";
+import { fakeApi, renderApp, statusFixture, type Routes } from "../test-utils";
+import { MeetingPrep } from "./MeetingPrep";
+import { Today } from "./Today";
+
+// Prep before a calendar entry and capture after it (design 6.32, 7.14): the three lines on
+// Today and the prep on the entry's page. Everything is worked out by rules on the server;
+// these tests check what the screens show of it, in plain words, with the cursor where the person types.
+
+type Line = S["QueueLineView"];
+type Item = S["OpenItemView"];
+type Prep = S["MeetingPrepView"];
+
+const ANA = "Ana Example";
+const line = (kind: Line["kind"], over: Partial<Line> = {}): Line => ({ key: `${kind}:1`, group: "review", kind, count: 1, untrusted: false, unpriced: 0, actions: [], questions: [], outcome: {}, ...over });
+const item = (over: Partial<Item> & Pick<Item, "kind" | "id" | "text">): Item => ({ record: "action", quiet: 0, ...over });
+
+function today(lines: Line[], extra: Routes = {}) {
+  vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener: () => undefined, removeEventListener: () => undefined }));
+  const calls = fakeApi({
+    "GET today/queue": () => lines,
+    "GET changes": () => [],
+    "GET followups": () => [],
+    "GET plugin-today": () => [],
+    "GET stages/records": () => [],
+    "GET stages/ready": () => [],
+    "GET stages/requests": () => [],
+    "GET today/agenda": () => [],
+    "GET today/todo": () => [],
+    "GET today/arrived": () => ({ items: [], left_out: 0, set_aside: 0 }),
+    "GET watch": () => [],
+    "GET projects": () => [],
+    "GET people": () => [],
+    "GET status": () => statusFixture(),
+    "GET runtime-config": () => ({ instance: null }),
+    ...extra,
+  });
+  const onOpenRecord = vi.fn();
+  renderApp(
+    <RestartProvider hellos={1}>
+      <Today workspace="Workspace" onView={vi.fn()} onAddSource={vi.fn()} onOpenGuide={vi.fn()} onOpenRecord={onOpenRecord} shortcuts={{ next: "j", previous: "k" }} />
+    </RestartProvider>,
+  );
+  return { calls, onOpenRecord };
+}
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+  forgetLine();
+});
+
+const rowOf = async (title: string) => (await screen.findByRole("group", { name: title })) as HTMLElement;
+
+// ---- Today -----------------------------------------------------------------------------------------------------------
+
+test("a meeting about to start is a line that says who is coming and how much is open, and its button opens the entry", async () => {
+  const user = userEvent.setup();
+  const { onOpenRecord } = today([line("meeting_prep", { key: "meeting_prep:EVT-1", text: "Design review", event: "EVT-1", names: [ANA], count: 2, open_items: 3, at: "2026-10-21T10:00:00-04:00" })]);
+  const row = await rowOf("Prepare for Design review");
+  expect(within(row).getByText("Prep")).toBeInTheDocument();
+  expect(row).toHaveTextContent(`with ${ANA} and 1 other`);
+  expect(row).toHaveTextContent("3 things open");
+  await user.click(within(row).getByRole("button", { name: "Open prep" }));
+  expect(onOpenRecord).toHaveBeenCalledWith("event", "EVT-1");
+});
+
+test("a meeting with nothing open and nobody on file says only who is coming", async () => {
+  today([line("meeting_prep", { key: "meeting_prep:EVT-2", text: "Sync", event: "EVT-2", names: [], count: 1, open_items: 0, at: "2026-10-21T10:00:00-04:00" })]);
+  const row = await rowOf("Prepare for Sync");
+  expect(row).toHaveTextContent("with 1 other");
+  expect(row).not.toHaveTextContent("open");
+});
+
+test("an invitation waiting for an answer is a line that says when and who invited, and its button opens the entry", async () => {
+  const user = userEvent.setup();
+  const { onOpenRecord } = today([line("invitation", { key: "invitation:EVT-3", group: "decide", text: "Planning session", subject: ANA, event: "EVT-3", at: "2026-10-22T10:00:00-04:00" })]);
+  const row = await rowOf("Answer the invitation to Planning session");
+  expect(within(row).getByText("Invitation")).toBeInTheDocument();
+  expect(row).toHaveTextContent(`from ${ANA}`);
+  await user.click(within(row).getByRole("button", { name: "Open invitation" }));
+  expect(onOpenRecord).toHaveBeenCalledWith("event", "EVT-3");
+});
+
+test("capture asks what happened with the cursor in the box, and Enter saves the words on the entry", async () => {
+  const user = userEvent.setup();
+  const { calls } = today([line("meeting_capture", { key: "meeting_capture:EVT-1", text: "Design review", event: "EVT-1", names: [ANA], at: "2026-10-20T11:00:00-04:00" })], {
+    "POST meetings/EVT-1/capture": () => ({ request: "REQ-1", captured_at: "2026-10-20T12:00:00Z" }),
+  });
+  const row = await rowOf("Capture what happened at Design review");
+  await user.click(within(row).getByRole("button", { name: "Capture" }));
+  const box = await within(row).findByRole("textbox", { name: "What happened at Design review?" });
+  await waitFor(() => expect(box).toHaveFocus());
+  await user.type(box, "Ana will send the contract by Friday.{Enter}");
+  await waitFor(() => expect(calls.find((c) => c.route === "POST meetings/EVT-1/capture")?.body).toEqual({ text: "Ana will send the contract by Friday." }));
+  expect(await screen.findByText(/Saved what happened at Design review/)).toBeInTheDocument();
+});
+
+test("Nothing to note ends the question with no words, and Escape closes the box without sending", async () => {
+  const user = userEvent.setup();
+  const { calls } = today([line("meeting_capture", { key: "meeting_capture:EVT-1", text: "Design review", event: "EVT-1", at: "2026-10-20T11:00:00-04:00" })], {
+    "POST meetings/EVT-1/capture": () => ({ request: null, captured_at: "2026-10-20T12:00:00Z" }),
+    "POST meetings/EVT-1/capture/undo": () => ({ request: null, captured_at: "2026-10-20T12:00:00Z" }),
+  });
+  const row = await rowOf("Capture what happened at Design review");
+  await user.click(within(row).getByRole("button", { name: "Capture" }));
+  await user.type(await within(row).findByRole("textbox"), "x{Escape}");
+  expect(within(row).queryByRole("textbox")).toBeNull();
+  expect(calls.some((c) => c.route === "POST meetings/EVT-1/capture")).toBe(false);
+  await user.click(within(row).getByRole("button", { name: "Capture" }));
+  await user.click(await within(row).findByRole("button", { name: "Nothing to note" }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST meetings/EVT-1/capture")?.body).toEqual({ text: "" }));
+  expect(await screen.findByText(/Marked Design review as nothing to note/)).toBeInTheDocument();
+  // Undo asks the question again: it names the moment the entry was marked.
+  await user.click(await screen.findByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST meetings/EVT-1/capture/undo")?.body).toEqual({ captured_at: "2026-10-20T12:00:00Z" }));
+});
+
+test("words that were written down have no Undo here: their changes are undone where the run's changes are", async () => {
+  const user = userEvent.setup();
+  const { calls } = today([line("meeting_capture", { key: "meeting_capture:EVT-1", text: "Design review", event: "EVT-1", at: "2026-10-20T11:00:00-04:00" })], {
+    "POST meetings/EVT-1/capture": () => ({ request: "REQ-1", captured_at: "2026-10-20T12:00:00Z" }),
+  });
+  const row = await rowOf("Capture what happened at Design review");
+  await user.click(within(row).getByRole("button", { name: "Capture" }));
+  await user.type(await within(row).findByRole("textbox"), "Agreed the trim size.{Enter}");
+  await screen.findByText(/Saved what happened at Design review/);
+  expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+  expect(calls.some((c) => c.route === "POST meetings/EVT-1/capture/undo")).toBe(false);
+});
+
+test("a promise gone quiet is one line that says who to follow up with and which way the promise went", async () => {
+  const user = userEvent.setup();
+  const { onOpenRecord } = today([line("quiet_promise", { key: "quiet_promise:ACT-1", group: "send", text: "Send the cover", person: "PER-2", person_name: ANA, actions: ["ACT-1"], waiting_days: 9, state: "to", due: "2026-10-30" })]);
+  const row = await rowOf(`Follow up with ${ANA}: Send the cover has gone quiet`);
+  expect(row).toHaveTextContent("You promised them");
+  expect(row).toHaveTextContent("No news for 9 days");
+  expect(row).toHaveTextContent("due");
+  await user.click(within(row).getByRole("button", { name: "Open" }));
+  expect(onOpenRecord).toHaveBeenCalledWith("person", "PER-2");
+});
+
+test("a promise the other person made says so", async () => {
+  today([line("quiet_promise", { key: "quiet_promise:ACT-2", group: "send", text: "Return the contract", person: "PER-2", person_name: ANA, actions: ["ACT-2"], waiting_days: 1, state: "from" })]);
+  const row = await rowOf(`Follow up with ${ANA}: Return the contract has gone quiet`);
+  expect(row).toHaveTextContent("They promised you");
+  expect(row).toHaveTextContent("No news for 1 day");
+});
+
+const SNOOZES = [
+  { days: 1, on: "2026-10-23" },
+  { days: 3, on: "2026-10-25" },
+];
+const quiet = (state: "to" | "from") => line("quiet_promise", { key: "quiet_promise:ACT-2", group: "send", text: "Return the contract", person: "PER-2", person_name: ANA, actions: ["ACT-2"], waiting_days: 9, state, snooze_days: SNOOZES });
+const menuOf = (user: ReturnType<typeof userEvent.setup>, row: HTMLElement) => user.click(within(row).getByRole("button", { name: /More actions for/ }));
+
+test("a promise someone owes you can be followed up from its line: the message is written, drafted as an act and opened to say yes", async () => {
+  const user = userEvent.setup();
+  const parts = { subject: "Checking in: Return the contract", body: "Hi Ana,\n\nChecking in on this:\nReturn the contract\n\nThanks!" };
+  const { calls } = today([quiet("from")], {
+    "GET quiet-promises/ACT-2/follow-up": () => ({ person: "PER-2", person_name: ANA, parts }),
+    "GET acts/send-options": () => ({ can_act: true, account: "mailbox:work", account_label: "Work mail" }),
+    "POST acts": () => actFixture({ id: "XACT-9" }),
+  });
+  const row = await rowOf(`Follow up with ${ANA}: Return the contract has gone quiet`);
+  await menuOf(user, row);
+  await user.click(await screen.findByRole("menuitem", { name: "Send a follow-up" }));
+  await waitFor(() => expect(calls.filter((c) => c.route === "POST acts")).toHaveLength(1));
+  expect(calls.find((c) => c.route === "POST acts")?.body).toEqual({
+    kind: "message",
+    action: "send",
+    account: "mailbox:work",
+    recipients: [{ person: "PER-2", kind: "email", role: "to", called_out: false, from_text: false }],
+    parts,
+  });
+  await waitFor(() => expect(window.location.hash).toBe("#work/followups"));
+});
+
+test("a promise the person made has no follow-up to send, and Snooze is a list of days", async () => {
+  const user = userEvent.setup();
+  today([quiet("to")]);
+  const row = await rowOf(`Follow up with ${ANA}: Return the contract has gone quiet`);
+  await menuOf(user, row);
+  expect(screen.queryByRole("menuitem", { name: "Send a follow-up" })).toBeNull();
+  const days = (await screen.findAllByRole("menuitem")).map((x) => x.textContent);
+  expect(days).toHaveLength(2);
+  expect(days[0]).toMatch(/^Tomorrow/);
+  expect(days[1]).toMatch(/^In 3 days/);
+});
+
+test("snoozing sends the chosen day, says when it comes back, and Undo takes the snooze back", async () => {
+  const user = userEvent.setup();
+  const { calls } = today([quiet("from")], {
+    "POST quiet-promises/ACT-2/snooze": () => ({ signal: "SIG-4", until: "2026-10-25" }),
+    "POST suggestions/not-now/SIG-4/undo": () => ({ ok: "SIG-4" }),
+  });
+  const row = await rowOf(`Follow up with ${ANA}: Return the contract has gone quiet`);
+  await menuOf(user, row);
+  await user.click(await screen.findByRole("menuitem", { name: /^In 3 days/ }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST quiet-promises/ACT-2/snooze")?.body).toEqual({ until: "2026-10-25" }));
+  expect(await screen.findByText(/Snoozed until/)).toBeInTheDocument();
+  await user.click(await screen.findByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST suggestions/not-now/SIG-4/undo")).toBe(true));
+});
+
+// ---- the entry's page ------------------------------------------------------------------------------------------------
+
+const prep = (over: Partial<Prep> = {}): Prep => ({
+  event: "EVT-1",
+  title: "Design review",
+  start: "2026-10-21T10:00:00-04:00",
+  end: "2026-10-21T11:00:00-04:00",
+  untrusted: false,
+  over: false,
+  coming: [{ person: "PER-2", name: ANA }],
+  people: [
+    {
+      person: "PER-2",
+      name: ANA,
+      promised_to: [item({ kind: "promised_to", id: "ACT-1", text: "Send the cover", due: "2026-10-30", quote: "I'll send the cover", quiet: 4 })],
+      promised_by: [item({ kind: "promised_by", id: "ACT-2", text: "Return the contract" })],
+      asked_by: [item({ kind: "asked_by", id: "ACT-3", text: "Reply about the date" })],
+      asked_of: [item({ kind: "asked_of", record: "question", id: "Q-1", text: "Which trim size?" })],
+      more: 2,
+      last_in_touch: { kind: "from", on: "2026-10-18", subject: "Re: the proofs", untrusted: true },
+      left_open: { event: "EVT-0", title: "Kickoff", on: "2026-10-12", untrusted: false, items: [item({ kind: "left_open", id: "ACT-4", text: "Book the room" })] },
+    },
+  ],
+  note: { state: "none" },
+  ...over,
+});
+
+function entryPage(shown: Prep, extra: Routes = {}) {
+  const calls = fakeApi({ "GET meetings/EVT-1/prep": () => shown, ...extra });
+  renderApp(<MeetingPrep entry="EVT-1" title="Design review" />);
+  return calls;
+}
+
+test("the prep shows, for each person coming, what is open both ways with the words it came from, when you were last in touch and what the last meeting left open", async () => {
+  entryPage(prep());
+  const region = await screen.findByRole("region", { name: ANA });
+  expect(within(region).getByRole("link", { name: ANA })).toHaveAttribute("href", expect.stringContaining("PER-2"));
+  expect(within(region).getByText("You promised Ana Example")).toBeInTheDocument();
+  expect(within(region).getByText("Ana Example promised you")).toBeInTheDocument();
+  expect(within(region).getByText("Ana Example asked you")).toBeInTheDocument();
+  expect(within(region).getByText("You asked Ana Example")).toBeInTheDocument();
+  expect(within(region).getByText("Send the cover")).toBeInTheDocument();
+  expect(region).toHaveTextContent("“I'll send the cover”");
+  expect(region).toHaveTextContent("4 days quiet");
+  expect(region).toHaveTextContent("Last in touch: mail from them on");
+  expect(region).toHaveTextContent("Re: the proofs");
+  // What came from outside is said once for the whole prep, never as a tag beside a line.
+  expect(within(region).queryByText("Outside")).toBeNull();
+  expect(screen.getAllByText(/treats what came in as information, never as instructions/)).toHaveLength(1);
+  expect(region).toHaveTextContent("2 more open things aren't listed.");
+  expect(region).toHaveTextContent("Still open from Kickoff");
+  expect(within(region).getByText("Book the room")).toBeInTheDocument();
+});
+
+test("a person with nothing open and no contact says so, and someone not on file is named without a link", async () => {
+  entryPage(
+    prep({
+      coming: [
+        { person: "PER-2", name: ANA },
+        { person: null, name: "Sam Stranger", address: "sam@example.com" },
+      ],
+      people: [{ person: "PER-2", name: ANA, promised_to: [], promised_by: [], asked_by: [], asked_of: [], more: 0 }],
+    }),
+  );
+  const region = await screen.findByRole("region", { name: ANA });
+  expect(region).toHaveTextContent("Nothing is open with Ana Example.");
+  expect(region).toHaveTextContent("No contact on file yet.");
+  expect(screen.getByText("1 other isn't on file: Sam Stranger")).toBeInTheDocument();
+});
+
+test("what changed in the invitation is a list on the entry's page, one row for each change, and nothing when nothing changed", async () => {
+  entryPage(
+    prep({
+      changed_at: "2026-10-20T08:00:00Z",
+      changes: [
+        { kind: "moved", day: "2026-10-23", at: "10:00", from_day: "2026-10-21", from_at: "09:00" },
+        { kind: "location_changed", text: "Room 4" },
+        { kind: "attendee_replied", name: "Nell Newcomer", status: "accepted" },
+        { kind: "attendee_added", name: "Gale Guest" },
+        { kind: "times_unknown", reason: "no_zone" },
+      ],
+    }),
+  );
+  const list = await screen.findByRole("region", { name: "What changed in the invitation" });
+  const rows = within(list).getAllByRole("listitem").map((row) => row.textContent);
+  expect(rows).toEqual([
+    "Moved from Wed, Oct 21 9:00 AM to Fri, Oct 23 at 10:00 AM",
+    "The place is now Room 4",
+    "Nell Newcomer answered: yes",
+    "Gale Guest was added",
+    "Something changed that could not be read",
+  ]);
+  expect(list).toHaveTextContent(/Last changed on .*Oct 20/);
+  cleanup();
+  entryPage(prep({ changes: [] }));
+  await screen.findByRole("region", { name: ANA });
+  expect(screen.queryByRole("region", { name: "What changed in the invitation" })).toBeNull();
+});
+
+test("an entry nobody else is on says so and offers no prep note", async () => {
+  entryPage(prep({ coming: [], people: [] }));
+  expect(await screen.findByText("Nobody else is on this calendar entry.")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Draft a prep note" })).toBeNull();
+});
+
+test("an ended entry nobody else is on still offers to capture what happened", async () => {
+  entryPage(prep({ coming: [], people: [], over: true }));
+  expect(await screen.findByText("Nobody else is on this calendar entry.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Capture what happened" })).toBeInTheDocument();
+});
+
+test("a prep note is asked for in one press, and the page says where it stands afterwards", async () => {
+  const user = userEvent.setup();
+  const calls = entryPage(prep(), { "POST meetings/EVT-1/prep-note": () => ({ request: "REQ-1" }) });
+  await user.click(await screen.findByRole("button", { name: "Draft a prep note" }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST meetings/EVT-1/prep-note")?.body).toEqual({ note: null }));
+  cleanup();
+  entryPage(prep({ note: { state: "needs_go", request: "REQ-1" } }));
+  expect(await screen.findByText("A prep note is waiting for your go on Today.")).toBeInTheDocument();
+  cleanup();
+  entryPage(prep({ note: { state: "draft", request: "REQ-1" } }));
+  expect(await screen.findByText("A prep note is waiting below for you to read.")).toBeInTheDocument();
+});
+
+test("once the entry has ended the page offers to capture what happened, and says when it was written down", async () => {
+  const user = userEvent.setup();
+  const calls = entryPage(prep({ over: true }), { "POST meetings/EVT-1/capture": () => ({ request: "REQ-1", captured_at: "2026-10-21T12:00:00Z" }) });
+  await user.click(await screen.findByRole("button", { name: "Capture what happened" }));
+  const box = await screen.findByRole("textbox", { name: "What happened at Design review?" });
+  await waitFor(() => expect(box).toHaveFocus());
+  await user.type(box, "Agreed the trim size.");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST meetings/EVT-1/capture")?.body).toEqual({ text: "Agreed the trim size." }));
+  cleanup();
+  entryPage(prep({ over: true, captured_at: "2026-10-21T12:00:00Z" }));
+  expect(await screen.findByText(/What happened was written down on/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Capture what happened" })).toBeNull();
+});
+
+test("an entry still ahead has no capture button", async () => {
+  entryPage(prep());
+  await screen.findByRole("region", { name: ANA });
+  expect(screen.queryByRole("button", { name: "Capture what happened" })).toBeNull();
+});
+
+// ---- meetings the person added (design 6.32; S-0103) ------------------------------------------------------------------
+
+test("a meeting the person runs lists what to write down after it, and a date of a repeat leads with what changed since the last one", async () => {
+  entryPage(
+    prep({
+      role: "run",
+      coming: [],
+      people: [],
+      occurrence: "2026-10-21T10:00:00-04:00",
+      since_last: [item({ kind: "changed", id: "ACT-9", text: "Confirm the venue" })],
+      guide: [{ key: "decisions", items: [] }, { key: "actions", items: [] }, { key: "questions", items: [] }],
+      no_agenda: true,
+    }),
+  );
+  await screen.findByRole("heading", { name: "Before the meeting" });
+  expect(screen.getByText("What changed since last time")).toBeInTheDocument();
+  expect(screen.getByText("Confirm the venue")).toBeInTheDocument();
+  expect(screen.getByText("After it, write down:", { exact: false })).toBeInTheDocument();
+  for (const part of ["Decisions made", "Actions agreed, and who has each", "Questions left open"]) expect(screen.getByText(part)).toBeInTheDocument();
+  expect(screen.getByText(/Nothing is on the agenda yet/)).toBeInTheDocument();
+});
+
+test("a meeting the person attends lists what to raise, ask and listen for, from what is open with the people coming", async () => {
+  entryPage(
+    prep({
+      role: "attend",
+      guide: [
+        { key: "raise", items: [item({ kind: "promised_to", id: "ACT-1", text: "Send the cover" })] },
+        { key: "ask", items: [item({ kind: "asked_of", record: "question", id: "Q-1", text: "Which trim size?" })] },
+        { key: "listen", items: [] },
+      ],
+    }),
+  );
+  const raise = await screen.findByRole("heading", { name: "To raise" });
+  expect(raise.parentElement).toHaveTextContent("Send the cover");
+  expect(screen.getByRole("heading", { name: "To ask" }).parentElement).toHaveTextContent("Which trim size?");
+  expect(screen.queryByRole("heading", { name: "To listen for" })).toBeNull(); // nothing found for it
+});
+
+test("a meeting kept only for the brief has no prep page", async () => {
+  entryPage(prep({ role: "brief_only", coming: [], people: [] }));
+  await waitFor(() => expect(screen.queryByRole("heading", { name: "Before the meeting" })).toBeNull());
+});
+
+test("a repeating meeting's line says when there is no agenda and with nobody else on it names no one", async () => {
+  today([line("meeting_prep", { key: "meeting_prep:EVT-1:2026-10-21", text: "Print sync", event: "EVT-1", names: [], count: 0, open_items: 0, state: "no_agenda", at: "2026-10-21T10:00:00-04:00" })]);
+  const row = await rowOf("Prepare for Print sync");
+  expect(row).toHaveTextContent("No agenda yet");
+  expect(row).not.toHaveTextContent("with 0 others");
+});

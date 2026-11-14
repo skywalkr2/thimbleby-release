@@ -1,0 +1,3219 @@
+"""Core record types.
+
+Records refer to each other by id, never by name; names live on their own record and are rendered where shown.
+Each type has a kind (its table name in exports) and an id prefix. Plugins add record types through the plugin API.
+"""
+
+from __future__ import annotations
+
+import functools
+from dataclasses import dataclass
+from datetime import date, datetime
+from typing import Annotated, Any, ClassVar, Literal
+
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
+
+from engine.texts import LongText
+
+
+class Record(BaseModel):
+    """Base for every stored record. A plugin's record type subclasses it and sets `record_kind` ("<plugin>/<name>")
+    and `prefix` (the id prefix, capital letters). Fields are pydantic fields; unknown fields are refused. Every record
+    also carries the core's `ext` and `stage` fields, which a record type may not redefine. A field declared with an
+    `alias` takes the alias as input and is stored, read back and named in reference paths by its field name, in the
+    record and in any model nested in it; only a model whose config sets `serialize_by_alias` is stored by alias."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: The kind's id: "<plugin>/<name>" for a plugin's record type.
+    record_kind: ClassVar[str]
+    #: The id prefix, capital letters, unique in the workspace: ids are "<prefix>-<number>" and never reused.
+    prefix: ClassVar[str]
+    #: What one record of this kind is called on screen and in messages ("chapter"); empty: made from the kind's id.
+    record_label: ClassVar[str] = ""
+    #: Field values only the person may set; an op from anyone else that sets one is held for the person. An empty
+    #: tuple means every value of that field.
+    person_only: ClassVar[dict[str, tuple[Any, ...]]] = {}
+    #: Field groups whose values must be unique among live records of this kind.
+    unique: ClassVar[tuple[tuple[str, ...], ...]] = ()
+    #: How sensitive these records are: packets that include them go only to accounts allowed this level.
+    data_level: ClassVar[str] = "internal"
+    #: "core" (the default) or "own". A pack whose records are not workspace knowledge (a story's cast and plan)
+    #: declares "own": the core's learning from inputs, new-term scan, first-name resolution against people and fact
+    #: ranking into the workspace's facts then don't run on work about these records. The pack keeps its own plan
+    #: records; its task kinds can still ask for the person's rules and lessons (`view.knowledge`).
+    learning: ClassVar[str] = "core"
+    #: The field (a list of ids from ai.content_levels) holding the content levels the person set on a record; work on
+    #: the record goes only to accounts that take them. Only the person sets it.
+    content_levels_field: ClassVar[str | None] = None
+    #: Where each record is written in the synced folder, relative to its project's folder (or the workspace's, for
+    #: a record in no project), without an extension: "plan/chapters/{order:02}-{slug}". `{field}` and
+    #: `{field:format}` take the record's own values (and `{id}`); a missing value becomes the id. The core adds
+    #: the extension: a record with one long text field is a Markdown file, its other fields as front matter and the
+    #: current text as the body; a record with none is a YAML file; one with several is a folder holding
+    #: `record.yaml` and a file per field. Every version of its long text is kept beside it, in `.versions/`. None:
+    #: the record is only in the folder's machine copy.
+    layout: ClassVar[str | None] = None
+    #: With a layout, write every record whose path renders the same into one YAML file: a list of entries, each with
+    #: its id. Not for record types with long text. Edits made outside come back per entry: a changed entry as a
+    #: field edit and a removed one as a delete, both waiting for the person; an added entry is reported, not created.
+    layout_collection: ClassVar[bool] = False
+    #: The field a collection's entries are sorted by (the id when unset); numbers sort as numbers.
+    layout_sort: ClassVar[str | None] = None
+    #: For a record with no project of its own: the reference field whose record's project it is placed under in the
+    #: synced folder (a chapter's entry, under the chapter's book).
+    layout_project: ClassVar[str | None] = None
+    #: Fields that never change once the record is made: no edit, the person's included, may set them.
+    fixed_fields: ClassVar[tuple[str, ...]] = ()
+
+    id: str = Field(description='The record\'s id: "<prefix>-<number>", never reused.')
+    stage: str | None = Field(None, description="Current configured stage id; its wording is set with the stages.")
+    ext: dict[str, dict[str, Any]] = Field(default_factory=dict, description="Fields added by plugins, by plugin name.")
+
+    @classmethod
+    def needs_person(cls, field: str, value: Any) -> bool:
+        """Whether only the person may set this field to this value (see `person_only`)."""
+        values = cls.person_only.get(field)
+        return values is not None and (not values or value in values)
+
+
+@dataclass(frozen=True)
+class RefTo:
+    """Marks a field as holding the id of another record: `Annotated[str | None, RefTo("project")]`. Honored up to six
+    levels into a record (its own fields, then models nested in them); a reference deeper than that is a plain id,
+    which the plugin's own validator must check.
+
+    A reference blocks deleting the record it points at while it holds that record's id. With `blocks_delete=False`
+    the target can be deleted and the id stays: reading it finds no record (never an error) and the screens show it as
+    removed. Writing the reference still needs the target to exist."""
+
+    kind: str
+    blocks_delete: bool = True
+
+
+@dataclass(frozen=True)
+class InList:
+    """Marks a field whose values come from a value list (design 5.1): `Annotated[str | None, InList("project-status")]`
+    or a list of them. A value not on the list is refused wherever the record is written; a value already on the
+    record stays valid after it is retired from the list."""
+
+    name: str
+
+
+def list_fields(model: type[BaseModel]) -> list[tuple[str, str, bool]]:
+    """(field, list name, holds many) for every top-level field marked with InList."""
+    from typing import Annotated, Union, get_args, get_origin
+
+    def marks(annotation: Any) -> list[str]:
+        if get_origin(annotation) is Annotated:
+            return [m.name for m in annotation.__metadata__ if isinstance(m, InList)]
+        return []
+
+    found = []
+    for name, info in model.model_fields.items():
+        direct = [m.name for m in info.metadata if isinstance(m, InList)]
+        annotation = info.annotation
+        origin = get_origin(annotation)
+        members = get_args(annotation) if origin is Union or type(annotation).__name__ == "UnionType" else ()
+        single = direct + [n for arg in members for n in marks(arg)] + marks(annotation)
+        many = []
+        for arg in (annotation, *members):
+            if get_origin(arg) in (list, tuple, set):
+                many += [n for inner in get_args(arg) for n in marks(inner)]
+        found += [(name, n, False) for n in dict.fromkeys(single)]
+        found += [(name, n, True) for n in dict.fromkeys(many)]
+    return found
+
+
+#: How many levels of nested models references are found in (a record's own fields are the first level).
+MAX_REF_DEPTH = 6
+
+
+def ref_fields(model: type[BaseModel], _prefix: str = "", _depth: int = 0) -> list[tuple[str, str]]:
+    """The reference paths of a model, worked out once per model class (they depend only on the class) and copied for
+    each caller. See `_ref_marks`."""
+    return [(path, kind) for path, kind, _ in _ref_marks(model, _prefix, _depth)]
+
+
+def soft_ref_paths(model: type[BaseModel]) -> frozenset[str]:
+    """The reference paths of a model whose `RefTo` says `blocks_delete=False`: the target may be deleted while the
+    record still holds its id."""
+    return frozenset(path for path, _, blocks in _ref_marks(model, "", 0) if not blocks)
+
+
+@functools.cache
+def _ref_marks(model: type[BaseModel], _prefix: str = "", _depth: int = 0) -> tuple[tuple[str, str, bool], ...]:
+    """References are honored (checked on write, guarded on delete, rendered as names) up to MAX_REF_DEPTH levels into
+    a record: its own fields, models in them, and models in those, and so on.
+
+    (path, kind it points to, whether it blocks deleting the target) for every field marked with RefTo: "field" for a
+    single reference, "field[]" for a list of references (`list[Annotated[str, RefTo("kind")]]`), optional or not, and
+    paths into nested models such as "relations[].person" for a list of models whose `person` field is a reference."""
+    from typing import Annotated, Union, get_args, get_origin
+
+    def ref_meta(annotation: Any) -> list[RefTo]:
+        if get_origin(annotation) is Annotated:
+            return [m for m in annotation.__metadata__ if isinstance(m, RefTo)]
+        return []
+
+    def in_list(annotation: Any) -> list[RefTo]:
+        origin = get_origin(annotation)
+        if origin in (list, tuple, set):
+            return [m for arg in get_args(annotation) for m in ref_meta(arg)]
+        if origin is Union or type(annotation).__name__ == "UnionType":
+            return [m for arg in get_args(annotation) for m in in_list(arg)]
+        return []
+
+    def single_in_union(annotation: Any) -> list[RefTo]:
+        """A single reference written as one member of a union: `Annotated[str, RefTo("k")] | None`."""
+        origin = get_origin(annotation)
+        if origin is Union or type(annotation).__name__ == "UnionType":
+            return [m for arg in get_args(annotation) for m in ref_meta(arg)]
+        return []
+
+    def nested(annotation: Any) -> list[tuple[type[BaseModel], bool]]:
+        """Models a field holds directly ("") or in a list ("[]")."""
+        origin = get_origin(annotation)
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            return [(annotation, False)]
+        if origin in (list, tuple, set):
+            return [(m, True) for arg in get_args(annotation) for m, _ in nested(arg)]
+        if origin is Union or type(annotation).__name__ == "UnionType" or origin is Annotated:
+            return [found for arg in get_args(annotation) for found in nested(arg)]
+        return []
+
+    found: list[tuple[str, str, bool]] = []
+    for name, info in model.model_fields.items():
+        # A reference path names the key the record is stored under: the alias only for a model stored by alias.
+        path = f"{_prefix}{info.alias if info.alias and model.model_config.get('serialize_by_alias') else name}"
+        for meta in info.metadata:
+            if isinstance(meta, RefTo):
+                found.append((path, meta.kind, meta.blocks_delete))
+        singles = single_in_union(info.annotation)
+        found += [(path, m.kind, m.blocks_delete) for m in singles]
+        single_kinds = {m.kind for m in singles}
+        found += [
+            (f"{path}[]", m.kind, m.blocks_delete) for m in in_list(info.annotation) if m.kind not in single_kinds
+        ]
+        if _depth < MAX_REF_DEPTH - 1:
+            for inner, many in nested(info.annotation):
+                found += _ref_marks(inner, f"{path}[]." if many else f"{path}.", _depth + 1)
+    return tuple(found)
+
+
+class Link(BaseModel):
+    """A labeled web link, kept on a project or a question."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: str = Field(description="What the link is, in words for the reader.")
+    url: str = Field(description="The address to open.")
+
+
+class Evidence(BaseModel):
+    """The exact words in a source that justify a claim."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = Field(description='The id of the source the words come from, or "note" for the person\'s own note.')
+    quote: str = Field(min_length=1, description="The exact words, as they appear in that source.")
+
+
+class FiledBy(BaseModel):
+    """Why the assistant filed an item under a project: the signal that decided (`people` it names or came from, the
+    sender's mail `domain`, the watched `source` it was read from, a project's `alias`, a project's `name`, or a
+    configured side `word`), the word, domain or source that matched (none for people) and the project it was filed
+    under."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    by: Literal["people", "source", "domain", "alias", "name", "word"] = Field(description="The signal that decided.")
+    word: str | None = Field(None, description="The word, domain or source that matched; none when people decided.")
+    project: str = Field(description="The id of the project it was filed under.")
+    unsure: bool = Field(
+        False,
+        description="True when the assistant left the project empty and this is only the rules' best guess (design "
+        "6.32); false when the person's own settled choice or a fixed reading decided.",
+    )
+
+
+class LogEntry(BaseModel):
+    """One dated line in a project's update log."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    on: date = Field(description="The day the line was added.")
+    text: str = Field(min_length=1, description="What the line says.")
+
+
+class AwayRead(BaseModel):
+    """Where a period of days away was read from, and the days as they were read: the absence calendar's source, the
+    entry's key, and the first day, last day and label the read wrote. A period whose days now differ from these was
+    edited by the person, so no later read changes it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = Field(min_length=1, description="The id of the absence calendar that held the entry.")
+    entry: str = Field(min_length=1, description="The entry's key in that calendar (one entry of a repeating series).")
+    series: str | None = Field(None, description="The key of the entry's series; the entry's own key for a single one.")
+    start: date = Field(description="The first day, as read.")
+    end: date | None = Field(None, description="The last day, as read; empty for a single day.")
+    label: str | None = Field(None, max_length=80, description="The label, as read.")
+
+
+class DateRange(BaseModel):
+    """A run of days, both ends included, with an optional label: a team's closure, a person's vacation or leave."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    start: date = Field(description="The first day.")
+    end: date | None = Field(None, description="The last day; empty for a single day.")
+    label: str | None = Field(
+        None, max_length=80, description="What it is, in plain words (vacation, leave, a closure)."
+    )
+    read: AwayRead | None = Field(
+        None,
+        description="For a period read from an absence calendar: where it came from and the days as read. Empty for a "
+        "period the person or an input gave.",
+    )
+
+    @model_validator(mode="after")
+    def _in_order(self) -> DateRange:
+        if self.end is not None and self.end < self.start:
+            raise ValueError("the last day can't come before the first")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _no_empty_read(self, handler: Any) -> Any:
+        """A period that wasn't read from a calendar is kept as it always was, with no `read`."""
+        data = handler(self)
+        if isinstance(data, dict) and data.get("read") is None:
+            data.pop("read", None)
+        return data
+
+    @property
+    def last(self) -> date:
+        """The last day it covers."""
+        return self.end or self.start
+
+
+class Owner(BaseModel):
+    """An action owner: always a person, optionally with the team they act for."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    person: str = Field(description="The id of the person who owns the action.")
+    team: str | None = Field(None, description="The id of the team the person acts for here, if any.")
+
+
+#: The parts a person can have on a project: they run it, design for it, or only watch it.
+PROJECT_ROLES = ("run", "design", "watch")
+
+
+class ProjectRole(BaseModel):
+    """What one person's part in a project is. A person with no entry runs the project."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    person: Annotated[str, RefTo("person")] = Field(description="The id of the person the role is for.")
+    role: Literal["run", "design", "watch"] = Field(
+        description="run: they run it. design: they design for it. watch: they only watch it, so the assistant "
+        "records facts about it and makes no actions or questions for other people."
+    )
+
+
+#: The kinds of record a hold can name as its blocker, by the start of their ids.
+BLOCKER_KINDS: dict[str, str] = {"PER-": "person", "ACT-": "action", "Q-": "question"}
+
+
+def blocker_kind(record_id: str) -> str | None:
+    """The kind a blocker's id belongs to (person, action or question), or None for any other id."""
+    for prefix, kind in BLOCKER_KINDS.items():
+        if record_id.startswith(prefix) and record_id[len(prefix) :].isdigit():
+            return kind
+    return None
+
+
+class OnHold(BaseModel):
+    """What an action waits for before it can go on. Set and cleared by the person; an action on hold is never due,
+    overdue or chased."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    waiting_for: str = Field(min_length=1, description="What it waits for, in plain words.")
+    since: date = Field(description="The day it was put on hold.")
+    on: str | None = Field(
+        None,
+        description="What it is blocked on, when the hold names its blocker: the id of a person, an action or a "
+        "question. A hold with only words is on hold; one that names a blocker is blocked.",
+    )
+    entry: str | None = Field(
+        None,
+        description="The id of the calendar entry that put it on hold because the entry was called off: the hold "
+        "ends when the entry has a new date, or the person decides about the to-do when the entry is dropped.",
+    )
+
+    @field_validator("on")
+    @classmethod
+    def _a_blocker_is_a_person_an_action_or_a_question(cls, value: str | None) -> str | None:
+        if value is not None and blocker_kind(value) is None:
+            raise ValueError("a hold can name a person, an action or a question")
+        return value
+
+    @model_serializer(mode="wrap")
+    def _leave_out_an_unnamed_blocker(self, handler: Any) -> dict[str, Any]:
+        """A hold with only words is stored as it always was, with no blocker key."""
+        data = handler(self)
+        for key in ("on", "entry"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
+
+
+class ActionNews(BaseModel):
+    """Something heard about an action that doesn't end it: a reply that didn't answer, or a part delivered."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    on: date = Field(description="The day it was heard.")
+    text: str = Field(min_length=1, description="What was heard, in plain words.")
+    quote: str | None = Field(None, description="The exact words it came from, when an input said it.")
+    source: str | None = Field(None, description="The id of the source it came from, if any.")
+    delivered: bool = Field(False, description="It records a part that was delivered, credited to the owners.")
+    non_answer: bool = Field(
+        False,
+        description="It records a reply that didn't answer (an acknowledgement, thanks, a deferral or a change of "
+        "subject), set when the news op says it is a reply. A non-answer restarts the chase clock once; a second "
+        "brings the line back with the news shown. Other news (a part delivered, a call-off, a notice) has none.",
+    )
+
+
+class Person(Record):
+    """Someone the workspace works with or tracks. Added by `person.add`; role, org, why_they_matter, side and relation
+    change through `record.set`; a period they are away is added by `person.away`; the person edits the rest (the
+    sides included) in the app."""
+
+    record_kind: ClassVar[str] = "person"
+    prefix: ClassVar[str] = "PER"
+    layout: ClassVar[str | None] = "people/{full_name}"
+
+    full_name: str = Field(min_length=1, description="The name shown wherever the person appears.")
+    first_name: str | None = Field(
+        None,
+        description="The name a greeting to them uses, as they write it; empty means the first word of the full name.",
+    )
+    aliases: list[str] = Field(
+        default_factory=list, description="Other names that mean this person, such as a first name or nickname."
+    )
+    role: str | None = Field(None, description="Their job or part in the work, in plain words.")
+    team: str | None = Field(None, description="The id of the team they belong to.")
+    org: Annotated[str | None, RefTo("organization")] = Field(
+        None, description="The id of the organization they work for; its name lives on that record."
+    )
+    how_to_reach: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="How to reach them: a kind of contact detail (email, phone) mapped to every address, number or "
+        "handle they have of it, the first being the one used when a single one is needed. A record written with one "
+        "text for a kind is read as a list of one.",
+    )
+    why_they_matter: str | None = Field(None, description="Why this person matters to the work, in plain words.")
+    name_verified: bool = Field(
+        False,
+        description="True when the name's spelling came from the person, a signed header address or a record the "
+        "person made; false when it was read from outside content and not yet confirmed.",
+    )
+    away: list[DateRange] = Field(
+        default_factory=list,
+        description="The periods they are away (vacation, leave), each with its first and last day. They are off on "
+        "these days besides their team's days off.",
+    )
+    track_only: bool = Field(
+        False, description="True for someone inside the tracked area who is only observed, not given work."
+    )
+    stance: Literal["manage", "alongside", "report_to", "watch"] | None = Field(
+        None,
+        description="Who they are to the person (design 6.34): manage (the person manages them), alongside (they "
+        "work alongside each other), report_to (the person reports to them) or watch (the person only watches). "
+        "Empty means the workspace's default stance; someone marked track_only counts as watch.",
+    )
+
+    @field_validator("how_to_reach", mode="before")
+    @classmethod
+    def _a_kind_holds_a_list(cls, value: Any) -> Any:
+        """One text for a kind (the shape before a kind could hold several) is a list of one."""
+        from engine.contacts import reach_lists
+
+        return reach_lists(value) if isinstance(value, dict) else value
+
+    sides: list[Annotated[str, RefTo("project", blocks_delete=False)]] = Field(
+        default_factory=list,
+        description="The sides of the person's life this person belongs to, as the ids of the top-level projects that "
+        "hold them (the personal project's id for family, friends and home). Empty means not known, and then `side` "
+        "is read. Someone on two or more sides, or not known, never decides where an item that names them is filed.",
+    )
+    side: Literal["personal", "business", "both"] | None = Field(
+        None,
+        description="The older, shorter form of `sides`: personal (family, friends, home), business (work) or both. "
+        "It is worked out from `sides` when that is set; it can be written while there is at most one side besides "
+        "the personal one, and with several the side is named in `sides`.",
+    )
+    relation: str | None = Field(
+        None,
+        description="How they relate to the person this app is for, in plain words ('my sister', 'our neighbor'); "
+        "shown only on the personal side.",
+    )
+    status: Literal["active", "left"] = Field(
+        "active", description="active: still around. left: no longer part of the work."
+    )
+    forgotten_on: date | None = Field(
+        None,
+        description="The day the person was forgotten (`person.forget`): their name is a marker, their details are "
+        "blank and their record can't be changed. Empty for everyone else.",
+    )
+
+
+class Organization(Record):
+    """A company, client, supplier or other body people work for (design 5.1). Its name lives here only: people refer
+    to it by id, so a rename shows everywhere at once."""
+
+    record_kind: ClassVar[str] = "organization"
+    prefix: ClassVar[str] = "ORG"
+    unique: ClassVar[tuple[tuple[str, ...], ...]] = (("name",),)
+
+    name: str = Field(min_length=1, description="The name shown wherever the organization appears.")
+    aliases: list[str] = Field(default_factory=list, description="Other names that mean this organization.")
+    notes: str | None = Field(None, description="Anything worth knowing about it, in plain words.")
+
+
+class Team(Record):
+    """A group of people. The person edits it in the app (`record.edit`, with Undo); no op from an input changes it. Its
+    days off are the days its members don't work: the holidays of its calendar (the workspace's when none is set), the
+    weekdays it doesn't work, and its own closures."""
+
+    record_kind: ClassVar[str] = "team"
+    prefix: ClassVar[str] = "TEAM"
+    layout: ClassVar[str | None] = "teams/{name}"
+
+    name: str = Field(min_length=1, description="The name shown wherever the team appears.")
+    aliases: list[str] = Field(default_factory=list, description="Other names that mean this team.")
+    members: list[str] = Field(default_factory=list, description="The ids of the people in the team.")
+    holiday_calendar: str | None = Field(
+        None,
+        description="Which list of named holidays the team takes off. Empty: the workspace's own.",
+        json_schema_extra={"choices": "holiday_calendars"},
+    )
+    working_days: list[Literal["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]] | None = (
+        Field(
+            None,
+            description="The weekdays the team works. Empty: the workspace's working week.",
+        )
+    )
+    days_off: list[DateRange] = Field(
+        default_factory=list, description="The team's own closures: days it doesn't work, with what each is."
+    )
+
+
+class Project(Record):
+    """A piece of work being run, possibly inside another (a book in its series). `project.add` starts one;
+    `record.set` changes status, phase, target, priority, summary, parent and language; `record.log` adds to its log;
+    `project.role` sets a person's part in it; the person edits the rest in the app, and only the person sets its
+    content levels, budget and priority (the assistant's `record.set` of the priority waits for the person)."""
+
+    record_kind: ClassVar[str] = "project"
+    prefix: ClassVar[str] = "PRJ"
+    content_levels_field: ClassVar[str | None] = "content_levels"
+    person_only: ClassVar[dict[str, tuple[Any, ...]]] = {"priority": (), "organization": ()}
+
+    name: str = Field(min_length=1, description="The name shown wherever the project appears.")
+    group: Annotated[str | None, InList("project-group")] = Field(
+        None, description="The portfolio grouping the project is listed under, from the project-group list."
+    )
+    status: Annotated[str | None, InList("project-status")] = Field(
+        None, description="Where the project stands now, from the project-status list."
+    )
+    phase: Annotated[str | None, InList("project-phase")] = Field(
+        None, description="The part of its life the project is in, from the project-phase list."
+    )
+    target: date | None = Field(None, description="The day the project is meant to be finished.")
+    priority: Annotated[str | None, InList("project-priority")] = Field(
+        None, description="How important the project is, from the project-priority list."
+    )
+    aliases: list[str] = Field(
+        default_factory=list,
+        description="Other forms the project is called by: another name, a code or a ticket-key prefix. An item that "
+        "contains one as a whole word is filed under the project's side.",
+    )
+    summary: str | None = Field(None, description="A short description of what the project is.")
+    owner: str | None = Field(None, description="The id of the person responsible for the project.")
+    organization: Annotated[str | None, RefTo("organization")] = Field(
+        None,
+        description="The id of the organization this project is the work of, for a business or job the person works "
+        "for. The project and the organization keep one name: renaming either renames the other. Only the person "
+        "sets it.",
+    )
+    links: list[Link] = Field(default_factory=list, description="Pages that belong to the project.")
+    tags: list[str] = Field(default_factory=list, description="Free labels for finding the project.")
+    content_levels: list[str] = Field(
+        default_factory=list,
+        description="Content levels (those defined for AI) its material carries, set by the person; AI work on it "
+        "goes only to accounts that take them all.",
+    )
+    parent: str | None = Field(
+        None, description="The id of the project this one belongs to (a book in its series); never itself or below it."
+    )
+    area: bool = Field(
+        False,
+        description="An area of life (health, home, money): ongoing and never finished, so it has no target day and is "
+        "never behind. A project has a goal and an end and is followed like any other; either may sit under an area "
+        "or under the personal project. What a draft for an area draws on stops at the area (design 6.32).",
+    )
+    language: str | None = Field(
+        None,
+        pattern=r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$",
+        description="The language tag work on it is written in; unset means its parent's, else the workspace's.",
+    )
+    budget_usd: float | None = Field(
+        None,
+        ge=0,
+        description="The most AI work on it and everything in it may cost, set by the person; none for no cap.",
+    )
+    log: list[LogEntry] = Field(
+        default_factory=list, description="The update log, oldest first; `record.log` adds a line dated that day."
+    )
+    roles: list[ProjectRole] = Field(
+        default_factory=list,
+        description="Each person's part in the project (run, design or watch); `project.role` sets one. A person "
+        "with no entry runs it.",
+    )
+
+    @model_validator(mode="after")
+    def _an_area_has_no_end(self) -> Project:
+        if self.area and self.target is not None:
+            raise ValueError("an area has no target day; a project with an end is not an area")
+        return self
+
+
+class Repeat(BaseModel):
+    """How a to-do repeats: the phrase as the person typed it, the standard repeat rule it was read as, and the day the
+    repeat started. Set by `action.repeat`; each occurrence is its own action carrying the same repeat."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rule: str = Field(min_length=1, description="The repeat rule (an iCalendar RRULE value) the phrase was read as.")
+    phrase: str = Field(min_length=1, description="The words the person typed, kept as they were written.")
+    start: date = Field(description="The day of the first occurrence; the rule's counting starts from it.")
+
+
+class Action(Record):
+    """Something a person will do. Added by `action.add`, closed by `action.close`, dropped by `action.drop`;
+    `action.reply` approves or replaces its drafted reply (only the person does), `record.set` changes text, due, notes
+    and the calendar entry or series it belongs to, `action.hold` or the person
+    puts it on hold and the person takes it off, and sending a notice marks who was told. A chase adds a day to
+    `followed_up`; closing records who did the work and who said it was done; dropping records why it is no longer
+    needed and credits no one."""
+
+    record_kind: ClassVar[str] = "action"
+    prefix: ClassVar[str] = "ACT"
+    layout: ClassVar[str | None] = "actions/{id}"
+    #: The assistant's guess at the effort, and its proposal of a reminder, wait for the person's yes, as a project's
+    #: priority does.
+    person_only: ClassVar[dict[str, tuple[Any, ...]]] = {"effort_minutes": (), "remind_at": ()}
+
+    project: str | None = Field(None, description="The id of the project it belongs to.")
+    text: str = Field(min_length=1, description="What is to be done, starting with a verb.")
+    owners: list[Owner] = Field(
+        default_factory=list, description="The people who do it; required unless the action is held."
+    )
+    due: date | None = Field(None, description="The day it is due.")
+    effort_minutes: int | None = Field(
+        None,
+        ge=1,
+        le=1440,
+        description="About how long it takes, in whole minutes (design 6.32). The person sets it; the assistant may "
+        "suggest one from an input, which waits for the person's yes. It is what the day's capacity check adds up; a "
+        "to-do with none counts as no time.",
+    )
+    lead_days: int | None = Field(
+        None,
+        ge=0,
+        le=30,
+        json_schema_extra={"choices": [0, 1, 2, 3, 4, 5, 7, 10]},
+        description="How many working days before its day the work must start (a meeting to set up, a document to "
+        "prepare, an invitation that needs a room). Today counts the to-do from that many working days before it is "
+        "due and names the day, not only in its week. Empty: a meeting you set up takes the usual lead time from the "
+        "settings and any other to-do has none. 0: none, even for a meeting. The person sets it.",
+    )
+    status: Literal["held", "open", "done", "dropped"] = Field(
+        "open",
+        description="held: waiting for an owner to be picked. open: to be done. done: finished. dropped: closed "
+        "because it is no longer needed; never done, never credited, never chased.",
+    )
+    dropped_reason: str | None = Field(None, description="Why it was dropped, in plain words; set when it is dropped.")
+    notes: str | None = Field(None, description="Extra detail about the action.")
+    reply: str | None = Field(
+        None,
+        description="The reply the assistant drafted for a question someone asked the person, ready to copy. Empty "
+        "when no recorded fact holds the answer; the action's text then says what is missing.",
+    )
+    reply_reviewed: bool = Field(
+        False,
+        description="False until the person approves the drafted reply or writes their own; a reply that is not "
+        "reviewed is shown as a draft.",
+    )
+    reply_owed: bool = Field(
+        False,
+        description="The action is a reply the person owes: someone's message asked them something and nothing has "
+        "answered it yet (design 6.35). It is a line on Today with the drafted reply under it, and it ends when the "
+        "person sends a reply, says it was answered another way, or says none is needed.",
+    )
+    replies_to: str | None = Field(
+        None,
+        description="For a reply owed: the id of the source (the message) that asked, whose date orders the line.",
+    )
+    asker: Annotated[str | None, RefTo("person")] = Field(
+        None, description="For a reply owed: the id of the person the reply is to, when the message's sender is known."
+    )
+    remind_at: AwareDatetime | None = Field(
+        None,
+        description="When to remind the person of it, as a moment with its time zone. The person sets it, and moves it "
+        "when they snooze; the assistant may propose one for a to-do whose day an input labels, which waits for the "
+        "person's yes. The reminder is a line on Today while the action is open and not on hold, and it is never a "
+        "correction of the assistant's work.",
+    )
+    on_hold: OnHold | None = Field(
+        None,
+        description="Set while the action waits for something outside the person's control; the person sets and "
+        "clears it. An action on hold is never counted as due, overdue or in need of a follow-up, and keeps its due "
+        "date for when it comes off hold.",
+    )
+    told: dict[str, date] = Field(
+        default_factory=dict, description="Who has been told about it: a person id mapped to the day they were told."
+    )
+    followed_up: dict[str, list[date]] = Field(
+        default_factory=dict,
+        description="Who has been chased about it: a person id mapped to the days they were chased, oldest first. "
+        "A chase is not a notice (`told`) and never closes the action.",
+    )
+    event: Annotated[str | None, RefTo("event")] = Field(
+        None, description="The id of the calendar entry it belongs to (the instance it sits on, for a series)."
+    )
+    series: Annotated[str | None, RefTo("series")] = Field(
+        None, description="The id of the series it belongs to; it sits on the series' next instance."
+    )
+    done_by: list[str] = Field(
+        default_factory=list, description="The ids of the people who did the work, set when the action is closed."
+    )
+    reported_by: str | None = Field(
+        None, description="The id of the person who said it was done, set when the action is closed."
+    )
+    source: str | None = Field(None, description="The id of the source it came from, if any.")
+    evidence: Evidence | None = Field(None, description="The words in the source that justify the action.")
+    filed_by: FiledBy | None = Field(
+        None,
+        description="Why the assistant filed it under its project, when it chose the project itself (design 6.32): "
+        "the signal, the word or domain that matched and the project. Set once by the applier; none for an item the "
+        "person or the input placed.",
+    )
+    promised_to: list[Annotated[str, RefTo("person")]] = Field(
+        default_factory=list,
+        description="For a promise, the ids of the people it was promised to; empty for a plain to-do (design 6.33).",
+    )
+    basis: Literal["inferred", "said"] | None = Field(
+        None, description="For a promise: said outright, or inferred by the assistant; never a confidence score."
+    )
+    said_by: Annotated[str | None, RefTo("person")] = Field(
+        None, description="The id of the person who said it, when the input names them."
+    )
+    due_words: str | None = Field(None, description="The exact words its due date was read from.")
+    due_check: bool = Field(
+        False, description="The rules' reading of `due_words` is uncertain, so the person checks the date."
+    )
+    due_event: Annotated[str | None, RefTo("event")] = Field(
+        None, description="The calendar entry it is due at: its date follows the entry's when the entry moves."
+    )
+    proposed_event: Annotated[str | None, RefTo("event", blocks_delete=False)] = Field(
+        None,
+        description="A calendar entry on its day whose title and its words contain one another, proposed for the "
+        "person to tie it to; nothing follows the entry until they say yes, which sets `due_event`.",
+    )
+    due_by_person: bool = Field(
+        False, description="Its date came from the person's own words, so another source's date doesn't replace it."
+    )
+    also_said: list[Evidence] = Field(
+        default_factory=list,
+        description="Other sources that said the same promise, each with its words; one promise, every quote kept.",
+    )
+    news: list[ActionNews] = Field(
+        default_factory=list, description="What was heard about it that didn't end it, oldest first."
+    )
+    repeat: Repeat | None = Field(
+        None,
+        description="How it repeats, when it does (design 6.32): each occurrence is its own action, and the next one "
+        "is made when this one ends. Set and stopped by `action.repeat`.",
+    )
+    occurrence_of: Annotated[str | None, RefTo("action")] = Field(
+        None,
+        description="For a later occurrence of a repeating to-do, the id of the first occurrence; empty for the first.",
+    )
+    work: Annotated[str | None, LongText("markdown")] = Field(
+        None,
+        description="The work the action stands for (a message, a list, a page) when the assistant drafted it at the "
+        "person's request. It is long text: a draft waits for the person's review and is theirs once they accept it. "
+        "The action itself stays the person's.",
+    )
+
+    @model_validator(mode="after")
+    def _owners_unless_held(self) -> Action:
+        if self.status not in ("held", "dropped") and not self.owners:
+            raise ValueError("an action needs at least one owner unless it is held for one or dropped")
+        return self
+
+
+class HeldFor(BaseModel):
+    """What a question is held for, out of To send until its day: a meeting (a calendar entry, or a series, which is its
+    next instance from the day it was held) or a day to send it on. Exactly one of the three is named."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event: Annotated[str | None, RefTo("event")] = Field(None, description="The id of the calendar entry it waits for.")
+    series: Annotated[str | None, RefTo("series")] = Field(
+        None, description="The id of the series it waits for: its first instance on or after the day it was held."
+    )
+    on: date | None = Field(None, description="The day to send it, when it waits for a date.")
+    since: date | None = Field(
+        None, description="The day it was held, set when it is; a series is read from this day on."
+    )
+
+    @model_validator(mode="after")
+    def _one_thing(self) -> HeldFor:
+        if sum(x is not None for x in (self.event, self.series, self.on)) != 1:
+            raise ValueError("a question is held for one thing: a meeting, a series or a day")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _leave_out_what_it_is_not_held_for(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        return {k: v for k, v in data.items() if v is not None}
+
+
+class Question(Record):
+    """A question for a person; a decision is a question to the person. Added by `question.add` or by the engine,
+    closed by `question.done`; the person sends, drops or answers them in the app."""
+
+    record_kind: ClassVar[str] = "question"
+    prefix: ClassVar[str] = "Q"
+    layout: ClassVar[str | None] = "questions/{id}"
+
+    to: str = Field(description="The id of the person being asked.")
+    title: str = Field(min_length=1, description="The question in one line.")
+    text: str = Field("", description="The detail the reader needs to answer.")
+    links: list[Link] = Field(default_factory=list, description="Pages the reader can open to see what it is about.")
+    kind: Literal["question", "decision", "action-notice", "routing", "impact"] = Field(
+        "question",
+        description=(
+            "question: an ordinary question. decision: a choice for whoever decides, the person when nobody is named. "
+            "action-notice: tells someone about an action. routing: asks the person who or what something is. impact: "
+            "asks another area's contact how a change affects them."
+        ),
+    )
+    projects: list[str] = Field(default_factory=list, description="The ids of the projects it is about.")
+    filed_by: FiledBy | None = Field(
+        None,
+        description="Why the assistant filed it under its project, when it chose the project itself (design 6.32): "
+        "the signal, the word or domain that matched and the project. Set once by the applier; none for an item the "
+        "person or the input placed.",
+    )
+    event: Annotated[str | None, RefTo("event")] = Field(
+        None, description="The id of the calendar entry it belongs to (the instance it sits on, for a series)."
+    )
+    series: Annotated[str | None, RefTo("series")] = Field(
+        None, description="The id of the series it belongs to; it sits on the series' next instance."
+    )
+    batch: Literal["now", "later"] = Field(
+        "now", description="Whether it is ready to go out now or waits for a later batch."
+    )
+    held_for: HeldFor | None = Field(
+        None,
+        description="What it is held for: a meeting (a calendar entry, or a series' next instance) or a day. It stays "
+        "out of To send, in Later, until that meeting's day or the day, and is then to send as any other.",
+    )
+    status: Literal["open", "sent", "answered", "dropped"] = Field(
+        "open",
+        description="open: not yet sent. sent: marked as sent, waiting for an answer. answered: closed with an "
+        "answer. dropped: closed without one.",
+    )
+    sent_at: datetime | None = Field(None, description="When it was marked as sent.")
+    followed_up: list[date] = Field(
+        default_factory=list,
+        description="The days the person was chased about it after it went out, oldest first. A chase restarts the "
+        "wait for an answer and never changes when the question was first sent (`sent_at`).",
+    )
+    answer: str | None = Field(None, description="The answer, once answered.")
+    source: str | None = Field(None, description="The id of the source it came from, if any.")
+    options: list[str] = Field(default_factory=list, description="Choices offered, for routing and decisions.")
+    resolves: dict[str, Any] | None = Field(None, description="What answering it releases, e.g. a held op.")
+    raised_by: dict[str, str] | None = Field(
+        None,
+        description="For a question an add-on's job or event handler filed: `plugin` is the add-on and `subject` a key "
+        "of its title and words. The same question from the same add-on is never filed twice, whatever became of the "
+        "first one (open, sent, answered or dropped).",
+    )
+    matters_for: str | None = Field(
+        None,
+        description="Which of the person's decisions, designs or dated items depends on the answer, by id or in "
+        "words. A question to anyone but the person says it.",
+    )
+    dropped_reason: str | None = Field(None, description="Why the person dropped it, when they did.")
+    asker: Annotated[str | None, RefTo("person")] = Field(
+        None,
+        description="The id of the person who asked it, when the input says who asked (a question someone put to the "
+        "person). Empty for a question the assistant or the person made up, and for a name that isn't one known "
+        "person: it is never guessed. The asker's page lists it as a question they asked.",
+    )
+
+
+class Watched(BaseModel):
+    """Where a watched input came from: the source in watch.yaml, the item's key there, and what happened to it."""
+
+    source: str = Field(description="The id of the watched source.")
+    key: str = Field(description="The item's key within that source.")
+    change: Literal["new", "changed", "removed"] = Field(description="What happened to the item.")
+    author: str | None = Field(None, description="Who changed it last, as the source says.")
+    by_us: bool = Field(False, description="The author is one of the names the app publishes under.")
+    by_you: bool = Field(False, description="The change is the person's own work, from their source or their names.")
+    credited_to: str | None = Field(
+        None, description="The person or team the source names as the author of all it holds, as an id."
+    )
+
+
+class Audience(BaseModel):
+    """Who may see a source's content, when its sender limited it: the people it went to and came from, or the group
+    the message names. Anyone else is outside it; the person running the app is never outside."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    people: list[str] = Field(
+        description="The person ids it is limited to; an address no known person holds is kept lowercased."
+    )
+    marking: str | None = Field(None, description="The phrase in the message that limits it, as the rules found it.")
+    why: str | None = Field(
+        None, description="The sentence of the message that holds the marking, or the words that name the group."
+    )
+    group: str | None = Field(
+        None, description="The group the message names, in its own words, when the assistant narrowed the limit to it."
+    )
+    widened_by: str | None = Field(None, description="The id of the person who widened the limit, when they did.")
+
+
+class Source(Record):
+    """One input the workspace received, such as pasted text; the text is kept by its hash. The engine adds it when
+    something is handed in, and its content never changes; the person may mark how it may be quoted."""
+
+    record_kind: ClassVar[str] = "source"
+    prefix: ClassVar[str] = "SRC"
+    fixed_fields: ClassVar[tuple[str, ...]] = (
+        "received_at",
+        "kind",
+        "content_hash",
+        "trust",
+        "url",
+        "watched",
+        "author",
+        "audience",
+    )
+    person_only: ClassVar[dict[str, tuple[Any, ...]]] = {"sensitivity": ()}
+
+    received_at: datetime = Field(
+        description="When the input arrived: a mail's own received time, else when it was handed in or first read."
+    )
+    sent_at: datetime | None = Field(
+        None,
+        description="For a mail message: when it was sent, with the sender's own offset, so 'tomorrow' in it is read "
+        "against its own day and zone; none for anything else.",
+    )
+    kind: str = Field(description="How it arrived, such as pasted.")
+    title: str = Field(description="A short name for it, shown in lists.")
+    content_hash: str = Field(description="Hash of its text; the saved text is named by it in the sources folder.")
+    trust: Literal["trusted", "untrusted"] = Field(
+        description="untrusted: outside content, material to read and never instructions. trusted: the person's own."
+    )
+    projects: list[str] = Field(default_factory=list, description="The ids of the projects it is about.")
+    url: str | None = Field(None, description="Where it came from, when it has an address.")
+    author: str | None = Field(
+        None,
+        description="The id of the person whose words it is, when that is known: the person running the app for a note "
+        "they wrote, the person it is reported about for a note that relays what someone else did or said.",
+    )
+    reported: bool = Field(
+        False,
+        description="A note that is content the person reports: typed on a button that relays someone else, or "
+        "repeating what someone else said. Facts from it apply; a change to how the product behaves from it waits for "
+        "the person.",
+    )
+    watched: Watched | None = Field(None, description="For an input a watcher found: where and what changed.")
+    excerpts: Literal["allowed", "never"] = Field(
+        "allowed",
+        description="never: the person allows using this source but never quoting it beyond a word or two; checks "
+        "that compare drafts with sources apply a stricter limit to it. Set by the person only.",
+    )
+    audience: Audience | None = Field(
+        None,
+        description="Who may see what it says, when its sender limited it (design 6.35): a question or reply drawn "
+        "from it goes only to these people. None means no limit. The assistant may only narrow it (`source.limit`); "
+        "the person widens it (`source.widen`).",
+    )
+    sensitivity: Literal["open", "internal", "restricted"] = Field(
+        "internal",
+        description="Its data level, how sensitive its text is: it goes only to AI accounts allowed this level. From "
+        "the person's choice when they handed it in, or the watched source's setting. Only the person changes it.",
+    )
+
+
+class File(Record):
+    """A file a person added or a program wrote. The bytes live in the workspace's files folder under their hash. A
+    person adds one by upload or `file.add`; a new version is a new record that points at the one it replaces."""
+
+    record_kind: ClassVar[str] = "file"
+    prefix: ClassVar[str] = "FILE"
+    person_only: ClassVar[dict[str, tuple[Any, ...]]] = {"sensitivity": ()}
+
+    name: str = Field(
+        description="The file's name as added, for showing and downloading. Empty only on a file the person removed "
+        "and forgot."
+    )
+    media_type: str = Field(description="What kind of content it is, such as image/png.")
+    size: int = Field(ge=0, description="Size in bytes.")
+    sha256: str = Field(
+        pattern=r"^([0-9a-f]{64})?$",
+        description="Hash of the bytes; also where they are stored. Empty only on a file the person removed and "
+        "forgot.",
+    )
+    file_kind: str = Field("attachment", description="What the file is for: the core's attachment or a declared kind.")
+    project: str | None = Field(None, description="The project it belongs to; none means the whole workspace.")
+    meta: dict[str, Any] = Field(default_factory=dict, description="Details the file kind asks for, validated on add.")
+    origin: Literal["upload", "tool"] = Field("upload", description="Added by the person, or written by a program.")
+    trust: Literal["trusted", "untrusted"] = Field(
+        "trusted", description="untrusted: its content is material to read, never instructions."
+    )
+    replaces: str | None = Field(None, description="The earlier file this one is a new version of.")
+    from_person: str | None = Field(
+        None,
+        description="The id of the person it came from (a sender, or whoever it was added from the page of); none "
+        "when it came from no one in particular.",
+    )
+    added_at: datetime = Field(description="When the record was added.")
+    sensitivity: Literal["open", "internal", "restricted"] = Field(
+        "internal",
+        description="Its data level, how sensitive its content is: it goes only to AI accounts allowed this level. "
+        "From the person's choice when they added it. Only the person changes it.",
+    )
+
+
+class JobRun(Record):
+    """One run of a plugin's scheduled job. The engine writes it after each run; nothing changes it."""
+
+    record_kind: ClassVar[str] = "job_run"
+    prefix: ClassVar[str] = "JOBRUN"
+
+    plugin: str = Field(description="The plugin the job belongs to.")
+    job: str = Field(description="The job's name.")
+    started_at: datetime = Field(description="When the run started.")
+    seconds: float = Field(0.0, description="How long it took.")
+    outcome: Literal["ok", "failed"] = Field(
+        description="ok: it finished. failed: it raised; repeated failures turn the plugin off."
+    )
+    error: str | None = Field(None, description="What went wrong, for a failed run.")
+    notes: list[str] = Field(
+        default_factory=list,
+        description="What the run did that the person may want to know: a question it filed that had already been "
+        "asked, and so was not filed again.",
+    )
+
+
+class Cite(BaseModel):
+    """Words an answer rests on, and where they come from."""
+
+    quote: str = Field(description="The exact words.")
+    source: str | None = Field(None, description="Where they are: the help material, or a saved source's id.")
+
+
+class Answer(Record):
+    """The assistant's answer to a question the person asked, with the words it rests on."""
+
+    record_kind: ClassVar[str] = "answer"
+    prefix: ClassVar[str] = "ANS"
+
+    request: str = Field(description="The ask it answers.")
+    text: str = Field(description="The answer.")
+    cites: list[Cite] = Field(default_factory=list, description="The words the answer rests on.")
+
+
+class SettingProposal(Record):
+    """A setting change the assistant suggested in an answer; the person applies it or sets it aside."""
+
+    record_kind: ClassVar[str] = "setting_proposal"
+    prefix: ClassVar[str] = "SETPROP"
+
+    request: str = Field(description="The ask it came from.")
+    key: str = Field(description="The setting's dotted key.")
+    value: Any = Field(None, description="The suggested value.")
+    why: str = Field(description="Why it answers the question.")
+    status: Literal["open", "applied", "dismissed"] = Field(
+        "open", description="open: waiting for the person. applied: saved. dismissed: set aside."
+    )
+
+
+class Report(Record):
+    """A report to the product's maintainers the assistant drafted for something the product can't do (design
+    6.13). The person reviews it and sends it themselves."""
+
+    record_kind: ClassVar[str] = "report"
+    prefix: ClassVar[str] = "RPT"
+
+    request: str = Field(description="The ask it came from.")
+    title: str = Field(description="What is missing, in one line.")
+    text: str = Field(description="The report.")
+    status: Literal["draft", "sent", "dismissed"] = Field(
+        "draft", description="draft: not yet reviewed. sent: the person sent it. dismissed: set aside."
+    )
+
+
+class SnapshotPerson(BaseModel):
+    """Someone on a calendar item as its source gave them (see EventPerson in the connectors)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    address: str | None = None
+    name: str | None = None
+    response: str | None = None
+
+
+class SnapshotOccurrence(BaseModel):
+    """One date of a repeating calendar item (see EventOccurrence in the connectors)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    start: str
+    end: str | None = None
+    was: str | None = None
+    cancelled: bool = False
+    title: str | None = None
+    where: str | None = None
+
+
+class SnapshotEvent(BaseModel):
+    """A calendar item's details as its source gave them (see EventDetails in the connectors)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    start: str
+    end: str | None = None
+    all_day: bool = False
+    where: str | None = None
+    cancelled: bool = False
+    repeats: str | None = None
+    occurrences: list[SnapshotOccurrence] = Field(default_factory=list)
+    organizer: SnapshotPerson | None = None
+    attendees: list[SnapshotPerson] = Field(default_factory=list)
+    method: str | None = None
+    notes: list[str] = Field(default_factory=list)
+    entries: bool = False
+    described: bool | None = None
+    uid: str | None = None
+
+
+class SnapshotMessage(BaseModel):
+    """A mail item's details as its source gave them (see MessageDetails in the connectors)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sender: str | None = None
+    received: str | None = None
+    unread: bool | None = None
+    bulk: bool | None = None
+    categories: list[str] = Field(default_factory=list)
+    participants: list[str] = Field(default_factory=list)
+    message_id: str | None = None
+    references: list[str] = Field(default_factory=list)
+
+
+class Snapshot(Record):
+    """What a watched item looked like when last read: its text is kept in the sources folder by hash. The watcher
+    writes it; nothing else changes it."""
+
+    record_kind: ClassVar[str] = "snapshot"
+    prefix: ClassVar[str] = "SNAP"
+
+    source: str = Field(description="The id of the watched source.")
+    key: str = Field(description="The item's key within the source.")
+    title: str = Field(description="The item's title when last read.")
+    content_hash: str = Field(description="Hash of its text when last read.")
+    author: str | None = Field(None, description="Who changed it last, as the source said.")
+    seen_at: datetime = Field(description="When this version was first seen.")
+    gone: bool = Field(False, description="It was no longer in the source at the last complete read.")
+    link: str | None = Field(None, description="Where the person can open it, as the source gave it.")
+    changed_at: str | None = Field(
+        None,
+        description="When the item last changed or arrived, as the source said (a file's modified time, say), so "
+        "'Look at the last day' can find what is already there.",
+    )
+    event: SnapshotEvent | None = Field(None, description="For a calendar item: when and where, for the agenda.")
+    message: SnapshotMessage | None = Field(None, description="For a mail item: from whom and when.")
+    closed_by: str | None = Field(
+        None, description="The triage rule that closed its latest change, so Today leaves it out (a newsletter, say)."
+    )
+    set_aside: dict[str, str] | None = Field(
+        None,
+        description="For a mail item set aside as not work: {section (personal, sales or notices), rule, reason}, and "
+        "{confirmed_at} once the person confirmed it (it is then deleted from the app after a short while). Today "
+        "leaves it out and counts it until it is confirmed; the Set aside folder lists it.",
+    )
+    deleted: bool = Field(
+        False,
+        description="The person confirmed the message was rightly set aside and its content was deleted from the app. "
+        "Only a marker is kept (the source, key, sender address, date, section and rule), so a later read doesn't "
+        "hand it in again.",
+    )
+
+
+class WatchRun(Record):
+    """One read of a watched source and what came of it. The watcher writes it; only a look further back changes it
+    (`looked_back_to`)."""
+
+    record_kind: ClassVar[str] = "watch_run"
+    prefix: ClassVar[str] = "WRUN"
+
+    source: str = Field(description="The id of the watched source.")
+    started_at: datetime = Field(description="When the read started.")
+    seconds: float = Field(0.0, description="How long it took.")
+    outcome: Literal["ok", "baseline", "failed", "offline", "throttled"] = Field(
+        description="ok: read and compared. baseline: a first read that only noted what is there, or took it in "
+        "quietly. failed: it couldn't be read. offline: no network here, so it wasn't tried. throttled: the service "
+        "asked to wait."
+    )
+    retry_at: datetime | None = Field(None, description="For a throttled read: not read again before this time.")
+    error_kind: str | None = Field(
+        None,
+        description="For a failed read: auth, no_access, not_found, outage, addon (its add-on isn't running), or "
+        "unreadable (something in what it holds stopped the read with an error nothing expected).",
+    )
+    error: str | None = Field(None, description="What went wrong, in the connector's words.")
+    error_own: bool = Field(
+        False,
+        description="The error is in the app's own words (the app found the fault itself, or a connector the app ships "
+        "wrote it), so a screen may say it as the sentence; any other error is a service's reply and is shown only "
+        "behind a button.",
+    )
+    error_advice: str | None = Field(
+        None, description="For a failed read: the wording key of the advice the connector gave, if it gave one."
+    )
+    new: int = Field(0, description="Items handed in as new.")
+    changed: int = Field(0, description="Items handed in as changed.")
+    removed: int = Field(0, description="Items handed in as gone.")
+    unsorted: str | None = Field(
+        None,
+        description="When some of the read's mail wasn't sorted by the assistant, why, in plain words (it was handed "
+        "in as work instead); none when all of it was sorted or placed by the rules.",
+    )
+    unreadable: list[dict[str, str]] = Field(
+        default_factory=list,
+        description="The things the read found but couldn't read, each with its `key` (how the service names it) and "
+        "the `reason` in plain words, never any of its own text. The read went past them and read the rest.",
+    )
+    state: dict[str, Any] = Field(default_factory=dict, description="What the connector keeps between reads.")
+    looked_back_to: date | None = Field(
+        None,
+        description="For a source's first read that took it in quietly: the day before which its mail was not "
+        "looked at. A look further back moves it earlier; none for a source with no mail or another kind of first "
+        "read.",
+    )
+
+
+class SettingChange(Record):
+    """One setting the person changed from the screens: which key, what it was and what it became. Written with the
+    config file; nothing changes it."""
+
+    record_kind: ClassVar[str] = "setting_change"
+    prefix: ClassVar[str] = "SETCHG"
+
+    key: str = Field(description="Which setting changed.")
+    before: Any = Field(None, description="Its value before the change.")
+    after: Any = Field(None, description="Its value after the change.")
+    was_default: bool = Field(False, description="It was at its default before the change (set in no file).")
+    is_default: bool = Field(False, description="The change put it back to its default (removed from the file).")
+    at: datetime = Field(description="When it was changed.")
+
+
+class Look(Record):
+    """When a person last opened the list of what changed since yesterday: everything made before that moment counts as
+    seen, and the list begins there when that is later than the start of the previous day. One record for each person;
+    it only ever moves forward, and nothing but opening the list writes it."""
+
+    record_kind: ClassVar[str] = "look"
+    prefix: ClassVar[str] = "LOOK"
+    unique: ClassVar[tuple[tuple[str, ...], ...]] = (("person",),)
+
+    person: Annotated[str | None, RefTo("person")] = Field(
+        None, description="The person who looked; none when the workspace names no person yet."
+    )
+    at: datetime = Field(description="The moment the list was drawn that the person then opened.")
+
+
+class ScreenLook(Record):
+    """When a person last opened a screen that lists what the app did without them, so a count of what is new there
+    means what came after that moment. One record for each person and screen; it only ever moves forward, and nothing
+    but opening the screen writes it."""
+
+    record_kind: ClassVar[str] = "screen_look"
+    prefix: ClassVar[str] = "SLOOK"
+    unique: ClassVar[tuple[tuple[str, ...], ...]] = (("person", "screen"),)
+
+    person: Annotated[str | None, RefTo("person")] = Field(
+        None, description="The person who looked; none when the workspace names no person yet."
+    )
+    screen: str = Field(min_length=1, description="The screen that was opened, by its name in the app.")
+    at: datetime = Field(description="The moment the screen was opened.")
+
+
+class PromiseCount(Record):
+    """The person's own count for one day: how many promises they count on their own list that day (`present`) and how
+    many of those the app didn't have (`missed`). Entered on the Quality screen and kept as the person typed it; the
+    app never works it out. One record for each person and day, and saving the day again corrects it."""
+
+    record_kind: ClassVar[str] = "promise_count"
+    prefix: ClassVar[str] = "PCNT"
+    unique: ClassVar[tuple[tuple[str, ...], ...]] = (("person", "day"),)
+
+    person: Annotated[str | None, RefTo("person")] = Field(
+        None, description="The person who counted; none when the workspace names no person yet."
+    )
+    day: date = Field(description="The day counted, on the person's own clock.")
+    present: int = Field(ge=0, description="How many promises the person counted on their own list that day.")
+    missed: int = Field(ge=0, description="Of those, how many the app didn't have.")
+    at: datetime = Field(description="When the count was last saved.")
+
+    @model_validator(mode="after")
+    def _within(self) -> PromiseCount:
+        if self.missed > self.present:
+            raise ValueError("the app can't have missed more promises than the person counted")
+        return self
+
+
+class SampleItem(BaseModel):
+    """One message of a sample, and what the person found reading it on their own: how many promises it holds
+    (`present`) and how many of those the app didn't have (`missed`); both none until it is read."""
+
+    source: str = Field(description="The id of the message (a saved input).")
+    present: int | None = Field(None, ge=0, description="How many promises the person found in it; none until read.")
+    missed: int | None = Field(None, ge=0, description="Of those, how many the app didn't have; none until read.")
+    read_at: datetime | None = Field(None, description="When the person's count of it was last saved.")
+
+    @model_validator(mode="after")
+    def _read_whole(self) -> SampleItem:
+        if (self.present is None) != (self.missed is None):
+            raise ValueError("a message is read with both counts or with neither")
+        if self.present is not None and self.missed is not None and self.missed > self.present:
+            raise ValueError("the app can't have missed more promises than the person found")
+        return self
+
+
+class GateSample(Record):
+    """A sample of the messages the app read in the quality window, drawn once for the person to read on their own and
+    count the promises it missed (design 6.32, "Measures"). The person must have allowed it. The messages are chosen
+    by `seed` alone, so the same seed and the same messages give the same sample, and one sample is drawn for a window
+    so the choice isn't the person's. Only the counts in `items` change afterward."""
+
+    record_kind: ClassVar[str] = "gate_sample"
+    prefix: ClassVar[str] = "SAMP"
+    fixed_fields: ClassVar[tuple[str, ...]] = ("person", "drawn_at", "since", "until", "seed", "candidates", "size")
+
+    person: Annotated[str | None, RefTo("person")] = Field(
+        None, description="The person it was drawn for; none when the workspace names no person yet."
+    )
+    drawn_at: datetime = Field(description="When the sample was drawn.")
+    since: date = Field(description="The first day of the window it was drawn from, on the person's own clock.")
+    until: date = Field(description="The last day of that window.")
+    seed: str = Field(description="What chose the messages: the same seed over the same messages gives the same ones.")
+    candidates: int = Field(ge=0, description="How many messages the window held to draw from.")
+    size: int = Field(ge=1, description="How many messages the sample was set to hold.")
+    items: list[SampleItem] = Field(default_factory=list, description="The chosen messages, oldest first.")
+
+
+class WeekPlan(Record):
+    """The person's own plan for one week (design 6.32, the Monday briefing): the goals they confirmed for it and the
+    message to whoever they report to. One record for each person and week, made when the first goal is confirmed or
+    the message is first asked for; the week is named by its first day. The goals are the person's own words and
+    nothing but the person writes them. The message is a draft the assistant writes, unreviewed until the person copies
+    it, and it is never sent from here."""
+
+    record_kind: ClassVar[str] = "week_plan"
+    prefix: ClassVar[str] = "WEEK"
+    unique: ClassVar[tuple[tuple[str, ...], ...]] = (("person", "week"),)
+
+    person: Annotated[str | None, RefTo("person")] = Field(
+        None, description="The person whose week it is; none when the workspace names no person yet."
+    )
+    week: date = Field(description="The first working day of the week, on the person's own clock.")
+    goals: list[str] = Field(
+        default_factory=list,
+        description="The goals the person confirmed for the week, in their own words, in the order they gave them, "
+        "each one to 200 characters. Empty until they confirm some.",
+    )
+    confirmed_at: datetime | None = Field(None, description="When the goals were last confirmed; none until then.")
+    offer_dismissed_at: datetime | None = Field(
+        None,
+        description="When the person dismissed the offer of the week's briefing for this week, so the morning brief "
+        "stops offering it; none while it is offered. Taking the dismissal back clears it.",
+    )
+    reports_to_nobody_at: datetime | None = Field(
+        None,
+        description="When the person said they report to nobody, so the Monday briefing stops asking who its message "
+        "is for in every week, not only this one; none while it is still asked. Taking it back clears it.",
+    )
+    message: Annotated[str | None, LongText("markdown")] = Field(
+        None,
+        description="The message to the person they report to, drafted from the week's records. It is long text: a "
+        "draft waits for the person's review and is theirs once they copy it.",
+    )
+
+    @field_validator("goals")
+    @classmethod
+    def _goals_are_short_words(cls, goals: list[str]) -> list[str]:
+        if any(not g.strip() or len(g) > 200 for g in goals):
+            raise ValueError("a goal is one to 200 characters")
+        return goals
+
+
+class AuditEntry(Record):
+    """One sign-in, sign-out or turning an add-on on or off, made from the screens. The engine writes it as it happens;
+    nothing changes it. It never holds a token, a secret or the signed-in account's name."""
+
+    record_kind: ClassVar[str] = "audit_entry"
+    prefix: ClassVar[str] = "AUD"
+
+    kind: Literal["sign_in", "sign_out", "plugin_on", "plugin_off"] = Field(
+        description="What happened: signed in to a service, signed out of one (or lost the sign-in because its app "
+        "registration changed), turned an add-on on, or turned one off."
+    )
+    subject: str = Field(description="The sign-in's name, or the add-on's name, as the add-on declares it.")
+    label: str | None = Field(None, description="The sign-in's label for the person, when it has one.")
+    detail: str | None = Field(None, description="A few plain words when the entry needs them.")
+    at: datetime = Field(description="When it happened.")
+
+
+class ToolRun(Record):
+    """One run of an outside program a plugin declared: what ran, how it ended and what it returned. The engine writes
+    it after each run; nothing changes it."""
+
+    record_kind: ClassVar[str] = "tool_run"
+    prefix: ClassVar[str] = "TOOL"
+
+    plugin: str = Field(description="The name of the plugin that ran the program.")
+    tool: str = Field(description="The program's name, as the plugin declared it.")
+    version: str | None = Field(None, description="The program's version, from its version check.")
+    args: list[str] = Field(default_factory=list, description="The arguments it was run with.")
+    inputs: list[str] = Field(default_factory=list, description="Names of the files given to the program.")
+    returncode: int = Field(description="The program's exit code.")
+    timed_out: bool = Field(False, description="True when it was stopped for running too long.")
+    output_cut: bool = Field(False, description="True when its output was cut short for being too large.")
+    seconds: float = Field(0, description="How long it ran, in seconds.")
+    collected: list[dict[str, Any]] = Field(default_factory=list, description="Files returned: {name, size}.")
+    omitted: list[dict[str, Any]] = Field(default_factory=list, description="Files matched but not returned.")
+    stderr_tail: str = Field("", description="The end of the program's error stream, for diagnosing a failure.")
+    ran_at: datetime = Field(description="When it was run.")
+
+
+class TextVersion(Record):
+    """One version of a long text field: its text (stored once by hash in the workspace's texts folder), where it came
+    from, whether it is waiting for review, and who wrote each passage. Written by the text ops and `writer.set_text`;
+    the person accepts or discards pending ones."""
+
+    record_kind: ClassVar[str] = "text_version"
+    prefix: ClassVar[str] = "TXT"
+
+    owner_kind: str = Field(description="The kind of the record whose field this is a version of.")
+    owner_id: str = Field(description="The id of that record.")
+    field: str = Field(description="The long text field.")
+    number: int = Field(ge=1, description="The version's number for this field: 1, 2, 3...; never reused.")
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$", description="Hash of the text; also where it is stored.")
+    format: str = Field(description="The text format its units come from.")
+    words: int = Field(0, ge=0, description="How many words it has.")
+    source: Literal["edit", "draft", "proposal", "merge", "import"] = Field(
+        description="edit: the person wrote it here. draft: the assistant wrote it. proposal: the person's own work "
+        "arriving from outside (a working copy, a file). merge: the result of accepting changes. import: loaded by a "
+        "person's action."
+    )
+    status: Literal["pending", "accepted", "merged", "discarded"] = Field(
+        description="pending: waiting for review. accepted: it became the field's text. merged: some of its changes "
+        "were accepted into a newer version. discarded: set aside."
+    )
+    base: int | None = Field(None, description="The number of the version it was made from.")
+    replaces: int | None = Field(None, description="For an accepted version, the number of the one it replaced.")
+    authorship: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Who wrote each passage: {start, end, kind, run}, kind person, assistant (drafted) or "
+        "assistant_edit (the person's text changed by the assistant), with the AI run for the assistant's.",
+    )
+    paragraph_map: list[dict[str, Any]] = Field(
+        default_factory=list, description="For an anchored draft, which base units each new unit came from."
+    )
+    note: str | None = Field(None, description="Where it came from, in words, when that helps the review.")
+    unmapped: list[str] = Field(
+        default_factory=list,
+        description="For a version taken back from a working copy, what the format couldn't map, shown beside it.",
+    )
+    questions: list[str] = Field(
+        default_factory=list, description="For a draft, the questions for the person it ended with, shown beside it."
+    )
+    run: str | None = Field(None, description="The AI run that wrote it, for a draft.")
+    created_at: datetime = Field(description="When it was written.")
+
+
+class WorkingCopy(Record):
+    """A long text field handed out as a file for the person's own tool (a word processor), and what came back. The
+    host writes it when the person hands a field out or brings a file back."""
+
+    record_kind: ClassVar[str] = "working_copy"
+    prefix: ClassVar[str] = "WC"
+
+    owner_kind: str = Field(description="The kind of the record whose field was handed out.")
+    owner_id: str = Field(description="That record's id.")
+    field: str = Field(description="The long text field.")
+    format: str = Field(description="The working-copy format that made the file.")
+    base: int | None = Field(None, description="The number of the version handed out; none if the field was empty.")
+    file: str = Field(description="The id of the file handed out.")
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$", description="Hash of the file handed out, to tell an untouched one.")
+    status: Literal["out", "returned", "dropped"] = Field(
+        "out",
+        description="out: handed out. returned: a file came back as a proposal. dropped: set aside by the person.",
+    )
+    returned_file: str | None = Field(None, description="The id of the last file brought back.")
+    proposal: str | None = Field(None, description="The id of the text version the last file back became.")
+    handed_at: datetime = Field(description="When it was handed out.")
+    returned_at: datetime | None = Field(None, description="When a file last came back.")
+
+
+class StageStart(BaseModel):
+    """Which stage entry asked for a task."""
+
+    model_config = ConfigDict(extra="forbid")
+    kind: str = Field(description="The kind of the record that entered the stage.")
+    record: str = Field(description="The id of the record that entered the stage.")
+    stage: str = Field(description="The id of the stage entered.")
+    changeset: str | None = Field(None, description="The id of the changeset that made the move, if known.")
+
+
+class About(BaseModel):
+    """The record a request's work is about, as it was when the work was asked for."""
+
+    model_config = ConfigDict(extra="forbid")
+    kind: str = Field(description="The record's kind.")
+    id: str = Field(description="The record's id.")
+
+
+class StopCause(BaseModel):
+    """Why a request stopped, in a form the screen can act on."""
+
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["data_level", "no_person", "paused", "retry", "offline", "identity", "no_account", "no_fit"] = Field(
+        description="data_level: no AI account may see the request's material, and `accounts` would take it if "
+        "allowed. no_person: the workspace has no person set yet, so the work waits before any AI call. paused: "
+        "every account that could take it is waiting for a usage limit to reset (`account`, `until`); the request "
+        "stays queued and runs again by itself then. retry: a run that gave no usable answer is tried again by "
+        "itself at `until` (`idle` counts the runs in a row that did no work). offline: no AI account could be "
+        "reached for want of a network connection; the request stays queued since `since` and is looked at again "
+        "at `until`, and no try is counted. identity: a command-line agent's sign-in changed (`why` changed) or "
+        "isn't set for the material's level (`why` level); the request stays queued, untouched, until the person "
+        "answers for `account`. no_account: the kind of work has no AI account to run on, so every request stopped "
+        "for it is one line that asks for an account. no_fit: accounts exist and none can take this work (each is "
+        "refused for a reason named in the request's wait); requests refused for the same reasons are one line."
+    )
+    level: Literal["open", "internal", "restricted"] | None = Field(
+        None, description="For data_level and identity: the data level of the material."
+    )
+    accounts: list[str] = Field(
+        default_factory=list,
+        description='For data_level: the accounts ("provider/model") that would take the material if allowed its '
+        "level, in the order the tier tries them.",
+    )
+    account: str | None = Field(
+        None, description="For paused: the account whose limit resets first. For identity: the agent account."
+    )
+    why: Literal["changed", "level"] | None = Field(
+        None, description="For identity: whether the sign-in changed, or isn't set for the material's level."
+    )
+    tier: str | None = Field(None, description="For paused: the tier whose work waits.")
+    until: datetime | None = Field(
+        None, description="For paused, retry and offline: when the request runs again by itself."
+    )
+    since: datetime | None = Field(None, description="For offline: when the request first found no network.")
+    idle: int | None = Field(
+        None, description="For retry after runs that did no work: how many such runs in a row there have been."
+    )
+
+    @model_serializer(mode="wrap")
+    def _leave_out_unset_times(self, handler: Any) -> dict[str, Any]:
+        """The account, the tier and the times are written only for the causes that have them."""
+        data = handler(self)
+        for key in ("account", "tier", "until", "since", "idle", "why"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
+
+
+class Request(Record):
+    """A unit of work for the assistant. The engine creates it when something is handed in, a stage starts a task or
+    a schedule fires, and moves it through its states; the person can send back or dismiss it."""
+
+    record_kind: ClassVar[str] = "request"
+    prefix: ClassVar[str] = "REQ"
+
+    task: str = Field(description="The kind of work to do, as an AI task kind id.")
+    stage_start: StageStart | None = Field(None, description="The stage entry that requested this task.")
+    about: About | None = Field(None, description="The record the work is about, for a task kind that works on one.")
+    use: str | None = Field(
+        None, description='The account the person picked for this request ("provider/model"), in place of its tier.'
+    )
+    approval: Literal["required", "granted"] | None = Field(
+        None,
+        description="Needs the person's go before dispatch: stage tasks, runs above the amount to confirm, and the "
+        "first run waiting for a go. A request waiting for the go is `needs_you` with approval `required`; the go sets "
+        "it to `granted` and queues the request.",
+    )
+    estimate_usd: float | None = Field(None, description="What the run was estimated to cost when it asked for a go.")
+    range_usd: list[float] | None = Field(
+        None,
+        description="What the whole request was estimated to cost, low and high, with its fix rounds, searches and "
+        "the stronger model, when it was last dispatched; none when it can't be priced.",
+    )
+    range_account: str | None = Field(
+        None,
+        description="The AI account the estimate was priced on: the first one that may see the material and whose "
+        "model's context window holds the packet and its answer.",
+    )
+    spend_cap_usd: float | None = Field(
+        None,
+        description="The most the request may spend in all under the person's go: what it had spent before the go "
+        "plus the high figure; none until the first dispatch after a go.",
+    )
+    note: str | None = Field(None, description="The person's own words that came with the request.")
+    source: str | None = Field(None, description="The id of the source the request is about, if any.")
+    origin: Literal["pm", "input", "schedule"] = Field(
+        description="Who started it: pm, the person (handing something in or sending work back); input, an outside "
+        "input; schedule, a schedule or a stage entry."
+    )
+    state: Literal["queued", "running", "review", "done", "needs_you", "failed"] = Field(
+        "queued",
+        description="queued: waiting its turn. running: with the assistant. review: its changeset awaits the "
+        "person. done: finished. needs_you: stopped until the person acts (a request waiting for their go is needs_you "
+        "with approval `required`). failed: ended with an error.",
+    )
+    waiting: str | None = Field(None, description="Why it is waiting and until when, in plain words.")
+    cause: StopCause | None = Field(
+        None,
+        description="Why a request waits, when there is more to it than its words: for one waiting on the person, the "
+        "cause the screen can offer an action for; for one queued, the time it is waiting for.",
+    )
+    follows: str | None = Field(
+        None,
+        description="The change (a changeset id) whose event a plugin answered with this work, or whose moved date or "
+        "replaced fact a follow-on run answers, if any.",
+    )
+    follows_also: list[str] = Field(
+        default_factory=list,
+        description="For a follow-on run: the later changes to the same records that were folded into it before it "
+        "started, oldest first, so one run answers them all; `follows` is the first.",
+    )
+    sensitivity: Literal["open", "internal", "restricted"] | None = Field(
+        None, description="How sensitive the person said what they handed in is; it only ever raises the level."
+    )
+    part: dict[str, Any] | None = Field(
+        None,
+        description="The part of a long text the work is about: {first, last} paragraphs (by number) an anchored "
+        'draft revises or other work reads, or {after} a draft adds new text after (0: at the start; "end": at the '
+        "end); with the {base} version number they refer to, a plugin's own {label} for it, and an {address}, a small "
+        "flat mapping the plugin defines, compared for equality and never shown (work that answers with ops may name "
+        "a part by its address alone).",
+    )
+    tag: dict[str, Any] | None = Field(
+        None,
+        description="A small flat mapping the plugin that filed the request put on it (short text, numbers or yes/no, "
+        "up to 1 KB): returned to the plugin in `origin`, `PacketContext.tag` and the events about the work, never "
+        "shown and never sent to a model.",
+    )
+    project: str | None = Field(None, description="The project the person said a hand-in is about, if they did.")
+    auto_closed: dict[str, str] | None = Field(
+        None, description="For a watched change a triage rule closed: {rule, reason}. Taking a closer look clears it."
+    )
+    set_aside: dict[str, str | None] | None = Field(
+        None,
+        description="For a watched mail item set aside as not work: {section, rule, reason}, and for one the person "
+        "set aside after it was handed in, {from_state, from_waiting} to put it back. It is never queued for the "
+        "assistant while this is set. This is work clears it.",
+    )
+    sort_pending: bool = Field(
+        False,
+        description="For a watched mail message the assistant's sorting couldn't be run for when it was handed in: "
+        "it waits for that sorting before any other run, and the sorting clears this when it answers.",
+    )
+    mail_kind: str | None = Field(
+        None,
+        description="For a watched mail message the assistant's sorting answered for: the kind it gave (bill, order, "
+        "delivery or none). Empty when no sorting ran for it. A kind is tracked, never set aside, and files the mail "
+        "under the Personal project; none means the sorting looked and found no kind, so the word lists don't stand "
+        "in.",
+    )
+    folded_into: str | None = Field(
+        None, description="The newer request this one's change was folded into, so they are read in order, once."
+    )
+    may_answer: list[str] = Field(
+        default_factory=list,
+        description="For a message the person sent: the open replies owed (action ids) it may answer, found by the "
+        "rules from its conversation and recipient. The assistant reads it with them and decides whether it answers "
+        "each one; the rules close nothing.",
+    )
+    intake: str | None = Field(
+        None,
+        description="The id of the watched source this request was taken in from when the source was newly added (or "
+        "looked at further back): its results are gathered into one line on Today and one list, not one line each.",
+    )
+    intake_seen: bool = Field(
+        False,
+        description="For a request taken in from a new source: the person opened the list of what was found (or "
+        "marked it seen), so its results show on Today one by one again if they still need a look.",
+    )
+    attempts: int = Field(0, description="How many times the assistant has started on it.")
+    retries: int = Field(
+        0, description="How many times it was tried again by itself after a run that gave no usable answer."
+    )
+    created_at: datetime = Field(description="When the request was made.")
+    changeset: str | None = Field(None, description="The id of the changeset the assistant proposed for it.")
+    previous: str | None = Field(None, description="The request this one redoes after the person sent it back.")
+    returned_from: str | None = Field(
+        None,
+        description="The request about the person's answer or correction to a question whose run changed nothing, "
+        "which this one redoes once, told so. A second run that changes nothing is not redone again.",
+    )
+    no_effect: bool = Field(
+        False,
+        description="The person's answer or correction to a question was handled twice and changed nothing: Today "
+        "asks the person to check what it changed, with their own words.",
+    )
+    superseded_by: str | None = Field(
+        None,
+        description="The later request that redid this one and applied, which retired this attempt: it is done, its "
+        "held items and open proposals are closed, and nothing is run or shown for it again.",
+    )
+    dismissed: bool = Field(
+        False, description="The person set this aside without trying again; it no longer counts as needing attention."
+    )
+    dismissed_from: Literal["queued", "running", "review", "done", "needs_you", "failed"] | None = Field(
+        None, description="The state the request was in when it was dismissed, put back by undoing the dismissal."
+    )
+
+
+class Changeset(Record):
+    """What the assistant proposed for one request, how it was checked and what was applied. The applier writes it
+    and updates it on release or undo; the person marks it reviewed."""
+
+    record_kind: ClassVar[str] = "changeset"
+    prefix: ClassVar[str] = "CS"
+
+    request: str = Field(description="The id of the request it answers.")
+    summary: str = Field("", description="One line saying what the changeset does.")
+    topic: str = Field("", description="A few words naming what the input was about, for the item's title.")
+    ops: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="One outcome per op: its index, the op, its status (applied, held, refused or undone), group, "
+        "the records it touched and the reason it was held or refused.",
+    )
+    status: Literal["applied", "held", "rejected", "undone", "partly_undone"] = Field(
+        description="applied: all ops went through. held: some wait for the person. rejected: set aside. undone: all "
+        "applied ops were undone. partly_undone: some were."
+    )
+    problems: list[dict[str, Any]] = Field(
+        default_factory=list, description="Problems that belong to the changeset as a whole rather than to one op."
+    )
+    trust: Literal["trusted", "untrusted"] = Field(
+        description="Whether the input it was made from was trusted; records its ops create carry the same mark."
+    )
+    reviewed: bool = Field(False, description="True once the person has looked at it and accepted it.")
+    followups: list[str] = Field(
+        default_factory=list,
+        description="The ids of the changes made because of this one (the notes drafted to the people told about "
+        "to-dos it dropped). Undo of the drops also takes back each of them whose act has not gone out.",
+    )
+    run: str | None = Field(None, description="The id of the AI run that produced it, if any.")
+    action: dict[str, Any] | None = Field(
+        None, description="The person action this came from: its name, target and the choices the person made."
+    )
+    applied: list[str] = Field(
+        default_factory=list,
+        description="The ids of the knowledge entries the run said it applied, kept only when the run was given them "
+        "(its knowledge log). A checked citation, never the model's say-so alone.",
+    )
+    applied_dropped: int = Field(
+        0, description="How many ids the run named as applied that it had not been given, which were left out."
+    )
+    missing: list[str] = Field(
+        default_factory=list,
+        description="What the run needed and no op could do, each in a few words, for the weekly missing-op list.",
+    )
+    omitted: list[dict[str, str]] = Field(
+        default_factory=list,
+        description="Ops a corrected answer left out on purpose, each {op, reason}, shown on the change's card.",
+    )
+    first_on_account: str | None = Field(
+        None,
+        description="The name of the AI account when this was the first run on an account that stands in a "
+        "fallback chain, so its cards can say so.",
+    )
+    by_rule: str | None = Field(
+        None,
+        description="For a change the engine made by its own rules, from what came in and with no run of the assistant "
+        "(a reply owed closed by the person's own sent mail): the name of the rule, so a list of what was done without "
+        "the person can say a rule did it.",
+    )
+    created_at: datetime = Field(description="When the changeset was recorded.")
+
+
+class Fact(Record):
+    """Something recorded as true, with the words that show it. Added by `fact` and by `question.done`; never
+    edited, except that `record.set` names the calendar entry or series it belongs to and proposes the day it is to be
+    reminded of (which waits for the person's yes)."""
+
+    record_kind: ClassVar[str] = "fact"
+    prefix: ClassVar[str] = "FACT"
+    layout: ClassVar[str | None] = "facts/{id}"
+    #: The assistant's proposal of a reminder waits for the person's yes.
+    person_only: ClassVar[dict[str, tuple[Any, ...]]] = {"remind_at": ()}
+
+    text: str = Field(min_length=1, description="The fact, as a statement.")
+    project: str | None = Field(None, description="The id of the project it is about, if any.")
+    source: str | None = Field(None, description="The id of the source it came from, if any.")
+    evidence: Evidence | None = Field(None, description="The words that justify it.")
+    filed_by: FiledBy | None = Field(
+        None,
+        description="Why the assistant filed it under its project, when it chose the project itself (design 6.32): "
+        "the signal, the word or domain that matched and the project. Set once by the applier; none for an item the "
+        "person or the input placed.",
+    )
+    trust: Literal["trusted", "untrusted"] = Field(
+        "trusted", description="untrusted when it came from outside content."
+    )
+    key: bool = Field(False, description="True for the facts that matter most, which are always shown first.")
+    as_of: date | None = Field(
+        None,
+        description="The day the fact was true as of: the day the input it came from was received, unless a later "
+        "input says otherwise.",
+    )
+    supersedes: str | None = Field(
+        None,
+        description="The id of the fact this one replaces. The older fact stays on record and is shown as replaced "
+        "by this one.",
+    )
+    basis: Literal["person", "inferred", "said"] | None = Field(
+        None,
+        description="Who the fact rests on. person: the person said it. inferred: the assistant worked it out, so it "
+        "feeds the record only: it never closes anything, never changes a date, an owner or a routing, and never goes "
+        "on anything others see. said: someone else said it (`said_by`). Empty for a fact recorded before this was "
+        "kept.",
+    )
+    said_by: Annotated[str | None, RefTo("person")] = Field(
+        None, description="The id of the person who said it, when `basis` is said and the input names them."
+    )
+    event: Annotated[str | None, RefTo("event")] = Field(
+        None, description="The id of the calendar entry it belongs to (the instance it sits on, for a series)."
+    )
+    series: Annotated[str | None, RefTo("series")] = Field(
+        None, description="The id of the series it belongs to; it sits on the series' next instance."
+    )
+    about: str | None = Field(
+        None,
+        description="The id of the record it is about when that is any record (a to-do, a question, a person, an "
+        "organization, a pack's own record), not only a project, a calendar entry or a series. The record's page shows "
+        "it, and a run working on that record reads it. Added with the fact; never changed after.",
+    )
+    reaches_children: bool = Field(
+        False,
+        description="True for a fact about a project that holds for the projects inside it too (a series' fact for "
+        "each of its books): it goes into the packets of those projects as well.",
+    )
+    on: date | None = Field(
+        None,
+        description="For a dated fact: the day a deadline, renewal, expiry, warranty end or bill falls on, as the "
+        "input states it. Nothing is worked out or guessed: an input that gives no full date makes no dated fact.",
+    )
+    on_kind: Literal["deadline", "renewal", "expiry", "warranty", "bill"] | None = Field(
+        None, description="With `on`: what kind of day it is. A bill is a reminder only: no amount is kept."
+    )
+    remind_at: AwareDatetime | None = Field(
+        None,
+        description="When to remind the person of a dated fact, as a moment with its time zone. The rules propose it "
+        "from the day and the settings; it waits for the person's yes, and the person may set or move it. The "
+        "reminder is a line on Today from that moment until the day has passed.",
+    )
+    fixed_fields: ClassVar[tuple[str, ...]] = ("supersedes", "basis", "said_by", "about")
+
+
+class Scope(BaseModel):
+    """What a rule or a piece of knowledge applies to: one shape for both. Empty lists mean no narrowing. `scope` is
+    "workspace" (everywhere, less the projects in `except`) or "projects" (only those in `projects`)."""
+
+    #: Stored by alias, so the key is `except`; a model that doesn't ask for this is stored by its field names.
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, serialize_by_alias=True)
+
+    task_kinds: list[str] = Field(default_factory=list, description="Task kinds it applies to; empty means all.")
+    records: list[str] = Field(
+        default_factory=list, description="Record types or type.field targets it applies to; empty means all."
+    )
+    filter: dict[str, Any] = Field(default_factory=dict, description="Exact field values narrowing the record targets.")
+    projects: list[Annotated[str, RefTo("project")]] = Field(
+        default_factory=list, description="With scope projects, the projects it is for."
+    )
+    people: list[Annotated[str, RefTo("person")]] = Field(
+        default_factory=list, description="The people it is about; empty means anyone."
+    )
+    scope: Literal["workspace", "projects"] = Field(
+        "workspace",
+        description="workspace: everywhere, except the projects in `except`. projects: only the projects listed in "
+        "`projects`.",
+    )
+    except_: list[Annotated[str, RefTo("project")]] = Field(
+        default_factory=list,
+        alias="except",
+        description="With scope workspace, the projects it does not apply to. Dumped by alias, so the key is `except`.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _projects_mean_projects(cls, data: Any) -> Any:
+        """Naming projects without a scope means the scope is those projects."""
+        if isinstance(data, dict) and "scope" not in data and data.get("projects"):
+            return {**data, "scope": "projects"}
+        return data
+
+    @model_validator(mode="after")
+    def _coherent(self) -> Scope:
+        if self.scope == "projects" and not self.projects:
+            raise ValueError("a scope of projects names the projects it is for")
+        if self.scope == "projects" and self.except_:
+            raise ValueError("projects it doesn't apply to can be left out only from the whole workspace")
+        if self.scope == "workspace" and self.projects:
+            raise ValueError("name the projects only when the scope is those projects")
+        return self
+
+
+class Rule(Record):
+    """A standing instruction the assistant follows, kept as a record so changing one has history and Undo. The
+    starting set comes from the workspace's rules file; after that the records are the truth. Added by `rule.add`
+    and ended by `rule.retire`."""
+
+    record_kind: ClassVar[str] = "rule"
+    prefix: ClassVar[str] = "RULE"
+    layout: ClassVar[str | None] = "rules/{id}"
+    unique: ClassVar[tuple[tuple[str, ...], ...]] = (("name",),)
+    #: Where a rule came from and when never change after it is made.
+    fixed_fields: ClassVar[tuple[str, ...]] = ("origin", "trust", "learned_at", "evidence", "more_evidence")
+
+    name: str = Field(
+        min_length=1,
+        description="The rule's own name, which stage entry checks and the rules file refer to; never reused.",
+    )
+    text: str = Field("", description="The rule in the person's wording; it is also its explanation.")
+    applies_to: Scope = Field(default_factory=Scope, description="What the rule applies to.")
+    check: str | None = Field(
+        None,
+        description="A deterministic check that implements the rule; a rule with none is prose, and prose alone never "
+        "lets a stage move.",
+    )
+    origin: Literal["person", "input", "assistant", "pack", "seed", "import"] = Field(
+        description="Where it came from: seed (the starting set), person (the person's own words), input (content), "
+        "assistant (its own generalization), pack or import."
+    )
+    trust: Literal["trusted", "untrusted"] = Field(
+        "trusted", description="untrusted when it was proposed from outside content, until the person keeps it."
+    )
+    status: Literal["proposed", "active", "discarded", "expired", "retired"] = Field(
+        "active",
+        description="proposed: waiting for the person. active: in use. discarded: the person said no. expired: a "
+        "proposal nobody reviewed in time. retired: it was active and no longer is.",
+    )
+    discard_reason: str | None = Field(
+        None, description="Why it was discarded: what the person said, or that it was close to one they discarded."
+    )
+    more_evidence: list[KnowledgeEvidence] = Field(
+        default_factory=list,
+        description="What other proposals of the same rule were learned from, merged into this one.",
+    )
+    source: str | None = Field(None, description="Where it came from, in words.")
+    evidence: Evidence | None = Field(None, description="The words that justify it, when it came from an input.")
+    learned_at: datetime | None = Field(None, description="When the rule was learned or added.")
+    kept_by: str | None = Field(None, description="The id of the person who made it active.")
+    kept_at: datetime | None = Field(None, description="When it was made active.")
+    constrains: list[str] = Field(
+        default_factory=list,
+        description="What it is about, so a run's log can tell a rule that applied from one that was only present: "
+        "op kinds (`question.add`) or op fields (`action.add.owners`). Empty means nothing is checked, so the rule "
+        "is only ever present.",
+    )
+    reviewed_at: datetime | None = Field(
+        None,
+        description="When the person last chose to keep it in a review; the clock for its next review starts here.",
+    )
+
+
+class EntryRepeat(BaseModel):
+    """How the person's own calendar entry repeats: every day, week, two weeks or month from its start, with the day it
+    stops (that day included) when it has one. The dates are worked out when they are shown, by the same expansion a
+    connected calendar's repeating events get; nothing is stored for each date."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    every: Literal["day", "week", "two_weeks", "month"] = Field(
+        description="How often: day, week, two_weeks (every other week) or month (the same day of the month)."
+    )
+    until: str | None = Field(
+        None,
+        description="The last day it can happen, written 2026-12-31; empty for no end. Never before the day it starts.",
+    )
+
+    @field_validator("until")
+    @classmethod
+    def _a_day(cls, value: str | None) -> str | None:
+        if value is None or value == "":
+            return None
+        try:
+            return date.fromisoformat(value.strip()).isoformat()
+        except ValueError:
+            raise ValueError("give the last day as a date, such as 2026-12-31") from None
+
+
+class EntryException(BaseModel):
+    """One date of a repeating entry that is not as the rule gives it: moved to another time (`start`, and `end` when
+    it has one) or called off (`cancelled`). `was` is when the rule had it, in the form the entry's start is written."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    was: str = Field(description="When the repeat rule had this date, as ISO 8601 text.")
+    start: str | None = Field(None, description="Where it moved to; empty when it is only called off.")
+    end: str | None = Field(None, description="Where its end moved to, in the same form, when it has one.")
+    cancelled: bool = Field(False, description="True when this date is skipped.")
+
+
+class EntryPerson(BaseModel):
+    """Someone on a calendar entry: who invited, or who is asked. Resolved to a person the workspace knows by the
+    address they can be reached at."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    address: str | None = Field(None, description="Their address, as the calendar gives it.")
+    name: str | None = Field(None, description="Their name, as the calendar gives it.")
+    person: Annotated[str | None, RefTo("person")] = Field(
+        None, description="The id of the person it is, when the workspace knows them."
+    )
+    response: str | None = Field(
+        None, description="Their answer to the invitation, as the calendar says it (accepted, tentative, declined...)."
+    )
+
+
+class AgendaItem(BaseModel):
+    """One thing on a meeting's agenda: the action, question or note it came from (exactly one is named), who put it
+    there, when, and the words it is there under. Put there by `agenda.add`; the linked record is not changed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Annotated[str | None, RefTo("action")] = Field(None, description="The id of the action it came from.")
+    question: Annotated[str | None, RefTo("question")] = Field(None, description="The id of the question it came from.")
+    note: Annotated[str | None, RefTo("note")] = Field(None, description="The id of the note it came from.")
+    added_by: Annotated[str | None, RefTo("person")] = Field(
+        None, description="The id of the person who put it there; none when the assistant did, from what came in."
+    )
+    added_at: datetime = Field(description="When it was put on the agenda.")
+    text: str = Field(min_length=1, description="The words it is on the agenda under, in a line.")
+
+    @model_validator(mode="after")
+    def _one_record(self) -> AgendaItem:
+        if sum(x is not None for x in (self.action, self.question, self.note)) != 1:
+            raise ValueError("an agenda item comes from one action, question or note")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _leave_out_what_it_did_not_come_from(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        return {k: v for k, v in data.items() if v is not None}
+
+
+#: How far a delivery has got, in order; a later mail never moves it back.
+DELIVERY_STATUSES = ("on_its_way", "out_for_delivery", "arrived")
+
+
+class Delivery(BaseModel):
+    """What makes a calendar entry a delivery: the order and the parcel it is about, and how far it has got. Later
+    mails about the same order or tracking number update the one entry (`event.add` with a `delivery`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    order: str | None = Field(None, max_length=80, description="The order number, as the mail gives it.")
+    tracking: str | None = Field(None, max_length=80, description="The tracking number, as the mail gives it.")
+    carrier: str | None = Field(None, max_length=80, description="Who carries it, as the mail gives it.")
+    status: Literal["on_its_way", "out_for_delivery", "arrived"] = Field(
+        "on_its_way", description="How far it has got; it only moves forward."
+    )
+    dated: bool = Field(
+        True,
+        description="Whether the mail gave a date or window. False for a delivery with no date yet: its entry sits on "
+        'the day the mail came and shows under the schedule\'s "On its way", not on a day.',
+    )
+
+
+class CalendarEntry(Record):
+    """Something dated in the app's own calendar: a day or a moment, or a range of days or moments. Added by
+    `event.add` from what came in, and by plugins and the person later; never written to a calendar service."""
+
+    record_kind: ClassVar[str] = "event"
+    prefix: ClassVar[str] = "EVT"
+    record_label: ClassVar[str] = "calendar entry"
+    layout: ClassVar[str | None] = "calendar/{id}"
+    fixed_fields: ClassVar[tuple[str, ...]] = ("agenda", "captured_at")
+
+    title: str = Field(min_length=1, description="What the entry is, in a few words.")
+    start: str = Field(
+        description="When it starts: a day (2026-10-12) or a date-time (2026-10-12T09:30:00+01:00), in ISO 8601 text. "
+        "A day means an all-day entry; a date-time with no offset is in the person's time zone."
+    )
+    end: str | None = Field(
+        None,
+        description="When it ends, in the same forms. Set, it makes a range, and the last day or moment is included.",
+    )
+    project: str | None = Field(None, description="The id of the project it is about, if any.")
+    series: Annotated[str | None, RefTo("series")] = Field(
+        None, description="The id of the series it is one instance of, if any."
+    )
+    source: str | None = Field(None, description="The id of the source it came from, if any.")
+    key: str | None = Field(
+        None,
+        description="For an entry kept from a calendar source: which date of which event it is, as the source names "
+        "it, so a read of the source updates this entry and no other.",
+    )
+    where: str | None = Field(None, description="Where it happens, as the calendar says (or as the person wrote it).")
+    repeat: EntryRepeat | None = Field(
+        None,
+        description="For the person's own entry that happens again: how often, and the day it stops. Only the person "
+        "sets it. Each date shows on the schedule; one can be moved or called off by an entry in `exceptions`.",
+    )
+    exceptions: list[EntryException] = Field(
+        default_factory=list,
+        description="With `repeat`: the dates that are moved or called off, each by the time the rule had it.",
+    )
+    cancelled: bool = Field(False, description="The calendar says it was called off, or the series skips this date.")
+    dropped: str | None = Field(
+        None,
+        description="Why a called-off entry was dropped, in the person's words. A called-off entry that is not dropped "
+        "is held: it waits for a new date, and the to-dos tied to it wait with it. Only the person sets it.",
+    )
+    role: Literal["run", "attend", "brief_only"] | None = Field(
+        None,
+        description="For an entry the person adds: whether they run it, attend it or only want it in the brief (a "
+        "daily stand-up has no prep page). None reads as attend. Only the person sets it.",
+    )
+    invitation: bool = Field(False, description="It came as an invitation: someone else asked the person to it.")
+    organizer: EntryPerson | None = Field(None, description="Who invited, or who organizes it.")
+    attendees: list[EntryPerson] = Field(default_factory=list, description="Who is asked, with each one's answer.")
+    response: str | None = Field(
+        None, description="The person's own answer to the invitation, when the attendee list holds them."
+    )
+    notes: list[str] = Field(
+        default_factory=list, description="What had to be guessed in reading it (a time zone, a repeat rule)."
+    )
+    delivery: Delivery | None = Field(
+        None,
+        description="For a parcel or order on its way: its order, tracking number, carrier and how far it has got.",
+    )
+    plain: bool = Field(
+        False,
+        description="Nobody else is invited and it has no description, so the rules kept it without the assistant "
+        "reading it. A plain entry whose title starts with a task verb is offered as a to-do, one whose title "
+        "names a known person is proposed for them to confirm as a guest, and one that names an open promise's "
+        "words on its day is proposed to that promise for the person to tie.",
+    )
+    people: list[Annotated[str, RefTo("person")]] = Field(
+        default_factory=list,
+        description="The known people confirmed to be on it: by the person (Yes on the proposal) or by the assistant's "
+        "`event.guests` with the words that say so; never written by a rule.",
+    )
+    proposed_guests: list[Annotated[str, RefTo("person", blocks_delete=False)]] = Field(
+        default_factory=list,
+        description="The known people a plain entry's title names, proposed for the person to confirm as on it; "
+        "nothing treats them as guests until they say yes, which moves them to `people`.",
+    )
+    agenda: list[AgendaItem] = Field(
+        default_factory=list,
+        description="What is to be taken up at it, each item linked to the action, question or note it came from; "
+        "added by `agenda.add`.",
+    )
+    evidence: Evidence | None = Field(None, description="The words that justify it.")
+    trust: Literal["trusted", "untrusted"] = Field(
+        "trusted", description="untrusted when it came from outside content."
+    )
+    reminder: Annotated[str | None, RefTo("action")] = Field(
+        None,
+        description="For an entry the engine made as a to-do's reminder: the to-do. The entry follows the reminder: a "
+        "snooze moves it and a finished, dropped or held to-do removes it.",
+    )
+    alarm_minutes: int | None = Field(
+        None,
+        ge=0,
+        le=40320,
+        description="Minutes before the start an alarm rings in the app; 0 rings at the start. None for no alarm.",
+    )
+    captured_at: AwareDatetime | None = Field(
+        None,
+        description="When the person wrote down what happened at it, or said there was nothing to note; the line on "
+        "Today that asks goes once this is set. Set by the screen's capture, never edited.",
+    )
+    prep: Annotated[str | None, LongText("markdown")] = Field(
+        None,
+        description="A note to read before the meeting, when the assistant drafted one at the person's request from "
+        "who is coming and what is open with them. It is long text: a draft waits for the person's review and is "
+        "theirs once they accept it.",
+    )
+
+    @model_validator(mode="after")
+    def _readable_times(self) -> CalendarEntry:
+        if (problem := entry_problem(self.start, self.end)) is not None:
+            raise ValueError(problem)
+        self.start = canonical_time(self.start)
+        self.end = canonical_time(self.end) if self.end is not None else None
+        return self
+
+
+class Series(Record):
+    """A run of calendar entries that are the same thing again (a weekly meeting, a standing check-in). Each instance
+    is its own calendar entry that names the series; the series holds what they share. Added by `series.add`; an entry
+    joins by `series.link` or by naming it in `event.add`. An item on a series sits on its next instance."""
+
+    record_kind: ClassVar[str] = "series"
+    prefix: ClassVar[str] = "SER"
+    record_label: ClassVar[str] = "series of calendar entries"
+    layout: ClassVar[str | None] = "calendar/{id}"
+    fixed_fields: ClassVar[tuple[str, ...]] = ("agenda",)
+
+    title: str = Field(min_length=1, description="What the series is, in a few words.")
+    project: str | None = Field(None, description="The id of the project it is about, if any.")
+    repeats: str | None = Field(
+        None, description="How often it repeats, in the person's words (every Tuesday); never used to work out dates."
+    )
+    source: str | None = Field(None, description="The id of the source it came from, if any.")
+    agenda: list[AgendaItem] = Field(
+        default_factory=list,
+        description="What is to be taken up at its meetings, each item linked to the action, question or note it came "
+        "from; added by `agenda.add`, which names the series when the words are about the meeting in general.",
+    )
+    evidence: Evidence | None = Field(None, description="The words that justify it.")
+    trust: Literal["trusted", "untrusted"] = Field(
+        "trusted", description="untrusted when it came from outside content."
+    )
+
+
+def entry_time(value: str) -> date | datetime:
+    """An ISO 8601 day or date-time. Raises ValueError for anything else."""
+    text = value.strip()
+    if len(text) == 10:
+        return date.fromisoformat(text)
+    return datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
+
+
+def canonical_time(value: str) -> str:
+    """A day or date-time in the one form it is kept in: a day as 2026-10-12, a date-time to the second with its offset
+    written out (2026-10-12T09:30:00+00:00), or with none when it is in the person's time zone. Raises ValueError for
+    anything `entry_time` doesn't read."""
+    moment = entry_time(value)
+    if isinstance(moment, datetime):
+        return moment.isoformat(timespec="seconds" if not moment.microsecond else "auto")
+    return moment.isoformat()
+
+
+def entry_problem(start: str, end: str | None) -> str | None:
+    """Why a calendar entry's start and end can't stand, in plain words; None when they can."""
+    try:
+        first = entry_time(start)
+    except ValueError:
+        return f"{start!r} isn't a day such as 2026-10-12 or a date-time such as 2026-10-12T09:30:00+01:00"
+    if end is None:
+        return None
+    try:
+        last = entry_time(end)
+    except ValueError:
+        return f"{end!r} isn't a day such as 2026-10-12 or a date-time such as 2026-10-12T09:30:00+01:00"
+    both_times = isinstance(first, datetime) and isinstance(last, datetime)
+    if both_times and (first.tzinfo is None) == (last.tzinfo is None):
+        before = last < first
+    else:
+        before = (last.date() if isinstance(last, datetime) else last) < (
+            first.date() if isinstance(first, datetime) else first
+        )
+    return "it ends before it starts" if before else None
+
+
+class Note(Record):
+    """Something kept from an input that is not a fact, action or question. Added by `note`; never edited."""
+
+    record_kind: ClassVar[str] = "note"
+    prefix: ClassVar[str] = "NOTE"
+    layout: ClassVar[str | None] = "notes/{id}"
+
+    text: str = Field(min_length=1, description="What was kept.")
+    project: str | None = Field(None, description="The id of the project it is about, if any.")
+    question: Annotated[str | None, RefTo("question")] = Field(
+        None, description="The id of the question it adds to, if any: what an input says about a question."
+    )
+    source: str | None = Field(None, description="The id of the source it came from, if any.")
+    filed_by: FiledBy | None = Field(
+        None,
+        description="Why the assistant filed it under its project, when it chose the project itself (design 6.32): "
+        "the signal, the word or domain that matched and the project. Set once by the applier; none for an item the "
+        "person or the input placed.",
+    )
+    trust: Literal["trusted", "untrusted"] = Field(
+        "trusted", description="untrusted when it came from outside content."
+    )
+
+
+class KnowledgeEvidence(BaseModel):
+    """What a piece of knowledge was learned from, kept apart from its own wording: the exact words, and the records
+    that show where they came from."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    quote: str | None = Field(
+        None, min_length=1, description="The exact words in the source that the entry rests on, as they appear there."
+    )
+    source: Annotated[str | None, RefTo("source")] = Field(
+        None, description="The input the words come from, when it was saved as one."
+    )
+    request: Annotated[str | None, RefTo("request")] = Field(
+        None, description="The request whose work produced the entry."
+    )
+    signal: Annotated[str | None, RefTo("signal")] = Field(
+        None, description="The correction the entry was learned from."
+    )
+    changeset: Annotated[str | None, RefTo("changeset")] = Field(
+        None, description="The change the correction was about."
+    )
+
+    @model_validator(mode="after")
+    def _says_something(self) -> KnowledgeEvidence:
+        if not any((self.quote, self.source, self.request, self.signal, self.changeset)):
+            raise ValueError("evidence names the words or the record they came from")
+        return self
+
+
+Rule.model_rebuild()
+
+
+class KnowledgeRecord(Record):
+    """What the four kinds of knowledge share (design 6.22). Not a record type itself. The assistant proposes an entry
+    or the person states it; it guides runs only once active. `text` is the entry's own wording, in plain words;
+    the evidence is kept beside it, never mixed in."""
+
+    #: Where an entry came from and when never change after it is made.
+    fixed_fields: ClassVar[tuple[str, ...]] = ("origin", "pack", "trust", "learned_at", "evidence", "more_evidence")
+
+    text: str = Field(min_length=1, description="The entry in plain words: what is kept, and what is shown.")
+    evidence: KnowledgeEvidence | None = Field(
+        None, description="What it was learned from: the exact words and the records they came from."
+    )
+    more_evidence: list[KnowledgeEvidence] = Field(
+        default_factory=list,
+        description="What other proposals of the same entry were learned from, merged into this one.",
+    )
+    origin: Literal["person", "input", "assistant", "pack", "seed", "import"] = Field(
+        description="person: the person's own words. input: proposed from content. assistant: the assistant's own "
+        "generalization. pack: a pack's guidance (see `pack`). seed: shipped as a starting entry. import: loaded "
+        "from a file."
+    )
+    pack: str | None = Field(None, description="For a pack's guidance, the pack's name.")
+    trust: Literal["trusted", "untrusted"] = Field(
+        "trusted", description="untrusted when it came from outside content."
+    )
+    learned_at: datetime = Field(description="When the entry was made.")
+    status: Literal["proposed", "active", "discarded", "expired", "retired"] = Field(
+        "proposed",
+        description="proposed: waits for the person's Keep. active: guides runs. discarded: the person said no. "
+        "expired: a proposal nobody reviewed in time. retired: was active, and no longer is.",
+    )
+    discard_reason: str | None = Field(None, description="Why the person discarded it, if they said.")
+    kept_by: Annotated[str | None, RefTo("person")] = Field(
+        None, description="The person who made it active, and so the author of its wording."
+    )
+    kept_at: datetime | None = Field(None, description="When it was made active.")
+    applies_to: Scope = Field(default_factory=Scope, description="What it applies to.")
+
+    @model_validator(mode="after")
+    def _states_hold_together(self) -> KnowledgeRecord:
+        if self.status == "active" and (self.kept_by is None or self.kept_at is None):
+            raise ValueError("an active entry says who kept it and when")
+        if self.discard_reason is not None and self.status != "discarded":
+            raise ValueError("only a discarded entry has a reason for it")
+        if (self.origin == "pack") != (self.pack is not None):
+            raise ValueError("a pack's guidance names the pack, and nothing else does")
+        return self
+
+
+class Lesson(KnowledgeRecord):
+    """What went wrong, why, and the guard that prevents a repeat. Added by `lesson.add`, changed by `lesson.update`,
+    ended by `knowledge.retire`; the person keeps or discards a proposal."""
+
+    record_kind: ClassVar[str] = "lesson"
+    prefix: ClassVar[str] = "LES"
+
+    guard: str | None = Field(None, description="The check or behavior that prevents a repeat, in plain words.")
+    signal: Annotated[str | None, RefTo("signal")] = Field(None, description="The correction it came from.")
+
+
+class GlossaryEntry(KnowledgeRecord):
+    """A term or acronym and what it means here. Added by `glossary.add`, changed by `glossary.update`."""
+
+    record_kind: ClassVar[str] = "glossary_entry"
+    prefix: ClassVar[str] = "GLOSS"
+    record_label: ClassVar[str] = "glossary entry"
+
+    term: str = Field(min_length=1, description="The term, acronym or name as it is written.")
+    meaning: str = Field(min_length=1, description="What it means.")
+    confidence: Literal["confirmed", "assumed", "unknown"] = Field(
+        "assumed", description="confirmed: someone who knows said so. assumed: a reasonable reading. unknown: not yet."
+    )
+    project: Annotated[str | None, RefTo("project")] = Field(
+        None, description="The project it is about; none means it holds everywhere."
+    )
+    id_patterns: list[str] = Field(
+        default_factory=list, description="Patterns for splitting compound ids that use the term."
+    )
+
+
+class RoutingEntry(KnowledgeRecord):
+    """Who answers a kind of question, or who doesn't. Added by `routing.add`."""
+
+    record_kind: ClassVar[str] = "routing_entry"
+    prefix: ClassVar[str] = "ROUTE"
+    record_label: ClassVar[str] = "routing entry"
+
+    topic: str = Field(min_length=1, description="The topic, area or kind of question.")
+    person: Annotated[str | None, RefTo("person")] = Field(None, description="The person it is about.")
+    team: Annotated[str | None, RefTo("team")] = Field(None, description="The team it is about, instead of a person.")
+    negative: bool = Field(False, description="True when they don't answer this.")
+    look_up: str | None = Field(None, description="Where to look it up instead, in plain words.")
+
+    @model_validator(mode="after")
+    def _names_who(self) -> RoutingEntry:
+        if self.person is None and self.team is None:
+            raise ValueError("a routing entry names the person or the team")
+        return self
+
+
+class StyleNote(KnowledgeRecord):
+    """What a recipient or audience wants or avoids in what is written for them. Added by `style.add`."""
+
+    record_kind: ClassVar[str] = "style_note"
+    prefix: ClassVar[str] = "STYLE"
+    record_label: ClassVar[str] = "style note"
+
+    audience: str = Field(min_length=1, description="A person's id, or a kind of audience in words.")
+    observation: str = Field(min_length=1, description="What they want or avoid.")
+
+
+class RunSearch(BaseModel):
+    """One search a run asked for, and how many results came back."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    words: str = Field("", description="The words searched for.")
+    kinds: list[str] = Field(default_factory=list, description="The kinds searched: facts, inputs, records, knowledge.")
+    results: int = Field(0, description="How many results came back.")
+
+
+class PackSearch(BaseModel):
+    """One search an add-on's packet function made for the run (`view.search`), what came back and what was sent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    words: str = Field("", description="The words searched for.")
+    kinds: list[str] = Field(
+        default_factory=list, description="The places searched: facts, inputs, records, knowledge."
+    )
+    projects: list[str] = Field(default_factory=list, description="The projects it was limited to; none means all.")
+    results: int = Field(0, description="How many results came back.")
+    sent: list[str] = Field(default_factory=list, description="The ids of the results the packet function received.")
+
+
+class RunKnowledge(BaseModel):
+    """The knowledge log of one run (design 6.22): what it was given and what it searched for, so a bad result can be
+    traced to knowledge that was missing or ignored."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    given: list[str] = Field(
+        default_factory=list, description="The ids of the knowledge entries and rules it was given."
+    )
+    left_out_by_scope: list[str] = Field(
+        default_factory=list,
+        description="The ids of rules and entries left out because their scope excludes the input.",
+    )
+    facts_left_out: int = Field(0, description="How many facts of the input's projects didn't fit the facts budget.")
+    stable_chars: int = Field(0, description="The size of the knowledge sent with every run, in characters.")
+    rules_applied: list[str] = Field(
+        default_factory=list,
+        description="The ids of the rules it was given that the run's changeset, the check on its output or a later "
+        "correction shows were applied. Never the model's own claim.",
+    )
+    rules_present: list[str] = Field(
+        default_factory=list, description="The ids of the rules it was given that were not shown to apply."
+    )
+    rules_moved: list[str] = Field(
+        default_factory=list,
+        description="The ids of the rules moved out of the always-sent part because it passed its size budget.",
+    )
+    searches: list[RunSearch] = Field(default_factory=list, description="The searches it asked for.")
+    pack_searches: list[PackSearch] = Field(
+        default_factory=list,
+        description="The searches made while building its packet: the add-on's own packet function's, or the core's "
+        "for the older history a conversation on a record brings in.",
+    )
+    trimmed_chars: int = Field(
+        0,
+        description="How many characters the core took out of its own knowledge section so the packet fit its add-on's "
+        "own limit (rules moved to the part for this run, facts cut by rank).",
+    )
+    refused_checks: list[str] = Field(
+        default_factory=list,
+        description="The names of the checks that refused this call's answer, each once, including refusals the answer "
+        "was sent back to fix.",
+    )
+
+
+class Run(Record):
+    """One call to an AI provider. The engine writes it after each call, for usage and cost reports; nothing changes
+    it."""
+
+    record_kind: ClassVar[str] = "run"
+    prefix: ClassVar[str] = "RUN"
+
+    request: str | None = Field(
+        None,
+        description="The id of the request the call was made for; none for a call that serves no request (sorting "
+        "mail headers).",
+    )
+    task: str = Field(description="The kind of task asked.")
+    provider: str = Field(description="The configured provider that was called.")
+    model: str = Field(description="The model that answered, as the provider reported it.")
+    tier: str = Field(description="The configured tier the call was made on.")
+    input_chars: int = Field(0, description="Characters sent.")
+    output_chars: int = Field(0, description="Characters received.")
+    input_tokens: int | None = Field(None, description="Tokens sent, when the provider reports them.")
+    output_tokens: int | None = Field(None, description="Tokens received, when the provider reports them.")
+    cached_input_tokens: int | None = Field(None, description="Tokens sent that were read from the provider's cache.")
+    cost_usd: float | None = Field(None, description="What the call cost in US dollars; none when it can't be told.")
+    seconds: float = Field(0.0, description="How long the call took, in seconds.")
+    outcome: Literal["ok", "invalid_output", "error", "refused"] = Field(
+        description="ok: an answer came back. invalid_output: the answer wasn't in the expected shape. error: the "
+        "call failed. refused: the provider said it refused the work under its own policy (its reason is in "
+        "error_detail)."
+    )
+    independence: Literal["other_account", "same_account"] | None = Field(
+        None,
+        description="For a check: other_account, run on an account that didn't write the work; same_account, on one "
+        "that did, as a fresh run the person accepted. None for other work.",
+    )
+    error_kind: str | None = Field(None, description="How the call failed, from the runner's own error; none if ok.")
+    no_work: bool = Field(
+        False,
+        description="The run did no work: the program only printed a banner, or the call was cut off by the computer "
+        "sleeping. It is no try, never sent back as a mistake, and counts for nothing in spending or in how well an "
+        "account is doing.",
+    )
+    error_detail: str | None = Field(None, description="The error's own text, for diagnosing a failure.")
+    started_at: datetime = Field(description="When the call started.")
+    knowledge: RunKnowledge | None = Field(None, description="What it was given from what was learned, and searched.")
+
+
+class Signal(Record):
+    """A correction by the person, the measure of how well the assistant does. The engine records one when the person
+    sends work back, undoes it, edits a draft or similar; nothing changes it."""
+
+    record_kind: ClassVar[str] = "signal"
+    prefix: ClassVar[str] = "SIG"
+
+    kind: Literal[
+        "sent_back",
+        "undone",
+        "dropped",
+        "reworded",
+        "pulled_back",
+        "draft_edited",
+        "held_declined",
+        "routed",
+        "set_aside",
+        "put_on_hold",
+        "taken_off_hold",
+        "kept",
+        "discarded",
+        "retired",
+        "narrowed",
+        "just_this_time",
+        "change_requested",
+        "answered_assistant",
+        "edited",
+        "not_now",
+        "no_reply_needed",
+        "missed",
+        "suggestion_dismissed",
+        "suggestion_chosen",
+        "review_time",
+        "answer_helpful",
+        "answer_not_helpful",
+        "confirmed",
+    ] = Field(
+        description="What the person did: sent_back, undone, dropped or reworded something the assistant made; "
+        "pulled_back an automatic change; draft_edited a draft before approving it; held_declined a held op; "
+        "routed, said who a name or an owner is; set_aside, moved a mail item to the Set aside folder by hand; "
+        "put_on_hold or taken_off_hold, changed whether an action waits for something; kept, discarded or retired "
+        "a piece of what the assistant learned (a lesson, glossary entry, routing entry, style note or standing rule); "
+        "narrowed, limited what a rule applies to; just_this_time, said a proposed piece of learning was right for "
+        "this case but is not a pattern; change_requested, asked for something the assistant made to be changed, in a "
+        "note on its row; answered_assistant, wrote an answer to a question the assistant asked them; edited, changed "
+        "fields the assistant had set (the note says which, from what to what); not_now, put off the rules review "
+        "line for its week (not a correction of anything the assistant made); no_reply_needed, said a reply the "
+        "assistant thought was owed is not; missed, said in a sentence what the assistant missed (the note is their "
+        'words); suggestion_dismissed, said "Not now" to a suggestion line on Today (the note says which line and '
+        "what it was when put off, so it stays off until something about it changes; it is not a correction); "
+        "suggestion_chosen, picked one of the choices a suggestion line offered (the note says which line, the choice "
+        "and what the line was; it is not a correction); review_time, the seconds spent looking over the assistant's "
+        "work on one screen (the note says which screen and how long; it is a measure, not a correction); "
+        "answer_helpful or answer_not_helpful, said one answer from Ask helped or didn't (the ref is the answer; "
+        'the note is "taken back" once the person undid it; a measure that teaches nothing by itself); confirmed, '
+        'said "All looks good" to a batch of the assistant\'s work on Today (the ref is the request, one signal for '
+        'each; the note is "taken back" once the person undid it; a measure, not a correction).'
+    )
+    refs: list[str] = Field(default_factory=list, description="The ids of the records the correction is about.")
+    run: str | None = Field(None, description="The id of the AI run whose work was corrected, when there was one.")
+    changeset: str | None = Field(
+        None, description="The id of the changeset the correction is about, when there is one."
+    )
+    note: str | None = Field(None, description="What the person said or changed, if anything.")
+    person: Annotated[str | None, RefTo("person")] = Field(
+        None, description="The person who made the correction, when it is counted for them (a missed one)."
+    )
+    learned: list[str] = Field(
+        default_factory=list,
+        description='The knowledge entries the person\'s own answer made (a glossary entry from "Not a project", for '
+        "example): what this correction teaches is already recorded, so no learning run is queued for it.",
+    )
+    at: datetime = Field(description="When the correction was made.")
+
+
+class Copy(Record):
+    """A message the person copied to send, kept exactly as copied: who it was for, when, and the questions and actions
+    it covered. It is what the sent message is matched against (6.35): the difference between the two is what the person
+    changed before sending. The engine writes it when a follow-up is marked as sent, when a drafted reply is copied and
+    when the draft made for an action is approved or copied; the person settles it when the message went out another
+    way or never went."""
+
+    record_kind: ClassVar[str] = "copy"
+    prefix: ClassVar[str] = "COPY"
+
+    kind: Literal["follow_up", "reply", "work"] = Field(
+        description="follow_up: the message to one person that lists their questions and actions; reply: the drafted "
+        "reply to a message that asked the person something; work: the draft the assistant made for an action, "
+        "approved or copied (the action stays open until the sent message is seen or the person ends it)."
+    )
+    person: Annotated[str | None, RefTo("person")] = Field(
+        None,
+        description="The person it was for; none when the reply is to a sender nobody knows (it is never matched).",
+    )
+    text: str = Field(description="The message exactly as copied.")
+    at: datetime = Field(description="When it was copied; copying the same message again moves it forward.")
+    questions: list[Annotated[str, RefTo("question")]] = Field(
+        default_factory=list, description="The questions the message covered."
+    )
+    actions: list[Annotated[str, RefTo("action")]] = Field(
+        default_factory=list, description="The actions the message covered (for a reply, the one it answers)."
+    )
+    sent_source: Annotated[str | None, RefTo("source")] = Field(
+        None, description="The sent message it was matched to, once there is one."
+    )
+    matched_at: datetime | None = Field(None, description="When it was matched to a sent message.")
+    settled: Literal["sent_another_way", "not_sent"] | None = Field(
+        None, description="The person's own answer to whether it went out, when no sent message was found."
+    )
+    ask_again_at: datetime | None = Field(
+        None, description="When to ask again whether it went out, after the person said it is still to send."
+    )
+
+
+class ValueList(Record):
+    """A list of the values a field may take, shown as a dropdown (design 5.1). The core and plugins ship its first
+    values; the person adds, renames and retires values with `list.add`, `list.rename` and `list.retire`. A retired
+    value is no longer offered, and records that have it keep it."""
+
+    record_kind: ClassVar[str] = "value_list"
+    prefix: ClassVar[str] = "LIST"
+    unique: ClassVar[tuple[tuple[str, ...], ...]] = (("name",),)
+
+    name: str = Field(
+        pattern=r"^([a-z0-9][a-z0-9-]*/)?[a-z0-9][a-z0-9-]*$",
+        description='The list\'s id: "project-status", or "<plugin>/<name>" for a plugin\'s list.',
+    )
+    label: str = Field(min_length=1, description="What the list is called on screen.")
+    values: list[str] = Field(default_factory=list, description="The values offered, in the order shown.")
+    retired: list[str] = Field(
+        default_factory=list, description="Values no longer offered that records may still hold."
+    )
+    tones: dict[str, Literal["ok", "warn", "danger", "neutral"]] = Field(
+        default_factory=dict,
+        description="How each value is colored: ok, warn, danger or neutral. A value with none reads the tone the core "
+        "ships for that wording, else neutral.",
+    )
+    meanings: dict[str, Literal["not_started", "open", "at_risk", "blocked", "done"]] = Field(
+        default_factory=dict,
+        description="What each value of a status list means: not_started, open, at_risk, blocked or done. Ranking, "
+        "at-risk lines, colors and completed read this, never the wording.",
+    )
+
+    @model_validator(mode="after")
+    def _distinct(self) -> ValueList:
+        everything = [v.strip() for v in (*self.values, *self.retired)]
+        if any(not v for v in everything):
+            raise ValueError("a list's values are words, not blanks")
+        if len({v.casefold() for v in everything}) != len(everything):
+            raise ValueError("a list holds each value once")
+        known = {*self.values, *self.retired}
+        if stray := (set(self.tones) | set(self.meanings)) - known:
+            raise ValueError(f"a tone or meaning is for a value on the list, not {sorted(stray)[0]!r}")
+        return self
+
+
+class ActRecipient(BaseModel):
+    """One person or address a message act goes to: the known person (an id) with the address their record gave when
+    the act was made, or an address alone for someone who isn't a known person."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    person: Annotated[str | None, RefTo("person")] = Field(
+        None, description="The known person it goes to, as an id; none for an address no known person holds."
+    )
+    address: str = Field(min_length=1, description="The address it goes to, as the act resolved it when it was made.")
+    kind: str | None = Field(
+        None,
+        description="Which way of reaching the person the address is (a key of their `how_to_reach`); the publisher "
+        "reads that key again from the person's record to see whether the address moved.",
+    )
+    role: Literal["to", "cc"] = Field("to", description="to: addressed to them; cc: copied to them.")
+    from_text: bool = Field(
+        False, description="True when the address was taken from text that came from outside, which is called out."
+    )
+    called_out: bool = Field(
+        False, description="True when whoever made the act asks the person to look at this recipient before the yes."
+    )
+
+
+class ActTarget(BaseModel):
+    """Where an act goes and what it does: a message's recipients, the saved messages a mailbox act changes, a
+    calendar's event (or an answer to one), or a file's folder."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["message", "mailbox", "calendar", "file"] = Field(description="message, mailbox, calendar or file.")
+    action: str | None = Field(
+        None,
+        description="What it does (send, reply, archive, create, answer, write and so on); none for an act made before "
+        "acts named one, which does the first of its kind's actions.",
+    )
+    recipients: list[ActRecipient] = Field(default_factory=list, description="Who a message goes to.")
+    about: list[str] = Field(
+        default_factory=list,
+        description="The ids of the saved messages a mailbox act changes, or of the one calendar entry an event act "
+        "moves, cancels or answers.",
+    )
+    calendar: str | None = Field(None, description="The calendar an event goes on, as the channel names it.")
+    when: str | None = Field(None, description="The time or day of an event, as canonical time text.")
+    folder: str | None = Field(None, description="The folder a file is written to or messages are moved to.")
+    label: str | None = Field(None, description="The label a mailbox act puts on messages.")
+    folder_name: str | None = Field(
+        None, description="What the person saw the picked folder called, when the channel's own id for it differs."
+    )
+    label_name: str | None = Field(
+        None, description="What the person saw the picked label called, when the channel's own id for it differs."
+    )
+    start: str | None = Field(None, description="When an event starts, as canonical time text.")
+    end: str | None = Field(None, description="When an event ends, as canonical time text.")
+    title: str | None = Field(None, description="What an event is called.")
+    alarm_minutes: int | None = Field(None, description="Minutes before the start an alarm rings.")
+    answer: Literal["accepted", "tentative", "declined", "propose"] | None = Field(
+        None, description="How an invitation is answered."
+    )
+    proposed_start: str | None = Field(None, description="The start a proposed new time suggests.")
+    proposed_end: str | None = Field(None, description="The end a proposed new time suggests.")
+
+
+class ActNoticeTitle(BaseModel):
+    """One item's title in a notice, with the data level it was allowed at."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, description="The item's title, as the notice shows it.")
+    level: Literal["open", "internal"] = Field(description="The item's data level; restricted never appears.")
+
+
+class ActNotice(BaseModel):
+    """What makes an act a notice: how many items wait and, for the titles form, which titles; or that it is the test
+    the person asked for."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    count: int = Field(ge=0, description="How many items wait for the person.")
+    titles: list[ActNoticeTitle] = Field(default_factory=list, description="The titles the notice shows, if any.")
+    test: bool = Field(False, description="True for the test the person asked for.")
+
+
+class ActTemplate(BaseModel):
+    """The template an act's content was rendered from, with the version it had then."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, description="The template's name.")
+    version: str = Field(min_length=1, description="The template's version when the content was rendered from it.")
+
+
+class ActApproval(BaseModel):
+    """The person's yes on one exact act: what it covered, who gave it and when, and the recipients they
+    acknowledged."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    fingerprint: str = Field(description="The hash of what the yes covers (see `engine/acts.py`).")
+    covers: dict[str, str] = Field(
+        default_factory=dict,
+        description="The hash of each part the yes covers (channel, target, content, template), so a difference can "
+        "say which part changed.",
+    )
+    by: Annotated[str, RefTo("person")] = Field(description="The person who said yes.")
+    at: AwareDatetime = Field(description="When they said it.")
+    acknowledged: list[str] = Field(
+        default_factory=list, description="The recipients called out that the yes acknowledged, by key."
+    )
+    standing_yes: Annotated[str | None, RefTo("standing_yes")] = Field(
+        None,
+        description="Set when the yes is the person's standing yes for reminders rather than their click on this act.",
+    )
+    shown: dict[str, Any] | None = Field(
+        None,
+        description="The exact content and target the yes was given on, in plain values (see `engine/acts.py`), kept "
+        "so that an act gone stale can say what is different now. None on a yes given before it was kept.",
+    )
+
+
+class ActWasApproved(BaseModel):
+    """What a yes covered, kept after the act went stale: who gave it, when, and the exact content and target it was
+    given on, so the screen can show what changed since."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    by: Annotated[str, RefTo("person")] = Field(description="The person who said yes.")
+    at: AwareDatetime = Field(description="When they said it.")
+    shown: dict[str, Any] | None = Field(
+        None, description="The content and target the yes was given on; None for a yes given before it was kept."
+    )
+
+
+class ActFailure(BaseModel):
+    """Why an act did not go out, as the channel classified it, never read from a service's own words."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["auth", "refused", "outage", "offline"] = Field(description="How it failed.")
+    reason: str = Field(description="Why, in plain words for the person.")
+    at: AwareDatetime = Field(description="When it failed.")
+
+
+class Act(Record):
+    """One thing the app does outside the workspace on the person's behalf (design 6.12): a message, a calendar change
+    or a file for someone. It moves draft, approved (the person's yes on this exact act), sending, then sent, failed or
+    uncertain; stale when what the yes covered changed, withdrawn when the person takes it back. Every change of state
+    is an outbound-tier op, so each is in the ledger; only the person approves, and only the publisher moves it from
+    approved onward."""
+
+    record_kind: ClassVar[str] = "act"
+    prefix: ClassVar[str] = "XACT"
+    record_label: ClassVar[str] = "act"
+
+    channel: str = Field(min_length=1, description="The channel that carries it out: `copy`, or a plugin's.")
+    account: str | None = Field(
+        None,
+        description="The account that carries it: the sign-in or mailbox it goes through, as `<kind>:<name>`. None for "
+        "an act on a channel that has no accounts.",
+    )
+    intended_channel: str | None = Field(
+        None,
+        description="The channel the draft named before acting was off for its account made it a copy; set only then, "
+        "so choosing another account can bring the channel back.",
+    )
+    target: ActTarget = Field(description="Where it goes.")
+    parts: dict[str, str] = Field(
+        default_factory=dict, description="The content in named parts (a subject, a body), exactly as it will go."
+    )
+    template: ActTemplate | None = Field(None, description="The template the content was rendered from, if any.")
+    status: Literal["draft", "approved", "sending", "sent", "failed", "uncertain", "stale", "withdrawn", "undone"] = (
+        Field("draft", description="Where it stands.")
+    )
+    approved: ActApproval | None = Field(
+        None, description="The person's yes; cleared by an edit or when it goes stale."
+    )
+    was_approved: ActWasApproved | None = Field(
+        None,
+        description="The yes that stopped covering the act, kept while it is stale so the screen can show what "
+        "changed; cleared by an edit, a new yes or taking it back.",
+    )
+    attempt_key: str | None = Field(None, description="The key the channel was called with for the latest attempt.")
+    attempt_at: AwareDatetime | None = Field(None, description="When the latest attempt started.")
+    service_id: str | None = Field(None, description="The id the service gave the sent act.")
+    failure: ActFailure | None = Field(None, description="Why it failed, when it did.")
+    undo_requested_at: AwareDatetime | None = Field(
+        None, description="When the person asked to take a sent act back, until the channel answers."
+    )
+    undone_at: AwareDatetime | None = Field(None, description="When the channel took a sent act back.")
+    undo_failure: ActFailure | None = Field(
+        None, description="Why the channel could not take it back; the act stays sent."
+    )
+    sent_at: AwareDatetime | None = Field(None, description="When it went out, or the person said it did.")
+    sent_by: Literal["publisher", "person"] | None = Field(
+        None, description="publisher: the channel confirmed it; person: they said it was sent."
+    )
+    made_by: Literal["assistant", "person", "reminders", "notices"] = Field(
+        "person",
+        description="What made the draft: the assistant, the person (an add-on's proposal the person applies is "
+        "theirs), the engine's own reminders, which draft only a reminder to the person themselves, or the engine's "
+        "own notices, which draft only a notice to the person's own address.",
+    )
+    notice: ActNotice | None = Field(
+        None,
+        description="For a notice act: what it was drafted from (how many items wait, the titles it may show with "
+        "their levels, or that it is a test). Only the engine's notices make one; the standing yes for notices "
+        "approves only an act that has this.",
+    )
+    reminder: Annotated[str | None, RefTo("action")] = Field(
+        None,
+        description="For a reminder act: the to-do it reminds the person of. Only the engine's reminders make one; the "
+        "standing yes approves only an act that has this.",
+    )
+    reminder_at: AwareDatetime | None = Field(
+        None,
+        description="For a reminder act: the reminder time it was drafted for, so one reminder time never gets two "
+        "acts and a snooze is noticed.",
+    )
+    run: Annotated[str | None, RefTo("run")] = Field(None, description="The AI run that wrote the draft, if one did.")
+    sources: list[Annotated[str, RefTo("source")]] = Field(
+        default_factory=list, description="The saved inputs the content draws on."
+    )
+    in_reply_to: Annotated[str | None, RefTo("source")] = Field(
+        None, description="The message this answers; the people in that thread are people it may address."
+    )
+    project: Annotated[str | None, RefTo("project")] = Field(None, description="The project it is about, if any.")
+    sensitivity: Literal["open", "internal", "restricted"] = Field(
+        "internal", description="The most sensitive level of what it draws on."
+    )
+    why: list[str] = Field(
+        default_factory=list,
+        description="Codes for why it is stale (content, target, template or channel), uncertain (lost_answer, "
+        "no_status or no_channel) or withdrawn (reminder_moved or reminder_ended); the screens word them.",
+    )
+
+
+class StandingYes(Record):
+    """The person's standing yes for reminders (design 6.12): one choice, on one account, that lets the engine approve a
+    reminder act that goes only to the person themselves (a message to their own address, or an event with an alarm on
+    the account's own calendar), on that account, rendered from the core's reminder template at the version the
+    person saw. Only the person's own `standing_yes.give` makes one and `standing_yes.end` ends it; it
+    never covers anything else, and it goes stale (stops approving) when the template, the account's acting switch or
+    the person's own address changes."""
+
+    record_kind: ClassVar[str] = "standing_yes"
+    prefix: ClassVar[str] = "XSY"
+    record_label: ClassVar[str] = "standing yes"
+
+    person: Annotated[str, RefTo("person")] = Field(description="The person whose own address or calendar it covers.")
+    account: str = Field(
+        min_length=1, description="The account it goes through, as `<kind>:<name>` (the sign-in or mailbox)."
+    )
+    channel: str = Field(min_length=1, description="The channel that account's reminders go through.")
+    form: Literal["mail", "calendar", "notice"] = Field(
+        description="calendar: an event with an alarm on the account's own calendar. mail: a message to the person's "
+        "own address. notice: a notice by mail to one of the person's own addresses (design 7.19), rendered from the "
+        "notice template."
+    )
+    address: str | None = Field(
+        None,
+        description="For mail or a notice: the person's own address as it was when they said yes. For mail, a "
+        "different address makes the yes stale; for a notice, so does the address no longer being one of theirs.",
+    )
+    template: ActTemplate = Field(description="The reminder or notice template and the version the person saw.")
+    given_at: AwareDatetime = Field(description="When the person gave it.")
+    ended_at: AwareDatetime | None = Field(None, description="When the person ended it; none while it stands.")
+
+
+class WorkView(Record):
+    """A named list of projects inside one side (design 6.32, "Views: one project under several roles"): the roles the
+    person works in within a side. A project can be in any number of views, and its sub-projects come with it. A view
+    only changes what a screen shows; it never files anything, never changes a project's side and never changes a data
+    level. Only the person's own `view.add`, `view.set` and `view.remove` write one."""
+
+    record_kind: ClassVar[str] = "view"
+    prefix: ClassVar[str] = "VIEW"
+    record_label: ClassVar[str] = "view"
+    unique: ClassVar[tuple[tuple[str, ...], ...]] = (("side", "name"),)
+
+    name: str = Field(min_length=1, max_length=80, description="What the view is called, in the person's words.")
+    label: str = Field(
+        min_length=1,
+        max_length=20,
+        description="A short word for the tag on a line that is in this view; the first word of the name when it is "
+        "left out.",
+    )
+    side: Annotated[str, RefTo("project", blocks_delete=False)] = Field(
+        description="The side the view is inside, as the id of the side's top project."
+    )
+    projects: list[Annotated[str, RefTo("project", blocks_delete=False)]] = Field(
+        default_factory=list,
+        description="The projects in the view, each inside its side. A project's sub-projects come with it. A project "
+        "that has been deleted is skipped when the view is read.",
+    )
+
+
+#: Record kind to its model. The order is the export order.
+REGISTRY: dict[str, type[Record]] = {
+    model.record_kind: model
+    for model in (
+        Person,
+        Organization,
+        Team,
+        Project,
+        Action,
+        Question,
+        Source,
+        Request,
+        Changeset,
+        Fact,
+        Rule,
+        CalendarEntry,
+        Series,
+        Note,
+        Lesson,
+        GlossaryEntry,
+        RoutingEntry,
+        StyleNote,
+        Run,
+        Signal,
+        File,
+        ToolRun,
+        JobRun,
+        SettingChange,
+        Look,
+        ScreenLook,
+        PromiseCount,
+        GateSample,
+        WeekPlan,
+        AuditEntry,
+        Answer,
+        SettingProposal,
+        Report,
+        Snapshot,
+        WatchRun,
+        TextVersion,
+        WorkingCopy,
+        ValueList,
+        Copy,
+        Act,
+        StandingYes,
+        WorkView,
+    )
+}
+
+#: The references in the evidence merged into an entry from other proposals of it.
+MORE_EVIDENCE_REFERENCES: list[tuple[str, str]] = [
+    ("more_evidence[].source", "source"),
+    ("more_evidence[].request", "request"),
+    ("more_evidence[].signal", "signal"),
+    ("more_evidence[].changeset", "changeset"),
+]
+
+#: The references every kind of knowledge has: what it was learned from, who kept it, what it applies to.
+KNOWLEDGE_REFERENCES: list[tuple[str, str]] = [
+    ("evidence.source", "source"),
+    ("evidence.request", "request"),
+    ("evidence.signal", "signal"),
+    ("evidence.changeset", "changeset"),
+    *MORE_EVIDENCE_REFERENCES,
+    ("kept_by", "person"),
+    ("applies_to.projects[]", "project"),
+    ("applies_to.people[]", "person"),
+    ("applies_to.except[]", "project"),
+]
+
+#: The references of a meeting's agenda items, on a calendar entry and on a series.
+AGENDA_REFERENCES = [
+    ("agenda[].action", "action"),
+    ("agenda[].question", "question"),
+    ("agenda[].note", "note"),
+    ("agenda[].added_by", "person"),
+]
+
+#: Fields that hold ids of other records, per kind, as (field, kind it points to). Used to check references.
+REFERENCES: dict[str, list[tuple[str, str]]] = {
+    "look": [("person", "person")],
+    "screen_look": [("person", "person")],
+    "promise_count": [("person", "person")],
+    "gate_sample": [("person", "person"), ("items[].source", "source")],
+    "week_plan": [("person", "person")],
+    "copy": [("person", "person"), ("questions[]", "question"), ("actions[]", "action"), ("sent_source", "source")],
+    "act": [
+        ("target.recipients[].person", "person"),
+        ("approved.by", "person"),
+        ("was_approved.by", "person"),
+        ("approved.standing_yes", "standing_yes"),
+        ("reminder", "action"),
+        ("run", "run"),
+        ("sources[]", "source"),
+        ("in_reply_to", "source"),
+        ("project", "project"),
+    ],
+    "standing_yes": [("person", "person")],
+    "person": [("team", "team"), ("org", "organization"), ("sides[]", "project")],
+    "team": [("members[]", "person")],
+    "project": [
+        ("owner", "person"),
+        ("parent", "project"),
+        ("roles[].person", "person"),
+        ("organization", "organization"),
+    ],
+    "action": [
+        ("project", "project"),
+        ("event", "event"),
+        ("series", "series"),
+        ("owners[].person", "person"),
+        ("owners[].team", "team"),
+        ("done_by[]", "person"),
+        ("reported_by", "person"),
+        ("promised_to[]", "person"),
+        ("said_by", "person"),
+        ("asker", "person"),
+        ("due_event", "event"),
+        ("proposed_event", "event"),
+        ("occurrence_of", "action"),
+        ("on_hold.on", "person"),
+        ("on_hold.on", "action"),
+        ("on_hold.on", "question"),
+        ("source", "source"),
+    ],
+    "question": [
+        ("to", "person"),
+        ("asker", "person"),
+        ("projects[]", "project"),
+        ("event", "event"),
+        ("series", "series"),
+        ("held_for.event", "event"),
+        ("held_for.series", "series"),
+        ("source", "source"),
+    ],
+    "source": [("projects[]", "project"), ("author", "person")],
+    "request": [
+        ("source", "source"),
+        ("changeset", "changeset"),
+        ("previous", "request"),
+        ("follows", "changeset"),
+        ("follows_also[]", "changeset"),
+        ("folded_into", "request"),
+        ("superseded_by", "request"),
+        ("may_answer[]", "action"),
+        ("project", "project"),
+    ],
+    "changeset": [("request", "request"), ("run", "run")],
+    "fact": [
+        ("project", "project"),
+        ("event", "event"),
+        ("series", "series"),
+        ("source", "source"),
+        ("supersedes", "fact"),
+        ("said_by", "person"),
+    ],
+    "rule": [
+        *MORE_EVIDENCE_REFERENCES,
+        ("kept_by", "person"),
+        ("applies_to.projects[]", "project"),
+        ("applies_to.people[]", "person"),
+        ("applies_to.except[]", "project"),
+    ],
+    "signal": [("run", "run"), ("changeset", "changeset"), ("person", "person")],
+    "event": [
+        ("project", "project"),
+        ("series", "series"),
+        ("source", "source"),
+        ("organizer.person", "person"),
+        ("attendees[].person", "person"),
+        ("people[]", "person"),
+        ("proposed_guests[]", "person"),
+        ("reminder", "action"),
+        *AGENDA_REFERENCES,
+    ],
+    "series": [("project", "project"), ("source", "source"), *AGENDA_REFERENCES],
+    "view": [("side", "project"), ("projects[]", "project")],
+    "note": [("project", "project"), ("question", "question"), ("source", "source")],
+    "lesson": [*KNOWLEDGE_REFERENCES, ("signal", "signal")],
+    "glossary_entry": [*KNOWLEDGE_REFERENCES, ("project", "project")],
+    "routing_entry": [*KNOWLEDGE_REFERENCES, ("person", "person"), ("team", "team")],
+    "style_note": list(KNOWLEDGE_REFERENCES),
+    "run": [("request", "request")],
+    "file": [("project", "project"), ("replaces", "file"), ("from_person", "person")],
+    "working_copy": [("file", "file"), ("returned_file", "file"), ("proposal", "text_version")],
+    "answer": [("request", "request")],
+    "setting_proposal": [("request", "request")],
+    "report": [("request", "request")],
+}
+
+
+def model_for(kind: str) -> type[Record]:
+    try:
+        return REGISTRY[kind]
+    except KeyError:
+        raise KeyError(f"unknown record kind {kind!r}") from None
+
+
+def values_at(data: object, path: str) -> list[object]:
+    """The values at a reference path such as "owner", "members[]" or "owners[].person"."""
+    if not path:
+        return [data]
+    head, _, rest = path.partition(".")
+    if head.endswith("[]"):
+        items = data.get(head[:-2], []) if isinstance(data, dict) else []
+        return [v for item in items for v in values_at(item, rest)]
+    if not isinstance(data, dict):
+        return []
+    return values_at(data.get(head), rest)
+
+
+def referrers(view: Any, kind: str, record_id: str) -> list[tuple[str, str]]:
+    """Every live record that refers to this one, as (kind, id), from the declared references."""
+    found = []
+    for other_kind, refs in REFERENCES.items():
+        paths = [path for path, target in refs if target == kind]
+        if not paths:
+            continue
+        for stored in view.list(other_kind):
+            if any(record_id in values_at(stored.data, p) for p in paths):
+                found.append((other_kind, stored.id))
+    return found
+
+
+def kind_label(model: type[BaseModel] | None, kind: str) -> str:
+    """What one record of a kind is called in words: its `record_label`, else its id's last part with spaces."""
+    label = getattr(model, "record_label", "") if model is not None else ""
+    return label or kind.rsplit("/", 1)[-1].replace("-", " ").replace("_", " ")

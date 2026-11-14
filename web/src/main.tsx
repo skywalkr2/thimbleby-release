@@ -1,0 +1,96 @@
+import "@fontsource-variable/inter";
+import "@fontsource-variable/fraunces";
+import "./theme/tokens.css";
+import "./styles.css";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { StrictMode, type ReactNode } from "react";
+import { createRoot } from "react-dom/client";
+import { App } from "./App";
+import { preloadScreens } from "./lib/lazy-screen";
+import { api, ApiError, setRequestTimeouts, type S } from "./lib/api";
+import { ToastProvider } from "./lib/toasts";
+import { WordingProvider, useWords } from "./lib/wording";
+import { OwnRequestsProvider } from "./components/HandIn";
+import { Button } from "./ui/Button";
+import { ScreenBoundary } from "./ui/PartBoundary";
+import { initAppearance } from "./lib/theme";
+import { installInputMode } from "./lib/input-mode";
+import { setClockZone, setTimePrefs } from "./lib/dates";
+import { useSides } from "./lib/sides";
+import { setTitleWords } from "./lib/title-dates";
+
+const client = new QueryClient({
+  defaultOptions: { queries: { staleTime: 30_000, refetchOnWindowFocus: true, retry: 1 } },
+});
+
+function Problem(props: { signedOut: boolean }) {
+  const { t } = useWords();
+  return (
+    <main id="main" className="problem">
+      <h1>{t(props.signedOut ? "app.signed_out_title" : "app.unreachable_title")}</h1>
+      <p>{t(props.signedOut ? "app.signed_out" : "app.unreachable")}</p>
+      {!props.signedOut && (
+        <Button variant="primary" icon="refresh" onClick={() => window.location.reload()}>
+          {t("action.try_again")}
+        </Button>
+      )}
+    </main>
+  );
+}
+
+/** The wording with the names the app has now: a renamed assistant or app reads right on every screen, with no reload. */
+function LiveWording(props: { rc: S["RuntimeConfig"]; children: ReactNode }) {
+  const fresh = useQuery({ queryKey: ["runtime-config"], queryFn: api.runtimeConfig, initialData: props.rc, staleTime: Infinity });
+  const rc = fresh.data;
+  // A person with only their own life reads no word of work: the sheet's `.just_me` variants stand in.
+  const { justMe } = useSides();
+  // Every moment on every screen is written on the person's own clock, not the computer's.
+  setClockZone(rc.timezone);
+  setTitleWords(rc.title_words);
+  setTimePrefs({ format: rc.time_format, step: rc.time_step });
+  return (
+    <WordingProvider
+      overrides={rc.wording}
+      base={{ assistant: rc.assistant_name, workspace: rc.workspace_name }}
+      unnamed={rc.assistant_named === false}
+      justMe={justMe}
+      locale={rc.language}
+    >
+      {props.children}
+    </WordingProvider>
+  );
+}
+
+function start(rc: S["RuntimeConfig"]) {
+  setRequestTimeouts(rc.request_timeout_seconds, rc.long_request_timeout_seconds);
+  initAppearance(rc);
+  installInputMode();
+  // The phone layout applies from the first paint, not after the first render.
+  if (typeof window.matchMedia === "function") {
+    document.documentElement.toggleAttribute("data-narrow", window.matchMedia(`(max-width: ${rc.narrow_below_px - 1}px)`).matches);
+  }
+  preloadScreens();
+  createRoot(document.getElementById("root")!).render(
+    <StrictMode>
+      <QueryClientProvider client={client}>
+        <LiveWording rc={rc}>
+          <ToastProvider seconds={rc.toast_seconds}>
+            <OwnRequestsProvider>
+              <ScreenBoundary>
+                <App rc={rc} />
+              </ScreenBoundary>
+            </OwnRequestsProvider>
+          </ToastProvider>
+        </LiveWording>
+      </QueryClientProvider>
+    </StrictMode>,
+  );
+}
+
+api.runtimeConfig().then(start, (err: unknown) => {
+  createRoot(document.getElementById("root")!).render(
+    <WordingProvider>
+      <Problem signedOut={err instanceof ApiError && err.status === 401} />
+    </WordingProvider>,
+  );
+});

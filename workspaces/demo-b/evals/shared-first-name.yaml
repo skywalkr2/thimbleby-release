@@ -1,0 +1,21 @@
+id: shared-first-name
+title: A first name two people share
+skills: [owners]
+received: '2026-10-09'
+pasted: 'Events: Maya will send the guest list for the launch reading by Nov 20.'
+expect:
+- held: who-is
+  options: 2
+forbid:
+- op: event.add
+stub_answer:
+  summary: One action; the owner's name is ambiguous.
+  ops:
+  - op: action.add
+    text: Send the guest list for the launch reading
+    owners:
+    - Maya
+    due: '2026-11-20'
+    project: PRJ-1
+    evidence:
+      quote: Maya will send the guest list for the launch reading by Nov 20

@@ -1,0 +1,253 @@
+// Journey 7, the batch's closing proof: a person's whole first evening on a fresh workspace, from the first setup field
+// to a working Today. A workspace made by the init command with no template, started by the serve command, beside the
+// fake outside services (tests/fake_services.py, started with --evening): an AI service whose model list opens with a
+// retired model, and a mailbox and calendar that hold a booking confirmation for an appointment the calendar also has,
+// a one-time code from a no-reply sender, and a bill. Nothing is touched by hand: the page, the fake services and the
+// file the app prints are all the journey reads. Names come from the fictional workspace the fake services serve.
+//
+// What the fakes can't produce, and what is asserted instead:
+// - the sent folder taken by itself is for the plain mailbox; this journey signs in to the add-on, and the first look at the mail
+//   step shows no read list any more, so choosing the Sent folder is on Sources (its own tests);
+// - a failed check that names the retired model needs the app to pick it; the app never does, so the journey asserts the
+//   pick is a usable model and the retired one is not on offer (the replace line is covered by WelcomeAi.test.tsx).
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { expect } from "@playwright/test";
+import { test } from "./test";
+import { choose } from "./choose";
+import { collectProblems, fakeAddress, openView, pressStart, startOnToday, visit, widerThanWindow, type Info, type Requests, type SignInSeen } from "./journey-helpers";
+import { openScreen, screenReady } from "./open-screen";
+
+const FAKE = fakeAddress("JOURNEY_EVENING_FAKE_PORT", 8761);
+const RETIRED = "fake-retired-text";
+const HALL = "Maple Hall";
+const BILL_LINE = "Pay the water bill of $84.20 by 2026-11-05.";
+
+let info: Info;
+const problems: string[] = [];
+
+const requests = async (): Promise<Requests> => (await fetch(`${FAKE}/__e2e/ai-requests`)).json();
+const service = async (): Promise<SignInSeen> => (await fetch(`${FAKE}/__e2e/sign-in`)).json();
+const restarts = (): number => (existsSync(String(info.app_log)) ? readFileSync(String(info.app_log), "utf8").match(/Restarting, as asked/g) ?? [] : []).length;
+
+test.describe.serial("journey: a first evening", () => {
+  test.beforeAll(async () => {
+    info = await (await fetch(`${FAKE}/__e2e/info`)).json();
+  });
+
+  test.afterAll(() => {
+    expect(problems.filter((p) => !p.includes("Failed to load resource"))).toEqual([]);
+  });
+
+  test("J7. A first evening: a fresh workspace from setup to a working Today", async ({ page }) => {
+    test.setTimeout(240_000);
+    collectProblems(page, problems);
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const installed = join(String(info.install_target), "journey_mail");
+    expect(existsSync(installed)).toBe(false);
+    const [me, friend] = info.people;
+
+    await openScreen(page, "", info.token);
+    await expect(page.getByRole("heading", { level: 1, name: "Getting started" })).toBeVisible();
+    await pressStart(page);
+    const main = page.locator("main#main");
+
+    // 1. You: the cursor is on the step's heading, not in a field; only the name and the time zone are asked (the
+    // workspace's name and the assistant's, Reginald, are Settings'); the time zone is one list to pick from.
+    await expect(main.getByRole("heading", { level: 2, name: "You" })).toBeVisible();
+    expect(await widerThanWindow(page, "You")).toEqual([]);
+    const fullName = main.getByLabel("Your full name");
+    await expect(main.getByRole("heading", { level: 2, name: "You" })).toBeFocused();
+    await expect(fullName).not.toBeFocused();
+    await fullName.click();
+    await page.keyboard.type(me);
+    await expect(main.getByLabel("Workspace name")).toHaveCount(0);
+    await expect(main.getByLabel("Your assistant's name")).toHaveCount(0);
+    await expect(main.getByRole("radio")).toHaveCount(0);
+    const zone = main.getByRole("combobox", { name: "Your time zone" });
+    await expect(main.getByRole("searchbox")).toHaveCount(0);
+    await zone.click();
+    const choice = page.getByRole("listbox").getByRole("option", { name: /Los Angeles/ });
+    await expect(choice).toBeVisible();
+    await choice.click();
+    await expect(zone).toHaveText(/Los Angeles/);
+    await visit(page);
+    await main.getByRole("button", { name: "Continue" }).click();
+    await screenReady(page);
+
+    // 1b. What it's for, on its own screen: your own life is always included, then two tick boxes. A job shows the notice
+    // about work mail; leaving both unticked is just me, which the evening is.
+    await expect(main.getByRole("heading", { level: 2, name: "What it's for" })).toBeVisible();
+    await expect(main.getByRole("radio")).toHaveCount(0);
+    await expect(main.getByRole("checkbox")).toHaveCount(2);
+    await expect(main.getByText("Your own life is always included.")).toBeVisible();
+    await main.getByRole("checkbox", { name: "A job" }).check();
+    await expect(main.getByRole("note")).toContainText("may need your employer's permission");
+    await main.getByRole("checkbox", { name: "A job" }).uncheck();
+    await expect(main.getByRole("note")).toHaveCount(0);
+    await main.getByRole("button", { name: "Continue" }).click();
+    await screenReady(page);
+
+    // 2. The AI account, by key, against a service whose list opens with a retired model: the pick is a usable one.
+    await expect(main.getByRole("heading", { level: 2, name: "Your AI account" })).toBeVisible();
+    expect(await widerThanWindow(page, "Your AI account")).toEqual([]);
+    await main.getByRole("radio", { name: /Something else/ }).check();
+    await main.getByRole("button", { name: /^Another service/ }).click();
+    await main.getByLabel(/^Another service/).check();
+    await main.locator("#ai-key").fill("a-made-up-key");
+    await main.getByRole("textbox", { name: "Service address" }).fill(info.ai_base_url);
+    await main.getByRole("textbox", { name: "Service address" }).blur();
+    await expect(main.getByText("Works. Ready to use.")).toBeVisible();
+    // The model is picked for the person and never shown here; the account that is saved holds a usable one.
+    await expect(main.getByLabel("AI model for everyday work")).toHaveCount(0);
+    await expect(main.getByText(/no longer offered|has been deprecated/)).toHaveCount(0);
+    await main.getByRole("radio", { name: /^Yes/ }).check();
+    await visit(page);
+    await main.getByRole("button", { name: "Continue" }).click();
+    await screenReady(page);
+    await expect(main.getByRole("heading", { level: 2, name: "Mail and calendar" })).toBeVisible();
+    const saved = JSON.stringify(await page.evaluate(async () => (await fetch("api/ai/accounts", { credentials: "same-origin" })).json()));
+    expect(saved).not.toContain(RETIRED);
+    expect(saved).toMatch(/fake-(small|large)/);
+
+    // 3. Mail and calendar: the row is one line and one Connect button; one click adds the add-on, restarts once and opens the sign-in in a
+    // popup; the app's window never goes to the service.
+    await expect(main.getByRole("heading", { level: 2, name: "Mail and calendar" })).toBeVisible();
+    const row = main.locator('[data-service="journey-mail"]');
+    await expect(row).toHaveAttribute("data-state", "not_installed");
+    await expect(row.locator("[data-needs-addon]")).toContainText("The app restarts for a few seconds first");
+    expect(restarts()).toBe(0);
+    // No setup step is wider than the window, the mail step with the add-on line shown included.
+    const wide = await widerThanWindow(page, "Mail and calendar");
+    expect(wide).toEqual([]);
+    const appAddress = page.url();
+    // The bill is read by a scripted answer, so its amount and due day are the ones in the mail.
+    await fetch(`${FAKE}/__e2e/script`, {
+      method: "POST",
+      body: JSON.stringify({
+        when: BILL_LINE,
+        answer: {
+          summary: "Read by the journey's script.",
+          ops: [{ op: "action.add", text: "Pay the water bill, $84.20.", owners: ["me"], due: "2026-11-05", basis: "said", evidence: { quote: BILL_LINE } }],
+        },
+      }),
+    });
+    await row.getByRole("button", { name: /^Connect Example mail/ }).click();
+    const signInButton = main.getByRole("button", { name: "Sign in to Example mail", exact: true });
+    await expect(signInButton).toBeVisible({ timeout: 120_000 });
+    const [popup] = await Promise.all([page.waitForEvent("popup", { timeout: 60_000 }), signInButton.click()]);
+    // The add-on went into the throwaway place this app installs into, and nowhere in the computer's own add-ons place.
+    expect(existsSync(installed)).toBe(true);
+    expect(existsSync(join(String(info.real_install_target), "journey_mail"))).toBe(false);
+    expect(restarts()).toBe(1);
+    expect(page.url()).toBe(appAddress);
+    await popup.waitForEvent("close", { timeout: 60_000 }).catch(() => undefined);
+    await expect(main.locator("[data-mail-result]")).toContainText("Example mail is connected.", { timeout: 90_000 });
+    await main.getByRole("button", { name: "Connect another" }).click();
+    await expect(main.getByText(/Signed in as .+@example\.com/)).toBeVisible();
+    expect(page.url()).not.toMatch(/code=|state=|sign_in=/);
+    await main.getByRole("button", { name: "Continue" }).click();
+
+    // 4. No screen of its own for the first look at the mail: the Start is on Today, and nothing is asked before it.
+    expect((await requests()).work).toBe(0);
+    // Backups, then People.
+    await expect(main.getByRole("heading", { level: 2, name: "Backups" })).toBeVisible();
+    expect(await widerThanWindow(page, "Backups")).toEqual([]);
+    await main.getByLabel("Folder", { exact: true }).fill(info.backup_folder);
+    await main.getByRole("button", { name: "Continue" }).click();
+
+    // 5. People by relation.
+    await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible();
+    expect(await widerThanWindow(page, "People")).toEqual([]);
+    const addRow = main.getByRole("form", { name: "Add someone" });
+    await addRow.getByLabel("Name").fill(friend);
+    await choose(addRow.getByLabel("Who they are"), { label: "my friend" });
+    await addRow.getByRole("button", { name: "Add", exact: true }).click();
+    // The people added so far are their own list; the suggestions above it may still show the same name for a moment.
+    await expect(main.getByRole("region", { name: "The people in your life" }).getByRole("listitem").filter({ hasText: friend })).toContainText("my friend");
+    await visit(page);
+    await main.getByRole("button", { name: "Continue" }).click();
+    // Headed Done when every counted step is done, else where things stand.
+    await expect(main.getByRole("heading", { level: 2, name: /^(Done|Where things stand|You're set\.)$/ })).toBeVisible();
+    expect(await widerThanWindow(page, "Done")).toEqual([]);
+    const recap = main.getByRole("list", { name: "What was set up" });
+    for (const step of ["workspace", "work", "ai", "mail", "backup", "people"]) await expect(recap.locator(`[data-step="${step}"]`)).toContainText("Done");
+    await main.getByRole("button", { name: "Go to Today" }).click();
+
+    // 6. Today. The bill and the rest are read under its Start, so they are on screen after it.
+    await expect(page.getByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening)/ })).toBeVisible();
+    // Setting up never asks for a restart: everything setup saves is taken in at once.
+    const status = (await (await page.request.get("api/status", { headers: { Authorization: `Bearer ${info.token}` } })).json()) as { restart_needed: string | null; restart_for: string[] };
+    expect(status.restart_for, "settings that wait for a restart after setup").toEqual([]);
+    expect(status.restart_needed).toBeNull();
+    await startOnToday(page);
+    await expect.poll(async () => (await requests()).work, { timeout: 90_000 }).toBeGreaterThan(0);
+    const header = page.getByRole("banner");
+    // The header has no assistant button. This is a person with only their own life, so the search field says what it finds in
+    // those words, and its Ask row (in the list under the field) names the assistant.
+    const search = header.getByRole("searchbox");
+    await expect(search).toHaveAttribute("placeholder", "A person or a to-do");
+    await search.click();
+    await expect(page.getByRole("list", { name: "Results" }).getByRole("button", { name: /^Ask Reginald/ })).toBeVisible();
+    await page.keyboard.press("Escape");
+    // Missed something? is an entry of the Help menu (it is no longer a button in the header).
+    await header.getByRole("button", { name: "Help" }).click();
+    await expect(page.getByRole("menuitem", { name: /^Report something .* missed$/ })).toBeVisible();
+    await page.keyboard.press("Escape");
+    // Nothing reaches past the right edge of a 1280 wide window.
+    const past = await page.evaluate(() =>
+      Array.from(document.querySelectorAll("header *, [role=banner] *")).filter((el) => el.getBoundingClientRect().right > window.innerWidth + 0.5).map((el) => el.tagName + ":" + (el.textContent ?? "").slice(0, 30)),
+    );
+    expect(past).toEqual([]);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+    // The calendar's entry two days ahead is not on Today's card, which lists today only; it is on the Schedule screen once,
+    // and the booking made no second entry and no clash.
+    // The fake calendar's two back-to-back meetings in different rooms are a real clash line; the appointment is in none.
+    await expect(page.locator('[data-queue-line="clash"]').filter({ hasText: HALL })).toHaveCount(0);
+    await page.evaluate(() => {
+      window.location.hash = "schedule";
+    });
+    await expect(page.getByRole("heading", { level: 1, name: "Schedule", exact: true })).toBeVisible();
+    await page.getByRole("tab", { name: "Week", exact: true }).click();
+    const agenda = page.locator("main");
+    // The appointment is two days ahead of the workspace's today, so near the end of a week it is in the next one.
+    const today = await page.locator("ul[data-day][data-today]").first().getAttribute("data-day");
+    const ahead = new Date(`${today}T12:00:00Z`);
+    ahead.setUTCDate(ahead.getUTCDate() + 2);
+    if ((await page.locator(`ul[data-day="${ahead.toISOString().slice(0, 10)}"]`).count()) === 0) {
+      await page.getByRole("button", { name: "Next week", exact: true }).click();
+    }
+    await expect(agenda.getByText(HALL).first()).toBeVisible({ timeout: 60_000 });
+    await expect(agenda.getByText(new RegExp(HALL))).toHaveCount(1);
+    await visit(page);
+
+    // The one-time code is set aside under notices, and is not in What changed, which is the history of the work.
+    // It is on Handled for you, in the group of its reason, which is collapsed until it is opened.
+    await openView(page, "Handled for you");
+    const handled = page.locator("[data-handled]");
+    await expect(handled.locator("[data-group]").first()).toBeVisible({ timeout: 60_000 });
+    const shut = handled.locator("[data-group] > h2 button[aria-expanded=false]");
+    for (let closed = await shut.count(); closed > 0; closed = await shut.count()) await shut.first().click();
+    await expect(handled.getByText("Your verification code")).toBeVisible();
+    await openView(page, "What changed");
+    await expect(page.getByText("Your verification code")).toHaveCount(0);
+
+    // The bill is a to-do with its amount and due day. Nothing is beside Personal here, so the row has no place words: the
+    // person has no other place it could be.
+    await openView(page, "To-dos and questions");
+    const bill = page.getByRole("listitem").filter({ hasText: "Pay the water bill" });
+    await expect(bill).toHaveCount(1, { timeout: 60_000 });
+    await expect(bill).toContainText("$84.20");
+    await expect(bill).toContainText(/Nov(ember)? 5|2026-11-05|5 Nov/);
+    await expect(bill).not.toContainText("Personal");
+
+    // Nothing on the Knowledge page says a word is not known yet.
+    await openView(page, "Knowledge");
+    await expect(page.getByRole("heading", { level: 2, name: "Your words" })).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByText(/not known yet/i)).toHaveCount(0);
+
+    expect(restarts()).toBe(1);
+    expect((await service()).unauthorized).toBe(0);
+  });
+});

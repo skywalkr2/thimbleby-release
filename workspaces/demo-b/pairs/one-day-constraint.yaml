@@ -1,0 +1,58 @@
+id: one-day-constraint
+title: A note about one Tuesday stays that Tuesday; the assistant never learns "on Tuesdays" from it
+skills: [dates, use-lesson]
+negative: true
+first:
+  received: '2026-10-09'
+  project: PRJ-1
+  pasted: |-
+    From: Theo Brandt
+    Subject: Cover review call
+
+    Can we hold the cover review call on Tuesday, October 13 at 10:30?
+  wrong:
+    summary: A cover review call on October 13.
+    ops:
+    - op: event.add
+      title: Cover review call
+      start: '2026-10-13T10:30:00+00:00'
+      end: '2026-10-13T11:00:00+00:00'
+      project: PRJ-1
+      evidence:
+        quote: Can we hold the cover review call on Tuesday, October 13 at 10:30
+  correction:
+    kind: sent_back
+    note: I'm unavailable after 9 that Tuesday, so the call has to be earlier.
+  expect_proposal: none
+later:
+  received: '2026-10-21'
+  project: PRJ-1
+  pasted: |-
+    From: Theo Brandt
+    Subject: Proof check call
+
+    Can we hold the proof check call on Tuesday, October 27 at 10:30?
+  expect:
+  - op: event.add
+    text_has: [proof]
+    start: '2026-10-27T10:30:00+00:00'
+  # the fact beside the calendar entry is allowed
+  allow:
+  - fact
+  expect_proposal: none
+ideal:
+  learn:
+    summary: Nothing to generalize.
+    topic: one Tuesday's availability
+    ops: []
+  later:
+    summary: A proof check call on October 27.
+    topic: proof check call
+    ops:
+    - op: event.add
+      title: Proof check call
+      start: '2026-10-27T10:30:00+00:00'
+      end: '2026-10-27T11:00:00+00:00'
+      project: PRJ-1
+      evidence:
+        quote: Can we hold the proof check call on Tuesday, October 27 at 10:30

@@ -1,0 +1,69 @@
+[project]
+name = "thimbleby"
+version = "0.1.0"
+description = "A generic, extensible AI-assisted cockpit for running projects."
+readme = "README.md"
+license = "FSL-1.1-ALv2"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pydantic>=2.8",
+    "pyyaml>=6.0",
+    "httpx>=0.27",
+    "packaging>=24",
+    "pypdf>=5",
+    "cryptography>=43",
+    "python-dateutil>=2.9",
+    "tzdata>=2025.2",
+    "icalendar>=6",
+]
+
+[project.optional-dependencies]
+# What the installed desktop app adds: the tray or menu-bar item (`engine/launcher.py`). The command-line install
+# doesn't need them.
+desktop = [
+    "pystray>=0.19",
+    "pillow>=10",
+]
+
+[project.scripts]
+thimbleby = "engine.cli:main"
+cockpit = "engine.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-xdist>=3.6",
+    "ruff>=0.6",
+    "time-machine>=2.15",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["engine", "api", "plugins"]
+
+# Copies templates, the catalog, the built web screens and the demo workspaces into engine/_shipped/ (hatch_build.py).
+[tool.hatch.build.targets.wheel.hooks.custom]
+
+[tool.hatch.build.targets.sdist]
+artifacts = ["web/dist"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = ["docs", "workspaces"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q -n auto"  # parallel (pytest-xdist); add -n0 to run one test with a debugger or print output
+# A full run makes several gigabytes of throwaway workspaces: keep only the failed tests' ones, from the last run.
+tmp_path_retention_policy = "failed"
+tmp_path_retention_count = 1

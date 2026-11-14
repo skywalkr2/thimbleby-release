@@ -1,0 +1,159 @@
+// Which knowledge shaped a piece of the assistant's work (design 6.20, 7.18). Its card shows what the run was given and
+// applied: "Because you told me: <entry>", linked to the entry. When the work was wrong because of a wrong entry, the
+// entry's menu has "This doesn't apply here": leave one project out of it, or retire it, right there, at once with Undo.
+// A first run on an account that stands in for another says so.
+import { useQuery } from "@tanstack/react-query";
+import { useId, useState } from "react";
+import { api, type S } from "../lib/api";
+import { useAct } from "../lib/act";
+import { narrowedWithout } from "../lib/reach";
+import { useReadable } from "../lib/readable";
+import { recordView, viewHref } from "../lib/views";
+import { useWords } from "../lib/wording";
+import { RowMenu } from "./RowMenu";
+import styles from "./Learned.module.css";
+import { Button } from "../ui/Button";
+import { Select } from "../ui/Select";
+import { FormField } from "../ui/FormField";
+import { Actions } from "../ui/Actions";
+type Entry = S["AppliedEntryView"];
+
+/** Where an entry opens. */
+/** Where an applied entry opens: a rule or fact has its own page; other learned guidance is listed on the Knowledge screen. */
+export function entryHref(entry: Pick<Entry, "kind" | "id">): string {
+  return entry.kind === "rule" || entry.kind === "fact"
+    ? viewHref(recordView(entry.kind, entry.id))
+    : viewHref("records/knowledge");
+}
+
+/** What an entry can still be narrowed or retired from a card: only a piece of learned guidance that is active. */
+const canChange = (entry: Entry) => entry.kind !== "fact" && entry.status === "active";
+
+export function Because(props: { cs: S["ChangesetView"] }) {
+  const { t, has } = useWords();
+  const applied = props.cs.applied ?? [];
+  const omitted = props.cs.omitted ?? [];
+  const account = props.cs.first_on_account;
+  if (!applied.length && !account && !omitted.length) return null;
+  return (
+    <>
+      {omitted.length > 0 && (
+        <ul className={styles.because} aria-label={t("omitted.label")}>
+          {omitted.map((o, i) => (
+            <li key={`${o.op}-${i}`} className={styles.becauseItem} data-omitted={o.op}>
+              {t("omitted.line", { what: omittedWhat(o.op, t, has), reason: o.reason })}
+            </li>
+          ))}
+        </ul>
+      )}
+      {account && <p className="hint">{t("because.first_run", { account })}</p>}
+      {applied.length > 0 && (
+        <ul className={styles.because} aria-label={t("because.label")}>
+          {applied.map((entry) => (
+            <AppliedItem key={entry.id} entry={entry} />
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+
+/** What a left-out op would have done, in words; an op with no wording is "something". */
+function omittedWhat(op: string, t: (key: string) => string, has: (key: string) => boolean): string {
+  const key = [`op.would.${op}`, `op.${op}`].find((k) => has(k));
+  return key ? t(key) : t("omitted.something");
+}
+
+function AppliedItem(props: { entry: Entry }) {
+  const { t } = useWords();
+  const { entry } = props;
+  const readable = useReadable();
+  const words = readable(entry.text);
+  const [open, setOpen] = useState(false);
+  return (
+    <li className={styles.becauseItem} data-applied={entry.id}>
+      <span>{t("because.told")}</span>
+      <a className={styles.becauseText} href={entryHref(entry)}>
+        {words}
+      </a>
+      {canChange(entry) && (
+        <RowMenu label={words} actions={[{ id: "not-here", label: t("because.not_here"), run: () => setOpen(true) }]} />
+      )}
+      {open && (
+        <div className={styles.becauseForm}>
+          <NotHere entry={entry} onClose={() => setOpen(false)} />
+        </div>
+      )}
+    </li>
+  );
+}
+
+/** The projects a leave-out can name: those an entry for a list of projects names (when more than one), else every
+ * project it doesn't already leave out. */
+function candidates(entry: Entry, all: S["ProjectView"][]): S["ProjectView"][] {
+  const scope = entry.applies_to;
+  if (!scope) return [];
+  return all.filter((p) => !p.side && narrowedWithout(scope, p.id) !== null && (scope.scope !== "projects" || (scope.projects ?? []).includes(p.id)));
+}
+
+function NotHere(props: { entry: Entry; onClose: () => void }) {
+  const { t } = useWords();
+  const act = useAct();
+  const id = useId();
+  const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects });
+  const [project, setProject] = useState("");
+  const { entry } = props;
+  const choices = candidates(entry, projects.data ?? []);
+  const scope = entry.applies_to && project ? narrowedWithout(entry.applies_to, project) : null;
+  const narrow = () =>
+    scope &&
+    act(
+      () => api.narrowKnowledge(entry.id, { read_version: entry.version, applies_to: scope }),
+      (done) => ({ message: t("toast.narrowed"), undo: () => api.undo(done.changeset) }),
+    ).then((done) => done && props.onClose());
+  const retire = () =>
+    act(
+      () => api.retireKnowledge(entry.id, entry.version),
+      (done) => ({ message: t("toast.retired"), undo: () => api.undo(done.changeset) }),
+    ).then((done) => done && props.onClose());
+  return (
+    <form
+      className="answer-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void narrow();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") props.onClose();
+      }}
+    >
+      {choices.length > 0 ? (
+        <FormField id={id} label={t("because.leave_out")}>
+          <Select id={id} autoFocus value={project} onChange={(e) => setProject(e.target.value)}>
+            <option value="">{t("because.choose_project")}</option>
+            {choices.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </Select>
+        </FormField>
+      ) : (
+        <p className="hint">{t("because.only_retire")}</p>
+      )}
+      <Actions align="end">
+        <Button variant="quiet" onClick={props.onClose}>
+          {t("action.cancel")}
+        </Button>
+        <Button autoFocus={choices.length === 0} onClick={() => void retire()}>
+          {t("because.retire")}
+        </Button>
+        {choices.length > 0 && (
+          <Button variant="primary" type="submit" disabled={!scope}>
+            {t("because.narrow")}
+          </Button>
+        )}
+      </Actions>
+    </form>
+  );
+}

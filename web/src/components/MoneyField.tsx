@@ -1,0 +1,74 @@
+// A box for an amount of money (design 7.9): shown as currency with two decimals in the person's number format, typed with
+// or without the sign and in that number format ("1.5", "$1.50" and "1,50" where a comma is the decimal mark are the same; "1,50" elsewhere is refused
+// amount). While the cursor is in the box what was typed stays as it was typed; leaving it writes the amount out. The draft
+// the form keeps is the amount as plain digits, or the text typed when it is not an amount yet.
+import { useState } from "react";
+import { parseAmount, plainDigits, useWriteAmount } from "../lib/money";
+import { useWords } from "../lib/wording";
+
+/** How many decimals an amount needs to be written exactly, at most ten. */
+function decimalsOf(n: number): number {
+  const text = plainDigits(n);
+  const at = text.indexOf(".");
+  return at < 0 ? 0 : Math.min(10, text.length - at - 1);
+}
+
+export function MoneyField(props: {
+  id: string;
+  /** The draft: the amount as plain digits ("0.1"), or what was typed when it isn't an amount. */
+  value: string;
+  disabled: boolean;
+  invalid?: boolean;
+  describedBy?: string;
+  onChange: (draft: string) => void;
+  /** The cursor left the box or Enter was pressed: the draft to save. */
+  onCommit?: (draft: string) => void;
+}) {
+  const { locale } = useWords();
+  const write = useWriteAmount();
+  // What is typed while the cursor is in the box; none before the first key and the rest of the time, when the amount is written out.
+  const [typed, setTyped] = useState<string | null>(null);
+  const draftOf = (text: string) => {
+    const n = parseAmount(text, locale);
+    return n === null ? text : plainDigits(n);
+  };
+  const written = (draft: string) => {
+    const n = draft.trim() === "" ? null : parseAmount(draft, locale);
+    // An amount with more than the two usual decimals is written with the ones it has, so it never reads as zero.
+    return n === null ? draft : write(n, 2, Math.max(2, decimalsOf(n)));
+  };
+  return (
+    <input
+      id={props.id}
+      className="money-field"
+      type="text"
+      inputMode="decimal"
+      autoComplete="off"
+      value={typed ?? written(props.value)}
+      disabled={props.disabled}
+      aria-invalid={props.invalid ? true : undefined}
+      aria-describedby={props.describedBy}
+      // Nothing is kept on entering the box: the amount shown is the one that is saved, so a value put back from outside while
+      // the cursor is in the box (Reset) is what the box shows and what leaving it writes, never an older one.
+      onFocus={(e) => e.currentTarget.select()}
+      onChange={(e) => {
+        setTyped(e.target.value);
+        props.onChange(draftOf(e.target.value));
+      }}
+      onBlur={(e) => {
+        const draft = draftOf(e.target.value);
+        setTyped(null);
+        props.onChange(draft);
+        props.onCommit?.(draft);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          const draft = draftOf(e.currentTarget.value);
+          props.onChange(draft);
+          props.onCommit?.(draft);
+        }
+      }}
+    />
+  );
+}

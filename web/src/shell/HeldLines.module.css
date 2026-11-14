@@ -1,0 +1,2 @@
+/* Today's lines for work that has stopped or needs a check are rows of the queue (ui/Row); only the list of places is its own. */
+.places { margin: 0; padding-left: var(--space-5); color: var(--text-muted); overflow-wrap: anywhere; }

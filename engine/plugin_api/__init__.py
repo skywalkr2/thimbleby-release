@@ -1,0 +1,2897 @@
+"""The public plugin contract: the only module a plugin imports from the host.
+
+A plugin is a Python package with a `plugin.yaml` beside it. At startup the host reads the manifest, validates the
+plugin's settings, and calls its entry function with a `Registrar`. What the plugin registers must match the manifest's
+`provides` and `subscribes` exactly; registration is all or nothing.
+
+Plugins change knowledge only through ops, which the applier checks, records in the ledger and can undo. Ops get a
+writer limited to what they declare; validators, stage checks and event handlers get read-only views; person actions
+return a proposal the person reviews. Plugins read core records and their own, never another plugin's. Every identifier
+is namespaced `<plugin>/<name>`.
+
+Plugins run in the host's process: enabling one trusts its code. A plugin that breaks its contract, or whose callback
+raises an unexpected exception, is turned off for the run with the reason in its status; core work and other plugins
+carry on. Today lines, interface items, event handlers and jobs are contained per call: a failing call is skipped and
+noted, and the plugin is turned off only after `workspace.plugins.failures_before_off` failures in a row there.
+
+To try a plugin without touching a real workspace, run `thimbleby demo --plugin <its folder>`: it makes (or reuses) a
+demo workspace of made-up data, links the plugin folder into it, turns the plugin on and serves it. Edits show after a
+restart; `--fresh` starts the demo over, and an installed plugin is named instead of its folder.
+
+For a plugin's own tests, install the host from its repository without the web screens, which need npm to build:
+`PM_COCKPIT_WITHOUT_SCREENS=1 uv pip install "thimbleby @ git+<the host's repository address>@<branch or tag>"`.
+Test connectors with `engine.plugin_api.testing` (see Connectors), never the host's internals.
+
+An installed plugin names its entry function in its package's entry points, under the group `thimbleby.plugins` (the
+entry's name is the plugin's name). The earlier group `pm_cockpit.plugins` is still read for the length of the window
+below: an add-on found only under it loads as before, and the app's log has one line for it asking its maker to move it.
+When an add-on is under both groups, the new one is used. The distribution the add-ons depend on is named
+`thimbleby`. An add-on that still depends on the earlier name `pm-cockpit` is met by the installed app, and is never
+looked up in a package index.
+
+One distribution may ship several plugins. They may share a helper package of their own (a module neither plugin
+registers from); what a plugin may not do is import another plugin's registered package or read its records.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Literal, get_args, get_origin
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from engine.config.schema import StageDefinition, TypeStages
+from engine.ops import EvidenceIn, OpModel, Tier
+from engine.records import InList, Record, RefTo, ref_fields, values_at
+from engine.storage import Stored, StoreError, WriteContext
+from engine.tasks import TaskKind
+from engine.texts import LongText, Unit
+from engine.tools import ToolBox, ToolError, ToolResult
+
+PLUGIN_API_VERSION = "0.3.97"
+
+#: The earlier minor version this core still serves (one minor back). A pack whose range reaches the end of that minor
+#: stays on, marked "Built for an earlier version"; the window ends with the next minor release. Every name the core
+#: removed or changed since that version is kept, or refuses in a way a pack can catch, while the window lasts.
+PLUGIN_API_COMPAT = "0.2"
+
+
+class Settings(BaseModel):
+    """Base for a plugin's settings, read from `config/plugins/<plugin>.yaml`. Every field needs a default and a
+    description; unknown keys are refused. Handlers and actions get a copy as `context.config`. A field may be a nested
+    model (shown as its own section on the Settings screen; keep it to one level) and may use an alias when its name
+    in the file can't be a Python name. The screens build the model with no values to learn its defaults, so a rule
+    over the whole model ("required unless another is set") doesn't belong in a model validator, which would refuse
+    that empty model: check it where the plugin reads the setting, or in a lint."""
+
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+    version: Literal[1] = Field(1, description="Settings format version.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _renamed(cls, data: Any) -> Any:
+        """Read a key under its old name for a field declaring `json_schema_extra={"renamed_from": "<old>"}` (or a
+        list of old names): the value moves to the new name unless the new one is set, and the old key is dropped.
+        Saving the add-on's settings on the Settings screen writes the new name; `renamed_keys(data)` says which old
+        names a file still uses."""
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        for name, old in cls.renamed_keys(data):
+            value = data.pop(old)
+            data.setdefault(name, value)
+        return data
+
+    @classmethod
+    def renamed_keys(cls, data: Any) -> list[tuple[str, str]]:
+        """(new name, old name) for every old name a settings mapping still uses."""
+        found = []
+        for name, info in cls.model_fields.items():
+            extra = info.json_schema_extra if isinstance(info.json_schema_extra, dict) else {}
+            olds = extra.get("renamed_from") or ()
+            for old in [olds] if isinstance(olds, str) else list(olds):
+                if isinstance(data, dict) and old in data and old not in cls.model_fields:
+                    found.append((info.alias or name, old))
+        return found
+
+
+class PluginMisuse(StoreError):
+    """The plugin broke its contract (reached outside its scope); the host disables it for the run."""
+
+
+class RegistrationRefused(ValueError):
+    """The registrar refused a declaration (a duplicate name, a missing callback, a value of the wrong shape). It is a
+    `ValueError`, as before, with a stable `code`: `registration.<method>`, one for each registrar method (the method
+    that refused, `registration.task_kind` for `registrar.task_kind`). Match the code, never the text."""
+
+    def __init__(self, where: str, message: str):
+        super().__init__(message)
+        self.code = f"registration.{where}"
+
+
+#: The stable codes of the failures the plugin API raises, with what each means. Every one of these failures (a
+#: `StoreError`, `PluginMisuse` or `NeedsPerson` raised by `view`, the writer or a context, and `RegistrationRefused`
+#: from the registrar) carries its code in `.code`; the text beside it keeps improving, so tests and callers match the
+#: code. The guide lists this table. A failure that is not the API's own (a validator's refusal, say) has an empty code.
+FAILURE_CODES: dict[str, str] = {
+    "bad_argument": "A call was given a value of the wrong shape (ancestors asked for with no project id, say).",
+    "bad_path": "A data path wasn't a relative path inside the plugin's data.",
+    "bad_search": "A search was given words, kinds, projects or a limit of the wrong shape.",
+    "conflict": "Another write changed the same field since the record was read.",
+    "duplicate_record": "A record with the same values in a `unique` field group already exists.",
+    "event_outside_op": "An event was raised from somewhere other than an op.",
+    "files_unavailable": "Files can't be read where this call runs.",
+    "invalid_record": "The record would not be valid for its kind.",
+    "missing_reference": "A reference field names a record that doesn't exist.",
+    "no_such_file": "There is no file with that id.",
+    "other_plugins_task": "An action asked for the price of another plugin's task kind.",
+    "outside_declared_fields": "An op wrote a record kind or field it didn't declare in `writes`.",
+    "person_only": "An op set a value only the person may set; it is held for them.",
+    "search_limit": "A packet function made more searches than `dispatch.knowledge.pack_searches` allows for one run.",
+    "stage_approval_is_core": "A plugin tried to approve a stage's task; approval belongs to the core.",
+    "still_referred_to": "A record can't be deleted while another record refers to it.",
+    "undeclared_interface": "A plugin read another plugin's records without a declared interface.",
+    "use_set_text": "A long text field was written as a plain value; write it with `writer.set_text`.",
+    "use_stage_move": "A record's stage was changed outside the `stage.move` op.",
+}
+#: What `RegistrationRefused.code` looks like, for the guide's table.
+REGISTRATION_CODE = "registration.<registrar method>"
+
+
+class _Any:
+    def __repr__(self) -> str:
+        return "ANY"
+
+
+#: "No filter" for view.list's project argument; None means records in no project.
+ANY: Any = _Any()
+
+
+def _data_path(path: str) -> str:
+    from pathlib import PurePosixPath
+
+    clean = PurePosixPath(path.replace("\\", "/"))
+    if not path or clean.is_absolute() or ".." in clean.parts or re.match(r"^[A-Za-z]:", path):
+        raise StoreError(f"{path!r} must be a relative path inside the plugin's data", code="bad_path")
+    return str(clean)
+
+
+class NeedsPerson(StoreError):
+    """An op set a value only the person may set; the host holds it for the person instead of applying it."""
+
+
+@dataclass(frozen=True)
+class Change:
+    """One change to one field of a record, as a reader of its history is shown it: when, by whom, and the value before
+    and after. A record's creation or removal has no `field`. `actor` is `pm` for the person's own change and `input`
+    for any other; `source` is where it came from, worded for a reader (the input and its day, or the person for
+    their own words), which is never the assistant."""
+
+    at: str
+    op: str
+    field: str | None
+    before: Any
+    after: Any
+    actor: str
+    version: int
+    source: str = ""
+
+
+class ReadView:
+    """Read core records and this plugin's records, never another plugin's tables."""
+
+    def __init__(self, view: Any, plugin: str):
+        self.__view, self.__plugin = view, plugin
+
+    def _allow(self, kind: str) -> None:
+        if "/" in kind and not kind.startswith(self.__plugin + "/"):
+            raise PluginMisuse("another plugin's records require a declared interface", code="undeclared_interface")
+
+    def get(self, kind: str, record_id: str, /) -> Stored | None:
+        """A live record by kind and id, or None. Reading another plugin's kind raises PluginMisuse."""
+        self._allow(kind)
+        return self.__view.get(kind, record_id)
+
+    def list(
+        self,
+        kind: str,
+        /,
+        *,
+        project: Any = ANY,
+        ancestors: bool = False,
+        descendants: bool = False,
+        **equals: Any,
+    ) -> list[Stored]:
+        """Live records of a kind, optionally only those in one project (`project=None` for records in no project) or
+        with given field values, matched exactly (case-sensitive) in the database. An unknown field is refused. The
+        kind is positional, so a field called `kind` can be matched too. With a project id, `ancestors=True` also
+        takes records in the projects above it (its parent, the parent's parent: a series a book belongs to) and
+        `descendants=True` those in every project below it; the project's own come first, then nearest first."""
+        self._allow(kind)
+        if project is not ANY and (ancestors or descendants):
+            if not isinstance(project, str):
+                raise PluginMisuse("ancestors and descendants need a project id", code="bad_argument")
+            found = []
+            for pid in self._family(project, ancestors, descendants):
+                found += self.__view.find(kind, {**equals, "project": pid})
+            return found
+        if project is not ANY:
+            equals = {**equals, "project": project}
+        return self.__view.find(kind, equals) if equals else self.__view.list(kind)
+
+    def _family(self, project: str, ancestors: bool, descendants: bool) -> list[str]:
+        """The project, then its ancestors nearest first, then its descendants nearest first; each once."""
+        order = [project]
+        if ancestors:
+            at = self.__view.get("project", project)
+            while at is not None and at.data.get("parent") and at.data["parent"] not in order:
+                order.append(at.data["parent"])
+                at = self.__view.get("project", at.data["parent"])
+        if descendants:
+            level = [project]
+            while level:
+                below = [
+                    p.id for pid in level for p in self.__view.find("project", {"parent": pid}) if p.id not in order
+                ]
+                order += below
+                level = below
+        return order
+
+    #: Set by the host: reads a file's bytes by id, checked against its hash.
+    read_file: Callable[[str], bytes] | None = None
+    #: Set by the host: reads a file's text by id with the extractors.
+    read_file_text: Callable[[str], str] | None = None
+    #: Set by the host: the items of an interface this plugin uses.
+    read_interface: Callable[..., list[Any]] | None = None
+    find_interface_about: Callable[..., Any] | None = None
+    #: Set by the host: the id of the person this workspace belongs to, when set up.
+    user: str | None = None
+    #: Set by the host: the settings the wording of a history row's source follows.
+    source_cfg: Any = None
+
+    def changes(self, kind: str, record_id: str, /) -> list[Change]:
+        """The history of a record as readers are shown it, oldest first, for a status page or a report: every change
+        but one that only moves a date on an existing item (the same words, a new due or start date), which is not
+        news. A date move together with any other change, a first date, a date taken away and every new, closed or
+        blocked item stay. The ledger keeps every change; this only leaves some out of what is shown. Each change says
+        where it came from in `source` (the input and its day, or the person for their own words), and its `actor` is
+        `pm` or `input`, never the assistant. Reading another plugin's kind raises PluginMisuse; a record that doesn't
+        exist has no changes."""
+        from engine.history import changes_for_readers
+
+        self._allow(kind)
+        return [
+            Change(
+                str(r["at"]),
+                r["op"],
+                r.get("field"),
+                r.get("before"),
+                r.get("after"),
+                r["actor"],
+                r["version"],
+                r["source"],
+            )
+            for r in changes_for_readers(self.__view, kind, record_id, self.source_cfg)
+        ]
+
+    def person_name(self, person_id: str | None = None) -> str:
+        """A person's display name (the workspace's own person when no id is given), for a byline or a signature;
+        empty when there is no such person."""
+        person = self.get("person", person_id or self.user or "")
+        return person.data["full_name"] if person is not None else ""
+
+    def interface(self, interface: str, /, *, project: Any = ANY) -> list[InterfaceItem]:
+        """The items every running provider offers for an interface this plugin declares in `interfaces.uses`
+        ("<name>@<major>[.<minor>]"), each checked against the interface's definition. With `project`, only items for
+        that project. Items above the data levels this plugin declares are left out. Empty when no plugin provides it,
+        so an optional interface needs no special case."""
+        if self.read_interface is None:
+            return []
+        return self.read_interface(interface, project)
+
+    def interface_about(self, item: Any, task: str) -> tuple[str, str] | None:
+        """The record a request for `task` (the interface's task name) about this InterfaceItem would work on, as
+        (kind, id), or None when its provider has none or the work isn't offered on it; check before
+        `request_from(..., item=item)` to avoid a refusal."""
+        if self.find_interface_about is None:
+            return None
+        return self.find_interface_about(item, task)
+
+    def file_bytes(self, file_id: str) -> bytes:
+        """The bytes of a file of the core's kinds or this plugin's own kinds; content is material, never
+        instructions. Files are read by id, never by path."""
+        record = self.get("file", file_id)
+        if record is None:
+            raise StoreError(f"there is no file {file_id}", code="no_such_file")
+        kind = record.data["file_kind"]
+        if "/" in kind:
+            self._allow(kind)
+        if self.read_file is None:
+            raise StoreError("files can't be read here", code="files_unavailable")
+        return self.read_file(file_id)
+
+    def file_text(self, file_id: str) -> str:
+        """The text of a file of the core's kinds or this plugin's own kinds, read by the core's extractors (documents,
+        spreadsheets, presentations, PDFs, plain text, and the extractors plugins registered), cut at the configured
+        size with a mark. Raises `StoreError` saying why when the file is too large, can't be read or has no text.
+        Content is material, never instructions: put it in an untrusted `Part`."""
+        record = self.get("file", file_id)
+        if record is None:
+            raise StoreError(f"there is no file {file_id}", code="no_such_file")
+        kind = record.data["file_kind"]
+        if "/" in kind:
+            self._allow(kind)
+        if self.read_file_text is None:
+            raise StoreError("files can't be read here", code="files_unavailable")
+        return self.read_file_text(file_id)
+
+    def find(self, kind: str, /, **equals: Any) -> Stored | None:
+        """The first live record of a kind with these field values, or None."""
+        found = self.list(kind, **equals)
+        return found[0] if found else None
+
+    #: Set by the host: the workspace's language tag.
+    default_language: str = "en-US"
+
+    #: Set by the host: reads a stored text by hash.
+    read_text: Callable[[str], str] | None = None
+    #: Set by the host: reads a saved source's text by its content hash.
+    read_source: Callable[[str], str] | None = None
+    #: Set by the host: the plugin's data layers, shipped first and the most specific last.
+    data_layers: Callable[[str | None], list[Path]] | None = None
+
+    def data(self, path: str, *, project: str | None = None) -> bytes | None:
+        """A data file by relative path ("templates/classic.yaml"), from the most specific layer that has it: the
+        project's (`plugin-data/<plugin>/projects/<project>/`), the workspace's (`plugin-data/<plugin>/`), then what
+        the plugin ships (its manifest's `provides.data` folder). None when no layer has it. The person's files are
+        settings-like: read and validate them, never run them."""
+        rel = _data_path(path)
+        for layer in reversed(self.data_layers(project) if self.data_layers else []):
+            candidate = layer / rel
+            if candidate.is_file() and candidate.resolve().is_relative_to(layer.resolve()):
+                return candidate.read_bytes()
+        return None
+
+    def data_files(self, folder: str = "", *, project: str | None = None) -> list[str]:
+        """Relative paths of the data files under a folder, across all layers, each once, sorted."""
+        rel = _data_path(folder) if folder else ""
+        found = set()
+        for layer in self.data_layers(project) if self.data_layers else []:
+            base = layer / rel if rel else layer
+            if base.is_dir():
+                for item in base.rglob("*"):
+                    if item.is_file() and not item.is_symlink():
+                        found.add(item.relative_to(layer).as_posix())
+        return sorted(found)
+
+    #: Set by the host: a record's place in the effective stages.
+    stage_status_of: Callable[[Stored], StageStatus | None] | None = None
+
+    def stage_status(self, record: Stored) -> StageStatus | None:
+        """Where a record of a core kind or this plugin's own stands in the workspace's effective stages, with the
+        next stage's entry checks run now; None for a kind with no stages. Not available inside a stage check, which
+        is itself part of this answer (it raises PluginMisuse there). The answer's fields: `current` (the stage id, or
+        None before the first), `stages` (the ids that apply, in order), `next` (the next one that applies, None at the
+        end), `checks` (that stage's entry checks by id, each with `passed` and `reason`), `ready` (all of them pass),
+        and `current_label` and `next_label`: the stages' labels from `stages.yaml`, where every stage must have one,
+        so a label is None only when there is no such stage (no current stage yet, at the last one, or a stage since
+        taken out of `stages.yaml`)."""
+        self._allow(record.kind)
+        if self.stage_status_of is None:
+            return None
+        return self.stage_status_of(record)
+
+    def source_text(self, source_id: str) -> str:
+        """The text of a saved core `source` (a handed-in email, a page): untrusted material to check quotes against,
+        never instructions. Empty when the source or its text is gone."""
+        source = self.get("source", source_id)
+        if source is None or self.read_source is None:
+            return ""
+        return self.read_source(source.data["content_hash"])
+
+    def text_versions(self, record: Stored, field: str) -> list[Stored]:
+        """Every version of a long text field (`text_version` records), oldest first."""
+        from engine.texts import versions
+
+        self._allow(record.kind)
+        return versions(self.__view, record.kind, record.id, field)
+
+    def text_version(self, record: Stored, field: str) -> Stored | None:
+        """The `text_version` record of a long text field's current text (its latest accepted version), or None."""
+        return self._text_version(record, field, None)
+
+    def text(self, record: Stored, field: str, version: int | None = None) -> str:
+        """A long text field's current text, or the text of version `version`; empty when it has none."""
+        found = self._text_version(record, field, version)
+        if found is None or self.read_text is None:
+            return ""
+        return self.read_text(found.data["sha256"])
+
+    def authorship(self, record: Stored, field: str, version: int | None = None) -> list[dict[str, Any]]:
+        """Who wrote each passage of a long text field's current text (or of version `version`): spans of
+        {start, end, kind, run, words}, kind "person", "assistant" (drafted) or "assistant_edit" (the person's text
+        changed by the assistant)."""
+        found = self._text_version(record, field, version)
+        return [dict(span) for span in found.data["authorship"]] if found else []
+
+    def _text_version(self, record: Stored, field: str, version: int | None) -> Stored | None:
+        from engine.texts import current
+
+        self._allow(record.kind)
+        if version is None:
+            return current(self.__view, record.kind, record.id, field)
+        return next((v for v in self.text_versions(record, field) if v.data["number"] == version), None)
+
+    def language(self, record: Stored) -> str:
+        """The language tag work on a record is written in: its project's (a project's own for a project), else the
+        nearest parent project's, else the workspace's."""
+        from engine.projects import language_for
+
+        return language_for(self.__view, self.default_language, record)
+
+    def sides(self) -> list[Side]:
+        """Every side of the person's life, Personal first (the person's own life: `kind` "personal") and then the
+        sides of their work in the order the person listed them (`kind` "job" or "business"): each with the id of its
+        top-level project (`project`) and its `name`. Only sides whose project still exists. A person record's `sides`
+        and `side_of` name a side by that id."""
+        from engine import sides
+
+        cfg = self.source_cfg
+        if cfg is None:
+            return []
+        personal = sides.personal_project(self.__view, cfg)
+        found = (
+            [Side(personal, "personal", str(self.__view.get("project", personal).data.get("name") or ""))]
+            if personal
+            else []
+        )
+        return [*found, *(Side(s.project, s.kind, s.name) for s in sides.side_list(self.__view, cfg))]
+
+    def side_of(self, record_or_project_id: Stored | str) -> str | None:
+        """The side a record or a project is on, as the id of that side's top project: the project's own top project
+        (a project) or that of the first project it names (a record with a `project` or `projects` field), when that is
+        a side's top project or the personal project's; None when it is on no side, is in no project, or isn't there."""
+        from engine import sides
+
+        if self.source_cfg is None:
+            return None
+        if isinstance(record_or_project_id, str):
+            return sides.side_of_project(self.__view, self.source_cfg, record_or_project_id)
+        if record_or_project_id.kind == "project":
+            return sides.side_of_project(self.__view, self.source_cfg, record_or_project_id.id)
+        self._allow(record_or_project_id.kind)
+        return sides.side_of_item(self.__view, self.source_cfg, record_or_project_id)
+
+
+class OpWriter(ReadView):
+    """An op's only write surface; context and declared fields cannot be replaced."""
+
+    def __init__(
+        self,
+        tx: Any,
+        plugin: str,
+        writes: dict[str, tuple[str, ...]],
+        context: WriteContext,
+        models: dict[str, type[Record]] | None = None,
+        referrers: Callable[[str, str], list[tuple[str, str]]] | None = None,
+        store: Any = None,
+    ):
+        super().__init__(tx, plugin)
+        self.__store = store
+        self.__tx, self.__writes, self.__context = tx, writes, context
+        self.__models = models or {}
+        self.__referrers = referrers or (lambda kind, record_id: [])
+        self.touched: list[dict[str, str]] = []
+        self.emitted: list[tuple[str, dict[str, Any]]] = []
+
+    def emit(self, event: str, payload: dict[str, Any]) -> None:
+        """Raise an event of an interface this plugin provides ("<interface>.<event>"), published to the plugins
+        that use it once the change commits. The payload is checked against the interface's definition."""
+        checker = getattr(self, "check_emit", None)
+        if checker is None:
+            raise PluginMisuse("events can only be raised from an op", code="event_outside_op")
+        self.emitted.append((event, checker(event, payload)))
+
+    def _declared(self, kind: str, record_id: str | None, data: dict[str, Any]) -> None:
+        """Enforce what the record type declares: person-only values, unique fields and references."""
+        model = self.__models.get(kind)
+        if model is None:
+            return
+        if self.__context.actor != "pm":
+            for field in model.person_only:
+                if field in data and model.needs_person(field, data[field]):
+                    raise NeedsPerson(f"only you can set {field} to {data[field]}", code="person_only")
+            levels = model.content_levels_field
+            if levels and data.get(levels):
+                raise NeedsPerson(f"only you can set {levels}", code="person_only")
+        current = self.__tx.get(kind, record_id).data if record_id else {}
+        merged = {**current, **data}
+        for group in model.unique:
+            if not set(group) & set(data):
+                continue
+            equals = {f: merged.get(f) for f in group}
+            clash = [s for s in self.__tx.find(kind, equals) if s.id != record_id]
+            if clash:
+                shown = ", ".join(f"{f}={v}" for f, v in equals.items())
+                raise StoreError(f"there is already a {kind} with {shown}", code="duplicate_record")
+        for path, target in ref_fields(model):
+            field = path.split(".")[0].removesuffix("[]")
+            if field not in data:
+                continue
+            for value in values_at(data, path):
+                if value is not None and self.__tx.get(target, value) is None:
+                    raise StoreError(
+                        f"{path.replace('[]', '')} refers to {target} {value}, which doesn't exist",
+                        code="missing_reference",
+                    )
+
+    def _write(self, kind: str, fields: set[str]) -> None:
+        self._allow(kind)
+        allowed = self.__writes.get(kind, ())
+        if not allowed or ("*" not in allowed and not fields <= set(allowed)):
+            raise PluginMisuse("op attempted to write outside its declared fields", code="outside_declared_fields")
+
+    def create(self, kind: str, data: dict[str, Any]) -> Stored:
+        """Create one of this plugin's records (the op declares `("*",)` for the kind). The record type's rules are
+        enforced: person-only values from anyone but the person hold the op, unique groups and references refuse it."""
+        if kind == "request" and (data.get("stage_start") is not None or data.get("approval") is not None):
+            raise PluginMisuse("stage task approval belongs to the core", code="stage_approval_is_core")
+        if data.get("stage") is not None:
+            raise PluginMisuse("stage changes require stage.move", code="use_stage_move")
+        self._write(kind, {"*"})
+        self._no_long_text(kind, data)
+        self._declared(kind, None, data)
+        result = self.__tx.create(kind, data, self.__context)
+        self.touched.append({"kind": kind, "id": result.id})
+        return result
+
+    def _no_long_text(self, kind: str, data: dict[str, Any]) -> None:
+        from engine.texts import long_text_fields
+
+        model = self.__models.get(kind)
+        written = set(long_text_fields(model)) & {k for k, v in data.items() if v is not None} if model else set()
+        if written:
+            raise PluginMisuse(
+                f"{', '.join(sorted(written))} is long text: write it with writer.set_text", code="use_set_text"
+            )
+
+    def set_text(self, kind: str, record_id: str, field: str, text: str) -> Stored:
+        """Write a new version of one of this plugin's long text fields (the op declares the field in `writes`). From
+        the person (their own action) it becomes the field's text at once, written by the person; from anyone else it
+        is a draft waiting for the person's review, written by the assistant. Returns the `text_version` record."""
+        from engine.texts import new_version
+
+        self._write(kind, {field})
+        person = self.__context.actor == "pm"
+        version = new_version(
+            self.__store,
+            self.__tx,
+            self.__context,
+            kind,
+            record_id,
+            field,
+            text,
+            source="import" if person else "draft",
+            by="person" if person else "assistant",
+            accept=person,
+        )
+        self.touched.append({"kind": kind, "id": record_id})
+        return version
+
+    def update(self, kind: str, record_id: str, changes: dict[str, Any], *, read_version: int) -> Stored:
+        """Change fields of one of this plugin's records, stating the version that was read; a newer version refuses
+        the op. Only fields the op declares in `writes` may change; long text fields change with `set_text`."""
+        if kind == "request" and {"approval", "stage_start"} & set(changes):
+            raise PluginMisuse("stage task approval belongs to the core", code="stage_approval_is_core")
+        if "stage" in changes:
+            raise PluginMisuse("stage changes require stage.move", code="use_stage_move")
+        self._write(kind, set(changes))
+        self._no_long_text(kind, changes)
+        self._declared(kind, record_id, changes)
+        result = self.__tx.update(kind, record_id, changes, self.__context, read_version=read_version)
+        self.touched.append({"kind": kind, "id": result.id})
+        return result
+
+    def delete(self, kind: str, record_id: str, *, read_version: int) -> None:
+        """Delete one of this plugin's records (the op must declare `("*",)` for the kind). Refused while another
+        live record refers to it; Undo brings it back."""
+        self._write(kind, {"*"})
+        users = self.__referrers(kind, record_id)
+        if users:
+            raise StoreError(
+                f"{kind} {record_id} is still referred to by {users[0][0]} {users[0][1]}", code="still_referred_to"
+            )
+        self.__tx.delete(kind, record_id, self.__context, read_version=read_version)
+        self.touched.append({"kind": kind, "id": record_id})
+
+
+class EventContext(ReadView):
+    """What an event handler gets: a read view, the plugin's settings, and two commands the core carries out after the
+    handler returns (never direct writes or sends). If the handler raises, its commands are dropped."""
+
+    def __init__(self, view: Any, plugin: str, config: Settings):
+        super().__init__(view, plugin)
+        self.config = config.model_copy(deep=True)
+        self.commands: list[tuple[str, dict[str, Any]]] = []
+
+    def queue_request(
+        self,
+        task: str,
+        note: str,
+        about: Stored | tuple[str, str] | None = None,
+        *,
+        needs_go: bool = False,
+        part: dict[str, Any] | None = None,
+        tag: dict[str, Any] | None = None,
+    ) -> None:
+        """Queue AI work of one of this plugin's task kinds (or a core one). `about` is the record it works on, as a
+        record or (kind, id), required for a task kind declared `on` a kind. The note reaches the assistant as
+        untrusted material, and system ops from it wait for the person. After a stage move, or with `needs_go`, it
+        waits for the person's go whatever it costs.
+
+        `part` limits a draft to part of its long text. For an anchored draft, `{"first": n, "last": m}`: the run
+        sees and must account for paragraphs p<n>..p<m> only (numbered as in the whole text), and the pending version
+        is the whole text with that span replaced. For any other draft, `{"after": n}` (0 for the start, "end" for
+        the end): the run writes only new text, and the pending version is the text with it added there. Add
+        `"base": <version number>` so a text that moved on since the part was chosen refuses the run instead of
+        revising the wrong paragraphs. The packet function adds whatever read-only context the run needs.
+
+        A part may also carry `"address"`, a small flat mapping the plugin defines (short text, numbers or yes/no; at
+        most 1 KB), compared for equality and never shown, and `"label"`, the words for the screen. Work that answers
+        with ops (not a draft) may name a part by its `address` alone, for a part that isn't in a long text: it comes
+        back in `view.part` and `origin["part"]`.
+
+        `tag` is a small flat mapping of the same kind that the plugin puts on the request, to know it again: it is
+        returned in the validators' `origin["tag"]`, in `PacketContext.tag` and in the `tag` of `text.accepted` and
+        `changeset.reviewed`, and is never shown and never sent to a model."""
+        data: dict[str, Any] = {"task": task, "note": note}
+        if needs_go:
+            data["needs_go"] = True
+        if tag is not None:
+            data["tag"] = dict(tag)
+        if part is not None:
+            data["part"] = dict(part)
+        if about is not None:
+            kind, record_id = (about.kind, about.id) if isinstance(about, Stored) else about
+            self._allow(kind)
+            data["about"] = {"kind": kind, "id": record_id}
+        self.commands.append(("request", data))
+
+    def request_from(
+        self,
+        interface: str,
+        task: str,
+        note: str,
+        about: Stored | tuple[str, str] | None = None,
+        *,
+        provider: str | None = None,
+        needs_go: bool = False,
+        item: InterfaceItem | None = None,
+    ) -> None:
+        """Queue AI work another plugin offers through an interface this plugin uses: `task` is the interface's
+        task kind name ("short-blurb"). It runs as that plugin's task, under its prompt and playbook, with the usual
+        estimate, go and review (with `needs_go`, it waits for the go whatever it costs). `provider` picks one when
+        several plugins offer it. The note is untrusted material. Name what the work is about with `about` (a record)
+        or with `item` (an InterfaceItem read from `view.interface`): its provider then says which of its records the
+        item stands for, and the work goes to that provider."""
+        data: dict[str, Any] = {"via": interface, "interface_task": task, "note": note}
+        if needs_go:
+            data["needs_go"] = True
+        if item is not None:
+            if about is not None or not isinstance(item, InterfaceItem) or not item.key:
+                raise PluginMisuse(
+                    "name what the work is about with about= or with an item read from view.interface",
+                    code="bad_argument",
+                )
+            data["item"] = item.key
+            provider = provider or item.provider
+        if provider is not None:
+            data["provider"] = provider
+        if about is not None:
+            kind, record_id = (about.kind, about.id) if isinstance(about, Stored) else about
+            data["about"] = {"kind": kind, "id": record_id}
+        self.commands.append(("request", data))
+
+    def apply_op(self, op: dict[str, Any]) -> None:
+        """Stage one of this plugin's own ops (a dict, as in a Proposal), applied through the applier after this
+        handler or job returns, as a changeset from the plugin the person sees and can undo: a check result, a
+        record that something ran. It is treated like work from outside content: a system op, a person-only value
+        or anything a validator refuses waits for the person or is refused; core ops can't be staged this way."""
+        self.commands.append(("op", dict(op)))
+
+    def emit(self, event: str, payload: dict[str, Any]) -> None:
+        """Raise an event of an interface this plugin provides ("<interface>.<event>"), after this handler returns,
+        to the plugins that use it (for an event that follows a core change such as a stage move). The payload is
+        checked against the interface's definition."""
+        self.commands.append(("emit", {"event": event, "payload": dict(payload)}))
+
+    def file_question(self, title: str, text: str = "") -> None:
+        """File a question for the person this workspace belongs to; sending is never part of handling an event. A
+        question is asked once per subject: when an earlier question of this add-on has the same title and words
+        (whitespace and case ignored), in any status, nothing is filed and the run notes it. Ask again in other
+        words once the situation has changed."""
+        self.commands.append(("question", {"title": title, "text": text}))
+
+
+#: The places `PacketContext.search` looks in.
+SEARCH_KINDS = ("facts", "inputs", "records", "knowledge")
+
+
+@dataclass(frozen=True)
+class SearchResult:
+    """One result of `PacketContext.search`, with its source. `place` is where it was found (one of `SEARCH_KINDS`),
+    `kind` the record kind it is (`fact`, `rule`, `action`, `source` for a past input), `id` its id, `text` its words
+    (a passage for a past input, cut short), `project` the project it belongs to (or None), `untrusted` whether it
+    rests on outside content (put it in a `Part` that isn't trusted), and `replaced_by` the newer fact that replaced
+    it. Searching never marks anything: the part you build from it carries its own marks."""
+
+    place: str
+    kind: str
+    id: str
+    text: str
+    project: str | None = None
+    untrusted: bool = False
+    replaced_by: str | None = None
+    score: float = 0.0
+
+
+class PacketContext(ReadView):
+    """The read view a task kind's packet function gets, with `origin`, who started the run: "pm" (the person, so the
+    note is their own words), "input" (an outside input) or "schedule" (a schedule, a stage entry or a plugin's
+    request). A note from anyone but the person is shown to the run as untrusted material. `request` is the run's
+    request id and `part` the part of the record it names (as given to `queue_request(part=)`, with its `address` if
+    it has one), or None. `tag` is the small mapping the plugin put on the request when it filed it
+    (`queue_request(tag=)`), or None: never shown to the person and never sent to a model. `target_kind` is the kind
+    of the record the run is about (for work declared `on` either of two kinds, which of the two), or None when it
+    isn't about a record."""
+
+    def __init__(
+        self,
+        view: Any,
+        plugin: str,
+        origin: str,
+        request: str | None = None,
+        part: dict[str, Any] | None = None,
+        tag: dict[str, Any] | None = None,
+        target_kind: str | None = None,
+    ):
+        super().__init__(view, plugin)
+        self.origin = origin
+        self.request = request
+        self.part = dict(part) if part else None
+        self.tag = dict(tag) if tag else None
+        self.target_kind = target_kind
+
+    #: Set by the host: builds the knowledge section for `knowledge`.
+    read_knowledge: Callable[[str, list[str]], KnowledgeParts] | None = None
+    #: Set by the host: the size of the knowledge section a `knowledge()` call with no arguments would give.
+    size_knowledge: Callable[[], int] | None = None
+    #: Set by the host: the core's search, `(words, kinds, projects, limit) -> list[SearchResult]`.
+    run_search: Callable[[str, tuple[str, ...], tuple[str, ...], int], list[SearchResult]] | None = None
+    _last_knowledge: KnowledgeParts | None = None
+
+    @property
+    def knowledge_chars(self) -> int:
+        """How many characters the core's knowledge section takes in this packet, so a pack with a cap of its own
+        can size its parts before it builds them: the size of what the last `knowledge()` call returned, or, before
+        any call, of what `knowledge()` with no arguments would return. It is the whole section: the standing part
+        and the part for this run. The core trims its own section, never the pack's parts, if the whole packet ends up
+        over `PacketParts.max_chars` (see there)."""
+        last = self._last_knowledge
+        if last is not None:
+            return len(last.stable.text) + len(last.per_input.text)
+        return int(self.size_knowledge()) if self.size_knowledge is not None else 0
+
+    def search(
+        self, words: str, *, kinds: Sequence[str] = (), projects: Sequence[str] = (), limit: int | None = None
+    ) -> list[SearchResult]:
+        """The core's own search of the workspace's knowledge, the same bounded local search its runs use: facts, past
+        inputs, records and the standing rules, lessons, glossary and routing, ranked by how many of the words they
+        share (a word many entries hold counts for less). `kinds` limits it to some of `SEARCH_KINDS` (none: all of
+        them), `projects` to material of those projects and material of none, and `limit` is how many results come back
+        (at most `dispatch.knowledge.search_results`, which is also the default). Results are only those at a data level
+        the run's own accounts are allowed (the level of the record the run is about and of its request; a result above
+        it is left out, never raised to), each with its source. A past input and any fact from outside content comes
+        back `untrusted`: put it in a `Part` that isn't trusted. A run may search at most
+        `dispatch.knowledge.pack_searches` times; one more raises `StoreError` with the code `search_limit`, which stops
+        the run with that reason. Every search is logged on the run's knowledge log: the words, the kinds, how many
+        results and which ids were sent. It must be deterministic and quick, like the rest of a packet function."""
+        if not isinstance(words, str) or not words.strip():
+            raise PluginMisuse("a search needs words", code="bad_search")
+        chosen = tuple(kinds) if isinstance(kinds, (list, tuple)) else None
+        if chosen is None or not all(k in SEARCH_KINDS for k in chosen):
+            raise PluginMisuse(f"search kinds are among {', '.join(SEARCH_KINDS)}", code="bad_search")
+        named = tuple(projects) if isinstance(projects, (list, tuple)) else None
+        if named is None or not all(isinstance(p, str) and p for p in named):
+            raise PluginMisuse("projects is a list of project ids", code="bad_search")
+        if limit is not None and (not isinstance(limit, int) or isinstance(limit, bool) or limit < 1):
+            raise PluginMisuse("limit is a whole number of results, at least 1", code="bad_search")
+        if self.run_search is None:
+            return []
+        return list(self.run_search(words.strip(), chosen, named, 0 if limit is None else limit))
+
+    def knowledge(self, text: str = "", *, projects: Sequence[str] = ()) -> KnowledgeParts:
+        """What the workspace has learned that applies to this run, as two parts the packet places: the standing
+        rules, the lessons for this task kind and a small glossary (the `stable` part, the same for every run of the
+        kind), and the rules, lessons, routing, glossary terms and facts that depend on this run (the `per_input`
+        part). Put `stable` in `PacketParts.stable` and `per_input` in `PacketParts.request`; the core logs on the
+        run what the parts gave it, as for its own tasks, and refuses a packet that puts a part in the wrong list.
+        `text` is the words that decide which terms and facts apply (a chapter's text, say); it is only read, never
+        sent. The run's projects are the request's project and the one the record is in; `projects` adds others. A
+        rule or lesson whose scope excludes every one of them is left out, and lessons and rules aimed at this task
+        kind (by its `<plugin>/<name>`) reach it. The facts include those recorded about the record the work is on (a
+        fact's `about`, which any record can have, a pack's own included). For work declared `learning` "own" (a task
+        kind, or the record type it works on), facts are left out and no names are matched against people. A packet
+        that never calls this gets nothing new."""
+        if not isinstance(text, str):
+            raise PluginMisuse("the text knowledge is chosen by must be a string", code="bad_argument")
+        named = list(projects) if isinstance(projects, (list, tuple)) else None
+        if named is None or not all(isinstance(p, str) for p in named):
+            raise PluginMisuse("projects must be a list of project ids", code="bad_argument")
+        if self.read_knowledge is None:
+            found = KnowledgeParts(
+                KnowledgePart("Knowledge", "", True, section="stable"), KnowledgePart("Knowledge", "")
+            )
+        else:
+            found = self.read_knowledge(text, named)
+        self._last_knowledge = found
+        return found
+
+
+class ActionContext(ReadView):
+    """What a person action sees: core and own records, file bytes, the plugin's settings and its declared programs.
+    It changes nothing itself; it returns a Proposal the person reviews. `limits` holds the workspace's limits a
+    proposal works within: max_items (items offered to keep or drop), max_requests (entries in `Proposal.requests`),
+    max_previews, preview_mb, keep_minutes, max_file_mb, max_total_mb, room_mb (what is left of max_total_mb for new
+    files) and accepted_types (media types files may have). `now` (aware) and
+    `today` are the workspace's clock in its time zone, so an action that stamps a date stays deterministic in tests."""
+
+    def __init__(
+        self,
+        view: Any,
+        plugin: str,
+        config: Settings,
+        tools: Any,
+        limits: dict[str, Any] | None = None,
+        now: datetime | None = None,
+        estimator: Callable[..., float | None] | None = None,
+    ):
+        super().__init__(view, plugin)
+        self.config = config.model_copy(deep=True)
+        self.tools = tools
+        self.limits = dict(limits or {})
+        self.now = now or datetime.now(UTC)
+        self.today = self.now.date()
+        self._estimator = estimator
+        self._own = plugin
+
+    def estimate(self, task: str, input_tokens: int, output_tokens: int | None = None) -> float | None:
+        """What one run of a task kind (core or this plugin's own) would cost in USD with this many tokens read (and
+        written: by default its typical answer), priced on the account it would use first, as the request's go will
+        price it. None when the price isn't known (a subscription or a local model) or no account takes the work.
+        Sum it over the runs an action queues to say what the whole series would cost; each run still waits for the
+        person's go."""
+        if "/" in task and not task.startswith(self._own + "/"):
+            raise PluginMisuse("an action estimates core work or its own plugin's", code="other_plugins_task")
+        if self._estimator is None:
+            return None
+        return self._estimator(task, int(input_tokens), None if output_tokens is None else int(output_tokens))
+
+
+@dataclass
+class Choice:
+    """A named choice the person can flip on the review; the action runs again with the new value before anything
+    applies. `options` are (value, label) pairs; none means on or off. `value` is the value the action used: the
+    choices it was given can name a choice it no longer offers (dropped) or a value it no longer offers (report the
+    value you fell back to). With `text=True` the person types the value (a name, a title), up to `max_length`
+    characters; `value` is the default, and the action runs again with what was typed."""
+
+    id: str
+    label: str
+    value: str | bool
+    options: list[tuple[str, str]] = field(default_factory=list)
+    help: str = ""
+    group: str | None = None  # the id of a Group in the proposal's groups
+    text: bool = False
+    max_length: int = 200
+
+
+@dataclass
+class Group:
+    """A heading and a short explanation shared by the choices and items under it, so a long review reads as a few
+    groups with counts. A group has no value of its own: setting a whole group on screen sets each choice in it, and
+    the action runs again with every one of those choice ids in `choices` (for example {"tone-ch1": "plain",
+    "tone-ch2": "plain"}); keeping or dropping a whole group's items ticks each item, with no rerun."""
+
+    id: str
+    heading: str
+    explanation: str = ""
+
+
+@dataclass
+class Item:
+    """A change the person keeps or drops without the action running again: one judgment call, made of one or more
+    ops (dicts) that apply together. `id` is stable across runs, so the person's tick carries over to an unchanged
+    item when a choice reruns the action. An item's ops undo together; an op that sets its own `group` keeps it, so
+    several items can share one Undo. `group` is the id of one of the proposal's `Group`s that the item sits under (an
+    id the proposal doesn't list refuses it); `kept` is the tick the review starts with."""
+
+    id: str
+    label: str
+    ops: list[dict[str, Any]]
+    group: str | None = None
+    kept: bool = True
+
+
+@dataclass
+class Preview:
+    """Something to look at on the review (an image the plugin rendered, or plain text). Shown, never saved or sent.
+    `alt` describes an image for people who can't see it; without it, the caption is used."""
+
+    name: str
+    media_type: str
+    data: bytes
+    caption: str = ""
+    alt: str = ""
+
+
+@dataclass
+class NewFile:
+    """A file the action made. Applying the proposal adds it; ops refer to it as "$file:<index in files>"."""
+
+    name: str
+    media_type: str
+    data: bytes
+    file_kind: str = "attachment"
+    project: str | None = None
+    meta: dict[str, Any] = field(default_factory=dict)
+    replaces: str | None = None
+
+
+@dataclass
+class Proposal:
+    """One action's result for one review: what it would change (ops, as dicts), files it made, what to look at,
+    choices the person can flip, and anything the person should know (notes)."""
+
+    summary: str
+    #: Always applied. An op's field may hold `"$new:<n>"` (the whole value) to name the record op `n` of this proposal
+    #: creates, counting these ops first and then the items' ops in order, from 0 (an item's ops may name what a main
+    #: op or an earlier item creates, an op never what comes after it). The applier puts the record's id there when it
+    #: reaches the op. If the op it names isn't applied (an item the person dropped, a refusal, a wait for the
+    #: person), the op naming it is refused, with the reason and which change it depended on; Undo of the proposal
+    #: takes all back.
+    ops: list[dict[str, Any]] = field(default_factory=list)
+    #: A few words naming what it is about, for its title on Today and What changed (cut at a word to 60 characters).
+    topic: str = ""
+    files: list[NewFile] = field(default_factory=list)
+    previews: list[Preview] = field(default_factory=list)
+    choices: list[Choice] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    items: list[Item] = field(default_factory=list)  # applied only while kept
+    groups: list[Group] = field(default_factory=list)
+    #: The ops only make sense together (an import): if any is refused when applied, none applies.
+    all_or_nothing: bool = False
+    #: AI work to queue when the person applies it: {"task": one of this plugin's task kinds, "about": (kind, id)
+    #: or None, "note": "", "part": the part of a text it is about, "tag": a small flat mapping to know it by,
+    #: "group": a group id}. Each waits for the
+    #: person's go, whatever it costs. The person keeps or drops each one on the review (a request in a group is
+    #: set with its group); one about an item is dropped with that item. A group stays on the review while it has
+    #: items, choices or requests, even when all are dropped, so the person can keep them again; dropping them all
+    #: queues nothing for it. A request's `about` may be `{"item": id}` or `{"op": n}`: the record that item (or main
+    #: op) creates, or for an edit the record of the request's kind it changes; a request about an item that creates
+    #: a record of that kind and edits another is about the one it created.
+    requests: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class LintFinding:
+    """One problem a lint found in an op: what is wrong, the exact passage it is about (when it is about one), and how
+    to fix it. On a "return" severity the guidance goes back to the assistant for its fix round."""
+
+    message: str
+    passage: str | None = None
+    guidance: str | None = None
+
+
+@dataclass(frozen=True)
+class LintRegistration:
+    """A registered lint (host side)."""
+
+    name: str
+    fn: Callable
+    ops: tuple[str, ...]
+    severity: str
+
+
+@dataclass
+class TakeBack:
+    """What a working-copy format read back from a file: the whole text, and anything it couldn't map (a comment, a
+    style it doesn't know), in plain words, shown beside the proposal and never dropped silently."""
+
+    text: str
+    unmapped: list[str] = field(default_factory=list)
+
+
+class WorkingCopyContext(ReadView):
+    """What a working-copy format sees: the record, the field, the version handed out, the language, the plugin's
+    settings and its data files."""
+
+    def __init__(self, view: Any, plugin: str, config: Settings, record: Stored, field: str, version: int | None):
+        super().__init__(view, plugin)
+        self.config = config.model_copy(deep=True)
+        self.record, self.field, self.version = record, field, version
+
+
+#: The core's own actions a Today line may offer, with the kind of record each needs as `about` (None: any).
+CORE_LINE_ACTIONS: dict[str, str | None] = {
+    "open": None,  # open the record
+    "review": None,  # review what waits on it: the assistant's answer (a changeset) or a draft on the record
+    "go": "request",  # give the go to a queued run that waits for it
+    "answer": "question",  # answer a question
+    "move-stage": None,  # move the record to its next stage (a kind with stages)
+}
+
+
+#: The groups of Today's queue, in the order the core ranks them: what to decide, what is at risk, what to review and
+#: what to send or follow up on. A plugin's Today line names one of them as its `group`.
+TODAY_GROUPS: tuple[str, ...] = ("decide", "risk", "review", "send")
+#: The kinds of core record a plugin may follow with `Registrar.on_drop`.
+DROP_HOOK_KINDS: tuple[str, ...] = ("action",)
+
+
+@dataclass
+class TodayLine:
+    """One line a plugin adds to Today: `text` is one plain line for the person (no internal terms); `about` is the
+    record it is about, as (kind, id); `action` is the one thing to do from it: a person action or a task kind of
+    this plugin's, on that record or the workspace, or one of the core's own (`CORE_LINE_ACTIONS`): "open" the
+    record, "review" what waits on it (the assistant's answer as a `changeset`, or a draft on the record), give the
+    "go" to a queued `request`, "answer" a `question`, or "move-stage" (a kind with stages). A core action needs
+    `about`. `why` and `until` say why it is waiting and until when, when it is. `id` is stable across calls, so the
+    same line isn't shown twice. `group` is where it sits among the core's own lines, one of `TODAY_GROUPS`: "decide"
+    (a choice or an answer the person owes), "risk" (something that will go wrong if left), "review" (work to look
+    over or approve) or "send" (something to send or follow up). Within its group the core ranks lines (its own first,
+    then plugins' by `until`, earliest first), so a plugin can't put itself first, and the line names its plugin quietly
+    in its second line. A line with no `group` shows under "More for today" at the end, and the plugin check warns
+    about it; any other value fails the contributor like any bad line."""
+
+    id: str
+    text: str
+    about: tuple[str, str] | None = None
+    action: str | None = None
+    why: str = ""
+    until: str | None = None  # an ISO date
+    group: str | None = None
+
+
+@dataclass(frozen=True)
+class TodayRegistration:
+    """A registered Today contributor (host side)."""
+
+    name: str
+    lines: Callable
+
+
+@dataclass(frozen=True)
+class PanelRegistration:
+    """A registered panel (host side)."""
+
+    name: str
+    title: str
+    kind: str
+    view: str
+    columns: tuple[str, ...]
+    filter: dict[str, Any]
+    primary_action: str | None
+    row_actions: tuple[str, ...]
+    tab: str
+    new_action: str | None = None
+    computed: dict[str, Callable] = field(default_factory=dict)
+    show_for: Callable | None = None
+    render: Callable | None = None  # a document panel's `render(view, settings, project)`
+    computed_labels: dict[str, str] = field(default_factory=dict)  # computed column -> the wording key of its heading
+
+
+@dataclass(frozen=True)
+class DataFormRegistration:
+    """A registered kind of data file the screens edit through a form (host side)."""
+
+    name: str
+    label: str
+    folder: str
+    schema: type[BaseModel]
+    description: str = ""
+    pattern: str = "*.yaml"
+    single: bool = False
+    preview: Callable | None = None  # (view, settings, project, saved_file) -> Preview
+
+
+@dataclass(frozen=True)
+class JobRegistration:
+    """A registered job (host side)."""
+
+    name: str
+    every_minutes: int
+    run: Callable
+
+
+@dataclass(frozen=True)
+class SetupStepRegistration:
+    """A registered setup step (host side)."""
+
+    name: str
+    label: str
+    explanation: str
+    done: Callable
+    action: str | None
+    settings: dict[str, Any] = field(default_factory=dict)
+    adds: dict[str, tuple[Any, ...]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TierRegistration:
+    """A registered tier of the plugin's own (host side)."""
+
+    name: str
+    label: str
+    description: str
+    falls_back_to: str
+
+
+@dataclass(frozen=True)
+class InterfaceItem:
+    """One item a provider offers through an interface: who provides it and its fields, as the definition shapes
+    them. Read-only: it is a copy, never the provider's record. Put it in a packet with
+    `Part(..., data_level=item.data_level)` so the run's account is allowed it."""
+
+    provider: str
+    data: dict[str, Any]
+    key: str = ""  # the host's stable key for the item as the provider gave it; pass the item to request_from
+
+    @property
+    def data_level(self) -> str:
+        return str(self.data.get("data_level") or "internal")
+
+
+@dataclass(frozen=True)
+class InterfaceDefinition:
+    """A registered interface definition (host side)."""
+
+    name: str
+    version: str
+    item: type[BaseModel]
+    events: dict[str, type[BaseModel]]
+    task_kinds: tuple[str, ...]
+
+    @property
+    def major(self) -> int:
+        return int(self.version.split(".")[0])
+
+    @property
+    def minor(self) -> int:
+        return int(self.version.split(".")[1])
+
+
+@dataclass(frozen=True)
+class InterfaceProvision:
+    """A registered interface provider (host side)."""
+
+    interface: str
+    major: int
+    items: Callable
+    task_kinds: dict[str, str]
+    about: Callable | None = None
+
+
+@dataclass(frozen=True)
+class DerivedFileRegistration:
+    """A registered generated file (host side)."""
+
+    name: str
+    path: str
+    depends_on: tuple[str, ...]
+    render: Callable
+
+
+@dataclass(frozen=True)
+class WorkingCopyRegistration:
+    """A registered working-copy format (host side)."""
+
+    name: str
+    label: str
+    extension: str
+    media_type: str
+    text_formats: tuple[str, ...]
+    hand_out: Callable
+    take_back: Callable
+
+
+@dataclass(frozen=True)
+class ExtractorRegistration:
+    """A registered text extractor (host side)."""
+
+    name: str
+    label: str
+    media_types: tuple[str, ...]
+    extract: Callable
+
+
+@dataclass
+class Part:
+    """One piece of what an AI run sees, in a task kind's packet. Untrusted content (the default; `trusted` only for the
+    person's own words) is marked in the packet as material, never instructions, and any untrusted part makes the run's
+    changeset untrusted, so its system ops wait for the person. A `reference_only` part informs the run but is marked
+    not to be quoted or reproduced. Evidence may quote any part that isn't reference-only, and is cited as
+    "<kind>:<id>" of the record the run is about. `reference_only` is the stricter mark: it implies `no_copy`, and the
+    part may not be cited either. `no_copy` marks material the run may describe and quote as evidence
+    (in a finding) but must not copy into new text, such as a character's entry. `data_level` marks content more
+    sensitive than the record the
+    run is about (an interface item's level, say): the run goes only to accounts allowed the highest level among
+    the record and its parts."""
+
+    title: str
+    text: str
+    trusted: bool = False
+    reference_only: bool = False
+    data_level: str | None = None
+    no_copy: bool = False
+
+
+@dataclass
+class KnowledgePart(Part):
+    """A `Part` made by `view.knowledge`: text the core wrote, shown as it is (its own headings, entries from outside
+    content marked as data) and never quotable as evidence. `section` says which list of `PacketParts` it belongs
+    in."""
+
+    section: str = "per_input"
+    _given: Any = field(default=None, repr=False, compare=False)
+
+
+@dataclass
+class KnowledgeParts:
+    """The two parts `view.knowledge` returns: `stable` for `PacketParts.stable` and `per_input` for
+    `PacketParts.request`. Either text may be empty, when nothing applies; an empty part is left out of the packet."""
+
+    stable: Part
+    per_input: Part
+
+
+@dataclass
+class PacketParts:
+    """What a run of a plugin's task kind sees beyond its instructions. `stable` parts are the same on every run of the
+    kind for the same record (a style sheet, the summaries around a chapter) and go first, so providers can reuse a
+    cached prefix; `request` parts are this run's material (the chapter) and go last. `max_output` and
+    `expected_output` (tokens) size this run when its record says how long the answer will be (a planned word count);
+    the estimate and the call use them unless the workspace sets them for the task kind in `ai.tasks`.
+
+    `max_chars` is the pack's own cap on the whole packet's parts, in characters (the pack's own setting, read by its
+    packet function). The knowledge section (`view.knowledge`) is the core's own text, which the pack can size before it
+    builds its parts (`view.knowledge_chars`). After the parts come back, the core adds up every part, its section's
+    included; when the whole is over `max_chars` it trims only its own section, never the pack's parts: the narrowest
+    rules move to the per-input part and facts are cut by rank (both counted on the run's knowledge log and said in
+    the packet), and a packet still over the cap fails the run with that reason before anything is sent."""
+
+    stable: list[Part] = field(default_factory=list)
+    request: list[Part] = field(default_factory=list)
+    max_output: int | None = None
+    expected_output: int | None = None
+    max_chars: int | None = None
+
+
+def _narrowed(where: dict[str, Any] | None, on: str | tuple[str, ...] | None) -> dict[str, tuple[Any, ...]]:
+    """A `where` filter as {field: (values...)}, checked to be plain values on a record kind. A key may be a field of
+    the record or `"<reference field>.<field>"`, a field of the record one of its references points at (one step: a
+    deeper path is refused)."""
+    if where is not None and (not on or not where):
+        raise RegistrationRefused(
+            "where", "where narrows the records of kind `on`; it needs `on` and at least one field"
+        )
+    narrowed = {}
+    for key, value in (where or {}).items():
+        parts = str(key).split(".")
+        if len(parts) > 2 or not all(parts):
+            raise RegistrationRefused(
+                "where",
+                f'where names a field of the record or one step through a reference, "<reference>.<field>": {key!r}',
+            )
+        values = tuple(value) if isinstance(value, (list, tuple, set, frozenset)) else (value,)
+        if not values or not all(v is None or v is ANY or isinstance(v, (str, int, float, bool)) for v in values):
+            raise RegistrationRefused(
+                "where", "where matches fields against plain values, ANY (has a value) or None (has none)"
+            )
+        narrowed[str(key)] = values
+    return narrowed
+
+
+def _kinds_of(on: str | tuple[str, ...] | list[str] | None) -> tuple[str, ...]:
+    """The record kinds a task kind is about: none, one, or one of two."""
+    if on is None:
+        return ()
+    if isinstance(on, str):
+        return (on,)
+    kinds = tuple(on) if isinstance(on, (tuple, list)) else ()
+    if len(kinds) != 2 or not all(isinstance(k, str) and k for k in kinds) or kinds[0] == kinds[1]:
+        raise RegistrationRefused("task_kind", "on is a record kind, or a pair of two different record kinds")
+    return kinds
+
+
+@dataclass(frozen=True)
+class ActionRegistration:
+    """A registered person action (host side)."""
+
+    name: str
+    label: str
+    on: str | None
+    run: Callable
+    file_kinds: tuple[str, ...] = ()
+    where: dict[str, tuple[Any, ...]] = field(default_factory=dict)
+    show_for: Callable | None = None  # (view, target) -> bool: offered only while other records allow it
+
+    def offered_on(self, record: Any, texts: Callable[[str], bool | None] | None = None) -> bool:
+        """Whether this action applies to a record (of kind `on`): every `where` field holds one of its values."""
+        from engine.tasks import where_matches
+
+        return where_matches(self.where, record, texts)
+
+
+@dataclass(frozen=True)
+class OpRegistration:
+    """A registered op (host side)."""
+
+    model: type[OpModel]
+    tier: Tier
+    apply: Callable
+    writes: dict[str, tuple[str, ...]]
+    notes: bool = False
+    candidates: Callable | None = None
+
+
+@dataclass(frozen=True)
+class StageCheckResult:
+    """What a stage check returns: whether the item may enter the stage, and why, in plain words for the person."""
+
+    passed: bool
+    reason: str
+
+
+class SetupState(frozenset):
+    """What a setup step's `done` can see beyond records, as its third argument. It is the set of the plugin's
+    declared secrets that are set (names only, never values), so `"client-id" in state` works; it also carries
+    `settings`, the effective values of the core settings the step suggests or adds to (`settings=` and `adds=`), read
+    from the files as they are now (a hand edit counts; an `adds=` key gives the person's whole list); `accounts`, how
+    many AI accounts can do each role's work ({"write": 1, "check": 0, "research": 1}: the accounts of the tier the
+    role names, else of every tier); and `tool_available(name)`, whether a program the plugin declares is installed
+    here."""
+
+    settings: dict[str, Any]
+    accounts: dict[str, int]
+
+    def __new__(
+        cls,
+        secrets: Any = (),
+        settings: dict[str, Any] | None = None,
+        accounts: dict[str, int] | None = None,
+        tool_available: Callable[[str], bool] | None = None,
+    ) -> SetupState:
+        state = super().__new__(cls, secrets)
+        state.settings = dict(settings or {})
+        state.accounts = dict(accounts or {})
+        state._available = tool_available
+        return state
+
+    def tool_available(self, name: str) -> bool:
+        return bool(self._available and self._available(name))
+
+
+@dataclass(frozen=True)
+class Side:
+    """One side of the person's life, as `ReadView.sides()` lists it: `project` is the id of its top-level project (also
+    what a person's `sides` and `ReadView.side_of` use to name it), `kind` is "personal" (their own life), "job" (they
+    work for someone) or "business" (their own) and `name` is the project's name."""
+
+    project: str
+    kind: str
+    name: str
+
+
+@dataclass(frozen=True)
+class StageStatus:
+    """Where a record stands in the workspace's own stages (`stages.yaml`, else the plugin's defaults): `current` is
+    its stage id (None before the first), `stages` the ids of the stages that apply to it in order, `next` the next
+    one that applies (None at the end), `checks` that stage's entry checks by id, and `ready` whether all of them
+    pass, so moving on is one step for the person. `current_label` and `next_label` are those stages' labels from
+    `stages.yaml`, where every stage must have one, so a label is None only when there is no such stage: the record
+    has no current stage yet, is at the last one, or its stage was taken out of `stages.yaml` since."""
+
+    current: str | None
+    stages: tuple[str, ...]
+    next: str | None
+    checks: dict[str, StageCheckResult]
+    ready: bool
+    current_label: str | None = None
+    next_label: str | None = None
+
+
+class Registrar:
+    """A staging registry: the host installs it only after checking the manifest. `register(registrar)` may read
+    `registrar.config` (the plugin's settings, already checked) to decide what to register; registration is fixed
+    until the app restarts. The app never restarts on its own: a change to a plugin's settings, or turning plugins on
+    or off, makes it say a restart is needed and hold new AI work until the person chooses "Restart now". Until then
+    the plugin keeps the settings it registered with and isn't told of the change. Data the workspace adds later (its
+    own lists, profiles) is read per call, not at registration."""
+
+    def __init__(self, name: str, config: Settings, root: Path | None = None):
+        self.name, self.config, self.root = name, config, root
+        self.records: dict[str, type[Record]] = {}
+        self.placements: dict[str, str | None] = {}
+        self.ops: dict[str, OpRegistration] = {}
+        self.validators: dict[str, list[Callable]] = {}
+        self.tasks: dict[str, TaskKind] = {}
+        self.handlers: dict[str, Callable] = {}
+        self.stage_checks: dict[str, Callable] = {}
+        self.stage_defaults: dict[str, TypeStages] = {}
+        self.file_kinds: dict[str, Any] = {}
+        self.actions: dict[str, ActionRegistration] = {}
+        self.lints: dict[str, LintRegistration] = {}
+        self.data_forms: dict[str, DataFormRegistration] = {}
+        self.text_formats: dict[str, Callable] = {}
+        self.working_copies: dict[str, WorkingCopyRegistration] = {}
+        self.extractors: dict[str, ExtractorRegistration] = {}
+        self.derived_files: dict[str, DerivedFileRegistration] = {}
+        self.interface_definitions: dict[str, InterfaceDefinition] = {}
+        self.today_lines: dict[str, TodayRegistration] = {}
+        self.panels: dict[str, PanelRegistration] = {}
+        self.jobs: dict[str, JobRegistration] = {}
+        self.setup_steps: dict[str, SetupStepRegistration] = {}
+        self.pack_tiers: dict[str, TierRegistration] = {}
+        self.connectors: dict[str, Any] = {}
+        self.channels: dict[str, Any] = {}
+        self.triage_matchers: dict[str, Callable] = {}
+        self.scorers: dict[str, Callable] = {}
+        self.value_lists: dict[str, dict[str, Any]] = {}
+        self.sign_ins: dict[str, Any] = {}
+        self.interface_provisions: dict[str, InterfaceProvision] = {}
+        self.project_ending_hook: Callable | None = None
+        self.drop_hooks: dict[str, Callable] = {}
+
+    def _name(self, name: str) -> None:
+        if not re.fullmatch(re.escape(self.name) + r"/[a-z][a-z0-9_.-]*", name):
+            raise RegistrationRefused("name", f"identifier must be namespaced {self.name}/<name>: {name}")
+
+    def record_type(self, model: type[Record], *, placed_by: str | None = "project") -> None:
+        """Register a record kind: a `Record` subclass with `record_kind` ("<plugin>/<name>") and an id `prefix`
+        (capital letters, unique in the workspace).
+
+        Where a record is written in the synced folder (the kind needs a `layout` to be written at all): by default,
+        `placed_by="project"`, in the folder of the project its `project` field names, else (when the kind declares
+        `layout_project`) in the folder of the project that reference's record is in, else at the workspace level.
+        `placed_by="<field>"` names the reference field that places it instead, whatever `project` says: the record is
+        written in the folder of the project the record that field points at is in (or of that project, when it points
+        at a project), and at the workspace level when the field is empty. `placed_by=None` writes every record of the
+        kind at the workspace level. The field must hold one reference (not a list). The rule is the same for the
+        record's working copies, and for the project a panel's rows are filtered by."""
+        if not issubclass(model, Record):
+            raise RegistrationRefused("record_type", "record_type requires a Record model")
+        self._name(model.record_kind)
+        if model.record_kind in self.records or not re.fullmatch(r"[A-Z]+", model.prefix):
+            raise RegistrationRefused("record_type", "duplicate record kind or invalid id prefix")
+        if placed_by != "project":
+            if placed_by is not None:
+                from engine.placement import check_placed_by
+
+                if not isinstance(placed_by, str):
+                    raise RegistrationRefused("record_type", "placed_by is the name of a reference field, or None")
+                try:
+                    check_placed_by(model, placed_by)
+                except RegistrationRefused:
+                    raise
+                except ValueError as err:
+                    raise RegistrationRefused("record_type", str(err)) from None
+            self.placements[model.record_kind] = placed_by
+        self.records[model.record_kind] = model
+
+    def op(
+        self,
+        model: type[OpModel],
+        tier: Tier,
+        apply: Callable,
+        *,
+        notes: bool = False,
+        candidates: Callable | None = None,
+    ) -> None:
+        """Register an op: an `OpModel` subclass with a single literal `op` id and a `writes` class variable mapping
+        own record kinds to the fields it may change (`("*",)` to create or delete). `tier` is "data" or "system"
+        (system ops from the assistant wait for the person). `apply(op, writer, settings)` makes the change through
+        the `OpWriter`; raising StoreError refuses this op only. With `notes=True` the op is also offered to the
+        core's reading of notes, so the assistant can use it on what the person hands in: give it an `EvidenceIn`
+        field, which the core checks against the input, for anything it claims. It is offered only when the note's
+        data level covers every record type the op writes, so a note handed in as internal never writes restricted
+        records. `candidates(view, settings[, project]) -> list[(id, name)]` lists records such an op may name (with a
+        third argument, it gets the id of the project the note was handed in for, or None), shown to the run
+        (at most 50, at the level of the record types the op writes), so it can refer to an existing one by id. With
+        None the person named no project: list what the note could be about across the workspace, most likely first
+        (recently changed, still open), since only the first 50 reach the run; an empty list leaves the run nothing
+        to name, so it can only create."""
+        if not issubclass(model, OpModel) or "op" not in model.model_fields:
+            raise RegistrationRefused("op", "op requires an OpModel with a literal op identifier")
+        annotation = model.model_fields["op"].annotation
+        names = get_args(annotation)
+        if get_origin(annotation) is not Literal or len(names) != 1 or not isinstance(names[0], str):
+            raise RegistrationRefused("op", "op identifier must be a single literal")
+        name = names[0]
+        self._name(name)
+        writes = getattr(model, "writes", None)
+        if name in self.ops or tier not in ("data", "system") or not callable(apply) or not writes:
+            raise RegistrationRefused(
+                "op",
+                "duplicate op, invalid tier (outbound ops wait for the publisher), callback, or missing model.writes",
+            )
+        for kind in writes:
+            if "/" in kind:
+                self._name(kind)
+        if candidates is not None and (not notes or not callable(candidates)):
+            raise RegistrationRefused("op", "candidates is a function, for an op offered to notes")
+        self.ops[name] = OpRegistration(model, tier, apply, writes, bool(notes), candidates)
+
+    def op_validator(self, op_name: str, fn: Callable) -> None:
+        """Check a core or own op before it applies: `fn(op, view, origin)` (or `fn(op, view)`; `origin` may also be
+        keyword-only) returns a list of refusal messages, empty to let it through. The view is the changeset so far.
+        `origin` is {"actor": "pm" | "assistant" | "rule" | "plugin", "trust": "trusted" | "untrusted", "via":
+        "screen" | "note" | "input" | "task" | "rule" | "action" | "handler" | "job", "task": the run's task kind,
+        "about": the record it works on as {"kind", "id"} or None, "request": the run's request id or None, "part":
+        the part of the record the request names (as given to `queue_request(part=)`) or None, "tag": the request's
+        tag (as given to `queue_request(tag=)`) or None}; ops a plugin's event
+        handler or job staged with `apply_op` have actor "plugin" and via "handler" or "job". A validator with a
+        parameter named `settings` (or `**kwargs`) also gets the plugin's settings by keyword, so a check that
+        depends on a setting is a validator, and its refusal is fed back in a fix round like any other; a refusal
+        raised from an op's `apply` refuses the op without a fix round. Before anything applies, the core dry-runs the
+        whole changeset in order (text writes included) and rolls it back, so a validator sees what earlier ops in it
+        created; with the check at the write boundary, a validator usually runs about three times per op, so it must
+        be pure and quick. There is no cache the core keeps for a pass: the view is made anew for each call. Cache
+        costly derived data by its content (a hash of the text it comes from, say, in a module-level dictionary of
+        bounded size), never by record id or version alone, since the changeset so far may change what a version
+        holds."""
+        if not callable(fn):
+            raise RegistrationRefused("op_validator", "validator must be callable")
+        self.validators.setdefault(op_name, []).append(fn)
+
+    def project_ending(self, fn: Callable) -> None:
+        """Wind down the plugin's own records when a project ends: `fn(project_id, view)` returns the plugin's own ops
+        for that ending (a list of op dicts or op models; for example dropping its open records about the project),
+        or an empty list. `view` is a read view of core and the plugin's own records, as before the ending applies,
+        and a hook with a parameter named `settings` also gets the plugin's settings by keyword. The core's wind-down
+        calls every running plugin's hook once for each project the change ends (a status whose meaning is done) and
+        joins the ops into the ending's own op group, so they are one change with the core's own drops: one Undo,
+        and when the ending was read from an input, one held proposal in which each item is listed with the core's
+        and can be kept like them, with one keep list. The ops are checked by the applier like any of the plugin's
+        ops (validators, write scopes and tiers), and only the plugin's own ops are
+        accepted: a core op or another plugin's op breaks the contract and turns the plugin off. The call is held to
+        `steward.pack_call_limit_seconds` and contained like an event handler: a hook that raises, returns something
+        else or doesn't return in time adds nothing, is noted on the plugin, and the plugin's records that refer to
+        the project are listed as left open for the add-on to close, never as resolved. A hook must be pure and
+        quick: it reads and returns ops, it never writes. One hook per plugin; the plugin needs no manifest entry."""
+        if self.project_ending_hook is not None or not callable(fn):
+            raise RegistrationRefused("project_ending", "one project-ending hook per plugin, and it must be callable")
+        self.project_ending_hook = fn
+
+    def on_drop(self, kind: str, fn: Callable) -> None:
+        """Follow a core record that is dropped: `fn(record_id, view)` returns the plugin's own ops (as for
+        `project_ending`) to apply with the drop, for example dropping the record of the plugin's that is paired with a
+        dropped action. `kind` is "action" for now (`DROP_HOOK_KINDS`). Whenever the applier drops a record of that
+        kind, the ops join the drop's own op group (same Undo, same hold: when the drop waits for the person, so do
+        they). A drop that is part of a project's ending is covered by the `project_ending` hook, not by this one.
+        Time limit, containment, what ops are accepted and purity are as for `project_ending`. One hook per kind per
+        plugin."""
+        if kind not in DROP_HOOK_KINDS:
+            raise RegistrationRefused("on_drop", f"a drop hook follows one of: {', '.join(DROP_HOOK_KINDS)}")
+        if kind in self.drop_hooks or not callable(fn):
+            raise RegistrationRefused("on_drop", "one drop hook per kind per plugin, and it must be callable")
+        self.drop_hooks[kind] = fn
+
+    def task_kind(
+        self,
+        name: str,
+        *,
+        ops: tuple[str, ...] = (),
+        label: str = "",
+        output: str = "ops",
+        field: str | None = None,
+        anchored: bool = False,
+        questions: int = 0,
+        where: dict[str, Any] | None = None,
+        start_where: dict[str, Any] | None = None,
+        role: str = "write",
+        prompt: str = "notes",
+        playbook: str = "notes",
+        on: str | tuple[str, str] | None = None,
+        packet: Callable | None = None,
+        groups: Callable | None = None,
+        tier: str | None = None,
+        max_output: int | None = None,
+        expected_output: int | None = None,
+        temperature: float | None = None,
+        all_or_nothing: bool = False,
+        requires_ops: tuple[str, ...] | list[str] = (),
+        learning: str = "core",
+        min_context: int | None = None,
+    ) -> None:
+        """Register AI work: the core or own ops its answer may use, and `label`, what to call it on screen.
+
+        `prompt` names the instructions: a core prompt ("notes") or the plugin's own, "<plugin>/<name>", read from
+        `prompts/<name>.md` in the plugin's folder. `playbook` names its guidance the same way, from
+        `guidance/<name>.md`.
+        The workspace overrides a plugin's prompt with `prompts/<plugin>/<name>.md`.
+
+        `on` is the record kind a run is about (core or own), when it works on one record: the request then carries that
+        record, and the person can start it from the record. `on=("<kind a>", "<kind b>")` is work about either of two
+        kinds, with one set of prompts, guidance and evaluation cases: the run is about one record of either kind (the
+        packet function's `view.target_kind` says which), the person can start it from a record of either, `where` and
+        `start_where` may name only fields both kinds have, and a draft's `field` must be a long text field of both.
+        `packet(target, view, settings, note) -> PacketParts` says
+        what the run sees (without it, the run sees what reading notes sees); `view` is a PacketContext, whose `origin`
+        says who started the run. It runs before every call, so it must be deterministic and quick; raising StoreError
+        stops the run with that message for the person: the request waits with it as the reason, and no retry, fix
+        round or escalation follows. `where` narrows which records of kind `on` the work is offered on and may start
+        on: {field: value} or {field: (value, ...)}, every field matching; ANY means the field has a value and None
+        that it has none, which for a long text field asks whether the record has text in it. A key may also be
+        `"<reference field>.<field>"`: a field of the record the reference points at, one step only ("the chapter's
+        book is in the draft stage"); an empty reference, or one whose record is gone, has no value, so it matches
+        None and not ANY. `start_where`, in the
+        same form, narrows further only the runs the person starts (from a record, or offered to them there):
+        requests a plugin, an action or a stage queues, and any request naming a `part`, check `where` alone, so a
+        kind the person starts only on an empty record can still continue part by part. The packet's `max_output`
+        hint is never below 256 tokens.
+
+        `output` is "ops" (the answer is a changeset of `ops`) or "draft": the answer is plain prose for the long text
+        field `field` of the record the run is about (`on` is required). The core wraps it as a pending `text.draft`
+        version for the person's review, runs lints on it (lints on the op "text.draft"), sends a "return" finding
+        back for one fix round, and continues a draft cut off at the output limit once before holding it. With
+        `anchored=True` the draft revises the current text: the run sees it with an id on each unit, starts every
+        paragraph it writes with the ids it came from, and a core check refuses a draft that leaves a unit unaccounted
+        for, names an unknown id, or splits or merges an atomic unit; the paragraph map is kept with the version.
+        The core adds the text with its ids after the packet's parts, as untrusted material: ids are p1, p2, ... in
+        the order of the field format's units over the whole text, so a packet can name the same ids. A request's
+        `part` limits a draft to a span or a place in the text (see `queue_request`).
+        `questions=N` lets a draft end with up to N questions for the person, in a `<questions>` block the core takes
+        off the text and keeps on the version (`questions`), shown beside it; more than N gets a fix round. In an
+        anchored answer the `Removed:` line comes before the `<questions>` block, which is always last.
+
+        `role` is "write" (the default: work that writes or changes things), "check" (an independent second opinion on
+        work already done) or "research" (gathering from sources). The workspace maps roles to tiers (`ai.roles`); a
+        tier the kind declares itself wins over its role's. A
+        check never runs on an account that wrote the record it is about (its accepted and pending text versions and
+        the changes AI runs made to it), unless the person accepts the same account for checks; the run then records
+        which kind of independence it had (`Run.independence`). With no account to take it, the check waits for the
+        person and says why. The packet decides what a check sees: give it the work, never the writing run's own
+        material.
+
+        `tier`, `max_output` (the most tokens an answer may use), `expected_output` (typical answer size, for estimates
+        before there are past runs) and `temperature` are defaults; the workspace's `ai.tasks.<kind>` overrides them.
+        `tier` is a core tier or one of the plugin's own (`registrar.tier`, "<plugin>/<name>"); naming one the plugin
+        didn't declare refuses the plugin at start. The tier a run uses is decided in this order: the workspace's
+        `ai.tasks.<kind>.tier`, then the `tier` the kind declares (a tier named for the kind is more specific than a
+        role), then its role's tier (`ai.roles`), then the default tier (`routine`). A routing rule
+        (`ai.routing`) that matches a request still sends it to another tier first.
+
+        `min_context` is the smallest context window, in tokens, a model must have for this work (a whole chapter read
+        at once, say). The core measures every packet against each model's window anyway (from the account's model
+        list, with the adapter's own token count when it has one) and sends the run only to an account whose window
+        holds the packet and its answer; the estimate names the account it is priced on, and a run that fits nowhere
+        says so before anything is sent. `min_context` lets the estimate be given before a packet is built (a batch of
+        runs priced up front), and keeps the work off a model whose window is smaller however short the packet is.
+        The workspace sets it for a kind in `ai.tasks.<kind>.min_context`.
+
+        `groups(op, view) -> str | None` labels each op of an answer, so the review shows the answer as a few rows, one
+        per label, each with Keep and Drop for all of its ops, instead of one row for every op: `op` is the op as a
+        model (the same one a validator gets) and `view` a read view; the label is words for the person, from the
+        plugin's wording (one line, up to 120 characters), and ops given the same label are one group; an op given
+        None stays on its own row. It runs once for each op when the answer is recorded; it must be quick and
+        deterministic and never call AI, and one that raises, hangs or returns something else leaves the answer
+        ungrouped and is noted on the plugin. Drop undoes the group's applied ops and declines its held ones (they
+        stay as they were), each recorded as a signal like any other rejection of the assistant's work, and names any
+        op it can't take back without overwriting a later change; Keep releases the group's held ops as the person's
+        own go. The ops are applied or held as usual before the person chooses; Undo of the whole answer still takes
+        everything back in one step, and "Release all" on the review applies every held op of an answer together
+        (except one that waits on a choice only the person makes there), also with one Undo.
+
+        In an answer's ops (and in a proposal's), a field may hold `"$new:<n>"`, the whole value, to name the record
+        op `n` of the same answer created, counting from 0: a chapter's `book` can name the book op 0 made. The applier
+        resolves it in order and keeps the real id on the op, so an answer that builds a book, its chapters and their
+        notes applies, shows and undoes as one. The op it names must come before it and must have been applied and made
+        a record; one that was refused, is waiting for the person or made none refuses the op that names it, saying
+        which change it depended on. A validator or a lint sees the id, never the placeholder. The core's op reference
+        does not describe `$new:<n>` to the model: the task kind's own prompt or guidance says when to use it.
+
+        `all_or_nothing=True` applies an answer's ops together: if any is refused, none applies, and the changeset is
+        recorded as refused with each op's reason, for ops that depend on each other (notes that summarize findings
+        made in the same answer). Ops held for the person still wait as usual.
+
+        `requires_ops` names ops (from `ops`) an answer must include at least one of, for work whose every answer
+        reports (findings, or an explicit "nothing found"): an answer with none of them is refused like any
+        invariant, which gets the usual fix round, then a stronger tier; one still without them is held for the
+        person as refused.
+
+        `learning` is "core" (the default) or "own". With "own" the core's learning from inputs, new-term scan,
+        first-name resolution against people and fact ranking into the workspace's facts don't run on this work, and
+        a run's knowledge section (`view.knowledge`) leaves out facts. A task kind working `on` a record type that
+        declares `learning = "own"` is treated the same."""
+        from engine.config.schema import TaskSettings
+
+        self._name(name)
+        if output not in ("ops", "draft"):
+            raise RegistrationRefused("task_kind", 'a task kind\'s output is "ops" or "draft"')
+        if (anchored or questions) and output != "draft":
+            raise RegistrationRefused("task_kind", "only a draft task kind is anchored or asks questions")
+        if role not in ("write", "check", "research"):
+            raise RegistrationRefused("task_kind", 'a task kind\'s role is "write", "check" or "research"')
+        if learning not in ("core", "own"):
+            raise RegistrationRefused("task_kind", 'a task kind\'s learning is "core" or "own"')
+        if not isinstance(questions, int) or not 0 <= questions <= 20:
+            raise RegistrationRefused("task_kind", "questions is how many a draft may ask, from 0 to 20")
+        on_kinds = _kinds_of(on)
+        narrowed = _narrowed(where, on_kinds)
+        start_narrowed = _narrowed(start_where, on_kinds)
+        if groups is not None and (not callable(groups) or output != "ops"):
+            raise RegistrationRefused(
+                "task_kind", "groups is a function that labels an answer's ops, for work that answers with ops"
+            )
+        if output == "draft":
+            if not on_kinds or not field or ops:
+                raise RegistrationRefused(
+                    "task_kind", "a draft task kind names the record kind it works on and the long text field it drafts"
+                )
+            ops = ("text.draft",)
+        if name in self.tasks or not ops:
+            raise RegistrationRefused("task_kind", "duplicate task kind or empty op list")
+        if not set(requires_ops) <= set(ops):
+            raise RegistrationRefused("task_kind", "requires_ops names ops the task kind's answers may use")
+        if packet is not None and not callable(packet):
+            raise RegistrationRefused("task_kind", "packet must be callable")
+        defaults = {
+            key: value
+            for key, value in (
+                ("tier", tier),
+                ("max_output", max_output),
+                ("expected_output", expected_output),
+                ("temperature", temperature),
+                ("min_context", min_context),
+            )
+            if value is not None
+        }
+        TaskSettings.model_validate(defaults)
+        if tier is not None and "/" in tier and not re.fullmatch(re.escape(self.name) + r"/[a-z][a-z0-9_.-]*", tier):
+            raise RegistrationRefused(
+                "task_kind", "a task kind may name a core tier or one of the plugin's own, never another plugin's"
+            )
+        prompt_file = self._own_file(prompt, "prompts")
+        guidance_file = self._own_file(playbook, "guidance")
+        self.tasks[name] = TaskKind(
+            name,
+            tuple(ops),
+            prompt,
+            playbook,
+            label=label.strip(),
+            on=on_kinds[0] if on_kinds else None,
+            kinds=on_kinds if len(on_kinds) > 1 else (),
+            groups=groups,
+            packet=packet,
+            defaults=defaults,
+            prompt_file=prompt_file,
+            guidance_file=guidance_file,
+            output=output,
+            field=field,
+            anchored=anchored,
+            questions=questions,
+            where=narrowed,
+            start_where=start_narrowed,
+            role=role,
+            all_or_nothing=bool(all_or_nothing),
+            requires_ops=tuple(requires_ops),
+            learning=learning,
+        )
+
+    def _own_file(self, name: str, folder: str) -> Path | None:
+        """The plugin's own prompt or guidance file for a namespaced name; None for a core name."""
+        if "/" not in name:
+            return None
+        self._name(name)
+        if self.root is None:
+            raise RegistrationRefused("prompt_file", f"{name} needs the plugin's folder")
+        path = self.root / folder / f"{name.split('/', 1)[1]}.md"
+        if not path.is_file():
+            raise RegistrationRefused("prompt_file", f"{folder}/{path.name} is missing from the plugin")
+        return path
+
+    def stage_check(self, id: str, fn: Callable) -> None:
+        """Register a pure check: (record, read_view, settings) -> StageCheckResult. Never call AI. When several checks
+        refuse a move, their reasons are shown joined with "; ", so write each as a short clause that reads well
+        beside others."""
+        self._name(id)
+        if id in self.stage_checks or not callable(fn):
+            raise RegistrationRefused("stage_check", "duplicate stage check or invalid callback")
+        self.stage_checks[id] = fn
+
+    def stages(self, record_type: str, stages: list[StageDefinition | dict], *, moves=None) -> None:
+        """Default stages for one of this plugin's record types. The workspace's stages.yaml may replace them. `moves`
+        is "person" (the default: only the person moves items) or "rule" (stage checks move items forward)."""
+        self._name(record_type)
+        if record_type in self.stage_defaults:
+            raise RegistrationRefused("stages", "duplicate default stages")
+        self.stage_defaults[record_type] = TypeStages(stages=stages, moves=moves)
+
+    def file_kind(
+        self,
+        name: str,
+        *,
+        details: type[BaseModel] | None = None,
+        accept: tuple[str, ...] = (),
+        max_mb: float | None = None,
+        label: str = "",
+        data_level: str | None = None,
+    ) -> None:
+        """Declare what a kind of file is for: the details asked for when one is added (a pydantic model), the media
+        types it accepts (within the workspace's), and a size cap (never above the workspace's). `data_level` ("open",
+        "internal" or "restricted"; default internal) is the level a file added under this kind gets when the person
+        doesn't choose one at the upload; a level the manifest's `requires.data_levels` doesn't list refuses the
+        plugin. A person's explicit choice at the upload stands, and only the person changes it afterwards."""
+        from engine.files import AnyDetails, FileKind
+
+        self._name(name)
+        if name in self.file_kinds:
+            raise RegistrationRefused("file_kind", "duplicate file kind")
+        if details is not None and not issubclass(details, BaseModel):
+            raise RegistrationRefused("file_kind", "file kind details must be a pydantic model")
+        if data_level not in (None, "open", "internal", "restricted"):
+            raise RegistrationRefused("file_kind", "a file kind's data_level must be open, internal or restricted")
+        self.file_kinds[name] = FileKind(name, details or AnyDetails, tuple(accept), max_mb, label, data_level)
+
+    def action(
+        self,
+        name: str,
+        *,
+        label: str,
+        run: Callable,
+        on: str | None = None,
+        file_kinds: tuple[str, ...] = (),
+        where: dict[str, Any] | None = None,
+        show_for: Callable | None = None,
+    ) -> None:
+        """Something the person starts: on a record of kind `on` (core or own; "file" with optional `file_kinds`), or
+        on the workspace when `on` is None. `where` narrows the records of kind `on` it is offered on and may run on,
+        as for task kinds: {field: value} or {field: (value, ...)}, every field matching. `run(target, context,
+        choices) -> Proposal` is deterministic work (it may run declared programs through `context.tools`); the person
+        reviews the proposal, and what they approve applies as theirs. Raising StoreError or ToolError shows its
+        message to the person; any other exception turns the plugin off.
+
+        `show_for(view, target) -> bool` offers the action only while other records allow it (a "Close the chapter"
+        that needs its notes to exist, say): `view` is a read view of core and the plugin's own records and `target` a
+        copy of the record the action is offered on (None for an action on the workspace). It is read only, quick and
+        deterministic and never calls AI; one that raises hides the action and counts as the plugin failing (failure
+        containment). The core asks it again when the action is started, and refuses with the action's own "not
+        available" wording (the wording key `action.unavailable.<action>`; the core's sentence when the plugin
+        sets none) if it no longer holds. `where` is checked first, so `show_for` only sees records that pass it."""
+        self._name(name)
+        if name in self.actions or not callable(run) or not label.strip():
+            raise RegistrationRefused("action", "duplicate action, missing label or invalid callback")
+        if file_kinds and on != "file":
+            raise RegistrationRefused("action", "file_kinds applies only to actions on files")
+        if show_for is not None and not callable(show_for):
+            raise RegistrationRefused("action", "show_for is a function of (view, target)")
+        self.actions[name] = ActionRegistration(
+            name, label.strip(), on, run, tuple(file_kinds), _narrowed(where, on), show_for
+        )
+
+    def text_format(self, name: str, units: Callable) -> None:
+        """A long text format: `units(text) -> list[Unit]`, spans that cover the text exactly, in order, each with a
+        kind and whether it is atomic (never split or merged). Pure and deterministic; the core checks the coverage.
+        The core ships "plain" (blank-line paragraphs) and "markdown" (its blocks)."""
+        self._name(name)
+        if name in self.text_formats or not callable(units):
+            raise RegistrationRefused("text_format", "duplicate text format or invalid callback")
+        self.text_formats[name] = units
+
+    def working_copy(
+        self,
+        name: str,
+        *,
+        label: str,
+        extension: str,
+        media_type: str,
+        hand_out: Callable,
+        take_back: Callable,
+        text_formats: tuple[str, ...] = (),
+    ) -> None:
+        """A file format people edit long text in with their own tools. `hand_out(text, context) -> bytes` makes the
+        file from a version; `take_back(data, base_text, context) -> TakeBack` reads a file back, given the text of the
+        version it was handed out from. Both are deterministic, with no AI; anything take_back can't map goes in
+        `unmapped`, never dropped. Handing out an untouched file and taking it back must give the same text: the core
+        reads every file back as it hands it out, and refuses to hand out one that doesn't. A
+        returned file becomes a `text.propose` made from the handed-out version, so the review is three-way when the
+        text moved on. `text_formats` limits it to long text in those formats (empty: any). The media type must be
+        one the workspace accepts (storage.files.accepted_types)."""
+        self._name(name)
+        if name in self.working_copies or not callable(hand_out) or not callable(take_back) or not label.strip():
+            raise RegistrationRefused(
+                "working_copy", "duplicate working-copy format, missing label or invalid callback"
+            )
+        if not re.fullmatch(r"\.[a-z0-9]{1,8}", extension):
+            raise RegistrationRefused("working_copy", "a working-copy extension is like .docx")
+        self.working_copies[name] = WorkingCopyRegistration(
+            name, label.strip(), extension, media_type, tuple(text_formats), hand_out, take_back
+        )
+
+    def extractor(self, name: str, *, label: str, media_types: Sequence[str], extract: Callable) -> None:
+        """A reader that turns files of some media types into text (listed in `provides.extractors`), for the
+        attachments a connector hands over and for `view.file_text`. `extract(data, name) -> str | None` gets the
+        file's bytes and its file name and returns its text; return None to decline a file, which the core's own
+        reader (if it has one for the type) then reads. Raise `ExtractError(reason)` with the reason in plain words
+        when the file can't be read (locked, damaged): the person is told it wasn't read and why. An empty text is
+        the same as that. Plugins' readers are asked before the core's own, in plugin name order, and the core cuts
+        the text at the configured size. `label` names the kind of file on screen (`Reading <label> isn't working:
+        …`). Deterministic, quick and offline: it never calls AI or the network, and it never follows a path the file
+        names."""
+        self._name(name)
+        types = tuple(media_types)
+        if (
+            name in self.extractors
+            or not callable(extract)
+            or not str(label).strip()
+            or not types
+            or any(not re.fullmatch(r"[a-z]+/[a-z0-9][a-z0-9.+_-]*", t) for t in types)
+        ):
+            raise RegistrationRefused(
+                "extractor",
+                "duplicate extractor, missing label, invalid function, or media types that aren't like text/plain",
+            )
+        self.extractors[name] = ExtractorRegistration(name, " ".join(label.split()), types, extract)
+
+    def define_interface(
+        self,
+        name: str,
+        *,
+        version: str,
+        item: type[BaseModel],
+        events: dict[str, type[BaseModel]] | None = None,
+        task_kinds: tuple[str, ...] = (),
+    ) -> None:
+        """Define a versioned interface other plugins provide or use (listed in `interfaces.defines`): `item` is the
+        pydantic model of one item, `events` the events providers raise with their payload models, and `task_kinds`
+        the work a provider may offer for others to request. `version` is "<major>.<minor>": add only optional
+        fields within a major version, and bump the major to change anything else. A plugin that defines an interface
+        may also provide and use it."""
+        self._name(name)
+        if name in self.interface_definitions:
+            raise RegistrationRefused("define_interface", "duplicate interface definition")
+        if not re.fullmatch(r"[0-9]+\.[0-9]+", version):
+            raise RegistrationRefused("define_interface", 'an interface version is "<major>.<minor>", like "1.0"')
+        if not isinstance(item, type) or not issubclass(item, BaseModel):
+            raise RegistrationRefused("define_interface", "an interface's item is a pydantic model")
+        for event, model in (events or {}).items():
+            if (
+                not re.fullmatch(r"[a-z][a-z0-9_]*", event)
+                or not isinstance(model, type)
+                or not issubclass(model, BaseModel)
+            ):
+                raise RegistrationRefused(
+                    "define_interface", "interface events are lowercase names with pydantic payload models"
+                )
+        for kind in task_kinds:
+            if not re.fullmatch(r"[a-z][a-z0-9-]*", kind):
+                raise RegistrationRefused(
+                    "define_interface", "an interface's task kinds are short lowercase names like short-blurb"
+                )
+        self.interface_definitions[name] = InterfaceDefinition(
+            name, version, item, dict(events or {}), tuple(task_kinds)
+        )
+
+    def provide_interface(
+        self,
+        interface: str,
+        *,
+        items: Callable,
+        task_kinds: dict[str, str] | None = None,
+        about: Callable | None = None,
+    ) -> None:
+        """Provide an interface ("<name>@<major>", listed in `interfaces.provides`), defined here or by another
+        plugin. `items(view, settings, project) -> list[dict]` returns what this plugin offers through it: for one
+        project when `project` is an id, everything when it is None (a function taking only `view, settings` is
+        called for everything and filtered). Each item is checked against the definition when read; include
+        `project` (an id) for items that belong to one, and `data_level` when it isn't "internal". It must be quick
+        and deterministic. `task_kinds` maps the interface's task kind names to this plugin's own task kinds, so
+        others can request them. `about(view, settings, item) -> record | (kind, id) | None` says which of this
+        plugin's records an item (as `items` returned it) stands for, so a user can request work on the item itself;
+        the record must be of the kind the requested task kind is `on`. A function taking a fourth argument also gets
+        the interface's task name being requested, so different task kinds can work on different records. Raise the
+        interface's events from an op with `writer.emit`, or from an event handler with `context.emit`. With no
+        plugin defining the interface running, nothing reads it."""
+        match = re.fullmatch(r"([a-z0-9-]+/[a-z0-9-]+)@([0-9]+)", interface)
+        if match is None:
+            raise RegistrationRefused("provide_interface", 'provide an interface as "<plugin>/<name>@<major>"')
+        if match.group(1) in self.interface_provisions or not callable(items):
+            raise RegistrationRefused("provide_interface", "duplicate interface provision or invalid items function")
+        for own in (task_kinds or {}).values():
+            if not own.startswith(self.name + "/"):
+                raise RegistrationRefused("provide_interface", "an interface offers this plugin's own task kinds")
+        if about is not None and not callable(about):
+            raise RegistrationRefused("provide_interface", "an interface's about is a function")
+        self.interface_provisions[match.group(1)] = InterfaceProvision(
+            match.group(1), int(match.group(2)), items, dict(task_kinds or {}), about
+        )
+
+    def today(self, name: str, *, lines: Callable) -> None:
+        """Lines for the Today list (listed in `provides.today`): `lines(view, settings) -> list[TodayLine]`, called
+        whenever Today is shown, so it must be quick and deterministic and never call AI. A line's `action` is one
+        of this plugin's person actions or task kinds, or one of the core's own (`CORE_LINE_ACTIONS`), which need
+        `about`: "go" a `request` waiting for the go, "answer" a `question`, "move-stage" a record of a kind with
+        stages, and "open" or "review" any record. A line names the `group` it belongs in (`TODAY_GROUPS`), so it sits
+        among the core's own lines of that kind. A line that counts several items ("three runs wait for your go")
+        names the one record its button acts on as `about`; when no single record fits, use "open" on the most
+        relevant one, or leave `action` unset and let the line inform. A line naming a core action with the wrong
+        `about` fails the contributor like any bad line."""
+        self._name(name)
+        if name in self.today_lines or not callable(lines):
+            raise RegistrationRefused("today", "duplicate Today contributor or invalid lines function")
+        self.today_lines[name] = TodayRegistration(name, lines)
+
+    def panel(
+        self,
+        name: str,
+        *,
+        title: str,
+        kind: str,
+        columns: tuple[str, ...],
+        view: str = "table",
+        filter: dict[str, Any] | None = None,
+        primary_action: str | None = None,
+        row_actions: tuple[str, ...] = (),
+        tab: str = "work",
+        new_action: str | None = None,
+        computed: dict[str, Callable] | None = None,
+        show_for: Callable | None = None,
+        computed_labels: dict[str, str] | None = None,
+    ) -> None:
+        """A screen listing records (listed in `provides.panels`), described as data so it looks and behaves like
+        the core's (design 7.2): the records of `kind` (core or own) whose fields equal `filter`, shown as `view`
+        ("list", "table" or "board"; a board groups by the first column) with `columns` (fields of the kind, or
+        names in `computed`). `primary_action` is the one action on a row and `row_actions` the rest, in its menu:
+        this plugin's person actions or task kinds on that kind. `new_action` is a person action of this plugin's on
+        the workspace (`on` None) shown above the rows, to add one. Rows are read through the core, and actions run
+        as they always do.
+
+        `computed` adds columns that aren't fields: {"words": fn} where `fn(record, view, settings)` returns a short
+        str, a number, a bool or None (a word count, a stage, "complete for its tier", the last build). A computed
+        column can't be named like a field of the kind (that is a load error). It must be quick and deterministic
+        and never call AI; one that raises shows an empty cell and counts as the plugin failing (failure
+        containment). A function taking a fourth argument gets a dict shared by every cell of one listing, to keep
+        work it would otherwise repeat per row (an index of builds by record); it is new for each listing.
+        `computed_labels={"words": "panel.column.<plugin>/<name>"}` names the wording key (set in one of the plugin's
+        wording files) of a computed column's heading, so the screens show the plugin's own words for it, in the
+        workspace's wording; a computed column with none is headed by its key made readable. A key names a computed
+        column of this panel and a wording key of this plugin's namespace, or the plugin is refused at start.
+
+        Filtered by project, a kind with no `project` field follows its `layout_project` reference: a record is in the
+        project its referenced record is in. A kind registered with `placed_by` is in the project that places it.
+        `show_for(project, view) -> bool` lists the panel only on the projects it returns True for (a panel of what a
+        parent project's children share, say); without it the panel is on every project."""
+        self._name(name)
+        if name in self.panels or not title.strip() or not columns:
+            raise RegistrationRefused("panel", "duplicate panel, missing title or no columns")
+        if view not in ("list", "table", "board"):
+            raise RegistrationRefused("panel", 'a panel view is "list", "table" or "board"')
+        if tab not in ("today", "work", "people", "settings"):
+            raise RegistrationRefused("panel", 'a panel tab is "today", "work", "people" or "settings"')
+        computed = dict(computed or {})
+        if any(not isinstance(k, str) or not k or not callable(fn) for k, fn in computed.items()):
+            raise RegistrationRefused("panel", "computed maps column names to functions of (record, view, settings)")
+        if show_for is not None and not callable(show_for):
+            raise RegistrationRefused("panel", "show_for is a function of (project, view)")
+        labels = dict(computed_labels or {})
+        if any(
+            key not in computed
+            or not isinstance(text, str)
+            or not text.startswith("panel.column.")
+            or f"{self.name}/" not in text
+            for key, text in labels.items()
+        ):
+            raise RegistrationRefused(
+                "panel",
+                "computed_labels maps a computed column to a wording key like panel.column.<plugin>/<name>, "
+                "in the plugin's namespace",
+            )
+        self.panels[name] = PanelRegistration(
+            name,
+            title.strip(),
+            kind,
+            view,
+            tuple(columns),
+            dict(filter or {}),
+            primary_action,
+            tuple(row_actions),
+            tab,
+            new_action,
+            computed,
+            show_for,
+            None,
+            labels,
+        )
+
+    def document(
+        self,
+        name: str,
+        *,
+        title: str,
+        render: Callable,
+        tab: str = "work",
+        show_for: Callable | None = None,
+    ) -> None:
+        """A read-only document panel (listed in `provides.panels`): a page the plugin composes from many records
+        (a start-here page, a beat sheet, a timeline). `render(view, settings, project) -> str | None` returns
+        Markdown, built per call from the view (`project` is the record of the project in view, as `show_for` gets
+        it, or None for the workspace); None
+        shows that there is nothing to show yet. It must be quick and deterministic and never call AI; one that
+        raises shows the panel's problem and counts as the plugin failing (failure containment).
+
+        The screens draw a small Markdown subset as their own elements, never HTML: headings (`#` to `###`),
+        paragraphs, bullet and numbered lists (one level), tables (a header row, then `|---|`), rules (`---`), and
+        inline `**strong**`, `*emphasis*`, `` `code` `` and links. `[text](record:<kind>/<id>)` links to a record the
+        plugin may read (core or its own; one that doesn't exist shows as its text) and opens its page;
+        `[text](https://...)` links to a page outside, shown with its real domain. Anything else, raw HTML
+        included, shows as the characters it is. Up to 200,000 characters. `show_for(project, view) -> bool` lists
+        it only on some projects, as for record panels."""
+        self._name(name)
+        if name in self.panels or not str(title).strip() or not callable(render):
+            raise RegistrationRefused("document", "duplicate panel, missing title or invalid render function")
+        if tab not in ("today", "work", "people", "settings"):
+            raise RegistrationRefused("document", 'a panel tab is "today", "work", "people" or "settings"')
+        if show_for is not None and not callable(show_for):
+            raise RegistrationRefused("document", "show_for is a function of (project, view)")
+        self.panels[name] = PanelRegistration(
+            name, str(title).strip(), "", "document", (), {}, None, (), tab, None, {}, show_for, render
+        )
+
+    def data_form(
+        self,
+        name: str,
+        *,
+        label: str,
+        folder: str,
+        schema: type[BaseModel],
+        description: str = "",
+        pattern: str = "*.yaml",
+        single: bool = False,
+        preview: Callable | None = None,
+    ) -> None:
+        """A kind of data file the person edits through a form (listed in `provides.data_forms`): the files in
+        `folder` of the plugin's data layers (`view.data`) that match `pattern`, each checked against `schema` (a
+        pydantic model; every field needs a default and a description, as in `Settings`). `pattern` is a glob
+        relative to the folder, ending in `.yaml`, with at most one level of subfolder: `*.yaml` (the default),
+        `*/item.yaml` (one folder per item, beside its own files) or `stages.yaml`. With `single=True` the form is
+        that one file (`pattern` names it): it is listed even before it exists, and no other file can be made.
+
+        The screens list the files with the layer each comes from (shipped, the workspace's, a project's) and any
+        problem each has, checked as the plugin's loader would and with defaults checked too (a required value left
+        empty shows). They offer a form built from the schema, as for settings: editing a shipped file saves a copy
+        in the workspace's layer (or a project's), never the shipped one; a new file starts from the schema's
+        defaults or from another file of the kind ("start from"); a copy can be removed to fall back to the less
+        specific one. A save writes only the keys the file already had plus those the person set, never the whole
+        model with its defaults, so keys left out stay left out (a template's `extends` keeps following its base).
+        Every save is checked against the schema (a refusal names the field, or says the file's own rule when the
+        model's validator refused it) and offers Undo. The list shows each file's first problem; opening the file
+        shows the form with it. The plugin reads the files as before, with `view.data(path, project=...)`, and must
+        read them with this same schema: a key left out of a file takes the schema's default, so a loader with other
+        defaults (or a field it requires that the form defaults) sees a different file than the form checked.
+
+        Every field needs a default because the form builds the model with no values to learn them, so a rule over the
+        whole model ("this is required unless that is set") can't be a model validator: it would refuse that empty
+        model and the form would show no defaults. Put such a rule in the plugin's loader, where the file is read, or
+        in a lint on the ops that use the file.
+
+        `preview(view, settings, project, saved_file) -> Preview` shows what the file will look like, beside its form
+        (a sample page set in a template, a rendered cover): `view` is an `ActionContext` (a read view that may run
+        the plugin's declared programs, as person actions do), `settings` the plugin's settings, `project` the record
+        of the project in view (None for the workspace's own file) and `saved_file` the file's name as the form lists
+        it (read it with `view.data(saved_file, project=...)` for the copy in effect). It returns a `Preview` of an
+        image (`image/png`, `image/jpeg`, `image/gif` or `image/webp`), plain text (`text/plain`) or a short document
+        (`text/markdown`, drawn from the same small Markdown subset as `registrar.document`, never as HTML). It runs
+        as the person, changes nothing, after each save and when the person presses Refresh, within
+        `workspace.plugins.preview_seconds` seconds. A preview that raises, returns something else, is too large
+        (`workspace.plugins.actions.preview_mb`) or runs out of time shows that beside the form, and never blocks or
+        undoes the save; it is not counted as the plugin failing."""
+        self._name(name)
+        folder = str(folder).strip("/")
+        if name in self.data_forms or not str(label).strip():
+            raise RegistrationRefused("data_form", "duplicate data form or missing label")
+        if not re.fullmatch(r"[a-z0-9_-]+(/[a-z0-9_-]+)*", folder):
+            raise RegistrationRefused(
+                "data_form", "a data form's folder is a relative path of lowercase names, like templates"
+            )
+        if not re.fullmatch(r"([a-z0-9_*-]+/)?[a-z0-9_*-]+\.yaml", str(pattern)):
+            raise RegistrationRefused(
+                "data_form", "a data form's pattern names YAML files and has at most one folder level"
+            )
+        if single and "*" in pattern:
+            raise RegistrationRefused("data_form", "a single-file data form names its file in pattern, with no *")
+        if not isinstance(schema, type) or not issubclass(schema, BaseModel):
+            raise RegistrationRefused("data_form", "a data form's schema is a pydantic model")
+        for key, info in schema.model_fields.items():
+            if info.is_required() or not info.description:
+                raise RegistrationRefused("data_form", f"data form field {key} needs a default and a description")
+        if preview is not None and not callable(preview):
+            raise RegistrationRefused("data_form", "preview is a function of (view, settings, project, saved_file)")
+        self.data_forms[name] = DataFormRegistration(
+            name, " ".join(str(label).split()), folder, schema, description, str(pattern), bool(single), preview
+        )
+
+    def job(self, name: str, *, every_minutes: int, run: Callable) -> None:
+        """Work on a schedule (listed in `provides.jobs`): `run(context)` with an `EventContext`, every
+        `every_minutes` by default; the workspace changes it or turns the job off in
+        `workspace.plugins.jobs.<name>`. Like an event handler it reads, queues requests, files questions, raises
+        interface events and stages its own ops; it never writes records directly and never calls AI itself. It runs
+        only while the app runs, and each run is recorded."""
+        self._name(name)
+        if name in self.jobs or not callable(run) or not isinstance(every_minutes, int) or every_minutes < 5:
+            raise RegistrationRefused("job", "duplicate job, invalid run function, or a schedule under 5 minutes")
+        self.jobs[name] = JobRegistration(name, every_minutes, run)
+
+    def connector(
+        self,
+        name: str,
+        *,
+        label: str,
+        settings: type[BaseModel],
+        poll: Callable,
+        reads: Literal["mail", "calendar"] | None = None,
+        older: Callable | None = None,
+        older_count: Callable | None = None,
+    ) -> None:
+        """A place the assistant can keep reading (listed in `provides.connectors`). A workspace watches it by naming
+        it in `watch.yaml` with its settings, which `settings` (a pydantic model) checks. `poll(settings, state,
+        context) -> Poll` lists what the source holds now as `SourceItem`s (a stable key, a title, the text, who
+        changed it last) and returns the `state` to keep for the next read; set `complete=False` when it lists only
+        what changed. An item can carry files (`SourceItem.files`, `ItemFile`: name, media type, bytes), such as a
+        mail's attachments: the core reads them as text and adds it to the item's text, so the connector never parses
+        a file and a change in a file is a change in the item. A thing the connector listed but couldn't read goes in
+        `Poll.unreadable` as `Unreadable(key, reason)` (never its own text): the read moves past it, the core records
+        it and tells the person, and the rest is read.
+        Raise `ConnectorError(kind, detail)` with kind `auth`, `no_access`, `not_found`, `outage`, `offline` or
+        `throttled` (with `retry_after=` seconds). The core compares, keeps snapshots and hands in what is new,
+        changed or gone (for a read that lists only changes, the keys in `Poll.removed`); the connector never writes
+        records. `context.web` (when `requires.network` lists hosts) reaches only those hosts, over HTTPS:
+        `context.web.get(url, params=..., headers=...)`, `.post(...)`, `.put(...)`, `.patch(...)` and `.delete(...)`
+        return a response with `status`, `headers`,
+        `content`, `.text` and `.json()`, and raise `ConnectorError` for no connection (offline), timeouts and 5xx
+        (outage), 401 (auth), 403 (no_access), 404 (not_found), and 429 or 503 with a Retry-After (throttled, with
+        the wait). Those errors carry the answer's `status`, `headers` and `body` (`err.json()`), so a connector can
+        read the service's own error code and raise a better kind: a 403 that means "slow down" is `throttled`, with
+        `retry_after=retry_after(err.headers)`. Every other status (410, say) comes back as a response to read, so a
+        service whose expired change marker is a 404 is caught as `not_found` and one whose marker is a 410 is a
+        status to check; both mean "start over with a full read". A throttled read isn't counted as a failure,
+        and the source isn't read again before its wait ends. `context.secret(name)` reads a secret named in
+        `requires.secrets` (None when it isn't set), `context.keep_secret(name, value)` keeps one on this computer,
+        and `context.access_token(name)` gives a current token for one of the plugin's sign-ins: the token of the
+        account the source reads with (see `registrar.sign_in`), so a connector needs no change to read several
+        accounts. `context.account` is that account's address, read-only (None when the sign-in names no accounts, or
+        several are signed in and the source names none). Test a connector with `engine.plugin_api.testing`.
+        `reads="mail"` or `reads="calendar"` says what the connector reads, so the setup walkthrough offers its
+        add-on as a mail or calendar service, also before it is installed. Say it in the manifest too, as
+        `provides.connector_reads: {<connector>: mail}`, which the registration must match. A connector that says
+        nothing is told apart by its name (mail, mailbox, email or inbox; calendar), and the app logs that it
+        should say so.
+
+        **Older items (a look further back):** a connector that can read items older than its first read took
+        passes `older=fn`, with `fn(settings, since, before, max_items, context) -> list[SourceItem]`: the newest
+        `max_items` items dated from the day `since` up to, not including, the day `before` (both are dates; each
+        item carries its date as the poll's items do), as a poll's items are, with the same keys, so an item a
+        poll already returned is the same item. Only then is "Look further back" offered for a source of the
+        connector, on the source's menu: the person picks how many days, the core shows how many items and about what
+        reading them costs, holds the work for the person's go like any other AI work, and never asks for more than
+        `watch.look_back_max_items` (it is `max_items`); an answer of fewer says the service holds nothing older. The
+        function runs with the source's own settings and account, reads only, and a failure is contained like a
+        poll's (`ConnectorError` kinds pass through). `older_count=fn`, with the same arguments, returns how many
+        items there are (at most `max_items`) without reading them, so the estimate costs no more than a count; left
+        out, the estimate calls `older` and counts what comes back."""
+        self._name(name)
+        if name in self.connectors or not callable(poll):
+            raise RegistrationRefused("connector", "duplicate connector or invalid poll function")
+        if (older is not None and not callable(older)) or (older_count is not None and not callable(older_count)):
+            raise RegistrationRefused("connector", "older and older_count are functions")
+        if older_count is not None and older is None:
+            raise RegistrationRefused("connector", "older_count goes with older")
+        if reads not in (None, "mail", "calendar"):
+            raise RegistrationRefused("connector", "a connector reads mail or a calendar, or says nothing")
+        if not isinstance(settings, type) or not issubclass(settings, BaseModel):
+            raise RegistrationRefused("connector", "a connector's settings are a pydantic model")
+        from engine.connectors import Connector
+
+        self.connectors[name] = Connector(
+            name,
+            " ".join(str(label).split()) or name,
+            settings,
+            poll,
+            reads=reads,
+            older=older,
+            older_count=older_count,
+        )
+
+    def channel(
+        self,
+        name: str,
+        label: str,
+        kinds: Sequence[str],
+        send: Callable,
+        status: Callable | None = None,
+        undo: Callable | None = None,
+        *,
+        template_version: Callable | None = None,
+        actions: dict[str, Sequence[str]] | None = None,
+        accounts: Sequence[str] = (),
+        folders: Callable | None = None,
+    ) -> None:
+        """A way an approved act is carried out (listed in `provides.channels`): a message sent, a message filed, an
+        event written, a file put in a folder, on the person's behalf. `kinds` are the kinds of target it takes:
+        `message`, `mailbox`, `calendar`, `file`. The core calls it only for an act the person approved, whose approval
+        still covers the act, and never twice for one attempt.
+
+        `actions` says what the channel does, by kind: `{"message": ["send", "reply", "reply_all", "forward"],
+        "mailbox": ["archive", "move", "label", "mark_read"], "calendar": ["create", "move", "cancel", "answer"],
+        "file": ["write"]}`. A draft whose action the channel doesn't declare is refused at the draft, with the reason
+        in plain words; a channel that declares none takes the first action of each kind (`send`, `archive`, `create`,
+        `write`). The core never offers an action a channel didn't declare, and a mailbox act never deletes: there is
+        no delete action. `accounts` are the kinds of account the channel serves: the name of a sign-in the plugin
+        registers, or `mailbox` for a plain mailbox. An act names its account (the sign-in's account, `<kind>:<name>`),
+        and a draft on an account of another kind is refused. Acting is the person's switch for each account, off until
+        they turn it on: until then a draft for the account is carried out by Copy, so a channel is never called for an
+        account that isn't switched on.
+
+        `send(act, attempt_key, context)` gets an `OutgoingAct` (exactly what the person approved, each recipient's
+        address as it resolves now), the attempt key the core recorded before calling, which the channel should hand to
+        the service so it can tell a repeat from a new send, and a `ChannelContext` built for that call. It returns
+        `ChannelSent(service_id)` when it went out,
+        `ChannelFailed(kind, reason)` when it is sure it didn't (`kind` is `auth`, `refused`, `outage` or `offline`,
+        decided from status codes and error codes, never from message text; for `auth` the reason says which account to
+        sign in to again), or `ChannelUnknown()` when it can't tell. A timeout or a raised exception also leaves the act
+        waiting: the core asks `status` before anything is sent again.
+
+        `OutgoingAct` carries what the act does and what it is about: `action`, `about` (each item an `OutgoingAbout`:
+        the record's id, the service's own id of the saved message or calendar entry as it resolves now, and for a
+        calendar entry its UID and sequence where the source gave them), `account`, and for an event `calendar`,
+        `when`, `start`, `end`, `title`, `alarm_minutes`, and for an answer `answer` (`accepted`, `tentative`,
+        `declined` or `propose`), `proposed_start` and `proposed_end`; an answer's recipient is the organizer, which
+        the core called out to the person like any recipient.
+
+        `ChannelContext` is built by the core for the act's own account and reaches nothing else: `web` is a client
+        limited to the hosts in the plugin's `requires.network` (None when it declares none); `access_token()` gives a
+        current token of the act's account when it is an account of one of the plugin's own sign-ins (renewed by the
+        core; it raises `ConnectorError` of kind `auth` or `no_access`, which the channel answers as
+        `ChannelFailed("auth", ...)`), and None for a plain mailbox or an act with no account; `account` is the act's
+        account id; `granted` the scopes that sign-in holds for the account (empty when it has none); `log` a logger.
+        A channel written for 0.3.88 with `send(act, attempt_key)`, `status(attempt_key)` and `undo(act, service_id)`
+        is still called without a context; those signatures are deprecated and go in the next release. Test a channel
+        with `engine.plugin_api.testing.channel_context`.
+
+        `status(attempt_key, context)` says what happened to an attempt: `ChannelSent(service_id)`, `ChannelNotSent()`
+        (the service has nothing for that key) or `ChannelUnknown()`. A channel with no `status` can't be asked, so an
+        attempt whose answer was lost is shown to the person as uncertain, never as sent.
+        `undo(act, service_id, context)` takes a sent act back where the service can: only a mailbox act (moved back,
+        the label removed, marked unread) and a calendar `create` (the event deleted) are ever asked, never a sent
+        message, and never a move, a cancel or an answer that others were told of. It is called once, only after the
+        person asked, and returns `ChannelUndone()` or `ChannelFailed(kind, reason)`; an exception counts as a failure
+        with no clear answer, so the act stays sent and the person looks in the service. `template_version(name)`
+        returns the version a template has now (None when it is gone), so a yes given to content rendered from an older
+        one goes stale. A channel never writes records; it sees only the act it is handed. Draft acts with the core op
+        `act.draft` from a person action.
+
+        **Listing where messages can go:** `folders(account, context)` lets Move to and Label offer the account's own
+        folders and labels to pick from, instead of a box the person types a name in. It gets the account id and a
+        `ChannelContext` built exactly as for `send` (for that account, reaching only the plugin's declared hosts and
+        that account's sign-in), and returns a list of `ChannelFolder(id, name, kind)`: `id` is what the channel wants
+        back in a move or label act (the act's `folder` or `label`, as the person picked it), `name` is what the person
+        sees (a nested folder's whole path, such as "Projects/Archive") and `kind` is `folder` or `label`. Move to
+        offers the `folder`s and Label the `label`s; a channel that lists only one kind leaves the other typed. When it
+        can't list, it returns `ChannelFailed(kind, reason)` with the same kinds as `send`; the core shows the person
+        its own words for the kind, never the service's. It is read-only: it never changes anything, makes a bounded
+        number of requests, and is called only for an account the channel serves. The core calls it when the person
+        opens Move to or Label, and keeps the answer for a short time (`watch.folders_cache_minutes`, default 5), so
+        opening the form again doesn't ask the service again; a call that takes longer than
+        `watch.folders_timeout_seconds` (default 10), raises, or returns anything else counts as no list, and the
+        person types the name, as before. A channel that declares neither `mailbox: move` nor `mailbox: label` in
+        `actions` may not pass `folders` (the registration is refused). Test it with
+        `engine.plugin_api.testing.channel_folders`."""
+        self._name(name)
+        if name in self.channels or not callable(send):
+            raise RegistrationRefused("channel", "duplicate channel or invalid send function")
+        if not kinds or not set(kinds) <= {"message", "mailbox", "calendar", "file"}:
+            raise RegistrationRefused("channel", "a channel takes message, mailbox, calendar or file targets")
+        from engine.ops import ACT_ACTIONS
+
+        declared: dict[str, tuple[str, ...]] = {}
+        for kind, names in (actions or {}).items():
+            if kind not in kinds or not names or not set(names) <= set(ACT_ACTIONS[kind]):
+                raise RegistrationRefused(
+                    "channel",
+                    "actions names, for each kind the channel takes, some of that kind's actions: "
+                    + "; ".join(f"{k}: {', '.join(v)}" for k, v in ACT_ACTIONS.items()),
+                )
+            declared[kind] = tuple(dict.fromkeys(names))
+        if not all(isinstance(a, str) and a.strip() for a in accounts):
+            raise RegistrationRefused("channel", "accounts are the names of the kinds of account the channel serves")
+        if any(fn is not None and not callable(fn) for fn in (status, undo, template_version, folders)):
+            raise RegistrationRefused("channel", "a channel's status, undo, template_version and folders are functions")
+        if folders is not None and not {"move", "label"} & set(declared.get("mailbox", ())):
+            raise RegistrationRefused(
+                "channel",
+                "folders lists where messages can be moved or labeled, so the channel declares "
+                "actions={'mailbox': [...]} with move or label",
+            )
+        from engine.channels import ChannelRegistration
+
+        self.channels[name] = ChannelRegistration(
+            name,
+            " ".join(str(label).split()) or name,
+            tuple(dict.fromkeys(kinds)),
+            send,
+            status,
+            undo,
+            template_version,
+            declared,
+            tuple(dict.fromkeys(a.strip() for a in accounts)),
+            folders,
+        )
+
+    def sign_in(
+        self,
+        name: str,
+        *,
+        label: str,
+        authorize_url: str,
+        token_url: str,
+        scopes: tuple[str, ...] | list[str],
+        client_id: str = "client-id",
+        client_secret: str | None = None,
+        params: dict[str, str] | None = None,
+        allows: tuple[str, ...] | list[str] = (),
+        account: Callable | None = None,
+        revoke_url: str | None = None,
+        default_client_id: str | None = None,
+        default_client_secret: str | None = None,
+        default_app_note: str | None = None,
+        own_app_steps: Sequence[str | tuple[str, str]] = (),
+        default_redirects: Sequence[str] = (),
+        sources: Sequence[dict[str, Any]] = (),
+        acting_scopes: tuple[str, ...] | list[str] = (),
+    ) -> None:
+        """A sign-in to a service through its own sign-in page, as the person (listed in `provides.sign_ins`):
+        OAuth 2.0 authorization code with PKCE. `authorize_url` and `token_url` are the service's HTTPS addresses, on
+        hosts listed in `requires.network`; `scopes` are what it asks the person to allow; `client_id` (and
+        `client_secret`, for services that issue one to apps on a computer) name secrets in `requires.secrets` that
+        hold the app registration the person made with the service (the secret, when given, is sent to `token_url`
+        with the code and with every renewal, beside PKCE); `params` adds parameters to the sign-in page's
+        address. The person signs in from Settings; the core receives the answer at its own callback address
+        (`<the app's address><base path>/api/sign-ins/callback`, which the app registration must allow: register
+        exactly the address the Sign-ins section shows, since some services tell `localhost` from `127.0.0.1`, and
+        register it again if the app's address or port changes), keeps the
+        tokens on this computer and renews them. A connector gets a current token with
+        `context.access_token(name)`; when the person needs to sign in (again) it raises `ConnectorError("auth",
+        ...)`, which asks them once; naming a sign-in the plugin doesn't register raises `PluginMisuse`. The
+        plugin never sees the sign-in itself or the refresh token.
+
+        **Several accounts at once:** when `account` is given, the person can sign in to the service again ("Add
+        another account") and the core keeps each account's tokens apart, known by the name `account` returned (the
+        same name again is the same account, and signing in replaces its tokens). Each source of the plugin has an
+        `account` setting, a list of the accounts signed in (the only one is used when there is one; a source must
+        choose when there are several), and `context.access_token(name)` in its read gives that account's token;
+        `context.account` is its name. Signing one account out pauses only the sources reading with it, with the
+        usual "sign in again" line naming it. A sign-in without `account` has one account, which a new sign-in
+        replaces. The sources a sign-in starts (`sources=`) are started for the account just added.
+
+        `allows` says in plain words what the person is asked to allow ("Read your mail"), shown on the Sign-ins
+        row and the setup step before they leave for the service's page. `account(context) -> str`, when given, is
+        called once after signing in, with a context like a connector's (`context.web`, `context.access_token`, which
+        gives the token just granted), and names the signed-in account ("Signed in as …"), best as its address; a
+        failure leaves it unnamed: a `ConnectorError` quietly, and
+        anything else also counts as the plugin failing (failure containment). `context.granted(name)` is the set of
+        scopes the person allowed (the service's answer, or everything asked when it doesn't say); the row names
+        any scope asked for and not granted. It is empty while signed out, so ask `context.access_token(name)` first
+        (which raises `ConnectorError("auth")` then) and check `granted` after, or a signed-out person reads as
+        `no_access` instead of being asked to sign in. `revoke_url` (HTTPS, on a declared host) is where signing out
+        withdraws the access at the service (RFC 7009), best effort. When the service refuses to renew a sign-in, it
+        shows "Sign in again" at once and the person is told once. The core adds a setup step per sign-in, done
+        while signed in.
+
+        Which app registration is used: the workspace's references in `workspace.plugins.secrets` when it sets the
+        client id; else values the person pasted on the Sign-ins row (kept on this computer, readable by its owner
+        only); else the add-on's own, `default_client_id` (and `default_client_secret`), so people sign in without
+        registering anything. Ship a default only for a registration the service issues to apps on a person's
+        computer, whose secret the service doesn't treat as confidential, and which allows loopback addresses; a
+        hosted app sets its own. `default_app_note` says in plain words what using the add-on's registration means
+        (a warning page, how often to sign in again), shown while it is in use. `own_app_steps` is how a person
+        makes their own registration, shown as a numbered list beside the paste boxes and the address to allow: each
+        step is a line, or (line, https link) to open the service's page for it (up to 12).
+
+        The default pair: `default_client_id` alone is a public client (the service issues no secret);
+        `default_client_secret` needs `default_client_id`. `requires.secrets` still lists `client_id` (and
+        `client_secret`), the names a pasted or workspace registration is kept under. `default_app_note` shows only
+        while the add-on's registration is in use; say there what the service's limits mean for the person (a
+        warning page, how often to sign in again, a cap on who may sign in). The note and each step are one or two
+        short sentences (up to 300 characters). `default_redirects` lists the callback addresses the add-on's
+        registration allows (`http://localhost/api/sign-ins/callback`, say; a loopback host matches any port): when
+        the app's own address isn't one of them (served under another base path, or hosted), the add-on's
+        registration isn't used and the person is asked for their own, with the reason. Without it, any address is
+        assumed to be allowed.
+
+        `acting_scopes` are the extra scopes acting needs (send, change messages, write events), asked for only when the
+        person turns on **Let the assistant act after your yes** for an account of this sign-in; `scopes` stay the
+        reading ones, and signing in asks for those alone. Turning acting on starts the sign-in again for that
+        account with `scopes` and `acting_scopes` together; turning it off stops the core using the wider access, and
+        signing in again with the reading scopes gives it back where the service allows. Declare them only when a
+        channel of the plugin serves this sign-in's accounts.
+
+        `sources` are what the core starts reading as soon as the person signs in, so signing in is all the setup
+        there is: each is `{"connector": <one of this plugin's connectors>, "label": <a name for the list>,
+        "settings": {...}, "every_minutes": 15}` (settings checked against the connector's, defaults filling the
+        rest). Each is added once per sign-in, and only when the workspace reads nothing with that connector yet; a
+        source the person later removes or changes stays as they left it. Choose settings that read something
+        useful with no further choice (the inbox, the main calendar); the person narrows them later.
+
+        **The account's sent mail:** a source declared with `"sent": True` reads the folder or label the service
+        keeps the person's own sent mail in (name it in the source's `settings`, as the connector's settings take it;
+        it is the same connector as the inbox). The core starts it with the others, credits it to the person (what it
+        holds is their own mail, so the promises they made in it are found and a reply they sent ends the one they
+        owed), and shows no button for it. It is started once the workspace knows who the person is, so a sign-in made
+        before that gets it then. Each account gets its own; one the person removed isn't brought back by a new
+        sign-in, and "Start reading" brings it back."""
+        self._name(name)
+        if name in self.sign_ins or not str(label).strip() or not scopes:
+            raise RegistrationRefused("sign_in", "duplicate sign-in, or a sign-in without a label or scopes")
+        if not all(isinstance(s, str) and s.strip() for s in scopes):
+            raise RegistrationRefused("sign_in", "a sign-in's scopes are words")
+        if len(allows) > 10 or not all(isinstance(a, str) and a.strip() and len(a) <= 80 for a in allows):
+            raise RegistrationRefused(
+                "sign_in", "allows lists up to 10 short lines of what the person is asked to allow"
+            )
+        if account is not None and not callable(account):
+            raise RegistrationRefused("sign_in", "account is a function")
+        if default_client_secret and not default_client_id:
+            raise RegistrationRefused("sign_in", "default_client_secret comes with default_client_id")
+        if default_client_id is not None and not str(default_client_id).strip():
+            raise RegistrationRefused("sign_in", "default_client_id is the add-on's client id, not empty")
+        if default_app_note is not None and not (str(default_app_note).strip() and len(default_app_note) <= 300):
+            raise RegistrationRefused("sign_in", "default_app_note is one or two short sentences")
+        steps: list[tuple[str, str | None]] = []
+        for step in own_app_steps:
+            text, link = (step, None) if isinstance(step, str) else tuple(step)
+            if not str(text).strip() or len(text) > 300:
+                raise RegistrationRefused("sign_in", "each of own_app_steps is a short line")
+            if link is not None and not str(link).startswith("https://"):
+                raise RegistrationRefused("sign_in", "a link in own_app_steps is an https address")
+            steps.append((" ".join(str(text).split()), link))
+        if len(steps) > 12:
+            raise RegistrationRefused("sign_in", "own_app_steps lists up to 12 steps")
+        if any(not str(a).startswith(("http://", "https://")) for a in default_redirects):
+            raise RegistrationRefused("sign_in", "default_redirects are full http(s) callback addresses")
+        if default_redirects and not default_client_id:
+            raise RegistrationRefused("sign_in", "default_redirects describe default_client_id's registration")
+        if not all(isinstance(s, str) and s.strip() for s in acting_scopes):
+            raise RegistrationRefused("sign_in", "a sign-in's acting_scopes are words")
+        started = []
+        for source in sources:
+            if not isinstance(source, dict) or not set(source) <= {
+                "connector",
+                "label",
+                "settings",
+                "every_minutes",
+                "sent",
+            }:
+                raise RegistrationRefused(
+                    "sign_in", "each of sources is {connector, label, settings, every_minutes, sent}"
+                )
+            connector, title = source.get("connector"), str(source.get("label") or "").strip()
+            if not isinstance(connector, str) or not connector.startswith(self.name + "/") or not title:
+                raise RegistrationRefused(
+                    "sign_in", "each of sources names one of this plugin's connectors and a label"
+                )
+            every = source.get("every_minutes", 15)
+            if not isinstance(every, int) or not 1 <= every <= 1440:
+                raise RegistrationRefused("sign_in", "a source's every_minutes is a whole number from 1 to 1440")
+            if not isinstance(source.get("settings", {}), dict):
+                raise RegistrationRefused("sign_in", "a source's settings are a mapping")
+            if not isinstance(source.get("sent", False), bool):
+                raise RegistrationRefused("sign_in", "a source's sent is true or false")
+            started.append(
+                {
+                    "connector": connector,
+                    "label": title,
+                    "settings": dict(source.get("settings", {})),
+                    "every_minutes": every,
+                    "sent": bool(source.get("sent", False)),
+                }
+            )
+        from engine.sign_in import SignIn
+
+        self.sign_ins[name] = SignIn(
+            plugin=self.name,
+            name=name,
+            label=" ".join(str(label).split()),
+            authorize_url=authorize_url,
+            token_url=token_url,
+            scopes=tuple(scopes),
+            acting_scopes=tuple(dict.fromkeys(s.strip() for s in acting_scopes if s not in scopes)),
+            client_id=client_id,
+            client_secret=client_secret,
+            params=dict(params or {}),
+            allows=tuple(" ".join(a.split()) for a in allows),
+            account=account,
+            revoke_url=revoke_url,
+            default_client_id=default_client_id.strip() if default_client_id else None,
+            default_client_secret=default_client_secret.strip() if default_client_secret else None,
+            default_app_note=" ".join(default_app_note.split()) if default_app_note else None,
+            own_app_steps=tuple(steps),
+            default_redirects=tuple(str(a) for a in default_redirects),
+            sources=tuple(started),
+        )
+
+    def triage_matcher(self, name: str, *, match: Callable) -> None:
+        """A rule kind for triage in `watch.yaml` (listed in `provides.triage_matchers`): `match(change, params) ->
+        reason | None` closes a watched change before the assistant reads it when it returns a reason in plain words.
+        `change` has source, key, title, change (new, changed or removed), author, before, now, added and removed
+        and our_accounts; `params` are the rule's own. `before` is the text last read ("" for a new item) and `now`
+        the text read this time ("" for a removed item, whose author is None). For a changed item, `added` and
+        `removed` are the lines that appeared and disappeared (a line diff of `before` and `now`); for a new or
+        removed item both are empty, so read `now` or `before`. For a mail item, `message` holds its details
+        (sender, received, unread, bulk, categories, participants), and is None for anything else. Deterministic and
+        quick; it never calls AI. The person sees what it closed and why, and can take a closer look."""
+        self._name(name)
+        if name in self.triage_matchers or not callable(match):
+            raise RegistrationRefused("triage_matcher", "duplicate triage matcher or invalid match function")
+        self.triage_matchers[name] = match
+
+    def scorer(self, name: str, fn: Callable) -> None:
+        """A deterministic scorer for what only this plugin can judge (listed in `provides.scorers`). A case in the
+        folder `provides.evals` names (same format as the core's cases) uses it with `score: <plugin>/<name>`.
+        `fn(case, produced, view) -> list[str]` gets the case as written (read the keys it wants checked from it),
+        what the run produced as a list of `{"op": {...the op's fields}, "status": "applied" | "held" | "refused",
+        "records": [{"kind", "id"}]}` for the plugin's own ops (ids starting `<plugin>/`), and a `ReadView` of the
+        workspace the case ran in. It returns what is wrong in plain words: an empty list passes. The core's exact
+        matching still scores every other op of the case, and ignores the plugin's own ops, so a case that expects
+        or forbids one of them must name a scorer. Deterministic and quick; it never calls AI. One that raises fails
+        its case only."""
+        self._name(name)
+        if name in self.scorers or not callable(fn):
+            raise RegistrationRefused("scorer", "duplicate scorer or invalid function")
+        self.scorers[name] = fn
+
+    def value_list(self, name: str, *, label: str, values: Sequence[str] = ()) -> None:
+        """A value list (listed in `provides.value_lists`): the values a field of the plugin's own record types may
+        take, shown as a dropdown. Bind a field to it with `Annotated[str | None, InList("<plugin>/<name>")]` (or a
+        list of those); a field may also take a core list, such as "project-status". `values` are the first values a
+        workspace gets, once, the first time the list is needed, together with any values its records already hold;
+        after that the list is the person's (they add, rename and retire values, with Undo), so never rely on a value
+        staying on it. A value not on the list is refused wherever the record is written, a refusal the op's author
+        sees; a value a record already holds stays valid after it is retired."""
+        self._name(name)
+        if name in self.value_lists or not str(label).strip():
+            raise RegistrationRefused("value_list", "duplicate value list, or a list without a label")
+        cleaned = [" ".join(str(v).split()) for v in values]
+        if any(not v or len(v) > 80 for v in cleaned) or len({v.casefold() for v in cleaned}) != len(cleaned):
+            raise RegistrationRefused("value_list", "a list's values are distinct words of up to 80 characters")
+        self.value_lists[name] = {"label": " ".join(str(label).split()), "values": cleaned}
+
+    def setup_step(
+        self,
+        name: str,
+        *,
+        label: str,
+        done: Callable,
+        explanation: str = "",
+        action: str | None = None,
+        settings: dict[str, Any] | None = None,
+        adds: dict[str, Any] | None = None,
+    ) -> None:
+        """A step of the first-run setup (listed in `provides.setup_steps`), shown after the core's steps: `label` says
+        what to do in a few words, `explanation` why, and `done(view, settings) -> bool` whether it is done, called
+        whenever setup is shown, so it must be quick and deterministic. A `done` taking a third argument gets a
+        `SetupState`: the names of its declared secrets that are set (a frozenset; never their values), the effective
+        values of the settings it suggests (`state.settings`), the AI accounts per role (`state.accounts`) and
+        `state.tool_available(name)` for its declared programs. The host counts `done`'s positional parameters (through
+        `functools.wraps`), so a wrapper around it declares all three. `action` is one of this plugin's person actions
+        on the workspace, offered as the step's button; without one, the step points to the plugin's settings.
+        `settings` suggests core settings the plugin needs ({"ai.budgets.confirm_unpriced": True}): the step shows them
+        with an Apply button that saves them like any settings change (checked, with Undo); the plugin never changes
+        them itself. A suggested mapping is merged: its keys are added and every key the person already has keeps its
+        own value, nested keys included. The person can skip it and come back to it later.
+
+        `adds` suggests values to add to a list setting ({"storage.files.accepted_types": ["application/x-example"]}):
+        the step shows "adds: ..." with the values the person's list lacks, and the person's yes applies them as a union
+        with their own list (their entries stay, in their order, and the new values follow), as their own settings
+        change, checked and with Undo; the plugin never changes the list itself. The key must be a list setting, and
+        the same keys are barred as for `settings`. A step whose `adds` values are all on the list already has nothing
+        to apply. `state.settings[key]` is the person's whole effective list. Suggest only what the plugin needs and
+        say why in `explanation`."""
+        self._name(name)
+        label = " ".join(str(label).split())
+        if name in self.setup_steps or not callable(done) or not label or len(label) > 80:
+            raise RegistrationRefused(
+                "setup_step", "duplicate setup step, invalid done function, or a label that isn't one short line"
+            )
+        suggested = dict(settings or {})
+        if any(not isinstance(k, str) or "." not in k or "/" in k for k in suggested):
+            raise RegistrationRefused("setup_step", "a setup step suggests core settings by their dotted keys")
+        added: dict[str, tuple[Any, ...]] = {}
+        for key, values in dict(adds or {}).items():
+            if not isinstance(key, str) or "." not in key or "/" in key or key in suggested:
+                raise RegistrationRefused(
+                    "setup_step", "a setup step adds to core list settings by their dotted keys, apart from settings="
+                )
+            if (
+                not isinstance(values, (list, tuple))
+                or not values
+                or any(isinstance(v, bool) or not isinstance(v, (str, int, float)) for v in values)
+            ):
+                raise RegistrationRefused(
+                    "setup_step", "a setup step adds a non-empty list of text or numbers to a list setting"
+                )
+            added[key] = tuple(dict.fromkeys(values))
+        self.setup_steps[name] = SetupStepRegistration(
+            name, label, " ".join(str(explanation).split()), done, action, suggested, added
+        )
+
+    def tier(self, name: str, *, label: str, falls_back_to: str, description: str = "") -> None:
+        """Declare a tier of the plugin's own (listed in `provides.tiers`, id `<plugin>/<name>`), for work that needs a
+        kind of model the core's tiers don't name (long context, careful reading). `label` and `description` are what
+        the person sees when they map it to an account and model, under the plugin in Settings and in the setup guide;
+        `falls_back_to` is the core tier (`routine` or `deep`, or one the workspace added) the work runs on until the
+        person maps this one. Name it as `tier=` on the plugin's task kinds. Only the plugin's own task kinds use
+        it: the core's own work never does, and a role (`ai.roles`) can't name it. The core never picks an account for
+        it: until it is mapped the work runs on the fallback tier's account (one the person already set up) and one
+        line on Today says so and offers to map it. The person's mapping is the setting `ai.tiers.<id>` (an account
+        and model, with fallbacks, effort and thinking like any tier)."""
+        self._name(name)
+        label = " ".join(str(label).split())
+        if "." in name or name in self.pack_tiers or not label or len(label) > 80:
+            raise RegistrationRefused(
+                "tier", "duplicate tier, a name with a dot in it, or a label that isn't one short line"
+            )
+        if not isinstance(falls_back_to, str) or not re.fullmatch(r"[a-z][a-z0-9_-]*", falls_back_to):
+            raise RegistrationRefused("tier", "a tier falls back to a core tier by its name")
+        self.pack_tiers[name] = TierRegistration(name, label, " ".join(str(description).split()), falls_back_to)
+
+    def derived_file(self, name: str, *, path: str, depends_on: tuple[str, ...], render: Callable) -> None:
+        """A read-only file generated from records into each project's folder in the synced folder (an overview, a
+        sheet of facts). `path` is relative to the project's folder, with an extension ("views/overview.md").
+        `render(project, view, settings) -> str | None` makes its text for one project; None writes nothing. It runs
+        for every project that has records of a kind in `depends_on` (core or own; "project" means every project),
+        each time the folder is written, so it must be pure and quick and never call AI. The file is marked
+        generated: an edit made outside is reported and overwritten, never proposed or loaded."""
+        from engine.sync import check_derived_path
+
+        self._name(name)
+        if name in self.derived_files or not callable(render) or not depends_on:
+            raise RegistrationRefused(
+                "derived_file", "duplicate generated file, invalid render function or nothing it depends on"
+            )
+        check_derived_path(path)
+        self.derived_files[name] = DerivedFileRegistration(name, path, tuple(depends_on), render)
+
+    def lint(self, name: str, fn: Callable, *, ops: tuple[str, ...], severity: str = "warn") -> None:
+        """A soft check on the assistant's proposals: `fn(op, view, settings) -> list[LintFinding]` runs on every op
+        named in `ops` (core or own) before it applies. It must be deterministic and quick, and never call AI.
+        `severity` is the default: "return" sends the findings back to the assistant for its fix round (one more try,
+        then a stronger tier), "warn" shows them on the review, "off" skips it; the workspace's
+        `config/checks.yaml` (`lints: {<plugin>/<name>: ...}`) overrides it. A lint never refuses: refusing is for
+        invariants, which are validators."""
+        self._name(name)
+        if name in self.lints or not callable(fn) or not ops:
+            raise RegistrationRefused("lint", "duplicate lint, invalid callback or no ops to check")
+        if severity not in ("return", "warn", "off"):
+            raise RegistrationRefused("lint", 'a lint\'s default severity is "return", "warn" or "off"')
+        self.lints[name] = LintRegistration(name, fn, tuple(ops), severity)
+
+    def subscribe(self, event: str, fn: Callable) -> None:
+        """Handle an event after the change behind it is committed: `fn(payload, context)` with an `EventContext`.
+        One handler per event; route by `payload["kind"]` when it handles several kinds."""
+        if event in self.handlers or not callable(fn):
+            raise RegistrationRefused("subscribe", "duplicate subscription or invalid handler")
+        self.handlers[event] = fn
+
+
+from engine.channels import (  # noqa: E402 - part of the plugin API
+    ChannelContext,
+    ChannelFailed,
+    ChannelFolder,
+    ChannelNotSent,
+    ChannelSent,
+    ChannelUndone,
+    ChannelUnknown,
+    OutgoingAbout,
+    OutgoingAct,
+    OutgoingRecipient,
+)
+from engine.connectors import (  # noqa: E402 - part of the plugin API
+    ConnectorError,
+    EventDetails,
+    EventOccurrence,
+    EventPerson,
+    ItemFile,
+    MessageDetails,
+    Poll,
+    SourceItem,
+    Unreadable,
+)
+from engine.extract.core import ExtractError  # noqa: E402 - part of the plugin API
+from engine.net import retry_after  # noqa: E402 - part of the plugin API
+
+__all__ = [
+    "Change",
+    "ChannelContext",
+    "ChannelFailed",
+    "ChannelFolder",
+    "ChannelNotSent",
+    "ChannelSent",
+    "ChannelUndone",
+    "ChannelUnknown",
+    "OutgoingAbout",
+    "OutgoingAct",
+    "OutgoingRecipient",
+    "ConnectorError",
+    "retry_after",
+    "Poll",
+    "Unreadable",
+    "SourceItem",
+    "ItemFile",
+    "ExtractError",
+    "EventDetails",
+    "EventOccurrence",
+    "EventPerson",
+    "MessageDetails",
+    "PLUGIN_API_VERSION",
+    "PLUGIN_API_COMPAT",
+    "Settings",
+    "Record",
+    "OpModel",
+    "EvidenceIn",
+    "ANY",
+    "NeedsPerson",
+    "PluginMisuse",
+    "RefTo",
+    "InList",
+    "Tier",
+    "WriteContext",
+    "Stored",
+    "StoreError",
+    "ReadView",
+    "OpWriter",
+    "EventContext",
+    "ActionContext",
+    "LintFinding",
+    "TakeBack",
+    "WorkingCopyContext",
+    "InterfaceItem",
+    "TodayLine",
+    "CORE_LINE_ACTIONS",
+    "TODAY_GROUPS",
+    "DROP_HOOK_KINDS",
+    "PacketContext",
+    "LongText",
+    "Unit",
+    "Part",
+    "KnowledgeParts",
+    "PacketParts",
+    "Proposal",
+    "NewFile",
+    "Preview",
+    "Choice",
+    "Group",
+    "Item",
+    "Registrar",
+    "StageDefinition",
+    "StageCheckResult",
+    "StageStatus",
+    "Side",
+    "SetupState",
+    "ToolBox",
+    "ToolResult",
+    "ToolError",
+]

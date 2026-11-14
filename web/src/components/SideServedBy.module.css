@@ -1,0 +1,4 @@
+/* Which connections serve a new side: the question once, then one card for each account. */
+.group { display: grid; gap: var(--space-3); min-width: 0; }
+.legend { margin: 0; font-weight: var(--weight-semibold); }
+.card { padding: var(--space-3) var(--space-4); border-radius: var(--radius-lg); background: var(--surface); box-shadow: 0 0 0 1px var(--border); min-width: 0; }

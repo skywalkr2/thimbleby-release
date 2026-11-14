@@ -1,0 +1,203 @@
+version: 1
+blocked_phrases: [confirm, check whether, check if, "TBD?", follow up on]
+run_on_separators: [" / ", "; "]
+# Words that point at something the reader can't see, so an action built on them can't be read on its own, and the words that may come before one ("follow up on that").
+unanchored_words: [it, this, that, them, these, those, him, her, the above, the same, as discussed, as agreed]
+unanchored_lead_words: [up, "on", to, with, about, for, back, out, "off", over, at]
+# Words that mark the assistant's reasoning, which a to-do's or a question's title never holds (it belongs in the change's summary), and the characters that end a question.
+reasoning_phrases: [no recorded fact, no fact gives, nothing recorded, not recorded, "couldn't find", could not find, not stated, not mentioned, I assume, I think]
+# Words that open a question asking something wide open: one that quotes nothing seen and offers no choices is returned once.
+open_question_phrases: [what should, what do you want, what would you like, what happened, what now, what next, how should, what to do]
+# Words that point at one item in a list without naming it: a question whose title holds one, quoting and linking nothing, is returned once.
+unnamed_item_phrases: [this item, that item, this one, that one, the item, this row, this entry, this issue, this ticket]
+# Words that offer alternatives to pick from in a question.
+choice_words: [or, either]
+# Words that blame someone for a miss: a draft to several people that holds one in a sentence naming one of them is returned.
+singling_out_phrases: [missed, forgot, forgotten, dropped the ball, failed to, "didn't send", did not send, never sent, "hasn't sent", still hasn't, was late, is late, your fault, their fault, to blame]
+question_marks: ["?", "\uff1f", "\u061f"]
+# Words a sentence starts with when it asks someone to do something, and the words that make a sentence the person's own promise instead.
+ask_lead_words: [Can you, Could you, Would you, Please]
+own_promise_words: [I'll, I will]
+team_promise_words: [we'll, we will, we're going to]
+# Words that make a sentence someone's promise to do something; after a name and before a date, recorded as a fact, it goes back once.
+promise_words: [will, is going to, are going to]
+# Words that, right after a promise word, make it a state ("will be away"), which stays a fact.
+promise_state_words: [be]
+# Words that leave who does something open; an action quoting one, given owners the words don't name, goes back once.
+unassigned_words: [someone, somebody, anyone, anybody, nobody, no one]
+# Words that give an open action a new day; before a date and answered with only a fact or a note, they go back once.
+due_move_words: [is now due, can wait until, moved to, pushed to, postponed to, push it to]
+# Words that start a new piece of work; before a name in capitals no project has, recorded only as a fact, they go back once.
+project_start_words: [starting, launching, kicking off, start, launch, kick off]
+# Common words a project named by one of them alone never files an item by (a longer name, or an alias, still does).
+everyday_words: [launch, rollout, refresh, migration, review, audit, update, home, trip, taxes, garden, budget]
+# Words that, right after a name, say that person stated something; a question to you about it goes back once to ask them.
+claim_words: [told me, told us, said that, says that, tells me, claims]
+# Words that frame a question rather than say what it is about; left out when checking whether a recorded fact already answers it.
+asking_words: [when, what, which, where, will, would, could, should, tell, know, does, have, there, please, about, confirm]
+# Phrases that make a draft report to the maintainers a standing rule, to be proposed as a rule instead.
+rule_report_phrases: [from now on, going forward, from here on, in future, should never, should always, "don't ask", do not ask]
+# Words in an input that look like a system name or an acronym, suggested as new glossary terms when unknown.
+new_term_patterns: ['\b[A-Z]{2,}[0-9]*\b', '\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+\b']
+# Everyday abbreviations that match those patterns and are never suggested, and the status words the app writes itself in calendar text.
+new_term_ignore: [OK, FYI, ASAP, TBD, TBC, EOD, ETA, AM, PM, RE, FW, CC, BCC, NB, PS, URGENT, NOTE, UPDATE, REMINDER, CONFIRMED, TENTATIVE, CANCELLED]
+# Postal addresses, so the words inside one (a street direction, a state code) are never taken for terms. The patterns
+# use {region}, {postal} and {country}, filled from the three lists after them: a street line and a city line (on one
+# line or two), a city with its region and postal code, a city and region, a post office box.
+address_patterns: [
+  '\b\d{1,6}[ \t]+[^\n]{1,80}?(?:\n[ \t]*[^\n]{1,60}?)?[ \t,]+(?:{region})[ \t]+(?:{postal})\b(?:[ \t,]*\n?[ \t]*(?:{country})(?!\w))?',
+  '\b[A-Z][A-Za-z.''-]+(?:[ \t]+[A-Z][A-Za-z.''-]+){0,3},?[ \t]+(?:{region})[ \t]+(?:{postal})\b(?:[ \t,]*\n?[ \t]*(?:{country})(?!\w))?',
+  '\b[A-Z][a-z.''-]+(?:[ \t]+[A-Z][a-z.''-]+){0,3},[ \t]+(?:{region})\b(?![ \t]+[a-z])(?:[ \t,]*\n?[ \t]*(?:{country})(?!\w))?',
+  '\bP\.?O\.?[ \t]+Box[ \t]+\d+\b',
+]
+# The codes of the states, districts and territories of the United States, its military mail codes, and the provinces and
+# territories of Canada.
+address_regions: [
+  AL, AK, AZ, AR, CA, CO, CT, DE, DC, FL, GA, HI, ID, IL, IN, IA, KS, KY, LA, ME, MD, MA, MI, MN, MS, MO, MT, NE, NV, NH,
+  NJ, NM, NY, NC, ND, OH, OK, OR, PA, RI, SC, SD, TN, TX, UT, VT, VA, WA, WV, WI, WY, AS, GU, MP, PR, VI, AA, AE, AP,
+  AB, BC, MB, NB, NL, NS, NT, NU, "ON", PE, QC, SK, YT,
+]
+# United States ZIP codes (with the four-digit extension) and Canadian postal codes.
+address_postal_codes: ['\d{5}(?:-\d{4})?', '[A-Z]\d[A-Z][ \t]?\d[A-Z]\d']
+address_countries: [USA, US, U.S.A., U.S., United States of America, United States, Canada]
+# The core's list of well-known words (abbreviations, time zones, mail folder labels, service names) is never asked about; your own words can be added.
+known_terms_shipped: true
+known_terms: []
+# How a day is written in running text ({iso}, {day}, {month}, {year} stand for the day looked for): records whose words match a moved date's old day are tied to the move.
+date_patterns: ['{iso}', '\b{day}(?:st|nd|rd|th)?\s+(?:of\s+)?{month}\b', '\b{month}\.?\s+{day}(?:st|nd|rd|th)?\b', '\bthe\s+{day}(?:st|nd|rd|th)\b']
+never_shown: []
+# The words that mean the person themselves.
+self_words: [me, myself, I]
+# Words in an action's quoted words that show the person owes it something when everyone it is for is on another team:
+# a request addressed to them.
+owed_words: [you, your, please send, me]
+rejecting_words: [not my job, not my place, why are we asking, don't ask, do not ask, no need to ask]
+internal_terms: [changeset, ledger, applier, the assistant noticed]
+# Words that, right after the person's name or their team's, make the words a request addressed to them.
+request_words: [can, could, will, would, please, need to, needs to, should, must]
+# Lines an item's title is never taken from: greetings, quoted headers, sign-offs.
+title_skip: ['(hi|hello|hey|dear|good (morning|afternoon|evening))\b', '(from|to|cc|sent|date|subject)\s*:', '(thanks|best|regards|cheers)\b[ ,!.]*$', '-{2,}|>']
+# The fewest words a title's topic may have; a shorter one gives way to the first meaningful line of what came in, but only when that line fits whole.
+title_min_words: 3
+# Notes under this many words with no link are bare confirmations and stay with the change.
+bare_confirmation_words: 4
+# Words that begin a due date's words without being part of it ("due Oct 22", "on the 3rd"), the endings of a day of the month ("the 25th"), and the words that tie a due to something that happens, so it has no date ("once the keys arrive"); of those, the ones that put a promise on hold from the start, and the ones after which a calendar entry may be named ("before the print sync").
+due_lead_words: [by, "on", due, due on, due by, on or before, no later than, not later than]
+due_ordinal_suffixes: [st, nd, rd, th]
+due_condition_words: [once, after, before, when, whenever, until, till, if, unless, upon, as soon as, of receiving, of receipt, sometime, soon, eventually]
+due_hold_words: [once, after, when, whenever, until, till, if, unless, upon, as soon as, of receiving, of receipt]
+due_before_words: [before]
+# The words of the day-and-time phrases ("day after tomorrow", "first thing Monday", "within 48 hours"), by what they mean; the number words read in "within two days"; the time zone abbreviations ("5pm ET") and the zone each names; and the list of named days ("by Thanksgiving") the reader uses (empty: the one for the language).
+due_phrase_words:
+  day_after_tomorrow: [day after tomorrow]
+  later_today: [later today]
+  tonight: [tonight]
+  noon: [noon, midday]
+  midnight: [midnight]
+  first_thing: [first thing]
+  end_of_month: [end of month, end of the month, end of this month]
+  end_of_next_month: [end of next month, end of the next month]
+  this_weekend: [this weekend]
+  within: [within]
+  hours: [hours, hour]
+  days: [days, day]
+  working_days: [working days, working day, business days, business day]
+due_number_words: {one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, twelve: 12}
+time_zone_abbreviations:
+  ET: America/New_York
+  EST: America/New_York
+  EDT: America/New_York
+  Eastern: America/New_York
+  Eastern time: America/New_York
+  CT: America/Chicago
+  CST: America/Chicago
+  CDT: America/Chicago
+  Central: America/Chicago
+  Central time: America/Chicago
+  MT: America/Denver
+  MST: America/Denver
+  MDT: America/Denver
+  Mountain: America/Denver
+  Mountain time: America/Denver
+  PT: America/Los_Angeles
+  PST: America/Los_Angeles
+  PDT: America/Los_Angeles
+  Pacific: America/Los_Angeles
+  Pacific time: America/Los_Angeles
+  UTC: UTC
+  GMT: UTC
+  BST: Europe/London
+holiday_calendar: en-US
+# The verbs a task's title starts with: a plain calendar entry whose first word is one is offered as a to-do.
+task_verbs: [pay, send, call, email, text, book, buy, order, renew, submit, file, return, pick, drop, cancel, confirm, schedule, register, sign, review, write, finish, prepare, collect, fix, clean, pack, check, ask, remind, reply, print, post, pickup, organize, arrange]
+# The words that read an ending: delivered (done), learned another way or no longer matters (called off), or only closed (asks).
+delivery_words: [sent, finished, delivered, it's in, its in, did it, done, completed, handed in, turned in, submitted, shipped, attached, uploaded, published, emailed, mailed, posted, paid, booked, signed, returned, taken care of, took care of, came through, they did, she did, he did, went out, gone out, is out, handed over, shared, forwarded, got it, received, arrived]
+called_off_words: [moot, covered by, covered in, will cover, we'll cover, we will cover, will be covered, no longer needed, no longer need, not needed, isn't needed, no need, don't need, drop it, drop this, call it off, called off, cancel, canceled, cancelled, never mind, forget it, we'll get it in, we will get it in, in our discussions, in the discussions, in our discussion, in the planning sessions, in our planning, superseded, obsolete, unnecessary]
+closed_words: [close, closed, closing, close out, closed out]
+# The words that say something moved into a meeting: a call-off that holds one and names a meeting the workspace knows puts the action on its agenda.
+meeting_words: [will cover, we'll cover, we will cover, will be covered, covered in, covered at, take it up, in our discussions, in the discussions, in our discussion, in the planning sessions, in our planning, we'll get it in, we will get it in, raise it, bring it up, discuss it, move it to, moved to]
+# Phrases that say the person already sent something (see the unnamed-recipient check).
+already_sent_phrases: [I sent, I've sent, I have sent, I just sent, I emailed, I've emailed, I forwarded, I've forwarded, we sent, we've sent]
+# Phrases with which a sender limits who may see a message (see the audience check).
+limit_markings: [internal only, do not forward, don't forward, not for the client, not for distribution, confidential, for your eyes only]
+# Words that say, in the title of an absence calendar's entry, that the person is away (see Connections, "Who is away").
+away_words: [vacation, holiday, leave, out of office, ooo, away, pto, time off, day off, sick, parental leave]
+# Patterns for a tool's version number, which a question or draft for someone else never holds (see the version-number check).
+version_patterns: ['\b[vV]\d+(?:\.\d+){0,3}\b', '\b\d{1,3}\.\d{1,3}\.\d{1,3}(?:\.\d{1,5})?\b', '(?i)\b(?:version|ver\.?|release|build)\s+\d+(?:\.\d+)*\b']
+# Words that show a project's summary holds findings instead of its status (see the summary-is-status check).
+findings_words: [found, finding, findings, discovered, discrepancy, discrepancies, inconsistency, inconsistencies, mismatch, turns out]
+# Phrases that say a change made a draft, a write-up or a file (see the unlinked-made check).
+made_phrases: [drafted, wrote up, write-up, writeup, created a draft, made a draft, prepared a draft, saved a draft, created a file, made a file, saved a file, generated a file, created a document, made a document, saved a document, created minutes, wrote minutes, made minutes]
+# Phrases with which a request asks someone else to remove, replace or stop something (see the asks-to-take-away check).
+take_away_phrases: [replace, replacing, remove, removing, instead of, rather than, get rid of, swap out, stop using, stop showing, no longer show, no longer use, take away, take out, drop the]
+# Patterns that read a note as about one particular day, and patterns that read a text as about a repeating day
+# (see the one-day-generalized check).
+one_day_patterns: ['\b(?:that|this|next|last)\s+(?:mon|tues|wednes|thurs|fri|satur|sun)day\b', '\b(?:on\s+)?(?:mon|tues|wednes|thurs|fri|satur|sun)day,?\s+(?:the\s+)?(?:\d{1,2}(?:st|nd|rd|th)?|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2})\b', '\b(?:on|until|after|before)\s+the\s+\d{1,2}(?:st|nd|rd|th)\b']
+recurring_day_patterns: ['\b(?:every|each|most)\s+(?:mon|tues|wednes|thurs|fri|satur|sun)day\b', '\b(?:mon|tues|wednes|thurs|fri|satur|sun)days\b', '\b(?:every|each)\s+(?:week|month|day)\b', '\b(?:weekly|monthly|daily|always|usually|recurring|repeats?)\b', '\bfrom now on\b']
+# Everyday words that never belong to a person's name at the edge of a capitalized phrase (see the unverified-name check).
+name_skip_words: [the, a, an, this, that, these, those, our, your, my, his, her, their, its, hi, hello, hey, dear, thanks, thank, please, also, and, but, so, if, when, as, for, to, from, with, "on", in, at, by, of, is, are, was, were, we, i, it, do]
+reported_speech:
+  verbs: [said, says, confirmed, confirms, told, wrote, writes, asked, wants, mentioned, replied, responded, noted, commented, pinged]
+  lead_words: [per, according to]
+  own_speakers: [I, we]
+  request_words: [me to, us to]
+  quote_min_words: 3
+  chat_line_patterns:
+    - '^\s*[\[(]?\d{1,2}:\d{2}(?::\d{2})?(?:\s?[AaPp][Mm])?(?:,\s?[\d/.-]{6,10})?[^\w\n:]{0,4}[^\W\d_][\w''’. -]{0,40}:\s+\S'
+    - '^\s*[^\W\d_][\w''’.-]*(?:\s+[^\W\d_][\w''’.-]*){0,2}\s+[\[(]?\d{1,2}:\d{2}(?::\d{2})?\s?[AaPp][Mm][\])]?\s*$'
+  chat_min_lines: 2
+messages:
+  greeting: "Hi {first_name},"
+  actions_heading: "To-dos with you:"
+  folded_note: "Also came up: {text} (\u201c{quote}\u201d)"
+  folded_reason: "Added to \u201c{text}\u201d instead"
+  merged_note: "Merged with: {text}"
+  merged_reason: "Merged into \u201c{text}\u201d"
+  link_not_read: "Not read: nothing set up can open this link"
+  part_of_meaning: "A name for {project}."
+  part_of_reason: "Filed under {project} instead"
+  not_a_project_meaning: "Not a project."
+  not_a_project_reason: "You said this isn't a project"
+  closing: "Thanks, Rafa"
+  nudge_intro: "Following up on {count} things from my note on {date}:"
+  quiet_intro: "Checking in on this:"
+  quiet_subject: "Checking in: {text}"
+  nudge_intro_one: "Following up on one thing from my note on {date}:"
+  nudge_ask: "A quick yes or no, or a date, for each is plenty."
+  nudge_ask_one: "A quick yes or no, or a date, is plenty."
+  nudge_overdue: "(it was due {date})"
+  nudge_second_intro: "Checking in again on what I first asked on {date}:"
+  called_off_notice: "No longer needed, thanks: {item}"
+  called_off_subject: "No longer needed"
+  source_by_person: "{who}, {date}"
+  source_input: "the {date} {what}"
+  source_recorded: "recorded {date}"
+  source_date_format: "%b %d"
+  withheld_where: "the message to {name}"
+  undo_no_answer: "The service gave no answer to taking this back. Look in it to see whether it was."
+  resourced_summary: "Took the assistant's name out of {count} history lines and said where each came from"
+  resourced_label: "Put where the change came from in a history line instead of the assistant's name"
+  withheld_name: "Held back: {where} names {name}. Take the name out before this goes to anyone."
+  nudge_second_ask: "Is there someone else I should ask, or a date I can plan around?"
+  date_format: "%a, %b %d"
+  date_time_format: "%a, %b %d, %Y, %H:%M"

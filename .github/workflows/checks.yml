@@ -1,0 +1,119 @@
+name: checks
+
+# Runs on every push: the Python suite twice (on 3.12, and on 3.13 with the date 40 days ahead, so each supported version
+# runs it once), the web unit tests, build and lint, and the whole browser suite with its accessibility checks. A run by
+# hand does the same.
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync
+      - name: Lint
+        run: uv run ruff check .
+      - name: Format
+        run: uv run ruff format --check .
+      - name: Tests
+        run: uv run pytest
+      - name: Self-check
+        run: uv run python -m engine.selfcheck
+
+  # The Python suite with the date 40 days ahead: a test that mixes a fixed date with the real one fails here, before
+  # the day it would fail for everyone. The date moves inside each test process (tests/conftest.py,
+  # TEST_CLOCK_DAYS_AHEAD); the clocks that time waits stay real.
+  python-later:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - name: Tests, 40 days on
+        env:
+          TEST_CLOCK_DAYS_AHEAD: "40"
+        run: uv run pytest
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: uv sync
+      - run: npm --prefix web ci
+      - name: Unit tests
+        run: npm --prefix web test
+      - name: Build (generates the API types and type-checks)
+        run: npm --prefix web run build
+      - name: Lint the web code (ESLint)
+        run: npm --prefix web run lint
+
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: uv sync
+      - run: npm --prefix web ci
+      - name: Build the screens the browser tests run
+        run: npm --prefix web run build
+      - name: Install the browser
+        # The browser comes from Playwright's own servers. Its system packages come from the runner's Ubuntu mirror, which
+        # can be unreachable for hours; the runner image already holds what the browser needs, so the packages are tried
+        # three times and their absence is a warning, not a failure.
+        run: |
+          npx --prefix web playwright install chromium
+          for attempt in 1 2 3; do
+            if npx --prefix web playwright install-deps chromium; then exit 0; fi
+            echo "The browser's system packages didn't install (attempt $attempt of 3)"
+            sleep 30
+          done
+          echo "::warning::The browser's system packages couldn't be installed from the runner's package mirror; the tests run with the image's own."
+      - name: Browser tests with accessibility checks
+        # Three lanes on the runner's four cores: with more, the test servers and browsers overload it.
+        env:
+          PW_WORKERS: "3"
+        run: npm --prefix web run e2e
+      - name: Keep the evidence of a failed browser test
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-test-results
+          path: web/test-results/
+          if-no-files-found: ignore
+          retention-days: 7

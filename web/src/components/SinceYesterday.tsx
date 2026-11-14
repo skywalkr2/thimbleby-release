@@ -1,0 +1,279 @@
+// What changed since yesterday (design 6.32, 6.35): one row for each thing the assistant or a rule did on its own, newest first,
+// in the assistant's own words with the quote it rested on and who said it. A close nobody has seen says so in words.
+// Open (the record) is the row's one action; Undo is in its menu. Opening the list is what marks it seen, as drawn: the
+// line on Today goes until something new happens. The list is kept as it was drawn while the screen is open.
+import { useReviewTime } from "../lib/review-time";
+import { useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api, type S } from "../lib/api";
+import { useAct } from "../lib/act";
+import { day, dayAndTime } from "../lib/dates";
+import { useWords } from "../lib/wording";
+import { Button } from "../ui/Button";
+import { Icon, type IconName } from "../ui/Icon";
+import { GroupLabel } from "../ui/GroupLabel";
+import { LoadFailed } from "../ui/LoadFailed";
+import { Row, RowItem } from "../ui/Row";
+import { StateMark } from "../ui/StateMark";
+import { Skeleton } from "../ui/Skeleton";
+import { filedWords, movesToPick, useMoveFiled } from "./Filed";
+import { shortTitle } from "../lib/title-dates";
+import { MissedOneLine } from "./MissedOne";
+import type { MenuGroup } from "../ui/MenuButton";
+import { RowMenu, type MenuAction } from "./RowMenu";
+
+import { EmptyState } from "../ui/EmptyState";
+import { PageHeader } from "../ui/PageHeader";
+import { RowList } from "../ui/RowList";
+type Entry = S["SinceEntryView"];
+type T = (key: string, vars?: Record<string, string | number>) => string;
+
+/** The acts that close something, whose unseen ones are marked. */
+const CLOSES = new Set<Entry["act"]>(["closed", "dropped", "set_aside"]);
+
+/** The reason in the assistant's voice: who said what it rested on, or the rule that did it. */
+export function whyWords(e: Entry, t: T): string {
+  switch (e.because) {
+    case "replied":
+      return t("since.why.replied", { day: e.day ? day(e.day) : "" });
+    case "meeting":
+      return t("since.why.meeting");
+    case "rule":
+      return e.reason ? t("since.why.rule", { reason: e.reason }) : t("since.why.nothing");
+    case "sorting":
+      return e.reason ? t("since.why.sorting", { reason: e.reason }) : t("since.why.nothing");
+    default:
+      if (e.quote) {
+        if (e.by_you) return t("since.why.said_you", { quote: e.quote });
+        return e.said_by_name ? t("since.why.said", { name: e.said_by_name, quote: e.quote }) : t("since.why.said_unknown", { quote: e.quote });
+      }
+      return e.reason ? t("since.why.reason", { reason: e.reason }) : t("since.why.nothing");
+  }
+}
+
+/** The act and its reason as one sentence: "Closed “Send the floor plan”: Ana said “it went out this morning”". */
+export function sentence(e: Entry, t: T): string {
+  const key = e.act === "moved" && !e.day ? "since.act.moved_undated" : `since.act.${e.act}`;
+  return t(key, { title: shortTitle(e.title), why: whyWords(e, t), day: e.day ? day(e.day) : "" });
+}
+
+/** What was done, with its subject and nothing else: the reason goes on the meta line. */
+export function subject(e: Entry, t: T): string {
+  const key = e.act === "moved" && !e.day ? "since.subject.moved_undated" : `since.subject.${e.act}`;
+  return t(key, { title: shortTitle(e.title), day: e.day ? day(e.day) : "" });
+}
+
+/** The reason as the start of a line: its first letter is a capital. */
+function asLine(words: string): string {
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** What each kind of act looks like in the row's slot, so the mark says what was done. */
+const ACT_ICON: Record<Entry["act"], IconName> = {
+  added: "plus",
+  closed: "check",
+  moved: "calendar",
+  merged: "layers",
+  dropped: "minus",
+  set_aside: "archive",
+  news: "inbox",
+};
+
+type Drawn = { status: "loading" } | { status: "failed" } | { status: "ready"; asOf: string; entries: Entry[]; rowsShown: number };
+
+export function SinceYesterday(props: { onOpenRecord: (kind: string, id: string) => void; onBack: () => void }) {
+  const { t, tn } = useWords();
+  useReviewTime("since");
+  const client = useQueryClient();
+  const heading = useRef<HTMLHeadingElement>(null);
+  const [drawn, setDrawn] = useState<Drawn>({ status: "loading" });
+  const [gone, setGone] = useState<ReadonlySet<string>>(new Set());
+  const [more, setMore] = useState<Record<string, number>>({});
+  const load = useCallback(async () => {
+    setDrawn({ status: "loading" });
+    try {
+      const body = await api.sinceYesterday();
+      setDrawn({ status: "ready", asOf: body.as_of, entries: body.entries, rowsShown: body.rows_shown ?? 25 });
+      // Opening the list is what marks it seen, as it was drawn; a failure here only leaves Today's line where it was.
+      if (body.entries.length > 0) {
+        await api.sinceSeen(body.as_of).catch(() => undefined);
+        await client.invalidateQueries({ queryKey: ["today"] });
+      }
+    } catch {
+      setDrawn({ status: "failed" });
+    }
+  }, [client]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  // A screen with no field puts the cursor on its heading.
+  useEffect(() => heading.current?.focus(), []);
+  const entries = drawn.status === "ready" ? drawn.entries.filter((e) => !gone.has(e.ref)) : [];
+  // The list is grouped by the day each thing was done, newest first; a day shows its first rows and the rest on "Show more".
+  const days: Array<{ key: string; label: string; entries: Entry[] }> = [];
+  for (const e of entries) {
+    const key = e.when.slice(0, 10);
+    const last = days[days.length - 1];
+    if (last?.key === key) last.entries.push(e);
+    else days.push({ key, label: day(e.when), entries: [e] });
+  }
+  const pageRows = drawn.status === "ready" ? drawn.rowsShown : 25;
+  const unseen = entries.filter((e) => !e.seen && CLOSES.has(e.act)).length;
+  return (
+    <section className="panel-section" aria-labelledby="since-title">
+      <PageHeader
+        id="since-title"
+        headingRef={heading}
+        focusable
+        title={t("since.title")}
+        subtitle={
+          <>
+            {t("since.intro")}
+            {entries.length > 0 && (
+              <>
+                {" "}
+                <strong data-since-count="">{tn("since.count", entries.length)}</strong>
+                {unseen > 0 && <> · {tn("since.count_unseen", unseen)}</>}
+              </>
+            )}
+          </>
+        }
+        back={{ label: t("since.back"), onClick: props.onBack }}
+      />
+      {drawn.status === "loading" ? (
+        <div aria-busy="true" aria-label={t("since.loading")}>
+          <Skeleton />
+        </div>
+      ) : drawn.status === "failed" ? (
+        <LoadFailed message={t("since.load_failed")} onRetry={() => void load()} />
+      ) : entries.length === 0 ? (
+        <EmptyState text={t("since.empty")}>
+          <MissedOneLine className="hint" />
+        </EmptyState>
+      ) : (
+        <div className="since-days" aria-label={t("since.list_label")} role="group">
+          {days.map((d) => {
+            const limit = pageRows + (more[d.key] ?? 0);
+            return (
+              <section key={d.key} data-since-day={d.key} aria-label={d.label}>
+                <GroupLabel as="h2" count={d.entries.length}>
+                  {d.label}
+                </GroupLabel>
+                <RowList>
+                  {d.entries.slice(0, limit).map((e) => (
+                    <EntryRow key={e.ref} entry={e} onOpenRecord={props.onOpenRecord} onGone={() => setGone((g) => new Set([...g, e.ref]))} />
+                  ))}
+                  {d.entries.length > limit && (
+                    <RowItem>
+                      <Button variant="quiet" onClick={() => setMore((now) => ({ ...now, [d.key]: (now[d.key] ?? 0) + pageRows }))}>
+                        {t("since.show_more", { n: Math.min(pageRows, d.entries.length - limit) })}
+                      </Button>
+                    </RowItem>
+                  )}
+                </RowList>
+              </section>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function EntryRow(props: { entry: Entry; onOpenRecord: (kind: string, id: string) => void; onGone: () => void }) {
+  const { t } = useWords();
+  const act = useAct();
+  const move = useMoveFiled();
+  const [moved, setMoved] = useState(false);
+  const { entry: e } = props;
+  // The row stays as it was drawn, but once the item is moved its filing is no longer what the row says.
+  const filed = moved ? undefined : e.filed;
+  const text = sentence(e, t);
+  const unseen = !e.seen && CLOSES.has(e.act);
+  const undone = async (run: () => Promise<unknown>, done: string) => {
+    const result = await act(run, () => ({ message: t(done, { title: shortTitle(e.title) }) }));
+    if (result !== undefined) props.onGone();
+  };
+  const menu: MenuAction[] = [];
+  if (e.undo === "changeset" && e.changeset && e.op != null) {
+    const cs = e.changeset;
+    const op = e.op;
+    menu.push({
+      id: "undo",
+      label: t("since.undo"),
+      run: () =>
+        void act(
+          () => api.undo(cs, [op]),
+          (report) => ({ message: report.restored.includes(op) ? t("since.undone", { title: shortTitle(e.title) }) : t("since.undo_failed") }),
+        ).then((report) => report?.restored.includes(op) && props.onGone()),
+    });
+  } else if (e.undo === "closer_look" && e.request && e.version != null) {
+    const request = e.request;
+    const version = e.version;
+    menu.push({ id: "closer-look", label: t("since.closer_look"), run: () => void undone(() => api.closerLook(request, version), "since.closer_look_done") });
+  } else if (e.undo === "set_aside" && e.snapshot && e.version != null) {
+    const snapshot = e.snapshot;
+    const version = e.version;
+    menu.push({ id: "is-work", label: t("since.is_work"), run: () => void undone(() => api.isWork(snapshot, version), "since.is_work_done") });
+  }
+  // Moving an item the assistant filed by words to the other side is one step with Undo, like Undo itself in this menu.
+  if (filed?.move_to && e.record) {
+    const { kind, id } = e.record;
+    menu.push({ id: "move-filed", label: t("filed.move", { project: filed.move_to_name ?? "" }), run: () => void move(kind, id, filed).then((done) => done && setMoved(true)) });
+  }
+  // With several other sides the menu has "Move to…" over the list of them, one entry for each.
+  const sidesToPick = filed && e.record ? movesToPick(filed) : [];
+  const groups: MenuGroup[] = filed && e.record && sidesToPick.length > 0
+    ? [
+        {
+          id: "move-filed",
+          title: t("filed.move_choose"),
+          entries: sidesToPick.map((side) => ({
+            id: `move-filed-${side.project}`,
+            label: side.name,
+            run: () => void move(e.record!.kind, e.record!.id, filed, side).then((done) => done && setMoved(true)),
+          })),
+        },
+      ]
+    : [];
+  const record = e.record;
+  const open = record ? () => props.onOpenRecord(record.kind, record.id) : undefined;
+  // What the person most likely wants here is to take it back, so that is the row's one action; opening the record is in its menu.
+  // A row with nothing to undo keeps Open.
+  const undo = menu.find((m) => m.id === "undo" || m.id === "closer-look" || m.id === "is-work");
+  const rest = menu.filter((m) => m !== undo);
+  if (undo && open) rest.unshift({ id: "open", label: t("since.open"), run: open });
+  const primary = undo ? { label: undo.label, run: undo.run } : open ? { label: t("since.open"), run: open } : null;
+  return (
+    <Row
+      as="li"
+      lead={<Icon name={ACT_ICON[e.act]} size={18} />}
+      title={subject(e, t)}
+      aria-label={text}
+      metaLines={[
+        asLine(whyWords(e, t)),
+        <>
+          {dayAndTime(e.when)}
+          {e.detail ? ` · ${e.detail}` : ""}
+          {filed ? ` · ${filedWords(filed, t)}` : ""}
+          {unseen && (
+            <>
+              {" · "}
+              <StateMark tone="neutral">{t("since.unseen_close")}</StateMark>
+            </>
+          )}
+        </>,
+      ]}
+      data-since-entry={e.ref}
+      data-unseen={unseen ? "" : undefined}
+      primary={
+        primary ? (
+          <Button size="sm" variant="primary" data-key="primary" aria-label={`${primary.label}: ${shortTitle(e.title)}`} onClick={primary.run}>
+            {primary.label}
+          </Button>
+        ) : undefined
+      }
+      menu={rest.length > 0 || groups.length > 0 ? <RowMenu label={shortTitle(e.title)} actions={rest} groups={groups} /> : undefined}
+    />
+  );
+}

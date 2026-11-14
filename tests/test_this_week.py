@@ -1,0 +1,221 @@
+"""This week (design 7.7): what is due by the configured last working day, who is waiting on the person and which
+meetings to hold, across projects. Names, ids and days come from the fixtures and the settings."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from engine.followups import put_on_hold
+from engine.storage import Store, WriteContext
+from engine.this_week import this_week, week_end
+from engine.workspace import init_workspace
+from tests.conftest import DEMO_B
+
+# A Monday afternoon; the working week ends on the configured last day (Friday by default).
+NOW = datetime(2026, 10, 19, 14, 0, tzinfo=UTC)
+TODAY = NOW.date()
+_TEST = WriteContext(actor="pm", trust="trusted", op="test.this-week")
+
+
+def day(offset: int) -> str:
+    return (TODAY + timedelta(days=offset)).isoformat()
+
+
+@pytest.fixture
+def env(tmp_path):
+    ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
+    cfg = ws.config(
+        env={
+            "COCKPIT__WORKSPACE__USER__TIMEZONE": "UTC",
+            "COCKPIT__STEWARD__REMINDERS__WORKING_LAST_DAY": "friday",
+        }
+    )
+    store = Store(ws.db_path, cfg=cfg)
+    yield ws, cfg, store
+    store.close()
+
+
+def make(store, kind, **data) -> str:
+    with store.transaction() as tx:
+        return tx.create(kind, data, _TEST).id
+
+
+def me(cfg) -> str:
+    return cfg.workspace.user.person
+
+
+def test_the_week_runs_through_the_configured_last_working_day(env):
+    _, cfg, _ = env
+    assert week_end(cfg, TODAY).isoformat() == day(4)  # Monday to Friday
+    assert week_end(cfg, TODAY + timedelta(days=4)).isoformat() == day(4)  # on the last day itself
+    assert week_end(cfg, TODAY + timedelta(days=5)).isoformat() == day(11)  # after it, the next week's
+
+
+def test_the_week_follows_the_setting_for_its_last_day(tmp_path):
+    ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
+    cfg = ws.config(env={"COCKPIT__STEWARD__REMINDERS__WORKING_LAST_DAY": "thursday"})
+    assert week_end(cfg, TODAY).isoformat() == day(3)
+
+
+def test_what_is_due_by_the_end_of_the_week_is_listed_soonest_first_and_nothing_else(env):
+    _, cfg, store = env
+    them = next(p.id for p in store.read().list("person") if p.id != me(cfg))
+    late = make(store, "action", text="Send it Friday", owners=[{"person": them}], due=day(4))
+    early = make(store, "action", text="Send it today", owners=[{"person": me(cfg)}], due=day(0))
+    after = make(store, "action", text="Send it next week", owners=[{"person": me(cfg)}], due=day(5))
+    passed = make(store, "action", text="Sent last week", owners=[{"person": me(cfg)}], due=day(-1))
+    held = make(store, "action", text="Waiting on a quote", owners=[{"person": me(cfg)}], due=day(2))
+    put_on_hold(store, held, "the quote", now=NOW)
+    week = this_week(store, cfg, NOW)
+    mine = [x for x in week.due if x.action in {late, early, after, passed, held}]
+    assert [x.action for x in mine] == [early, late]
+    assert [x.mine for x in mine] == [True, False] and week.first == TODAY and week.last.isoformat() == day(4)
+
+
+def test_who_is_waiting_on_the_person_is_counted_by_what_they_were_promised_or_asked(env):
+    _, cfg, store = env
+    asker = make(store, "person", full_name="Quinn Fictional")
+    make(store, "action", text="Send the draft", owners=[{"person": me(cfg)}], due=day(2), promised_to=[asker])
+    make(store, "action", text="Answer the question", owners=[{"person": me(cfg)}], reply_owed=True, asker=asker)
+    make(store, "action", text="Send the cover later", owners=[{"person": me(cfg)}], due=day(9), promised_to=[asker])
+    found = next(w for w in this_week(store, cfg, NOW).waiting if w.person == asker)
+    assert found.count == 2 and found.due.isoformat() == day(2)
+
+
+def test_the_meetings_of_the_week_include_the_apps_own_entries_through_the_last_day(env):
+    _, cfg, store = env
+    inside = make(store, "event", trust="trusted", title="Print sync", start=f"{day(3)}T10:00:00+00:00")
+    outside = make(store, "event", trust="trusted", title="Next week's sync", start=f"{day(8)}T10:00:00+00:00")
+    found = {m.snapshot for m in this_week(store, cfg, NOW).meetings}
+    assert inside in found and outside not in found
+
+
+FRIDAY = datetime(2026, 10, 23, 14, 0, tzinfo=UTC)
+WEDNESDAY = datetime(2026, 10, 21, 14, 0, tzinfo=UTC)
+
+
+def meeting_todo(store, cfg, due, **more):
+    return make(
+        store, "action", text="Set up and hold the planning meeting", owners=[{"person": me(cfg)}], due=due, **more
+    )
+
+
+def test_on_a_friday_a_meeting_due_on_monday_is_counted_and_names_its_day(env):
+    _, cfg, store = env
+    monday = (FRIDAY.date() + timedelta(days=3)).isoformat()
+    todo = meeting_todo(store, cfg, monday)
+    plain = make(store, "action", text="Send the notes", owners=[{"person": me(cfg)}], due=monday)
+    found = {x.action: x for x in this_week(store, cfg, FRIDAY).due}
+    assert todo in found and found[todo].kind == "setup" and found[todo].due.isoformat() == monday
+    assert plain not in found, "only a meeting to set up has lead time"
+
+
+def test_on_a_wednesday_a_meeting_due_next_wednesday_is_not_counted_until_its_lead_time(env):
+    _, cfg, store = env
+    next_wednesday = (WEDNESDAY.date() + timedelta(days=7)).isoformat()
+    todo = meeting_todo(store, cfg, next_wednesday)
+    assert todo not in {x.action for x in this_week(store, cfg, WEDNESDAY).due}
+    cfg.steward.meetings.setup_lead_working_days = 5
+    assert todo in {x.action for x in this_week(store, cfg, WEDNESDAY).due}, "the lead time is a live setting"
+
+
+def test_a_meeting_whose_invitation_is_out_shows_only_on_its_day_as_a_hold(env):
+    _, cfg, store = env
+    sent = make(store, "event", trust="trusted", title="Planning", start="2026-10-26T10:00:00+00:00")
+    todo = meeting_todo(store, cfg, "2026-10-26", event=sent)
+    assert todo not in {x.action for x in this_week(store, cfg, FRIDAY).due}
+    assert todo not in {x.action for x in this_week(store, cfg, datetime(2026, 10, 24, 9, 0, tzinfo=UTC)).due}
+    [on_the_day] = [x for x in this_week(store, cfg, datetime(2026, 10, 26, 9, 0, tzinfo=UTC)).due if x.action == todo]
+    assert on_the_day.kind == "hold"
+
+
+# ---- lead time on any to-do (plugin API 0.3.90) ------------------------------------------------------------------
+
+
+def plain_todo(store, cfg, due, **more):
+    return make(store, "action", text="Prepare the board pack", owners=[{"person": me(cfg)}], due=due, **more)
+
+
+def test_on_a_friday_a_to_do_with_two_days_of_lead_time_due_monday_is_counted_and_without_it_is_not(env):
+    _, cfg, store = env
+    monday = (FRIDAY.date() + timedelta(days=3)).isoformat()
+    with_lead = plain_todo(store, cfg, monday, lead_days=2)
+    none_set = plain_todo(store, cfg, monday)
+    zero = plain_todo(store, cfg, monday, lead_days=0)
+    found = {x.action: x for x in this_week(store, cfg, FRIDAY).due}
+    assert with_lead in found and found[with_lead].kind == "lead" and found[with_lead].due.isoformat() == monday
+    assert none_set not in found and zero not in found
+
+
+def test_the_lead_time_counts_working_days_back_from_the_day_it_is_due(env):
+    _, cfg, store = env
+    tuesday = (FRIDAY.date() + timedelta(days=4)).isoformat()
+    todo = plain_todo(store, cfg, tuesday, lead_days=2)  # the work starts on Friday: Tuesday, Monday, then Friday
+    assert todo in {x.action for x in this_week(store, cfg, FRIDAY).due}
+    assert todo not in {x.action for x in this_week(store, cfg, WEDNESDAY).due}
+    longer = plain_todo(store, cfg, tuesday, lead_days=5)
+    assert longer in {x.action for x in this_week(store, cfg, WEDNESDAY).due}
+
+
+def test_a_to_dos_own_lead_time_replaces_the_default_a_meeting_gets_from_its_setup_words(env):
+    _, cfg, store = env
+    monday = (FRIDAY.date() + timedelta(days=3)).isoformat()
+    by_default = meeting_todo(store, cfg, monday)
+    none = meeting_todo(store, cfg, monday, lead_days=0)
+    long = meeting_todo(store, cfg, (WEDNESDAY.date() + timedelta(days=7)).isoformat(), lead_days=5)
+    found = {x.action: x for x in this_week(store, cfg, FRIDAY).due}
+    assert found[by_default].kind == "setup" and none not in found
+    assert long in {x.action for x in this_week(store, cfg, WEDNESDAY).due}
+
+
+def test_the_person_sets_the_lead_time_with_their_own_edit_and_undo_takes_it_back(env):
+    from engine.applier import apply_as_person
+    from engine.dispatcher import undo_changeset
+
+    _, cfg, store = env
+    monday = (FRIDAY.date() + timedelta(days=3)).isoformat()
+    todo = plain_todo(store, cfg, monday)
+    assert todo not in {x.action for x in this_week(store, cfg, FRIDAY).due}
+    edit = {
+        "op": "record.edit",
+        "record": {"kind": "action", "id": todo},
+        "fields": {"lead_days": 2},
+        "read_version": store.read().get("action", todo).version,
+    }
+    made = apply_as_person(store, cfg, [edit], "Set how early to start")
+    assert store.read().get("action", todo).data["lead_days"] == 2
+    assert todo in {x.action for x in this_week(store, cfg, FRIDAY).due}
+    undo_changeset(store, made)
+    assert store.read().get("action", todo).data["lead_days"] is None
+    assert todo not in {x.action for x in this_week(store, cfg, FRIDAY).due}
+
+
+def test_the_assistant_cannot_set_a_lead_time_with_record_set(env):
+    from engine.ops import SETTABLE
+
+    assert "lead_days" not in SETTABLE["action"]
+
+
+def test_the_lead_time_is_a_pick_list_of_days_on_the_to_dos_page_and_a_save_keeps_it(env, tmp_path):
+    from fastapi.testclient import TestClient
+
+    from api.app import create_app
+
+    ws, cfg, store = env
+    todo = plain_todo(store, cfg, (FRIDAY.date() + timedelta(days=3)).isoformat())
+    store.close()
+    application = create_app(ws, cfg, "t", ui_dist=tmp_path / "no-ui", start_worker=False)
+    with TestClient(application, headers={"Authorization": "Bearer t"}) as client:
+        field = next(f for f in client.get("/api/kinds/action").json()["fields"] if f["name"] == "lead_days")
+        assert (
+            field["type"] == "number" and field["editable"] and "2" in field["options"] and "" not in field["options"]
+        )
+        record = client.get("/api/record", params={"kind": "action", "id": todo}).json()
+        saved = client.post(
+            "/api/records/edit",
+            json={"kind": "action", "id": todo, "fields": {"lead_days": 3}, "read_version": record["version"]},
+        )
+        assert saved.status_code == 200, saved.text
+        assert client.get("/api/record", params={"kind": "action", "id": todo}).json()["fields"]["lead_days"] == 3

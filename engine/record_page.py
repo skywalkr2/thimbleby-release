@@ -1,0 +1,490 @@
+"""What a record's page shows (design 7.14): its name, its details in the order its type declares them with every
+reference resolved to a name, what is still open with it, and what happened to it, newest first. Also the counts the
+Projects and People tables show beside each row. Reads only."""
+
+from __future__ import annotations
+
+from datetime import date, datetime
+from typing import Any, Literal, get_args, get_origin
+from zoneinfo import ZoneInfo
+
+from engine import agenda as agenda_module
+from engine import entry_ties, repeats, sides
+from engine.followups import ABOUT_THE_APP, ROUTING
+from engine.history import changes_for_person
+from engine.names import render_owner
+from engine.organizations import LINK_OP
+from engine.origin import origins
+from engine.records import ref_fields, soft_ref_paths, values_at
+from engine.texts import long_text_fields
+
+ACTIVITY_MAX = 60
+# The op the workspace's own start writes its first records with (the person, the personal project).
+SETUP_OP = "init"
+COMPLETED_MAX = 50
+_NAME_FIELDS = ("full_name", "name", "title", "text")
+_HIDDEN = {"id", "stage", "ext", "aliases", "agenda", "filed_by", "repeat", "occurrence_of"}
+
+
+def display_name(data: dict[str, Any]) -> str:
+    """The name a record is shown by: its full name, name, title or text (never its id)."""
+    for field in _NAME_FIELDS:
+        if data.get(field):
+            return str(data[field])
+    return ""
+
+
+def _type_of(annotation: Any) -> str:
+    """How a field's value is shown: date, number, bool, enum, list, map or text."""
+    args = [a for a in get_args(annotation) if a is not type(None)]
+    origin = get_origin(annotation)
+    if origin is Literal:
+        return "enum"
+    if origin in (list, tuple, set):
+        return "list"
+    if origin is dict:
+        return "map"
+    if args and origin is not None and origin not in (list, dict):
+        inner = [_type_of(a) for a in args]
+        return next((t for t in inner if t != "text"), "text")
+    if annotation in (date, datetime):
+        return "date"
+    if annotation is bool:
+        return "bool"
+    if annotation in (int, float):
+        return "number"
+    return "text"
+
+
+def page(
+    store: Any,
+    kind: str,
+    record_id: str,
+    *,
+    pm: str | None,
+    owner_format: str = "{full_name}",
+    today: date | None = None,
+    here: ZoneInfo | None = None,
+    second_move_days: int = 14,
+    cfg: Any | None = None,
+) -> dict[str, Any] | None:
+    view = store.read()
+    record = view.get(kind, record_id)
+    model = store.plugins.records.get(kind) if hasattr(store, "plugins") else None
+    if record is None or model is None:
+        return None
+    data = record.data
+    names: dict[tuple[str, str], str] = {}
+
+    def name_of(ref_kind: str, ref_id: str) -> str:
+        key = (ref_kind, ref_id)
+        if key not in names:
+            target = view.get(ref_kind, ref_id, include_deleted=True)
+            names[key] = display_name(target.data) if target is not None else ""
+        return names[key]
+
+    def place(project_id: str | None) -> tuple[str | None, str | None]:
+        """The project's name and, when it is a side (a group, design 6.32), the side's name instead, never both."""
+        if not project_id:
+            return None, None
+        side = sides.side_name_of(view, cfg, project_id) if cfg is not None else None
+        return (None, side) if side is not None else (name_of("project", project_id), None)
+
+    def removed(ref_kind: str, ref_id: str) -> bool:
+        """Whether the record a reference names is gone (only a reference that doesn't block deleting can be)."""
+        target = view.get(ref_kind, ref_id, include_deleted=True)
+        return target is None or target.deleted
+
+    def owner_of(entry: dict[str, Any]) -> str:
+        person = view.get("person", entry["person"], include_deleted=True)
+        team = entry.get("team") or (person.data.get("team") if person is not None else None)
+        return render_owner(owner_format, name_of("person", entry["person"]), name_of("team", team) if team else None)
+
+    refs = ref_fields(model)
+    soft = soft_ref_paths(model)
+    long_text = set(long_text_fields(model))
+    details = []
+    for field, info in model.model_fields.items():
+        if field in _HIDDEN or field in long_text or field not in data:
+            continue
+        value = data[field]
+        if value in (None, "", [], {}) or field in _NAME_FIELDS[:2]:
+            continue
+        found = []
+        for path, target in refs:
+            if path.split(".")[0].removesuffix("[]") == field:
+                for v in values_at({field: value}, path):
+                    if isinstance(v, str):
+                        gone = path in soft and removed(target, v)
+                        found.append(
+                            {"kind": target, "id": v, "name": "" if gone else name_of(target, v), "removed": gone}
+                        )
+        if not found:
+            found = _ids_named(view, store, value, name_of)
+        details.append({"field": field, "value": value, "type": _type_of(info.annotation), "refs": found})
+
+    actions, questions = _open_with(view, kind, record_id, pm)
+    action_origin = origins(view, "action", [a.id for a in actions])
+    question_origin = origins(view, "question", [q.id for q in questions])
+
+    def meeting(entry: dict[str, Any]) -> dict[str, Any]:
+        return _meeting(view, entry, today, here)
+
+    return {
+        "kind": kind,
+        "id": record.id,
+        "version": record.version,
+        "name": display_name(data),
+        "details": details,
+        "open_actions": [
+            {
+                "id": a.id,
+                "text": a.data["text"],
+                "due": str(a.data["due"]) if a.data.get("due") else None,
+                "owners": [owner_of(o) for o in a.data.get("owners") or []],
+                "project": a.data.get("project"),
+                "project_name": place(a.data.get("project"))[0],
+                "side_name": place(a.data.get("project"))[1],
+                "origin": action_origin[a.id],
+                **meeting(a.data),
+            }
+            for a in actions
+        ],
+        "open_questions": [
+            {
+                "id": q.id,
+                "title": q.data["title"],
+                "to": q.data.get("to"),
+                "to_name": name_of("person", q.data["to"]) if q.data.get("to") else None,
+                "status": q.data.get("status"),
+                "kind": q.data.get("kind"),
+                "origin": question_origin[q.id],
+                **meeting(q.data),
+            }
+            for q in questions
+        ],
+        "completed_actions": _completed(view, kind, record_id, name_of, place),
+        "facts": facts_about(view, kind, record_id),
+        "fact_source": fact_source(view, record) if kind == "fact" else None,
+        "filed": sides.filed_view(view, cfg, kind, record) if cfg is not None else None,
+        "agenda": _agenda(view, record, today, here),
+        "tie": entry_ties.view_of(view, record) if kind == "action" else None,
+        "repeat": repeats.view_of(data.get("repeat")) if kind == "action" else None,
+        "earlier_occurrences": repeats.earlier_occurrences(view, record)
+        if kind == "action" and (data.get("repeat") or data.get("occurrence_of"))
+        else [],
+        "activity": _activity(view, kind, record_id, actions, questions, name_of, pm, second_move_days),
+    }
+
+
+def facts_about(view: Any, kind: str, record_id: str) -> list[dict[str, Any]]:
+    """The facts recorded about this record (a fact's `about` names it), that no newer fact replaces: the ones that
+    matter most first, then the newest."""
+    facts = view.list("fact")
+    replaced = {f.data["supersedes"] for f in facts if f.data.get("supersedes")}
+    mine = [f for f in facts if f.data.get("about") == record_id and f.id not in replaced]
+    mine.sort(
+        key=lambda f: (
+            not f.data.get("key"),
+            -(date.fromisoformat(str(f.data["as_of"])).toordinal() if f.data.get("as_of") else 0),
+            f.id,
+        )
+    )
+    return [
+        {
+            "id": f.id,
+            "text": f.data["text"],
+            "as_of": str(f.data["as_of"]) if f.data.get("as_of") else None,
+            "key": bool(f.data.get("key")),
+            "said_by": _said_by(view, f.data),
+        }
+        for f in mine
+    ]
+
+
+def _said_by(view: Any, data: dict[str, Any]) -> str | None:
+    """The name of who said a fact when it is one person's claim (`basis` said), so the line keeps whose word it is."""
+    if data.get("basis") != "said" or not data.get("said_by"):
+        return None
+    person = view.get("person", data["said_by"], include_deleted=True)
+    return str(person.data["full_name"]) if person is not None else None
+
+
+def _agenda(view: Any, record: Any, today: date | None, here: ZoneInfo | None) -> list[dict[str, Any]]:
+    """What is to be taken up at a calendar entry or a series: its agenda items (a calendar entry that is its series'
+    next meeting has the series' after its own)."""
+    if record.kind == "event" and today is not None and here is not None:
+        return agenda_module.for_entry(view, record, today, here)
+    if record.kind in ("event", "series"):
+        return agenda_module.lines(view, record.kind, record.id)
+    return []
+
+
+def _ids_named(view: Any, store: Any, value: Any, name_of: Any) -> list[dict[str, str]]:
+    """The records a field's value names by id when the record's type doesn't declare the field a reference: a string
+    (or a list of strings) that is exactly the id of a record that exists. Ids are never shown."""
+    from engine.learn import kind_of_id
+
+    found = []
+    for item in value if isinstance(value, list) else [value]:
+        kind = kind_of_id(store.plugins.records, item) if isinstance(item, str) else None
+        if kind is not None and view.get(kind, item, include_deleted=True) is not None:
+            found.append({"kind": kind, "id": item, "name": name_of(kind, item)})
+    return found
+
+
+def _meeting(view: Any, data: dict[str, Any], today: date | None, here: ZoneInfo | None) -> dict[str, Any]:
+    """The meeting an item is for: its series and the day of the instance it sits on (the series' next one when it
+    names none), for the "for Thursday's print sync" label. Empty for an item on no series."""
+    from engine.series import next_instance, span
+
+    series = view.get("series", data["series"]) if data.get("series") else None
+    entry = view.get("event", data["event"]) if data.get("event") else None
+    if entry is None and series is not None and today is not None and here is not None:
+        entry = next_instance(view, series.id, today, here)
+    days = span(entry.data, here or ZoneInfo("UTC")) if entry is not None else None
+    if series is None and entry is not None and entry.data.get("series"):
+        series = view.get("series", entry.data["series"])
+    return {
+        "series": series.id if series is not None else None,
+        "series_title": series.data["title"] if series is not None else None,
+        "meeting_on": days[0].isoformat() if days else None,
+    }
+
+
+def _completed(view: Any, kind: str, record_id: str, name_of: Any, place: Any = None) -> list[dict[str, Any]]:
+    """The finished actions credited to this person (or in this project, or to this organization's people), newest
+    first, each with who did the work and who said it was done. The one who only reported it is not credited."""
+    if kind not in ("person", "project", "organization"):
+        return []
+    people = {record_id} if kind == "person" else set()
+    if kind == "organization":
+        people = {p.id for p in view.list("person") if p.data.get("org") == record_id}
+    found = []
+    for a in view.list("action"):
+        d = a.data
+        if d.get("status") != "done":
+            continue
+        if not ((people & set(d.get("done_by") or [])) or (kind == "project" and d.get("project") == record_id)):
+            continue
+        closed = [
+            row
+            for row in view.ledger(kind="action", record_id=a.id)
+            if row["field"] == "status" and row["after"] == "done"
+        ]
+        if place is not None:
+            project_name, side_name = place(d.get("project"))
+        else:
+            project_name, side_name = (name_of("project", d["project"]) if d.get("project") else None), None
+        found.append(
+            {
+                "id": a.id,
+                "text": d["text"],
+                "project": d.get("project"),
+                "project_name": project_name,
+                "side_name": side_name,
+                "done_by": [name_of("person", p) for p in d.get("done_by") or []],
+                "reported_by": name_of("person", d["reported_by"]) if d.get("reported_by") else None,
+                "done_on": str(closed[-1]["at"])[:10] if closed else None,
+            }
+        )
+    found.sort(key=lambda c: (c["done_on"] or "", c["id"]), reverse=True)
+    return found[:COMPLETED_MAX]
+
+
+def fact_source(view: Any, record: Any) -> dict[str, Any]:
+    """Who a fact rests on and where it came from, for the label in its meta line: the basis (the person, someone
+    else, or the assistant's inference), who said it and who reported it, the kind of input it came from and whose it
+    was (never the input's own title), and the day. The day is the one the person confirmed it when they did, else the
+    day it was true as of, else the day it was filed."""
+    from engine.origin import origins
+    from engine.titles import source_kind
+    from engine.today_queue import watched_kind
+
+    data = record.data
+    source = view.get("source", data["source"]) if data.get("source") else None
+    said = view.get("person", data["said_by"], include_deleted=True) if data.get("said_by") else None
+    author = (
+        view.get("person", source.data["author"], include_deleted=True)
+        if source and source.data.get("author")
+        else None
+    )
+    rows = view.ledger(kind="fact", record_id=record.id)
+    confirmed = [r for r in rows if r["field"] == "basis" and r["version"] > 1]
+    filed = str(rows[0]["at"])[:10] if rows else None
+    on = str(confirmed[-1]["at"])[:10] if confirmed else (str(data["as_of"]) if data.get("as_of") else filed)
+    reported_by = author.data["full_name"] if author is not None and (said is None or author.id != said.id) else None
+    watched = (source.data.get("watched") or {}) if source is not None else {}
+    kind = (
+        source_kind(source.data, watched_kind=watched_kind(view, watched.get("source"), watched.get("key")))
+        if source is not None
+        else None
+    )
+    return {
+        "basis": data.get("basis"),
+        "by": said.data["full_name"] if said is not None else None,
+        "reported_by": reported_by if data.get("basis") == "said" else None,
+        "kind": kind,
+        "sender": author.data["full_name"] if author is not None else None,
+        "on": on,
+        "title": str(source.data.get("title") or "") or None if source is not None else None,
+        "origin": origins(view, "fact", [record.id])[record.id],
+    }
+
+
+def _open_with(view: Any, kind: str, record_id: str, pm: str | None = None) -> tuple[list[Any], list[Any]]:
+    """Open actions and questions with this person, in this project (or organization's people). On the page of the
+    person themselves, what the app asks about its own connections is left out (it is a line on Today, not a question
+    for them), and so is a question that holds an item until they say who (it is answered on the item, and is not in
+    the Questions tab either), so the page and the tab count the same questions."""
+    people = {record_id} if kind == "person" else set()
+    if kind == "organization":
+        people = {p.id for p in view.list("person") if p.data.get("org") == record_id}
+    actions, questions = [], []
+    for a in view.list("action"):
+        d = a.data
+        if d.get("status") not in ("open", "held"):
+            continue
+        owners = {o.get("person") for o in d.get("owners") or []}
+        # Open with a person is what they own and what the person owes them (a promise made to them, a reply they asked
+        # for): one list, so nothing has to be said again beside it.
+        owed = (
+            bool(pm)
+            and pm in owners
+            and (kind == "person" and (record_id in (d.get("promised_to") or []) or d.get("asker") == record_id))
+        )
+        if (people & owners) or owed or (kind == "project" and d.get("project") == record_id):
+            actions.append(a)
+    for q in view.list("question"):
+        d = q.data
+        if d.get("status") not in ("open", "sent"):
+            continue
+        if kind == "person" and record_id == pm and (d.get("resolves") or {}).get("kind") in (*ABOUT_THE_APP, *ROUTING):
+            continue
+        if d.get("to") in people or (kind == "project" and record_id in (d.get("projects") or [])):
+            questions.append(q)
+    actions.sort(key=lambda a: (a.data.get("due") is None, str(a.data.get("due") or ""), a.data["text"]))
+    return actions, questions
+
+
+def _activity(
+    view: Any,
+    kind: str,
+    record_id: str,
+    actions: list[Any],
+    questions: list[Any],
+    name_of: Any,
+    pm: str | None,
+    second_move_days: int = 14,
+) -> list[dict[str, Any]]:
+    """What happened to the record and to what is open with it: one entry per change, newest first. A change that only
+    moves a date on an existing item is left out (it is not news; the ledger keeps it), except a second move of the
+    same date within `second_move_days`, which says it moved again and since when. The making of a record is one entry
+    (`made`), with every value written in the change that made it folded in: "added", or "setup" for what the workspace
+    was started with. The link the app keeps between a side and its people is bookkeeping, and so is a person's own
+    organization set to one their same change just made; neither is an entry."""
+    entries = []
+    related = [("action", a.id) for a in actions] + [("question", q.id) for q in questions]
+    if kind == "project":
+        related += [("note", n.id) for n in view.list("note") if n.data.get("project") == record_id]
+    made_in: dict[str, set[str]] = {}
+
+    def made_with(changeset: str) -> set[str]:
+        if changeset not in made_in:
+            made_in[changeset] = {r["record_id"] for r in view.changes_of(changeset) if r["version"] == 1}
+        return made_in[changeset]
+
+    for ref_kind, ref_id in [(kind, record_id), *related]:
+        rows = changes_for_person(view, ref_kind, ref_id, second_move_days)
+        making = {r["changeset"] for r in rows if r["version"] == 1 and r.get("changeset")}
+        made = False
+        for row in rows:
+            if _bookkeeping(row, made_with):
+                continue
+            part_of_making = row["version"] == 1 or (row.get("changeset") in making)
+            if part_of_making and made:
+                continue
+            made = made or part_of_making
+            entries.append(
+                {
+                    "at": str(row["at"]),
+                    "kind": ref_kind,
+                    "id": ref_id,
+                    "name": name_of(ref_kind, ref_id),
+                    "op": row["op"],
+                    "field": None if part_of_making else row.get("field"),
+                    "made": ("setup" if row["op"].split("#")[0] == SETUP_OP else "added") if part_of_making else None,
+                    "actor": row["actor"],
+                    "by_assistant": row["actor"] not in ("pm",),
+                    "moved_again": row.get("moved_again"),
+                    "moved_since": row.get("moved_since"),
+                    "seq": row["seq"],
+                }
+            )
+    entries.sort(key=lambda e: e["seq"], reverse=True)
+    # One entry per record and change, not per field written in it.
+    seen: set[tuple[str, str, str, str]] = set()
+    unique = []
+    for entry in entries:
+        key = (entry["kind"], entry["id"], entry["op"], entry["at"][:16])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append({k: v for k, v in entry.items() if k != "seq"})
+    return unique[:ACTIVITY_MAX]
+
+
+def _bookkeeping(row: dict[str, Any], made_with: Any) -> bool:
+    """Whether a ledger row is no news to the person: the link the app keeps between a side and its people, or the
+    person's own change that sets someone's organization to one made in the same change (they work for the business
+    they just added)."""
+    if row["op"].split("#")[0] == LINK_OP:
+        return True
+    if row["version"] == 1 or row["actor"] != "pm" or not row.get("changeset") or row.get("field") != "org":
+        return False
+    after = row.get("after")
+    pointed = {after} if isinstance(after, str) else set(after) if isinstance(after, list) else set()
+    pointed = {p for p in pointed if isinstance(p, str)}
+    return bool(pointed & made_with(row["changeset"]) - {row["record_id"]})
+
+
+def counts(view: Any) -> dict[str, dict[str, Any]]:
+    """For the tables: per person, open items with them and when they were last contacted; per project, open
+    actions, open questions and when it last changed."""
+    people: dict[str, dict[str, Any]] = {}
+    projects: dict[str, dict[str, Any]] = {}
+
+    def person(pid: str) -> dict[str, Any]:
+        return people.setdefault(pid, {"open_items": 0, "last_contact": None})
+
+    def project(pid: str) -> dict[str, Any]:
+        return projects.setdefault(pid, {"open_actions": 0, "open_questions": 0, "last_change": None})
+
+    for a in view.list("action"):
+        d = a.data
+        if d.get("status") not in ("open", "held"):
+            continue
+        for owner in d.get("owners") or []:
+            entry = person(owner["person"])
+            entry["open_items"] += 1
+            told = (d.get("told") or {}).get(owner["person"])
+            if told and (entry["last_contact"] is None or str(told) > entry["last_contact"]):
+                entry["last_contact"] = str(told)
+        if d.get("project"):
+            project(d["project"])["open_actions"] += 1
+    for q in view.list("question"):
+        d = q.data
+        if d.get("status") in ("open", "sent") and d.get("to"):
+            person(d["to"])["open_items"] += 1
+            for pid in d.get("projects") or []:
+                project(pid)["open_questions"] += 1
+        if d.get("sent_at") and d.get("to"):
+            entry = person(d["to"])
+            sent = str(d["sent_at"])[:10]
+            if entry["last_contact"] is None or sent > entry["last_contact"]:
+                entry["last_contact"] = sent
+    for row in view.ledger(kind="project"):
+        entry = project(row["record_id"])
+        if entry["last_change"] is None or str(row["at"]) > entry["last_change"]:
+            entry["last_change"] = str(row["at"])
+    return {"people": people, "projects": projects}

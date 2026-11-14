@@ -1,0 +1,156 @@
+// A menu (design 7.12): a surface with a floating shadow, 36px items with an optional icon, a separator between groups,
+// an item that takes something away (`danger`) in red, opened beside its button (never over it) and its row,
+// a disabled item that says why, and groups that choose one value (a checked item). Built on the React Aria menu, so it
+// is keyboard and screen-reader complete. The trigger is any React Aria button (an IconButton, a StatusChip).
+import { Fragment, useRef, type ReactNode } from "react";
+import { Header, Menu, MenuItem, MenuSection, MenuTrigger, Popover, Separator, Text } from "react-aria-components";
+import { Icon, type IconName } from "./Icon";
+import { SegmentedControl, type SegmentOption } from "./SegmentedControl";
+import label from "./GroupLabel.module.css";
+import styles from "./MenuButton.module.css";
+
+export interface MenuEntry {
+  id: string;
+  label: string;
+  icon?: IconName;
+  run?: () => void;
+  /** An address to open in a new tab instead of running something (only for an address the caller has checked). */
+  href?: string;
+  /** The entry can't be used now; `reason` says why, under its label. */
+  disabled?: boolean;
+  reason?: string;
+  /** The entry takes something away (drop, remove, discard): drawn in the danger color. */
+  danger?: boolean;
+  /** A line under the label that says what the entry does or costs, shown whether or not the entry can be used. */
+  note?: string;
+}
+
+/** A choice between two to four values drawn as a compact segmented control under the menu's items (this device's theme, its spacing). */
+export interface MenuSegments {
+  value: string;
+  options: SegmentOption<string>[];
+  onChange: (value: string) => void;
+}
+
+export interface MenuGroup {
+  id: string;
+  /** A small heading over the group. */
+  title?: string;
+  /** What a screen reader calls a group that has no visible heading; the group's id when there is neither. */
+  label?: string;
+  entries: MenuEntry[];
+  /** The group is one segmented control, named by `title`, drawn after the menu's items: a choice that acts at once and keeps the menu open. */
+  segments?: MenuSegments;
+  /** The one chosen entry's id, for a group that picks a value (theme, density); it shows a check. */
+  selected?: string;
+  /** The ids of the entries that are switched on, for a group of independent choices (the columns of a table); each shows a check. */
+  checked?: string[];
+}
+
+export function MenuButton(props: { trigger: ReactNode; groups: MenuGroup[]; placement?: "bottom end" | "bottom start" | "top end" | "top start" }) {
+  const all = props.groups.filter((g) => g.entries.length || g.segments);
+  const groups = all.filter((g) => !g.segments);
+  const segments = all.filter((g) => g.segments);
+  const chosen = useRef<(() => void) | null>(null);
+  const opener = useRef<Element | null>(null);
+  if (!all.length) return null;
+  const find = (key: unknown) => groups.flatMap((g) => g.entries).find((e) => e.id === key);
+  // The open menu keeps focus inside itself, with the page behind it out of reach, and gives focus back to its button as it
+  // closes. An entry that opens something with its own cursor (a form's first field) can't take it while the menu is still
+  // there, and one that opens a dialog would have it return to nowhere. So an entry runs just after the menu has closed, with
+  // the cursor first put back on the button the menu came from: the form's field then takes it, and a dialog gives it back
+  // to the button when it closes. A choice in a group of independent ticks leaves the menu open, so it runs at once.
+  const closed = (open: boolean) => {
+    if (open) {
+      opener.current = document.activeElement;
+      return;
+    }
+    const run = chosen.current;
+    if (!run) return;
+    chosen.current = null;
+    window.setTimeout(() => {
+      const button = opener.current;
+      if (button instanceof HTMLElement && button.isConnected && document.activeElement === document.body) button.focus();
+      run();
+    }, 0);
+  };
+  return (
+    <MenuTrigger onOpenChange={closed}>
+      {props.trigger}
+      <Popover placement={props.placement ?? "bottom end"} offset={6} className={styles.popover}>
+        <div className={styles.surface}>
+        <Menu
+          className={styles.menu}
+          onAction={(key) => {
+            const entry = find(key);
+            if (entry && groups.some((g) => g.checked !== undefined && g.entries.includes(entry))) entry.run?.();
+            else chosen.current = entry?.run ?? null;
+          }}
+        >
+          {groups.map((group, index) => (
+            <Fragment key={group.id}>
+              {index > 0 && <Separator className={styles.sep} />}
+              <MenuSection
+                className={styles.group}
+                aria-label={group.title ?? group.label ?? group.id}
+                selectionMode={group.checked !== undefined ? "multiple" : group.selected !== undefined ? "single" : "none"}
+                selectedKeys={group.checked !== undefined ? group.checked : group.selected !== undefined ? [group.selected] : undefined}
+              >
+                {group.title && <Header className={`${label.label} ${styles.header}`}>{group.title}</Header>}
+                {group.entries.map((entry) => (
+                  <MenuItem
+                    key={entry.id}
+                    id={entry.id}
+                    className={styles.item}
+                    isDisabled={entry.disabled}
+                    data-danger={entry.danger ? "" : undefined}
+                    textValue={entry.label}
+                    href={entry.href}
+                    target={entry.href ? "_blank" : undefined}
+                    rel={entry.href ? "noopener noreferrer" : undefined}
+                  >
+                    {({ isSelected }) => (
+                      <>
+                        {entry.icon && (
+                          <span className={styles.lead}>
+                            <Icon name={entry.icon} size={16} />
+                          </span>
+                        )}
+                        <Text slot="label" className={entry.icon ? styles.label : styles.bare}>
+                          {entry.label}
+                        </Text>
+                        {isSelected && (
+                          <span className={styles.tick}>
+                            <Icon name="check" size={16} />
+                          </span>
+                        )}
+                        {(entry.disabled && entry.reason ? entry.reason : entry.note) && (
+                          <Text slot="description" className={styles.reason}>
+                            {entry.disabled && entry.reason ? entry.reason : entry.note}
+                          </Text>
+                        )}
+                      </>
+                    )}
+                  </MenuItem>
+                ))}
+              </MenuSection>
+            </Fragment>
+          ))}
+        </Menu>
+        {segments.length > 0 && (
+          <div className={styles.segments}>
+            {segments.map((group) => (
+              <div key={group.id} className={styles.segmented}>
+                <span className={`${label.label} ${styles.segmentedName}`} aria-hidden="true">
+                  {group.title}
+                </span>
+                <SegmentedControl label={group.title ?? group.label ?? group.id} value={group.segments!.value} options={group.segments!.options} onChange={group.segments!.onChange} />
+              </div>
+            ))}
+          </div>
+        )}
+        </div>
+      </Popover>
+    </MenuTrigger>
+  );
+}

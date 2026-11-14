@@ -1,0 +1,41 @@
+# Workspaces: only the two fictional demo workspaces are committed.
+/workspaces/*
+!/workspaces/demo-a/
+!/workspaces/demo-b/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Web
+node_modules
+web/dist/
+# The visual hand-back tool writes its pictures here.
+web/visual/out/
+
+# Local environment and secrets
+.env
+.env.*
+*.local
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+
+# Workspace runtime files (also inside the committed demo workspaces)
+thimbleby.db
+thimbleby.db-*
+.thimbleby/
+cockpit.db
+cockpit.db-*
+.cockpit/
+
+# Shipped files copied in by the wheel build
+engine/_shipped/

@@ -1,0 +1,112 @@
+# Places the assistant keeps reading. Each source names a connector and that connector's settings.
+version: 1
+sources:
+  - id: inbox
+    connector: folder
+    stance: follow   # mine to track: the assistant adds to-dos and questions from what it holds
+    label: Inbox folder
+    author: PER-1         # everything in it is the person's own work; a team id works too
+    sides: [PRJ-2]        # the sides of your work it serves, as their top projects; one files what it hands in there, several narrow the choice
+    every_minutes: 30
+    first_run: baseline   # the first read only notes what is there
+    report_removed: false
+    data_level: internal  # this source's own level; left out, the kind's level or the default applies
+    settings:
+      path: inbox         # inside the workspace's folder; a full path works too
+      patterns: ["*.txt", "*.md"]
+  - id: news
+    connector: feed
+    stance: understand   # another group's page or feed: read and kept as facts, nothing chased from it
+    label: Harbor news
+    enabled: false        # turn on to read the feed every few hours
+    every_minutes: 240
+    settings:
+      url: https://news.example.com/feed.xml
+  - id: calendar
+    connector: calendar
+    label: Work calendar
+    holds: meetings       # what its entries are: meetings (events on your schedule) or absence (who is away)
+    sides: [PRJ-2]        # the side of your work it serves, as its top project; its entries show that side's name on the schedule
+    color: teal          # the small mark beside its name on the schedule: blue, teal, green, orange, red, pink, purple or gray; left out, none
+    enabled: false        # turn on once the calendar's private address is set
+    every_minutes: 60
+    first_run: recent     # the first read hands in what happens within a day of now; the rest is only noted
+    first_run_hours: 24
+    settings:
+      address: env:WORK_CALENDAR_ADDRESS   # the private address, kept outside the files; or give file: and a path
+      days_ahead: 30        # how far ahead single events are read
+      expand_days: 60       # how far ahead each date of a repeating event is listed
+  - id: away
+    connector: calendar
+    label: Who is away
+    holds: absence        # vacations and days off: read into the days the people it names are away, never meetings
+    stance: follow
+    enabled: false        # turn on once the team calendar's private address is set
+    every_minutes: 240
+    settings:
+      address: env:TEAM_AWAY_ADDRESS   # the private address, kept outside the files; or give file: and a path
+      days_ahead: 90        # how far ahead entries are read
+  - id: mail
+    connector: mailbox
+    label: Project mail
+    enabled: false        # turn on once an app password is set
+    every_minutes: 15
+    first_run: intake     # the first read takes in the last first_run_days of mail quietly: one list to look over
+    first_run_days: 14    # older mail isn't read; Today says "Not looked at before <date>"
+    settings:
+      host: mail.example.com
+      user: pm@example.com
+      password: env:PROJECT_MAIL_PASSWORD
+      folder: Projects
+      from_address: pm@example.com   # the address messages are sent from (the user name when that is an address)
+      smtp_host: smtp.example.com    # the outgoing server (the mail server with imap. made smtp. when empty)
+      smtp_port: 465                 # 465 is secure from the start; 587 is made secure after connecting
+      sent_folder: Sent              # where a copy of each sent message is saved (the server's sent folder when empty)
+      server_keeps_sent: false       # true when the outgoing server saves its own copy
+      archive_folder: Archive        # where Archive moves messages (the server's archive folder when empty)
+acting: []   # accounts the assistant may act on after your yes; none until you tick one in Settings
+propose_days: 14   # days ahead to look for a free time when proposing another time for an invitation
+propose_slots: 6   # free times offered at most when proposing another time
+propose_round_minutes: 15   # the first free time offered starts at the next multiple of this many minutes
+look_back_choices: [30, 90, 365]   # days a mail source can be asked to look further back, shown as a list
+look_back_max_items: 100   # the most older messages one look further back asks a mail source for
+burst_items: 5   # more changed items than this from one read of a page, feed or tracker are filed as one input per project
+failures_before_asking: 3
+unread_gap_factor: 2   # a failing source becomes a line on Today after this many of its own read intervals
+stale_after_hours: 36   # hours without a good read before Today names a source instead of saying nothing needs you
+default_data_level: internal   # how sensitive a watched source's items are when nothing else says
+connector_data_levels: {mailbox: restricted}   # per kind of source; a source's own data_level wins over this
+sent_folder_names: [Sent, Sent Items, Sent Mail, Sent Messages, INBOX.Sent]   # names tried for the sent folder when the server marks none
+mail_services_extra: []   # mail services of your own for connecting a mailbox with an app password; one with a shipped id replaces it
+set_aside_defaults: true   # mailing lists and promotions are set aside with no AI run
+sorting: ai   # a low-cost run sorts the mail the rules cannot place, from sender, subject and category only
+versions:   # copies of one document in a watched folder: only the newest counts
+  enabled: true
+  ignore_words: [FOR REVIEW, DRAFT, FINAL, ARCHIVE, ARCHIVED, COPY, SUPERSEDED]
+  archive_folders: [Archive, Old, Superseded]
+  same_document: []   # files said by hand to be one document: [{source: <folder id>, files: [<path>, <path>]}]
+  not_same: {}   # files said not to belong to the name's document, by folder id
+  current: {}   # the copy said to be current when names couldn't tell, by folder id
+automated_mail:   # one-time-code mail from a no-reply address, and bulk mail from a notification sender, is set aside with no AI run
+  set_aside: true
+  senders: [no-reply, noreply, no_reply, do-not-reply, donotreply, notification]   # what an automated address starts with
+  words: [verification code, one-time code, one-time password, security code, sign-in code, login code, passcode, new sign-in, new login, sign-in attempt, security alert, suspicious activity, reset your password, access token, personal access token, app password, api key was, was added to your account, was added to your, new device, signed in from, security notice, security notification, verify your email, confirm your email]
+mail_kinds:   # bills, orders and deliveries are tracked for the Personal project, never set aside
+  enabled: true
+  bill: {senders: [billing, statements, invoices], subject_words: [your statement, statement is ready, amount due, invoice], words: [amount due, due date]}
+  order: {senders: [orders, receipts], subject_words: [order confirmation, thank you for your order], words: [order number]}
+  shipping: {senders: [shipping, tracking], subject_words: [has shipped, out for delivery, has been delivered, tracking number], words: [estimated delivery]}
+sorting_batch: 25   # messages covered by one sorting run
+set_aside_keep_seconds: 60   # how long a confirmed message's copy is kept so Undo can bring it back
+folders_cache_minutes: 5   # how long an account's list of folders and labels is kept before the service is asked again
+folders_timeout_seconds: 10   # how long to wait for an account's service to list its folders and labels, then the name is typed
+handled_rule_section: notices   # where Always set aside goes for mail the assistant already read: sales or notices
+handled_keep_days: 30   # how many days an item stays listed on Handled for you, then it leaves the list
+public_mail_domains_extra: [mail.example.net]   # more free mail domains, so no rule is offered for the whole domain
+triage:
+  - name: Spacing only
+    kind: cosmetic
+    why: "Closed: {reason}."
+  - name: Scratch files
+    kind: name-matches
+    params: {patterns: ["*.tmp", "~*"]}

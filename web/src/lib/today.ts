@@ -1,0 +1,155 @@
+// What Today's queue holds, counted and grouped in one place so the heading, the menu's count and the rows agree
+// (design 7.7): the lines the engine ranks, the lines running plugins add, the stage tasks waiting for a go and what failed or is unsure on its way out. A line
+// folded away (the week) is not counted.
+import { useQuery } from "@tanstack/react-query";
+import { api, type S } from "./api";
+import { chosenArea, inArea, useStoredArea } from "./area-filter";
+import { onAnySide, onSide, useSideFilter, type SideChoice } from "./sides";
+import { useStageToday } from "../components/StageToday";
+import { useActToday } from "./acts";
+import { sidesOfAccount, useAccountToday } from "./account-today";
+
+/** How many lines a card of Today's rail holds before one line says how many more there are, so the rail is never longer than
+ * the queue beside it, when the setting (`ui.today.rail_rows`) is not known yet. */
+export const RAIL_ROWS_DEFAULT = 3;
+
+/** How many rows each card of Today's rail shows (`ui.today.rail_rows`), read from the runtime configuration the app holds. */
+export function useRailRows(): number {
+  const rc = useQuery({ queryKey: ["runtime-config"], queryFn: api.runtimeConfig, enabled: false, staleTime: Infinity });
+  const rows = rc.data?.rail_rows;
+  return rows && rows > 0 ? Math.floor(rows) : RAIL_ROWS_DEFAULT;
+}
+
+/** From how many things that need the person Today is a heavy day, and how many lines each group then shows before its button for
+ * the rest (`ui.today.heavy_day_from`, `ui.today.group_rows`), when the settings are not known yet. */
+export const HEAVY_DAY_DEFAULT = 30;
+export const GROUP_ROWS_DEFAULT = 5;
+
+export function useHeavyDay(): { from: number; rows: number } {
+  const rc = useQuery({ queryKey: ["runtime-config"], queryFn: api.runtimeConfig, enabled: false, staleTime: Infinity });
+  const from = rc.data?.heavy_day_from;
+  const rows = rc.data?.group_rows;
+  return { from: from && from > 0 ? Math.floor(from) : HEAVY_DAY_DEFAULT, rows: rows && rows > 0 ? Math.floor(rows) : GROUP_ROWS_DEFAULT };
+}
+
+/** The keys of the lines a heavy day tucks behind "Show N more": in each group but setup, the lines after its first `rows`, unless
+ * the person opened that group. Every line is counted, whatever its kind. */
+export function tuckedLines(lines: QueueLine[], rows: number, opened: ReadonlySet<string>): Set<string> {
+  const tucked = new Set<string>();
+  for (const group of GROUPS) {
+    if (group === "setup" || opened.has(group)) continue;
+    for (const line of inGroup(lines, group).slice(rows)) tucked.add(line.key);
+  }
+  return tucked;
+}
+
+export type QueueLine = S["QueueLineView"];
+export type QueueGroupName = QueueLine["group"];
+
+/** The groups in the order the engine ranks them (6.15); the screen never ranks. "Finish setting up" is last and is not among what
+ * needs the person (design 7.7). */
+export const GROUPS: readonly QueueGroupName[] = ["decide", "risk", "review", "send", "setup"];
+
+/** Whether a line is a gap in setup: it is listed under "Finish setting up" and never counted among the things that need the person. */
+export const isSetupLine = (line: QueueLine): boolean => line.group === "setup";
+
+/** The kinds of line whose words are a count ("3 things need you"): with a count of zero there is nothing to say, so the
+ * line is not shown. */
+const COUNTED: ReadonlySet<QueueLine["kind"]> = new Set([
+  "first_go",
+  "catch_up_go",
+  "intake_go",
+  "intake_review",
+  "batches",
+  "restart",
+  "paused",
+  "borrow",
+  "offline",
+  "overdue",
+  "review",
+  "learned",
+  "catch_up",
+  "send",
+  "nudge",
+  "stale",
+  "unfiled",
+  "moved",
+  "terms",
+  "since_yesterday",
+  "away",
+]);
+
+/** Whether a line has something to count: a line that counts things and holds none is left out. */
+export const hasSomething = (line: QueueLine): boolean => !COUNTED.has(line.kind) || line.count > 0;
+
+/** The queue's lines; with a side picked, only that side's and the lines that belong to neither (the app's own). */
+export function useQueue(side: SideChoice = "all") {
+  const picked = useStoredArea();
+  return useQuery({
+    queryKey: ["today", "queue"],
+    queryFn: api.todayQueue,
+    // The area filter narrows to one area of life when the person picked one that some line is in.
+    select: (lines) => {
+      const area = chosenArea(lines, picked);
+      return lines.filter((line) => hasSomething(line) && (line.sides?.length ? onAnySide(line.sides, side, line.views) : onSide(line.side, side, line.views, !!line.project_name)) && inArea(line, area));
+    },
+  });
+}
+
+/** How many lines need the person: the queue's (setup gaps aside), the plugins', the stages', the acts' and the accounts that are
+ * not being read. Null until the queue has answered, so the
+ * menu shows no number rather than a wrong one. */
+export function useTodayCount(side: SideChoice = "all"): number | null {
+  const queue = useQueue(side);
+  const plugins = useQuery({ queryKey: ["plugin-today"], queryFn: api.pluginToday });
+  const stage = useStageToday();
+  const outgoing = useActToday();
+  const accounts = useAccountToday(side);
+  if (!queue.data) return null;
+  return queue.data.filter((line) => !isSetupLine(line)).length + (plugins.data?.length ?? 0) + stage.count + outgoing.count + accounts.count;
+}
+
+/** A side is picked and nothing of its own needs the person: what remains is the app's own lines, which belong to no side and stay
+ * under every choice. The heading, the list's empty card and the lines agree on it, so none counts those as the side's. */
+export function useSideBare(): boolean {
+  const filter = useSideFilter();
+  const queue = useQueue(filter.picked);
+  const accounts = useAccountToday(filter.picked);
+  const count = useTodayCount(filter.picked);
+  const own = (queue.data ?? []).filter((line) => !isSetupLine(line));
+  return (
+    filter.choice !== "all" &&
+    count !== null &&
+    count > 0 &&
+    count === own.length + accounts.count &&
+    own.every((line) => line.side == null && !(line.sides ?? []).length) &&
+    accounts.accounts.every((account) => sidesOfAccount(account).length === 0)
+  );
+}
+
+/** The lines of one group, in the engine's order. */
+export function inGroup(lines: QueueLine[], group: QueueGroupName): QueueLine[] {
+  return lines.filter((line) => line.group === group);
+}
+
+/** Whether the lines name more than one project, which is when a row names its own. */
+export function mixesProjects(lines: QueueLine[]): boolean {
+  return new Set(lines.map((line) => line.project).filter(Boolean)).size > 1;
+}
+
+// The line the inspector showed last, for the rest of the session: returning to Today (or a live refresh) opens the same
+// line, and when it is gone, the line now in its place.
+let remembered: { key: string; index: number } | null = null;
+
+export function rememberLine(key: string, index: number): void {
+  remembered = { key, index };
+}
+
+export function recallLine(): { key: string; index: number } | null {
+  return remembered;
+}
+
+/** Forgets the remembered line, so the inspector starts on the first one. */
+export function forgetLine(): void {
+  remembered = null;
+}

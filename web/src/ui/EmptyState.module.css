@@ -1,0 +1,27 @@
+/* One empty state for every list, page and card: a calm card centred in its area (never wider than 32rem, so a sentence is
+   never lost in a wide page), the brand mark that follows the theme, the title in the display face, one 14px sentence at most
+   44 characters wide, and the one quiet action. The card has no edge of its own. */
+.empty { display: grid; justify-items: center; width: 100%; max-width: 32rem; margin-inline: auto; gap: var(--space-2); padding: var(--space-8) var(--space-6); text-align: center; color: var(--text-muted); min-width: 0; }
+.mark { width: 48px; height: 48px; margin-bottom: var(--space-2); }
+.markDay { display: var(--mark-day-display); }
+.markNight { display: var(--mark-night-display); }
+.title { margin: 0; color: var(--text); font-family: var(--font-display); font-size: var(--text-section); line-height: var(--lh-section); font-weight: var(--weight-medium); letter-spacing: -0.01em; overflow-wrap: anywhere; }
+.text { margin: 0; max-width: 44ch; font-size: var(--text-sm); line-height: var(--lh-sm); }
+.empty > :global([data-variant]), .empty > :global([data-pill]) { margin-top: var(--space-2); }
+.actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: var(--space-2) var(--space-3); margin-top: var(--space-2); }
+.inline .actions { margin-top: 0; flex: none; }
+.inline { width: auto; max-width: none; margin-inline: 0; display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-4); text-align: left; justify-items: unset; }
+.inline .text { flex: 1 1 auto; min-width: 0; max-width: none; }
+/* The button beside the words never squeezes onto two lines: it keeps its own width, and when the words and the button do not fit
+   on one line the button drops under the words. */
+.inline { flex-wrap: wrap; }
+.inline > :global([data-variant]) { flex: none; margin-top: 0; white-space: nowrap; }
+/* A list inside the one-line form (the sources a rail card could not read) takes its own full row under the words. */
+.inline > ul { flex: 1 0 100%; margin: 0; padding: 0; list-style: none; text-align: left; }
+/* A page's own empty state: the pane's surface and edge across the content column, the mark, title, sentence and action centred in it. */
+.card { max-width: none; margin-inline: 0; background: var(--surface); border: 1px solid var(--pane-border); box-shadow: var(--pane-edge); border-radius: var(--radius-lg); padding: var(--space-10) var(--space-6); }
+/* The page's moment: a larger brand mark, a serif heading at the page-section size, one sentence, one primary and at most one quiet action. */
+.card .mark { width: 72px; height: 72px; margin-bottom: var(--space-3); }
+.card .title { font-size: var(--text-xl); line-height: var(--lh-xl); }
+.card .text { font-size: var(--text-md); line-height: var(--lh-md); }
+.card .actions { margin-top: var(--space-4); }

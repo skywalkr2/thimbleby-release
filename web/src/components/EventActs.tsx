@@ -1,0 +1,247 @@
+// What the person can do to a calendar entry of theirs (design 6.12): move it to another time or cancel it.
+// An entry the app keeps itself changes at once, with Undo in a toast. An event on a connected calendar drafts an act and opens it
+// in Waiting to go out, where the person says yes to exactly what will be written to the calendar; nothing changes there before
+// it. That is offered only when acting is on for its account and the account's service does it; otherwise a note says which
+// (acting is off, with the way to turn it on, or the service doesn't do it and the change is made in the calendar app).
+import { useQuery } from "@tanstack/react-query";
+import { useId, useRef, useState, type ReactNode } from "react";
+import { api } from "../lib/api";
+import { useAct } from "../lib/act";
+import { inputOn, momentOf } from "../lib/dates";
+import { useActOptions, useDraftAct } from "../lib/acts";
+import { settingsView, viewHref } from "../lib/views";
+import { useWords } from "../lib/wording";
+import type { MenuAction } from "./RowMenu";
+import { SafeLink } from "./SafeText";
+import { Button } from "../ui/Button";
+import { EntryEditForm, type EntryFields } from "./EntryEditForm";
+import { DateField } from "../ui/DateField";
+import { FormField } from "../ui/FormField";
+import { Actions } from "../ui/Actions";
+export interface EventActs {
+  /** The entries for the entry page's menu; none when nothing is offered. */
+  menu: MenuAction[];
+  /** The form a choice opened, shown beside the entry. */
+  form: ReactNode;
+  /** Why a connected event can't be changed from here, in plain words, when it can't. */
+  note: ReactNode;
+  /** Whether the entry the app keeps is called off now, as its record says (read again after every change), so a screen shows it at once. */
+  calledOff: boolean;
+}
+
+/** A moment as the text a `datetime-local` box takes, on the person's own clock. A day with no time starts at nine. */
+export function localInput(iso: string | null | undefined): string {
+  if (!iso) return "";
+  if (iso.length === 10) return `${iso}T09:00`;
+  const when = new Date(iso);
+  return Number.isNaN(when.getTime()) ? "" : inputOn(when);
+}
+
+/** What a `datetime-local` box holds as ISO text, on the person's own clock, or nothing when it holds no moment. */
+export function isoInput(local: string): string {
+  return momentOf(local)?.toISOString() ?? "";
+}
+
+/** The acts on the calendar entry `entry`, whose own start and end are `current` (the entry's own record says when they are left out).
+ * `link` is the event's address on its calendar, when it has one. `enabled` false asks the server nothing. */
+export function useEventActs(
+  entry: string,
+  current: { start?: string | null; end?: string | null },
+  enabled: boolean,
+  link?: string | null,
+  /** For one date of an entry that repeats: when the rule had it (`occurrence` of the schedule's entry), and when that date starts and ends. */
+  date?: { was: string; start: string; end?: string | null },
+): EventActs {
+  const { t } = useWords();
+  const found = useActOptions(entry, enabled);
+  const draft = useDraftAct();
+  const act = useAct();
+  const record = useQuery({ queryKey: ["record", "event", entry], queryFn: () => api.record("event", entry), enabled: enabled && !!entry });
+  const [moving, setMoving] = useState<false | "one" | "all">(false);
+  const [editing, setEditing] = useState(false);
+  // The entry the person just called off, said from the server's answer: the pane shows it at once, before its record is read again.
+  const [calledNow, setCalledNow] = useState<string | null>(null);
+  const options = found.data?.kind === "event" ? found.data : null;
+  const offered = options?.event_actions ?? [];
+  if (!enabled || !options) return { menu: [], form: null, note: null, calledOff: false };
+  const start = current.start ?? (record.data?.fields.start as string | undefined);
+  const end = current.end !== undefined ? current.end : (record.data?.fields.end as string | null | undefined);
+
+  // An entry the app keeps itself: the person's own change, at once, with Undo.
+  if (options.event_own) {
+    const version = record.data?.version;
+    const said = (done: { changeset?: string | null; refused?: "changed" | "referred_to" | null }, message: string) =>
+      done.refused || !done.changeset ? { message: t(`calendar.own.refused.${done.refused ?? "changed"}`) } : { message, undo: () => api.undo(done.changeset ?? "") };
+    // An entry that repeats is changed one date at a time or all of its dates together; the date is the one the person opened.
+    const one = date?.was;
+    // Calling an entry off keeps it, waiting for a new date; this takes it out for good (Undo brings it back). The first is the one way to
+    // call a meeting off, so the second is worded as removing it.
+    const cancelAll = {
+      id: "event-cancel",
+      label: t(one ? "acts.event.cancel_all" : "acts.event.remove"),
+      run: () => void act(() => api.cancelEvent(entry, { read_version: version ?? 0 }), (done) => said(done, t(one ? "calendar.own.cancelled" : "calendar.own.removed"))),
+    };
+    return {
+      menu: version
+        ? [
+            ...(one
+              ? [
+                  { id: "event-move-one", label: t("acts.event.move_one"), run: () => setMoving("one") },
+                  {
+                    id: "event-cancel-one",
+                    label: t("acts.event.cancel_one"),
+                    run: () => void act(() => api.cancelEvent(entry, { read_version: version, occurrence: one }), (done) => said(done, t("calendar.own.cancelled_one"))),
+                  },
+                ]
+              : []),
+            { id: "event-move", label: t(one ? "acts.event.move_all" : "acts.event.move"), run: () => setMoving("all") },
+            // The place and the repeat belong to the entry as a whole, so they are changed from any one of its dates too.
+            { id: "event-edit", label: t("acts.event.edit"), run: () => setEditing(true) },
+            ...(record.data?.fields.cancelled || calledNow === entry || one
+              ? []
+              : [{ id: "event-call-off", label: t("calledoff.call_off"), run: () => void act(() => api.callOffEvent(entry), (done) => {
+                const toast = said(done, t("calledoff.called_off", { title: (record.data?.fields.title as string | undefined) ?? "" }));
+                if (done.refused || !done.changeset) return toast;
+                setCalledNow(entry);
+                const undo = toast.undo;
+                return { ...toast, undo: undo ? async () => { await undo(); setCalledNow(null); } : undefined };
+              }, undefined, { key: entry, kinds: ["event"] }) }]),
+            cancelAll,
+          ]
+        : [],
+      note: null,
+      calledOff: !!record.data?.fields.cancelled || calledNow === entry,
+      form: editing && version && record.data ? (
+        <EntryEditForm entry={entry} version={version} fields={record.data.fields as EntryFields} onClose={() => setEditing(false)} />
+      ) : moving && version ? (
+        <MoveForm
+          start={localInput(moving === "one" && date ? date.start : start)}
+          end={localInput(moving === "one" && date ? date.end : end)}
+          go={t("calendar.own.move.go")}
+          onCancel={() => setMoving(false)}
+          onSubmit={async (from, to) => {
+            const done = await act(
+              () => api.moveEvent(entry, { start: from, end: to || null, read_version: version, ...(moving === "one" && one ? { occurrence: one } : {}) }),
+              (result) => said(result, t(moving === "one" ? "calendar.own.moved_one" : "calendar.own.moved")),
+            );
+            if (done) setMoving(false);
+          }}
+        />
+      ) : null,
+    };
+  }
+
+  if (offered.length === 0) {
+    const why = options.event_why;
+    const account = options.account_label ?? "";
+    return {
+      menu: [],
+      form: null,
+      calledOff: false,
+      note: why ? (
+        <p className="hint" data-event-why={why}>
+          {why === "acting_off" ? (
+            <>
+              {t("acts.event.why.acting_off", { account })} <a href={viewHref(settingsView("you"))}>{t("acts.event.why.settings")}</a>
+            </>
+          ) : (
+            <>
+              {t("acts.event.why.app_only")} {link && <SafeLink label={t("schedule.open_calendar")} url={link} />}
+            </>
+          )}
+        </p>
+      ) : null,
+    };
+  }
+  const menu: MenuAction[] = [
+    ...(offered.includes("move") ? [{ id: "event-move", label: t("acts.event.move"), run: () => setMoving("all") }] : []),
+    ...(offered.includes("cancel") ? [{ id: "event-cancel", label: t("acts.event.cancel"), run: () => void draft({ kind: "calendar", action: "cancel", about: [entry] }) }] : []),
+  ];
+  return {
+    menu,
+    note: null,
+    calledOff: false,
+    form: moving ? (
+      <MoveForm
+        start={localInput(start)}
+        end={localInput(end)}
+        go={t("acts.event.move.go")}
+        onCancel={() => setMoving(false)}
+        onSubmit={async (start, end) => {
+          const made = await draft({ kind: "calendar", action: "move", about: [entry], start, end });
+          if (made) setMoving(false);
+        }}
+      />
+    ) : null,
+  };
+}
+
+/** The new start and end, with the entry's own time to begin with; the cursor starts in the start. */
+export function MoveForm(props: { start: string; end: string; go: string; onCancel: () => void; onSubmit: (start: string, end: string) => Promise<void> }) {
+  const { t } = useWords();
+  const base = useId();
+  const [start, setStart] = useState(props.start);
+  const [end, setEnd] = useState(props.end);
+  // Moving the start moves the end with it, so the entry keeps its length. The start last whole is what it moves from: the boxes are
+  // empty for a moment while a day or a time is typed over, and that moment is no start.
+  const settled = useRef(props.start);
+  const changeStart = (next: string) => {
+    const to = momentOf(next);
+    if (to) {
+      const was = momentOf(settled.current);
+      const ending = momentOf(end);
+      if (was && ending && ending > was && to.getTime() !== was.getTime()) setEnd(inputOn(new Date(ending.getTime() + (to.getTime() - was.getTime()))));
+      settled.current = next;
+    }
+    setStart(next);
+  };
+  const [busy, setBusy] = useState(false);
+  const [bad, setBad] = useState(false);
+  const submit = () => {
+    const from = isoInput(start);
+    const to = isoInput(end);
+    // An event with no end moves by its start alone; one with an end needs an end after the start.
+    if (!from || (end !== "" && (!to || new Date(to) <= new Date(from)))) {
+      setBad(true);
+      return;
+    }
+    setBad(false);
+    setBusy(true);
+    void props.onSubmit(from, to).finally(() => setBusy(false));
+  };
+  return (
+    <form
+      className="answer-form"
+      data-act-form="move-event"
+      aria-labelledby={`${base}-title`}
+      onSubmit={(e) => {
+        e.preventDefault();
+        submit();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") props.onCancel();
+      }}
+    >
+      <h3 id={`${base}-title`}>{t("acts.event.move.title")}</h3>
+      <FormField id={`${base}-start`} label={t("acts.propose.start")}>
+        <DateField id={`${base}-start`} kind="datetime-local" autoFocus value={start} onChange={(e) => changeStart(e.target.value)} />
+      </FormField>
+      <FormField id={`${base}-end`} label={t("acts.propose.end")}>
+        <DateField id={`${base}-end`} kind="datetime-local" value={end} onChange={(e) => setEnd(e.target.value)} />
+      </FormField>
+      {bad && (
+        <p className="problem-note" role="alert">
+          {t("acts.event.move.bad")}
+        </p>
+      )}
+      <Actions align="end">
+        <Button variant="quiet" onClick={props.onCancel}>
+          {t("acts.cancel")}
+        </Button>
+        <Button variant="primary" type="submit" disabled={busy || !start}>
+          {props.go}
+        </Button>
+      </Actions>
+    </form>
+  );
+}

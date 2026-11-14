@@ -1,0 +1,447 @@
+"""Packs people can add (design 3.11): catalog feeds read on request, and what each listed pack adds, reaches and keeps,
+written from its manifest rather than its own description, with its typical AI jobs priced on the workspace's own
+accounts.
+
+A feed is one index file (YAML or JSON) at an https address. Everything in it is untrusted: text stays text, links are
+https only, and nothing in it becomes a rule, a setting or an instruction. An entry that doesn't fit the format is
+left out with a note; the rest of the feed still shows.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from dataclasses import dataclass, field
+from typing import Any, Literal
+from urllib.parse import urlsplit
+
+import yaml
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+
+from engine.catalog_signature import verify
+from engine.config import Config
+from engine.connectors import READS_WORDS, reads
+from engine.shipped import is_shipped_catalog
+from engine.state_file import write_whole
+from engine.yaml_load import load_yaml
+
+#: The largest feed read, in bytes.
+MAX_FEED_BYTES = 2_000_000
+#: The largest signature file read, in bytes.
+MAX_SIGNATURE_BYTES = 4_096
+CACHE_FILE = "pack-catalog.json"
+LEVELS = ("open", "internal", "restricted")
+
+
+class Price(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    model: Literal["free", "one_time", "subscription", "see_publisher"] = "see_publisher"
+    amount: float | None = Field(None, ge=0)
+    currency: str = Field("USD", pattern=r"^[A-Z]{3}$")
+    period: Literal["month", "year"] | None = None
+    note: str = Field("", max_length=200)
+
+
+class AiJob(BaseModel):
+    """One typical piece of AI work the pack does, sized so the app can price it."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    label: str = Field(min_length=1, max_length=80)
+    input_tokens: int = Field(ge=0, le=2_000_000)
+    output_tokens: int = Field(ge=0, le=200_000)
+    role: Literal["write", "check", "research"] = "write"
+    data_level: Literal["open", "internal", "restricted"] = "internal"
+
+
+class Library(BaseModel):
+    """One wheel of a library a pack needs besides its own: the package's name and version, the platform tag of this
+    build (`any` for pure Python, else a wheel platform tag such as `win_amd64` or `macosx_11_0_arm64`), the https
+    address of the wheel and its SHA-256, which the download must match. A library with builds for several platforms
+    has one entry for each; install takes the one that fits the computer."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$", max_length=100)
+    version: str = Field(min_length=1, max_length=50)
+    platform: str = Field("any", pattern=r"^[A-Za-z0-9_.]+$", max_length=80)
+    url: str = Field(max_length=1000)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("url")
+    @classmethod
+    def _wheel(cls, value: str) -> str:
+        from packaging.utils import InvalidWheelFilename, parse_wheel_filename
+
+        if not (value.startswith("https://") and urlsplit(value).hostname):
+            raise ValueError("a library is an https address")
+        try:
+            parse_wheel_filename(urlsplit(value).path.rsplit("/", 1)[-1])
+        except InvalidWheelFilename:
+            raise ValueError("a library is a built wheel (.whl), never source") from None
+        return value
+
+    @model_validator(mode="after")
+    def _agrees_with_its_file(self) -> Library:
+        from packaging.utils import canonicalize_name, parse_wheel_filename
+
+        name, version, _, tags = parse_wheel_filename(urlsplit(self.url).path.rsplit("/", 1)[-1])
+        if canonicalize_name(name) != canonicalize_name(self.name) or str(version) != self.version:
+            raise ValueError(f"library {self.name} {self.version} doesn't match the wheel it names")
+        if self.platform not in {t.platform for t in tags}:
+            raise ValueError(f"library {self.name} says platform {self.platform}, which its wheel isn't built for")
+        return self
+
+
+class Release(BaseModel):
+    """Where a pack's release file is, so the app can install it: an https address of its own wheel of pure Python,
+    and its SHA-256 checksum, which the download must match. `libraries` lists every other wheel the pack needs (its
+    dependencies and theirs), each with its SHA-256, a platform tag and its address; install installs exactly those and
+    never fetches from a package index."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    url: str = Field(max_length=1000)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    libraries: list[Library] = Field(default_factory=list, max_length=100)
+
+    @field_validator("url")
+    @classmethod
+    def _https(cls, value: str) -> str:
+        if not (value.startswith("https://") and urlsplit(value).hostname):
+            raise ValueError("a release is an https address")
+        return value
+
+    @model_validator(mode="after")
+    def _one_build_each(self) -> Release:
+        from packaging.utils import canonicalize_name
+
+        seen: set[tuple[str, str]] = set()
+        for library in self.libraries:
+            key = (str(canonicalize_name(library.name)), library.platform)
+            if key in seen:
+                raise ValueError(f"library {library.name} is listed twice for platform {library.platform}")
+            seen.add(key)
+        for name in {k[0] for k in seen}:
+            versions = {lib.version for lib in self.libraries if canonicalize_name(lib.name) == name}
+            if len(versions) > 1:
+                raise ValueError(f"library {name} is listed at more than one version")
+        return self
+
+
+class Entry(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str = Field(pattern=r"^[a-z][a-z0-9-]{0,40}$")
+    name: str = Field(min_length=1, max_length=80)
+    summary: str = Field("", max_length=300)
+    publisher: str = Field("", max_length=80)
+    maintainers: bool = False
+    updated: str = Field("", max_length=40)
+    version: str = Field("", max_length=40)
+    plugin_api: str = Field("", max_length=40)
+    price: Price = Field(default_factory=Price)
+    homepage: str | None = Field(None, max_length=500)
+    install: str = Field("", max_length=500)
+    demo: bool = False
+    ai_jobs: list[AiJob] = Field(default_factory=list, max_length=20)
+    provides: dict[str, Any] = Field(default_factory=dict)
+    requires: dict[str, Any] = Field(default_factory=dict)
+    release: Release | None = None
+
+    @field_validator("homepage")
+    @classmethod
+    def _https(cls, value: str | None) -> str | None:
+        if value is not None and not (value.startswith("https://") and urlsplit(value).hostname):
+            raise ValueError("a homepage is an https address")
+        return value
+
+
+@dataclass
+class Feed:
+    url: str
+    entries: list[Entry] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    error: str | None = None
+    read_at: float | None = None
+    #: The feed's signature verified against a trusted key.
+    signed: bool = False
+    #: The person marked the feed as their own and it carries no signature: each entry says so.
+    unsigned_own: bool = False
+
+
+@dataclass(frozen=True)
+class Trust:
+    """What a feed may be accepted with: the keys that can sign it, and whether the person marked it as their own."""
+
+    keys: tuple[str, ...] = ()
+    own: bool = False
+
+
+def trust_for(cfg: Config, product: dict[str, Any]) -> Any:
+    """For each feed address, its `Trust`: the key this build ships for the product's own catalog (with no key shipped,
+    that catalog is read as unsigned and shown with the warning), or the keys the person added and whether they marked
+    that address as their own."""
+    settings = cfg.workspace.plugins.catalog
+    shipped_key = product.get("pack_catalog_key")
+    shipped_keys = (shipped_key.strip(),) if isinstance(shipped_key, str) and shipped_key.strip() else ()
+
+    def trust(url: str) -> Trust:
+        if is_shipped_catalog(url, product):
+            # A build that ships no key (a source checkout) reads the product's catalog as an unsigned one of its own,
+            # shown with the warning; a build that ships a key accepts only what that key signed.
+            return Trust(shipped_keys, own=not shipped_keys)
+        return Trust(tuple(settings.keys), url in settings.own_feeds)
+
+    return trust
+
+
+def feed_urls(cfg: Config, product: dict[str, Any]) -> list[str]:
+    """The feeds this workspace reads: the one this build came with (unless switched off), then its own."""
+    settings = cfg.workspace.plugins.catalog
+    if not settings.enabled:
+        return []
+    shipped = product.get("pack_catalog") if settings.shipped_feed else None
+    urls = [shipped] if isinstance(shipped, str) and shipped.startswith("https://") else []
+    # A saved feed at a former shipped address is read at the current one; the person's settings are left as they are.
+    current = product.get("pack_catalog")
+    saved = [current if isinstance(current, str) and is_shipped_catalog(u, product) else u for u in settings.feeds]
+    return [*urls, *dict.fromkeys(u for u in saved if u not in urls)]
+
+
+def parse(url: str, text: str) -> Feed:
+    """A feed's entries; entries that don't fit are left out with a note."""
+    feed = Feed(url)
+    try:
+        data = load_yaml(text)
+    except yaml.YAMLError:
+        feed.error = "it isn't a catalog file"
+        return feed
+    if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("packs"), list):
+        feed.error = "it isn't a catalog file this version of the app reads"
+        return feed
+    seen: set[str] = set()
+    for i, raw in enumerate(data["packs"][:200]):
+        try:
+            entry = Entry.model_validate(raw)
+        except ValidationError as err:
+            feed.notes.append(f"entry {i + 1} was left out: {err.errors()[0]['msg']}")
+            continue
+        if entry.id in seen:
+            feed.notes.append(f"{entry.id} is listed twice; the first is shown")
+            continue
+        seen.add(entry.id)
+        feed.entries.append(entry)
+    return feed
+
+
+def _read_cache(path: Any) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+#: What a catalog that couldn't be read says went wrong, in words, by the kind of failure (never the address or the
+#: service's own text, which only the person who runs the catalog needs).
+_UNREAD_WORDS = {
+    "auth": "it asked for a sign-in",
+    "no_access": "the address didn't let the app in",
+    "not_found": "nothing is at that address",
+    "outage": "the site isn't answering",
+    "offline": "there is no internet connection",
+}
+
+
+def _why_unread(kind: str) -> str:
+    return _UNREAD_WORDS.get(kind, "the site didn't answer in a way the app could use")
+
+
+def _unread_line(kind: str) -> str:
+    """The reason a catalog has no copy, said once: the word for the state (Offline) and the reason."""
+    why = _why_unread(kind)
+    return f"Offline: {why}" if kind == "offline" else why[:1].upper() + why[1:]
+
+
+def _vet(feed: Feed, content: bytes, signature: str | None, trust: Trust) -> Feed:
+    """The feed as the app may use it: entries kept when its signature verifies (or it is unsigned and the person's
+    own); otherwise no entries and the reason in words."""
+    if signature is not None:
+        if verify(content, signature, list(trust.keys)):
+            feed.signed = True
+            return feed
+        why = (
+            "its signature doesn't match a key the app trusts, so nothing from it is used"
+            if trust.keys
+            else "the app has no key to check its signature with, so nothing from it is used"
+        )
+    elif trust.own:
+        feed.unsigned_own = True
+        return feed
+    else:
+        why = "it isn't signed, so nothing from it is used"
+    return Feed(feed.url, error=why[:1].upper() + why[1:], read_at=feed.read_at)
+
+
+def read_feeds(
+    urls: list[str],
+    cache_dir: Any,
+    refresh_hours: int,
+    *,
+    refresh: bool = False,
+    web_for: Any = None,
+    now: float | None = None,
+    trust: Any = None,
+) -> list[Feed]:
+    """Each feed from the kept copy when it is fresh enough, else read again; a feed that can't be read falls back to
+    its kept copy, with the reason. A feed is used only when its signature (read from `<address>.sig`) verifies against
+    a key `trust(address)` allows, or it is unsigned and marked the person's own; `trust` None trusts nothing."""
+    from engine.connectors import ConnectorError
+    from engine.net import WebClient
+
+    now = time.time() if now is None else now
+    path = cache_dir / CACHE_FILE
+    kept = _read_cache(path)
+    feeds = []
+    changed = False
+    trusting = trust or (lambda _url: Trust())
+
+    def vetted(url: str, copy: dict[str, Any]) -> Feed:
+        feed = parse(url, copy["text"])
+        feed.read_at = copy.get("read_at")
+        if feed.error:
+            return feed
+        return _vet(feed, copy["text"].encode("utf-8"), copy.get("sig"), trusting(url))
+
+    for url in urls:
+        copy = kept.get(url)
+        fresh = copy and not refresh and now - float(copy.get("read_at") or 0) < refresh_hours * 3600
+        if not fresh:
+            client = web_for(url) if web_for else WebClient([urlsplit(url).hostname or ""])
+            try:
+                response = client.get(url, headers={"Accept": "application/json, application/yaml, text/plain"})
+                if len(response.content) > MAX_FEED_BYTES:
+                    raise ConnectorError("outage", "the catalog is too large")
+                fresh_copy = {"text": response.content.decode("utf-8", errors="replace"), "read_at": now, "sig": None}
+                try:
+                    signature = client.get(f"{url}.sig", headers={"Accept": "text/plain"})
+                    if len(signature.content) > MAX_SIGNATURE_BYTES:
+                        raise ConnectorError("outage", "the signature is too large")
+                    fresh_copy["sig"] = signature.text
+                except ConnectorError as sig_err:
+                    if sig_err.kind != "not_found":
+                        raise
+                refused = vetted(url, fresh_copy)
+                if refused.error:
+                    # Not a catalog, signed wrongly or not at all: refused, and never kept in place of an earlier copy.
+                    feeds.append(refused)
+                    continue
+                copy = fresh_copy
+                kept[url] = copy
+                changed = True
+            except ConnectorError as err:
+                if copy:
+                    feed = vetted(url, copy)
+                    feed.notes.insert(
+                        0, f"couldn't read it just now ({_why_unread(err.kind)}); showing the copy kept earlier"
+                    )
+                    feeds.append(feed)
+                else:
+                    feeds.append(Feed(url, error=_unread_line(err.kind)))
+                continue
+            finally:
+                if web_for is None:
+                    client.close()
+        feeds.append(vetted(url, copy))
+    if changed:
+        write_whole(path, json.dumps({u: kept[u] for u in urls if u in kept}))
+    return feeds
+
+
+# ---- what a pack adds, reaches and keeps -----------------------------------------------------------------------------
+
+
+def _words(identifier: str) -> str:
+    return identifier.rsplit("/", 1)[-1].replace("-", " ").replace("_", " ").replace(".", " ")
+
+
+def _list(value: Any) -> list[str]:
+    return [str(v) for v in value if isinstance(v, (str, int))] if isinstance(value, list) else []
+
+
+def summary(
+    provides: dict[str, Any], requires: dict[str, Any], sign_in_labels: dict[str, str] | None = None
+) -> dict[str, Any]:
+    """What a manifest adds, reaches and keeps, in counts and plain names, for the screen to word. A sign-in is named by
+    the label its add-on declares for it (`sign_in_labels`, by the sign-in's id); where the add-on isn't running there
+    is no label to read, and the entry is empty, so the screen says only that it signs in to a service, never the id."""
+    tools = requires.get("tools") if isinstance(requires.get("tools"), list) else []
+    levels = [lvl for lvl in _list(requires.get("data_levels")) if lvl in LEVELS] or ["open", "internal"]
+    declared = provides.get("connector_reads")
+    said = {str(k): str(v) for k, v in declared.items()} if isinstance(declared, dict) else {}
+    return {
+        "adds": {
+            "item_types": [_words(k) for k in _list(provides.get("record_types"))],
+            "screens": len(_list(provides.get("panels"))),
+            "today": len(_list(provides.get("today"))),
+            "ai_work": len(_list(provides.get("ai_task_kinds"))),
+            "actions": len(_list(provides.get("actions"))),
+            "setup_steps": len(_list(provides.get("setup_steps"))),
+            "sources": len(_list(provides.get("connectors"))),
+        },
+        "reaches": {
+            "sign_ins": [(sign_in_labels or {}).get(k, "") for k in _list(provides.get("sign_ins"))],
+            "hosts": _list(requires.get("network")),
+            "programs": [str(t.get("name")) for t in tools if isinstance(t, dict) and t.get("name")],
+            "keys": len(_list(requires.get("secrets"))),
+        },
+        "keeps": max(levels, key=LEVELS.index),
+        "reads": [
+            kind for kind in READS_WORDS if any(kind in reads(c, said) for c in _list(provides.get("connectors")))
+        ],
+    }
+
+
+def manifest_summary(manifest: Any, sign_in_labels: dict[str, str] | None = None) -> dict[str, Any]:
+    """The same summary for an installed plugin, from its checked manifest."""
+    data = manifest.model_dump(mode="json")
+    return summary(data.get("provides") or {}, data.get("requires") or {}, sign_in_labels)
+
+
+# ---- what its AI work costs here -------------------------------------------------------------------------------------
+
+
+def job_cost(cfg: Config, router: Any, job: AiJob) -> dict[str, Any]:
+    """A pack's typical job on this workspace's accounts: its price in USD when the model's prices are known, else
+    only its size; `account` False when no account is set up for the work."""
+    from engine.ai.router import NoProvider, choices
+
+    role = getattr(cfg.ai.roles, job.role)
+    tier = role.tier or "routine"
+    size = {"label": job.label, "tokens": job.input_tokens + job.output_tokens, "usd": None, "account": True}
+    try:
+        choice = choices(cfg, "", job.data_level, tier=tier)[0]
+    except (NoProvider, IndexError):
+        return {**size, "account": False}
+    info = router.model_info(choice)
+    if info.input_per_million is None or info.output_per_million is None:
+        return size
+    usd = (job.input_tokens * info.input_per_million + job.output_tokens * info.output_per_million) / 1e6
+    return {**size, "usd": round(usd, 4)}
+
+
+def compatible(entry: Entry, version: str) -> bool | None:
+    """Whether the pack works with this version of the app; None when the feed doesn't say."""
+    from packaging.specifiers import InvalidSpecifier, SpecifierSet
+
+    from engine import api_window
+
+    if not entry.plugin_api:
+        return None
+    try:
+        SpecifierSet(entry.plugin_api)
+    except InvalidSpecifier:
+        return None
+    return api_window.served(entry.plugin_api, version) != "outside"

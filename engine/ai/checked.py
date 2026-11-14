@@ -1,0 +1,227 @@
+"""Which accounts have passed the connection check (design 6.16), and who may stand in a fallback chain.
+
+A fallback is a switch nobody chose at that moment, so only an account that passed the check with a tier's exact
+parameters, or that the person accepted unchecked, may be added to that tier's chain. A result is kept for each
+"account/model" with a fingerprint of the account's settings, so changing the account (its address, key reference,
+models, agent) means it is checked again. Accepting an account unchecked is not part of the fingerprint.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from engine.ai import calibration, identity
+from engine.ai.smoke import SmokeResult, _params_for_tier
+from engine.ai.task import AgentIdentity, IdentityUnknown
+from engine.config import Config
+from engine.legacy_names import private_dir
+from engine.state_file import write_whole
+from engine.workspace import Workspace
+
+CHECKED_FILE = "ai-checked.json"
+NOT_ACCOUNT = ("accepted_unchecked", "label", "identity_level", "refused_models")
+
+
+def account_fingerprint(cfg: Config, ref: str) -> str | None:
+    """A hash of the account's settings and the model id the reference names, or None when the account isn't set up."""
+    name, _, model_key = ref.partition("/")
+    provider = cfg.ai.providers.get(name)
+    if provider is None:
+        return None
+    data = provider.model_dump(mode="json", exclude=set(NOT_ACCOUNT))
+    data["model"] = provider.models.get(model_key, model_key)
+    return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
+
+
+@dataclass(frozen=True)
+class Folder:
+    """The private folder the results are kept in, for code that has the store and not the workspace."""
+
+    private_dir: Path
+
+
+def folder_of(store: Any) -> Folder:
+    """The private folder beside a store's database."""
+    return Folder(private_dir(store.path.parent))
+
+
+def _read(ws: Workspace | Folder) -> dict[str, Any]:
+    try:
+        data = json.loads((ws.private_dir / CHECKED_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def remember(ws: Workspace, cfg: Config, results: list[SmokeResult]) -> None:
+    """Keep what a test showed for each account it covered: the parameters whose call answered, and whether every part
+    of its check (the lockdown probes and the learning round-trip) passed. A result that only found no network says
+    nothing and changes nothing."""
+    by_ref: dict[str, list[SmokeResult]] = {}
+    for r in results:
+        if r.ref:
+            by_ref.setdefault(r.ref, []).append(r)
+    kept = _read(ws)
+    _take_in_identities(ws, results)
+    _take_in_calibration(ws, results)
+    for ref, found in by_ref.items():
+        fingerprint = account_fingerprint(cfg, ref)
+        if fingerprint is None or any(r.offline for r in found):
+            continue
+        calls = [r for r in found if r.part == "call"]
+        before = kept.get(ref) or {}
+        earlier = before.get("params", []) if before.get("fingerprint") == fingerprint else []
+        failed = [tuple(r.params) for r in calls if not r.ok and r.params]
+        passed = [tuple(r.params) for r in calls if r.ok and r.params]
+        params = [tuple(p) for p in [*earlier, *passed]]
+        failed_before = before.get("failed", []) if before.get("fingerprint") == fingerprint else []
+        still_failed = [tuple(p) for p in failed_before if tuple(p) not in passed]
+        kept[ref] = {
+            "fingerprint": fingerprint,
+            "params": [list(p) for p in dict.fromkeys(params) if p not in failed],
+            "failed": [list(p) for p in dict.fromkeys([*still_failed, *failed])],
+            "complete": all(r.ok for r in found if r.part != "call"),
+            # Whether everything this latest check ran passed, whatever earlier checks of other parameters found.
+            "ok": all(r.ok for r in found),
+            "at": datetime.now(UTC).isoformat(),
+        }
+    write_whole(ws.private_dir / CHECKED_FILE, json.dumps(kept, indent=2) + "\n")
+
+
+def _take_in_identities(ws: Workspace, results: list[SmokeResult]) -> None:
+    """Record which sign-in each agent account runs as, as the check read it (design 6.16). A different one than the
+    recorded identity waits for the person; one that couldn't be read is recorded as unknown. Once per account."""
+    seen: set[str] = set()
+    for r in results:
+        if r.part != "identity" or not r.identity or not r.provider or r.provider in seen:
+            continue
+        seen.add(r.provider)
+        said = r.identity
+        found = (
+            IdentityUnknown(said["unknown"])
+            if "unknown" in said
+            else AgentIdentity(said.get("account", ""), said.get("how_read", ""))
+        )
+        identity.observe(ws, r.provider, found)
+
+
+def _take_in_calibration(ws: Workspace, results: list[SmokeResult]) -> None:
+    """Keep what each account's check measured for its estimates (design 6.16): the ratio of real tokens to the app's
+    own count for the model it counted, and a program's fixed overhead per request. A check that only found no network
+    measured nothing. The overhead is read once per account."""
+    offline = {r.ref for r in results if r.offline}
+    seen: set[str] = set()
+    for r in results:
+        found = r.calibration
+        if r.part != "calibration" or not found or r.ref in offline or not r.provider:
+            continue
+        if "counted" in found:
+            calibration.record_check(
+                ws,
+                r.provider,
+                str(found.get("model", "")),
+                counted=found["counted"],
+                sample_chars=found["sample_chars"],
+            )
+        if "reported" in found and r.provider not in seen:
+            seen.add(r.provider)
+            calibration.record_overhead(
+                ws, r.provider, reported=found["reported"], text_tokens=found.get("text_tokens", 0)
+            )
+
+
+def answered(ws: Workspace | Folder, cfg: Config, ref: str, since: str | None = None) -> bool:
+    """Whether the account's latest check, as it is set up now, passed in every part (every call answered, and the
+    lockdown probes and learning round-trip passed), and was made at or after `since` when that is given. Any check
+    counts, a one-account Test in Settings as much as the whole test, since both are about the account itself."""
+    found = _read(ws).get(ref)
+    if not isinstance(found, dict) or found.get("fingerprint") != account_fingerprint(cfg, ref):
+        return False
+    passed = found.get("ok")
+    if passed is None:  # kept before the latest check's own result was: read it from what was kept
+        passed = bool(found.get("complete")) and bool(found.get("params")) and not found.get("failed")
+    return bool(passed) and (since is None or str(found.get("at", "")) >= since)
+
+
+def checked_at(ws: Workspace | Folder, cfg: Config, ref: str) -> datetime | None:
+    """When the account last passed or failed a check as it is set up now, or None when it never was checked."""
+    found = _read(ws).get(ref)
+    if not isinstance(found, dict) or found.get("fingerprint") != account_fingerprint(cfg, ref):
+        return None
+    try:
+        return datetime.fromisoformat(str(found["at"]))
+    except (KeyError, ValueError):
+        return None
+
+
+def is_checked(ws: Workspace | Folder, cfg: Config, ref: str, tier: str) -> bool:
+    """Whether the account passed the check for this tier's kinds of work, with their exact parameters, as it is set up
+    now: every one answered, and its lockdown probes and learning round-trip passed."""
+    found = _read(ws).get(ref)
+    if not isinstance(found, dict) or found.get("fingerprint") != account_fingerprint(cfg, ref):
+        return False
+    passed = {tuple(p) for p in found.get("params", [])}
+    return bool(found.get("complete")) and {tuple(p) for p in _params_for_tier(cfg, tier)} <= passed
+
+
+def check_failed(ws: Workspace | Folder, cfg: Config, ref: str, tier: str) -> bool:
+    """Whether the account's last check, as it is set up now, failed for this tier's kinds of work: one of their calls
+    didn't answer, or a lockdown probe or the learning round-trip failed. An account never checked has not failed."""
+    found = _read(ws).get(ref)
+    if not isinstance(found, dict) or found.get("fingerprint") != account_fingerprint(cfg, ref):
+        return False
+    wanted = {tuple(p) for p in _params_for_tier(cfg, tier)}
+    return not found.get("complete", True) or bool(wanted & {tuple(p) for p in found.get("failed", [])})
+
+
+@dataclass(frozen=True)
+class Standing:
+    """An account in a tier's fallback chain that can't stand in yet: `ref` is "account/model", `failed` is true when
+    its last check failed (rather than it never having been checked for this tier)."""
+
+    tier: str
+    ref: str
+    account: str
+    model: str
+    failed: bool
+
+
+def cannot_stand_in(ws: Workspace | Folder, cfg: Config) -> list[Standing]:
+    """Every account now in a fallback chain that is neither checked for that tier nor accepted unchecked, or whose
+    last check failed. Reads the chains as they are, so a hand-edited file is covered too."""
+    found = []
+    for tier, settings in cfg.ai.tiers.items():
+        for ref in settings.fallback:
+            name, _, model = ref.partition("/")
+            provider = cfg.ai.providers.get(name)
+            if provider is None:
+                continue
+            failed = check_failed(ws, cfg, ref, tier)
+            if failed or not (provider.accepted_unchecked or is_checked(ws, cfg, ref, tier)):
+                found.append(Standing(tier, ref, name, model, failed))
+    return found
+
+
+def chain_problems(ws: Workspace, before: Config, after: Config) -> list[str]:
+    """Why each account newly added to a fallback chain can't stand there, in plain words: it hasn't passed the check
+    for that tier's kinds of work, and the person hasn't accepted it unchecked. Accounts already in a chain stay."""
+    found = []
+    for tier, settings in after.ai.tiers.items():
+        old = before.ai.tiers.get(tier)
+        for ref in settings.fallback:
+            if old is not None and ref in old.fallback:
+                continue
+            name = ref.partition("/")[0]
+            provider = after.ai.providers.get(name)
+            if provider is None or provider.accepted_unchecked or is_checked(ws, after, ref, tier):
+                continue
+            found.append(
+                f"{name} can't be a backup account for this work yet: it hasn't passed the connection check with the "
+                "settings this work uses. Test it first, or accept it without a check in its settings."
+            )
+    return found

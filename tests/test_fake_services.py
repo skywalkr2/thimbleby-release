@@ -1,0 +1,416 @@
+"""The fake outside services the journeys stand on (tests/fake_services.py): the made-up sign-in checks what a real one
+checks (the client, the address, the PKCE verifier, a code used once), the mail and calendar answer only to a token it
+issued, the catalog lists a wheel the app can install, and the app trusts the throwaway authority only when told to,
+by the standard environment variable. A journey that passed against a lenient fake would prove nothing."""
+
+import base64
+import hashlib
+import json
+import socket
+from datetime import UTC, datetime
+from urllib.parse import parse_qs, urlsplit
+
+import pytest
+import yaml
+from starlette.testclient import TestClient
+
+from engine import pack_install, packs
+from engine.connectors import ConnectorError
+from engine.net import WebClient
+from tests import fake_services, fake_tls
+from tests.fake_services import CLIENT_ID, SECURE_SERVICES, State, build_app
+
+WEB = "https" + "://"
+REDIRECT = "http://127.0.0.1:8783/api/sign-ins/callback"
+VERIFIER = "v" * 60
+
+
+def challenge(verifier: str = VERIFIER) -> str:
+    return base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+
+
+@pytest.fixture
+def service(tmp_path):
+    state = State(tmp_path)
+    return state, TestClient(build_app(state, 0, SECURE_SERVICES, helpers=False), follow_redirects=False)
+
+
+def sign_in_page(client, **changes):
+    query = {
+        "response_type": "code",
+        "client_id": CLIENT_ID,
+        "redirect_uri": REDIRECT,
+        "scope": "mail.read",
+        "state": "s1",
+        "code_challenge": challenge(),
+        "code_challenge_method": "S256",
+        **changes,
+    }
+    return client.get("/account/authorize", params={k: v for k, v in query.items() if v is not None})
+
+
+def exchange(client, code, **changes):
+    form = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": REDIRECT,
+        "client_id": CLIENT_ID,
+        "code_verifier": VERIFIER,
+        **changes,
+    }
+    return client.post("/account/token", data=form)
+
+
+def code_from(response) -> str:
+    assert response.status_code == 302
+    query = parse_qs(urlsplit(response.headers["location"]).query)
+    assert query["state"] == ["s1"]
+    return query["code"][0]
+
+
+def test_the_client_the_mail_add_on_ships_is_the_one_the_service_knows():
+    from tests.fixtures.plugins import journey_mail
+
+    assert journey_mail.DEFAULT_CLIENT_ID == CLIENT_ID
+
+
+def test_the_sign_in_page_sends_the_person_back_with_a_code_and_the_token_needs_the_verifier(service):
+    state, client = service
+    code = code_from(sign_in_page(client))
+    assert exchange(client, code, code_verifier="wrong").status_code == 400  # the code is spent by a wrong verifier
+    assert exchange(client, code).status_code == 400
+    code = code_from(sign_in_page(client))
+    granted = exchange(client, code)
+    assert granted.status_code == 200
+    body = granted.json()
+    assert body["access_token"] in state.access and body["refresh_token"] in state.refresh
+    assert exchange(client, code).status_code == 400  # a code works once
+    assert state.seen["exchanges"] == 1 and state.seen["authorizations"] == 2
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"client_id": "someone-else"},
+        {"redirect_uri": WEB + "elsewhere.example.com/api/sign-ins/callback"},
+        {"code_challenge_method": "plain"},
+        {"code_challenge": None},
+        {"state": None},
+    ],
+)
+def test_a_sign_in_request_missing_what_a_real_one_needs_is_refused(service, changes):
+    _, client = service
+    assert sign_in_page(client, **changes).status_code == 400
+
+
+def test_a_code_is_only_good_for_the_address_it_was_asked_for_and_a_token_needs_the_client(service):
+    _, client = service
+    assert exchange(client, code_from(sign_in_page(client)), redirect_uri=REDIRECT + "/x").status_code == 400
+    assert exchange(client, code_from(sign_in_page(client)), client_id="someone-else").status_code == 401
+
+
+def test_mail_and_calendar_answer_only_to_a_token_the_service_issued_and_stop_at_revoking(service):
+    state, client = service
+    assert client.get("/mail/v1/messages").status_code == 401
+    assert client.get("/calendar/v1/events", headers={"Authorization": "Bearer made-up"}).status_code == 401
+    tokens = exchange(client, code_from(sign_in_page(client))).json()
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    assert {m["subject"] for m in client.get("/mail/v1/messages", headers=headers).json()["messages"]}
+    assert client.get("/calendar/v1/events", headers=headers).json()["events"]
+    assert client.get("/account/v1/me", headers=headers).json()["email"].endswith("@example.com")
+    renewed = client.post(
+        "/account/token",
+        data={"grant_type": "refresh_token", "refresh_token": tokens["refresh_token"], "client_id": CLIENT_ID},
+    )
+    assert renewed.status_code == 200 and renewed.json()["access_token"] in state.access
+    client.post("/account/revoke", data={"token": tokens["access_token"]})
+    assert client.get("/mail/v1/messages", headers=headers).status_code == 401
+    assert state.seen["unauthorized"] == 3 and state.seen["mail_reads"] == 1
+
+
+def test_a_mailbox_with_a_sent_folder_lists_the_persons_own_message_only_there(service):
+    state, client = service
+    headers = {"Authorization": f"Bearer {exchange(client, code_from(sign_in_page(client))).json()['access_token']}"}
+
+    def subjects(**params):
+        got = client.get("/mail/v1/messages", headers=headers, params=params).json()["messages"]
+        return {m["subject"] for m in got}
+
+    inbox = subjects()
+    assert subjects(folder=fake_services.SENT_FOLDER) == set()  # a mailbox with no sent mail has an empty sent folder
+    state.sent_mail = True
+    assert subjects(folder=fake_services.SENT_FOLDER) == {fake_services.SENT_SUBJECT}
+    assert subjects(folder="inbox") == inbox and fake_services.SENT_SUBJECT not in inbox
+    from datetime import UTC, datetime
+
+    taken = fake_services.intake_items(datetime.now(UTC))
+    assert taken["sent"] == [fake_services.SENT_SUBJECT] and fake_services.SENT_SUBJECT not in taken["mail"]
+
+
+def test_a_review_counts_only_the_items_that_hold_something_to_check():
+    from datetime import UTC, datetime
+
+    taken = fake_services.intake_items(datetime.now(UTC))
+    assert taken["mail_to_check"] and set(taken["mail_to_check"]) < set(taken["mail"])
+    assert taken["events_to_check"] and set(taken["events_to_check"]) < set(taken["events"])
+
+
+def test_the_mailbox_has_recent_and_old_items_in_the_shapes_the_assistant_reads():
+    from datetime import UTC, datetime
+
+    split = fake_services.recent_items(datetime.now(UTC))
+    assert split["mail"] and split["events"] and split["noted"]
+    assert not set(split["noted"]) & {*split["mail"], *split["events"]}
+
+
+def test_a_quiet_first_read_takes_in_two_weeks_of_work_mail_and_every_event():
+    from datetime import UTC, datetime
+
+    taken = fake_services.intake_items(datetime.now(UTC))
+    recent = fake_services.recent_items(datetime.now(UTC))
+    # The week-old message is taken in, not only noted; the meeting next week is too.
+    assert set(recent["mail"]) < set(taken["mail"]) and taken["noted"] == []
+    assert set(taken["events"]) == {e["title"] for e in fake_services.events(datetime.now(UTC))}
+    assert taken["set_aside"] == recent["set_aside"]
+
+
+def test_the_catalog_lists_a_wheel_the_app_installs(tmp_path):
+    wheel = fake_services.build_wheel(fake_services.PLUGINS / "journey_panel", tmp_path)
+    feed = packs.parse("https://127.0.0.1/catalog", fake_services.catalog_feed(wheel, "https://127.0.0.1:1"))
+    assert feed.error is None and feed.notes == [] and [e.id for e in feed.entries] == ["journey-panel"]
+    entry = feed.entries[0]
+    assert entry.release is not None and entry.release.sha256 == hashlib.sha256(wheel.read_bytes()).hexdigest()
+    place = tmp_path / "site"
+    done = pack_install.install(wheel.read_bytes(), place)
+    assert (done.name, done.version) == ("journey-panel", "0.1.0")
+    assert (place / "journey_panel" / "plugin.yaml").is_file()
+    assert "thimbleby.plugins" in (place / "journey_panel-0.1.0.dist-info" / "entry_points.txt").read_text()
+    assert pack_install.installed_here("journey-panel", place)
+    pack_install.remove("journey-panel", place)
+    assert not (place / "journey_panel").exists()
+
+
+def free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind((fake_services.HOST, 0))
+        return probe.getsockname()[1]
+
+
+def test_the_app_trusts_the_throwaway_authority_only_through_the_standard_variable(tmp_path, monkeypatch):
+    """The services answer over HTTPS with a certificate the app has no reason to trust, until `SSL_CERT_FILE` names
+    the authority that made it; nothing in the app's own code is involved."""
+    monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+    state = State(tmp_path)
+    port = free_port()
+    server = fake_services.start_secure(state, port)
+    try:
+        url = f"https://{fake_services.HOST}:{port}/catalog/packs.yaml"
+        monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "tls" / "authority.pem"))
+        client = WebClient([fake_services.HOST])
+        try:
+            answer = client.get(url)
+        finally:
+            client.close()
+        assert answer.status == 200 and yaml.safe_load(answer.text)["packs"][0]["id"] == "journey-panel"
+        # Trusting some other authority instead: the same address can't be verified, so it isn't read.
+        monkeypatch.setenv("SSL_CERT_FILE", str(fake_tls.make(tmp_path / "other").authority))
+        client = WebClient([fake_services.HOST])
+        try:
+            with pytest.raises(ConnectorError):
+                client.get(url)
+        finally:
+            client.close()
+    finally:
+        server.should_exit = True
+
+
+def test_a_sorting_packet_gets_an_answer_for_every_id_and_is_counted_apart_from_work(tmp_path):
+    state = State(tmp_path)
+    client = TestClient(build_app(state, 0), follow_redirects=False)
+    headers = "\n".join(f'{{"id": "m{n}", "from": "a", "subject": "s{n}", "categories": []}}' for n in (1, 2, 3))
+    packet = f"{fake_services.SORTING_MARK}\n{headers}\n</untrusted>"
+    sent = client.post(
+        "/ai/v1/chat/completions",
+        json={"model": "m", "messages": [{"role": "system", "content": "sort"}, {"role": "user", "content": packet}]},
+    )
+    answers = json.loads(sent.json()["choices"][0]["message"]["content"])["answers"]
+    assert [a["id"] for a in answers] == ["m1", "m2", "m3"]
+    assert {a["answer"] for a in answers} == {"work"}
+    seen = client.get("/__e2e/ai-requests").json()
+    assert (seen["sorting"], seen["work"], seen["smoke"]) == (1, 0, 0)
+
+
+def test_the_ai_service_passes_the_account_checks_learning_call_and_counts_it_as_part_of_the_check(tmp_path):
+    from engine.ai import learning_check
+
+    state = State(tmp_path)
+    client = TestClient(build_app(state, 0))
+    task = learning_check.task(None)
+    sent = {"messages": [{"role": "system", "content": task.instructions}, {"role": "user", "content": task.request}]}
+    answer = client.post("/ai/v1/chat/completions", json=sent).json()["choices"][0]["message"]["content"]
+    assert learning_check.problem(answer, None) is None
+    assert state.chats[-1]["smoke"]
+
+
+def test_a_scripted_answer_goes_to_the_next_request_holding_its_words_once_and_never_to_an_account_check(tmp_path):
+    from engine.ai import learning_check
+
+    state = State(tmp_path)
+    client = TestClient(build_app(state, 0))
+    scripted = {"summary": "Scripted.", "ops": []}
+    assert client.post("/__e2e/script", json={"when": "a marked line", "answer": scripted}).json() == {"waiting": 1}
+
+    def ask(text: str) -> dict:
+        sent = {"messages": [{"role": "system", "content": "s"}, {"role": "user", "content": text}]}
+        return json.loads(client.post("/ai/v1/chat/completions", json=sent).json()["choices"][0]["message"]["content"])
+
+    assert ask("<note>\nSomething else.\n</note>") != scripted
+    task = learning_check.task(None)
+    check = {"messages": [{"role": "user", "content": task.request + " a marked line"}]}
+    assert client.post("/ai/v1/chat/completions", json=check).status_code == 200
+    assert state.scripted
+    assert ask("<note>\nHas a marked line in it.\n</note>") == scripted
+    assert ask("<note>\nHas a marked line in it.\n</note>") != scripted
+    assert state.scripted == []
+
+
+class _Recorder:
+    """What the mail add-on registers, kept for a test to read: the sign-in's declared sources."""
+
+    def __init__(self):
+        self.sources: list[dict] = []
+
+    def connector(self, *args, **kwargs):
+        return None
+
+    def sign_in(self, name, **kwargs):
+        self.sources = list(kwargs["sources"])
+
+    def channel(self, *args, **kwargs):
+        return None
+
+
+@pytest.mark.parametrize(("switch", "named"), [(None, True), ("1", True), ("0", False)])
+def test_the_journey_mail_add_on_names_the_sent_mail_unless_the_app_is_told_it_does_not(monkeypatch, switch, named):
+    """Setup reads the sent mail of a service that has some by itself: the add-on names it by default, so a walk by hand
+    needs no second switch beside the fake service's own `--sent-mail` (the reviewer's G4)."""
+    import importlib
+
+    from tests.fixtures.plugins import journey_mail
+
+    if switch is None:
+        monkeypatch.delenv("JOURNEY_SENT_MAIL", raising=False)
+    else:
+        monkeypatch.setenv("JOURNEY_SENT_MAIL", switch)
+    importlib.reload(journey_mail)
+    try:
+        recorder = _Recorder()
+        journey_mail.register(recorder)
+        labels = [s["label"] for s in recorder.sources]
+        sent = [s for s in recorder.sources if s.get("sent")]
+        assert ("Your sent mail" in labels) is named and bool(sent) is named
+    finally:
+        monkeypatch.delenv("JOURNEY_SENT_MAIL", raising=False)
+        importlib.reload(journey_mail)
+
+
+def signed_in_token(client, scope: str) -> dict[str, str]:
+    granted = exchange(client, code_from(sign_in_page(client, scope=scope))).json()
+    assert granted["scope"] == scope  # the service says what it granted: what the sign-in asked for
+    return {"Authorization": f"Bearer {granted['access_token']}"}
+
+
+def test_the_service_changes_mail_only_for_a_token_that_holds_the_wider_access(service):
+    state, client = service
+    reading = signed_in_token(client, "mail.read")
+    asked = {"attempt": "k1", "action": "move", "messages": ["m-1"], "folder": "fld-archive-7", "label": None}
+    assert client.get("/mail/v1/folders", headers=reading).status_code == 403
+    assert client.post("/mail/v1/acts", json=asked, headers=reading).status_code == 403
+    assert client.post("/mail/v1/acts", json=asked).status_code == 401
+    assert state.acts == []
+
+    acting = signed_in_token(client, "mail.read mail.modify")
+    listed = client.get("/mail/v1/folders", headers=acting).json()["folders"]
+    assert {f["kind"] for f in listed} == {"folder", "label"}
+    assert all(f["id"] != f["name"] for f in listed) and any("/" in f["name"] for f in listed)
+    made = client.post("/mail/v1/acts", json=asked, headers=acting).json()
+    assert client.post("/mail/v1/acts", json=asked, headers=acting).json() == made  # one attempt is one change
+    assert state.acts == [{**asked, "id": made["id"]}]
+    assert client.get("/mail/v1/acts/status", params={"attempt": "k1"}, headers=acting).json() == made
+    assert client.get("/mail/v1/acts/status", params={"attempt": "other"}, headers=acting).json() == {"id": None}
+    client.post("/mail/v1/acts/undo", json={"id": made["id"], "action": "move"}, headers=acting)
+    assert state.undone == [{"id": made["id"], "action": "move"}]
+
+
+def test_a_token_renewed_keeps_the_access_it_was_given(service):
+    state, client = service
+    granted = exchange(client, code_from(sign_in_page(client, scope="mail.read mail.modify"))).json()
+    renewed = client.post(
+        "/account/token",
+        data={"grant_type": "refresh_token", "refresh_token": granted["refresh_token"], "client_id": CLIENT_ID},
+    ).json()
+    assert renewed["scope"] == "mail.read mail.modify"
+    headers = {"Authorization": f"Bearer {renewed['access_token']}"}
+    assert client.get("/mail/v1/folders", headers=headers).status_code == 200
+
+
+class _Context:
+    """The context a channel is handed, answered by the fake service in-process, so the add-on's own code runs."""
+
+    def __init__(self, client, token: str):
+        self.client, self.token = client, token
+        self.access_token = lambda: token
+
+        class Web:
+            def request(_self, method, url, **kwargs):
+                from engine.net import Response
+
+                path = url.split("/mail/v1", 1)[1]
+                answer = client.request(method, f"/mail/v1{path}", **kwargs)
+                if answer.status_code in (401, 403):
+                    raise ConnectorError("auth" if answer.status_code == 401 else "no_access", "refused")
+                return Response(answer.status_code, dict(answer.headers), answer.content)
+
+        self.web = Web()
+
+
+def test_the_journey_mail_channel_acts_lists_and_takes_back_through_the_service(service, monkeypatch):
+    from engine.plugin_api import ChannelFailed, ChannelNotSent, ChannelSent, ChannelUndone, OutgoingAbout, OutgoingAct
+    from tests.fixtures.plugins import journey_mail
+
+    monkeypatch.setattr(journey_mail, "SERVICE", "")
+    state, client = service
+    headers = signed_in_token(client, "mail.read mail.modify")
+    acting = _Context(client, headers["Authorization"][7:])
+    listed = journey_mail.folders("journey-mail/account:me", acting)
+    assert {(f.name, f.kind) for f in listed} >= {("Projects/Archive", "folder"), ("Follow up", "label")}
+
+    folder = next(f.id for f in listed if f.name == "Projects/Archive")
+    act = OutgoingAct(
+        id="a1",
+        kind="mailbox",
+        parts={},
+        action="move",
+        folder=folder,
+        about=(OutgoingAbout(id="r1", service_id="m-1"),),
+    )
+    sent = journey_mail.send(act, "key-1", acting)
+    assert isinstance(sent, ChannelSent)
+    assert [(a["messages"], a["folder"], a["action"]) for a in state.acts] == [(["m-1"], folder, "move")]
+    assert journey_mail.status("key-1", acting) == sent
+    assert isinstance(journey_mail.status("never", acting), ChannelNotSent)
+    assert isinstance(journey_mail.undo(act, sent.service_id, acting), ChannelUndone)
+    assert state.undone == [{"id": sent.service_id, "action": "move"}]
+
+    reading = _Context(client, signed_in_token(client, "mail.read")["Authorization"][7:])
+    assert journey_mail.send(act, "key-2", reading) == ChannelFailed("auth", "Sign in to Example mail again.")
+    assert journey_mail.folders("journey-mail/account:me", reading) == ChannelFailed(
+        "auth", "Sign in to Example mail again."
+    )
+
+
+def test_the_near_events_stay_on_the_same_day_as_now_just_before_midnight():
+    here = datetime.now().astimezone()
+    late = here.replace(hour=23, minute=30, second=0, microsecond=0)
+    near = [e for e in fake_services.events(late.astimezone(UTC)) if e["id"] in ("e-1", "e-2")]
+    assert {datetime.fromisoformat(e["start"]).astimezone().date() for e in near} == {late.date()}

@@ -1,0 +1,51 @@
+version: 1
+max_input_chars: 60000
+fix_rounds: 1
+retries: 2
+retry_wait_seconds: 30
+offline_check_seconds: 60
+offline_line_after_minutes: 60
+no_work_tries: 5
+sleep_gap_seconds: 30
+cleaning:
+  remove_quoted: true
+  signature_markers: ["-- ", "Sent from my ", "Best regards,"]
+  remove_patterns: ["(?is)^(confidentiality notice|this e-?mail and any attachments).*"]
+ask:
+  guide_max_tokens: 12000   # the whole guide is read by every question while it is this many tokens or fewer
+knowledge:
+  glossary_all_below: 150
+  facts_budget: 4000
+  routing_match: 0.67
+  stable_budget: 8000
+  search_rounds: 2
+  search_results: 20
+  refusals_to_packet:
+    share: 0.05
+    of_last: 50
+    min_runs: 10
+    floor: 3
+    floor_days: 7
+  rule_review_days: 30
+  rule_review_every_days: 7
+  discards_hold_days: 90
+  discard_similarity: 0.8
+  proposals_expire_days: 14
+  catch_up_max: 20
+  learn: true
+  learn_every_minutes: 30
+  learn_input_chars: 6000
+  follow_on: true
+  follow_on_max_tied: 20
+  correction_reach_items: 20   # the most other open items a correction's request shows after the corrected item
+  follow_on_match: 0.67
+  check_on_switch: true
+  learn_later_inputs: 5
+  new_terms_per_input: 3
+  new_terms_per_day: 3
+  quality_window_days: 28
+  review_visit_max_seconds: 1800   # the most seconds one visit to a review screen counts toward your review time
+  sample_consent: false           # whether a sample of messages may be drawn for your own reading
+  sample_size: 50                 # how many messages one sample holds
+  min_corrections_per_week: 10
+  quality_min_promises: 1         # the fewest promises found in the window before the quality page shows figures

@@ -1,0 +1,161 @@
+"""The meetings that clash from today onward, for Today's at-risk lines and the brief (design 6.32), by rules.
+
+`engine.clashes` compares the timed entries of every calendar (`engine.day_calendar`) through the configured days ahead
+(`steward.clashes.days_ahead`): two that overlap, and two in different places with less than
+`steward.clashes.travel_minutes`
+between them (an online meeting needs none). A meeting the person hasn't accepted never makes one, and a clash that has
+already ended today is left out. Reads only.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from typing import Any
+
+from engine import clashes as clash_rules
+from engine.day_calendar import Timed, timed
+from engine.same_entry import same_entry
+from engine.today import zone
+
+
+@dataclass(frozen=True)
+class Found:
+    """A clash: the two entries (`first` starts first), `state` (overlap or travel), `minutes` (how long they overlap,
+    or how many minutes short the travel time is), and the day and moment the later one starts, on the person's
+    clock. `travel` is the travel time the rules asked for between two places (the configured amount)."""
+
+    first: Timed
+    second: Timed
+    state: str
+    minutes: int
+    day: date
+    at: datetime
+    travel: int = 0
+
+    @property
+    def key(self) -> str:
+        return f"clash:{self.first.item.snapshot}:{self.second.item.snapshot}:{self.day.isoformat()}"
+
+    @property
+    def link(self) -> tuple[str, str] | None:
+        return entry_link(self.first)
+
+    @property
+    def other_link(self) -> tuple[str, str] | None:
+        return entry_link(self.second)
+
+
+@dataclass(frozen=True)
+class Group:
+    """Clashes that share a meeting, counted as one: the meetings that overlap one another through a run of pairs on a
+    day (A with B, B with C, and C with D make one group of four). `pairs` are earliest first; the first (`lead`) names
+    the group, so `key` stays the same while its meetings do. This is the one count of clashes: Today's lines, the
+    schedule, the timeline and the menu's count all read groups, never pairs."""
+
+    pairs: tuple[Found, ...]
+    members: int
+
+    @property
+    def lead(self) -> Found:
+        return self.pairs[0]
+
+    @property
+    def key(self) -> str:
+        return self.lead.key
+
+    @property
+    def pair_keys(self) -> list[str]:
+        return [f.key for f in self.pairs]
+
+    @property
+    def day(self) -> date:
+        return self.lead.day
+
+    @property
+    def at(self) -> datetime:
+        return self.lead.at
+
+
+def entry_id(entry: Timed) -> str:
+    """The id of a meeting among the others on a day: its entry and when it starts."""
+    return f"{entry.item.snapshot}#{entry.item.start}"
+
+
+def groups(found: list[Found], fine: set[str] | frozenset[str] = frozenset()) -> list[Group]:
+    """The clashes grouped (a pair the person said is fine is left out first), earliest group first. Pairs are linked
+    when they share a meeting on the same day."""
+    live = [f for f in found if f.key not in fine]
+    parent: dict[tuple[date, str], tuple[date, str]] = {}
+
+    def root(node: tuple[date, str]) -> tuple[date, str]:
+        parent.setdefault(node, node)
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    for f in live:
+        parent[root((f.day, entry_id(f.second)))] = root((f.day, entry_id(f.first)))
+    pairs: dict[tuple[date, str], list[Found]] = {}
+    for f in sorted(live, key=lambda f: (f.at, f.key)):
+        pairs.setdefault(root((f.day, entry_id(f.first))), []).append(f)
+    out = []
+    for run in pairs.values():
+        members = {entry_id(e) for f in run for e in (f.first, f.second)}
+        out.append(Group(tuple(run), len(members)))
+    return sorted(out, key=lambda g: (g.at, g.key))
+
+
+def entry_link(entry: Timed) -> tuple[str, str] | None:
+    """The calendar entry record to open for an entry, or none when nothing is kept for it."""
+    item = entry.item
+    found = item.entry or (item.snapshot if item.own else None)
+    return ("event", found) if found else None
+
+
+def upcoming(store: Any, cfg: Any, now: datetime) -> list[Found]:
+    """Every clash from today through the configured days ahead whose later entry hasn't ended, earliest first."""
+    today = now.astimezone(zone(cfg)).date()
+    found = in_range(store, cfg, now, today, today + timedelta(days=cfg.steward.clashes.days_ahead))
+    return [f for f in found if max(f.first.end, f.second.end) > now]
+
+
+def in_range(store: Any, cfg: Any, now: datetime, first_day: date, last_day: date) -> list[Found]:
+    """Every clash among the entries on the days from `first_day` through `last_day`, earliest first, by the same rules
+    whatever the range: ended ones are included, and the ones the person said are fine are not left out here (the
+    callers choose, through `engine.suggestions.fine_clashes`)."""
+    here = zone(cfg)
+    settings = cfg.steward.clashes
+    entries = [t for t in timed(store, cfg, now, through=last_day, start=first_day) if not t.tentative]
+    by_id: dict[str, Timed] = {}
+    events = []
+    for entry in entries:
+        key = f"{entry.item.snapshot}#{entry.item.start}"
+        by_id[key] = entry
+        events.append(
+            clash_rules.Event(key, entry.item.source or "own", entry.start, entry.end, "busy", entry.item.where)
+        )
+    report = clash_rules.clashes(events, float(settings.travel_minutes))
+    found = []
+    for clash in report.blocking:
+        first, second = by_id[clash.first.id], by_id[clash.second.id]
+        if first.start > second.start:
+            first, second = second, first
+        if same_entry(first.item.title, first.start, second.item.title, second.start):
+            continue  # one appointment held twice, not a clash
+        later = second.start.astimezone(here)
+        overlap = clash.overlap_minutes > 0
+        minutes = clash.overlap_minutes if overlap else clash.travel_shortfall_minutes or 0
+        found.append(
+            Found(
+                first,
+                second,
+                "overlap" if overlap else "travel",
+                round(minutes),
+                later.date(),
+                later,
+                round(settings.travel_minutes),
+            )
+        )
+    return sorted(found, key=lambda f: (f.at, f.key))

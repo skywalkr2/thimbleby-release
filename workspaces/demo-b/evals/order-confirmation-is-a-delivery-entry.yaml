@@ -1,0 +1,48 @@
+id: order-confirmation-is-a-delivery-entry
+title: 'A shop order is one delivery entry with its order number and day, and its return-by day is a fact; no to-do'
+skills: [dates, evidence]
+received: '2026-10-26'
+pasted: |-
+  From: Corner Goods <orders@shop.example.com>
+  To: Avery Lane <avery.lane@example.com>
+  Subject: Order confirmation
+
+  Thank you for your order of a desk lamp. Order number 4471.
+  Expected delivery: November 3, 2026. You can return it until November 17, 2026.
+expect:
+- op: event.add
+  text_has:
+  - lamp
+  start: '2026-11-03'
+  delivery:
+    order: '4471'
+    status: on_its_way
+    dated: true
+- op: fact
+  text_has:
+  - return
+  "on": '2026-11-17'
+  on_kind: deadline
+- held: record.set
+  text_has:
+  - remind_at
+forbid:
+- op: action.add
+- op: question.add
+stub_answer:
+  summary: The desk lamp order is expected on November 3 and can be returned until November 17.
+  ops:
+  - op: event.add
+    title: 'Corner Goods delivery: desk lamp'
+    start: '2026-11-03'
+    delivery:
+      order: '4471'
+      status: on_its_way
+    evidence:
+      quote: 'Expected delivery: November 3, 2026.'
+  - op: fact
+    text: The desk lamp from Corner Goods can be returned until November 17, 2026.
+    "on": '2026-11-17'
+    on_kind: deadline
+    evidence:
+      quote: You can return it until November 17, 2026.

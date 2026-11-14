@@ -1,0 +1,59 @@
+// A top-level pane (design 7.12): a surface with a hairline border, no shadow and a 48px header holding the title, a
+// count and actions. Nothing inside a panel is another bordered card except the sunken source block. `flush` lets rows
+// run edge to edge.
+import { useId, type ReactNode } from "react";
+import { PartBoundary } from "./PartBoundary";
+import styles from "./Panel.module.css";
+
+export function Panel(props: {
+  title: string;
+  /** The heading level; a view's own title is the page's h1, so panes are h2 by default. */
+  level?: 2 | 3;
+  count?: ReactNode;
+  actions?: ReactNode;
+  /** The count is said to a screen reader and not drawn (a card that is a glance, not a tally). */
+  countHidden?: boolean;
+  /** The region's name when it is not the title's words (the title says more than the region needs to be called). */
+  label?: string;
+  /** The title is kept for a screen reader and left off the page, for a pane whose rows say what it holds (Today's queue). */
+  hideTitle?: boolean;
+  /** The smaller title of a rail pane. */
+  small?: boolean;
+  /** No padding in the body, for rows that run edge to edge. */
+  flush?: boolean;
+  id?: string;
+  className?: string;
+  children?: ReactNode;
+}) {
+  const auto = useId();
+  const headId = props.id ?? auto;
+  const Heading = props.level === 3 ? "h3" : "h2";
+  return (
+    <section className={[styles.panel, props.small ? styles.small : "", props.className ?? ""].filter(Boolean).join(" ")} aria-label={props.label} aria-labelledby={props.label ? undefined : headId}>
+      {props.hideTitle ? (
+        <>
+          <Heading id={headId} className="sr" data-panel-title-hidden="">
+            {props.title}
+          </Heading>
+          {props.count !== undefined && props.count !== null && props.count !== "" && <span className="sr">{props.count}</span>}
+        </>
+      ) : (
+        <div className={styles.head}>
+          <Heading id={headId} className={styles.title}>
+            {props.title}
+          </Heading>
+          {props.count !== undefined && props.count !== null && props.count !== "" && <span className={props.countHidden ? "sr" : styles.count}>{props.count}</span>}
+          <span className={styles.spacer} />
+          {props.actions && <div className={styles.actions}>{props.actions}</div>}
+        </div>
+      )}
+      {props.children !== undefined && <div className={props.flush ? styles.flush : styles.body}><PartBoundary>{props.children}</PartBoundary></div>}
+    </section>
+  );
+}
+
+/** A pane's surface and edge with no region and no title of its own, for a pane whose content already names itself as a
+ * region (a list group drawn as a card of its own), so a screen reader meets one region, not two of the same name. */
+export function PaneBox(props: { className?: string; children?: ReactNode }) {
+  return <div className={[styles.panel, props.className ?? ""].filter(Boolean).join(" ")}>{props.children}</div>;
+}

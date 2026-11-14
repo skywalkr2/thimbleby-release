@@ -1,0 +1,1365 @@
+// What changed (design 7.3, 7.7): the history, one row per thing handed in, with what the assistant did nested inside it.
+// Nothing here is answered: what waits for the person is a line on Today, and a held item links to it.
+import { useReviewTime } from "../lib/review-time";
+import { useQuery } from "@tanstack/react-query";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { api, type S } from "../lib/api";
+import { useAct } from "../lib/act";
+import { dayAndTime, day, dayLong, todayOn } from "../lib/dates";
+import { accountsOf, drawn, groupChanges, RUNS_SHOWN, shownRuns, useTwinWindow, type ChangeGroup } from "../lib/change-groups";
+import { useRowKeys } from "../lib/keys";
+import { useFieldLabel } from "../lib/records";
+import { useHeldAnswers } from "../lib/held-answers";
+import { heldTold, titleWords } from "../lib/queue-words";
+import { useMediaQuery } from "../lib/media";
+import { useListChoice, type ListChoice } from "../lib/list-choice";
+import { showRow, useReveal } from "../lib/reveal";
+import { recordView, viewHref } from "../lib/views";
+import { useEstimate, useSpent } from "../lib/money";
+import { useSetAside } from "../lib/set-aside";
+import { useActSaved } from "../lib/settings-save";
+import { useQueue, useTodayCount } from "../lib/today";
+import { useFactLine } from "../lib/fact-line";
+import { plainDates } from "../lib/read";
+import { useReadable } from "../lib/readable";
+import { shortTitle } from "../lib/title-dates";
+import { useWords } from "../lib/wording";
+import { Button, ButtonLink } from "../ui/Button";
+import { ListDetail } from "../ui/ListDetail";
+import { AskChooser } from "./AskChooser";
+import { ProjectProposalRow } from "./NextSteps";
+import { NoteBox } from "./NoteBox";
+import { Because } from "./Because";
+import { LearnedLines } from "./Learned";
+import { AnswerOnToday } from "./AnswerOnToday";
+import { useChangeThis, type ChangeKind } from "./ChangeThis";
+import { PromiseWhy } from "./PromiseWhy";
+import { RowMenu, type MenuAction } from "./RowMenu";
+import { DialogFooter, ModalPanel } from "./ModalPanel";
+import { SideFilter } from "./SideFilter";
+import { onSide, useSideFilter, useSideOf, useSides } from "../lib/sides";
+import { Highlighted } from "./SafeText";
+import { useStageToday } from "./StageToday";
+import { useOwnRequests } from "./HandIn";
+import { FilteredEmpty } from "../ui/FilteredEmpty";
+import { ListState } from "../ui/ListState";
+import { Icon, type IconName } from "../ui/Icon";
+import { Skeleton } from "../ui/Skeleton";
+import { Pill, type PillTone } from "../ui/Pill";
+import { StateMark, toneOfPill, withStatus } from "../ui/StateMark";
+import { GroupLabel } from "../ui/GroupLabel";
+
+import { EmptyState } from "../ui/EmptyState";
+import { PageHeader } from "../ui/PageHeader";
+import { TabStrip } from "../ui/TabStrip";
+import { Actions } from "../ui/Actions";
+import { RowList, DetailItem } from "../ui/RowList";
+import { ItemList, Item } from "../ui/ItemList";
+import { ExpandableRow, RowItem } from "../ui/Row";
+import { RowBody } from "../ui/RowBody";
+import { DetailTop } from "../ui/DetailTop";
+/** The width the list needs beside the pane: a state, a title with one line under it, the primary and the menu. */
+const CHANGES_FIT = 480;
+
+type Filter = "done" | "all";
+const ATTENTION = new Set(["queued", "running", "review", "needs_you"]);
+
+/** Still in progress, waiting for review, or holding something until the PM answers. */
+export function needsAttention(c: S["ChangeItem"]): boolean {
+  return ATTENTION.has(c.state) || !!c.changeset?.ops.some((o) => o.ask?.status === "open");
+}
+
+/** `compact` is for a narrow column on Today: the heading sits one level down. `onOpenGuide` opens the setup guide at a
+ * step, for a stopped line whose way on is a step of the guide. */
+export function WhatChanged(props: { compact?: boolean; onOpenGuide?: (step: string) => void }) {
+  const { t, tn, has } = useWords();
+  useReviewTime("changes", !props.compact);
+  const changes = useQuery({ queryKey: ["changes"], queryFn: api.changes });
+  // A quiet count of what was handled without the person, a link to the screen that lists it.
+  const handled = useQuery({ queryKey: ["handled", "counts"], queryFn: api.handledCounts });
+  const handledCount = handled.data ? handled.data.set_aside + handled.data.read : 0;
+  const own = useOwnRequests();
+  const stageToday = useStageToday();
+  // What waits for the person is on Today; this screen says how much, once, and links there.
+  const waitingOnToday = useTodayCount();
+  const [filter, setFilter] = useState<Filter>("all");
+  const [shown, setShown] = useState<Set<string> | null>(null);
+  const [announce, setAnnounce] = useState("");
+  // A Today line asking for an answer to be looked at: the row (by request) opens, whatever the filter.
+  const [revealed, setRevealed] = useState<{ id: string; n: number } | null>(null);
+  const latest = useRef(changes.data);
+  latest.current = changes.data;
+  const [picked, setPicked] = useState<{ id: string; n: number } | null>(null);
+  const [wanted, setWanted] = useState<string | null>(null);
+  // A row that stands in a run, or past the first few of its group, is drawn when something asks for it.
+  const [openRuns, setOpenRuns] = useState<ReadonlySet<string>>(new Set());
+  const [allOf, setAllOf] = useState<ReadonlySet<string>>(new Set());
+  const groupsRef = useRef<ChangeGroup[]>([]);
+  const drawItem = (id: string) => {
+    for (const g of groupsRef.current) {
+      for (const r of g.runs) {
+        if (r.same.some((c) => c.id === id)) setOpenRuns((prev) => new Set([...prev, r.head.id]));
+        if (r.head.id === id || r.same.some((c) => c.id === id) || r.twins.some((c) => c.id === id)) setAllOf((prev) => new Set([...prev, g.id]));
+      }
+    }
+  };
+  // A Today line for what a newly added source's intake found: the list narrows to that source's intake until it is cleared.
+  const [intake, setIntake] = useState<string | null>(null);
+  const watched = useQuery({ queryKey: ["watch"], queryFn: api.watchSources, enabled: intake !== null });
+  useReveal("intake", (source) => {
+    setFilter("all");
+    setIntake(source);
+    return true;
+  });
+  const openChangeset = (changeset: string): boolean => {
+    const all = latest.current;
+    const item = all?.find((c) => c.changeset?.id === changeset || (c.edits ?? []).some((e) => e.changeset?.id === changeset));
+    if (!all || !item) return false;
+    setFilter("all");
+    drawItem(item.id);
+    setShown((prev) => new Set([...(prev ?? all.map((c) => c.id)), item.id]));
+    setRevealed({ id: item.id, n: Date.now() });
+    // The change is chosen, so its detail shows it in full (once the list shows it).
+    setPicked({ id: item.id, n: Date.now() });
+    return true;
+  };
+  useReveal("changeset", (changeset) => {
+    // Opened from another screen before the list has loaded: it opens the row once it has.
+    if (!latest.current) {
+      setWanted(changeset);
+      return true;
+    }
+    return openChangeset(changeset);
+  });
+  useEffect(() => {
+    if (wanted && changes.data) {
+      openChangeset(wanted);
+      setWanted(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wanted, changes.data]);
+
+  // Rows that arrive while the PM is reading wait behind "N new · Show" instead of moving the list,
+  // except the PM's own hand-ins, which they expect to see.
+  useEffect(() => {
+    if (!changes.data) return;
+    const ids = changes.data.flatMap((c) => [c.id, ...(c.edits ?? []).map((e) => e.id)]);
+    setShown((prev) => {
+      if (prev === null) return new Set(ids);
+      const add = ids.filter((id) => !prev.has(id) && own.has(id));
+      return add.length ? new Set([...prev, ...add]) : prev;
+    });
+  }, [changes.data, own]);
+
+  // A row of folded edits is shown while any of its edits was: a new edit joins it, it never makes the row vanish.
+  const isShown = (c: S["ChangeItem"]) => !!shown && (shown.has(c.id) || (c.edits ?? []).some((e) => shown.has(e.id)));
+  const waiting = useMemo(
+    () => (changes.data && shown ? changes.data.filter((c) => !(shown.has(c.id) || (c.edits ?? []).some((e) => shown.has(e.id)))) : []),
+    [changes.data, shown],
+  );
+  useEffect(() => {
+    if (waiting.length) setAnnounce(tn("changes.new_arrived", waiting.length));
+  }, [waiting.length, tn]);
+
+  // A run waiting for a go (a stage's, or the first one) is a line on Today, not history: it is counted in the line at the
+  // top, and its plain request row would only offer a retry.
+  const waitingGo = new Set(stageToday.waiting.map((w) => w.request.id));
+  // The shared side filter narrows the rows: a change on no side shows under every choice.
+  const side = useSideFilter();
+  const sideOf = useSideOf();
+  const rows = (changes.data ?? []).filter(
+    (c) =>
+      onSide(sideOf(c.project), side.choice) &&
+      (intake !== null ? c.intake === intake : isShown(c)) &&
+      !waitingGo.has(c.id) &&
+      !(c.first_go && !c.dismissed && c.state === "needs_you") &&
+      (filter === "all" || (filter === "done") === !needsAttention(c)),
+  );
+  const filters: Filter[] = ["all", "done"];
+  // A list with nothing in it has nothing to hold still: what arrives shows at once, so the first results after a first go are
+  // one list, never "5 new · Show" over an empty one.
+  useEffect(() => {
+    if (changes.data && waiting.length > 0 && rows.length === 0) setShown(new Set(changes.data.flatMap((c) => [c.id, ...(c.edits ?? []).map((e) => e.id)])));
+  }, [changes.data, waiting.length, rows.length]);
+
+  // The list | detail choice (design 7.13): beside the list the newest change is chosen as the list opens; below 1024px the
+  // detail is a drawer that opens when a change is chosen.
+  const beside = useMediaQuery("(min-width: 1024px)") && !props.compact;
+  // What needs the person first, then what is with the assistant, then the rest under the day it was handed in; rows that read the
+  // same are one run, whose other rows come out on "Show more like this".
+  const twinWindow = useTwinWindow();
+  const groups = useMemo(
+    () => groupChanges(rows, (c) => changeTitle(c, t, has), (c) => stateWord(c, waitsForGo(c)), twinWindow),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [JSON.stringify(rows), t, has, twinWindow],
+  );
+  groupsRef.current = groups;
+  // The row the person is on stays drawn when a change to it moves it into a run or past the first rows of a group.
+  const kept = useRef<string | null>(null);
+  const runsDrawn = new Set(openRuns);
+  const groupsDrawn = new Set(allOf);
+  for (const g of groups) {
+    g.runs.forEach((r, at) => {
+      if (kept.current && r.same.some((c) => c.id === kept.current)) runsDrawn.add(r.head.id);
+      if (kept.current && at >= RUNS_SHOWN && (r.head.id === kept.current || r.same.some((c) => c.id === kept.current))) groupsDrawn.add(g.id);
+    });
+  }
+  const ordered = drawn(groups, runsDrawn, groupsDrawn);
+  // A row asked for that the groups hold back (inside a run, or past the first few) is drawn once the groups are known.
+  useEffect(() => {
+    if (picked && !ordered.some((c) => c.id === picked.id)) drawItem(picked.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [picked, groups]);
+  const choice = useListChoice({ keys: ordered.map((c) => c.id), beside, first: null, reset: `${filter}|${intake ?? ""}` });
+  useEffect(() => {
+    if (picked) choice.choose(picked.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [picked]);
+  kept.current = choice.chosen;
+  const selected = ordered.find((c) => c.id === choice.chosen) ?? null;
+  const [want, setWant] = useState<(ChangeWant & { id: string }) | null>(null);
+  useEffect(() => setWant(null), [choice.chosen]);
+  const asked = (id: string) => (what: ChangeWant["what"]) => {
+    setWant({ id, what, n: Date.now() });
+    choice.choose(id);
+  };
+
+  return (
+    <section className={props.compact ? "panel-section compact" : "panel-section"} aria-labelledby="changes-title">
+      <PageHeader
+        id="changes-title"
+        level={props.compact ? 3 : 1}
+        title={t("changes.title")}
+        actions={!props.compact ? <ButtonLink href={viewHref("work/since")}>{t("changes.since")}</ButtonLink> : undefined}
+        tabs={<TabStrip label={t("changes.filter")} value={filter} onChange={setFilter} options={filters.map((f) => ({ value: f, label: t(`changes.filter.${f}`) }))} />}
+        filters={<SideFilter waiting="changed" />}
+      />
+      <p className="sr" aria-live="polite">
+        {announce}
+      </p>
+      {((waitingOnToday !== null && waitingOnToday > 0) || handledCount > 0) && (
+        <p className="hint summary" data-changes-summary="">
+          {waitingOnToday !== null && waitingOnToday > 0 && (
+            <span data-waiting-on-today="">
+              {tn("changes.waiting_on_today", waitingOnToday)} <ButtonLink variant="quiet" size="sm" href={viewHref("today")}>{t("changes.open_today")}</ButtonLink>
+            </span>
+          )}
+          {handledCount > 0 && (
+            <span data-handled-count="">
+              <ButtonLink variant="quiet" size="sm" href={viewHref("work/handled")}>{t("changes.handled", { n: handledCount })}</ButtonLink>
+            </span>
+          )}
+        </p>
+      )}
+      {intake !== null && (
+        <p className="hint" data-intake-filter="">
+          {t("changes.intake.title", { source: watched.data?.find((w) => w.id === intake)?.label ?? intake })}{" "}
+          <Button onClick={() => setIntake(null)}>
+            {t("changes.intake.show_all")}
+          </Button>
+        </p>
+      )}
+      {waiting.length > 0 && (
+        <button
+          type="button"
+          className="newbar"
+          onClick={() => setShown(new Set([...(shown ?? []), ...waiting.flatMap((c) => [c.id, ...(c.edits ?? []).map((e) => e.id)])]))}
+        >
+          {tn("changes.show_new", waiting.length)}
+        </button>
+      )}
+      <ListState query={changes} failed={t("changes.load_failed")}>
+        {() =>
+      rows.length === 0 ? (
+        side.choice !== "all" && (changes.data ?? []).length > 0 ? (
+          <FilteredEmpty text={t("sides.empty.changes", { side: side.named })} label={t("sides.empty.show_all")} onClear={() => side.set("all")} />
+        ) : (
+          <EmptyState text={t("changes.empty")} />
+        )
+      ) : (
+        <ListDetail
+          title={selected ? (folded(selected) ? editsTitle(selected, t) : changeTitle(selected, t, has)) : ""}
+          titleHref={selected?.mail_item && selected.source ? viewHref(recordView("source", selected.source)) : undefined}
+          onClose={choice.close}
+          fit={CHANGES_FIT}
+          detail={
+            selected && folded(selected) ? (
+              <FoldedEditsPane item={selected} />
+            ) : selected ? (
+              <RowList as="ol" detail>
+                <ChangeRow
+                  key={selected.id}
+                  item={selected}
+                  pane
+                  history
+                  reveal={0}
+                  want={want?.id === selected.id ? want : null}
+                  onOpenGuide={props.onOpenGuide}
+                />
+              </RowList>
+            ) : null
+          }
+        >
+          <RowList as="ol">
+            {groups.map((group) => (
+              <ChangeGroupRows
+                key={group.id}
+                group={group}
+                openRuns={runsDrawn}
+                all={groupsDrawn.has(group.id)}
+                onAll={() => setAllOf((prev) => new Set([...prev, group.id]))}
+                onToggleRun={(id) => setOpenRuns((prev) => (prev.has(id) ? new Set([...prev].filter((x) => x !== id)) : new Set([...prev, id])))}
+                row={(item, count, accounts) => (
+                  <ChangeListRow
+                    key={item.id}
+                    item={item}
+                    choice={choice}
+                    count={count}
+                    accounts={accounts}
+                    inNeeds={group.kind === "needs"}
+                    inWith={group.kind === "with"}
+                    reveal={revealed?.id === item.id ? revealed.n : 0}
+                    onWant={asked(item.id)}
+                    onOpenGuide={props.onOpenGuide}
+                  />
+                )}
+              />
+            ))}
+          </RowList>
+        </ListDetail>
+      )
+        }
+      </ListState>
+    </section>
+  );
+}
+
+/** One group of the list: its label with the count, then its rows; a run of rows that read the same is its first row with the
+ * number ("×5") and a button that draws the others. */
+function ChangeGroupRows(props: {
+  group: ChangeGroup;
+  openRuns: ReadonlySet<string>;
+  /** The group draws every run, not the first few. */
+  all: boolean;
+  onAll: () => void;
+  onToggleRun: (id: string) => void;
+  row: (item: S["ChangeItem"], count: number, accounts?: string[]) => React.ReactNode;
+}) {
+  const { t, tn } = useWords();
+  const { group } = props;
+  const label =
+    group.kind === "needs"
+      ? t("changes.group.needs")
+      : group.kind === "with"
+        ? t("changes.group.with")
+        : group.day === todayOn(new Date())
+          ? t("changes.group.today")
+          : group.day === yesterdayOn()
+            ? t("changes.group.yesterday")
+            : dayLong(group.day ?? "");
+  const total = group.runs.reduce((n, r) => n + 1 + r.same.length, 0);
+  return (
+    <>
+      <li>
+        <GroupLabel as="h3" count={total} tone={group.kind === "needs" ? "danger" : "plain"} data-changes-group={group.kind}>
+          {label}
+        </GroupLabel>
+      </li>
+      {shownRuns(group, props.all ? new Set([group.id]) : new Set()).map((run) => {
+        const open = props.openRuns.has(run.head.id);
+        return (
+          <Fragment key={run.head.id}>
+            {props.row(run.head, run.same.length + 1, accountsOf(run))}
+            {open && run.same.map((item) => props.row(item, 1))}
+            {run.same.length > 0 && (
+              <RowItem>
+                <Button variant="quiet" size="sm" aria-expanded={open} onClick={() => props.onToggleRun(run.head.id)}>
+                  {open ? t("changes.run.fewer") : tn("changes.run.more", run.same.length)}
+                </Button>
+              </RowItem>
+            )}
+          </Fragment>
+        );
+      })}
+      {!props.all && group.runs.length > shownRuns(group, new Set()).length && (
+        <RowItem>
+          <Button variant="quiet" size="sm" onClick={props.onAll}>
+            {tn("changes.group.more", group.runs.length - shownRuns(group, new Set()).length)}
+          </Button>
+        </RowItem>
+      )}
+    </>
+  );
+}
+
+/** The day before today, on the person's clock, as yyyy-mm-dd. */
+function yesterdayOn(): string {
+  const back = new Date();
+  back.setDate(back.getDate() - 1);
+  return todayOn(back);
+}
+
+const TONE: Record<S["ChangeItem"]["state"], PillTone> = {
+  queued: "need",
+  running: "need",
+  review: "neutral",
+  needs_you: "warn",
+  done: "neutral",
+  failed: "danger",
+};
+
+/** A run held back because its estimate is above the amount to confirm (stage tasks have their own go row). */
+export function waitsForGo(c: S["ChangeItem"]): boolean {
+  return c.approval === "required" && !c.stage_task && c.state === "needs_you" && !c.dismissed;
+}
+
+/** What a change is called: by the rule Today uses ("Email from <person> · <topic>"), never by the first line of what came in;
+ * the stored title is only the way back when the rule has nothing to say. Once the assistant has done something with what the
+ * person typed, their words are shown as their note and never as the title; until then (waiting, or stopped) they are all that
+ * says what the change is. */
+export function changeTitle(item: S["ChangeItem"], t: T, has: (key: string) => boolean): string {
+  return shortTitle(titleWords(item.title, t, has) || item.source_title || (item.changeset ? "" : firstLine(item.note)) || t("changes.untitled"));
+}
+
+/** What a change asks the screen to open in its detail: the note to send it back with, or the choice of another account. */
+export interface ChangeWant {
+  what: "sendback" | "choose";
+  n: number;
+}
+
+/** The one primary action of a change and the rest in its menu, the same on its list row and in its detail. `startSendBack`
+ * and `startChoosing` open the form each needs, wherever that is shown. */
+function useChangeActions(item: S["ChangeItem"], hooks: { onOpenGuide?: (step: string) => void; startSendBack: () => void; startChoosing: () => void }) {
+  const { t, tn, has } = useWords();
+  const act = useAct();
+  const actSaved = useActSaved();
+  const { setAside: moveToFolder } = useSetAside();
+  const gated = waitsForGo(item);
+  const cs = item.changeset;
+  const live = cs ? cs.ops.filter((o) => o.status === "applied" || o.status === "held") : [];
+  const title = changeTitle(item, t, has);
+
+  const looksGood = () =>
+    cs &&
+    act(
+      () => api.looksGood(cs.id),
+      () => ({ message: t("toast.looks_good"), many: (n) => tn("toast.looks_good_many", n), undo: () => api.reopen(cs.id) }),
+    );
+  // Undo everything reverses many records at once, so it is the one undo that asks first.
+  const [confirmingUndoAll, setConfirmingUndoAll] = useState(false);
+  const undoAll = () =>
+    cs &&
+    act(
+      () => api.undo(cs.id),
+      (report) => ({ message: undoMessage(report, t, tn) }),
+    );
+  const undoAllDialog = confirmingUndoAll ? (
+    <ModalPanel titleId={`undo-all-${item.id}`} onClose={() => setConfirmingUndoAll(false)}>
+      <h2 id={`undo-all-${item.id}`}>{t("changes.undo_all_title")}</h2>
+      <p>{t("changes.undo_all_text")}</p>
+      <DialogFooter>
+        <Button variant="quiet" onClick={() => setConfirmingUndoAll(false)}>
+          {t("action.cancel")}
+        </Button>
+        <Button
+          variant="primary"
+          onClick={() => {
+            setConfirmingUndoAll(false);
+            void undoAll();
+          }}
+        >
+          {t("changes.undo_all_go")}
+        </Button>
+      </DialogFooter>
+    </ModalPanel>
+  ) : null;
+  const retry = () => void act(() => api.retry(item.id), () => ({ message: t("toast.retrying") }));
+
+  // A stop with a cause the screen can clear offers that one action in place of Try again, which could not work.
+  const cause = item.state === "needs_you" || item.state === "failed" ? item.cause : null;
+  const allowing = cause?.kind === "data_level" && cause.account && cause.level ? { account: cause.account, level: cause.level } : null;
+  const naming = cause?.kind === "no_person" && hooks.onOpenGuide ? hooks.onOpenGuide : null;
+  const levelWord = (level: string) => (has(`changes.level.${level}`) ? t(`changes.level.${level}`) : level);
+  const allow = async () => {
+    if (!allowing) return;
+    await actSaved(
+      () => api.allowData(item.id),
+      (done) => done.saved,
+      (done) => ({ message: t("toast.allowed_data", { account: done.account, level: levelWord(done.level) }) }),
+    );
+  };
+
+  const dismiss = () =>
+    void act(
+      () => api.dismiss(item.id, item.version),
+      (result) => ({ message: t("toast.dismissed"), undo: () => api.undismiss(item.id, result.version) }),
+    );
+
+  let primary: { label: string; run: () => void } | null = null;
+  if (item.state === "review" && cs) primary = { label: t("changes.looks_good"), run: () => void looksGood() };
+  if (gated)
+    primary = {
+      label: t("changes.go"),
+      run: () => void act(() => api.stageGo(item.id, item.version), () => ({ message: t("toast.go") })),
+    };
+  else if (allowing)
+    primary = { label: t("changes.allow_data", { account: allowing.account, level: levelWord(allowing.level) }), run: () => void allow() };
+  else if (naming) primary = { label: t("changes.say_who"), run: () => naming("workspace") };
+  else if (item.state === "needs_you" || item.state === "failed")
+    primary = item.refused ? { label: t("changes.send_other"), run: hooks.startChoosing } : { label: t("action.try_again"), run: retry };
+
+  const menu: MenuAction[] = [];
+  if (item.refused && (item.state === "needs_you" || item.state === "failed"))
+    menu.push({ id: "retry", label: t("action.try_again"), run: retry });
+  if (cs && item.state === "review") menu.push({ id: "sendback", label: t("changes.send_back"), run: hooks.startSendBack });
+  if (item.state === "needs_you" || item.state === "failed") menu.push({ id: "dismiss", label: t("changes.dismiss"), run: dismiss });
+  if (cs && item.state === "done") {
+    menu.push({
+      id: "reopen",
+      label: t("changes.reopen"),
+      run: () => void act(() => api.reopen(cs.id), () => ({ message: t("toast.reopened"), undo: () => api.looksGood(cs.id) })),
+    });
+  }
+  if (cs && live.length) menu.push({ id: "undoall", label: t("changes.undo_all"), run: () => setConfirmingUndoAll(true) });
+  if (item.mail_item) {
+    const mail = { id: item.mail_item, title };
+    menu.push({ id: "aside-sales", label: t("setaside.menu_sales"), run: () => void moveToFolder(mail, "sales") });
+  }
+  return { gated, cs, title, primary, menu, undoAllDialog, canSendBack: !!cs && item.state === "review" };
+}
+
+/** What What changed offers on a row: it is the history, so nothing on the row is a button. The choice that would have been
+ * its primary is the first entry of the row's menu, and the rest follow. Acting on the assistant's work is done on Today's
+ * review line; Undo stays here, in each row's menu. */
+function historyMenu(primary: { label: string; run: () => void } | null, menu: MenuAction[]): MenuAction[] {
+  return primary ? [{ id: "first-choice", label: primary.label, run: primary.run }, ...menu] : menu;
+}
+
+/** A change that waits for the person is decided on Today: the pane links to its line there, or to Today when the line is not found. */
+function OnTodayLink(props: { item: S["ChangeItem"] }) {
+  const { t } = useWords();
+  const queue = useQueue();
+  const line = (queue.data ?? []).find((l) => !!props.item.changeset && l.changeset === props.item.changeset.id);
+  return (
+    <p className="hint" data-on-today="">
+      {line ? <AnswerOnToday line={line.key} /> : <ButtonLink size="sm" href={viewHref("today")}>{t("changes.decide_on_today")}</ButtonLink>}
+    </p>
+  );
+}
+
+/** The glyph in a row's leading slot for what the change came from, so an email and a calendar entry are not the same row. */
+function kindIcon(kind: NonNullable<S["ChangeItem"]["title"]>["kind"] | undefined): IconName | null {
+  switch (kind) {
+    case "email":
+      return "inbox";
+    case "calendar":
+      return "calendar";
+    case "note":
+    case "pasted":
+      return "book";
+    case "answer":
+      return "chat";
+    default:
+      return null;
+  }
+}
+
+/** What a change's list row says under its title: the estimate while it waits for the go, else what was done. */
+function useChangeSub(item: S["ChangeItem"]): string {
+  const { t, tn } = useWords();
+  const estimate = useEstimate();
+  return waitsForGo(item) ? (estimate(item.estimate_usd) ?? t("changes.sub.go_waiting", { when: dayAndTime(item.created_at) })) : subLine(item, t, tn);
+}
+
+/** The word a row's state is written in: what happened, so a change the assistant finished and nobody has checked yet reads
+ * "Not yet checked" and not as an instruction. */
+function stateWord(item: S["ChangeItem"], gated: boolean): string {
+  if (item.dismissed) return "changes.state.dismissed";
+  if (gated) return "changes.state.cost_go";
+  // Work the person took back is not done, whatever its request says.
+  if (item.changeset?.status === "undone") return "changes.state.undone";
+  if (item.changeset?.status === "partly_undone") return "changes.state.partly_undone";
+  // What needed no look was filed quietly; what did was checked once the person said it looks good.
+  if (item.review === "filed") return "changes.history.filed";
+  if (item.review === "checked") return "changes.history.checked";
+  return item.state === "review" ? "changes.history.review" : `changes.state.${item.state}`;
+}
+
+/** One change as a line of the list (design 7.13): its state, its title, what was done in one line, its one primary and the
+ * rest in the menu. Choosing it shows the whole change in the detail beside the list. */
+/** Whether a row stands for several of the person's own edits of one item on one day. */
+const folded = (item: S["ChangeItem"]): boolean => (item.edits ?? []).length > 1;
+
+/** "You changed Pay the deposit 5 times": the title of a row of folded edits. */
+const editsTitle = (item: S["ChangeItem"], t: T): string => t("changes.you_changed", { name: shortTitle(item.edited ?? "") || t("changes.untitled"), n: (item.edits ?? []).length });
+
+/** One row for the person's own edits of one item on one day; choosing it lists the edits in the detail, each a change of its own
+ * with its own Undo. */
+function FoldedListRow(props: { item: S["ChangeItem"]; choice: ListChoice; reveal: number }) {
+  const { t, tn } = useWords();
+  const { item, choice } = props;
+  const ref = useRef<HTMLLIElement>(null);
+  useEffect(() => {
+    if (props.reveal) showRow(ref.current);
+  }, [props.reveal]);
+  useRowKeys(ref, { toggle: () => choice.enter(item.id) });
+  const title = editsTitle(item, t);
+  return (
+    <ExpandableRow
+      ref={ref}
+      aria-labelledby={`t-${item.id}`}
+      {...choice.rowProps(item.id)}
+      title={title}
+      titleId={`t-${item.id}`}
+      meta={t("changes.edits_sub", { edits: tn("changes.edits", (item.edits ?? []).length), when: dayAndTime(item.created_at) })}
+      expand={{ expanded: choice.chosen === item.id, inert: choice.chosen === item.id, onToggle: () => choice.choose(item.id) }}
+    />
+  );
+}
+
+/** The list of edits a folded row stands for, newest first, each one as a change of its own. */
+function FoldedEditsPane(props: { item: S["ChangeItem"] }) {
+  const { t, tn } = useWords();
+  const edits = props.item.edits ?? [];
+  return (
+    <RowList as="ol" detail>
+      <DetailItem data-row="" tabIndex={-1}>
+        <p className="hint">{t("changes.edits_intro", { edits: tn("changes.edits", edits.length), date: day(props.item.created_at) })}</p>
+      </DetailItem>
+      {edits.map((edit) => (
+        <ChangeRow key={edit.id} item={edit} reveal={0} history />
+      ))}
+    </RowList>
+  );
+}
+
+interface ChangeListRowProps {
+  item: S["ChangeItem"];
+  choice: ListChoice;
+  reveal: number;
+  /** How many rows read the same as this one (this one included): more than one draws "×N". */
+  count: number;
+  /** The accounts the row's change was read from, when it was read from more than one: the row names them all. */
+  accounts?: string[];
+  /** The group the row is in says it needs the person, or is with the assistant, so the row does not say it again. */
+  inNeeds: boolean;
+  inWith: boolean;
+  onWant: (what: ChangeWant["what"]) => void;
+  onOpenGuide?: (step: string) => void;
+}
+
+function ChangeListRow(props: ChangeListRowProps) {
+  return folded(props.item) ? <FoldedListRow item={props.item} choice={props.choice} reveal={props.reveal} /> : <SingleChangeListRow {...props} />;
+}
+
+/** What a row says about its state: only what is not ordinary. Being with the assistant, done, or waiting for the person is said
+ * by the group the row is in; what is left (not yet checked, stopped, undone, dismissed) is a dot and a word. */
+const ROUTINE = new Set(["changes.state.queued", "changes.state.running", "changes.state.done", "changes.state.needs_you"]);
+function statusOf(item: S["ChangeItem"], gated: boolean, t: T): { tone: PillTone; word: string } | null {
+  const key = stateWord(item, gated);
+  return ROUTINE.has(key) ? null : { tone: TONE[item.state], word: t(key) };
+}
+
+function SingleChangeListRow(props: ChangeListRowProps) {
+  const { t } = useWords();
+  const { item, choice } = props;
+  const ref = useRef<HTMLLIElement>(null);
+  const { gated, cs, title, primary, menu, undoAllDialog, canSendBack } = useChangeActions(item, {
+    onOpenGuide: props.onOpenGuide,
+    startSendBack: () => props.onWant("sendback"),
+    startChoosing: () => props.onWant("choose"),
+  });
+  const sub = useChangeSub(item);
+  // A title written "Kind from Sender · Subject" leads with what is distinct, the subject; the kind and the sender go to the meta.
+  const { subject, lead } = leadWithSubject(title, withTopicJoin(t));
+  const base = lead ? `${lead} · ${sub}` : sub;
+  const subLine = props.accounts && props.accounts.length > 1 ? `${base} · ${t("changes.twin", { accounts: props.accounts.join(", ") })}` : base;
+  useEffect(() => {
+    if (props.reveal) showRow(ref.current);
+  }, [props.reveal]);
+  useRowKeys(ref, {
+    toggle: () => choice.enter(item.id),
+    send_back: canSendBack ? () => props.onWant("sendback") : undefined,
+  });
+  return (
+    <ExpandableRow
+      ref={ref}
+      aria-labelledby={`t-${item.id}`}
+      data-changeset={cs?.id}
+      {...choice.rowProps(item.id)}
+      lead={kindIcon(item.title?.kind) ? <Icon name={kindIcon(item.title?.kind)!} size={18} /> : undefined}
+      title={subject}
+      titleId={`t-${item.id}`}
+      meta={withStatus(
+        statusOf(item, gated, t),
+        props.count > 1 ? (
+          <>
+            <strong>×{props.count}</strong> · {subLine}
+          </>
+        ) : (
+          subLine
+        ),
+      )}
+      expand={{ expanded: choice.chosen === item.id, inert: choice.chosen === item.id, onToggle: () => choice.choose(item.id) }}
+      menu={
+        <>
+          <RowMenu label={title} actions={historyMenu(primary, menu)} />
+          {undoAllDialog}
+        </>
+      }
+    >
+      <OnTheRow item={item} />
+    </ExpandableRow>
+  );
+}
+
+/** What the wording puts between a title's head and its topic ("Email from Pat · Question"). */
+function withTopicJoin(t: T): string {
+  const filled = t("queue.title.with_topic", { head: "\u0000", topic: "\u0001" });
+  return filled.slice(filled.indexOf("\u0000") + 1, filled.indexOf("\u0001"));
+}
+
+/** A title written "Head · Topic" split into its topic and its head; a title with no topic is all subject. */
+export function leadWithSubject(title: string, join: string): { subject: string; lead: string | null } {
+  const at = join ? title.indexOf(join) : -1;
+  if (at <= 0 || at + join.length >= title.length) return { subject: title, lead: null };
+  return { subject: title.slice(at + join.length), lead: title.slice(0, at) };
+}
+
+/** What the list row keeps in view without the change being chosen: what is being learned from it, and the drafts and files
+ * it made. */
+function OnTheRow(props: { item: S["ChangeItem"] }) {
+  const { item } = props;
+  const cs = item.changeset;
+  return (
+    <>
+      <div className="learned-inset">
+        <LearnedLines changesets={[cs?.id, item.redoes]} />
+      </div>
+      {cs && (cs.made ?? []).length > 0 && <MadeLinks made={cs.made ?? []} />}
+    </>
+  );
+}
+
+/** One change in full: what the assistant did, nested, with the buttons for it. `open` shows it expanded from the start (the
+ * Today inspector), `sendBack` starts with the note to send it back with, and `pane` is the detail beside the list, where the
+ * title is the pane's own heading and `want` is what the list row asked to have opened. */
+export function ChangeRow(props: {
+  item: S["ChangeItem"];
+  reveal: number;
+  onOpenGuide?: (step: string) => void;
+  open?: boolean;
+  sendBack?: boolean;
+  pane?: boolean;
+  /** What changed's own detail: the history, with every choice in the menu and no button (Today's inspector has them). */
+  history?: boolean;
+  want?: ChangeWant | null;
+}) {
+  const { t, tn } = useWords();
+  const spentLine = useSpent();
+  const { item } = props;
+  const cs = item.changeset;
+  // Every row that holds a question for the person starts open, whatever state its request is in, so none sits closed.
+  const asks = !!cs?.ops.some((o) => o.ask?.status === "open");
+  const gated = waitsForGo(item);
+  const [open, setOpen] = useState(!!props.open || !!props.pane || !!props.sendBack || !!props.want || asks || item.state === "review" || (item.state === "needs_you" && !gated));
+  const [sendingBack, setSendingBack] = useState(!!props.sendBack || props.want?.what === "sendback");
+  const [choosing, setChoosing] = useState(props.want?.what === "choose");
+  const ref = useRef<HTMLLIElement>(null);
+  const { title, primary, menu, undoAllDialog, canSendBack } = useChangeActions(item, {
+    onOpenGuide: props.onOpenGuide,
+    startSendBack: () => {
+      setOpen(true);
+      setSendingBack(true);
+    },
+    startChoosing: () => {
+      setOpen(true);
+      setChoosing(true);
+    },
+  });
+  const sub = useChangeSub(item);
+  useEffect(() => {
+    if (!props.reveal) return;
+    setOpen(true);
+    showRow(ref.current);
+  }, [props.reveal]);
+  // What the list row asked for (its menu's Send back, or Send to another account) opens here, in the detail.
+  const wantedN = props.want?.n;
+  useEffect(() => {
+    if (!props.want) return;
+    setOpen(true);
+    if (props.want.what === "sendback") setSendingBack(true);
+    else setChoosing(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wantedN]);
+
+  useRowKeys(ref, {
+    toggle: props.pane ? undefined : () => setOpen((v) => !v),
+    primary: props.history ? undefined : primary?.run,
+    send_back: canSendBack ? () => {
+      setOpen(true);
+      setSendingBack(true);
+    } : undefined,
+  });
+
+  const actions = (
+    <Actions>
+      {primary && !props.history && (
+        <Button variant="primary" onClick={primary.run}>
+          {primary.label}
+        </Button>
+      )}
+      <RowMenu label={title} actions={props.history ? historyMenu(primary, menu) : menu} />
+      {undoAllDialog}
+    </Actions>
+  );
+  const statusWord = t(props.history || item.changeset?.status === "undone" || item.changeset?.status === "partly_undone" ? stateWord(item, gated) : item.dismissed ? "changes.state.dismissed" : gated ? "changes.state.cost_go" : `changes.state.${item.state}`);
+  const status = { tone: TONE[item.state], word: statusWord };
+  const secondOpinion = cs?.second_opinion ? <span className="second-opinion">{t(`changes.second.${cs.second_opinion}`)}</span> : null;
+  const opened = (
+    <>
+          {item.waiting && item.state !== "review" && <p data-waiting-reason="">{item.waiting}</p>}
+          {item.note && (
+            <div className="your-note">
+              <span className="what">{item.title?.kind === "answer" ? t("queue.title.answer") : t("changes.your_note")}</span>
+              <p>{item.note}</p>
+            </div>
+          )}
+          {(item.state === "review" || item.state === "done") && spentLine(item.spent_usd, item.range_usd) && (
+            <p className="hint">{spentLine(item.spent_usd, item.range_usd)}</p>
+          )}
+          {cs && <Because cs={cs} />}
+          {cs && cs.ops.length === 0 && <p className="hint">{t("changes.nothing_done")}</p>}
+          {cs && !props.history && cs.ops.filter((o) => o.status === "held").length > 1 && <ReleaseAll cs={cs} />}
+          {cs && cs.ops.length > 0 && (
+            <ItemList pane={props.pane} aria-label={tn("changes.did", cs.ops.length)}>
+              {(cs.groups ?? []).map((group) => (
+                <GroupRow key={`g-${group.id}`} group={group} cs={cs} history={props.history} />
+              ))}
+              {cs.ops
+                .filter((op) => !op.answer_group)
+                .map((op) =>
+                  op.op === "project.add" && op.status === "held" && !props.history ? (
+                    <ProjectProposalRow key={op.index} op={op} changeset={cs.id} />
+                  ) : (
+                    <OpRow key={op.index} op={op} cs={cs} source={item.source} history={props.history} />
+                  ),
+                )}
+            </ItemList>
+          )}
+          {sendingBack && cs && <SendBackForm cs={cs.id} onDone={() => setSendingBack(false)} />}
+          {choosing && <AccountChooser request={item.id} onDone={() => setChoosing(false)} />}
+    </>
+  );
+  if (props.pane) {
+    return (
+      <DetailItem data-row="" tabIndex={-1} ref={ref} data-changeset={cs?.id}>
+        <DetailTop
+          state={
+            <>
+              <StateMark tone={toneOfPill(status.tone)} quiet>
+                {status.word}
+              </StateMark>
+              <span>{sub}</span>
+            </>
+          }
+          actions={actions}
+        />
+        {secondOpinion && <p className="hint">{secondOpinion}</p>}
+        {item.state === "needs_you" && !gated && !item.dismissed && <OnTodayLink item={item} />}
+        {open && <RowBody pane id={`b-${item.id}`}>{opened}</RowBody>}
+      </DetailItem>
+    );
+  }
+  return (
+    <ExpandableRow
+      ref={ref}
+      aria-labelledby={`t-${item.id}`}
+      data-changeset={cs?.id}
+      title={title}
+      titleId={`t-${item.id}`}
+      metaLines={[withStatus(status, sub), secondOpinion]}
+      expand={{ expanded: open, controls: `b-${item.id}`, onToggle: () => setOpen(!open) }}
+      primary={
+        primary && !props.history ? (
+          <Button variant="primary" onClick={primary.run}>
+            {primary.label}
+          </Button>
+        ) : undefined
+      }
+      menu={
+        <>
+          <RowMenu label={title} actions={props.history ? historyMenu(primary, menu) : menu} />
+          {undoAllDialog}
+        </>
+      }
+    >
+      <OnTheRow item={item} />
+      {open && <RowBody id={`b-${item.id}`}>{opened}</RowBody>}
+    </ExpandableRow>
+  );
+}
+
+function firstLine(text: string | null): string {
+  return (text ?? "").split("\n").find((l) => l.trim())?.trim() ?? "";
+}
+
+/** The drafts and files a change made, one link each, shown without opening the change's details. A draft opens on the
+ * record it is for, where it waits for review; a file opens in the files list. */
+function MadeLinks(props: { made: S["MadeView"][] }) {
+  const { t } = useWords();
+  return (
+    <ul className="made plain-list" aria-label={t("changes.made")}>
+      {props.made.map((m) => (
+        <li key={`${m.kind}-${m.id}`}>
+          <span className="what">{t("changes.made")}</span>{" "}
+          <a href={viewHref(m.kind === "file" ? "records/files" : recordView(m.record.kind, m.record.id))}>
+            {t(`changes.made.${m.kind}`, { label: m.label })}
+          </a>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+type T = (key: string, vars?: Record<string, string | number>) => string;
+type TN = (key: string, n: number, vars?: Record<string, string | number>) => string;
+
+// What each kind of op did, in the words the screens use for it (the same grouping Today's review lines use).
+const DID: Record<string, string> = {
+  "action.add": "actions_added",
+  "action.close": "actions_closed",
+  "question.add": "questions",
+  note: "notes",
+  fact: "recorded",
+  "event.add": "recorded",
+  "event.set": "recorded",
+  "series.add": "recorded",
+  "series.link": "recorded",
+  "agenda.add": "recorded",
+  "record.set": "recorded",
+  "record.log": "recorded",
+  "person.add": "people",
+  "project.add": "projects",
+  "text.draft": "drafts",
+  "report.draft": "drafts",
+  "text.propose": "drafts",
+};
+const DID_ORDER = ["actions_added", "actions_closed", "questions", "notes", "recorded", "people", "projects", "drafts"];
+
+/** What the changes did, said as what they were: "Added 3 to-dos, Filed 1 note". Ops of a kind with no words here are
+ * counted as "did N things", so nothing is left out. */
+function didText(ops: S["OpView"][], t: T, tn: TN): string {
+  const counts = new Map<string, number>();
+  let other = 0;
+  for (const op of ops) {
+    const group = DID[op.op];
+    if (group) counts.set(group, (counts.get(group) ?? 0) + 1);
+    else other += 1;
+  }
+  const said = DID_ORDER.filter((g) => counts.has(g)).map((g) => tn(`changes.did_what.${g}`, counts.get(g)!));
+  if (other) said.push(tn("changes.did", other));
+  return said.join(t("changes.did_what.join"));
+}
+
+function subLine(item: S["ChangeItem"], t: T, tn: TN): string {
+  const when = dayAndTime(item.created_at);
+  if (item.state === "queued" || item.state === "running") return t("changes.sub.waiting", { when });
+  if (item.dismissed) return t("changes.sub.dismissed", { when });
+  if (item.state === "needs_you" || item.state === "failed") return item.waiting ? t("changes.sub.stopped_why", { when, why: firstLine(item.waiting) }) : t("changes.sub.stopped", { when });
+  const ops = item.changeset?.ops ?? [];
+  const held = ops.filter((o) => o.status === "held" || o.ask?.status === "open").length;
+  const did = ops.length ? didText(ops, t, tn) : t("changes.did_nothing");
+  return held ? t("changes.sub.held", { did, held: tn("changes.held", held), when }) : t("changes.sub.did", { did, when });
+}
+
+function undoMessage(report: S["UndoReport"], t: T, tn: TN): string {
+  const restored = report.restored.length;
+  const skipped = report.skipped.length;
+  if (!restored && !skipped) return t("toast.nothing_undone");
+  return skipped ? t("toast.undo_partial", { skipped: tn("toast.skipped", skipped) }) : t("toast.undone_items");
+}
+
+const OP_PILL: Record<S["OpView"]["status"], "warn" | "danger" | "neutral" | null> = {
+  applied: null,
+  held: "warn",
+  refused: "danger",
+  undone: "neutral",
+};
+
+/** The kinds of item a review card's row can be changed as (the kinds the change route takes). */
+const CHANGEABLE: ChangeKind[] = ["action", "question", "decision", "event", "fact"];
+
+/** The ops about a promise: the row shows why it exists and how it ended, beside the words the op rests on. */
+const PROMISE_OPS = new Set(["action.add", "action.close", "action.drop", "action.move", "action.part", "action.news"]);
+
+/** What changed's one link for a held item: the item is answered on its line on Today, so here it is information and this
+ * opens that line. Every held item has its line, so a missing one (the queue not loaded yet) shows no link for now. */
+function HeldOnToday(props: { changeset: string; op: number; question?: string }) {
+  const queue = useQueue();
+  const all = queue.data ?? [];
+  const lines = all.filter((l) => l.changeset === props.changeset);
+  // A question about an item (who owns it) is a line of its own, found by the question; a hold, by the change and its op.
+  const line = (props.question ? all.find((l) => l.question === props.question) : undefined) ?? lines.find((l) => l.op === props.op) ?? lines.find((l) => l.kind === "project_ending");
+  if (!line) return null;
+  return (
+    <div className="full">
+      <AnswerOnToday line={line.key} />
+    </div>
+  );
+}
+
+/** One thing the assistant did. In the history (`history`) a held item has no button: it is shown as information with a
+ * link to its line on Today, and Undo is in the row's menu. */
+export function OpRow(props: { op: S["OpView"]; cs: S["ChangesetView"]; source: string | null; history?: boolean }) {
+  const { t, tn, has } = useWords();
+  const act = useAct();
+  const { op, cs, history } = props;
+  const ref = useRef<HTMLLIElement>(null);
+  const [showSource, setShowSource] = useState(false);
+  const ask = op.ask && op.ask.status === "open" ? op.ask : null;
+  const needsOwner = op.meta.action_status === "held";
+  const pillKey = needsOwner && ask ? "owner" : op.status;
+  const pill = needsOwner && ask ? "warn" : OP_PILL[op.status];
+
+  const release = () =>
+    act(
+      () => api.release(cs.id, op.index),
+      () => ({ message: t("toast.released"), undo: () => api.undo(cs.id, [op.index]) }),
+    );
+  const undoThis = () =>
+    act(
+      () => api.undo(cs.id, [op.index]),
+      (report) => ({ message: undoMessage(report, t, tn) }),
+    );
+  // A held change the line on Today asks as a question has the same two answers here, in the same words.
+  const heldWords = useHeldAnswers(cs.id, op.index, op.status === "held" && !ask ? op.held : null, () => ref.current?.focus());
+  const told = op.held ? heldTold(op.held, t) : "";
+
+  // Each item the assistant made can be changed on its own, without sending the others back.
+  const changeKind = op.record && CHANGEABLE.includes(op.record.kind as ChangeKind) ? (op.record.kind as ChangeKind) : null;
+  const change = useChangeThis({ kind: changeKind ?? "action", id: op.record?.id ?? "" }, () => ref.current?.focus());
+  const menu: MenuAction[] = [];
+  if (op.status === "applied") menu.push({ id: "undo", label: t("op.undo_this"), run: () => void undoThis() });
+  if (changeKind && op.status === "applied") menu.push(change.entry);
+  if (op.evidence && props.source)
+    menu.push({ id: "source", label: t(showSource ? "op.hide_source" : "op.show_source"), run: () => setShowSource((v) => !v) });
+
+  if (heldWords && !history) for (const extra of heldWords.menu) menu.push(extra);
+  useRowKeys(ref, { primary: op.status === "held" && !ask && !history ? (heldWords ? heldWords.primary.run : () => void release()) : undefined });
+
+  const labelOf = useFieldLabel();
+  const factLine = useFactLine();
+  const readable = useReadable();
+  const { justMe } = useSides();
+  const meta = metaLine(op, t, labelOf);
+  return (
+    <Item row ref={ref}>
+      <div>
+        {heldWords && told && (
+          <div className="reason">
+            <strong>{told}</strong>
+          </div>
+        )}
+        <div className="what">
+          {opLabel(op, t, has, justMe)}
+          {pill && (
+            <Pill tone={pill} className="pill-gap">
+              {t(`op.status.${pillKey}`)}
+            </Pill>
+          )}
+        </div>
+        <div className="title">{op.op === "fact" ? readable(factLine(op.title, op.meta.said_by)) : readable(shortTitle(op.title, op.meta.due))}</div>
+        {meta && <div className="meta">{meta}</div>}
+        {op.op === "note" && op.status === "applied" && (
+          <div className="meta">
+            <a href={viewHref("records/notes")}>{t("notes.see")}</a>
+          </div>
+        )}
+        {op.reason && op.status !== "applied" && <div className="reason">{op.reason}</div>}
+      </div>
+      <Actions>
+        {history ? null : heldWords ? (
+          <>
+            {heldWords.other && (
+              <Button onClick={heldWords.other.run}>
+                {heldWords.other.label}
+              </Button>
+            )}
+            <Button variant="primary" onClick={heldWords.primary.run}>
+              {heldWords.primary.label}
+            </Button>
+          </>
+        ) : (
+          op.status === "held" &&
+          !ask && (
+            <Button variant="primary" onClick={() => void release()}>
+              {t("op.do_anyway")}
+            </Button>
+          )
+        )}
+        <RowMenu label={shortTitle(op.title, op.meta.due)} actions={menu} />
+      </Actions>
+      {heldWords?.noting && heldWords.other && (
+        <div className="full">
+          <NoteBox sends={[{ label: heldWords.other.label, run: heldWords.declineWithNote }]} onClose={heldWords.closeNote} />
+        </div>
+      )}
+      {op.evidence && (
+        <div className="because">
+          {t("op.because")} <q>{plainDates(op.evidence.quote)}</q>{" "}
+          {props.source && (
+            <button type="button" aria-expanded={showSource} onClick={() => setShowSource(!showSource)}>
+              {t(showSource ? "op.hide_source" : "op.show_source")}
+            </button>
+          )}
+        </div>
+      )}
+      {showSource && op.evidence && props.source && <SourcePanel id={props.source} quote={op.evidence.quote} />}
+      {op.record?.kind === "action" && PROMISE_OPS.has(op.op) && op.status !== "undone" && (
+        <div className="full">
+          <PromiseWhy action={op.record.id} quiet omitQuote line />
+        </div>
+      )}
+      {changeKind && change.form}
+      {history && (op.status === "held" || ask) && <HeldOnToday changeset={cs.id} op={op.index} question={ask?.id} />}
+      {ask && !history && (
+        <div className="full">
+          <AskChooser ask={ask} fold={{ changeset: cs.id, index: op.index }} />
+        </div>
+      )}
+    </Item>
+  );
+}
+
+/** What a Keep, a Drop or a Release all left alone, said as one toast: the ops that wait on the person's own choice, or whose
+ * Undo would overwrite a later change. */
+function leftMessage(done: S["AnswerGroupDone"], done_key: string, t: T, tn: TN): string {
+  return done.skipped.length
+    ? t("toast.group_partial", { skipped: tn("toast.skipped", done.skipped.length) })
+    : t(done_key);
+}
+
+/** One row for a group of an answer the task kind grouped: what it is, how its ops stand, Keep for all of them (while some
+ * wait) and Drop for all of them in the menu. */
+function GroupRow(props: { group: S["AnswerGroupView"]; cs: S["ChangesetView"]; history?: boolean }) {
+  const { t, tn } = useWords();
+  const act = useAct();
+  const { group, cs } = props;
+  const ref = useRef<HTMLLIElement>(null);
+  const counts = [
+    group.applied ? tn("changes.group.applied", group.applied) : "",
+    group.held ? tn("changes.held", group.held) : "",
+    group.undone ? tn("changes.group.undone", group.undone) : "",
+    group.refused ? tn("changes.group.refused", group.refused) : "",
+  ].filter(Boolean);
+  const keep = () =>
+    act(
+      () => api.keepGroup(cs.id, group.id),
+      (done) => ({
+        message: leftMessage(done, "toast.group_kept", t, tn),
+        undo: done.released.length ? () => api.undo(cs.id, done.released) : undefined,
+      }),
+    );
+  const drop = () =>
+    act(
+      () => api.dropGroup(cs.id, group.id),
+      (done) => ({ message: leftMessage(done, "toast.group_dropped", t, tn) }),
+    );
+  const menu: MenuAction[] = [];
+  if (group.applied || group.held) menu.push({ id: "drop", danger: true, label: t("changes.group.drop"), run: () => void drop() });
+  useRowKeys(ref, { primary: group.held && !props.history ? () => void keep() : undefined });
+  const firstHeld = props.history && group.held ? cs.ops.find((o) => o.answer_group === group.label && o.status === "held") : undefined;
+  return (
+    <Item row ref={ref}>
+      <div>
+        <div className="title">{group.label}</div>
+        <div className="meta">{counts.join(" · ")}</div>
+      </div>
+      <Actions>
+        {group.held > 0 && !props.history && (
+          <Button variant="primary" onClick={() => void keep()}>
+            {t("changes.group.keep")}
+          </Button>
+        )}
+        <RowMenu label={group.label} actions={menu} />
+      </Actions>
+      {firstHeld && <HeldOnToday changeset={cs.id} op={firstHeld.index} />}
+    </Item>
+  );
+}
+
+/** Release every held change of one answer together, with one Undo. */
+function ReleaseAll(props: { cs: S["ChangesetView"] }) {
+  const { t, tn } = useWords();
+  const act = useAct();
+  const { cs } = props;
+  return (
+    <Actions align="end">
+      <Button
+        onClick={() =>
+          void act(
+            () => api.releaseAll(cs.id),
+            (done) => ({
+              message: leftMessage(done, "toast.released_all", t, tn),
+              undo: done.released.length ? () => api.undo(cs.id, done.released) : undefined,
+            }),
+          )
+        }
+      >
+        {t("changes.release_all")}
+      </Button>
+    </Actions>
+  );
+}
+
+/** What the assistant did, in words; a filed note also says where it went. */
+function opLabel(op: S["OpView"], t: T, has: (key: string) => boolean, alone = false): string {
+  // Before it is decided an op is only what would happen ("Would close a to-do"); done is said once it is.
+  const word = op.status === "held" && has(`op.would.${op.op}`) ? "op.would" : "op";
+  if (op.op === "note") {
+    if (op.meta.project) return t(`${word}.note.under`, { project: op.meta.project });
+    // With nothing beside Personal, "not in a project" says nothing: a note is simply filed in Personal.
+    return op.meta.side_name ? t(`${word}.note.${alone ? "in_personal" : "in_side"}`, { side: op.meta.side_name }) : t(`${word}.note.none`);
+  }
+  return t(`${word}.${op.op}`);
+}
+
+/** A value an op sets, as words: a date as elsewhere in the app, never as it is stored. */
+function setValue(value: unknown): string {
+  const text = String(value ?? "");
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? day(text) : text;
+}
+
+function metaLine(op: S["OpView"], t: T, labelOf: (name: string) => string): string {
+  const bits: string[] = [];
+  const m = op.meta;
+  if (m.owners?.length) bits.push(m.owners.join(", "));
+  if (m.to_send) bits.push(t("action.to_send"));
+  if (m.to) bits.push(t("op.meta.to", { name: m.to }));
+  if (m.due) bits.push(t("op.meta.due", { date: day(m.due) }));
+  // A project shows only when the item has one: no chip says "not in a project".
+  if (op.op !== "note" && m.project) bits.push(m.project);
+  if (m.field) bits.push(t("op.meta.set", { field: labelOf(m.field), value: setValue(m.value) }));
+  if (m.said_by && m.as_of) bits.push(day(m.as_of));
+  if (m.role) bits.push(t("op.meta.role", { role: t(`role.${m.role}`) }));
+  if (m.stance) bits.push(t("op.meta.stance", { stance: t(`stance.${m.stance}`) }));
+  return bits.join(" · ");
+}
+
+export function SourcePanel(props: { id: string; quote: string }) {
+  const { t } = useWords();
+  const source = useQuery({ queryKey: ["source", props.id], queryFn: () => api.source(props.id) });
+  if (source.isPending) return <Skeleton rows={1} />;
+  if (source.isError || !source.data) return <div className="source">{t("source.missing")}</div>;
+  const s = source.data;
+  return (
+    <div className="source">
+      <div className="src">
+        {s.title} · {dayAndTime(s.received_at)}
+        {s.trust === "untrusted" && <span className="tag">{t("source.outside")}</span>}
+      </div>
+      {s.text ? <Highlighted text={s.text} quote={props.quote} /> : <p className="hint">{t("source.not_kept")}</p>}
+    </div>
+  );
+}
+
+/** `op` and `item` make it a note about one item of the change: only that item is undone, and the box names it. */
+export function SendBackForm(props: { cs: string; onDone: (sent?: boolean) => void; op?: number; item?: string; estimate?: string | null }) {
+  const { t } = useWords();
+  const act = useAct();
+  const [note, setNote] = useState("");
+  // Starting again from nothing is the usual choice; keeping what it did and changing it from there is the other.
+  const [undoFirst, setUndoFirst] = useState(true);
+  const area = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => area.current?.focus(), []);
+  return (
+    <form
+      className="sendback"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void act(
+          () => api.sendBack(props.cs, note, undoFirst, props.op === undefined ? undefined : [props.op]),
+          () => ({ message: t("toast.sent_back") }),
+        ).then((done) => {
+          if (done) props.onDone(true);
+          else props.onDone();
+        });
+      }}
+    >
+      <label className="hint" htmlFor={`sb-${props.cs}-${props.op ?? "all"}`}>
+        {props.item ? t("changes.send_back_label_item", { item: props.item.replace(/[.!?]+$/, "") }) : t("changes.send_back_label")}
+      </label>
+      <textarea id={`sb-${props.cs}-${props.op ?? "all"}`} ref={area} value={note} onChange={(e) => setNote(e.target.value)} required />
+      {props.op !== undefined && (
+        <p className="hint">
+          <span>{t("changes.send_back_item_redo")}</span>
+          {props.estimate && <span> · {props.estimate}</span>}
+        </p>
+      )}
+      {props.op === undefined && (
+        <label className="check-line">
+          <input type="checkbox" checked={undoFirst} onChange={(e) => setUndoFirst(e.target.checked)} />
+          {t("changes.send_back_undo")}
+        </label>
+      )}
+      <Actions align="end">
+        <Button variant="quiet" onClick={() => props.onDone()}>
+          {t("action.cancel")}
+        </Button>
+        <Button variant="primary" type="submit" disabled={!note.trim()} reason={t("changes.send_back_needs_note")}>
+          {t("changes.send_back_go")}
+        </Button>
+      </Actions>
+    </form>
+  );
+}
+
+/** Where a request that an account declined can go instead: the other accounts that may take its material. */
+function AccountChooser(props: { request: string; onDone: () => void }) {
+  const { t } = useWords();
+  const act = useAct();
+  const accounts = useQuery({
+    queryKey: ["request-accounts", props.request],
+    queryFn: () => api.requestAccounts(props.request),
+    gcTime: 0,
+  });
+  const box = useRef<HTMLDivElement>(null);
+  const ready = !accounts.isPending;
+  useEffect(() => {
+    if (ready) box.current?.querySelector<HTMLElement>("button")?.focus();
+  }, [ready]);
+  const choose = (account: S["AccountChoice"]) =>
+    void act(
+      () => api.retry(props.request, account.use),
+      () => ({ message: t("toast.sent_other", { account: account.label }) }),
+    ).then((done) => {
+      if (done) props.onDone();
+    });
+  const list = accounts.data ?? [];
+  return (
+    <div className="sendback" role="group" aria-labelledby={`ac-${props.request}`} ref={box}>
+      <p className="hint" id={`ac-${props.request}`}>
+        {t(ready && list.length === 0 ? "changes.no_accounts" : "changes.choose_account")}
+      </p>
+      {accounts.isPending && <Skeleton rows={1} />}
+      {accounts.isError && <p className="problem-note">{t("changes.accounts_failed")}</p>}
+      {list.length > 0 && (
+        <ul className="plain-list account-list">
+          {list.map((a) => (
+            <li key={a.use}>
+              <Button onClick={() => choose(a)}>
+                {a.label}
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <Actions align="end">
+        <Button variant="quiet" onClick={props.onDone}>
+          {t("action.cancel")}
+        </Button>
+      </Actions>
+    </div>
+  );
+}

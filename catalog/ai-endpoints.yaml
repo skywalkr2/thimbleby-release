@@ -1,0 +1,249 @@
+# Kinds of AI account the Add account screen offers, so a person picks a service by name instead of typing addresses.
+# Naming public services here (and only here, in data) is a product decision. Each entry:
+#   id, name           shown on screen; the name starts the new account's name ("<name> account"), and the id is
+#                      its short name in the settings until the person names it themselves
+#   adapter            the adapter that talks to it
+#   base_url           the base address of its endpoint ("" when the person enters it)
+#   key_url            where the person makes a key ("" when it needs none)
+#   signup_url         where the person makes an account with the service ("" when the setup steps don't offer a link)
+#   credit_url         where the person adds credit to it ("" when the setup steps don't offer a link)
+#   install_url        for a server on this computer: where the person gets it ("" when there is no such page)
+#   recommended        the one service the setup guide offers first, with a "Recommended" tag (at most one entry)
+#   alternative        the one other service the guide offers beside it (at most one entry)
+#                      Every other entry is offered under "Something else".
+#   needs_key          whether a key is asked for
+#   local              a server on this computer: nothing leaves it, and the screen can look for it
+#   allowed_data       the data levels a new account of this kind is offered by default (the person can change them)
+#   settings           provider settings a new account of this kind starts with (see ai.yaml's providers); for a
+#                      command-line agent, its whole `agent` block: the command with the program's own options that
+#                      turn its tools off, how it takes the packet and where its answer is, and, where the program
+#                      can say which account it is signed in as, identity_command with identity_field (or
+#                      identity_line and identity_pattern) naming where the account is in its answer
+#   program            for a command-line agent: the program's name, so the screen can say whether it is installed
+#   model_examples     names the program accepts for its models, offered when it can't list them
+#   model_roles        what each example is for, by example name: recommended (the one chosen first), stronger or
+#                      faster. The screen offers these three words and shows the program's own name for the choice
+#                      only in a hint, so a name the program renames is a change here and nowhere else
+#   model_optional     the program picks its own model when none is named
+#   tier_presets       the recommended setup, by tier name (routine, deep, hardest): `family`, a word matched without
+#                      regard to case against the model ids the service lists for the person's key (for a
+#                      command-line agent, against model_examples), and `effort` (low, medium or high; optional).
+#                      Adding an account with no choice of tiers fills each tier with the newest model of its family
+#                      (by the listing's release date, else the version in the id, else the list's order) and its effort; hardest is made when the settings have no such tier. A family no model matches
+#                      leaves its tier as it would be without a preset. Names families, never ids, so a newer model of
+#                      the family is picked up with no change here. An entry with no preset gets its tiers by price.
+#   effort_param, effort_option (provider and agent settings): how a service takes an effort. Each is set on an
+#                      entry only once the service's own documentation confirms the parameter for it; an entry
+#                      without one records a tier's effort but never sends it.
+#   note               what it is, shown once the kind is chosen (and on its card when there is no summary)
+#   summary            one short line for the kind's card, for an entry whose note is too long for a card; the card
+#                      shows the summary when there is one, else the note
+# Model ids are never listed here: the screen asks the service for its models with the person's key.
+endpoints:
+  - id: openai
+    name: OpenAI
+    adapter: openai-compatible
+    base_url: https://api.openai.com/v1
+    key_url: https://platform.openai.com/api-keys
+    signup_url: https://platform.openai.com/signup
+    credit_url: https://platform.openai.com/settings/organization/billing/overview
+    alternative: true
+    needs_key: true
+    settings:
+      max_tokens_param: max_completion_tokens   # the older name is deprecated and refused by its reasoning models
+      send_temperature: false   # its current models take none once they reason, and they reason by default
+      effort_param: reasoning_effort
+    note: Pay as you go on your own OpenAI account.
+  - id: anthropic
+    name: Anthropic
+    adapter: anthropic-messages
+    base_url: https://api.anthropic.com
+    key_url: https://console.anthropic.com/settings/keys
+    signup_url: https://console.anthropic.com/login
+    credit_url: https://console.anthropic.com/settings/billing
+    recommended: true
+    needs_key: true
+    settings:
+      send_temperature: false   # its current models refuse a temperature they don't set themselves
+    tier_presets:
+      routine: {family: haiku}
+      deep: {family: sonnet}
+      hardest: {family: opus}
+    note: Pay as you go on your own Anthropic account.
+  - id: google
+    name: Google AI Studio
+    adapter: openai-compatible
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    key_url: https://aistudio.google.com/apikey
+    needs_key: true
+    settings:
+      send_temperature: false   # its current models are documented to behave badly with any value but their own
+      effort_param: reasoning_effort
+      auth_reasons: [API_KEY_INVALID]   # the reason code in an error body that says the key was refused
+      key_refused_status_on_models: [400]   # it answers a refused key with a 400, never a 401
+    note: Has a free tier with lower limits; check what it allows the service to keep.
+  - id: openrouter
+    name: OpenRouter
+    adapter: openai-compatible
+    base_url: https://openrouter.ai/api/v1
+    key_url: https://openrouter.ai/settings/keys
+    needs_key: true
+    settings:
+      effort_param: reasoning_effort
+    note: One key for models from many companies, with prices listed per model.
+  - id: mistral
+    name: Mistral
+    adapter: openai-compatible
+    base_url: https://api.mistral.ai/v1
+    key_url: https://console.mistral.ai/api-keys
+    needs_key: true
+    note: Pay as you go on your own Mistral account.
+  - id: groq
+    name: Groq
+    adapter: openai-compatible
+    base_url: https://api.groq.com/openai/v1
+    key_url: https://console.groq.com/keys
+    needs_key: true
+    note: Fast answers from open models.
+  - id: deepseek
+    name: DeepSeek
+    adapter: openai-compatible
+    base_url: https://api.deepseek.com
+    key_url: https://platform.deepseek.com/api_keys
+    needs_key: true
+    settings:
+      effort_param: reasoning_effort
+    note: Low prices; check where it keeps what you send.
+  - id: xai
+    name: xAI
+    adapter: openai-compatible
+    base_url: https://api.x.ai/v1
+    key_url: https://console.x.ai
+    needs_key: true
+    settings:
+      effort_param: reasoning_effort
+      key_refused_status_on_models: [400]   # it answers a refused key with a 400, never a 401
+    note: Pay as you go on your own xAI account.
+  - id: local
+    name: Ollama on this computer
+    adapter: openai-compatible
+    base_url: http://localhost:11434/v1
+    install_url: https://ollama.com/download
+    needs_key: false
+    local: true
+    settings:
+      effort_param: reasoning_effort
+    allowed_data: [open, internal, restricted]
+    note: Runs on this computer. Start Ollama first, then press Check.
+  - id: lm-studio
+    name: LM Studio on this computer
+    adapter: openai-compatible
+    base_url: http://localhost:1234/v1
+    install_url: https://lmstudio.ai
+    needs_key: false
+    local: true
+    settings:
+      json_mode: false   # its documented request fields have no JSON-object mode
+    allowed_data: [open, internal, restricted]
+    note: Runs on this computer. Start LM Studio's server first, then press Check.
+  - id: other
+    name: Another service
+    adapter: openai-compatible
+    base_url: ""
+    needs_key: false
+    note: Any service that works the way the big ones do. Enter its address from its own documentation, and a key only if it asks for one.
+  - id: claude-code
+    name: Claude Code
+    adapter: cli-agent
+    base_url: ""
+    needs_key: false
+    program: claude
+    model_examples: [haiku, sonnet, opus]
+    model_roles: {haiku: recommended, sonnet: stronger, opus: stronger}
+    tier_presets:
+      routine: {family: haiku}
+      deep: {family: sonnet}
+      hardest: {family: opus}
+    settings:
+      agent:
+        command: [claude, -p, --output-format, json, --model, "{model}", --tools, "", --disallowedTools, "mcp__*", --strict-mcp-config, --no-session-persistence]
+        packet_via: stdin
+        output_via: stdout
+        output_json: true
+        output_fields:
+          text: result
+          input_tokens: usage.input_tokens
+          output_tokens: usage.output_tokens
+          cached_input_tokens: usage.cache_read_input_tokens
+          cost_usd: total_cost_usd
+        errors:
+          report_on_output: true
+          auth: ["not logged in", "please run /login", "invalid api key", "oauth token (?:has )?(?:expired|revoked)", "authentication required", "login expired"]
+          quota: ["usage limit reached", "hit your [a-z ]{0,30}limit", "credit balance is too low"]
+          rate_limited: ["rate limit", "overloaded", "temporarily limiting requests"]
+        effort_option: ["--effort", "{effort}"]
+        system_option: ["--system-prompt-file", "{system}"]  # our instructions in place of its coding-assistant ones
+        sign_in_hint: Open a terminal, run claude and sign in, then press Test again.
+        identity_command: [claude, auth, status]
+        identity_field: email
+    note: Uses your Claude plan or account through Claude Code, with its tools off.
+  - id: copilot
+    name: GitHub Copilot CLI
+    adapter: cli-agent
+    base_url: ""
+    needs_key: false
+    program: copilot
+    model_optional: true
+    settings:
+      agent:
+        command: [copilot, -s, --no-ask-user, --no-custom-instructions, --disable-builtin-mcps, "--deny-tool=shell", "--deny-tool=write", "--deny-tool=read", "--deny-tool=url", "--deny-tool=memory"]
+        packet_via: stdin
+        output_via: stdout
+        effort_option: ["--effort", "{effort}"]
+        errors:
+          quota: ["exceeded your monthly quota"]  # as it printed, out of quota
+        sign_in_hint: Open a terminal, run copilot and sign in with /login, then press Test again.
+    note: Uses your Copilot plan through the Copilot CLI, with its tools denied.
+  - id: codex
+    name: Codex CLI
+    adapter: cli-agent
+    base_url: ""
+    needs_key: false
+    program: codex
+    model_optional: true
+    settings:
+      agent:
+        command: [codex, exec, --sandbox, read-only, --skip-git-repo-check, --ephemeral, --ignore-user-config, --ignore-rules]
+        packet_via: stdin
+        output_via: stdout
+        effort_option: ["-c", "model_reasoning_effort={effort}"]
+        errors:
+          auth: ["not logged in", "401 unauthorized", "missing bearer or basic authentication"]  # as it printed, signed out
+        sign_in_hint: Open a terminal, run codex and sign in, then press Test again.
+    note: Uses your ChatGPT plan or account through the Codex CLI, read-only.
+  - id: gemini-cli
+    name: Gemini CLI
+    adapter: cli-agent
+    base_url: ""
+    needs_key: false
+    program: gemini
+    model_optional: true
+    settings:
+      agent:
+        command: [gemini, --skip-trust, --output-format, json]
+        packet_via: stdin
+        output_via: stdout
+        output_json: true
+        output_fields:
+          text: response
+        errors:
+          unsupported: ["ineligibletiererror", "unsupported_client", "no longer supported for"]  # as it printed, on a personal account
+        sign_in_hint: Open a terminal, run gemini and sign in, then press Test again.
+    summary: Uses your Google account through the Gemini CLI. A key or a paid plan is needed.
+    note: Uses your Google account through the Gemini CLI. It refuses personal free Google accounts, so a key or a paid plan is needed. Its documentation says it asks before writing files or running commands; it names no option that stops it reading files or fetching pages.
+  - id: agent
+    name: Another command-line agent signed in as you
+    adapter: cli-agent
+    base_url: ""
+    needs_key: false
+    note: Give the command that starts it, with the options that turn its tools off. The app checks that they are off before it uses it.

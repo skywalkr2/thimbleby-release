@@ -1,0 +1,578 @@
+"""The HTTP application.
+
+Everything is served under the configured base path. In local mode every route except the health check needs the
+session, which the page gets once by giving the install token (`POST /api/session`) and then sends as a bearer header.
+There is no cookie: a cookie for this computer is sent to every local web server, whatever its port.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hmac
+import logging
+import os
+import sqlite3
+import time
+import uuid
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+from html import escape
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, Request
+from fastapi.exception_handlers import http_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
+from starlette.applications import Starlette
+from starlette.exceptions import HTTPException
+from starlette.routing import Mount
+from starlette.types import ASGIApp
+
+from api.act_routes import build_act_router
+from api.action_work_routes import build_action_work_router
+from api.ask_routes import build_ask_router
+from api.attention_routes import build_attention_router
+from api.brief_routes import build_brief_router
+from api.calendar_routes import build_calendar_router
+from api.correction_routes import build_correction_router
+from api.data_form_routes import build_data_form_router
+from api.day_routes import build_day_router
+from api.erase_routes import build_erase_router
+from api.feedback_routes import build_feedback_router
+from api.first_promises_routes import build_first_promises_router
+from api.knowledge_routes import build_knowledge_router
+from api.meeting_routes import build_meeting_router
+from api.notification_routes import build_notification_router
+from api.open_items_routes import build_open_items_router
+from api.pack_routes import build_pack_router
+from api.promise_routes import build_promise_router
+from api.quality_routes import build_quality_router
+from api.records_routes import build_records_router
+from api.reminder_routes import build_reminder_router
+from api.repeat_routes import build_repeat_router
+from api.reply_routes import build_reply_router
+from api.routes import build_router
+from api.schemas import RuntimeConfig, SessionOpened
+from api.screen_text import refusal
+from api.search_routes import build_search_router
+from api.secret_routes import build_secret_router
+from api.sent_routes import build_sent_router
+from api.setup_routes import build_setup_router
+from api.sign_in_routes import build_sign_in_router
+from api.since_routes import build_since_router
+from api.tie_routes import build_tie_router
+from api.today_routes import build_today_router
+from api.todo_routes import build_todo_router
+from api.view_routes import build_view_router
+from api.waiting_routes import build_waiting_router
+from api.watch_routes import build_watch_router
+from engine import __version__, problems, slow_screens
+from engine.ai.router import Router
+from engine.brand import LOGO_TYPES, logo_path
+from engine.config import Config
+from engine.local_guards import allowed_hosts, allowed_origins
+from engine.sessions import Sessions
+from engine.shipped import product, shipped
+from engine.storage import Store, StoreError
+from engine.storage.lease import LeaseLost
+from engine.storage.store import CONFLICT_WORDS
+from engine.worker import Events, Worker
+from engine.workspace import Workspace
+
+UI_DIST = shipped("web")
+
+#: Paths served with no session. The sign-in callback is reached by the browser's own navigation from the service's
+#: page, which carries no header; it is protected instead by the single-use state only this app issued (with PKCE), and
+#: it answers with a page that takes the person back into the app. `/api/session` is where the install token opens a
+#: session: it checks the token itself.
+OPEN_PATHS = {"/api/health", "/api/sign-ins/callback", "/api/session"}
+#: Methods that don't change anything, so the origin rule doesn't apply to them.
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+#: The response header that names the record kinds a write changed, comma-separated (S-0424).
+CHANGED_KINDS_HEADER = "X-Changed-Kinds"
+CHANGED_POSITION_HEADER = "X-Changed-Position"
+#: A ledger position past any real one: asking for the kinds written after it returns only the ledger's last position.
+_LAST_ONLY = 2**62
+
+# The UI loads nothing from elsewhere and runs no inline script, so the policy can be strict (design 12.5). The UI's
+# component library adds two fixed style rules (touch handling for pressable elements, and scroll locking on touch
+# screens); they are allowed by their exact hash, so nothing else inline can apply. The browser tests fail if a
+# library update changes them. A picture the app fetches with the person's key (the logo) is shown from a blob address
+# it made itself, so images may come from blob: too.
+UI_STYLE_HASHES = (
+    "'sha256-38RhXrc7EdReTKsOm23ZPOCUgniTUUcjky8QOOrQx6o='",
+    "'sha256-gYiS/BvZvRcK27JIXTuwhZ3hs2+VJ1X+2gUlE+farlg='",
+)
+SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; script-src 'self'; "
+        f"style-src 'self' {' '.join(UI_STYLE_HASHES)}; img-src 'self' data: blob:; connect-src 'self'; "
+        "font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+}
+
+
+log = logging.getLogger(__name__)
+
+#: The name the assistant has until the person gives it one.
+
+
+#: What the browser shows when this copy of the code has no built screens: the app runs, and the screens are a
+#: separate build step in a copy taken straight from the repository.
+NOT_BUILT_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Screens not built yet</title></head>
+<body>
+<h1>The screens aren't built in this copy yet</h1>
+<p>The app is running, but this copy of its code doesn't have its screens built. In a terminal, in the app's folder,
+run these two commands, then reload this page:</p>
+<pre>npm --prefix web install
+npm --prefix web run build</pre>
+<p>The first installs the tools the screens are built with; the second builds them. You don't need to stop the app.</p>
+</body></html>
+"""
+
+
+def create_app(
+    ws: Workspace,
+    cfg: Config,
+    token: str,
+    *,
+    on_shutdown: Callable[[], None] | None = None,
+    start_worker: bool = False,
+    router_factory: Callable[[], Router] | None = None,
+    ui_dist: Path | None = None,
+    on_restart: Callable[[], None] | None = None,
+    sync_held: bool = False,
+    on_erased: Callable[[], None] | None = None,
+) -> ASGIApp:
+    """Build the app for a workspace. The returned app serves the base path from the config.
+
+    `on_shutdown` runs while the server shuts down, before the process exits on a stop signal, so cleanup such as
+    releasing the instance lease always happens. With `start_worker`, queued requests are processed in the background;
+    otherwise they wait until `app.state.worker.run_pending()` is called (tests). `on_restart` is called when saved
+    settings or new code need the process to start again; without it, waiting work says a restart is needed.
+    `sync_held`: the app started while this computer and the synced folder had diverged, so it writes nothing to the
+    folder until the person chooses which copy to keep. `on_erased` is called once the person has deleted the workspace
+    and the answer is sent, to stop the server."""
+    from engine.sync import placement_problem
+
+    base_path = cfg.server.base_path
+    placed = placement_problem(ws, cfg)
+    if placed:
+        raise RuntimeError(f"Can't start: {placed} (storage.sync.folder).")
+    store = Store(ws.db_path, cfg=cfg)
+    events = Events()
+    if cfg.moved:
+        from engine.migrate import move_identity
+
+        move_identity(ws, store, cfg)
+    from engine.lists import ensure as ensure_lists
+    from engine.organizations import link_sides, move_names
+    from engine.rules import seed_rules
+
+    move_names(store)
+    from engine.contacts import restate_stored
+
+    restate_stored(store)  # a person's contact details from before a kind could hold several become lists, once
+    link_sides(store, cfg)  # a side from before the link gets its organization, once
+    ensure_lists(store)
+    seed_rules(store)
+    try:
+        # History lines that name the assistant are re-sourced from the ledger's evidence, once; later starts find none.
+        from engine.outward import sweep as resource_history
+
+        resource_history(store, cfg)
+    except Exception as err:  # never stops the app from starting
+        log.warning("Couldn't re-source history lines that name the assistant: %s", err)
+    try:
+        # Labels and titles written when an id stood where a title belongs are re-worded from the record, once.
+        from engine.outward import sweep_ids
+
+        sweep_ids(store, cfg)
+    except Exception as err:  # never stops the app from starting
+        log.warning("Couldn't re-word titles that hold an id: %s", err)
+    try:
+        # Notes stored before the title rule are re-titled by their message's subject and sender, once.
+        from engine.note_titles import retitle_stored
+
+        retitle_stored(ws, store, cfg)
+    except Exception as err:  # never stops the app from starting
+        log.warning("Couldn't re-title stored notes: %s", err)
+    try:
+        # Hand-made file links an earlier version wrote as paths name their file by its content instead, once.
+        from engine.version_choices import migrate_to_hashes
+
+        migrate_to_hashes(ws, cfg, store, dict(os.environ))
+    except Exception as err:  # never stops the app from starting
+        log.warning("Couldn't turn file links into links by content: %s", err)
+    try:
+        # Names older settings and rules hold for a project or person become their ids, so a rename can't detach them.
+        from engine.references import join_stored_names
+
+        join_stored_names(ws, store)
+    except Exception as err:  # never stops the app from starting
+        log.warning("Couldn't join names to ids: %s", err)
+    try:
+        # Corrections recorded before the assistant could learn from them, and rule decisions held for the person,
+        # are gathered once into the catch-up list.
+        from engine.catch_up import start as start_catch_up
+
+        start_catch_up(store, cfg)
+    except Exception as err:  # never stops the app from starting
+        log.warning("Couldn't make the catch-up list: %s", err)
+    try:
+        # Kinds of suggestion already quieted by counting are kept as the person's own choice, once.
+        from engine import attention_learning
+
+        attention_learning.keep_earlier_choices(ws, store.read(), cfg, datetime.now(UTC))
+    except Exception as err:  # never stops the app from starting
+        log.warning("Couldn't keep what the dismissals had quieted: %s", err)
+    worker = Worker(ws, store, cfg, events, router_factory, on_restart)
+    if sync_held:
+        worker.hold_sync()
+    from engine.sign_in_sources import start_signed_in
+
+    try:
+        # Sources a sign-in declares, for sign-ins made before their add-on declared them; the worker takes them in.
+        start_signed_in(ws, cfg, store)
+    except Exception as err:  # never stops the app from starting
+        log.warning("Couldn't start the sources of sign-ins made earlier: %s", err)
+    instance = uuid.uuid4().hex
+    dist = ui_dist if ui_dist is not None else UI_DIST
+
+    @asynccontextmanager
+    async def lifespan(_app: Any) -> AsyncIterator[None]:
+        if start_worker:
+            worker.start()
+        try:
+            yield
+        finally:
+            worker.stop()
+            store.close()
+            if on_shutdown is not None:
+                on_shutdown()
+
+    inner = FastAPI(
+        title="Thimbleby",
+        version=__version__,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url="/api/openapi.json",
+        lifespan=lifespan if base_path == "/" else None,
+    )
+
+    @inner.exception_handler(HTTPException)
+    async def refuse_unfit_wording(request: Request, err: HTTPException) -> Any:
+        """While the wording check is on, an error message the screen would show that names a file, a key or a command
+        fails the response with the problem found, so it is fixed where it was written. Otherwise the usual answer."""
+        problem = refusal(err.detail) if isinstance(err.detail, str) else None
+        if problem is not None:
+            log.error("Refused to send an error message: %s", problem)
+            return JSONResponse({"detail": problem}, status_code=500)
+        if err.detail == CONFLICT_WORDS:
+            # The screen reads it as "look again", and says nothing when it was the person's own second press.
+            err = HTTPException(
+                status_code=err.status_code,
+                detail=err.detail,
+                headers={**(err.headers or {}), "X-Cockpit-Needs": "look-again"},
+            )
+        return await http_exception_handler(request, err)
+
+    @inner.exception_handler(RequestValidationError)
+    async def say_what_is_allowed(request: Request, err: RequestValidationError) -> Any:
+        """A request the schema refused (a value too long, a wrong kind) answers in plain words: what is allowed, from
+        the kind of the error and its limits, never the validation library's own message."""
+        from engine.plain_errors import reason_of
+
+        errors = err.errors()
+        return JSONResponse(
+            {"detail": reason_of(errors[0]) if errors else "That value can't be used."}, status_code=422
+        )
+
+    @inner.exception_handler(LeaseLost)
+    async def say_it_was_taken(request: Request, err: LeaseLost) -> Any:
+        """Another copy took the workspace over: this copy saves nothing more, and the answer says so."""
+        return JSONResponse({"detail": str(err)}, status_code=409)
+
+    @inner.exception_handler(Exception)
+    async def keep_unexpected_error(request: Request, err: Exception) -> Any:
+        """An error nothing handled: a line is kept for the person's feedback (type and masked message, no traceback),
+        and the answer is the usual plain 500."""
+        route = request.scope.get("route")
+        where = f"{request.method} {getattr(route, 'path', None) or 'unknown route'}"
+        problems.note(ws, store, cfg, where, err)
+        return PlainTextResponse("Internal Server Error", status_code=500)
+
+    def signed_out(request: Request, path: str) -> Any:
+        """The answer to a request with no sign-in. The built page's own files are open, and a browser asking for a page
+        gets the app's screen (with the 401), which says the way back in its own words; every other answer, and every
+        call for data, is the plain error."""
+        if request.method == "GET" and not path.startswith("/api/"):
+            candidate = (dist / path.lstrip("/")).resolve()
+            index = dist / "index.html"
+            if (
+                path != "/"
+                and candidate.is_file()
+                and candidate.is_relative_to(dist.resolve())
+                and candidate != index.resolve()
+            ):
+                return FileResponse(candidate)
+            if "text/html" in request.headers.get("accept", "") and index.exists():
+                return HTMLResponse(
+                    _with_base(index.read_text(encoding="utf-8"), base_path),
+                    status_code=401,
+                    headers={"Cache-Control": "no-store"},
+                )
+        return _unauthorized()
+
+    sessions = Sessions(ws.private_dir, cfg.server.cookie_max_age_days)
+
+    @inner.middleware("http")
+    async def require_session(request: Request, call_next: Any) -> Any:
+        path = request.url.path.removeprefix(request.scope.get("root_path", "")) or "/"
+        if path in OPEN_PATHS:
+            return await call_next(request)
+        presented = _bearer(request)
+        if presented is None or not sessions.valid(presented):
+            offered = request.query_params.get("token")
+            index = dist / "index.html"
+            if (
+                offered is not None
+                and request.method == "GET"
+                and path == "/"
+                and hmac.compare_digest(offered, token)
+                and index.exists()
+            ):
+                # The app's own link: the page opens, and gives the token once to get its session.
+                return HTMLResponse(
+                    _with_base(index.read_text(encoding="utf-8"), base_path), headers={"Cache-Control": "no-store"}
+                )
+            return signed_out(request, path)
+        return await call_next(request)
+
+    hosts = allowed_hosts(cfg.server)
+    origins = allowed_origins(cfg.server)
+
+    # Added after the token check, so it runs first: a request for another address, or a change asked for by another
+    # web page, is refused before anything else looks at it. It covers every path, including the open ones.
+    @inner.middleware("http")
+    async def local_guards(request: Request, call_next: Any) -> Any:
+        if request.headers.get("host", "").lower() not in hosts:
+            return _refused("This address isn't the app's. Open the link the app printed when it started.")
+        if request.method not in SAFE_METHODS:
+            origin = request.headers.get("origin")
+            cross_site = request.headers.get("sec-fetch-site", "").lower() == "cross-site"
+            if cross_site or (origin is not None and origin.lower() not in origins):
+                return _refused("This request came from another web page, so the app didn't act on it.")
+        return await call_next(request)
+
+    slow = slow_screens.for_workspace(ws.root, cfg.server.slow_screen_ms)
+
+    # Times every request (design 6.13): logged with its route, and a main screen's load counts toward its Today line.
+    @inner.middleware("http")
+    async def time_requests(request: Request, call_next: Any) -> Any:
+        started = time.perf_counter()
+        response = await call_next(request)
+        route = request.scope.get("route")
+        path = getattr(route, "path", None)
+        if path and request.method == "GET" and response.status_code == 200:
+            slow.note(path, (time.perf_counter() - started) * 1000)
+        return response
+
+    # Every write says what it changed (S-0424): the record kinds the ledger gained while the request ran go back in a
+    # header, so the screen reads again only what shows them, as the live stream's "changed" event would. A write that
+    # wrote no record says so with an empty header; the screen then reads everything, as before. A write that ran beside
+    # another may name a kind more, which only reads a little more.
+    @inner.middleware("http")
+    async def changed_kinds(request: Request, call_next: Any) -> Any:
+        if request.method in SAFE_METHODS:
+            return await call_next(request)
+
+        def ledger_kinds(after: int) -> tuple[int, list[str]] | None:
+            # A write that closed or removed the workspace (an erase, a restore) has no ledger left to read: it answers
+            # without the header, and the screen reads everything, as before.
+            try:
+                return store.read().changed_kinds(after)
+            except (sqlite3.Error, StoreError):
+                return None
+
+        before = await asyncio.to_thread(ledger_kinds, _LAST_ONLY)
+        response = await call_next(request)
+        if before is not None and 200 <= response.status_code < 300:
+            after = await asyncio.to_thread(ledger_kinds, before[0])
+            if after is not None:
+                response.headers[CHANGED_KINDS_HEADER] = ",".join(after[1])
+                # Where the ledger stood when the answer was made: the stream's event for this very write carries a
+                # position no later than this, so the screen knows it already read what that event announces.
+                response.headers[CHANGED_POSITION_HEADER] = str(after[0])
+        return response
+
+    # Added last so it wraps everything, including the sign-in redirects and refusals above.
+    @inner.middleware("http")
+    async def security_headers(request: Request, call_next: Any) -> Any:
+        response = await call_next(request)
+        for name, value in SECURITY_HEADERS.items():
+            response.headers.setdefault(name, value)
+        return response
+
+    @inner.get("/api/health")
+    def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @inner.post("/api/session")
+    def open_session(request: Request) -> Any:
+        """Give the install token, as a bearer header, and get a session to send on every later call. The token opens
+        nothing else."""
+        offered = _bearer(request)
+        if offered is None or not hmac.compare_digest(offered, token):
+            return _unauthorized()
+        return SessionOpened(session=sessions.open())
+
+    @inner.get("/api/runtime-config")
+    def runtime_config() -> RuntimeConfig:
+        """What the UI needs before anything else: where it is served, what to call things, and its settings."""
+        prefix = "" if base_path == "/" else base_path
+        return RuntimeConfig(
+            base_path=base_path,
+            api_base=f"{prefix}/api",
+            assistant_name=cfg.workspace.assistant_name,
+            assistant_named=bool(cfg.workspace.assistant_name.strip()),
+            workspace_name=cfg.workspace.name,
+            version=__version__,
+            pm=cfg.workspace.user.person,
+            narrow_below_px=cfg.ui.narrow_below_px,
+            toast_seconds=cfg.ui.toast_seconds,
+            request_timeout_seconds=cfg.ui.request_timeout_seconds,
+            long_request_timeout_seconds=cfg.ui.long_request_timeout_seconds,
+            title_words=cfg.ui.title_words,
+            rail_rows=cfg.ui.today.rail_rows,
+            heavy_day_from=cfg.ui.today.heavy_day_from,
+            group_rows=cfg.ui.today.group_rows,
+            twin_window_minutes=cfg.ui.twin_window_minutes,
+            time_format=cfg.ui.time_format,
+            time_step=cfg.ui.time_step,
+            shortcuts=cfg.ui.shortcuts,
+            wording={**store.plugins.wording(), **cfg.ui.wording},
+            demo=cfg.workspace.demo,
+            instance=instance,
+            feedback_to=cfg.ui.feedback_to or product().get("feedback_to") or None,
+            brand_color=cfg.ui.brand.color,
+            logo=logo_path(ws.config_dir, cfg.ui.brand.logo) is not None,
+            theme=cfg.ui.theme,
+            density=cfg.ui.density,
+            language=cfg.workspace.language,
+            timezone=cfg.workspace.user.timezone or "UTC",
+        )
+
+    @inner.get("/api/brand/logo", include_in_schema=False)
+    def brand_logo() -> Any:
+        """The workspace's logo image from its config folder, when one is set and present."""
+        found = logo_path(ws.config_dir, cfg.ui.brand.logo)
+        if found is None:
+            return _error("not found", 404)
+        response = FileResponse(found, media_type=LOGO_TYPES[found.suffix.lower()])
+        response.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'"
+        response.headers["Cache-Control"] = "no-cache"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    inner.include_router(build_router(ws, cfg, store, events, worker))
+    inner.include_router(build_setup_router(ws, cfg, store, events, worker))
+    inner.include_router(build_secret_router(ws, cfg, store, events, worker))
+    inner.include_router(build_search_router(cfg, store, worker))
+    inner.include_router(build_notification_router(ws, cfg, store, events, worker))
+    inner.include_router(build_first_promises_router(ws, cfg, store, events, worker))
+    inner.include_router(build_ask_router(ws, cfg, store, events, worker))
+    inner.include_router(build_correction_router(ws, cfg, store, events, worker))
+    inner.include_router(build_open_items_router(ws, cfg, store, events, worker))
+    inner.include_router(build_today_router(ws, cfg, store, events, worker))
+    inner.include_router(build_promise_router(ws, cfg, store, events, worker))
+    inner.include_router(build_reminder_router(ws, cfg, store, events, worker))
+    inner.include_router(build_repeat_router(cfg, store, events, worker))
+    inner.include_router(build_tie_router(cfg, store, events, worker))
+    inner.include_router(build_attention_router(ws, cfg, store, events, worker))
+    inner.include_router(build_todo_router(cfg, store, events, worker))
+    inner.include_router(build_day_router(ws, cfg, store, events, worker))
+    inner.include_router(build_since_router(ws, cfg, store, events, worker))
+    inner.include_router(build_reply_router(ws, cfg, store, events, worker))
+    inner.include_router(build_action_work_router(ws, cfg, store, events, worker))
+    inner.include_router(build_brief_router(ws, cfg, store, events, worker))
+    inner.include_router(build_meeting_router(ws, cfg, store, events, worker))
+    inner.include_router(build_calendar_router(ws, cfg, store, events, worker))
+    inner.include_router(build_sent_router(cfg, store, events, worker))
+    inner.include_router(build_act_router(ws, cfg, store, events, worker))
+    inner.include_router(build_watch_router(ws, cfg, store, events, worker))
+    inner.include_router(build_waiting_router(ws, cfg, store, events, worker))
+    inner.include_router(build_view_router(ws, cfg, store, events, worker))
+    inner.include_router(build_sign_in_router(ws, cfg, store, worker))
+    inner.include_router(build_pack_router(ws, cfg, store, worker))
+    inner.include_router(build_data_form_router(store, cfg))
+    inner.include_router(build_knowledge_router(cfg, store, events, worker))
+    inner.include_router(build_quality_router(ws, cfg, store, events, worker))
+    inner.include_router(build_feedback_router(ws, cfg, store, worker))
+    inner.include_router(build_records_router(ws, cfg, store, events, worker))
+    inner.include_router(build_erase_router(ws, cfg, store, worker, on_erased))
+    inner.state.worker = worker
+    inner.state.store = store
+    inner.state.events = events
+    inner.state.sessions = sessions
+
+    @inner.get("/{path:path}", include_in_schema=False)
+    def ui(path: str) -> Any:
+        """The built UI: files by path, and index.html for every other route so the UI's own router takes over."""
+        if path.startswith("api/"):
+            return _error("not found", 404)
+        index = dist / "index.html"
+        if not index.exists():
+            return HTMLResponse(NOT_BUILT_PAGE, headers={"Cache-Control": "no-store"})
+        candidate = (dist / path).resolve()
+        if path and candidate.is_file() and candidate.is_relative_to(dist.resolve()) and candidate != index.resolve():
+            return FileResponse(candidate)
+        return HTMLResponse(
+            _with_base(index.read_text(encoding="utf-8"), base_path), headers={"Cache-Control": "no-store"}
+        )
+
+    if base_path == "/":
+        return inner
+    outer = Starlette(routes=[Mount(base_path, app=inner)], lifespan=lifespan)
+    outer.state.worker = worker
+    outer.state.store = store
+    outer.state.events = events
+    outer.state.sessions = sessions
+    return outer
+
+
+def _with_base(html: str, base_path: str) -> str:
+    """Point the page's relative paths (assets, API calls) at the configured base path."""
+    href = base_path if base_path.endswith("/") else base_path + "/"
+    return html.replace("<head>", f'<head>\n    <base href="{escape(href, quote=True)}" />', 1)
+
+
+def _bearer(request: Request) -> str | None:
+    header = request.headers.get("authorization", "")
+    if header.lower().startswith("bearer "):
+        return header[7:].strip()
+    return None
+
+
+def _unauthorized() -> JSONResponse:
+    return _error("Open the link the app printed when it started to sign in on this computer.", 401)
+
+
+def _refused(message: str) -> JSONResponse:
+    return _error(message, 403)
+
+
+def _error(message: str, status_code: int) -> JSONResponse:
+    """An error body for the screen. While the wording check is on, a message that fails it fails the response."""
+    problem = refusal(message)
+    if problem is not None:
+        log.error("Refused to send an error message: %s", problem)
+        return JSONResponse({"error": problem}, status_code=500)
+    return JSONResponse({"error": message}, status_code=status_code)

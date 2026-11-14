@@ -1,0 +1,26 @@
+{
+  "include": [
+    {
+      "target": "macos-arm64",
+      "runner": "macos-15",
+      "python_arch": "arm64",
+      "spec": "deploy/desktop/build_support/thimbleby_macos.spec",
+      "frozen": "dist/Thimbleby.app/Contents/MacOS/Thimbleby"
+    },
+    {
+      "target": "macos-x86_64",
+      "runner": "macos-15-intel",
+      "python_arch": "x64",
+      "spec": "deploy/desktop/build_support/thimbleby_macos.spec",
+      "frozen": "dist/Thimbleby.app/Contents/MacOS/Thimbleby",
+      "tag_only": true
+    },
+    {
+      "target": "windows-x64",
+      "runner": "windows-2022",
+      "python_arch": "x64",
+      "spec": "deploy/desktop/build_support/thimbleby_windows.spec",
+      "frozen": "dist/Thimbleby/Thimbleby.exe"
+    }
+  ]
+}

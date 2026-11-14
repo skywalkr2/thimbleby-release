@@ -1,0 +1,275 @@
+// Settings forms: turning each setting's value into what a control edits and back, grouping, searching and read-backs.
+import type { S } from "./api";
+import { parseAmount, plainDigits } from "./money";
+import { readable } from "./records";
+import { holdsAny, searchTerms, type SearchWords } from "./settings-find";
+
+type T = (key: string, vars?: Record<string, string | number>) => string;
+type Has = (key: string) => boolean;
+export type Draft = string | boolean;
+export type Item = S["SettingItem"];
+
+/** What a control shows for a setting's value: text for most, a box for yes/no, one value a line for a list. */
+export function toDraft(item: Item): Draft {
+  const v = item.value;
+  if (item.type === "yes_no") return v === true;
+  if (item.type === "list") return Array.isArray(v) ? v.map(String).join("\n") : "";
+  if (v === null || v === undefined) return "";
+  // A number that is money is kept as plain digits: a small one is never "1e-7".
+  if (item.money === true && typeof v === "number") return plainDigits(v);
+  return typeof v === "object" ? JSON.stringify(v) : String(v);
+}
+
+export type Parsed = { ok: true; value: unknown } | { ok: false; problem: "number" | "integer" };
+
+/** What to send for what a control holds, or what is wrong with it. `locale` is the number format a money box was typed
+ * in; a draft a form keeps is already plain digits. */
+export function fromDraft(item: Item, draft: Draft, locale?: string): Parsed {
+  switch (item.type) {
+    case "yes_no":
+      return { ok: true, value: draft === true };
+    case "list":
+      return {
+        ok: true,
+        value: String(draft)
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean),
+      };
+    case "number":
+    case "integer": {
+      const text = String(draft).trim();
+      // An amount of money is typed with or without the sign: "1.5" and "$1.50" are the same number.
+      const n = item.money === true ? (parseAmount(text, locale) ?? Number.NaN) : Number(text);
+      if (!text || !Number.isFinite(n)) return { ok: false, problem: item.type };
+      if (item.type === "integer" && !Number.isInteger(n)) return { ok: false, problem: "integer" };
+      return { ok: true, value: n };
+    }
+    default:
+      return { ok: true, value: String(draft).trim() };
+  }
+}
+
+/** A value in plain words, for a default, a read-only value and the read-back after a save. */
+/** The fields a record is named by, first one that holds words. */
+const NAME_FIELDS = ["label", "name", "title"];
+
+/** What a record is called, or nothing when it has no name of its own. */
+const nameOf = (record: object): string | undefined => {
+  const found = NAME_FIELDS.map((field) => (record as Record<string, unknown>)[field]).find((v) => typeof v === "string" && v.trim() !== "");
+  return typeof found === "string" ? found.trim() : undefined;
+};
+
+/** A value in plain words. A record is shown by its name and a list of records by their names, or by how many there are
+ * when none has a name: never as its fields, which are data (check U13). */
+export function formatValue(value: unknown, t: T): string {
+  if (value === null || value === undefined || value === "") return t("settings.empty");
+  if (typeof value === "boolean") return t(value ? "settings.yes" : "settings.no");
+  if (Array.isArray(value)) {
+    if (value.length === 0) return t("settings.empty");
+    const records = value.filter((v): v is object => typeof v === "object" && v !== null && !Array.isArray(v));
+    if (records.length === value.length && records.some((r) => nameOf(r) === undefined)) {
+      return t(value.length === 1 ? "settings.value.entries.one" : "settings.value.entries.other", { n: value.length });
+    }
+    return value.map((v) => formatValue(v, t)).join(", ");
+  }
+  if (typeof value === "object") return nameOf(value) ?? t("settings.value.entry");
+  return String(value);
+}
+
+/** A short label from the wording sheet when there is one, otherwise the setting's own description. */
+export function labelOf(item: Pick<Item, "key" | "description">, t: T, has: Has): string {
+  const key = `settings.key.${item.key}`;
+  return has(key) ? t(key) : item.description;
+}
+
+/** Add-on settings sit in a group named for the add-on: "plugins/<name>". */
+const ADDON_PREFIX = "plugins/";
+
+/** The add-on a group belongs to, if it is an add-on's. */
+export const addonOf = (group: string): string | null => (group.startsWith(ADDON_PREFIX) ? group.slice(ADDON_PREFIX.length) : null);
+
+/** An add-on's name for showing: the wording sheet's when it has one, otherwise its name made readable. */
+export function addonLabel(name: string, t: T, has: Has): string {
+  const key = `settings.addon.${name}`;
+  return has(key) ? t(key) : readable(name);
+}
+
+/** A heading for a topic of Advanced: the wording sheet's name for it, otherwise the group's heading. */
+export function topicLabel(topic: string, t: T, has: Has): string {
+  const key = `settings.topic.${topic}`;
+  return has(key) ? t(key) : groupLabel(topic, t, has);
+}
+
+/** A heading for a group: an add-on's name, the wording sheet's, otherwise its dotted name made readable. */
+export function groupLabel(group: string, t: T, has: Has): string {
+  const addon = addonOf(group);
+  if (addon !== null) return addonLabel(addon, t, has);
+  const key = `settings.group.${group}`;
+  if (has(key)) return t(key);
+  const words = group.replace(/[._-]+/g, " ").replace(/\bai\b/g, "AI").trim();
+  return words ? words[0].toUpperCase() + words.slice(1) : group;
+}
+
+/** The words that end a name: dots, ellipses and spaces, so a sentence built around the name ends in exactly one period. */
+const trimEnd = (text: string) => text.replace(/[\s.…]+$/u, "");
+
+/** A setting's short name for use in a sentence: the wording sheet's label, otherwise the first sentence of its
+ * description without its closing period, otherwise its key. */
+export function shortLabel(item: Pick<Item, "key" | "description">, t: T, has: Has): string {
+  const key = `settings.key.${item.key}`;
+  if (has(key)) return trimEnd(t(key)) || item.key;
+  const first = (item.description ?? "").trim().split(/(?<=[.!?])\s+/u)[0] ?? "";
+  return trimEnd(first) || item.key;
+}
+
+/** What to call a setting by its key: the label its screen shows (shortened to a name), else its group's, else a general phrase. */
+export function labelForKey(key: string, items: Item[], t: T, has: Has): string {
+  const item = items.find((i) => i.key === key);
+  if (item) return shortLabel(item, t, has);
+  if (has(`settings.key.${key}`)) return t(`settings.key.${key}`);
+  const parts = key.split(".");
+  for (let n = parts.length - 1; n >= 1; n -= 1) {
+    const group = parts.slice(0, n).join(".");
+    if (addonOf(group) !== null || has(`settings.group.${group}`)) return groupLabel(group, t, has);
+  }
+  return t("restart.for_other");
+}
+
+const RESTART_SHOWN = 3;
+
+/** What a restart brings in besides settings, by the name the app gives it: "code" is an update to the app,
+ * "add-ons" an add-on installed or removed and "restore" a backup copy waiting to be swapped in. */
+export const RESTART_OWN: Record<string, string> = { code: "restart.for_code", "add-ons": "restart.for_addons", restore: "restart.for_restore" };
+
+/** What waits for a restart, in plain words: each settings key by its label, "code" as an update to the app, "add-ons"
+ * as a change to the add-ons. Up to three are named, then how many more. Nothing when nothing waits. */
+export function restartWhat(keys: string[], items: Item[], t: T, has: Has): string {
+  const names: string[] = [];
+  for (const key of keys) {
+    const name = RESTART_OWN[key] ? t(RESTART_OWN[key]) : labelForKey(key, items, t, has);
+    if (!names.includes(name)) names.push(name);
+  }
+  if (!names.length) return "";
+  const shown = names.slice(0, RESTART_SHOWN).join(", ");
+  const list = names.length > RESTART_SHOWN ? t("restart.for_more", { list: shown, n: names.length - RESTART_SHOWN }) : shown;
+  return t("restart.for", { what: trimEnd(list) });
+}
+
+/** Whether a setting matches a search: by its key, its label, its description or the name of the add-on it belongs to,
+ * ignoring capitals, and by the words the list of search words gives for what was typed. An empty search matches nothing. */
+export function matches(item: Item, query: string, t: T, has: Has, words: SearchWords = {}): boolean {
+  const addon = item.plugin ? [addonLabel(item.plugin, t, has)] : [];
+  return holdsAny([item.key, labelOf(item, t, has), item.description, ...addon], searchTerms(query, words));
+}
+
+/** The setting that switches this one on or off, if there is one. */
+export function switchOf(item: Pick<Item, "enabled_by">, items: Item[]): Item | undefined {
+  return item.enabled_by ? items.find((i) => i.key === item.enabled_by) : undefined;
+}
+
+/** Whether a switch is off: a yes/no setting that is not on, or a text setting (such as a folder) that is empty. Reads
+ * what is on screen when it was changed there, otherwise the saved value. */
+export function isOff(switchItem: Item, edits: Record<string, Draft>): boolean {
+  const draft = switchItem.key in edits ? edits[switchItem.key] : toDraft(switchItem);
+  return switchItem.type === "yes_no" ? draft !== true : String(draft).trim() === "";
+}
+
+/** How many switches sit above a setting, so dependents can be indented under theirs. */
+export function depthOf(item: Item, items: Item[]): number {
+  let depth = 0;
+  for (let at = switchOf(item, items); at && depth < 4; at = switchOf(at, items)) depth += 1;
+  return depth;
+}
+
+/** The body that puts a save back as it was: what was default goes back to default, the rest to its old value. */
+export function undoBody(changes: S["SettingChangeView"][], fingerprint: string): S["SettingsSave"] {
+  const body: S["SettingsSave"] = { changes: {}, reset: [], fingerprint };
+  for (const c of changes) {
+    if (c.was_default) body.reset!.push(c.key);
+    else body.changes![c.key] = c.before;
+  }
+  return body;
+}
+
+/** Dotted keys as nested objects: {"a.b": 1} becomes {a: {b: 1}}. */
+export function nest(flat: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(flat)) {
+    const parts = key.split(".");
+    let at = out;
+    for (const part of parts.slice(0, -1)) {
+      const next = at[part];
+      at = (typeof next === "object" && next !== null && !Array.isArray(next) ? next : (at[part] = {})) as Record<string, unknown>;
+    }
+    at[parts[parts.length - 1]] = value;
+  }
+  return out;
+}
+
+/** The value at a dotted key in a nested object, or undefined when it isn't there. */
+export function valueAt(values: unknown, key: string): unknown {
+  let at: unknown = values;
+  for (const part of key.split(".")) {
+    if (typeof at !== "object" || at === null || Array.isArray(at) || !(part in at)) return undefined;
+    at = (at as Record<string, unknown>)[part];
+  }
+  return at;
+}
+
+/** The items with the values a nested settings object holds, where it holds one; the rest keep theirs. */
+export function prefill(items: Item[], values: unknown): Item[] {
+  return items.map((item) => {
+    const value = valueAt(values, item.key);
+    return value === undefined ? item : { ...item, value };
+  });
+}
+
+/** Whether a setting is on screen as its default: an empty box and no default are the same thing. */
+export function isDefault(item: Item, value: unknown): boolean {
+  const norm = (v: unknown) => (v === null || v === undefined ? (item.type === "yes_no" ? false : item.type === "list" ? [] : "") : v);
+  return JSON.stringify(norm(value)) === JSON.stringify(norm(item.default));
+}
+
+/** Whether what is on screen counts as changed by the person: it differs from the default, except a value setup wrote
+ * that is still as setup left it. Something that can't be read yet (a number half typed) is a change. */
+export function isChanged(item: Item, edited: Parsed | null): boolean {
+  if (edited === null) return false;
+  if (!edited.ok) return true;
+  if (item.by_setup === true) {
+    const saved = fromDraft(item, toDraft(item));
+    if (saved.ok && JSON.stringify(saved.value) === JSON.stringify(edited.value)) return false;
+  }
+  return !isDefault(item, edited.value);
+}
+
+/** Whether a control can be edited in a form of items: the item itself says so. */
+export const editableItem = (item: Item) => item.editable && !item.locked && item.type !== "other";
+
+/** What a form of items sends: the editable settings whose value on screen differs from their default, by dotted key,
+ * and the keys that hold something that can't be sent. */
+export function formValues(items: Item[], edits: Record<string, Draft>): { values: Record<string, unknown>; bad: string[] } {
+  const values: Record<string, unknown> = {};
+  const bad: string[] = [];
+  for (const item of items) {
+    if (!editableItem(item)) continue;
+    const draft = item.key in edits ? edits[item.key] : toDraft(item);
+    const parsed = fromDraft(item, draft);
+    if (!parsed.ok) bad.push(item.key);
+    else if (!isDefault(item, parsed.value)) values[item.key] = parsed.value;
+  }
+  return { values, bad };
+}
+
+/** What a save of an add-on's data file sends: only what was changed on screen, by dotted key. */
+export function changedValues(items: Item[], edits: Record<string, Draft>): { changes: Record<string, unknown>; bad: string[] } {
+  const changes: Record<string, unknown> = {};
+  const bad: string[] = [];
+  for (const item of items) {
+    if (!(item.key in edits) || !editableItem(item) || edits[item.key] === toDraft(item)) continue;
+    const parsed = fromDraft(item, edits[item.key]);
+    if (parsed.ok) changes[item.key] = parsed.value;
+    else bad.push(item.key);
+  }
+  return { changes, bad };
+}

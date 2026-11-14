@@ -1,0 +1,223 @@
+import "@testing-library/jest-dom/vitest";
+import { screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { vi } from "vitest";
+import type { S } from "../lib/api";
+import { fakeApi, Refuse, renderApp, type Routes } from "../test-utils";
+import { BannerSlot } from "../ui/BannerSlot";
+import { TodayRail } from "./TodayRail";
+import { WhatChanged } from "./WhatChanged";
+import { MAIL_LINK } from "../fixtures/mail";
+
+const AT = "@";
+const SENDER = `news${AT}lists.example.com`;
+const DONE: S["SetAsideDone"] = { id: "SNAP-1", version: 7, section: "sales", address: SENDER, domain: "lists.example.com" };
+const SAVED: S["SettingsSaved"] = {
+  changes: [{ key: "watch.triage", before: [], after: [{ name: "x" }], was_default: true, is_default: false }],
+  fingerprint: "fp-2",
+  needs_restart: false,
+};
+
+function today(extra: Routes = {}, setAside = 6, more: Partial<S["ArrivedView"]> = {}) {
+  const received = new Date().toISOString();
+  const calls = fakeApi({
+    "GET today/agenda": () => [],
+    "GET today/arrived": () => ({
+      items: [{ snapshot: "SNAP-1", source: "mail-1", title: "Spring sale", sender: "Shop", received, unread: true, version: 3, ...more }],
+      left_out: 0,
+      set_aside: setAside,
+    }),
+    "GET watch": () => [],
+    "GET projects": () => [],
+    "GET changes": () => [],
+    "GET plugin-today": () => [],
+    "GET followups": () => [],
+    "GET stages/records": () => [],
+    "GET stages/ready": () => [],
+    "GET stages/requests": () => [],
+    "GET settings": () => ({ fingerprint: "fp-1", items: [] }),
+    ...extra,
+  });
+  const onView = vi.fn();
+  renderApp(
+    <>
+      <BannerSlot />
+      <TodayRail onView={onView} />
+    </>,
+  );
+  return { calls, onView };
+}
+
+const column = (name: string) => screen.findByRole("region", { name });
+const body = (calls: ReturnType<typeof fakeApi>, route: string) => calls.find((c) => c.route === route)?.body;
+
+test("Came in carries no count of what was set aside, whatever it is: Today lists only what the person does", async () => {
+  today();
+  const col = await column("Came in");
+  await within(col).findByText("Spring sale");
+  expect(within(col).queryByRole("button", { name: /set aside/ })).toBeNull();
+  expect(within(col).queryByText(/set aside/)).toBeNull();
+});
+
+test("a Came in row's menu sets the message aside as sales, never as personal, with Undo and an offer of a rule", async () => {
+  const user = userEvent.setup();
+  const { calls } = today({
+    "POST mail/SNAP-1/set-aside": () => DONE,
+    "POST set-aside/SNAP-1/put-back": () => DONE,
+    "POST watch/sorting": () => SAVED,
+  });
+  const col = await column("Came in");
+  await user.click(await within(col).findByRole("button", { name: "More actions for Spring sale" }));
+  expect(screen.queryByRole("menuitem", { name: "Set aside: personal" })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("menuitem", { name: "Set aside: sales" }));
+  await waitFor(() => expect(body(calls, "POST mail/SNAP-1/set-aside")).toEqual({ section: "sales" }));
+  expect(await screen.findByText("Set aside Spring sale as sales mail.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Always set aside mail from this email domain" })).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Always set aside mail from this sender" }));
+  await waitFor(() =>
+    expect(body(calls, "POST watch/sorting")).toEqual({ fingerprint: "fp-1", choice: "sales", senders: [SENDER], domains: [] }),
+  );
+  expect(await screen.findByText(`From now on, mail from ${SENDER} is set aside as sales mail.`)).toBeInTheDocument();
+});
+
+test("the rule's message is said when the server answers, while the screen's own reads are still under way", async () => {
+  const user = userEvent.setup();
+  let reads = 0;
+  const received = new Date().toISOString();
+  const { calls } = today({
+    "POST mail/SNAP-1/set-aside": () => DONE,
+    "POST watch/sorting": () => SAVED,
+    // The first read draws the row; every later one (the read after the save) never answers within the test.
+    "GET today/arrived": () => {
+      reads += 1;
+      if (reads > 1) return new Promise(() => undefined);
+      return { items: [{ snapshot: "SNAP-1", source: "mail-1", title: "Spring sale", sender: "Shop", received, unread: true, version: 3 }], left_out: 0, set_aside: 6 };
+    },
+  });
+  const col = await column("Came in");
+  await user.click(await within(col).findByRole("button", { name: "More actions for Spring sale" }));
+  await user.click(screen.getByRole("menuitem", { name: "Set aside: sales" }));
+  await user.click(await screen.findByRole("button", { name: "Always set aside mail from this sender" }));
+  await waitFor(() => expect(body(calls, "POST watch/sorting")).toBeTruthy());
+  expect(await screen.findByText(`From now on, mail from ${SENDER} is set aside as sales mail.`)).toBeInTheDocument();
+});
+
+test("Undo of a set-aside puts the message back with the version it was left at", async () => {
+  const user = userEvent.setup();
+  const { calls } = today({
+    "POST mail/SNAP-1/set-aside": () => DONE,
+    "POST set-aside/SNAP-1/put-back": () => DONE,
+  });
+  const col = await column("Came in");
+  await user.click(await within(col).findByRole("button", { name: "More actions for Spring sale" }));
+  await user.click(screen.getByRole("menuitem", { name: "Set aside: sales" }));
+  await user.click(await screen.findByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(body(calls, "POST set-aside/SNAP-1/put-back")).toEqual({ read_version: 7 }));
+});
+
+function change(id: string, extra: Partial<S["ChangeItem"]> = {}): S["ChangeItem"] {
+  return {
+    id,
+    version: 4,
+    dismissed: false,
+    stage_task: false,
+    first_go: false,
+    refused: false,
+    state: "needs_you",
+    waiting: "Waiting for your first go.",
+    created_at: "2026-10-09T14:00:00Z",
+    note: null,
+    source: "SRC-1",
+    source_title: "Spring sale",
+    changeset: null,
+    ...extra,
+  };
+}
+
+test("a What changed row for a mail message has the same correction; other rows do not", async () => {
+  const user = userEvent.setup();
+  const calls = fakeApi({
+    "GET changes": () => [change("REQ-1", { mail_item: "SNAP-1" }), change("REQ-2", { source_title: "A note" })],
+    "POST mail/SNAP-1/set-aside": () => DONE,
+  });
+  renderApp(<WhatChanged />);
+  await user.click(await screen.findByRole("button", { name: "More actions for Spring sale" }));
+  await user.click(screen.getByRole("menuitem", { name: "Set aside: sales" }));
+  await waitFor(() => expect(body(calls, "POST mail/SNAP-1/set-aside")).toEqual({ section: "sales" }));
+  await user.keyboard("{Escape}");
+  const other = screen.getByRole("button", { name: "More actions for A note" });
+  await user.click(other);
+  expect(screen.queryByRole("menuitem", { name: "Set aside: sales" })).toBeNull();
+});
+
+const project = (id: string, name: string) => ({ id, name, parent: null }) as S["ProjectView"];
+
+test("a Came in row opens the message's page, and its menu has Treat as and Set aside, for any message", async () => {
+  const user = userEvent.setup();
+  const { calls } = today(
+    {
+      "GET setup/business": () => ({ business: false, name: null, personal: "PRJ-personal", sides: [], chosen: "me" }),
+      "GET projects": () => [project("PRJ-personal", "Personal"), project("PRJ-other", "Other")],
+      "POST handled/SNAP-1/personal": () => ({ id: "SNAP-1", version: 4, section: "sales", request: "REQ-1", address: SENDER, domain: null }),
+    },
+    6,
+    { saved: "SRC-9", link: MAIL_LINK },
+  );
+  const col = await column("Came in");
+  const title = await within(col).findByRole("link", { name: "Spring sale" });
+  expect(title).toHaveAttribute("href", expect.stringContaining("records/source/SRC-9"));
+  await user.click(within(col).getByRole("button", { name: "More actions for Spring sale" }));
+  expect(screen.getByRole("menuitem", { name: "Set aside: sales" })).toBeInTheDocument();
+  expect(screen.getByRole("menuitem", { name: "Open the message" })).toBeInTheDocument();
+  await user.click(screen.getByRole("menuitem", { name: "Treat as personal" }));
+  await waitFor(() => expect(body(calls, "POST handled/SNAP-1/personal")).toEqual({ read_version: 3 }));
+});
+
+test("Treat as on mail the assistant already handled says what was taken back, and offers no Undo that would only half undo it", async () => {
+  const user = userEvent.setup();
+  const { calls } = today(
+    {
+      "GET setup/business": () => ({ business: true, name: "Orchard Press", personal: "PRJ-personal", sides: [{ project: "PRJ-2", kind: "business", name: "Orchard Press", removable: false }], chosen: "work" }),
+      "GET projects": () => [project("PRJ-personal", "Personal"), project("PRJ-2", "Orchard Press")],
+      "POST handled/SNAP-1/treat-as": () => ({ id: "SNAP-1", version: 4, section: "sales", request: "REQ-1", address: SENDER, domain: null }),
+    },
+    6,
+    { saved: "SRC-9", link: MAIL_LINK },
+  );
+  const col = await column("Came in");
+  await user.click(within(col).getByRole("button", { name: "More actions for Spring sale" }));
+  await user.click(screen.getByRole("menuitem", { name: /Orchard Press/ }));
+  await waitFor(() => expect(body(calls, "POST handled/SNAP-1/treat-as")).toEqual({ read_version: 3, side: "PRJ-2" }));
+  const toasts = screen.getByRole("region", { name: "Notifications" });
+  await waitFor(() => expect(toasts).toHaveTextContent(/Took back what was done with “Spring sale”/));
+  expect(within(toasts).queryByRole("button", { name: "Undo" })).toBeNull();
+});
+
+test("a filing that fails is marked Not saved on its Came in row and named once, in the banner with Try again, and no toast", async () => {
+  const user = userEvent.setup();
+  let refuse = true;
+  today(
+    {
+      "GET setup/business": () => ({ business: false, name: null, personal: "PRJ-personal", sides: [], chosen: "me" }),
+      "GET projects": () => [project("PRJ-personal", "Personal"), project("PRJ-other", "Other")],
+      "POST handled/SNAP-1/personal": () => (refuse ? new Refuse(500, "The app couldn't write to its folder.") : { id: "SNAP-1", version: 4, section: "sales", request: "REQ-1", address: SENDER, domain: null }),
+    },
+    6,
+    { saved: "SRC-9", link: MAIL_LINK },
+  );
+  const col = await column("Came in");
+  await user.click(await within(col).findByRole("button", { name: "More actions for Spring sale" }));
+  await user.click(screen.getByRole("menuitem", { name: "Treat as personal" }));
+  const line = await within(col).findByRole("alert");
+  // The row keeps only the short mark; the sentence is said once, in the banner.
+  expect(line).toHaveTextContent("Not saved");
+  expect(line).not.toHaveTextContent("wasn't saved");
+  expect(screen.getByRole("region", { name: "Notifications" })).not.toHaveTextContent(/That didn't work/);
+  refuse = false;
+  // The one Try again is in the page's banner, which names the thing too.
+  expect(within(line).queryByRole("button", { name: "Try again" })).toBeNull();
+  const banner = document.querySelector<HTMLElement>("[data-not-saved-banner]")!;
+  expect(banner).toHaveTextContent("“Spring sale” wasn't saved.");
+  await user.click(within(banner).getByRole("button", { name: "Try again" }));
+  await waitFor(() => expect(within(col).queryByRole("alert")).toBeNull());
+});

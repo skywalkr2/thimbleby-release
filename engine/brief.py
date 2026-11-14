@@ -1,0 +1,1210 @@
+"""The morning brief, the evening wrap-up and the Monday briefing (design 6.32), built from the records by rules.
+
+Nothing here calls AI or reaches a service, and building a brief writes nothing (`mark_brief_seen` is the one write,
+made when the person is shown it). The brief reads what the other parts already work out (Today's
+queue, what changed since yesterday, this week's days, the clash finder, what an invitation changed) and does not
+repeat their logic. Every line is data: a kind and its values for the screen to word from the wording sheet, with the
+record or Today line it opens. No line reports status or progress.
+
+**The morning brief** summarises and never repeats Today. Its sections, in this order: *today* (counts that link to
+the lines Today already has: "2 things need you", "1 thing is late", "1 clash today"), *changed* overnight (what
+someone else did to the person's own things, and what changed in an invitation), *risk* (what Today has no line for:
+the person's own to-dos due today, the day's squeeze), and *yes* (a reminder offered, and what the attention rules
+saved for the brief). An empty section is left out and a quiet day is one line.
+
+**The evening wrap-up** has *done* today (credited to whoever did it), *moved* (a date moved ahead today), *carried*
+(what is due today and still open) and *waiting* (what others owe the person, and the questions sent that nobody has
+answered). It is quiet when nothing moved, nothing is carried and nobody is waited on.
+
+**The Monday briefing** is the weekly form: the person's promises through the end of the week (weekend days
+included), what others promised them, the questions held to send, the answers to chase and the decisions waiting,
+overdue first. A promise Today already has a line for stays in the list, marked `on_today_line`; questions Today holds
+are counted in `on_today`. It carries the goals for the week, proposed from what is
+due and open until the person confirms them, and the message to whoever the person reports to.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, time, timedelta
+from typing import Any
+
+from engine import (
+    day_capacity,
+    day_clashes,
+    invitation_changes,
+    invitation_history,
+    since_yesterday,
+    suggestions,
+    week_plan,
+)
+from engine.blocked import standing_hold
+from engine.config.schema import WEEKDAYS
+from engine.due_phrases import named_entry
+from engine.firm_due import firm_due
+from engine.meeting_guests import window
+from engine.names import People
+from engine.records import entry_time
+from engine.reminder_lines import rules
+from engine.storage import WriteContext
+from engine.today import zone
+
+FORMS = ("morning", "evening", "monday")
+
+#: The kinds of Today line that wait for the person's yes: a decision, a question or a held change, and a message
+#: ready to send or a reply drafted.
+YES_KINDS = ("decision", "question", "who_is", "owner", "held", "reply", "send", "nudge", "escalate")
+#: Of those, the kinds whose line carries a message the assistant already wrote.
+READY_KINDS = ("send", "nudge", "escalate")
+#: What a change to an invitation says in the brief; the others (who replied, who was added) are not news.
+INVITATION_NEWS = (
+    "cancelled",
+    "restored",
+    "moved",
+    "now_timed",
+    "now_all_day",
+    "end_changed",
+    "location_changed",
+    "location_removed",
+    "title_changed",
+    "organizer_changed",
+)
+
+
+@dataclass
+class Line:
+    """One thing in a section: its `kind` (and `change`, `state` or `on` when the kind has variants), the words it
+    names (`text`, `person_name`, `other`, `detail`), the days and times it is about (`day`, `at`, and for a move
+    `from_day` and `from_at`), how many days (`days`) or minutes (`minutes`) or things (`count`), for a clash with too
+    little travel time the minutes the travel needs (`needed_minutes`) and where each meeting is (`place`,
+    `other_place`), the Today line it
+    opens (`queue`) or the record it opens (`link`), `ready` when a message is already drafted for it and `you` when it
+    is the person themselves who owns it or did it. `quieted` is the kind of suggestion the person chose to keep for the
+    brief (`steward.attention.quieted_kinds`) that this line is one of, so the brief can offer to show the kind on Today
+    again; none for a line that waits for the brief for another reason (quiet hours, the day's cap). A count of what
+    needs the person (`on_today`, change `need`) names each of those things in `subjects`, so the brief says what they
+    are about and not only how many there are."""
+
+    key: str
+    kind: str
+    text: str | None = None
+    person: str | None = None
+    person_name: str | None = None
+    other: str | None = None
+    detail: str | None = None
+    change: str | None = None
+    state: str | None = None
+    day: str | None = None
+    at: str | None = None
+    from_day: str | None = None
+    from_at: str | None = None
+    days: int | None = None
+    minutes: int | None = None
+    needed_minutes: int | None = None
+    place: str | None = None
+    other_place: str | None = None
+    when: str | None = None
+    count: int | None = None
+    queue: str | None = None
+    link: tuple[str, str] | None = None
+    ready: bool = False
+    you: bool = False
+    on_today_line: bool = False
+    quieted: str | None = None
+    subjects: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Section:
+    """A heading's lines, `more` being how many more there are than the configured most a section shows."""
+
+    key: str
+    lines: list[Line] = field(default_factory=list)
+    more: int = 0
+
+
+@dataclass
+class Goals:
+    """The week's goals: `confirmed` ones the person gave, else `proposed` from what is due and open, between `fewest`
+    and `most`."""
+
+    first: date
+    last: date
+    confirmed: bool
+    goals: list[str]
+    proposed: list[str]
+    fewest: int
+    most: int
+
+
+@dataclass
+class Brief:
+    """A form of the brief as of a day. `forms` are the forms that can show now, the one shown first; `form` is none
+    when nothing is due yet. `quiet` is a day with nothing to say (its one line is the wording sheet's). `on_today`
+    counts what the Monday briefing left out because Today holds it."""
+
+    form: str | None
+    day: date
+    forms: list[str] = field(default_factory=list)
+    sections: list[Section] = field(default_factory=list)
+    quiet: bool = False
+    on_today: int = 0
+    goals: Goals | None = None
+    message: week_plan.Message | None = None
+
+
+def _clock(text: str) -> time:
+    hour, minute = text.split(":")
+    return time(int(hour), int(minute))
+
+
+def available(cfg: Any, now: datetime, goals_confirmed: bool = False, offer_dismissed: bool = False) -> list[str]:
+    """The forms that can show at `now`, the one to open with first: the evening wrap-up from its time on; before it,
+    the Monday briefing on its day and then the morning brief, or the morning brief with the weekly form beside it on
+    any later working day of the week until the week's goals are confirmed (it is offered on the first day the app is
+    opened that week, whichever day that is) or the person dismisses the offer; or only the morning brief; none before
+    the morning time."""
+    rule = cfg.steward.brief
+    if not rule.enabled:
+        return []
+    local = now.astimezone(zone(cfg))
+    clock = local.time().replace(second=0, microsecond=0)
+    if clock >= _clock(rule.evening_from):
+        return ["evening"]
+    if clock < _clock(rule.morning_from):
+        return []
+    weekly = WEEKDAYS.index(rule.weekly_day)
+    if local.weekday() == weekly:
+        return ["morning"] if offer_dismissed else ["monday", "morning"]
+    first = WEEKDAYS.index(cfg.steward.reminders.working_first_day)
+    last = WEEKDAYS.index(cfg.steward.reminders.working_last_day)
+    since = (local.weekday() - weekly) % 7
+    settled = goals_confirmed or offer_dismissed
+    return ["morning", "monday"] if 0 < since <= (last - first) % 7 and not settled else ["morning"]
+
+
+def overnight_start(cfg: Any, now: datetime) -> datetime:
+    """The evening time on the last working day before today: what changed since then is what changed overnight."""
+    here = zone(cfg)
+    today = now.astimezone(here).date()
+    first = WEEKDAYS.index(cfg.steward.reminders.working_first_day)
+    last = WEEKDAYS.index(cfg.steward.reminders.working_last_day)
+    span = (last - first) % 7
+    day = today - timedelta(days=1)
+    for _ in range(7):
+        if (day.weekday() - first) % 7 <= span:
+            break
+        day -= timedelta(days=1)
+    return datetime.combine(day, _clock(cfg.steward.brief.overnight_from), tzinfo=here)
+
+
+#: The `screen_look` names under which the moment the brief was first shown on a day is kept, and the one before it.
+BRIEF_LOOK = "brief"
+BRIEF_LOOK_BEFORE = "brief_before"
+_LOOK = WriteContext(actor="pm", trust="trusted", op="brief.look")
+
+
+def _look(view: Any, person: str | None, screen: str) -> datetime | None:
+    for record in view.list("screen_look"):
+        if record.data.get("person") == person and record.data.get("screen") == screen:
+            return _stamp(record.data.get("at"))
+    return None
+
+
+def last_brief_at(view: Any, cfg: Any, person: str | None, now: datetime) -> datetime | None:
+    """When the brief was last first shown on an earlier day than today, so a brief opened late (after a weekend, or a
+    laptop shut for days) covers everything since then. None when it never was."""
+    here = zone(cfg)
+    latest = _look(view, person, BRIEF_LOOK)
+    if latest is not None and latest.astimezone(here).date() == now.astimezone(here).date():
+        return _look(view, person, BRIEF_LOOK_BEFORE)
+    return latest
+
+
+def mark_brief_seen(store: Any, cfg: Any, now: datetime) -> None:
+    """The person was shown the brief at `now`. The first showing on a day is kept (with the one before it, which is
+    what that day's brief covers back to); later showings the same day change nothing, so the brief does not shrink
+    when looked at again."""
+    here = zone(cfg)
+    person = People(store, cfg).pm
+    stamp = (now if now.tzinfo else now.replace(tzinfo=UTC)).astimezone(UTC)
+    with store.transaction() as tx:
+        rows = {
+            r.data.get("screen"): r
+            for r in tx.list("screen_look")
+            if r.data.get("person") == person and r.data.get("screen") in (BRIEF_LOOK, BRIEF_LOOK_BEFORE)
+        }
+        current = rows.get(BRIEF_LOOK)
+        if current is None:
+            tx.create("screen_look", {"person": person, "screen": BRIEF_LOOK, "at": stamp.isoformat()}, _LOOK)
+            return
+        before = _stamp(current.data.get("at"))
+        if before is not None and before.astimezone(here).date() >= stamp.astimezone(here).date():
+            return
+        held = rows.get(BRIEF_LOOK_BEFORE)
+        if held is None:
+            tx.create("screen_look", {"person": person, "screen": BRIEF_LOOK_BEFORE, "at": current.data["at"]}, _LOOK)
+        else:
+            tx.update("screen_look", held.id, {"at": current.data["at"]}, _LOOK, read_version=held.version)
+        tx.update("screen_look", current.id, {"at": stamp.isoformat()}, _LOOK, read_version=current.version)
+
+
+def _stamp(value: Any) -> datetime | None:
+    try:
+        found = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return found if found.tzinfo else found.replace(tzinfo=UTC)
+
+
+class _Day:
+    """What every form reads: the records, the people, the person's clock and Today's lines."""
+
+    def __init__(self, ws: Any, store: Any, cfg: Any, now: datetime) -> None:
+        self.ws, self.store, self.cfg, self.now = ws, store, cfg, now
+        self.view = store.read()
+        self.people = People(store, cfg)
+        self.pm = self.people.pm
+        self.here = zone(cfg)
+        self.today = now.astimezone(self.here).date()
+        self.first, self.last = week_plan.week_bounds(cfg, self.today)
+        self._split: suggestions.Split | None = None
+
+    @property
+    def split(self) -> suggestions.Split:
+        """Today's lines as the attention rules leave them: what shows now, and the suggestions saved for the brief."""
+        if self._split is None:
+            from engine.today_queue import queue_split
+
+            self._split = queue_split(self.ws, self.store, self.cfg, self.now)
+        return self._split
+
+    @property
+    def queue(self) -> list[Any]:
+        return self.split.shown
+
+    def name(self, person: str | None) -> str | None:
+        return self.people.name(person) if person else None
+
+    def mine(self, data: dict[str, Any]) -> bool:
+        return self.pm is not None and any(o.get("person") == self.pm for o in data.get("owners") or [])
+
+    def open_actions(self) -> list[Any]:
+        """The open actions that are not on hold and not a reply owed (which is a line on Today of its own)."""
+        return [
+            a
+            for a in self.view.list("action")
+            if a.data.get("status") == "open"
+            and not a.data.get("reply_owed")
+            and not standing_hold(self.view, a.data, self.people)
+        ]
+
+    def local_day(self, stamp: datetime) -> date:
+        return stamp.astimezone(self.here).date()
+
+    def clock_of(self, stamp: datetime) -> str:
+        return stamp.astimezone(self.here).strftime("%H:%M")
+
+
+def _cap(lines: list[Line], key: str, rule: Any) -> Section:
+    most = rule.max_lines
+    return Section(key, lines[:most], max(0, len(lines) - most))
+
+
+# ---- the morning brief ---------------------------------------------------------------------------------------------
+
+
+def _event_state(data: dict[str, Any], here: Any) -> invitation_changes.Invitation:
+    """An event record as an invitation (attendees are left out: who replied is not news)."""
+    return invitation_history.event_state(data, here)
+
+
+def _local_parts(value: Any) -> tuple[str | None, str | None]:
+    """A change's time as a day and a clock time (none for an all-day date)."""
+    return invitation_history.local_parts(value)
+
+
+def _invitation_lines(c: _Day, since: datetime) -> list[tuple[datetime, Line]]:
+    """What changed in the invitations the calendar entries came from, since `since`: a new invitation, and for one
+    that was already there the changes `describe_change` names that matter."""
+    rows: dict[str, list[dict[str, Any]]] = {}
+    for row in c.view.ledger(kind="event", op=since_yesterday.CALENDAR_RULE):
+        rows.setdefault(row["record_id"], []).append(row)
+    found: list[tuple[datetime, Line]] = []
+    for event in c.view.list("event"):
+        data = event.data
+        mine = rows.get(event.id)
+        if not mine or not data.get("invitation") or not data.get("start"):
+            continue
+        recent = [r for r in mine if (_stamp(r["at"]) or since) > since]
+        if not recent:
+            continue
+        when = max(_stamp(r["at"]) for r in recent)  # type: ignore[type-var]
+        organizer = (data.get("organizer") or {}).get("name")
+        try:
+            new = _event_state(data, c.here)
+            first_day, first_at = _local_parts(
+                {"at": new.start.astimezone(c.here)} if isinstance(new.start, datetime) else {"date": new.start}
+            )
+            if first_day is not None and first_day < c.today.isoformat():
+                continue
+            if any(r["version"] == 1 for r in recent):
+                if not data.get("cancelled"):
+                    found.append(
+                        (
+                            when,
+                            Line(
+                                f"invitation:{event.id}:new",
+                                "invitation",
+                                change="new",
+                                text=data["title"],
+                                person_name=organizer,
+                                day=first_day,
+                                at=first_at,
+                                link=("event", event.id),
+                            ),
+                        )
+                    )
+                continue
+            before = dict(data)
+            for row in sorted(recent, key=lambda r: r["seq"], reverse=True):
+                if row["field"] is not None:
+                    before[row["field"]] = row["before"]
+            old = _event_state(before, c.here)
+            changes = invitation_changes.describe_change(old, new, c.here)
+            moved_start = any(x.kind in ("moved", "now_timed", "now_all_day") for x in changes)
+            for change in changes:
+                if change.kind not in INVITATION_NEWS or (change.kind == "end_changed" and moved_start):
+                    continue
+                values = change.values
+                if change.kind in ("moved", "now_timed", "now_all_day"):
+                    day, at = _local_parts(values.get("after") or values.get("start"))
+                    from_day, from_at = _local_parts(values.get("before"))
+                elif change.kind == "end_changed":
+                    day, at = _local_parts(values.get("after"))
+                    from_day, from_at = _local_parts(values.get("before"))
+                else:
+                    day, at, from_day, from_at = first_day, first_at, None, None
+                found.append(
+                    (
+                        when,
+                        Line(
+                            f"invitation:{event.id}:{change.kind}",
+                            "invitation",
+                            change=change.kind,
+                            text=data["title"],
+                            person_name=organizer,
+                            detail=values.get("location") or values.get("title") or values.get("name"),
+                            day=day,
+                            at=at,
+                            from_day=from_day,
+                            from_at=from_at,
+                            link=("event", event.id),
+                        ),
+                    )
+                )
+        except (ValueError, KeyError, TypeError, OverflowError):
+            continue
+    return found
+
+
+def _fact_lines(c: _Day, since: datetime) -> list[tuple[datetime, Line]]:
+    found = []
+    for fact in c.view.list("fact"):
+        data = fact.data
+        evidence = data.get("evidence") or {}
+        if data.get("trust") != "untrusted" or not evidence.get("quote"):
+            continue
+        history = c.view.ledger(kind="fact", record_id=fact.id)
+        when = _stamp(history[0]["at"]) if history else None
+        if when is None or not since < when <= c.now:
+            continue
+        found.append(
+            (
+                when,
+                Line(
+                    f"fact:{fact.id}",
+                    "fact",
+                    text=data["text"],
+                    detail=evidence["quote"],
+                    link=("fact", fact.id),
+                ),
+            )
+        )
+    return found
+
+
+def _requested_action_lines(c: _Day, since: datetime) -> list[tuple[datetime, Line]]:
+    """To-dos someone else asked of the person, filed since the last brief from an outside message and tied to a
+    calendar entry. It starts from the messages that arrived in the window, so it never reads the whole history."""
+    arrived: dict[str, datetime] = {}
+    for request in c.view.list("request"):
+        data = request.data
+        when = _stamp(data.get("created_at") or "")
+        if data.get("origin") != "input" or not data.get("source") or when is None or not since < when <= c.now:
+            continue
+        source = c.view.get("source", data["source"])
+        if source is not None and source.data.get("trust") == "untrusted":
+            arrived[data["source"]] = when
+    if not arrived:
+        return []
+    found = []
+    for action in c.view.list("action"):
+        data = action.data
+        when = arrived.get(data.get("source") or "")
+        asker = data.get("said_by")
+        if when is None or not c.mine(data) or not data.get("event") or not asker or asker == c.pm:
+            continue
+        found.append(
+            (
+                when,
+                Line(
+                    f"requested:{action.id}",
+                    "requested_action",
+                    text=data["text"],
+                    person=asker,
+                    person_name=c.people.name(asker),
+                    link=("event", data["event"]),
+                ),
+            )
+        )
+    return found
+
+
+def _changed(c: _Day) -> list[Line]:
+    since = overnight_start(c.cfg, c.now)
+    last = last_brief_at(c.view, c.cfg, c.pm, c.now)
+    if last is not None:
+        since = min(since, last)
+    found: list[tuple[datetime, Line]] = []
+    plan = since_yesterday.build(c.ws, c.view, c.cfg, c.people, c.now, since=since)
+    for e in plan.entries:
+        when = _stamp(e.when)
+        if when is None or when <= since or e.by_you or e.act not in ("closed", "moved", "news"):
+            continue
+        line = Line(
+            f"since:{e.ref}",
+            e.act,
+            text=e.title,
+            person=e.said_by,
+            person_name=e.said_by_name,
+            change=e.because,
+            day=e.day,
+            detail=e.detail,
+            link=e.record,
+        )
+        found.append((when, line))
+    invitations = _invitation_lines(c, since)
+    found += invitations
+    found += _fact_lines(c, since)
+    found += _requested_action_lines(c, since)
+    found.sort(key=lambda pair: (pair[0], pair[1].key), reverse=True)
+    return [line for _, line in found]
+
+
+def _meeting_time(c: _Day, event_id: str | None, day: date) -> str | None:
+    """The clock time of the meeting an action is due at, when it is on that day."""
+    found = c.view.get("event", event_id) if event_id else None
+    if found is None or not found.data.get("start"):
+        return None
+    try:
+        start = entry_time(str(found.data["start"]))
+    except ValueError:
+        return None
+    if not isinstance(start, datetime):
+        return None
+    local = start if start.tzinfo else start.replace(tzinfo=c.here)
+    local = local.astimezone(c.here)
+    return local.strftime("%H:%M") if local.date() == day else None
+
+
+def _clashes(c: _Day) -> list[Line]:
+    """Meetings that overlap or leave too little travel time, from today through the configured days ahead."""
+    lines = []
+    fine = suggestions.fine_clashes(c.view)
+    # One line for each group of clashes that share meetings, as on Today (pairs said to be fine are left out first).
+    for group in day_clashes.groups(day_clashes.upcoming(c.store, c.cfg, c.now), fine):
+        clash = group.lead
+        link = clash.link
+        lines.append(
+            Line(
+                group.key,
+                "clash",
+                text=clash.first.item.title,
+                other=clash.second.item.title,
+                state=clash.state,
+                minutes=clash.minutes,
+                needed_minutes=clash.travel if clash.state == "travel" else None,
+                place=clash.first.item.where if clash.state == "travel" else None,
+                other_place=clash.second.item.where if clash.state == "travel" else None,
+                day=clash.day.isoformat(),
+                at=clash.at.strftime("%H:%M"),
+                link=link,
+            )
+        )
+    return lines
+
+
+def _standups(c: _Day) -> list[Line]:
+    """The meetings today that the person marked to be in the brief and nowhere else (a daily stand-up), earliest first,
+    each with its time. They have no prep page and no line on Today."""
+    from engine import meeting_prep
+
+    return [
+        Line(
+            f"standup:{entry.id}:{begins.astimezone(c.here).date().isoformat()}",
+            "standup",
+            text=entry.data["title"],
+            day=begins.astimezone(c.here).date().isoformat(),
+            at=None if _all_day(entry.data) else begins.astimezone(c.here).strftime("%H:%M"),
+            place=entry.data.get("where"),
+        )
+        for entry, begins, _ in meeting_prep.brief_only_today(c.store, c.cfg, c.now)
+    ]
+
+
+def _all_day(data: dict[str, Any]) -> bool:
+    return len(str(data.get("start") or "")) == 10
+
+
+def _capacity(c: _Day) -> list[Line]:
+    """The one line saying today's to-dos need more than the calendar leaves; it opens Today's line with the moves."""
+    held = day_capacity.check(c.store, c.cfg, c.now)
+    if held is None:
+        return []
+    return [
+        Line(
+            "capacity",
+            "capacity",
+            minutes=held.free_minutes,
+            needed_minutes=held.needed_minutes,
+            count=len(held.moves),
+            queue="capacity",
+        )
+    ]
+
+
+#: The kinds of dated fact the brief lists as at risk: a day by which the person has to act or lose something.
+AT_RISK_KINDS = ("deadline", "renewal", "expiry")
+
+
+def _dated(c: _Day) -> list[Line]:
+    """The deadlines, renewals and expiries that facts record (from a mail, a booking or a document), from today through
+    `steward.brief.dated_risk_days` days ahead, soonest first. A fact a newer one replaced is left out."""
+    window = c.cfg.steward.brief.dated_risk_days
+    if window <= 0:
+        return []
+    last = c.today + timedelta(days=window)
+    replaced = {f.data["supersedes"] for f in c.view.list("fact") if f.data.get("supersedes")}
+    found: list[tuple[date, str, Line]] = []
+    for fact in c.view.list("fact"):
+        d = fact.data
+        on = d.get("on")
+        if on is None or d.get("on_kind") not in AT_RISK_KINDS or fact.id in replaced:
+            continue
+        day = on if isinstance(on, date) else date.fromisoformat(str(on))
+        if not c.today <= day <= last:
+            continue
+        found.append(
+            (
+                day,
+                fact.id,
+                Line(
+                    f"dated:{fact.id}",
+                    "dated",
+                    change=d["on_kind"],
+                    text=d["text"],
+                    day=day.isoformat(),
+                    days=(day - c.today).days,
+                    link=("fact", fact.id),
+                ),
+            )
+        )
+    return [line for _, _, line in sorted(found, key=lambda t: (t[0], t[1]))]
+
+
+def _named_today(c: _Day, data: dict[str, Any]) -> Any | None:
+    """The one calendar entry today, timed, not called off and not over, that an open to-do's words name: its text, the
+    words its day was read from and the quoted words it came from. None when the words name none or several, or the
+    to-do is already due at an entry."""
+    if data.get("due_event"):
+        return None
+    entries = []
+    for entry in c.view.list("event"):
+        spans = window(entry.data, c.here)
+        if (
+            spans is None
+            or entry.data.get("cancelled")
+            or not isinstance(entry_time(str(entry.data["start"])), datetime)
+            or spans[0].astimezone(c.here).date() != c.today
+            or spans[1] <= c.now
+        ):
+            continue
+        entries.append(entry)
+    for phrase in (data.get("text"), data.get("due_words"), (data.get("evidence") or {}).get("quote")):
+        found = named_entry(entries, str(phrase), "") if phrase else None
+        if found is not None:
+            return found
+    return None
+
+
+def _meeting_waits(c: _Day) -> list[Line]:
+    """What someone else still owes the person and whose words name a meeting today that is not yet over: the thing
+    is at risk at that meeting, soonest meeting first. The meeting is named only in words: the to-do isn't due at it."""
+    found: list[tuple[datetime, str, Line]] = []
+    for a in c.open_actions():
+        d = a.data
+        if c.mine(d) or c.pm not in (d.get("promised_to") or []):
+            continue
+        entry = _named_today(c, d)
+        spans = window(entry.data, c.here) if entry is not None else None
+        if entry is None or spans is None:
+            continue
+        who = next((o["person"] for o in d.get("owners") or [] if o.get("person")), None)
+        start = spans[0].astimezone(c.here)
+        found.append(
+            (
+                start,
+                a.id,
+                Line(
+                    f"meeting_wait:{a.id}",
+                    "meeting_wait",
+                    text=d["text"],
+                    person=who,
+                    person_name=c.name(who),
+                    other=entry.data["title"],
+                    day=start.date().isoformat(),
+                    at=start.strftime("%H:%M"),
+                    link=("action", a.id),
+                ),
+            )
+        )
+    return [line for _, _, line in sorted(found, key=lambda t: (t[0], t[1]))]
+
+
+def _risk(c: _Day) -> list[Line]:
+    # What doesn't fit today comes first: it is the reason the to-dos below it are at risk.
+    lines: list[Line] = _capacity(c)
+    due: list[tuple[date, str, Line]] = []
+    for a in c.open_actions():
+        d = a.data
+        day = firm_due(d)
+        if day is None or day > c.today or not c.mine(d):
+            continue
+        to = next((p for p in d.get("promised_to") or [] if p != c.pm), None)
+        due.append(
+            (
+                day,
+                d["text"].lower(),
+                Line(
+                    f"own:{a.id}",
+                    "own_due",
+                    text=d["text"],
+                    person=to,
+                    person_name=c.name(to),
+                    state="today" if day == c.today else "overdue",
+                    day=day.isoformat(),
+                    days=(c.today - day).days,
+                    at=_meeting_time(c, d.get("due_event"), day),
+                    link=("action", a.id),
+                ),
+            )
+        )
+    lines += [line for _, _, line in sorted(due, key=lambda t: (t[0], t[1], t[2].key))]
+    seen: set[str] = set()
+    for q in c.queue:
+        if q.kind not in ("promise", "nudge", "escalate"):
+            continue
+        for action_id in q.actions:
+            found = c.view.get("action", action_id)
+            if found is None or action_id in seen or found.data.get("status") != "open" or c.mine(found.data):
+                continue
+            day = firm_due(found.data)
+            if day is None or day >= c.today:
+                continue
+            seen.add(action_id)
+            who = next((o["person"] for o in found.data.get("owners") or [] if o.get("person")), None)
+            lines.append(
+                Line(
+                    f"owed:{action_id}",
+                    "owed_late",
+                    text=found.data["text"],
+                    person=who,
+                    person_name=c.name(who),
+                    day=day.isoformat(),
+                    days=(c.today - day).days,
+                    queue=q.key,
+                    link=("action", action_id),
+                )
+            )
+    lines += _meeting_waits(c)
+    lines += _clashes(c)
+    lines += _dated(c)
+    return lines
+
+
+def _yes(c: _Day) -> list[Line]:
+    lines = []
+    for q in c.queue:
+        if q.kind not in YES_KINDS:
+            continue
+        lines.append(
+            Line(
+                f"yes:{q.key}",
+                "yes",
+                change=q.kind,
+                text=q.text,
+                person=q.person,
+                person_name=c.name(q.person),
+                count=q.count,
+                queue=q.key,
+                ready=q.kind in READY_KINDS or (q.kind == "reply" and bool(q.reply)),
+            )
+        )
+    return lines
+
+
+def _digest(c: _Day) -> list[Line]:
+    """The suggestions the attention rules saved for the brief (quiet hours, the day's cap, or the person's choice to
+    keep a kind for it), most important first."""
+    from engine import attention_learning
+
+    chosen = attention_learning.verdicts(c.cfg)
+    return [
+        Line(
+            f"digest:{q.key}",
+            "digest",
+            change=f"pattern_{q.state}" if q.kind == "pattern" else q.kind,
+            text=q.text or q.subject,
+            person=q.person,
+            person_name=c.name(q.person),
+            count=q.count,
+            queue=q.key,
+            quieted=q.kind if chosen.get(q.kind) == attention_learning.QUIET else None,
+        )
+        for q in c.split.digest
+    ]
+
+
+def _offers(c: _Day) -> list[Line]:
+    """A reminder offered for each of the person's own to-dos with a day coming up and no reminder: for the working
+    morning before it is due (or the morning it is due, when that one has passed)."""
+    rule = c.cfg.steward.brief
+    if not rule.offer_reminders:
+        return []
+    working = rules(c.cfg).working
+    ahead = c.today + timedelta(days=rule.remind_within_days)
+    found: list[tuple[date, str, Line]] = []
+    for a in c.open_actions():
+        d = a.data
+        day = firm_due(d)
+        if day is None or not c.today < day <= ahead or d.get("remind_at") or not c.mine(d):
+            continue
+        before = day - timedelta(days=1)
+        while before.weekday() not in working.days and before > c.today:
+            before -= timedelta(days=1)
+        at = next(
+            (
+                moment
+                for moment in (
+                    datetime.combine(before, working.start, c.here),
+                    datetime.combine(day, working.start, c.here),
+                )
+                if moment > c.now
+            ),
+            None,
+        )
+        if at is None:
+            continue
+        found.append(
+            (
+                day,
+                d["text"].lower(),
+                Line(
+                    f"remind:{a.id}",
+                    "yes",
+                    change="reminder_offer",
+                    text=d["text"],
+                    day=at.date().isoformat(),
+                    at=at.strftime("%H:%M"),
+                    when=at.isoformat(),
+                    link=("action", a.id),
+                ),
+            )
+        )
+    return [line for _, _, line in sorted(found, key=lambda t: (t[0], t[1], t[2].key))]
+
+
+def _subject(line: Any) -> str | None:
+    """What a line of Today is about, in its own words: a waiting decision is given by its subject, not only counted."""
+    if line is None:
+        return None
+    words = " ".join(str(getattr(line, "text", None) or getattr(line, "subject", None) or "").split())
+    return words or None
+
+
+def _on_today_counts(c: _Day, risk: list[Line], yes: list[Line]) -> tuple[list[Line], list[Line], list[Line]]:
+    """What Today already has a line for is counted and never listed again: the lines of `risk` and `yes` whose own
+    line is on Today now leave them, and come back as one count for each kind that links to the first of those lines
+    ("2 things need you", "1 thing is late", "1 clash today"). What Today has no line for (a to-do due today, a
+    reminder offered, what the attention rules saved for the brief) stays listed. Returns the counts and the two
+    sections without them."""
+    shown = {q.key: q for q in c.queue}
+    overdue = {a for q in c.queue if q.kind == "overdue" for a in q.actions}
+    # What needs the person is counted by Today's lines, so a late promise whose line is one of them is that line once.
+    needing = {line.queue for line in yes if line.kind == "yes" and line.change in YES_KINDS and line.queue in shown}
+
+    def bucket(line: Line) -> tuple[str, str, str] | None:
+        """Which count a line goes in, the Today line it links to and what is counted (a line, a to-do)."""
+        if line.kind == "yes" and line.change in YES_KINDS and line.queue in shown:
+            return "need", line.queue, line.queue
+        if line.kind == "owed_late" and line.queue in shown:
+            return ("need", line.queue, line.queue) if line.queue in needing else ("late", line.queue, line.link[1])
+        if line.kind == "own_due" and line.state == "overdue" and line.link and line.link[1] in overdue:
+            return "late", "overdue", line.link[1]
+        if line.kind == "clash" and line.key in shown:
+            return "clash", line.key, line.key
+        return None
+
+    counted: dict[str, tuple[set[str], str]] = {}
+    named: list[str] = []
+    keep: tuple[list[Line], list[Line]] = ([], [])
+    for into, lines in zip(keep, (risk, yes), strict=True):
+        for line in lines:
+            found = bucket(line)
+            if found is None:
+                into.append(line)
+                continue
+            kind, key, unit = found
+            units, first = counted.get(kind, (set(), key))
+            units.add(unit)
+            counted[kind] = (units, first)
+            if kind == "need":
+                subject = _subject(shown.get(key))
+                if subject and subject not in named:
+                    named.append(subject)
+    counts = [
+        Line(
+            f"today:{kind}",
+            "on_today",
+            change=kind,
+            count=len(counted[kind][0]),
+            queue=counted[kind][1],
+            subjects=named if kind == "need" else [],
+        )
+        for kind in ("need", "late", "clash")
+        if kind in counted
+    ]
+    return counts, keep[0], keep[1]
+
+
+def _morning(c: _Day) -> Brief:
+    rule = c.cfg.steward.brief
+    counts, risk, yes = _on_today_counts(c, _risk(c), _yes(c))
+    sections = [
+        _cap(counts + _standups(c), "today", rule),
+        _cap(_changed(c), "changed", rule),
+        _cap(risk, "risk", rule),
+        _cap(yes + _offers(c) + _digest(c), "yes", rule),
+    ]
+    sections = [s for s in sections if s.lines]
+    brief = Brief("morning", c.today, sections=sections, quiet=not sections)
+    confirmed = week_plan.goals_of(c.view, c.pm, c.first)
+    if confirmed:
+        brief.goals = Goals(c.first, c.last, True, confirmed, [], rule.goals_min, rule.goals_max)
+    return brief
+
+
+# ---- the evening wrap-up -------------------------------------------------------------------------------------------
+
+
+def _done(c: _Day) -> list[Line]:
+    found: dict[str, tuple[datetime, Line]] = {}
+    for row in c.view.ledger(kind="action", fields=("status",)):
+        if row["after"] != "done" or row["version"] == 1:
+            continue
+        when = _stamp(row["at"])
+        if when is None or c.local_day(when) != c.today:
+            continue
+        action = c.view.get("action", row["record_id"])
+        if action is None or action.data.get("status") != "done":
+            continue
+        d = action.data
+        if not (c.mine(d) or c.pm in (d.get("promised_to") or [])):
+            continue
+        doers = list(d.get("done_by") or [])
+        if not doers and d.get("reported_by") and d["reported_by"] != c.pm:
+            doers = [d["reported_by"]]
+        you = c.pm in doers or (not doers and c.mine(d))
+        who = None
+        if not you:
+            who = next(iter(doers), None) or next((o["person"] for o in d.get("owners") or [] if o.get("person")), None)
+        line = Line(
+            f"done:{action.id}",
+            "done",
+            text=d["text"],
+            person=who,
+            person_name=c.name(who),
+            you=you,
+            link=("action", action.id),
+        )
+        found[action.id] = (when, line)
+    return [line for _, line in sorted(found.values(), key=lambda pair: (pair[0], pair[1].key))]
+
+
+def _moved(c: _Day) -> list[Line]:
+    lines: list[Line] = []
+    seen: set[str] = set()
+    for row in c.view.ledger(kind="action", fields=("due",)):
+        if row["version"] == 1 or row["before"] is None:
+            continue
+        when = _stamp(row["at"])
+        if when is None or c.local_day(when) != c.today:
+            continue
+        action = c.view.get("action", row["record_id"])
+        if action is None or action.id in seen or action.data.get("status") != "open" or not c.mine(action.data):
+            continue
+        day = firm_due(action.data)
+        if day is None or day <= c.today:
+            continue
+        # Moved means put off: a date moved earlier, or one first set today, was not moved to a later day.
+        before = _day_of(row["before"])
+        if before is None or before >= day:
+            continue
+        seen.add(action.id)
+        lines.append(
+            Line(
+                f"moved:{action.id}",
+                "moved_ahead",
+                text=action.data["text"],
+                day=day.isoformat(),
+                link=("action", action.id),
+            )
+        )
+    return lines
+
+
+def _carried(c: _Day, moved: list[Line]) -> list[Line]:
+    """What is due today and still open, with no date moved: it was not put off, so it is not in the moved section."""
+    seen = {line.link[1] for line in moved if line.link}
+    return [
+        Line(f"carried:{a.id}", "carried", text=a.data["text"], day=c.today.isoformat(), link=("action", a.id))
+        for a in c.open_actions()
+        if a.id not in seen and c.mine(a.data) and firm_due(a.data) == c.today
+    ]
+
+
+def _day_of(value: Any) -> date | None:
+    """The day a stored date or moment names, or none when it names no day."""
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
+def _waiting(c: _Day) -> list[Line]:
+    lines: list[tuple[date, str, Line]] = []
+    far = date.max
+    for a in c.open_actions():
+        d = a.data
+        if c.mine(d) or c.pm not in (d.get("promised_to") or []):
+            continue
+        who = next((o["person"] for o in d.get("owners") or [] if o.get("person")), None)
+        day = firm_due(d)
+        lines.append(
+            (
+                day or far,
+                d["text"].lower(),
+                Line(
+                    f"waiting:{a.id}",
+                    "waiting",
+                    text=d["text"],
+                    person=who,
+                    person_name=c.name(who),
+                    day=day.isoformat() if day else None,
+                    link=("action", a.id),
+                ),
+            )
+        )
+    for q in c.view.list("question"):
+        d = q.data
+        if d.get("status") != "sent" or d.get("to") == c.pm or not d.get("sent_at"):
+            continue
+        sent = _stamp(d["sent_at"])
+        lines.append(
+            (
+                far,
+                d["title"].lower(),
+                Line(
+                    f"waiting:{q.id}",
+                    "waiting_answer",
+                    text=d["title"],
+                    person=d["to"],
+                    person_name=c.name(d["to"]),
+                    days=(c.today - c.local_day(sent)).days if sent else None,
+                    link=("question", q.id),
+                ),
+            )
+        )
+    return [line for _, _, line in sorted(lines, key=lambda t: (t[0], t[1], t[2].key))]
+
+
+def _evening(c: _Day) -> Brief:
+    rule = c.cfg.steward.brief
+    moved, waiting = _moved(c), _waiting(c)
+    carried = _carried(c, moved)
+    sections = [
+        _cap(_done(c), "done", rule),
+        _cap(moved, "moved", rule),
+        _cap(carried, "carried", rule),
+        _cap(waiting, "waiting", rule),
+    ]
+    return Brief(
+        "evening", c.today, sections=[s for s in sections if s.lines], quiet=not moved and not carried and not waiting
+    )
+
+
+# ---- the Monday briefing -------------------------------------------------------------------------------------------
+
+
+def _on_today(c: _Day) -> set[str]:
+    """The ids of the actions and questions Today already holds a line for."""
+    ids: set[str] = set()
+    for q in c.queue:
+        ids.update(q.actions)
+        ids.update(q.questions)
+        if q.question:
+            ids.add(q.question)
+    return ids
+
+
+def _proposed(c: _Day) -> list[str]:
+    """Up to the most goals, from the person's own open to-dos due through the week, soonest first."""
+    found = []
+    for a in c.open_actions():
+        day = firm_due(a.data)
+        if c.mine(a.data) and day is not None and day <= c.last:
+            found.append((day, a.data["text"].lower(), a.data["text"]))
+    seen: set[str] = set()
+    proposed = []
+    for _, key, text in sorted(found):
+        if key not in seen:
+            seen.add(key)
+            proposed.append(text)
+    return proposed[: c.cfg.steward.brief.goals_max]
+
+
+def _monday(c: _Day) -> Brief:
+    rule = c.cfg.steward.brief
+    held = _on_today(c)
+    left_out = 0
+    # The week runs through the day before the next week's first working day, so weekend items are in it.
+    through = c.first + timedelta(days=6)
+    yours: list[tuple[date, str, Line]] = []
+    owed: list[tuple[date, str, Line]] = []
+    for a in c.open_actions():
+        d = a.data
+        day = firm_due(d)
+        if day is None or day > through:
+            continue
+        mine = c.mine(d)
+        to = next((p for p in d.get("promised_to") or [] if p != c.pm), None)
+        who = next((o["person"] for o in d.get("owners") or [] if o.get("person") and o["person"] != c.pm), None)
+        if not mine and c.pm not in (d.get("promised_to") or []):
+            continue
+        person = to if mine else who
+        line = Line(
+            f"week:{a.id}",
+            "week_promise",
+            text=d["text"],
+            person=person,
+            person_name=c.name(person),
+            state="overdue" if day < c.today else "due",
+            day=day.isoformat(),
+            days=max(0, (c.today - day).days),
+            you=mine,
+            link=("action", a.id),
+            on_today_line=a.id in held,
+        )
+        (yours if mine else owed).append((day, d["text"].lower(), line))
+    send: list[Line] = []
+    chase: list[Line] = []
+    decide: list[Line] = []
+    for q in c.view.list("question"):
+        d = q.data
+        if d.get("status") not in ("open", "sent"):
+            continue
+        if q.id in held:
+            left_out += 1
+            continue
+        about_me = d.get("to") == c.pm
+        if d["status"] == "open" and about_me and d.get("kind") == "decision":
+            decide.append(Line(f"week:{q.id}", "decision", text=d["title"], link=("question", q.id)))
+        elif d["status"] == "open" and not about_me:
+            held_for = (d.get("held_for") or {}).get("on")
+            if held_for and held_for > c.last.isoformat():
+                continue
+            send.append(
+                Line(
+                    f"week:{q.id}",
+                    "send_question",
+                    text=d["title"],
+                    person=d["to"],
+                    person_name=c.name(d["to"]),
+                    link=("question", q.id),
+                )
+            )
+        elif d["status"] == "sent" and not about_me:
+            sent = _stamp(d.get("sent_at"))
+            chase.append(
+                Line(
+                    f"week:{q.id}",
+                    "chase_answer",
+                    text=d["title"],
+                    person=d["to"],
+                    person_name=c.name(d["to"]),
+                    days=(c.today - c.local_day(sent)).days if sent else None,
+                    link=("question", q.id),
+                )
+            )
+    ordered = [sorted(group, key=lambda t: (t[0], t[1], t[2].key)) for group in (yours, owed)]
+    sections = [
+        _cap([line for _, _, line in ordered[0]], "yours", rule),
+        _cap([line for _, _, line in ordered[1]], "owed", rule),
+        _cap(send, "send", rule),
+        _cap(chase, "chase", rule),
+        _cap(decide, "decide", rule),
+    ]
+    sections = [s for s in sections if s.lines]
+    confirmed = week_plan.goals_of(c.view, c.pm, c.first)
+    goals = Goals(
+        c.first, c.last, bool(confirmed), confirmed, [] if confirmed else _proposed(c), rule.goals_min, rule.goals_max
+    )
+    return Brief(
+        "monday",
+        c.today,
+        sections=sections,
+        quiet=not sections,
+        on_today=left_out,
+        goals=goals,
+        message=week_plan.message_of(c.view, c.cfg, c.store, c.now),
+    )
+
+
+def build(ws: Any, store: Any, cfg: Any, now: datetime, form: str | None = None) -> Brief:
+    """A form of the brief as of `now`: the one due now when none is named, or the one asked for. Reads only."""
+    c = _Day(ws, store, cfg, now)
+    forms = available(
+        cfg,
+        now,
+        bool(week_plan.goals_of(c.view, c.pm, c.first)),
+        week_plan.offer_dismissed(c.view, c.pm, c.first),
+    )
+    chosen = form if form is not None else (forms[0] if forms else None)
+    if chosen is None:
+        return Brief(None, c.today, forms=forms)
+    if chosen not in FORMS:
+        raise ValueError(f"there is no {chosen} form of the brief")
+    made = {"morning": _morning, "evening": _evening, "monday": _monday}[chosen](c)
+    made.forms = forms or [chosen]
+    return made

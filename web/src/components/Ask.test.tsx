@@ -1,0 +1,443 @@
+import "@testing-library/jest-dom/vitest";
+import { screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { S } from "../lib/api";
+import { fakeApi, renderApp } from "../test-utils";
+import { Ask } from "./Ask";
+
+type AskItem = S["AskView"];
+
+const ask = (id: string, extra: Partial<AskItem> = {}): AskItem => ({
+  id,
+  question: `Question ${id}`,
+  state: "queued",
+  waiting: "With the assistant, starting now",
+  created_at: "2026-03-04T10:30:00+00:00",
+  changeset: null,
+  answer: null,
+  proposals: [],
+  reports: [],
+  version: 1,
+  waiting_for_go: false,
+  reviewed: false,
+  ops: [],
+  ...extra,
+});
+
+const setting = (key: string, value: unknown, description = key): S["SettingItem"] => ({
+  key,
+  file: "demo",
+  group: "demo",
+  description,
+  type: "text",
+  options: [],
+  value,
+  default: value,
+  source: "default",
+  locked: false,
+  basic: true,
+  editable: true,
+});
+
+const saved = (key: string, before: unknown, after: unknown): S["SettingsSaved"] => ({
+  changes: [{ key, before, after, was_default: true, is_default: false }],
+  fingerprint: "fp-2",
+  needs_restart: false,
+});
+
+function open(asks: AskItem[], extra: Record<string, (b: unknown) => unknown> = {}, initial?: string, feedbackTo?: string | null) {
+  const calls = fakeApi({
+    "GET asks": () => asks,
+    "GET settings": () => ({ fingerprint: "fp-1", items: [setting("demo.thing", 5, "How many things")] }),
+    ...extra,
+  });
+  const onClose = vi.fn();
+  renderApp(<Ask onClose={onClose} initial={initial} feedbackTo={feedbackTo} />);
+  return { calls, onClose };
+}
+
+const item = async (question: string) => (await screen.findByRole("listitem", { name: question })) as HTMLElement;
+const sent = (calls: Array<{ route: string; body: unknown }>, route: string) => calls.find((c) => c.route === route)?.body;
+
+test("the dialog is named for the assistant and the question field has the focus", async () => {
+  open([]);
+  expect(screen.getByRole("dialog", { name: "Ask Helper" })).toBeInTheDocument();
+  expect(screen.getByLabelText("Your question")).toHaveFocus();
+  // While nothing has been asked yet the recent list is not drawn at all.
+  await waitFor(() => expect(screen.queryByRole("heading", { name: "Recent questions" })).toBeNull());
+  expect(screen.queryByText("No questions yet.")).toBeNull();
+});
+
+test("a question can start filled in", async () => {
+  open([], {}, "How do I add a source?");
+  expect(screen.getByLabelText("Your question")).toHaveValue("How do I add a source?");
+});
+
+test("asking posts the question, clears the field and lists it", async () => {
+  const asks: AskItem[] = [];
+  const { calls } = open(asks, {
+    "POST ask": (body) => {
+      asks.unshift(ask("r1", { question: (body as { question: string }).question }));
+      return { id: "r1" };
+    },
+  });
+  const user = userEvent.setup();
+  const field = screen.getByLabelText("Your question");
+  await user.type(field, "What is due this week?");
+  await user.click(screen.getByRole("button", { name: "Ask" }));
+  await waitFor(() => expect(sent(calls, "POST ask")).toEqual({ question: "What is due this week?" }));
+  expect(await item("What is due this week?")).toHaveTextContent("Waiting");
+  expect(field).toHaveValue("");
+  expect(field).toHaveFocus();
+});
+
+test("Enter asks and Shift+Enter starts a new line", async () => {
+  const { calls } = open([], { "POST ask": () => ({ id: "r1" }) });
+  const user = userEvent.setup();
+  await user.type(screen.getByLabelText("Your question"), "First{Shift>}{Enter}{/Shift}Second{Enter}");
+  await waitFor(() => expect(sent(calls, "POST ask")).toEqual({ question: "First\nSecond" }));
+});
+
+test("nothing is asked with an empty field", async () => {
+  open([]);
+  expect(screen.getByRole("button", { name: "Ask" })).toBeDisabled();
+});
+
+test("each state is said in words, with why it is waiting", async () => {
+  open([
+    ask("q", { state: "queued", waiting: "Next batch at 3:00" }),
+    ask("w", { state: "running", waiting: "Working now" }),
+    ask("n", { state: "needs_you", waiting: "Waiting for your answer" }),
+    ask("f", { state: "failed", waiting: "Paused until the limit resets" }),
+    ask("a", { state: "done", waiting: null, answer: { text: "It is Tuesday.", cites: [] } }),
+    ask("r", { state: "review", waiting: "In your list to look at", answer: { text: "Done.", cites: [] } }),
+  ]);
+  expect(await item("Question q")).toHaveTextContent(/Waiting\s*Next batch at 3:00/);
+  expect(await item("Question w")).toHaveTextContent("Working on it");
+  expect(await item("Question n")).toHaveTextContent(/Needs you\s*Waiting for your answer/);
+  expect(await item("Question f")).toHaveTextContent(/Stopped\s*Paused until the limit resets/);
+  const answered = await item("Question a");
+  expect(answered).toHaveTextContent("Answered");
+  expect(answered).toHaveTextContent("It is Tuesday.");
+  const review = await item("Question r");
+  expect(review).toHaveTextContent("Answered");
+  expect(review).not.toHaveTextContent("In your list to look at");
+});
+
+test("an answer lists the words it is based on, in quote marks, as text", async () => {
+  open([
+    ask("a", {
+      state: "done",
+      answer: {
+        text: "Backups run every day.",
+        cites: [
+          { quote: "Backups run on a schedule", source: "help" },
+          { quote: "<b>bold</b> words", source: null },
+        ],
+      },
+    }),
+  ]);
+  const row = await item("Question a");
+  expect(within(row).getByText("Based on")).toBeInTheDocument();
+  expect(within(row).getByText("“Backups run on a schedule”")).toBeInTheDocument();
+  expect(within(row).getByText("“<b>bold</b> words”")).toBeInTheDocument();
+  expect(row.querySelector("b")).toBeNull();
+  // The place a quote came from is an internal name and is not shown.
+  expect(row).not.toHaveTextContent(/\bhelp\b/);
+});
+
+test("a suggested setting shows its label, value and why, and Apply sends the current fingerprint and the version read", async () => {
+  const proposal: S["SettingProposalView"] = { id: "sp1", version: 3, key: "demo.thing", value: 8, why: "You asked for more.", status: "open" };
+  const { calls, onClose } = open([ask("a", { state: "done", answer: { text: "Try this.", cites: [] }, proposals: [proposal] })], {
+    "POST setting-proposals/sp1/apply": () => saved("demo.thing", 5, 8),
+  });
+  const user = userEvent.setup();
+  const row = await item("Question a");
+  await waitFor(() => expect(row).toHaveTextContent("How many things: 8"));
+  expect(row).toHaveTextContent("You asked for more.");
+  await user.click(await within(row).findByRole("button", { name: "Make this change: How many things" }));
+  await waitFor(() =>
+    expect(sent(calls, "POST setting-proposals/sp1/apply")).toEqual({ fingerprint: "fp-1", read_version: 3 }),
+  );
+  // The read-back with Undo, as after any saved setting.
+  expect(await screen.findByText("Saved. How many things: 8")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+  // The dialog closes, so the Undo can be reached from the keyboard.
+  expect(onClose).toHaveBeenCalled();
+});
+
+test("a setting with a name on the wording sheet uses it", async () => {
+  const proposal: S["SettingProposalView"] = {
+    id: "sp1",
+    version: 1,
+    key: "storage.backups.every_hours",
+    value: 6,
+    why: "",
+    status: "open",
+  };
+  open([ask("a", { state: "done", answer: { text: "Ok.", cites: [] }, proposals: [proposal] })], {
+    "GET settings": () => ({ fingerprint: "fp-1", items: [] }),
+  });
+  const row = await item("Question a");
+  await waitFor(() => expect(row).toHaveTextContent("Hours between backups: 6"));
+});
+
+test("a suggestion that changed since it was read is refused in words", async () => {
+  const proposal: S["SettingProposalView"] = { id: "sp1", version: 3, key: "demo.thing", value: 8, why: "", status: "open" };
+  const { Refuse } = await import("../test-utils");
+  open([ask("a", { state: "done", answer: { text: "Try.", cites: [] }, proposals: [proposal] })], {
+    "POST setting-proposals/sp1/apply": () => new Refuse(409, "That suggestion changed since you saw it."),
+  });
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /^Make this change/ }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("That suggestion changed since you saw it.");
+});
+
+test("Not now sets the suggestion aside with the version read", async () => {
+  const proposal: S["SettingProposalView"] = { id: "sp1", version: 3, key: "demo.thing", value: 8, why: "", status: "open" };
+  const { calls } = open([ask("a", { state: "done", answer: { text: "Try.", cites: [] }, proposals: [proposal] })], {
+    "POST setting-proposals/sp1/dismiss": () => ({ id: "sp1" }),
+  });
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /^Not now/ }));
+  await waitFor(() => expect(sent(calls, "POST setting-proposals/sp1/dismiss")).toEqual({ read_version: 3 }));
+  expect(await screen.findByText("Left as it is.")).toBeInTheDocument();
+});
+
+test("a suggestion already dealt with says so and offers nothing", async () => {
+  const proposal: S["SettingProposalView"] = { id: "sp1", version: 4, key: "demo.thing", value: 8, why: "", status: "applied" };
+  open([ask("a", { state: "done", answer: { text: "Done.", cites: [] }, proposals: [proposal] })]);
+  const row = await item("Question a");
+  expect(row).toHaveTextContent("Changed");
+  expect(within(row).queryByRole("button", { name: /^Make this change/ })).toBeNull();
+});
+
+test("Copy puts the draft report on the clipboard; Mark sent then records it", async () => {
+  const report: S["ReportView"] = { id: "rp1", version: 2, title: "A missing button", text: "It would help to have one.", status: "draft" };
+  const { calls } = open([ask("a", { state: "done", answer: { text: "Not yet.", cites: [] }, reports: [report] })], {
+    "POST reports/rp1/sent": () => ({ id: "rp1" }),
+  });
+  const user = userEvent.setup();
+  const row = await item("Question a");
+  expect(row).toHaveTextContent("A missing button");
+  expect(row).toHaveTextContent("It would help to have one.");
+  await user.click(within(row).getByRole("button", { name: "Copy: A missing button" }));
+  expect(await navigator.clipboard.readText()).toBe("A missing button\n\nIt would help to have one.");
+  expect(await screen.findByText("Copied. Send it, then mark it sent.")).toBeInTheDocument();
+  expect(calls.some((c) => c.route === "POST reports/rp1/sent")).toBe(false);
+  await user.click(within(row).getByRole("button", { name: "Mark sent: A missing button" }));
+  await waitFor(() => expect(sent(calls, "POST reports/rp1/sent")).toEqual({ read_version: 2 }));
+  expect(await screen.findByText("Marked as sent.")).toBeInTheDocument();
+});
+
+const draft = (extra: Partial<S["ReportView"]> = {}): S["ReportView"] => ({
+  id: "rp1",
+  version: 2,
+  title: "A missing button",
+  text: "It would help\nto have one.",
+  status: "draft",
+  ...extra,
+});
+const withReport = (report: S["ReportView"], feedbackTo: string | null | undefined, extra: Record<string, (b: unknown) => unknown> = {}) =>
+  open([ask("a", { state: "done", answer: { text: "Not yet.", cites: [] }, reports: [report] })], extra, undefined, feedbackTo);
+
+test("with an address a report has a mail link with its title and text encoded, beside Copy", async () => {
+  withReport(draft(), "feedback@example.com");
+  const row = await item("Question a");
+  const link = within(row).getByRole("link", { name: "Open in your email app: A missing button" });
+  expect(link).toHaveAttribute(
+    "href",
+    `mailto:feedback@example.com?subject=${encodeURIComponent("A missing button")}&body=${encodeURIComponent("It would help\r\nto have one.")}`,
+  );
+  expect(link).toHaveAttribute("data-variant", "primary");
+  expect(within(row).getByRole("button", { name: "Copy: A missing button" })).not.toHaveAttribute("data-variant", "primary");
+  expect(within(row).getByRole("button", { name: "Mark sent: A missing button" })).not.toHaveAttribute("data-variant", "primary");
+});
+
+test("without an address a report still has the mail link, which opens a blank To line, and it is the main action", async () => {
+  withReport(draft(), null);
+  const row = await item("Question a");
+  const link = within(row).getByRole("link", { name: "Open in your email app: A missing button" });
+  expect(link).toHaveAttribute(
+    "href",
+    `mailto:?subject=${encodeURIComponent("A missing button")}&body=${encodeURIComponent("It would help\r\nto have one.")}`,
+  );
+  expect(link).toHaveAttribute("data-variant", "primary");
+  expect(within(row).getByRole("button", { name: "Copy: A missing button" })).toHaveAttribute("data-variant", "quiet");
+});
+
+test("a report too long for a mail link has none, and says to copy it", async () => {
+  withReport(draft({ text: "word ".repeat(600) }), "feedback@example.com");
+  const row = await item("Question a");
+  expect(within(row).queryByRole("link", { name: /Open in your mail/ })).toBeNull();
+  expect(within(row).getByText(/too long for a mail link/)).toBeInTheDocument();
+  expect(within(row).getByRole("button", { name: "Copy: A missing button" })).toHaveAttribute("data-variant", "primary");
+});
+
+test("opening the report in the mail program makes Mark sent the main action, and Mark sent records it", async () => {
+  const { calls } = withReport(draft(), "feedback@example.com", { "POST reports/rp1/sent": () => ({ id: "rp1" }) });
+  const user = userEvent.setup();
+  const row = await item("Question a");
+  const link = within(row).getByRole("link", { name: "Open in your email app: A missing button" });
+  // The browser would follow the link; the test only checks what the page does about the click.
+  link.addEventListener("click", (e) => e.preventDefault());
+  await user.click(link);
+  expect(within(row).getByRole("button", { name: "Mark sent: A missing button" })).toHaveAttribute("data-variant", "primary");
+  expect(within(row).getByRole("link", { name: "Open in your email app: A missing button" })).not.toHaveAttribute("data-variant", "primary");
+  expect(calls.some((c) => c.route === "POST reports/rp1/sent")).toBe(false);
+  await user.click(within(row).getByRole("button", { name: "Mark sent: A missing button" }));
+  await waitFor(() => expect(sent(calls, "POST reports/rp1/sent")).toEqual({ read_version: 2 }));
+});
+
+test("copying a report with a mail link also makes Mark sent the main action", async () => {
+  withReport(draft(), "feedback@example.com");
+  const user = userEvent.setup();
+  const row = await item("Question a");
+  await user.click(within(row).getByRole("button", { name: "Copy: A missing button" }));
+  expect(await navigator.clipboard.readText()).toBe("A missing button\n\nIt would help\nto have one.");
+  expect(within(row).getByRole("button", { name: "Mark sent: A missing button" })).toHaveAttribute("data-variant", "primary");
+  expect(within(row).getByRole("link", { name: "Open in your email app: A missing button" })).toBeInTheDocument();
+});
+
+test("when copying is blocked the report is not marked sent", async () => {
+  const report: S["ReportView"] = { id: "rp1", version: 2, title: "T", text: "Body", status: "draft" };
+  const { calls } = open([ask("a", { state: "done", answer: { text: "No.", cites: [] }, reports: [report] })]);
+  const user = userEvent.setup();
+  vi.spyOn(navigator.clipboard, "writeText").mockRejectedValueOnce(new Error("blocked"));
+  await user.click(await screen.findByRole("button", { name: "Copy: T" }));
+  expect(await screen.findByText(/Copying was blocked/)).toBeInTheDocument();
+  expect(calls.some((c) => c.route === "POST reports/rp1/sent")).toBe(false);
+});
+
+test("Set aside dismisses the report with the version read", async () => {
+  const report: S["ReportView"] = { id: "rp1", version: 2, title: "T", text: "Body", status: "draft" };
+  const { calls } = open([ask("a", { state: "done", answer: { text: "No.", cites: [] }, reports: [report] })], {
+    "POST reports/rp1/dismiss": () => ({ id: "rp1" }),
+  });
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "Set aside: T" }));
+  await waitFor(() => expect(sent(calls, "POST reports/rp1/dismiss")).toEqual({ read_version: 2 }));
+});
+
+test("a report already sent has no buttons", async () => {
+  const report: S["ReportView"] = { id: "rp1", version: 2, title: "T", text: "Body", status: "sent" };
+  open([ask("a", { state: "done", answer: { text: "No.", cites: [] }, reports: [report] })]);
+  const row = await item("Question a");
+  expect(row).toHaveTextContent("Sent");
+  expect(within(row).queryByRole("button", { name: /^Copy/ })).toBeNull();
+});
+
+test("Close and Escape both close the dialog", async () => {
+  const { onClose } = open([]);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Close" }));
+  expect(onClose).toHaveBeenCalledTimes(1);
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(onClose).toHaveBeenCalledTimes(2));
+});
+
+test("Ask offers to set up kinds of items of your own, listing the starting templates only once it is opened, and applies one", async () => {
+  const user = userEvent.setup();
+  const calls = open([], {
+    "GET templates": () => [
+      { id: "tpl-a", name: "Client requests", description: "Requests with steps.", set_up: false, adds: [] },
+      { id: "tpl-b", name: "Trip", description: "Places and plans.", set_up: true, adds: [] },
+    ],
+    "POST templates/apply": () => ({ plugins: ["kit"], needs_restart: true }),
+  }).calls;
+  const offer = await screen.findByRole("button", { name: "Keep track of something of your own" });
+  expect(offer).toHaveAttribute("aria-expanded", "false");
+  // The link carries its context as a tooltip, not as a second paragraph.
+  expect(offer).toHaveAttribute("title", expect.stringMatching(/start a list of your own/));
+  expect(screen.queryByText(/Ask answers from what is saved here/)).toBeNull();
+  expect(calls.some((c) => c.route === "GET templates")).toBe(false);
+  expect(screen.queryByText("Client requests")).toBeNull();
+  await user.click(offer);
+  expect(offer).toHaveAttribute("aria-expanded", "true");
+  expect(await screen.findByText("Client requests")).toBeInTheDocument();
+  expect(screen.getByText("Already set up")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Use Client requests" }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST templates/apply")?.body).toEqual({ id: "tpl-a" }));
+  expect(await screen.findByText("Applied Client requests.")).toBeInTheDocument();
+});
+
+test("an answer offers Correct it, and the correction is sent with the person's words", async () => {
+  const user = userEvent.setup();
+  const answered = ask("Q-9", { state: "done", answer: { text: "It is in Settings.", cites: [] } });
+  const { calls } = open([answered], { "POST asks/Q-9/correction": () => ({ id: "SIG-1" }) });
+  const row = await item("Question Q-9");
+  await user.click(within(row).getByRole("button", { name: "Correct it" }));
+  await user.type(within(row).getByLabelText("What was wrong in this answer?"), "It is under Connections");
+  await user.click(within(row).getByRole("button", { name: "Send correction" }));
+  await waitFor(() => expect(sent(calls, "POST asks/Q-9/correction")).toEqual({ note: "It is under Connections" }));
+});
+
+test("an answer offers Helpful and Not helpful: one click records it, the standing one is pressed, and Undo takes it back", async () => {
+  const user = userEvent.setup();
+  const answered = ask("Q-8", { state: "done", answer: { text: "It is in Settings.", cites: [] } });
+  const { calls } = open([answered], {
+    "POST asks/Q-8/verdict": () => ({ id: "SIG-4" }),
+    "POST asks/verdict/SIG-4/undo": () => ({ ok: "SIG-4" }),
+  });
+  const row = await item("Question Q-8");
+  const helpful = within(row).getByRole("button", { name: "Helpful" });
+  expect(helpful).toHaveAttribute("aria-pressed", "false");
+  await user.click(helpful);
+  await waitFor(() => expect(sent(calls, "POST asks/Q-8/verdict")).toEqual({ helpful: true }));
+  expect(await screen.findByText("Thanks. Marked helpful.")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST asks/verdict/SIG-4/undo")).toBe(true));
+});
+
+test("a standing verdict shows pressed, and the other button replaces it", async () => {
+  const user = userEvent.setup();
+  const answered = ask("Q-7", { state: "done", answer: { text: "It is in Settings.", cites: [] }, verdict: "helpful", verdict_signal: "SIG-1" });
+  const { calls } = open([answered], { "POST asks/Q-7/verdict": () => ({ id: "SIG-2" }) });
+  const row = await item("Question Q-7");
+  expect(within(row).getByRole("button", { name: "Helpful" })).toHaveAttribute("aria-pressed", "true");
+  await user.click(within(row).getByRole("button", { name: "Helpful" }));
+  expect(calls.some((c) => c.route === "POST asks/Q-7/verdict")).toBe(false);
+  await user.click(within(row).getByRole("button", { name: "Not helpful" }));
+  await waitFor(() => expect(sent(calls, "POST asks/Q-7/verdict")).toEqual({ helpful: false }));
+});
+
+test("the link to a list of your own has a sentence saying what it is for", async () => {
+  fakeApi({ "GET asks": () => [] });
+  renderApp(<Ask onClose={() => undefined} />);
+  const link = await screen.findByRole("button", { name: "Keep track of something of your own" });
+  expect(link).toHaveAttribute("title", expect.stringMatching(/start a list of your own/));
+});
+
+test("asking while Today waits for Start says it waits for Start, with a way to Today", async () => {
+  const firstGo = { key: "first_go", group: "decide", kind: "first_go", count: 1, untrusted: false, unpriced: 0, actions: [], questions: [], outcome: {} };
+  open([], { "POST ask": () => ({ id: "r1" }), "GET today/queue": () => [firstGo] });
+  const user = userEvent.setup();
+  await user.type(screen.getByLabelText("Your question"), "What is due?");
+  await user.click(screen.getByRole("button", { name: "Ask" }));
+  expect(await screen.findByText(/waits until you choose Start/)).toBeInTheDocument();
+  expect(screen.queryByText(/is on it/)).toBeNull();
+  expect(screen.getByRole("button", { name: "Go to Today" })).toBeInTheDocument();
+});
+
+test("the toast that says the assistant is on it goes once the answer to that question is on the screen (X26)", async () => {
+  const user = userEvent.setup();
+  let answered = false;
+  const calls = fakeApi({
+    "GET asks": () => (answered ? [ask("r1", { state: "done", answer: { text: "It is due Friday.", cites: [] } })] : []),
+    "POST ask": () => ({ id: "r1" }),
+    "GET today/queue": () => [],
+    "GET settings": () => ({ fingerprint: "fp-1", items: [] }),
+    "POST asks/r1/read": () => ({ id: "r1" }),
+  });
+  const { client } = renderApp(<Ask onClose={() => undefined} />);
+  await user.type(screen.getByLabelText("Your question"), "What is due?");
+  await user.click(screen.getByRole("button", { name: "Ask" }));
+  expect(await screen.findByText(/is on it/)).toBeInTheDocument();
+  // The answer arrives as the live stream brings it.
+  answered = true;
+  await client.invalidateQueries({ queryKey: ["asks"] });
+  await waitFor(() => expect(screen.queryByText(/is on it/)).toBeNull());
+  expect(screen.getByText("It is due Friday.")).toBeInTheDocument();
+  // And Today holds no line to read the answer that is on the screen (X25).
+  await waitFor(() => expect(calls.some((c) => c.route === "POST asks/r1/read")).toBe(true));
+});

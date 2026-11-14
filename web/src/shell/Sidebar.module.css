@@ -1,0 +1,54 @@
+/* The sidebar: 232px with labels, or a 64px icon rail. Fixed in place under the header; only its own list scrolls. */
+.side {
+  position: sticky; top: var(--header-h); height: calc(100dvh - var(--header-h)); overflow-y: auto; overflow-x: hidden;
+  display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-3) var(--space-2);
+  background: var(--surface); border-right: 1px solid var(--border);
+}
+.group { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-1); }
+/* A section's label is the shared group label (ui/GroupLabel); here it only takes the sidebar's own margins. */
+.side .title { margin: var(--space-4) 0 var(--space-1); padding: 0 var(--space-3); color: var(--text-subtle); }
+.bottom { margin-top: auto; display: grid; gap: var(--space-1); padding-top: var(--space-3); }
+.entry {
+  display: flex; align-items: center; gap: var(--space-3); min-width: 0; min-height: 36px; padding: 0 var(--space-3); border-radius: var(--radius-md);
+  color: var(--text-muted); text-decoration: none; font-size: var(--text-sm); line-height: var(--lh-sm); font-weight: var(--weight-medium); cursor: pointer;
+}
+.entry:hover { background: var(--surface-hover); color: var(--text); }
+.entry[aria-current="page"] { background: var(--accent-soft); color: var(--accent-text); font-weight: var(--weight-semibold); }
+.sub { padding-left: var(--space-3); }
+/* A side's dot stands where an icon would: the same 22px box, the dot centred in it. */
+.sideDot { display: inline-grid; place-items: center; width: 22px; min-width: 22px; height: 22px; flex: none; }
+.glyph { display: inline-grid; place-items: center; width: 22px; min-width: 22px; height: 22px; padding: 0; box-sizing: border-box; flex: none; border-radius: var(--radius-sm); background: var(--surface-sunk); color: var(--text-muted); font-size: var(--text-xs); line-height: var(--lh-xs); font-weight: var(--weight-semibold); }
+.entry[aria-current="page"] .glyph { background: var(--surface); color: var(--accent-text); }
+.label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A side's name with the labels showing wraps to a second line, the dot staying beside the first, and a longer one ends its second line
+   with an ellipsis (the whole name is the entry's hover title). (The rail hides the label.) */
+.side:not(.rail) .entry[data-side-entry] { align-items: flex-start; padding-block: var(--space-2); }
+.side:not(.rail) .entry[data-side-entry] .sideDot { height: var(--lh-sm); }
+.side:not(.rail) .entry[data-side-entry] .label { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
+.side:not(.rail) .entry[data-side-entry] .count { align-self: center; }
+.count { margin-left: auto; padding: 0 var(--space-2); border-radius: var(--radius-full); background: var(--surface-sunk); color: var(--text); font-size: var(--text-xs); line-height: var(--lh-xs); font-weight: var(--weight-semibold); font-variant-numeric: tabular-nums; }
+.entry[aria-current="page"] .count { background: var(--surface); color: var(--accent-text); }
+.toggle { display: flex; justify-content: flex-start; }
+
+/* The icon rail: one icon each, with a tooltip. */
+.rail { align-items: stretch; }
+.rail .entry { justify-content: center; padding: 0; position: relative; }
+/* A count on the rail is a small figure on the icon's corner, so what waits still shows without the labels. */
+.rail .count { position: absolute; top: 2px; right: var(--space-1); margin: 0; min-width: var(--space-4); padding: 0 var(--space-1); border-radius: var(--radius-full); text-align: center; background: var(--accent); color: var(--text-on-accent); }
+.rail .entry[aria-current="page"] .count { background: var(--accent); color: var(--text-on-accent); }
+.rail .label, .rail .title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.rail .group + .group { margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--border); }
+.rail .toggle { justify-content: center; }
+
+/* The wrapper that carries an icon's title on the rail takes no box of its own: the link inside is laid out as it was. */
+.titled { display: contents; }
+/* On the icon rail a side's dot is a disc with the side's initial in it, so the sides are told apart without hovering. */
+.initial { display: inline-grid; place-items: center; width: 22px; height: 22px; box-sizing: border-box; border-radius: var(--radius-full); border: 2px solid var(--text-subtle); background: var(--surface); font-size: var(--text-xs); line-height: 1; font-weight: var(--weight-semibold); color: var(--text); }
+.initial[data-color="1"] { border-color: var(--side-1); }
+.initial[data-color="2"] { border-color: var(--side-2); }
+.initial[data-color="3"] { border-color: var(--side-3); }
+.initial[data-color="4"] { border-color: var(--side-4); }
+.initial[data-color="5"] { border-color: var(--side-5); }
+.initial[data-color="6"] { border-color: var(--side-6); }
+.initial[data-color="7"] { border-color: var(--side-7); }
+.initial[data-color="8"] { border-color: var(--side-8); }

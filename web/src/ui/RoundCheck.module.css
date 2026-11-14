@@ -1,0 +1,17 @@
+/* The one mark that finishes a to-do, wherever a to-do is listed: an empty 20px ring at rest (the strong border color, 3:1 or better against the row in both themes), with the check drawn only on hover or
+   focus, so it reads as "done" and not as "select" and never as already done. The hit area is 32px on a desktop and 44px on a touch screen (--hit-min). Hover or focus brings the check to full strength in the
+   success color; pressing fills the ring. */
+.check { display: inline-grid; place-items: center; width: var(--check-hit); height: var(--check-hit); margin: var(--check-offset); padding: 0; border: 0; border-radius: var(--radius-full); background: none; cursor: pointer; flex: none; }
+.ring { position: relative; width: 20px; height: 20px; box-sizing: border-box; border: 1.5px solid var(--border-strong); border-radius: var(--radius-full); background: var(--surface); transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out); }
+.ring::after { content: ""; position: absolute; left: 6px; top: 2px; width: 5px; height: 9px; border: solid var(--text-muted); border-width: 0 2px 2px 0; transform: rotate(45deg); opacity: 0; transition: opacity var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out); }
+.check:hover .ring, .check:focus-visible .ring { border-color: var(--ok); }
+.check:hover .ring::after, .check:focus-visible .ring::after { opacity: 1; border-color: var(--ok); }
+.check:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.check:active .ring { border-color: var(--ok); background: var(--ok); transform: scale(0.94); }
+.check:active .ring::after { opacity: 1; border-color: var(--surface); }
+/* A to-do among a day's entries: the mark is a little smaller and sits before the title, in the entry's own row. */
+.small .ring { width: 16px; height: 16px; }
+.small .ring::after { left: 4.5px; top: 1px; width: 4px; height: 7px; }
+/* A row whose save failed is not done: the check does not come up on it, so the page never shows success and failure at once. */
+:global([data-row-failed]) .check:hover .ring, :global([data-row-failed]) .check:focus-visible .ring { border-color: var(--border-strong); }
+:global([data-row-failed]) .check:hover .ring::after, :global([data-row-failed]) .check:focus-visible .ring::after { opacity: 0; }

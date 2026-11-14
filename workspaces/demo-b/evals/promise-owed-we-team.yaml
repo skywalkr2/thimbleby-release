@@ -1,0 +1,29 @@
+id: promise-owed-we-team
+title: '"We''ll" from the sender''s team is not owed to the person unless the words say so'
+skills: [owners, evidence]
+received: '2026-11-04'
+given_file: promise-people.yaml
+# A team's "we'll" names no owner and isn't said to the person, so it is the team's, with no person owed (F32).
+pasted: |-
+  From: Dev Maran <dev@example.com>
+  To: Avery Lane <avery.lane@example.com>
+  Subject: Workshop notes
+
+  We'll circulate the workshop notes on Friday.
+# Said to the person, the team's word can also be read as owed to them (they wait on the notes), so the case checks
+# only what matters here: no one person is made the owner of a team's "we'll". Owed-to is not scored either way.
+expect:
+- op: action.add
+  owners: []
+  due_words: on Friday
+stub_answer:
+  summary: 'The sender''s team will circulate the workshop notes; no one is named.'
+  ops:
+  - op: action.add
+    text: Circulate the workshop notes
+    owners: []
+    basis: said
+    said_by: Dev Maran
+    due_words: on Friday
+    evidence:
+      quote: We'll circulate the workshop notes on Friday.

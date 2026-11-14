@@ -1,0 +1,106 @@
+version: 1
+second_move_days: 14   # a second move of the same date within this many days shows in your own history as moved again
+default_stance: alongside   # who a new person is to you until you say otherwise
+tracks: [dates, decisions]   # what you track: no question is drafted about anything else
+background_stuck_after_minutes: 10   # background work that has not checked in for this many minutes is shown as stuck
+pack_call_limit_seconds: 20   # an add-on's handler, validator or Today lines may take this long per call, then count as failed
+reply_thread_days: 14   # same subject and someone in common within this many days is one conversation, for a sent reply to end a reply you owe
+sent_match:
+  window_days: 5   # a sent message matches a copied one only when it went to the same person within this many days
+  similarity: 0.6   # how much of their words a sent message and a copied one share for them to be the same message
+  ask_after_days: 2   # a copied message no sent message matches gets a "did it go out?" line after this many days
+hold_outside_hours: false   # on, what the assistant adds on its own waits for working hours and arrives together; off here so the sandbox shows lines at any time of day
+reminders:
+  working_start: "09:00"   # the working day starts; what the assistant adds on its own that came in earlier waits until then
+  working_end: "17:30"   # the working day ends; what the assistant adds on its own that came in later waits for the next working day
+  working_first_day: monday   # the first working day of the week
+  working_last_day: friday   # the last working day of the week
+  quiet_start: "21:00"   # quiet hours start; reminders in them wait and arrive together afterwards
+  quiet_end: "07:00"   # quiet hours end, which may be the next morning
+  missed: each   # reminders missed while the computer slept: each (one line each) or summary (one line)
+  later_today_hours: 3   # hours from now that Later today snoozes to
+  evening: "18:00"   # the time This evening snoozes to
+  late_after_minutes: 5   # how long after its time a reminder not yet shown is marked late
+  where: nowhere   # where a reminder reaches you when the app isn't open: nowhere, app (the app's own calendar), calendar or mail (an account)
+  where_account: ""   # the account those reminders go through, one the assistant may act on
+  look_ahead_hours: 24   # a reminder coming due within this many hours is drafted ahead, so it can reach you while the computer sleeps
+  allowed_data: internal   # the most sensitive to-do whose own words a reminder may carry out; above it only the time goes
+brief:
+  enabled: true   # Today opens with a card for the morning brief, the evening wrap-up and the Monday briefing
+  morning_from: "06:00"   # the morning brief starts to show at this time
+  evening_from: "17:00"   # the evening wrap-up takes the brief's place from this time
+  overnight_from: "18:00"   # what changed since this time on the last working day before today is what changed overnight
+  weekly_day: monday   # the day the Monday briefing shows
+  max_lines: 5   # the most lines one section shows; the rest become one line saying how many more
+  goals_min: 3   # the fewest goals for the week you confirm
+  goals_max: 5   # the most goals for the week
+  offer_reminders: true   # the morning brief offers a reminder for a to-do with a day coming up and no reminder
+  remind_within_days: 3   # a to-do's day can be up to this many days ahead for a reminder to be offered
+  dated_risk_days: 3   # a deadline, renewal or expiry a mail or booking states is at risk in the brief from this many days ahead; 0 is off
+meetings:
+  prep_hours_before: 24   # the prep for an entry with other people shows on Today this many hours before it starts
+  prep_min_open: 0   # the fewest open things with the people coming that an entry needs for a line on Today; 0 gives every one a line
+  capture_hours_after: 48   # the question of what happened at an entry stays on Today this many hours after it ends
+  max_items: 6   # the most open things the prep shows for each person coming
+  setup_lead_working_days: 2   # a meeting you set up counts on Today from this many working days before its day; once its invitation is out it shows only on its day
+  setup_words: [meeting]   # words in an open to-do's text that mark it as a meeting you set up
+  standup_days_ahead: 14      # the Schedule shows a repeating meeting marked brief-only this many days ahead
+  invitation_days_ahead: 14   # an unanswered invitation gets a line on Today when its entry starts within this many days; 0 is off
+  changes_days: 7   # an invitation's page looks this many days back for what changed in it
+  capture_alone: false   # the question of what happened also shows for an entry nobody else is on
+people:
+  quiet_promise_days: 7   # a promise to or from someone with no news for this many days gets a line on Today; 0 is off
+  snooze_days: [1, 3, 7, 14]   # the days a line about a promise gone quiet can be snoozed for, as a list to pick from
+  max_facts: 5   # the most facts a person's page shows under what matters to them, and under their dates
+  date_words: [birthday, anniversary]   # words that mark a fact about a person as a date that comes round every year
+capacity:
+  buffer_minutes: 10   # minutes kept clear around each meeting when the day's free time is added up
+  tentative_is_free: false   # whether a meeting you haven't accepted counts as free time
+clashes:
+  days_ahead: 7   # how many days after today the app looks for clashing meetings
+  travel_minutes: 30   # the least minutes between two meetings in different places
+attention:
+  quiet: false   # on, suggestions wait for the morning brief in quiet hours; off here so the sandbox shows them at any time of day
+  daily_cap: 5   # the most suggestions Today shows in a day; the rest wait for the morning brief
+  threshold: 0.0   # a suggestion that matters less than this (0 to 1) is not shown
+  quiet_after_dismissals: 3   # putting off the same kind of suggestion this many times keeps that kind for the morning brief; 0 is off
+  stop_after_dismissals: 0   # putting it off this many times stops that kind altogether; 0 never stops one
+  learn_days: 30   # how many days back dismissals are counted
+  keep_showing_days: 14   # after Keep showing, how many days before Today asks again about quieting or stopping a kind
+  quieted_kinds: []   # the kinds of suggestion you chose to keep for the morning brief; Today asks before one is added
+  stopped_kinds: []   # the kinds of suggestion you chose not to be offered at all
+  importance:
+    escalate: 0.8   # how much each kind of suggestion matters, from 0 to 1
+    unfiled: 0.4
+    stale: 0.4
+    learned: 0.3
+    catch_up: 0.2
+    area: 0.3
+    pattern: 0.5
+dates:
+  bookings_to_calendar: true   # a booking confirmation with structured details becomes an entry in the app's own calendar
+  find_by_rules: true   # an input is also read for a deadline, renewal or expiry with a full date beside words such as due, renews or expires; what is found waits for your yes
+  find_most: 5   # the most dates the rules offer from one input
+  days_off_weeks: 6   # how many weeks ahead the assistant is told the days off of the people an input names
+  undated_line_days: 7   # for how many days after a to-do was added with no date Today asks you to date it
+  suggest_reminders: true   # a reminder is offered with a deadline, renewal, expiry, warranty end or bill an input states
+  lead_days:
+    deadline: 3   # days before the day that the offered reminder falls
+    renewal: 14
+    expiry: 14
+    warranty: 30
+    bill: 3
+areas:
+  propose_after: 4   # items under the personal project sharing a word before an area is offered; 0 never offers one
+capture:
+  audio_kbps: 64   # the bit rate assumed for a voice note, to estimate its length before it is turned into text
+  max_audio_mb: 25   # the largest voice note handed in
+patterns:
+  moved_times: 3   # a to-do whose day has moved this many times gets a suggestion with choices; 0 is off
+  redated_times: 3   # a promise you made whose day has moved this many times gets a suggestion with choices; 0 is off
+  owed_replies: 2   # replies you owe the same person that bring a suggestion with choices; 0 is off
+  snooze_days: 7   # days a snoozed to-do stays out of Today
+conversation:
+  recent_turns: 4   # exchanges of a conversation on a record sent word for word; older ones are one short line each
+  older_turn_chars: 120   # characters of an older question kept as its short line
+  record_chars: 3000   # the most characters of the record a conversation is about sent with each message

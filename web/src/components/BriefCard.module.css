@@ -1,0 +1,37 @@
+/* The brief (design 6.32): a card at the top of Today. It wraps and never scrolls sideways. */
+.card {
+  min-width: 0; display: grid; gap: 0;
+  padding: 0; background: var(--surface); border: 1px solid var(--pane-border); box-shadow: var(--pane-edge);
+  border-radius: var(--radius-lg); font-size: var(--text-sm); line-height: var(--lh-sm);
+}
+/* The same header as every Today card (ui/Panel): 48px, the title, then its action, on one baseline. */
+.head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); min-width: 0; min-height: var(--space-12); padding: 0 var(--space-4); }
+.card > :not(.head) { margin: 0; padding: var(--space-2) var(--space-4) var(--space-3); }
+.title { margin: 0; flex: 1 1 12rem; min-width: 0; font-size: var(--text-md); line-height: var(--lh-md); font-weight: var(--weight-semibold); }
+.headActions { display: flex; flex-wrap: wrap; gap: var(--space-2); min-width: 0; }
+.section, .block { min-width: 0; display: grid; gap: var(--space-1); }
+.sub { margin: 0; font-size: var(--text-xs); line-height: var(--lh-xs); font-weight: var(--weight-semibold); color: var(--text-subtle); }
+.lines, .rows { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-1); min-width: 0; }
+.line { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-2); min-width: 0; }
+.what { flex: 1 1 16rem; min-width: 0; overflow-wrap: anywhere; }
+.meta { color: var(--text-muted); font-size: var(--text-meta); line-height: var(--lh-meta); }
+.open { flex: none; }
+/* The short summary under the title: one muted line before the sections. */
+.summary { min-width: 0; margin: 0; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quiet { margin: 0; color: var(--text-muted); }
+.goalList { margin: 0; padding-left: var(--space-5); display: grid; gap: var(--space-1); min-width: 0; overflow-wrap: anywhere; }
+.form { display: grid; gap: var(--space-2); min-width: 0; }
+.goalRow { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; min-width: 0; }
+.goalRow input { flex: 1 1 14rem; min-width: 0; }
+.actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.message { margin: 0; padding: var(--space-2) var(--space-3); background: var(--surface-sunk); border-radius: var(--radius-md); white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
+/* On the phone the card is one line, its title a button that unfolds it. */
+.foldToggle {
+  display: flex; align-items: center; gap: var(--space-2); width: 100%; min-height: var(--space-12);
+  padding: 0; border: 0; background: none; color: var(--text); font: inherit; font-weight: var(--weight-semibold);
+  text-align: left; cursor: pointer;
+}
+.foldToggle::before { content: ""; flex: none; display: inline-block; width: var(--chevron-size); height: var(--chevron-size); background: currentColor; clip-path: var(--chevron-clip); color: var(--text-subtle); align-self: center; }
+.foldToggle[aria-expanded="true"]::before { transform: rotate(90deg); }
+
+.reopen { margin: 0; }

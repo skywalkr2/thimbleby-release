@@ -1,0 +1,220 @@
+"""A recent first read (first_run: recent): the first read hands the assistant the last day's mail and the meetings
+around now, and only notes the rest; the person can hand in the recent items later after a plain first read."""
+
+from datetime import UTC, datetime, timedelta
+
+import yaml
+
+from engine.config import load_config
+from engine.storage import WriteContext
+from tests.test_watch import make
+
+PLUGIN = """
+from datetime import UTC, datetime, timedelta
+from engine.plugin_api import EventDetails, MessageDetails, Poll, Settings, SourceItem
+from pydantic import BaseModel
+
+class Config(Settings):
+    pass
+
+class BoxSettings(BaseModel):
+    pass
+
+def poll(settings, state, context):
+    now = datetime.now(UTC)
+    at = lambda hours: (now - timedelta(hours=hours)).isoformat()
+    soon = (now + timedelta(hours=3)).isoformat()
+    return Poll([
+        SourceItem("m-new", "Proofs are ready", "Ready.", message=MessageDetails(sender="A", received=at(2))),
+        SourceItem("m-old", "Old thread", "From last week.", message=MessageDetails(sender="B", received=at(120))),
+        SourceItem("e-soon", "Printer call", "A call.", event=EventDetails(start=soon)),
+        SourceItem("plain", "No time", "Nothing says when."),
+    ])
+
+def register(registrar):
+    registrar.connector("p21/box", label="A box", settings=BoxSettings, poll=poll)
+"""
+
+
+def workspace(tmp_path, first_run):
+    from engine.storage import Store
+
+    ws, cfg, store = make(tmp_path, [{"id": "box", "connector": "p21/box", "first_run": first_run, "settings": {}}])
+    store.close()
+    folder = ws.root / "plugins" / "p21"
+    folder.mkdir(parents=True)
+    (folder / "fixture.py").write_text(PLUGIN)
+    manifest = {
+        "name": "p21",
+        "version": "0.1.0",
+        "plugin_api": ">=0.3,<0.4",
+        "description": "Recent first read fixture",
+        "entry": "fixture:register",
+        "config_schema": "fixture:Config",
+        "provides": {"connectors": ["p21/box"]},
+    }
+    (folder / "plugin.yaml").write_text(yaml.safe_dump(manifest))
+    settings = yaml.safe_load((ws.config_dir / "workspace.yaml").read_text())
+    settings["plugins"]["enabled"] = [*settings["plugins"]["enabled"], "p21"]
+    (ws.config_dir / "workspace.yaml").write_text(yaml.safe_dump(settings))
+    cfg = load_config(ws.config_dir, env={})
+    store = Store(ws.db_path, cfg=cfg)
+    assert store.plugins.active("p21"), store.plugins.status["p21"].reason
+    return ws, cfg, store
+
+
+def handed_titles(store):
+    return sorted(s.data["title"] for s in store.read().list("source") if s.data.get("watched"))
+
+
+def test_a_recent_first_read_hands_in_the_last_day_and_notes_the_rest(tmp_path):
+    from engine.watch import refresh
+
+    ws, cfg, store = workspace(tmp_path, "recent")
+    try:
+        result = refresh(ws, store, cfg, "box")
+        assert result.outcome == "baseline" and len(result.new) == 2
+        assert handed_titles(store) == ["Printer call", "Proofs are ready"]
+        assert len(store.read().find("snapshot", {"source": "box"})) == 4
+    finally:
+        store.close()
+
+
+def test_after_a_plain_first_read_the_person_can_hand_in_the_recent_items_once(tmp_path):
+    from engine.watch import hand_in_recent, refresh
+
+    ws, cfg, store = workspace(tmp_path, "baseline")
+    try:
+        refresh(ws, store, cfg, "box")
+        assert handed_titles(store) == []
+        assert len(hand_in_recent(ws, store, cfg, "box")) == 2
+        assert handed_titles(store) == ["Printer call", "Proofs are ready"]
+        assert hand_in_recent(ws, store, cfg, "box") == []
+    finally:
+        store.close()
+
+
+def test_recent_means_received_or_starting_near_now():
+    from engine.watch import is_recent
+
+    now = datetime(2026, 10, 12, 12, tzinfo=UTC)
+    day = timedelta(hours=24)
+    assert is_recent({"message": {"received": "2026-10-12T02:00:00Z"}}, None, now, day)
+    assert not is_recent({"message": {"received": "2026-10-09T02:00:00Z"}}, None, now, day)
+    assert is_recent({"event": {"start": "2026-10-13", "all_day": True}}, None, now, day)
+    assert not is_recent({"event": {"start": "2026-10-20T09:00:00Z"}}, None, now, day)
+    assert not is_recent({}, None, now, day)
+
+
+def test_two_presses_at_once_hand_in_the_recent_items_once(tmp_path):
+    import threading
+
+    from engine.watch import _read_lock, hand_in_recent, refresh
+
+    ws, cfg, store = workspace(tmp_path, "baseline")
+    try:
+        refresh(ws, store, cfg, "box")
+        lock = _read_lock(ws, "box")
+        lock.acquire()  # a read of the source is under way: both presses wait for it, then run one after the other
+        made: list[list[str]] = []
+        presses = [threading.Thread(target=lambda: made.append(hand_in_recent(ws, store, cfg, "box"))) for _ in "ab"]
+        for press in presses:
+            press.start()
+        lock.release()
+        for press in presses:
+            press.join(timeout=30)
+        assert sorted(len(m) for m in made) == [0, 2]
+        assert handed_titles(store) == ["Printer call", "Proofs are ready"]
+    finally:
+        store.close()
+
+
+# ---- a folder's files carry their modified time ----------------------------------------------------------------------
+
+
+def folder_with_files(tmp_path, now):
+    """A watched folder holding one file modified two hours before `now` and one modified five days before."""
+    import os
+
+    folder = tmp_path / "shared"
+    folder.mkdir()
+    for name, hours in (("fresh.md", 2), ("stale.md", 120)):
+        (folder / name).write_text(f"Text of {name}.")
+        stamp = (now - timedelta(hours=hours)).timestamp()
+        os.utime(folder / name, (stamp, stamp))
+    sources = [{"id": "box", "connector": "folder", "first_run": "baseline", "settings": {"path": str(folder)}}]
+    ws, cfg, store = make(tmp_path, sources)
+    return ws, cfg, store
+
+
+def test_a_folder_item_carries_the_files_modified_time_on_its_snapshot(tmp_path):
+    from engine.watch import refresh
+
+    now = datetime.now(UTC)
+    ws, cfg, store = folder_with_files(tmp_path, now)
+    try:
+        refresh(ws, store, cfg, "box")
+        kept = {s.data["key"]: s.data["changed_at"] for s in store.read().find("snapshot", {"source": "box"})}
+        assert abs(datetime.fromisoformat(kept["fresh.md"]) - (now - timedelta(hours=2))) < timedelta(seconds=2)
+        assert abs(datetime.fromisoformat(kept["stale.md"]) - (now - timedelta(hours=120))) < timedelta(seconds=2)
+    finally:
+        store.close()
+
+
+def test_look_at_the_last_day_hands_in_the_folder_files_modified_in_the_last_day_once(tmp_path):
+    from engine.watch import hand_in_recent, refresh
+
+    now = datetime.now(UTC)
+    ws, cfg, store = folder_with_files(tmp_path, now)
+    try:
+        assert refresh(ws, store, cfg, "box").outcome == "baseline" and handed_titles(store) == []
+        assert len(hand_in_recent(ws, store, cfg, "box", now)) == 1
+        assert handed_titles(store) == ["fresh.md"]
+        assert hand_in_recent(ws, store, cfg, "box", now) == []
+    finally:
+        store.close()
+
+
+def test_a_snapshot_from_before_modified_times_were_kept_is_filled_in_by_the_next_read(tmp_path):
+    from engine.watch import refresh
+
+    now = datetime.now(UTC)
+    ws, cfg, store = folder_with_files(tmp_path, now)
+    try:
+        refresh(ws, store, cfg, "box")
+        with store.transaction() as tx:
+            for snap in tx.find("snapshot", {"source": "box"}):
+                tx.update(
+                    "snapshot",
+                    snap.id,
+                    {"changed_at": None},
+                    WriteContext("watcher", "untrusted", "test"),
+                    read_version=snap.version,
+                )
+        refresh(ws, store, cfg, "box")
+        assert all(s.data["changed_at"] for s in store.read().find("snapshot", {"source": "box"}))
+    finally:
+        store.close()
+
+
+def test_the_look_at_the_last_day_route_hands_in_a_folders_recent_files(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from api.app import create_app
+    from engine.watch import refresh
+
+    now = datetime.now(UTC)
+    ws, cfg, store = folder_with_files(tmp_path, now)
+    refresh(ws, store, cfg, "box")
+    store.close()
+    client = TestClient(create_app(ws, cfg, "t", start_worker=False))
+    client.headers["Authorization"] = "Bearer t"
+    api = cfg.server.base_path.rstrip("/") + "/api"
+    assert client.post(f"{api}/watch/box/recent").status_code == 200
+    from engine.storage import Store
+
+    check = Store(ws.db_path, cfg=cfg)
+    try:
+        assert handed_titles(check) == ["fresh.md"]
+    finally:
+        check.close()

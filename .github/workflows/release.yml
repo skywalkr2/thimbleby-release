@@ -1,0 +1,238 @@
+name: release
+
+# A tag like v0.2.0 builds the package (web screens included) and attaches it, with the install scripts, to a release;
+# it also builds the unsigned Windows and macOS installers (the Intel Mac one only for a tag) and keeps them as
+# downloads of the run. For a tag they also join the release, which starts as a draft that the person who makes the release publishes.
+# Starting it by hand from the Actions tab builds the same, with no release: the version is the package's own. A run by
+# hand skips the checks, which a tag runs first.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.13.17"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONHASHSEED: "0"
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      targets: ${{ steps.targets.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: uv sync
+      - name: Read this version's notes from the change log
+        # Before anything is built, so a tag whose version has no section in CHANGELOG.md stops here.
+        if: github.ref_type == 'tag'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: uv run python deploy/desktop/build_support/release_tools.py notes --out "$RUNNER_TEMP/release-notes.md"
+      - name: Choose the installers to build (the Intel Mac only for a tag)
+        id: targets
+        env:
+          TAGGED: ${{ github.ref_type == 'tag' }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          wanted = json.load(open("deploy/desktop/build_support/targets.json"))
+          tagged = os.environ["TAGGED"] == "true"
+          chosen = [t for t in wanted["include"] if tagged or not t.get("tag_only")]
+          print("matrix=" + json.dumps({"include": chosen}))
+          PY
+      - run: npm --prefix web ci
+      - name: Build the web screens
+        run: npm --prefix web run build
+      - name: Checks
+        if: github.ref_type == 'tag'
+        run: |
+          uv run ruff check .
+          uv run pytest
+          uv run python -m engine.selfcheck
+      - name: Replace where feedback goes and the packs catalog when repository variables set them
+        env:
+          FEEDBACK_TO: ${{ vars.FEEDBACK_TO }}
+          PACK_CATALOG: ${{ vars.PACK_CATALOG }}
+          PACK_CATALOG_KEY: ${{ vars.PACK_CATALOG_KEY }}
+        run: |
+          if [ -n "$FEEDBACK_TO" ]; then sed -i "s|^feedback_to:.*|feedback_to: \"$FEEDBACK_TO\"|" catalog/product.yaml; fi
+          if [ -n "$PACK_CATALOG" ]; then sed -i "s|^pack_catalog:.*|pack_catalog: \"$PACK_CATALOG\"|" catalog/product.yaml; fi
+          if [ -n "$PACK_CATALOG_KEY" ]; then sed -i "s|^pack_catalog_key:.*|pack_catalog_key: \"$PACK_CATALOG_KEY\"|" catalog/product.yaml; fi
+      - name: Build the package
+        run: uv build --wheel -o dist
+      - name: Write the exact library versions the tests ran on, from the lock
+        run: sh deploy/constraints.sh dist/constraints.txt
+      - name: Install it in a clean environment and start the demo
+        run: |
+          uv venv /tmp/try
+          VIRTUAL_ENV=/tmp/try uv pip install -c dist/constraints.txt dist/*.whl
+          # Unbuffered, so the line is in the log as soon as it is said; a fresh install's first start (it makes the demo
+          # workspace) can take longer than a fixed wait on a shared runner, so it waits up to a minute for the line.
+          HOME=/tmp/try-home PYTHONUNBUFFERED=1 timeout 90 /tmp/try/bin/thimbleby demo --no-open > /tmp/demo.log 2>&1 &
+          for _ in $(seq 60); do grep -q "Open http" /tmp/demo.log && exit 0; sleep 1; done
+          cat /tmp/demo.log
+          exit 1
+      - name: Keep the screens and the filled catalog facts for the desktop builds
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop-build-inputs
+          path: |
+            web/dist
+            catalog/product.yaml
+          if-no-files-found: error
+          retention-days: 1
+      - name: Start the draft release
+        # A draft: nobody sees it until the person who makes the release publishes it, after the installers below are attached to it.
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --draft --notes-file "$RUNNER_TEMP/release-notes.md" dist/*.whl dist/constraints.txt deploy/install.sh deploy/install.ps1 docs/install.md
+
+  desktop:
+    name: desktop ${{ matrix.target }}
+    needs: package
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.package.outputs.targets) }}
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned interpreter
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          architecture: ${{ matrix.python_arch }}
+          pip-version: "25.2"
+
+      - name: Restore the built screens and the filled catalog facts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: desktop-build-inputs
+          path: .
+
+      - name: Require the locked dependencies and built screens
+        shell: bash
+        env:
+          LOCK_FILE: deploy/desktop/build_support/locks/${{ matrix.target }}.txt
+        run: |
+          test -s "$LOCK_FILE" || { echo "The platform dependency lock is missing: see deploy/desktop/README.md"; exit 1; }
+          test -f web/dist/index.html || { echo "The built web screens were not restored"; exit 1; }
+          python -m pip install --require-hashes -r "$LOCK_FILE"
+          python -m pip install --no-deps --no-build-isolation .
+          python -m pip check
+          python -c "import PyInstaller; assert PyInstaller.__version__ == '6.22.3'"
+
+      - name: Read and validate the release version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: python deploy/desktop/build_support/release_tools.py prepare
+
+      - name: Freeze the application
+        shell: bash
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "15.0"
+        run: python -m PyInstaller --noconfirm --clean ${{ matrix.spec }}
+
+      - name: Check that the frozen app starts on an empty home folder
+        shell: bash
+        run: python deploy/desktop/build_support/smoke_frozen.py "${{ matrix.frozen }}"
+
+      - name: Create the disk image
+        if: runner.os == 'macOS'
+        run: python deploy/desktop/build_support/release_tools.py dmg
+
+      - name: Install the pinned installer compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tool = (Get-Content deploy/desktop/build_support/tool_downloads.yaml -Raw | ConvertFrom-Json).inno_setup
+          $setup = Join-Path $env:RUNNER_TEMP "inno-setup.exe"
+          Invoke-WebRequest -Uri $tool.url -OutFile $setup
+          $actual = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $tool.sha256) { throw "Installer compiler checksum mismatch" }
+          $compilerDir = Join-Path $env:RUNNER_TEMP "inno-$($tool.version)"
+          $process = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=`"$compilerDir`""
+          )
+          if ($process.ExitCode -ne 0) { throw "Compiler setup failed: $($process.ExitCode)" }
+          $compiler = Join-Path $compilerDir 'ISCC.exe'
+          if (-not (Test-Path $compiler)) { throw "Compiler not found" }
+          "INNO_COMPILER=$compiler" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Compile the per-user installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & $env:INNO_COMPILER "/DAppVersion=$env:APP_VERSION" "/DWindowsVersion=$env:WINDOWS_VERSION" `
+            "/DSourceDir=$env:GITHUB_WORKSPACE\dist\Thimbleby" "/DOutputDir=$env:GITHUB_WORKSPACE\dist" `
+            deploy/desktop/build_support/windows.iss
+          if ($LASTEXITCODE -ne 0) { throw "Installer compilation failed" }
+
+      - name: Write installer checksums
+        shell: bash
+        run: python deploy/desktop/build_support/release_tools.py hashes
+
+      - name: Upload the installer and checksums
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Thimbleby-${{ env.APP_VERSION }}-${{ matrix.target }}-unsigned
+          path: |
+            dist/*.dmg
+            dist/*-setup.exe
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  # For a tag: the installers and their checksums join the draft release, so its downloads live with the release.
+  attach:
+    needs: [package, desktop]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Fetch the installers the builds kept
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: Thimbleby-*-unsigned
+          path: installers
+      - name: Attach them to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          files=()
+          for dir in installers/*/; do
+            target="$(basename "$dir")"
+            mv "$dir/SHA256SUMS.txt" "installers/SHA256SUMS-${target}.txt"
+            files+=("$dir"/* "installers/SHA256SUMS-${target}.txt")
+          done
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber "${files[@]}"

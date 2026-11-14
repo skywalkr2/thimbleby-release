@@ -1,0 +1,28 @@
+id: a-question-names-what-its-answer-changes
+title: A question the assistant asks says which record's field its answer would change (`would_change`)
+skills: [structured-answers]
+received: '2026-10-09'
+project: PRJ-1
+pasted: |-
+  From: Maya Okafor
+
+  The printer can hold the interior files until Friday, or take them today and print the first run a week early. Tell me which.
+expect:
+- op: question.add
+  text_has: [today]
+forbid:
+- op: event.add
+stub_answer:
+  summary: The printer offers two dates for the interior files; the choice is the person's.
+  ops:
+  - op: question.add
+    to: Avery Lane
+    kind: decision
+    asks_about: decision
+    title: 'Interior files: send them today for a first run a week early, or hold them until Friday?'
+    text: 'Maya Okafor says "the printer can hold the interior files until Friday, or take them today and print the first run a week early"'
+    project: PRJ-1
+    would_change:
+      what: field
+      record: PRJ-1
+      field: target

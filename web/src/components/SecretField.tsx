@@ -1,0 +1,149 @@
+// A setting that holds a password, a key or a private address. On a local app the person types or pastes it and the app
+// keeps it on this computer (the setting then holds only where it is kept); "where it is kept instead" is the second
+// choice, a text box for a place of their own. A hosted app takes only that place. What is kept is never shown, only
+// where it is read from.
+import { useState } from "react";
+import { useWords } from "../lib/wording";
+import type { S } from "../lib/api";
+import { Button } from "../ui/Button";
+type Mode = "held" | "type" | "where";
+
+export type SecretState = Pick<S["SourceSecretView"], "where" | "name">;
+
+/** What a form of settings needs to let secrets be typed: whether the app keeps them (local), how each secret is held
+ * now by its setting key, and the values typed so far, which are sent apart from the settings. */
+export type SecretInput = {
+  local: boolean;
+  held: Record<string, SecretState>;
+  pasted: Record<string, string>;
+  onPaste: (key: string, value: string) => void;
+  /** Whether "where it is kept instead" is offered. Left out it is; a form for adding something leaves it out. */
+  offerWhere?: boolean;
+};
+
+export function SecretField(props: {
+  id: string;
+  /** The id of the element that names the field, which labels each box. */
+  labelId: string;
+  label: string;
+  local: boolean;
+  held: SecretState | null;
+  /** The place the secret is read from, as the setting holds it. */
+  reference: string;
+  onReference: (reference: string) => void;
+  pasted: string;
+  onPaste: (value: string) => void;
+  disabled: boolean;
+  describedBy?: string;
+  /** Put the cursor in the box when the field first shows (a form that has just opened). */
+  autoFocus?: boolean;
+  /** Whether "where it is kept instead" is offered beside the box (always when the setting already holds a place). */
+  offerWhere?: boolean;
+  /** Told which way the person is giving it: typed here, or as a place it is kept. */
+  onMode?: (mode: "type" | "where" | "held") => void;
+}) {
+  const { t } = useWords();
+  const [shown, setShown] = useState(false);
+  const [mode, setMode] = useState<Mode>(props.held ? "held" : props.reference !== "" ? "where" : "type");
+  const { id } = props;
+
+  const referenceBox = (
+    <input
+      id={`${id}-where`}
+      type="text"
+      value={props.reference}
+      disabled={props.disabled}
+      autoComplete="off"
+      autoFocus={props.autoFocus}
+      aria-labelledby={props.labelId}
+      aria-describedby={props.describedBy}
+      onChange={(e) => props.onReference(e.target.value)}
+    />
+  );
+  if (!props.local) {
+    return (
+      <>
+        {referenceBox}
+        <p className="hint" id={`${id}-note`}>
+          {t("secret.hosted_hint")}
+        </p>
+      </>
+    );
+  }
+
+  const go = (next: Mode) => {
+    if (next !== "type") props.onPaste("");
+    setMode(next);
+    props.onMode?.(next);
+  };
+  const held = props.held;
+  const heldWords = !held
+    ? ""
+    : held.where === "kept"
+      ? t("secret.kept")
+      : held.where === "env"
+        ? t("secret.read_from_env", { name: held.name ?? "" })
+        : held.where === "file"
+          ? t("secret.read_from_file", { name: held.name ?? "" })
+          : t("secret.read_from_other");
+
+  return (
+    <div className="secret-field" data-secret-mode={mode}>
+      {mode === "held" && (
+        <p className="setting-value" id={`${id}-held`}>
+          {heldWords}
+        </p>
+      )}
+      {mode === "type" && (
+        <>
+          <input
+            id={`${id}-typed`}
+            type={shown ? "text" : "password"}
+            value={props.pasted}
+            disabled={props.disabled}
+            autoComplete="new-password"
+            autoFocus={props.autoFocus}
+            aria-labelledby={props.labelId}
+            aria-describedby={`${id}-typed-hint`}
+            onChange={(e) => props.onPaste(e.target.value)}
+          />
+          <p className="hint" id={`${id}-typed-hint`}>
+            {t("secret.type_hint")}
+          </p>
+        </>
+      )}
+      {mode === "where" && referenceBox}
+      <div className="inline-field">
+        {mode === "held" && (
+          <Button size="sm"
+            disabled={props.disabled}
+            aria-label={t("secret.replace_named", { label: props.label })}
+            onClick={() => go("type")}
+          >
+            {t("secret.replace")}
+          </Button>
+        )}
+        {mode === "type" && (
+          <Button size="sm" variant="quiet" aria-pressed={shown} aria-label={t(shown ? "secret.hide_named" : "secret.show_named", { label: props.label })} onClick={() => setShown(!shown)}>
+            {t(shown ? "secret.hide" : "secret.show")}
+          </Button>
+        )}
+        {mode === "type" && props.held && (
+          <Button variant="quiet" size="sm" disabled={props.disabled} onClick={() => go("held")}>
+            {t("secret.keep_current")}
+          </Button>
+        )}
+        {mode !== "where" && props.offerWhere !== false && (
+          <Button variant="quiet" size="sm" icon="chevron" className="flush-left" disabled={props.disabled} onClick={() => go("where")}>
+            {t("secret.where_instead")}
+          </Button>
+        )}
+        {mode === "where" && (
+          <Button variant="quiet" size="sm" disabled={props.disabled} onClick={() => go("type")}>
+            {t("secret.type_instead")}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}

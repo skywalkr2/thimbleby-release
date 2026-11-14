@@ -1,0 +1,39 @@
+id: follow-up-with-no-clear-owner-asks-who
+title: 'When neither the maker of a claim nor an owner is clear, the PM is asked who takes it'
+skills: [owners, no-repeat-question]
+received: '2026-10-09'
+pasted: 'From: Maya Okafor
+
+  Subject: Advance copy shipping
+
+
+  Nobody has confirmed the carrier for the advance copies yet, and someone should find out. Ines Duarte mentioned it in
+  passing at the last meeting.
+
+
+  Maya'
+# Either way asks the PM who takes it: a question to the PM, or the work as an action with no owner, held for "Pick an
+# owner". Ines Duarte only mentioned it in passing: no one is picked to chase it.
+expect:
+- op: [question.add, action.add]
+  text_has: [carrier]
+forbid:
+- op: question.add
+  to: PER-5
+- op: question.add
+  to: PER-2
+- op: action.add
+  owners:
+  - PER-5
+stub_answer:
+  summary: Nobody owns the carrier question; asking you who to ask.
+  ops:
+  - op: question.add
+    to: me
+    kind: question
+    title: 'Who should I ask about the carrier for the advance copies?'
+    text: Maya Okafor says nobody has confirmed the carrier and someone should find out. Ines Duarte mentioned it in passing, so I did not pick anyone.
+    project: PRJ-1
+    would_change:
+      what: owner
+      record: PRJ-1

@@ -1,0 +1,130 @@
+// The wizard's frame (design 7.8, 7.12, VC12): the whole window with a header (the title, how long it takes and the way to finish
+// later), a rail of the steps at the left (a numeral in the display face in each circle, a check once done), and one centred column 680px wide for the open step. Under the step's title is its
+// explanation, never a column of its own. The footer is fixed at the bottom of the window, its buttons on the edges of the step's column: Back, then "I'll do this later", then
+// the one primary button; on a phone it is a bar across the bottom. The rail marks a finished step with a check in a circle and a
+// skipped one with its words, and says which step is open by its bar and weight, not by a fill.
+import type { ReactNode, Ref } from "react";
+import { GroupLabel } from "./GroupLabel";
+import { Icon } from "./Icon";
+import styles from "./Wizard.module.css";
+
+export function WizardShell(props: { brand?: ReactNode; title: ReactNode; titleId?: string; intro?: ReactNode; headAction?: ReactNode; rail?: ReactNode; banner?: ReactNode; children: ReactNode; "data-walkthrough"?: string }) {
+  return (
+    <div className={styles.root} data-wizard="" data-walkthrough={props["data-walkthrough"]}>
+      <header className={styles.head}>
+        {/* The header's content stands on the same grid as the rail and the column below it: its title on the rail's edge, the way to finish later on the column's. */}
+        <div className={styles.headInner}>
+          {props.brand}
+          <div className={styles.title}>
+            <h1 id={props.titleId}>{props.title}</h1>
+            {props.intro && <p className={styles.intro}>{props.intro}</p>}
+          </div>
+          <div className={styles.headActions}>{props.headAction}</div>
+        </div>
+      </header>
+      <div className={styles.banner}>{props.banner}</div>
+      <div className={styles.layout} data-no-rail={props.rail ? undefined : ""}>
+        {props.rail}
+        {props.children}
+      </div>
+    </div>
+  );
+}
+
+export interface RailStep {
+  id: string;
+  label: string;
+  state: "done" | "skipped" | "todo" | null;
+  /** The words for a step that is not simply done or to do: "Skipped", "Waiting for mail". */
+  stateWords?: string;
+  /** What a done step says to a screen reader: "Done". */
+  doneWords: string;
+  current: boolean;
+  /** "You are here", said to a screen reader on the open step. */
+  hereWords: string;
+  /** False for the summary row, which is no step: it shows the star instead of a number, so the numbers are the counted steps. */
+  numbered?: boolean;
+}
+
+/** The steps as a rail: a circle for each (a check once done), its name, and the exception in words. */
+export function WizardRail(props: { label: string; place: ReactNode; stepsLabel: ReactNode; open: boolean; onToggle: () => void; listId: string; steps: RailStep[]; onGo: (id: string) => void; toggle: ReactNode }) {
+  return (
+    <nav aria-label={props.label} className={styles.rail}>
+      <div className={styles.place}>
+        <p data-place="">{props.place}</p>
+        {props.toggle}
+      </div>
+      <ol className={styles.steps} id={props.listId} data-open={props.open}>
+        {props.steps.map((step, index) => (
+          <li key={step.id}>
+            <button type="button" className={styles.stepButton} data-screen={step.id} data-state={step.state ?? undefined} aria-current={step.current ? "step" : undefined} onClick={() => props.onGo(step.id)}>
+              <span className={styles.circle} data-state={step.state ?? undefined} aria-hidden="true">
+                {step.state === "done" ? <Icon name="check" size={12} /> : step.state === "skipped" ? <Icon name="minus" size={12} /> : step.numbered === false ? <span className={styles.star}>✳</span> : <span className={styles.numeral}>{index + 1}</span>}
+              </span>
+              <span className={styles.label}>
+                <span>{step.label}</span>
+                {step.current && <span className="sr">{step.hereWords}</span>}
+                {/* The note stands under the name, in the name's own column, so it never takes the room the name needs. */}
+                {step.state === "skipped" && step.stateWords && !step.current && <span className={styles.exception}>{step.stateWords}</span>}
+              </span>
+              {step.state === "done" && <span className="sr">{step.doneWords}</span>}
+            </button>
+          </li>
+        ))}
+      </ol>
+    </nav>
+  );
+}
+
+/** The open step: "Step 3 of 7", its title, its explanation under the title, its body, and the footer. */
+export function WizardStep(props: {
+  /** The brand moment of a first or last screen: the mark, set above a centred heading in the display face. */
+  brand?: ReactNode;
+  eyebrow?: ReactNode;
+  title: ReactNode;
+  titleId: string;
+  titleRef?: Ref<HTMLHeadingElement>;
+  explanation?: ReactNode;
+  screen: string;
+  children: ReactNode;
+  /** No footer: the screen carries its own one button (Welcome). */
+  footer?: ReactNode;
+}) {
+  return (
+    <main id="main" className={styles.step} tabIndex={-1} aria-labelledby={props.titleId} data-screen={props.screen} data-brand={props.brand ? "" : undefined}>
+      {props.brand}
+      {props.eyebrow && (
+        <GroupLabel as="p" className={styles.eyebrow} style={{ padding: 0 }}>
+          {props.eyebrow}
+        </GroupLabel>
+      )}
+      <h2 id={props.titleId} ref={props.titleRef} tabIndex={-1} className={styles.stepTitle}>
+        {props.title}
+      </h2>
+      {props.explanation && <p className={styles.explanation}>{props.explanation}</p>}
+      <div className={styles.body}>{props.children}</div>
+      {props.footer}
+    </main>
+  );
+}
+
+/**
+ * The buttons of a step, fixed at the bottom: Back at the left, then "I'll do this later" and the one primary at the right.
+ * `inFlow` shows them where they stand in the page instead (a sample of the footer): it covers nothing, so a toast does
+ * not move out of its way.
+ */
+export function StepFooter(props: { back?: ReactNode; later?: ReactNode; primary?: ReactNode; footRef?: Ref<HTMLDivElement>; inFlow?: boolean }) {
+  return (
+    <div className={props.inFlow ? `${styles.footer} ${styles.footerInFlow}` : styles.footer} ref={props.footRef} data-step-footer={props.inFlow ? "inline" : ""}>
+      <div className={styles.footerInner}>
+        {/* The buttons stand in the step's own column, so they line up with its left and right edges. */}
+        <div className={styles.footerButtons}>
+          {props.back}
+          <span className={styles.grow} />
+          {props.later}
+          {props.primary}
+        </div>
+      </div>
+    </div>
+  );
+}

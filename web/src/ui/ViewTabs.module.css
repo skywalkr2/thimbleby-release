@@ -1,0 +1,13 @@
+/* An underlined strip of text tabs: the chosen view is in full strength with the accent's underline, the others are muted. It has no
+   outline and no filled choice, so it never reads as the segmented control beside it. */
+.strip { display: flex; flex-wrap: nowrap; gap: var(--space-5); max-width: 100%; overflow-x: auto; scrollbar-width: none; border-bottom: 1px solid var(--border); }
+.strip::-webkit-scrollbar { display: none; }
+.tab {
+  flex: none; display: inline-flex; align-items: center; position: relative; top: 1px; padding: var(--space-2) 0; min-height: var(--hit-min);
+  border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; cursor: pointer; white-space: nowrap;
+  color: var(--text-muted); font-family: var(--font-ui); font-size: var(--text-sm); line-height: var(--lh-sm); font-weight: var(--weight-medium);
+}
+.tab:hover { color: var(--text); }
+.tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); font-weight: var(--weight-semibold); }
+.tab:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.tab:active { transform: translateY(1px); }

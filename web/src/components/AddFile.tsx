@@ -1,0 +1,251 @@
+// Adding a file (design 5.3): pick the file, say what it's for, and answer the questions that kind of file asks. Size
+// and type are checked here for a quick answer; the server's refusal is shown as it says it. Adding a file is not a
+// change that can be undone, so there is no Undo toast.
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { useId, useMemo, useState } from "react";
+import { Heading } from "react-aria-components";
+import { api, type S } from "../lib/api";
+import { buildDetails, detailFields, initialValue, type DetailField, type FormValues } from "../lib/details-form";
+import { useAcceptWords } from "../lib/files";
+import { problemText } from "../lib/problem";
+import { useSides } from "../lib/sides";
+import { useToasts } from "../lib/toasts";
+import { useWords } from "../lib/wording";
+import { ModalPanel, DialogFooter } from "./ModalPanel";
+import { placeOptions } from "./PlaceOptions";
+import { Skeleton } from "../ui/Skeleton";
+import { Button } from "../ui/Button";
+import { Select } from "../ui/Select";
+import { FormField } from "../ui/FormField";
+import { FormBlock } from "../ui/FormBlock";
+import { CheckboxGroup } from "../ui/CheckboxGroup";
+import { FileDrop } from "../ui/FileDrop";
+import { useWrite } from "../lib/write";
+const DEFAULT_KIND = "attachment";
+
+/** `initial`: a file already chosen (dropped on the empty Files page), so the form opens with it. */
+export function AddFile(props: { onClose: () => void; initial?: File | null }) {
+  const { t } = useWords();
+  const write = useWrite();
+  const { push } = useToasts();
+  const acceptWords = useAcceptWords();
+  const base = useId();
+  const kinds = useQuery({ queryKey: ["file-kinds"], queryFn: api.fileKinds });
+  const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects });
+  const [file, setFile] = useState<File | null>(props.initial ?? null);
+  const [kindName, setKindName] = useState("");
+  const [project, setProject] = useState("");
+  const { justMe } = useSides();
+  const [values, setValues] = useState<FormValues>({});
+  const [problem, setProblem] = useState("");
+
+  const kind: S["FileKindView"] | undefined =
+    kinds.data?.find((k) => k.name === kindName) ?? kinds.data?.find((k) => k.name === DEFAULT_KIND) ?? kinds.data?.[0];
+  const fields = useMemo(() => (kind ? detailFields(kind.details_schema) : []), [kind]);
+
+  const tooBig = file && kind && file.size > kind.max_mb * 1024 * 1024;
+  const wrongType = file && kind && file.type !== "" && !kind.accept.includes(file.type);
+  const checked = tooBig
+    ? t("addfile.too_big", { name: file.name, max: kind.max_mb })
+    : wrongType
+      ? t("addfile.wrong_type", { name: file.name })
+      : "";
+  const shown = checked || problem;
+
+  const add = useMutation({
+    mutationFn: async () => {
+      if (!file || !kind || !fields) return;
+      const built = buildDetails(fields, values);
+      if ("missing" in built) {
+        setProblem(t("addfile.need", { field: built.missing }));
+        return;
+      }
+      setProblem("");
+      try {
+        const added = await write(() => api.uploadFile(file, { kind: kind.name, project: project || null, meta: built.meta }));
+        push({ message: t("toast.added", { name: added.name }) });
+        props.onClose();
+      } catch (err) {
+        setProblem(problemText(err, t));
+      }
+    },
+  });
+
+  const titleId = `${base}-title`;
+  const ready = !!file && !!kind && fields !== null && !checked && !add.isPending;
+  return (
+    <ModalPanel titleId={titleId} onClose={props.onClose}>
+      <Heading slot="title" id={titleId}>
+        {t("addfile.title")}
+      </Heading>
+      {kinds.isPending ? (
+        <Skeleton rows={1} />
+      ) : kinds.isError || !kind ? (
+        <p className="problem-note" role="alert">
+          {t("addfile.kinds_failed")}{" "}
+          <Button onClick={() => void kinds.refetch()}>
+            {t("action.try_again")}
+          </Button>
+        </p>
+      ) : (
+        <form
+          noValidate
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (ready) add.mutate();
+          }}
+        >
+          {kinds.data.length > 1 && (
+            <FormField id={`${base}-kind`} label={t("addfile.kind")}>
+              <Select
+                id={`${base}-kind`}
+                value={kind.name}
+                onChange={(e) => {
+                  setKindName(e.target.value);
+                  setValues({});
+                  setProblem("");
+                }}
+              >
+                {kinds.data.map((k) => (
+                  <option key={k.name} value={k.name}>
+                    {k.label}
+                  </option>
+                ))}
+              </Select>
+            </FormField>
+          )}
+          <FormField id={`${base}-file`} label={t("addfile.file")} hint={acceptWords(kind.accept, kind.max_mb)}>
+            {props.initial && file === props.initial ? (
+              <p className="chosen-file">
+                <span>{file.name}</span>{" "}
+                <Button variant="quiet" size="sm" onClick={() => setFile(null)}>
+                  {t("addfile.change")}
+                </Button>
+              </p>
+            ) : (
+              <FileDrop
+                id={`${base}-file`}
+                aria-describedby={`${base}-file-hint`}
+                accept={kind.accept.join(",")}
+                onChange={(e) => {
+                  setFile(e.target.files?.[0] ?? null);
+                  setProblem("");
+                }}
+              />
+            )}
+          </FormField>
+          {!justMe && (
+          <FormField id={`${base}-project`} label={t("addfile.project")}>
+            <Select id={`${base}-project`} value={project} onChange={(e) => setProject(e.target.value)}>
+              <option value="">{t("addfile.no_project")}</option>
+              {placeOptions(projects.data ?? [], t)}
+            </Select>
+          </FormField>
+          )}
+          {fields === null ? (
+            <p className="hint">{t("addfile.unsupported")}</p>
+          ) : (
+            // One detail asks for no heading of its own; several are a group with one.
+            fields.length > 0 &&
+            (() => {
+              const inputs = fields.map((f) => (
+                <DetailInput
+                  key={`${kind.name}/${f.key}`}
+                  field={f}
+                  id={`${base}-d-${f.key}`}
+                  value={values[f.key] ?? initialValue(f)}
+                  onChange={(v) => {
+                    setValues((all) => ({ ...all, [f.key]: v }));
+                    setProblem("");
+                  }}
+                />
+              ));
+              return fields.length === 1 ? inputs : <CheckboxGroup legend={t("addfile.details")}>{inputs}</CheckboxGroup>;
+            })()
+          )}
+          {shown && (
+            <p className="problem-note" role="alert">
+              {shown}
+            </p>
+          )}
+          <DialogFooter>
+            <Button variant="quiet" onClick={props.onClose}>
+              {t("action.cancel")}
+            </Button>
+            <Button variant="primary" type="submit" disabled={!ready} reason={!file ? t("addfile.reason.choose") : undefined}>
+              {t(add.isPending ? "addfile.adding" : "addfile.go")}
+            </Button>
+          </DialogFooter>
+        </form>
+      )}
+    </ModalPanel>
+  );
+}
+
+function DetailInput(props: { field: DetailField; id: string; value: string | boolean; onChange: (v: string | boolean) => void }) {
+  const { t } = useWords();
+  const { field: f, id, value } = props;
+  const help = f.help ? `${id}-help` : undefined;
+  const hint = f.help && (
+    <span id={help} className="hint">
+      {f.help}
+    </span>
+  );
+  if (f.type === "boolean") {
+    return (
+      <FormBlock>
+        <label className="check-line" htmlFor={id}>
+          <input id={id} type="checkbox" checked={value === true} aria-describedby={help} onChange={(e) => props.onChange(e.target.checked)} />
+          <span>{f.label}</span>
+        </label>
+        {hint}
+      </FormBlock>
+    );
+  }
+  if (f.type === "choice") {
+    return (
+      <FormField id={id} label={f.label}>
+        <Select id={id} value={String(value)} aria-describedby={help} required={f.required} onChange={(e) => props.onChange(e.target.value)}>
+          {!f.required && <option value="">{t("addfile.not_chosen")}</option>}
+          {f.choices.map((c) => (
+            <option key={String(c.value)} value={String(c.value)}>
+              {c.label}
+            </option>
+          ))}
+        </Select>
+        {hint}
+      </FormField>
+    );
+  }
+  return (
+    <FormField id={id} label={f.label}>
+      {f.type === "text" ? (
+        <input
+          id={id}
+          type="text"
+          placeholder={f.required ? undefined : t("addfile.optional")}
+          value={String(value)}
+          maxLength={f.maxLength}
+          minLength={f.minLength}
+          required={f.required}
+          aria-describedby={help}
+          onChange={(e) => props.onChange(e.target.value)}
+        />
+      ) : (
+        <input
+          id={id}
+          type="number"
+          placeholder={f.required ? undefined : t("addfile.optional")}
+          step={f.type === "integer" ? 1 : "any"}
+          min={f.min}
+          max={f.max}
+          value={String(value)}
+          required={f.required}
+          aria-describedby={help}
+          onChange={(e) => props.onChange(e.target.value)}
+        />
+      )}
+      {hint}
+    </FormField>
+  );
+}

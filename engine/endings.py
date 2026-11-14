@@ -1,0 +1,487 @@
+"""How an action's ending is read from the words it quotes (design 6.33, endings).
+
+The assistant proposes how something ended and decides whether the words it quotes say so. The rules only read the
+words, by three language settings (delivery, call-off and closed words), and tell the assistant what they suggest, once,
+through the `ending-reading` judgment lint (`suggestion`): a close whose words read as no longer needed, a "closed" that
+doesn't say which, a done that would credit someone else with no word of delivery, a call-off that names a meeting. The
+assistant's answer to it stands; nothing is rewritten and no question is written by a rule. The person's own act on a
+screen is never read for words: they said what they meant by pressing the button. `answer` still settles a choice an
+earlier change held.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
+from typing import Any, Literal
+
+from engine.language_words import language_words
+from engine.ops import ActionCloseOp, ActionDropOp, QuestionDropOp, RecordSetOp
+from engine.records import values_at
+from engine.storage import StoreError
+
+Reading = Literal["done", "called_off", "choice"]
+Answer = Literal["done", "called_off"]
+
+#: The name of the check that held a bare close in earlier changes, so a screen can tell the choice from any other hold.
+CHOICE_CHECK = "ending-choice"
+CHOICE_WAITS = "Done by the owner, or no longer needed? Say which."
+#: What each answer is recorded as, for the assistant that learns from it.
+ANSWER_DONE = "Done"
+ANSWER_CALLED_OFF = "No longer needed"
+
+
+def _plain(text: str) -> str:
+    return " ".join(text.lower().replace("\u2019", "'").split())
+
+
+def _has(text: str, markers: Sequence[str]) -> bool:
+    """Whether a marker appears in the words, as whole words, ignoring case and the kind of apostrophe."""
+    value = _plain(text)
+    return any(
+        re.search(rf"(?<![\w'])(?:{re.escape(marker)})(?![\w'])", value) for marker in map(_plain, markers) if marker
+    )
+
+
+def reading(quote: str, settings: Any) -> Reading | None:
+    """What the quoted words say about how it ended, by the language settings (delivery, called-off and closed
+    words): `done` (delivery words alone), `called_off` (call-off words alone, even beside "closed"), `choice` (both
+    kinds, or "closed" with neither: not one answer) or None when the words say nothing about an ending."""
+    delivered = _has(quote, language_words(settings, "delivery_words"))
+    called_off = _has(quote, language_words(settings, "called_off_words"))
+    if delivered and called_off:
+        return "choice"
+    if delivered:
+        return "done"
+    if called_off:
+        return "called_off"
+    return "choice" if _has(quote, language_words(settings, "closed_words")) else None
+
+
+def _reason(quote: str) -> str:
+    """The person's words as the reason an action is called off."""
+    return " ".join(quote.split())[:500]
+
+
+def _read_here(ctx: Any) -> bool:
+    """Whether the assistant's proposal is read for words: not the person's own act on a screen, and not an ending the
+    person already confirmed."""
+    return ctx.actor != "pm" and not ctx.confirmed_by_pm
+
+
+def _quote(op: Any) -> str | None:
+    evidence = getattr(op, "evidence", None)
+    return evidence.quote if evidence is not None else None
+
+
+def _other_owners(op: Any, ctx: Any) -> list[str]:
+    """The names of the people other than the person who own the action an op closes."""
+    found = ctx.store.read().get("action", op.id)
+    owners = [o.get("person") for o in (found.data.get("owners") or [])] if found is not None else []
+    return [ctx.people.name(person) for person in owners if person and person != ctx.people.pm]
+
+
+def suggestion(op: Any, ctx: Any) -> str | None:
+    """What the words an ending quotes suggest, as the message of the `ending-reading` lint, or None when they suggest
+    nothing: a done whose words read as no longer needed; a done or a drop whose words say "closed" without saying
+    which (or say both); a done that would credit someone else when the words say nothing of delivery; a call-off
+    that names a meeting the workspace knows. It never changes the op: the assistant decides what the ending was."""
+    quote = _quote(op)
+    if not isinstance(op, (ActionCloseOp, ActionDropOp)) or not quote or not _read_here(ctx):
+        return None
+    said = _reason(quote)
+    found = reading(quote, ctx.cfg.language)
+    notes: list[str] = []
+    if found == "called_off":
+        closing = isinstance(op, ActionCloseOp)
+        if closing:
+            notes.append(
+                f"The quote '{said}' reads as no longer needed rather than done: if so, answer with action.drop and "
+                "the reason; if it was done, keep the close."
+            )
+        meeting = (
+            moved_into(quote, ctx)
+            if getattr(op, "event", None) is None and getattr(op, "series", None) is None
+            else None
+        )
+        if meeting is not None:
+            kind, ident = next(iter(meeting.items()))
+            record = ctx.store.read().get("event" if kind == "event" else "series", ident)
+            title = record.data["title"] if record is not None else ident
+            notes.append(
+                f'This call-off names the meeting {title}: if it belongs on its agenda, give the drop "{kind}" {ident}.'
+            )
+    elif found == "choice":
+        notes.append(
+            f"The quote '{said}' doesn't say whether it was done or no longer needed: say which (action.close if it "
+            "was done, action.drop with the reason if it wasn't needed), or ask the person with question.add if you "
+            "can't tell."
+        )
+    elif found is None and isinstance(op, ActionCloseOp) and (others := _other_owners(op, ctx)):
+        notes.append(
+            f"Closing {op.id} credits {', '.join(others)} with the work, but the quote '{said}' says nothing of it "
+            "being delivered: if it was done, keep the close; if it was no longer needed, answer with action.drop and "
+            "the reason; if you can't tell, ask the person with question.add."
+        )
+    return " ".join(notes) or None
+
+
+def _today(ctx: Any) -> date:
+    """The person's day when the input was received (its source's time, else its request's, else now), so a check and
+    the apply that follows name the same meetings."""
+    from engine.today import zone
+
+    view = ctx.store.read()
+    request = view.get("request", ctx.inputs.request) if ctx.inputs.request else None
+    source = view.get("source", ctx.inputs.source) if ctx.inputs.source else None
+    for stored, key in ((source, "received_at"), (request, "created_at")):
+        value = stored.data.get(key) if stored is not None else None
+        if value:
+            stamp = datetime.fromisoformat(str(value))
+            return (stamp if stamp.tzinfo else stamp.replace(tzinfo=UTC)).astimezone(zone(ctx.cfg)).date()
+    return datetime.now(zone(ctx.cfg)).date()
+
+
+def moved_into(quote: str, ctx: Any) -> dict[str, str] | None:
+    """The meeting a call-off's words move an action into, as the `event` or `series` field of the drop, or None: the
+    words must hold one of the meeting words and name a meeting the workspace knows (a calendar entry still ahead,
+    else a series), exactly one."""
+    from engine.agenda import named_meeting
+
+    if not _has(quote, language_words(ctx.cfg.language, "meeting_words")):
+        return None
+    found = named_meeting(ctx.store.read(), quote, _today(ctx))
+    return {"series" if found[0] == "series" else "event": found[1]} if found is not None else None
+
+
+def told_people(view: Any, cfg: Any, pm: str | None, action: Any) -> list[str]:
+    """The people an action was already sent to, in the order they were reached: told or chased, never the person and
+    never anyone they only watch or report to."""
+    from engine.followups import UNTOLD_STANCES
+    from engine.scope import stance_of
+
+    data = action.data
+    reached = [*(data.get("told") or {}), *(data.get("followed_up") or {})]
+    return [
+        person
+        for person in dict.fromkeys(reached)
+        if person != pm and stance_of(view, cfg.steward, person) not in UNTOLD_STANCES
+    ]
+
+
+def called_off_line(cfg: Any, action: Any) -> str:
+    """The one line for someone told about an action that is called off (`language.messages.called_off_notice`)."""
+    item = " ".join(str(action.data["text"]).split())
+    return cfg.language.messages.called_off_notice.format(item=item)
+
+
+def told_names(view: Any, cfg: Any, people: Any, action: Any) -> list[str]:
+    """The names, as shown, of the people an action reached (`told_people`): who "Drop it and tell them" writes to."""
+    data = action.data
+    if not (data.get("told") or data.get("followed_up")):
+        return []
+    return [people.name(person) for person in told_people(view, cfg, people.pm, action)]
+
+
+def answer(store: Any, cfg: Any, changeset_id: str, index: int, ending: Answer, *, now: datetime | None = None) -> None:
+    """The person's answer to "Done by <owner>, or no longer needed?": the held op becomes a close (crediting the
+    owners) or a drop (crediting nobody, with the quoted words as the reason), applied now with Undo, and the answer is
+    recorded as an answer to the assistant's question so it learns what that person means by "closed"."""
+    from engine.applier import release
+    from engine.dispatcher import signal
+
+    cs = store.read().get("changeset", changeset_id)
+    if cs is None:
+        raise StoreError(f"there is no changeset {changeset_id}")
+    ops = cs.data["ops"]
+    if not 0 <= index < len(ops):
+        raise StoreError("that item isn't waiting for you")
+    outcome = ops[index]
+    asked = any(p.get("check") == CHOICE_CHECK for p in outcome.get("problems") or [])
+    if outcome["status"] != "held" or not asked:
+        raise StoreError("that item isn't asking whether it is done or no longer needed")
+    held = outcome["op"]
+    action_id = held["id"]
+    quote = (held.get("evidence") or {}).get("quote") or ""
+    evidence = {"quote": quote} if quote else None
+    if ending == "done":
+        op: Any = ActionCloseOp(op="action.close", id=action_id, evidence=evidence)
+    else:
+        op = ActionDropOp(id=action_id, reason=_reason(quote) or ANSWER_CALLED_OFF, evidence=evidence)
+    release(store, cfg, changeset_id, index, now=now, instead=op)
+    signal(
+        store,
+        "answered_assistant",
+        [action_id],
+        note=ANSWER_DONE if ending == "done" else ANSWER_CALLED_OFF,
+        now=now,
+        changeset=changeset_id,
+    )
+
+
+#: Why the items of an ended project are dropped.
+PROJECT_ENDED = "The project ended"
+#: The check that holds a project's ending when it was read from what came in.
+PROJECT_ENDING_CHECK = "project-ending"
+PROJECT_ENDING_WAITS = "Something that came in says this project ended."
+
+
+def ends_project(view: Any, op: Any) -> bool:
+    """Whether an op moves a project to a status whose meaning is done (completed, archived, closed for good), and
+    the project isn't already at one. A status that only pauses the project has another meaning and ends nothing."""
+    from engine.lists import describe
+
+    if not (isinstance(op, RecordSetOp) and op.kind == "project" and op.field == "status"):
+        return False
+    current = view.get("project", op.id)
+    if current is None or describe(view, "project-status", op.value).meaning != "done":
+        return False
+    return describe(view, "project-status", current.data.get("status")).meaning != "done"
+
+
+def project_ended(view: Any, project_id: str | None) -> bool:
+    """Whether a project's status means done (completed, archived, closed for good), by its list's meaning, never by
+    its wording. A project that doesn't exist has not ended."""
+    from engine.lists import describe
+
+    found = view.get("project", project_id) if project_id else None
+    return found is not None and describe(view, "project-status", found.data.get("status")).meaning == "done"
+
+
+def hook_key(op: Any) -> str:
+    """An op in one canonical form, to tell whether the change already holds it."""
+    return json.dumps(op.model_dump(mode="json"), sort_keys=True)
+
+
+def _hook_ops(ctx: Any, purpose: str, target: str, view: Any) -> list[Any]:
+    """The ops the add-ons' hooks return for one project ending (`purpose` "ending") or one dropped record of a kind
+    (`purpose` the kind), asked once for each in a change's context: a hook that fails is contained and noted once, not
+    once for every check of the same change."""
+    key = (purpose, target)
+    if key not in ctx.hook_calls:
+        plugins = ctx.store.plugins
+        ctx.hook_calls[key] = (
+            plugins.ending_ops(target, view) if purpose == "ending" else plugins.drop_ops(purpose, target, view)
+        )
+    return ctx.hook_calls[key]
+
+
+def wind_down(cs: Any, ctx: Any) -> Any:
+    """Add to a changeset, for each project it ends, a drop of every open action (one waiting for an owner too, with
+    its "Pick an owner" question) and every open or sent question filed about the project, all in one op group with
+    the ending so one Undo takes them all back. The drops go at the end, so the positions of the ops already there
+    don't move. Dropped, not done: nobody is credited. A drop the changeset names already isn't added twice. The
+    person keeps an item by refusing its drop in the held proposal.
+
+    The add-ons' own records join the same group: the ops each running add-on's project-ending hook returns for the
+    project, and, for an action the changeset drops for another reason, the ops its drop hooks return (they join that
+    drop's own group). Hook ops are marked on the context (`hook_ops`) so the checks know them as the add-on's own
+    ops, whatever task the change came from, and hold them when the drop or ending is held."""
+    view = ctx.store.read()
+    ops = list(cs.ops)
+    named = {(o.op, o.id) for o in ops if isinstance(o, (ActionDropOp, QuestionDropOp))}
+    present = {hook_key(o) for o in ops}
+    extra: list[Any] = []
+
+    def join(pack_ops: Sequence[Any], group: str, purpose: str) -> None:
+        for pack_op in pack_ops:
+            joined = pack_op.model_copy(update={"group": group})
+            key = hook_key(joined)
+            ctx.hook_ops[key] = purpose
+            if key not in present:
+                present.add(key)
+                extra.append(joined)
+
+    for i, op in enumerate(ops):
+        if not ends_project(view, op):
+            continue
+        group = op.group or f"ending-{op.id}"
+        ops[i] = op.model_copy(update={"group": group})
+        quote = _quote(op)
+        evidence = op.evidence if quote else None
+        for action in view.list("action"):
+            if (
+                action.data.get("project") == op.id
+                and action.data.get("status") in ("open", "held")
+                and ("action.drop", action.id) not in named
+            ):
+                extra.append(ActionDropOp(id=action.id, reason=PROJECT_ENDED, evidence=evidence, group=group))
+        for question in view.list("question"):
+            if (
+                op.id in (question.data.get("projects") or [])
+                and question.data.get("status") in ("open", "sent")
+                and ("question.drop", question.id) not in named
+            ):
+                extra.append(QuestionDropOp(id=question.id, reason=PROJECT_ENDED, evidence=evidence, group=group))
+        join(_hook_ops(ctx, "ending", op.id, view), group, ENDING_HOOK)
+    for i, op in enumerate(ops):
+        if not isinstance(op, ActionDropOp) or op.reason == PROJECT_ENDED:
+            continue
+        group = op.group or f"drop-{op.id}"
+        pack_ops = _hook_ops(ctx, "action", op.id, view)
+        if pack_ops:
+            ops[i] = op.model_copy(update={"group": group})
+            join(pack_ops, group, DROP_HOOK)
+    if not extra and ops == list(cs.ops):
+        return cs
+    return cs.model_copy(update={"ops": [*ops, *extra]})
+
+
+#: What an op an add-on's hook added is for: the ending of a project, or the drop of a record.
+ENDING_HOOK = "ending"
+DROP_HOOK = "drop"
+
+
+@dataclass(frozen=True)
+class HeldItem:
+    """One item an ending read from an input would bring: the held op's `index` in its change. `kind` is "action" or
+    "question" for the core's own drops, and "other" for an op an add-on's hook added, whose `text` is the op's own
+    label and whose `id` is the record it names, when it names one."""
+
+    index: int
+    kind: str
+    id: str
+    text: str
+
+
+@dataclass(frozen=True)
+class HeldEnding:
+    """A project ending that waits for the person, with the drops that wait beside it: `index` is the held op that moves
+    the project to its done status, `items` the drops it brought."""
+
+    changeset: str
+    index: int
+    project: str
+    items: tuple[HeldItem, ...]
+
+
+@dataclass(frozen=True)
+class LeftOpen:
+    """A record of an add-on's own kind that refers to a project that is ending. The core can't tell whether the add-on
+    counts it as open, so it is listed as left open for the add-on to close."""
+
+    kind: str
+    id: str
+    title: str
+
+
+def held_endings(view: Any, changeset_id: str, outcomes: list[dict[str, Any]]) -> list[HeldEnding]:
+    """The project endings waiting in a change, each with the drops of the same op group that wait with it."""
+    found = []
+    for outcome in outcomes:
+        raw = outcome.get("op") or {}
+        if outcome.get("status") != "held" or raw.get("op") != "record.set" or raw.get("kind") != "project":
+            continue
+        try:
+            op = RecordSetOp.model_validate(raw)
+        except ValueError:
+            continue
+        if not ends_project(view, op):
+            continue
+        items = []
+        for other in outcomes:
+            drop = other.get("op") or {}
+            if (
+                other.get("status") == "held"
+                and drop.get("op") in ("action.drop", "question.drop")
+                and drop.get("reason") == PROJECT_ENDED
+                and drop.get("group") == raw.get("group")
+            ):
+                kind = "action" if drop["op"] == "action.drop" else "question"
+                record = view.get(kind, drop.get("id", ""))
+                text = (
+                    " ".join(str(record.data.get("text") or record.data.get("title") or "").split()) if record else ""
+                )
+                items.append(HeldItem(other["index"], kind, drop.get("id", ""), text))
+            elif (
+                other.get("status") == "held"
+                and "/" in str(drop.get("op"))
+                and drop.get("group") == raw.get("group")
+                and other["index"] != outcome["index"]
+            ):
+                items.append(_hook_item(other))
+        found.append(HeldEnding(changeset_id, outcome["index"], op.id, tuple(items)))
+    return found
+
+
+def _hook_item(outcome: dict[str, Any]) -> HeldItem:
+    """An op an add-on's hook added to a held ending, as one item: its own label (`describe`), else its name."""
+    raw = outcome.get("op") or {}
+    named = raw.get("id")
+    label = " ".join(str(outcome.get("label") or "").split())
+    return HeldItem(outcome["index"], "other", named if isinstance(named, str) else "", label or str(raw.get("op")))
+
+
+def left_behind(store: Any, project: str, closing: Sequence[str] = ()) -> list[LeftOpen]:
+    """The records of running add-ons' own kinds that refer to the project, in the order the kinds are declared. Only
+    the add-on knows whether one of its records is still open, so none is called open or closed here. A record in
+    `closing` (named by an op the add-on's own hook added to the waiting ending, which lists it as an item) isn't left
+    behind."""
+    from engine.stages import record_title
+
+    view = store.read()
+    found = []
+    for kind, paths in store.plugins.references().items():
+        if "/" not in kind or kind not in store.plugins.records:
+            continue
+        project_paths = [path for path, target in paths if target == "project"]
+        if not project_paths:
+            continue
+        for stored in view.list(kind):
+            if stored.id not in closing and any(project in values_at(stored.data, path) for path in project_paths):
+                found.append(LeftOpen(kind, stored.id, record_title(stored)))
+    return found
+
+
+def finish_ending(
+    store: Any,
+    cfg: Any,
+    changeset_id: str,
+    index: int,
+    keep: Sequence[int],
+    *,
+    now: datetime | None = None,
+    ws: Any = None,
+) -> list[str]:
+    """Confirm a project ending that waits for the person: the items in `keep` stay open (each is declined, and the
+    choice is a signal), and the ending and every other drop apply, so one Undo of the change takes them back. With
+    the workspace given, an ending that drops many records makes a backup first (`storage.backups`). Returns the ids of
+    the actions it dropped."""
+    from engine.applier import decline_held_many, release
+
+    ending = _held_ending(store, changeset_id, index)
+    wanted = list(dict.fromkeys(keep))
+    named = {item.index for item in ending.items}
+    if not set(wanted) <= named:
+        raise StoreError("one of those isn't an item this ending would drop")
+    if ws is not None:
+        from engine import backup
+
+        backup.backup_before_many(ws, backup.live(ws, cfg), 1 + len(named - set(wanted)), now)
+    if wanted:
+        decline_held_many(store, changeset_id, wanted, now=now)
+    for position in [ending.index, *(item.index for item in ending.items if item.index not in wanted)]:
+        release(store, cfg, changeset_id, position, now=now)
+    return [item.id for item in ending.items if item.kind == "action" and item.index not in wanted]
+
+
+def decline_ending(store: Any, changeset_id: str, index: int, *, now: datetime | None = None) -> None:
+    """Keep the project as it is: the ending and every drop that waits with it are declined together."""
+    from engine.applier import decline_held_many
+
+    ending = _held_ending(store, changeset_id, index)
+    decline_held_many(store, changeset_id, [ending.index, *(item.index for item in ending.items)], now=now)
+
+
+def _held_ending(store: Any, changeset_id: str, index: int) -> HeldEnding:
+    view = store.read()
+    cs = view.get("changeset", changeset_id)
+    if cs is None:
+        raise StoreError(f"there is no changeset {changeset_id}")
+    for ending in held_endings(view, changeset_id, cs.data["ops"]):
+        if ending.index == index:
+            return ending
+    raise StoreError("that ending isn't waiting for you")

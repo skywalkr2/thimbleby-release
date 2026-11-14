@@ -1,0 +1,9185 @@
+"""Response and request models for the API. The web client's types are generated from these through OpenAPI, so a
+changed field here fails the web build instead of breaking the UI at run time.
+
+Models carry data, not wording: the UI words everything through its wording sheet.
+"""
+
+from __future__ import annotations
+
+from datetime import date, datetime
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from api.screen_text import ScreenText
+from engine.config.schema import CalendarColor
+from engine.ops import ActRecipientIn
+from engine.records import KnowledgeEvidence, Scope
+
+# ---- requests --------------------------------------------------------------------------------------------------------
+
+
+class HandIn(BaseModel):
+    note: str = ""
+    pasted: str = ""
+    data_level: Literal["open", "internal", "restricted"] | None = Field(
+        None, description="How sensitive it is, when the person says it is more than the usual."
+    )
+    project: str | None = Field(None, description="The project it is about, when the person says.")
+
+
+class SendBack(BaseModel):
+    note: str
+    undo_first: bool = Field(True, description="Undo what the assistant did before it tries again (the default).")
+    ops: list[int] | None = Field(
+        None,
+        description="Indices of the items the note is about; only they are undone. All of the change when left out.",
+    )
+
+
+class UndoChoice(BaseModel):
+    ops: list[int] | None = Field(None, description="Indices of the items to undo; all of them when left out.")
+
+
+class PersonChoice(BaseModel):
+    person: str | None = None
+
+
+class EndingAnswer(BaseModel):
+    """The answer to "Done by <owner>, or no longer needed?": `done` closes the action and credits its owners,
+    `called_off` drops it and credits nobody, with the words it quoted as the reason."""
+
+    ending: Literal["done", "called_off"]
+
+
+class ProjectEndingItem(BaseModel):
+    """One item a waiting project ending would drop: the held op's `index` and the item's own words. `other` is a
+    change an add-on made for the ending (its own record dropped, say), listed beside the core's items and kept the
+    same way."""
+
+    index: int
+    kind: Literal["action", "question", "other"]
+    id: str
+    text: str
+
+
+class LeftOpenItem(BaseModel):
+    """A record of an add-on's own kind that refers to the project. The app can't tell whether the add-on counts it
+    open, so it is listed as left open for the add-on to close; it is never called resolved."""
+
+    kind: str
+    kind_label: str = Field(description="What one record of the kind is called, in words.")
+    id: str
+    title: str
+
+
+class ProjectEndingView(BaseModel):
+    """A project ending that waits for the person (design 6.7): the open `items` it would drop, each of which the person
+    can keep, and what add-ons' records `left_open` on the project whichever way it goes."""
+
+    project: str
+    project_name: str
+    index: int = Field(description="The held op that ends the project.")
+    items: list[ProjectEndingItem]
+    left_open: list[LeftOpenItem]
+    told_names: list[str] = Field(
+        default_factory=list,
+        description="The people told about any of the items, as shown: who gets one note, waiting for the person's "
+        "yes, about the items they were told about that are dropped. Empty when nobody.",
+    )
+
+
+class ProjectEndingDone(BaseModel):
+    """POST /api/changesets/{id}/ops/{index}/project-ending, and POST /api/sides/{project}/remove: `changeset` is the
+    ending (or the removal that ended the side's projects). When it was confirmed and
+    dropped items that reached people, `drafts` are the changes that drafted one note to each person told (`names`),
+    `acts` the notes, each waiting in Waiting to go out for the person's yes; Undo takes the drafts and the ending back
+    together. All are empty when the project was kept or nobody had been told."""
+
+    changeset: str
+    drafts: list[str]
+    acts: list[str]
+    names: list[str]
+    companions: list[str] = Field(
+        default_factory=list,
+        description="Further changes the removal made (the side's organization going with it): Undo takes these back "
+        "first, then `changeset`.",
+    )
+
+
+class ProjectEndingChoice(BaseModel):
+    """What the person does with a waiting project ending: `end` true ends the project and drops every item except the
+    ones in `keep` (held op indexes, which stay open); false keeps the project and every item as they are."""
+
+    end: bool = True
+    keep: list[int] = Field(default_factory=list)
+
+
+class SentText(BaseModel):
+    text: str | None = Field(None, description="The message as the PM sent it, to notice edits.")
+
+
+class Answer(BaseModel):
+    text: str | None = Field(
+        None,
+        description="A written answer; with a person chosen, a note that goes with the choice (it is read).",
+    )
+    person: str | None = Field(None, description="The person chosen, for questions that ask who.")
+
+
+class Reply(BaseModel):
+    text: str = Field(description="The reply as received, pasted by the PM.")
+
+
+class ActionState(BaseModel):
+    status: Literal["open", "done"]
+    note: str = Field(
+        "", description="Anything the person wrote with the change, in their own words; the assistant reads it."
+    )
+
+
+class NoteIn(BaseModel):
+    note: str = Field(
+        "",
+        description="Anything the person wrote with the change; the assistant reads it. On a button that relays "
+        "another person it is what they report about that person.",
+    )
+
+
+class OwnerPick(BaseModel):
+    person: str | None = None
+    note: str = Field(
+        "", description="Anything the person wrote with the choice, in their own words; the assistant reads it."
+    )
+
+
+class NudgeSent(BaseModel):
+    """A follow-up message the PM sent: what it listed (from `FollowupSection.nudge`) and its text as sent, to notice
+    edits."""
+
+    text: str | None = Field(None, description="The message as the PM sent it, to notice edits.")
+    question_ids: list[str] = []
+    action_ids: list[str] = []
+
+
+class NudgeUnsent(BaseModel):
+    """What undoes a follow-up marked as sent: the response that recorded it, sent back."""
+
+    question_ids: list[str] = []
+    action_ids: list[str] = []
+    on: str = Field(description="The day the chases were recorded.")
+    previous_told: dict[str, str | None] = Field(
+        default_factory=dict, description="The day each action's person was told before the chase, by action id."
+    )
+    signal_at: str | None = Field(None, description="When the edit of the message was recorded, if it was edited.")
+
+
+class Unfollow(BaseModel):
+    on: str = Field(description="The day the chase was recorded, from the response that recorded it.")
+    previous_told: str | None = Field(None, description="The day they were told before the chase, if any.")
+
+
+class HoldIn(BaseModel):
+    waiting_for: str = Field(
+        "",
+        description="What the action waits for, in plain words. Left out when `on` names the blocker: the words are "
+        "then its name.",
+    )
+    on: str | None = Field(
+        None,
+        description="The id of a person, an action or a question the action is blocked on. A hold with only words is "
+        "on hold; one that names a blocker is blocked.",
+    )
+
+
+class HoldState(BaseModel):
+    waiting_for: str = Field(description="What the action waits for.")
+    since: str = Field(description="The day it was put on hold (a date).")
+    on: str | None = Field(None, description="What it is blocked on, when the hold names its blocker.")
+
+
+class HeldForIn(BaseModel):
+    """What a question is held for: exactly one of a calendar entry, a series or a day."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event: str | None = Field(None, description="The id of the calendar entry to wait for.")
+    series: str | None = Field(None, description="The id of the series to wait for: its next instance.")
+    on: date | None = Field(None, description="The day to send it.")
+    since: date | None = Field(None, description="The day it was held, when putting a hold back as it was.")
+
+
+class HeldForState(BaseModel):
+    event: str | None = None
+    series: str | None = None
+    on: date | None = None
+    since: date | None = None
+
+
+class HeldIn(BaseModel):
+    held_for: HeldForIn | None = Field(
+        None, description="What to hold the question for; none sends it now (it leaves Later)."
+    )
+
+
+class QuestionHold(BaseModel):
+    id: str = Field(description="The id of the question.")
+    held_for: HeldForState | None = Field(None, description="What it is held for; none: it is not held.")
+
+
+class HeldMessageIn(BaseModel):
+    held_for: HeldForIn = Field(
+        description="What to hold the person's whole message for: a meeting, a series or a day."
+    )
+
+
+class HeldMessageRestore(BaseModel):
+    holds: list[QuestionHold] = Field(description="What each question was held for before the hold being undone.")
+
+
+class HoldRestore(BaseModel):
+    hold: HoldState | None = Field(
+        None, description="What the action's hold was before the change that is being undone; none for off hold."
+    )
+
+
+class QuestionRewordIn(BaseModel):
+    title: str | None = Field(None, min_length=1, description="The new title; left out, it stays as it is.")
+    text: str | None = Field(None, description="The new text, in the person's own words; left out, it stays as it is.")
+
+
+class QuestionRerouteIn(BaseModel):
+    to: str = Field(min_length=1, description="The person to ask instead, by id or name.")
+
+
+class QuestionDropIn(BaseModel):
+    reason: str = Field(min_length=1, max_length=500, description="Why the question isn't needed, in plain words.")
+
+
+class ActionDropIn(BaseModel):
+    reason: str = Field(min_length=1, max_length=500, description="Why the action isn't needed, in plain words.")
+
+
+class NotMineIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    note: str | None = Field(
+        None,
+        max_length=500,
+        description="The person's own words for why it isn't theirs to track; left out, the words 'Not mine to track'.",
+    )
+
+
+class NotMineDone(BaseModel):
+    """POST /api/not-mine/{kind}/{id}: the item and the source's other open items dropped in one change, the source
+    set to understand. `read_back` says it in words ('Dropped this and 3 more from <source>'); one Undo is
+    POST /api/not-mine/undo with `changeset`, `source` and `stance`."""
+
+    changeset: str
+    source: str = Field(description="The source's id.")
+    source_label: str = Field(description="What the source is called on screen.")
+    others: int = Field(description="How many other open items were dropped with the one asked about.")
+    stance: Literal["follow", "understand"] = Field(description="The source's stance before; send it back to Undo.")
+    read_back: str
+
+
+class NotMineUndoIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    changeset: str
+    source: str
+    stance: Literal["follow", "understand"]
+
+
+class NotMineUndone(BaseModel):
+    restored: int = Field(description="How many drops were taken back.")
+
+
+class AnsweredAnotherWayIn(BaseModel):
+    note: str | None = Field(
+        None,
+        min_length=3,
+        max_length=500,
+        description="A few words on how it was answered (a call, a chat); kept as the evidence of the close. Left out, "
+        "the reply owed closes with none.",
+    )
+
+
+class Copied(BaseModel):
+    id: str = Field(description="The id of the copy kept: the drafted reply as the person copied it.")
+
+
+class CopyAnswer(BaseModel):
+    how: Literal["sent_another_way", "not_sent", "still_to_send"] = Field(
+        description="The person's answer to whether a message they copied went out: sent_another_way settles it, "
+        "not_sent puts its questions back as unsent and settles it, still_to_send asks again after the configured "
+        "number of days."
+    )
+
+
+class CopySettled(BaseModel):
+    """What an answer changed, and what `POST /api/copies/{id}/unsettle` takes to put it back (Undo)."""
+
+    settled: Literal["sent_another_way", "not_sent"] | None = Field(
+        None, description="What the copy said before the answer."
+    )
+    ask_again_at: datetime | None = Field(None, description="When it was to be asked about again, before the answer.")
+    sent_at: dict[str, str | None] = Field(
+        default_factory=dict, description="The questions a Not sent put back, each with when it had been sent."
+    )
+    told: dict[str, str] = Field(
+        default_factory=dict, description="The actions a Not sent took the person's told day off, each with that day."
+    )
+
+
+class ActionReplyIn(BaseModel):
+    text: str | None = Field(
+        None,
+        min_length=1,
+        description="The person's own wording of the reply; left out, the drafted reply is approved as it is.",
+    )
+
+
+class ActionMergeIn(BaseModel):
+    """Merge a near-duplicate into the action this is posted to: it stays open and the other is closed."""
+
+    other: str = Field(min_length=1, description="The id of the open action it nearly repeats, which is closed.")
+    read_version: int = Field(description="The version of the action kept, as the person saw it.")
+    other_version: int = Field(description="The version of the action closed, as the person saw it.")
+
+
+class FoldIn(BaseModel):
+    into: str = Field(min_length=1, description="The id of the open action to add the one waiting for an owner to.")
+    read_version: int = Field(description="The version of that action as the person saw it.")
+
+
+class NewPersonIn(BaseModel):
+    """The form that answers a "Who is this?" question with a new person."""
+
+    full_name: str = Field(min_length=1, description="The person's full name.")
+    first_name: str | None = Field(None, description="The name a greeting to them uses, when it isn't the first word.")
+    org: str | None = Field(
+        None, description="The organization's name or id; a name no record has makes a new organization."
+    )
+    role: str | None = Field(None, description="Their job or part in the work.")
+    contact_kind: str | None = Field(
+        None, description="What kind of contact detail the value is, from the offered kinds."
+    )
+    contact_value: str | None = Field(None, description="A way to reach them, of that kind.")
+
+
+class NewPersonPrefillView(BaseModel):
+    """What the "Add a new person" form starts with, from the question and the input it came from."""
+
+    full_name: str = Field(description="The name as the input wrote it.")
+    first_name: str
+    org: str = Field(description="The organization the input gives, by name; empty when it gives none.")
+    role: str = Field(description="The role the input gives; empty when it gives none.")
+    contact_kind: str = Field(description="The kind of the detail the input gives for them; empty when none.")
+    contact_value: str = Field(description="The contact detail the input gives for them; empty when none.")
+    contact_kinds: list[str] = Field(description="The kinds of contact detail to pick from.")
+
+
+class NewPersonDone(BaseModel):
+    """A new person was added and the work waiting on the name went ahead."""
+
+    person: str = Field(description="The new person's id.")
+    name: str = Field(description="Their full name.")
+    undo: list[str] = Field(description="The changes that add them, newest first, to undo after the released items.")
+    changeset: str | None = Field(None, description="The change whose held items went ahead.")
+    released: list[int] = Field(description="The positions of the held items that went ahead.")
+
+
+class PartOfIn(BaseModel):
+    project: str = Field(min_length=1, description="The id of the project the held project is part of.")
+
+
+class QuestionSentIn(BaseModel):
+    on: date | None = Field(None, description="The day the person sent it themselves; today when left out.")
+
+
+class ChangeIn(BaseModel):
+    note: str = Field(
+        min_length=1,
+        description="What to change about it, in the person's own words; the assistant reads it. Required: a change "
+        "with no words is never sent.",
+    )
+
+
+class MissedIn(BaseModel):
+    text: str = Field(
+        description="What the assistant missed, in a plain sentence in the person's own words; it needs no source."
+    )
+
+
+class MissedSent(BaseModel):
+    request: str = Field(description="The work queued for the assistant to add what was missed.")
+    signal: str = Field(description="The id of the correction recorded for it.")
+
+
+class ChangeRequested(BaseModel):
+    ok: str = Field(description="The id of the item the change was asked for.")
+    request: str | None = Field(None, description="The work queued for the assistant from the note.")
+    signal: str = Field(description="The id of the correction recorded for it.")
+
+
+# ---- responses -------------------------------------------------------------------------------------------------------
+
+
+class Ok(BaseModel):
+    ok: str
+
+
+class PersonRemoval(BaseModel):
+    """Whether a person was removed (and can be brought back) or isn't a record at all, and when and under what name."""
+
+    state: Literal["removed", "none"]
+    name: str | None = None
+    removed_at: str | None = None
+
+
+class FeedbackProblem(BaseModel):
+    """One recent failure as Send feedback offers it, already masked (design 7, Help). Never the packet, the request,
+    any record's text, a file's name or a name of a person or project."""
+
+    at: datetime = Field(description="When it happened, on the person's own clock.")
+    doing: Literal["task", "account_check", "source_read", "app"] = Field(
+        description="What was being done: an AI task, checking an account, reading a source, or the app itself."
+    )
+    what: str | None = Field(
+        None,
+        description="The task kind, the part of the account check, the kind of source, or where in the app.",
+    )
+    service: str | None = Field(None, description="The account's kind of service, else its adapter.")
+    adapter: str | None = Field(None, description="The adapter that talks to the account.")
+    program_version: str | None = Field(None, description="For a command-line agent: the program's own version line.")
+    params: dict[str, str] = Field(
+        default_factory=dict,
+        description="The request's settings (tier, model, temperature, output limit, effort) and the account's "
+        "request settings, by name.",
+    )
+    status: int | None = Field(None, description="The status code the service answered with, if it did.")
+    error_kind: str | None = Field(None, description="How it failed: the error kind, or the app error's type.")
+    text: str = Field("", description="The service's or error's own text, masked and cut short.")
+
+
+class FeedbackProblems(BaseModel):
+    """GET /api/feedback/problems: the last failures Send feedback may add, newest first."""
+
+    problems: list[FeedbackProblem]
+
+
+class SlowScreenReport(BaseModel):
+    """GET /api/slow-screens/{screen}/report: a report to the maintainers about a screen that has been slow, for the
+    person to read and send themselves. Counts and times only; nothing in it names a person, project or file."""
+
+    title: str
+    text: str
+
+
+class Noted(BaseModel):
+    ok: str
+    request: str | None = Field(
+        None, description="The work queued for the assistant from the note that came with the change, if there was one."
+    )
+
+
+class FollowedUp(BaseModel):
+    on: str = Field(description="The day the chase was recorded (a date).")
+    previous_told: str | None = Field(None, description="The day they were told before it, for undoing the chase.")
+    request: str | None = Field(
+        None, description="The work queued for the assistant from the note that came with the chase, if there was one."
+    )
+
+
+class NudgeRecorded(BaseModel):
+    questions: int
+    actions: int
+    question_ids: list[str]
+    action_ids: list[str]
+    on: str = Field(description="The day the chases were recorded (a date).")
+    previous_told: dict[str, str | None] = Field(
+        description="The day each action's person was told before, by action id."
+    )
+    signal_at: str | None = Field(None, description="When an edit of the message was recorded, if it was edited.")
+
+
+class HeldChanged(BaseModel):
+    ok: str
+    previous: HeldForState | None = Field(
+        None, description="What the question was held for before the change, for undoing it (none: it was not held)."
+    )
+
+
+class HeldMessageChanged(BaseModel):
+    ok: str
+    previous: list[QuestionHold] = Field(
+        description="What each held question was held for before, for undoing it (none: it was not held)."
+    )
+
+
+class HoldChanged(BaseModel):
+    ok: str
+    previous: HoldState | None = Field(
+        None, description="What the action's hold was before the change, for undoing it (none: it was not on hold)."
+    )
+
+
+class RequestChanged(BaseModel):
+    ok: str
+    version: int = Field(description="The request's version after the change, for undoing it.")
+
+
+class Handed(BaseModel):
+    request: str
+    source: str | None
+
+
+class HandedFile(BaseModel):
+    """What happened to a file handed in: read as an outside input, or kept in the person's files."""
+
+    name: str
+    status: Literal["read", "kept"]
+    request: str | None
+    source: str | None
+    file: str | None
+    reason: str | None
+
+
+class HandedImage(BaseModel):
+    """What happened to a picture handed in: queued for reading or kept when no listed account can read it."""
+
+    status: Literal["queued", "kept"]
+    request: str | None
+    file: str
+    reason: str | None
+
+
+class Requeued(BaseModel):
+    request: str
+
+
+class BackupStatus(BaseModel):
+    configured: bool
+    last_success: str | None
+    age_hours: float | None
+    needs_attention: bool
+    last_error: ScreenText | None
+    encrypted: bool = Field(False, description="Whether every backup copy is encrypted (a key is set for it).")
+
+
+class BackupTargetView(BaseModel):
+    path: str
+    label: str
+    reachable: bool = Field(description="The folder is there now (a drive that isn't connected is not).")
+    last_success: str | None
+    last_error: ScreenText | None
+
+
+class BackupCopyView(BaseModel):
+    target: str = Field(description="What the place is called (its label, else its folder).")
+    path: str = Field(description="The dated folder, which `thimbleby restore --backup` takes.")
+    name: str
+    made_at: str | None = Field(description="When it was made, from its name.")
+    encrypted: bool
+
+
+class PendingRestoreView(BaseModel):
+    """A restore staged for the next start: the workspace goes back to how it was at `made_at` once the app restarts."""
+
+    made_at: str | None = Field(description="The moment the workspace goes back to (a copy's date), when known.")
+    kind: Literal["backup", "put_back"] = Field(
+        description="backup: one of the copies; put_back: the files an earlier restore set aside."
+    )
+    records: int = Field(description="How many records the restored workspace holds.")
+
+
+class RestoreCopyIn(BaseModel):
+    """POST /api/backups/restore: stage one of the copies the Backups page lists. `key` is the key of an encrypted copy;
+    it is used once, to open the copy, and never stored."""
+
+    path: str = Field(description="The copy's dated folder, as GET /api/backups lists it.")
+    key: str | None = Field(None, description="What an encrypted copy was sealed with.")
+
+
+class RestoreStaged(BaseModel):
+    """A restore is ready; it is swapped in at the next start, which the person chooses (POST /api/restart)."""
+
+    pending: PendingRestoreView
+    can_restart: bool = Field(description="The app can start itself again when the person asks.")
+
+
+class BackupsView(BaseModel):
+    """Where backups go and how they stand, for Settings > Backups: the places, the last one made, the newest copies
+    found, whether backups run on their own, and a restore waiting for the next start. Restoring a copy is
+    POST /api/backups/restore: it stages the copy and the app restarts when the person chooses (nothing is replaced
+    until then, and what the workspace held is set aside, never deleted). `thimbleby restore --backup <dated folder>
+    <new folder>` makes a new workspace instead; restoring to a moment in time (`--as-of`) isn't built."""
+
+    state: BackupStatus
+    message: ScreenText
+    targets: list[BackupTargetView]
+    copies: list[BackupCopyView]
+    schedule: bool = Field(
+        description="Backups are made on their own now: the setting is on and there is a place to put them."
+    )
+    switch: bool = Field(description="The setting itself, which stays on while there is no folder.")
+    pending: PendingRestoreView | None = Field(
+        None, description="A restore waiting for the next start, if there is one."
+    )
+    restore_blocked: ScreenText | None = Field(
+        None, description="Why a copy can't be restored from this screen right now, when something stops it."
+    )
+
+
+class RequestCounts(BaseModel):
+    queued: int
+    running: int
+    review: int
+    needs_you: int
+
+
+class NetworkWait(BaseModel):
+    """Work waiting for the network connection to come back."""
+
+    count: int = Field(description="How many requests wait for the network.")
+    since: str = Field(description="When the oldest of them first found no network, an ISO time.")
+
+
+class AiState(BaseModel):
+    """Whether the assistant can do its work: set up, tested, and answering."""
+
+    state: Literal["ok", "untested", "failing", "not_set_up", "stand_in"]
+    detail: ScreenText | None = Field(None, description="The provider's own reason when there is one, shortened.")
+
+
+class SpendStatus(BaseModel):
+    """What the assistant's work has cost today and this month (UTC), against the configured limits."""
+
+    today_usd: float
+    month_usd: float
+    per_day_usd: float
+    per_month_usd: float
+    warn: bool = Field(description="Either total has reached the configured share of its limit.")
+    warn_today: bool = Field(description="Today's total has reached that share of the daily limit.")
+    warn_month: bool = Field(description="This month's total has reached that share of the monthly limit.")
+
+
+class AssistantAccountRuns(BaseModel):
+    account: str = Field(description="The account's name in the settings.")
+    count: int = Field(description="Calls made to it today that reached it.")
+    failed: int = Field(description="Of those, the ones that didn't end in an answer that was used.")
+
+
+class AssistantChain(BaseModel):
+    tier: str
+    accounts: list[str] = Field(description="The accounts the tier tries, in order, by their names in the settings.")
+
+
+class AssistantPaused(BaseModel):
+    account: str
+    until: datetime = Field(description="When its usage limit resets, on the person's own clock (their time zone).")
+
+
+class AssistantStatus(BaseModel):
+    """Whether the assistant is alive, for the header's status line. Times are on the person's own clock."""
+
+    last_run_at: datetime | None = Field(
+        None, description="When the assistant last called an account; none before the first."
+    )
+    last_run_failed: bool = Field(description="That last call ended in an error and its account isn't paused.")
+    runs_today: list[AssistantAccountRuns] = Field(description="Today's calls by account, in the person's day.")
+    queued: int = Field(
+        description="Requests waiting for the assistant now, not counting ones that wait for the person."
+    )
+    oldest_queued_since: datetime | None = Field(None, description="When the oldest of them was made.")
+    chains: list[AssistantChain] = Field(description="For each tier with an account, the order its accounts are tried.")
+    paused: list[AssistantPaused] = Field(description="Accounts waiting for a usage limit to reset.")
+    loop_restarted_at: datetime | None = Field(
+        None,
+        description="When background work that had stopped was started again, if that was within the last hour.",
+    )
+    loop_stuck_since: datetime | None = Field(
+        None,
+        description="When background work that is stuck last checked in; none while nothing is stuck. The person "
+        "chooses Restart now (POST /api/restart); the app never restarts itself.",
+    )
+
+
+class Status(BaseModel):
+    backup: BackupStatus
+    ai: AiState
+    assistant: AssistantStatus
+    spend: SpendStatus
+    requests: RequestCounts
+    network_wait: NetworkWait | None = Field(
+        None,
+        description="Set while any request waits for the network connection, which it does with no tries used up.",
+    )
+    version: int
+    restart_needed: ScreenText | None = Field(
+        None, description="Why new work waits until the cockpit restarts, if it does."
+    )
+    can_restart: bool = Field(
+        False, description="The app can start itself again when the person asks (POST /api/restart)."
+    )
+    restart_for: list[str] = Field(
+        default_factory=list,
+        description='What waits for the restart: settings keys (their labels are in GET /api/settings), and "code" '
+        "when the app itself was updated while running.",
+    )
+
+
+class Option(BaseModel):
+    id: str
+    name: str
+
+
+class OwnerSuggestionView(BaseModel):
+    """What the workspace's own records suggest for an action that has no owner. The person still picks."""
+
+    person: str | None = Field(None, description="The id of the person a routing entry says does this kind of work.")
+    person_name: str | None = Field(None, description="That person's full name.")
+    entry: str | None = Field(None, description="The id of the routing entry that says so.")
+    why: str | None = Field(None, description='The routing entry\'s own words, for "because you told me ...".')
+    fold_into: str | None = Field(
+        None, description="The id of the open action this one most nearly repeats, to fold it into."
+    )
+    fold_into_text: str | None = Field(None, description="That action's text.")
+    fold_version: int | None = Field(
+        None, description="That action's version as read, to send back when adding this action to it."
+    )
+
+
+class Ask(BaseModel):
+    """A question to the PM that an item waits on: who a name is, or who owns an action."""
+
+    id: str
+    status: str
+    about: Literal["held-op", "owner", "other"]
+    name: str | None = Field(None, description="The name the assistant couldn't place, for who-is questions.")
+    options: list[Option]
+    suggestion: OwnerSuggestionView | None = Field(
+        None, description="For owner questions: who the routing entries suggest and the nearest open action."
+    )
+
+
+class RecordRef(BaseModel):
+    kind: str
+    id: str
+
+
+class Evidence(BaseModel):
+    quote: str
+
+
+class OpMeta(BaseModel):
+    owners: list[str] = []
+    due: str | None = None
+    project: str | None = None
+    side_name: str | None = Field(
+        None,
+        description="The side it is filed on directly, when it is in a side and in no project of it; its project "
+        "name is then empty.",
+    )
+    action_status: str | None = None
+    to_send: bool | None = Field(
+        None,
+        description="For an action: its owner, other than the person, hasn't been told about it yet (design 6.10).",
+    )
+    to: str | None = None
+    field: str | None = None
+    value: Any = None
+    name: str | None = Field(None, description="The name of what the op proposes to add, such as a project.")
+    role: str | None = Field(None, description="The part in a project that the op sets: run, design or watch.")
+    stance: Literal["manage", "alongside", "report_to", "watch"] | None = Field(
+        None, description="Who a person is to the user that the op sets (design 6.34)."
+    )
+    note: str | None = Field(
+        None,
+        description="A line the person should read beside the op: for a project added from a link nothing set up can "
+        "open, that it was not read.",
+    )
+    said_by: str | None = Field(
+        None,
+        description="For a fact that is one person's word: their name, so the row reads 'Pat says …', not as settled.",
+    )
+    as_of: str | None = Field(None, description="For a fact that names who said it: the day it was true as of.")
+
+
+class OpView(BaseModel):
+    index: int
+    op: str
+    status: Literal["applied", "held", "refused", "undone"]
+    reason: ScreenText | None
+    group: str
+    answer_group: str | None = Field(
+        None,
+        description="The label its task kind gave it when it grouped the answer for review; ops with the same label "
+        "are one row, with Keep and Drop for all of them (see `ChangesetView.groups`).",
+    )
+    title: str
+    meta: OpMeta
+    evidence: Evidence | None = None
+    record: RecordRef | None = None
+    ask: Ask | None = None
+    held: HeldAsk | None = Field(
+        None,
+        description="For a held item that rests on an inference, ends or moves a promise, or would drop something that "
+        "reached someone: the question the person is asked, shaped as Today's line asks it, so the change's card "
+        "offers the same two answers in the same words.",
+    )
+
+
+class AppliedEntryView(BaseModel):
+    """A piece of what the assistant knew that a run said it applied (design 6.20, 7.18): a lesson, glossary entry,
+    routing entry, style note, standing rule or fact, with what is needed to narrow or retire it from the work's
+    card."""
+
+    id: str
+    kind: Literal["lesson", "glossary_entry", "routing_entry", "style_note", "rule", "fact"]
+    version: int = Field(description="The entry's version, to send back with Narrow or Retire.")
+    text: str = Field(description="The entry in plain words.")
+    status: str = Field(description="active, retired and so on; a fact is always active.")
+    applies_to: Scope | None = Field(None, description="What it applies to; a fact applies to its project only.")
+
+
+class MadeView(BaseModel):
+    """A draft or file a change made, for the "Made:" link on the change's card: `label` says what it is for (the
+    record a draft is for, or the file's name) and `record` is where the person opens it."""
+
+    kind: Literal["draft", "file"]
+    id: str = Field(description="The draft's version, or the file.")
+    label: str
+    record: RecordRef
+
+
+class AnswerGroupView(BaseModel):
+    """One group of an answer the task kind grouped for review: a row with `label`, Keep (while some op `held` waits)
+    and Drop (while some op is `applied` or `held`) for all of its `ops` (their indexes)."""
+
+    id: int = Field(description="The group's place among the answer's groups, for Keep and Drop.")
+    label: str
+    ops: list[int]
+    applied: int
+    held: int
+    refused: int
+    undone: int
+
+
+class AnswerGroupDone(BaseModel):
+    """What Keep, Drop or Release all did to an answer's ops, by index."""
+
+    released: list[int] = Field(description="Held ops that were applied (released).")
+    restored: list[int] = Field(description="Applied ops that were undone.")
+    declined: list[int] = Field(description="Held ops that were kept as they were.")
+    skipped: list[Any] = Field(
+        description="Ops left as they were, each {ops, reason}: one that waits on a choice only the person makes, or "
+        "an Undo that would overwrite a later change."
+    )
+
+
+class OmittedOpView(BaseModel):
+    """An op the assistant left out of a corrected answer on purpose, for the change's card."""
+
+    op: str = Field(description="The op's name.")
+    reason: str = Field(description="Why the assistant left it out, in its own words.")
+
+
+class ChangesetView(BaseModel):
+    id: str
+    summary: str
+    status: str
+    reviewed: bool
+    trust: Literal["trusted", "untrusted"]
+    ops: list[OpView]
+    groups: list[AnswerGroupView] = Field(
+        default_factory=list,
+        description="When the task kind grouped its answer for review: one row for each group, with Keep and Drop for "
+        "all of its ops. The ops in a group are not listed again on their own; ops with no group stay in `ops` alone.",
+    )
+    made: list[MadeView] = Field(
+        default_factory=list,
+        description="The drafts and files this change made that still exist, in the order made, so its card links "
+        "each without opening the details.",
+    )
+    applied: list[AppliedEntryView] = Field(
+        default_factory=list,
+        description="What the run was given from what was learned and showed it applied, for the line 'Because you "
+        "told me'.",
+    )
+    omitted: list[OmittedOpView] = Field(
+        default_factory=list,
+        description="What the assistant left out of a corrected answer on purpose, each with its reason, so the card "
+        "says what is not in the change and why.",
+    )
+    first_on_account: str | None = Field(
+        None,
+        description="The name of the AI account when this was the first run on an account that stands in a fallback "
+        "chain, so the card can say so.",
+    )
+    second_opinion: Literal["other_account", "same_account"] | None = Field(
+        None,
+        description="For an independent check: run on an account other than the one that wrote the work, or on the "
+        "same account as a fresh run the person accepted.",
+    )
+
+
+class ItemTitle(BaseModel):
+    """An item's title in parts (design 7.14); the screen puts them into words: "{kind} from {person} · {topic}"."""
+
+    kind: Literal["email", "calendar", "change", "note", "screen", "answer", "pasted", "task"] = Field(
+        description="email, calendar or change (another watched item); note: the person's own words; screen: a change "
+        "the person made on a screen (setting something up, an edit), worded by what it did; answer: the "
+        "words typed to answer a question; pasted: someone else's words handed in; task: work the app started."
+    )
+    person: str | None = Field(None, description="The id of who it came from, when known.")
+    person_name: str | None = Field(None, description="That person's full name.")
+    sender: str | None = Field(None, description="Who it came from as written, when not a known person.")
+    topic: str = Field(
+        "",
+        description="A few words on what it is about; empty when the assistant gave none and the input has no line "
+        "short enough to use.",
+    )
+    task: str | None = Field(
+        None, description="For task: the kind of work (an AI task kind id), when the request names one."
+    )
+    subject: str | None = Field(None, description="For task: the words of the record the work is about, when known.")
+
+
+class StopCauseView(BaseModel):
+    """Why a stopped request waits, when the screen has one action that clears it."""
+
+    kind: Literal["data_level", "no_person"] = Field(
+        description="data_level: no AI account may see the material, so `account` can be allowed to "
+        "(POST /api/requests/{id}/allow-data). no_person: no one is set as the person the app is for; the setup "
+        "step 'workspace' names them, and the request runs again by itself once they are."
+    )
+    level: Literal["open", "internal", "restricted"] | None = Field(
+        None, description="For data_level: the data level of the material."
+    )
+    account: str | None = Field(
+        None,
+        description="For data_level: the short name of the account the tier would use first, which the action lets "
+        "see that level.",
+    )
+
+
+class ChangeItem(BaseModel):
+    id: str
+    version: int
+    dismissed: bool
+    state: Literal["queued", "running", "review", "done", "needs_you", "failed"]
+    waiting: ScreenText | None
+    created_at: str
+    note: str | None
+    source: str | None
+    source_title: str | None
+    approval: Literal["required", "granted"] | None = Field(
+        None, description="Whether the request waits for the person's go or has had it."
+    )
+    stage_task: bool = Field(False, description="The request was started by a stage, so the stage views show its go.")
+    first_go: bool = Field(
+        False, description="The request waits for the person's first go in the workspace, which starts every such run."
+    )
+    estimate_usd: float | None = Field(None, description="What the run was estimated to cost when it asked for a go.")
+    range_usd: list[float] | None = Field(
+        None, description="What the whole request was estimated to cost, low and high; none when it couldn't be priced."
+    )
+    range_account: str | None = Field(
+        None,
+        description="The account the estimate is priced on (its name): the first that may see the material and whose "
+        "model can hold the packet and its answer; none when none was found.",
+    )
+    spent_usd: float | None = Field(
+        None,
+        description="What its AI work has cost so far, leaving out runs an outage cut off; none when nothing priced "
+        "ran.",
+    )
+    refused: bool = Field(
+        False, description="The account declined it under its own policy; it can be sent to another account."
+    )
+    cause: StopCauseView | None = Field(None, description="For a stopped request: the cause an action can clear.")
+    follows: str | None = Field(None, description="The change (changeset id) this work followed from, if any.")
+    follows_summary: str | None = Field(None, description="That change's one-line summary, for the row.")
+    redoes: str | None = Field(
+        None,
+        description="The change (changeset id) this work redoes after the person sent it back, so what was learned "
+        "from the send-back shows on this row too.",
+    )
+    changeset: ChangesetView | None
+    review: Literal["filed", "checked", "unchecked"] | None = Field(
+        None,
+        description="How the assistant's finished work reads in What changed: filed (nothing in it needed a look: "
+        "facts, sources and notes are filed quietly), checked (the person confirmed what did) or unchecked (still to "
+        "look over on Today); none while it is running, stopped or undone.",
+    )
+    title: ItemTitle | None = Field(None, description="The item's title, by the title rule.")
+    mail_item: str | None = Field(
+        None, description="For work on a mail message the app is holding: its id, for 'Set aside' on the row."
+    )
+    intake: str | None = Field(
+        None,
+        description="The id of the newly added source whose first read (or look further back) took this in, so its "
+        "results can be listed together.",
+    )
+    project: str | None = Field(
+        None,
+        description="The one project the request's work is about (the project named for it, else that of what it is "
+        "about, else its source's only one, else the one its changes name); none when it is about none or several, so "
+        "the side filter shows it under every choice.",
+    )
+    edits: list[ChangeItem] = Field(
+        default_factory=list,
+        description="When the person's own edits of one item on one day are folded into this row: every one of them, "
+        "newest first, this row's own included, each as it would be listed alone. Empty for any other row, and for "
+        "a day with one edit.",
+    )
+    edited: str | None = Field(
+        None, description="With `edits`: the name of the item that was edited, for the row's title."
+    )
+
+
+class BatchConfirmIn(BaseModel):
+    changesets: list[str] = Field(min_length=1, description="The changesets of the batch the person looked over.")
+
+
+class BatchConfirmed(BaseModel):
+    changesets: list[str] = Field(description="The changesets marked reviewed, to send back to undo it.")
+    signals: list[str] = Field(description="The `confirmed` signals recorded, one for each request, to send back.")
+
+
+class BatchUnconfirmIn(BaseModel):
+    changesets: list[str]
+    signals: list[str] = Field(default_factory=list)
+
+
+class BatchUnconfirmed(BaseModel):
+    reopened: int
+
+
+class UndoReport(BaseModel):
+    restored: list[Any]
+    skipped: list[Any]
+
+
+class Link(BaseModel):
+    label: str
+    url: str
+
+
+class Origin(BaseModel):
+    """Where an action, a question or a decision came from, for its "Where it came from" link. `link`: the original
+    page (`url`, shown with its real domain). `source`: the saved text of the input (`source`, read from
+    GET /api/sources/{id}). `change`: the change that made the item (`changeset`) and the request behind it
+    (`request`), shown in What changed. An item with none of these has no origin (null)."""
+
+    kind: Literal["link", "source", "change"]
+    url: str | None = Field(None, description="The page's address, for a link.")
+    source: str | None = Field(None, description="The input's id, for a link or a source.")
+    changeset: str | None = Field(None, description="The change that made the item, for a change.")
+    request: str | None = Field(None, description="The request behind that change, for a change.")
+    watch: str | None = Field(
+        None,
+        description="The id of the watched source that handed the input in, when one did. A to-do or question with "
+        'it can be set aside with "Not mine to track" (POST /api/not-mine/{kind}/{id}).',
+    )
+
+
+class SourceLimitPerson(BaseModel):
+    id: str | None = Field(None, description="The person's id; none for an address no known person holds.")
+    name: str = Field(description="The person's name, or the address as kept.")
+
+
+class SourceLimit(BaseModel):
+    """Who a source's sender limited it to (design 6.35), with the sentence that says so."""
+
+    people: list[SourceLimitPerson]
+    marking: str | None = Field(None, description="The phrase in the message that limits it.")
+    why: str | None = Field(None, description="The sentence of the message that holds the marking.")
+    group: str | None = Field(None, description="The group the message names, when the limit was narrowed to it.")
+    widened_by: str | None = Field(None, description="The name of the person who widened the limit, when they did.")
+
+
+class SourceWiden(BaseModel):
+    """The person widening a source's limit: the people to add, or the whole limit removed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    people: list[str] = Field(default_factory=list, description="The ids of the people to add.")
+    open: bool = Field(False, description="True removes the limit.")
+
+    @model_validator(mode="after")
+    def _one_way(self) -> SourceWiden:
+        if self.open == bool(self.people):
+            raise ValueError("name the people to add, or remove the limit")
+        return self
+
+
+class SourceView(BaseModel):
+    id: str
+    title: str
+    kind: str
+    trust: Literal["trusted", "untrusted"]
+    received_at: str
+    url: str | None
+    text: str
+    limit: SourceLimit | None = Field(None, description="Who its sender limited it to; none when it has no limit.")
+
+
+class BlockerView(BaseModel):
+    """What a hold is blocked on, for a row to say: a person, an action or a question."""
+
+    kind: Literal["person", "action", "question"]
+    id: str
+    name: str = Field(description="A person's name, an action's text or a question's title.")
+    state: Literal["waiting", "answered", "done"] = Field(
+        "waiting",
+        description="waiting: still waited on. answered: the question was answered. done: the action is finished or "
+        "dropped, or the question was dropped.",
+    )
+    who: str | None = Field(None, description="For a question, the person who was asked.")
+    sent: date | None = Field(None, description="For a question, the day it was sent.")
+    answered: date | None = Field(None, description="For a question that was answered, the day it was.")
+
+
+class FollowupQuestion(BaseModel):
+    id: str
+    title: str
+    text: str
+    links: list[Link]
+    kind: str
+    status: Literal["open", "sent"]
+    project_name: str | None = Field(None, description="The projects it is about, by name, joined with commas.")
+    side_name: str | None = Field(
+        None,
+        description="The side it is filed on directly, when it is in a side and in no project of it; its project "
+        "name is then empty.",
+    )
+    sent: str | None = Field(description="The day it was first sent; chases never change it.")
+    followed_up: str | None = Field(None, description="The day the person was last chased about it (a date).")
+    chases: int = Field(0, description="How many times the person was chased about it after it was sent.")
+    waiting_days: int | None = Field(
+        description="Days since the last word to the person: the message, or the latest chase."
+    )
+    chase_due: bool = Field(
+        False, description="Whether it has gone unanswered as long as the follow-up rule says, so chasing is next."
+    )
+    held_until: str | None = Field(
+        None, description="For a question in Later: the day it comes back to To send (a date)."
+    )
+    held_for_name: str | None = Field(
+        None, description="For a question held for a meeting: the meeting's name; none for a question held for a day."
+    )
+    ready_since: str | None = Field(
+        None,
+        description="For an open question: the day it became ready to send (a date), or the day its hold ended when "
+        "that is later.",
+    )
+    about: str | None
+    options: list[Option]
+    origin: Origin | None = Field(None, description="Where the question came from, for its link.")
+    from_outside: bool | None = Field(
+        None,
+        description="Whether it was made from an input that was not the person's own words, so a link it holds says "
+        "where it came from before it is opened.",
+    )
+    side: str | None = Field(
+        None,
+        description="Which side the question is on, from its project: the id of that side's top project (the "
+        "personal project's or another side's), or none for neither (the screen's side filter shows such rows under "
+        "every choice).",
+    )
+    views: list[str] = Field(
+        default_factory=list,
+        description="The ids of the views its project is in (design 6.32); empty when its project is in none. A view "
+        "only changes what a screen shows.",
+    )
+
+
+class FollowupAction(BaseModel):
+    id: str
+    version: int | None = Field(None, description="Its version as read; sent back when its owners change.")
+    owners: list[OwnerNameView] | None = Field(None, description="Its owners, for Reassign.")
+    text: str
+    due: str | None
+    due_check: bool | None = Field(
+        None,
+        description="Its date is one the rules couldn't read for certain: shown to be checked, never a deadline, so "
+        "never overdue or chased by it.",
+    )
+    project_name: str
+    side_name: str | None = Field(
+        None,
+        description="The side it is filed on directly, when it is in a side and in no project of it; its project "
+        "name is then empty.",
+    )
+    parent_name: str | None = Field(None, description="The name of the project its project is part of, if any.")
+    notes: str | None = Field(None, description="Its notes, which the screen shows on hover and on a phone.")
+    links: list[Link] = Field(
+        default_factory=list, description="Pages that belong to the action's project, for the copied table."
+    )
+    told: str | None
+    to_send: bool = Field(
+        True,
+        description="Whether it is ready to send to this owner: never told (or changed since), and not a promise they "
+        "made themselves, which they already know and which is only waited on.",
+    )
+    told_days: int | None
+    told_names: list[str] = Field(
+        default_factory=list,
+        description="The people it reached (told or chased), as shown: who dropping it tells. Empty when nobody.",
+    )
+    ready_since: str | None = Field(
+        None,
+        description="For an action not yet told to this owner: the day it became ready to send them (a date): when "
+        "it was made, when they became an owner, or when it changed after they were told.",
+    )
+    followed_up: str | None = Field(None, description="The day the person was last chased about it (a date).")
+    chases: int = Field(0, description="How many times the person was chased about it.")
+    on_hold: str | None = Field(
+        None, description="What the action waits for while it is on hold; an action on hold is never chased."
+    )
+    blocker: BlockerView | None = Field(
+        None, description="What its hold is blocked on, when the hold names a blocker (a person, action or question)."
+    )
+    chase_due: bool = Field(
+        False,
+        description="Whether the follow-up rule says chasing is the next step: its due date is near or past, "
+        "or it has waited long enough with no word, and it is not on hold.",
+    )
+    due_soon: bool | None = Field(
+        None,
+        description="Whether its date is a deadline that is past, today or within `ui.followups.soon_days`, and it "
+        "is not on hold: the screen lists it in the due soon band of its person's group, whichever tab is open. "
+        "Always false when that setting is zero.",
+    )
+    origin: Origin | None = Field(None, description="Where the action came from, for its link.")
+    side: str | None = Field(
+        None,
+        description="Which side the action is on, from its project: the id of that side's top project (the "
+        "personal project's or another side's), or none for neither (the screen's side filter shows such rows under "
+        "every choice).",
+    )
+    views: list[str] = Field(
+        default_factory=list,
+        description="The ids of the views its project is in (design 6.32); empty when its project is in none. A view "
+        "only changes what a screen shows.",
+    )
+
+
+class LeftOutView(BaseModel):
+    """Something that went in the same first message as what a nudge lists and was answered or done since: the nudge
+    leaves it out, and the screen says so above the box ("answered Oct 12, left out")."""
+
+    kind: Literal["action", "question"]
+    id: str
+    text: str
+    on: str = Field(description="The day it was answered (a question) or done (an action), as an ISO date.")
+
+
+class LimitedOutView(BaseModel):
+    """Something a message to this person leaves out because the message it rests on limits who may see it, and the
+    person is outside that group; the screen says so beside the message (design 6.35)."""
+
+    kind: Literal["action", "question"]
+    id: str
+    text: str
+    limited_to: str = Field(description="The names of the people it is limited to.")
+
+
+class NudgeView(BaseModel):
+    """A drafted follow-up message for one person (built from a template, no AI run): what has gone unanswered as long
+    as the follow-up rule says. `round` is which follow-up it is: 1, or 2 and up once the person was chased before, when
+    it lists less and asks who else to ask. The ids are what it lists, and what Mark sent records a chase on."""
+
+    text: str
+    round: int
+    question_ids: list[str]
+    action_ids: list[str]
+    left_out: list[LeftOutView] = Field(
+        default_factory=list, description="What the message leaves out because it was settled since it went out."
+    )
+    withheld: str | None = Field(
+        None,
+        description="Why the message is not offered to copy: it still names the assistant. `text` is empty then.",
+    )
+
+
+class FollowupSection(BaseModel):
+    person: str
+    name: str
+    is_pm: bool
+    questions: list[FollowupQuestion]
+    later: list[FollowupQuestion] = Field(
+        default_factory=list,
+        description="Unsent questions held for a meeting or a day, out of To send until it comes.",
+    )
+    actions: list[FollowupAction]
+    message: str
+    withheld: str | None = Field(
+        None,
+        description="Why the message is not offered to copy: it still names the assistant, which what goes to "
+        "someone else never does. `message` is empty then.",
+    )
+    limited_out: list[LimitedOutView] = Field(
+        default_factory=list,
+        description="What no message to this person carries, because its source is limited to a group that leaves "
+        "them out.",
+    )
+    to_send: int
+    ready_since: str | None = Field(
+        None,
+        description="The day the oldest of what is to send became ready to send (a date), so a stale batch shows; "
+        "none when nothing is to send.",
+    )
+    nudge: NudgeView | None = Field(None, description="The follow-up message to draft, when anything is due one.")
+    send_from: list[str] = Field(
+        default_factory=list,
+        description="The mailboxes (addresses) the message could go out from: those of the mail sources the assistant "
+        "reads, each once. The message is copied and sent from the person's mail program, so this only says which "
+        "mailbox to use.",
+    )
+    send_from_default: str | None = Field(
+        None,
+        description="The one of `send_from` to start on: the mailbox the person's own conversation with them came "
+        "through (the latest mail from them was read there), else the first. None when no mail source is read.",
+    )
+
+
+class SentCounts(BaseModel):
+    questions: int
+    actions: int
+    question_ids: list[str]
+    action_ids: list[str]
+
+
+class Unmark(BaseModel):
+    question_ids: list[str] = []
+    action_ids: list[str] = []
+
+
+class PersonView(BaseModel):
+    id: str
+    name: str
+    first_name: str | None = Field(None, description="The name a greeting to them uses; empty means the first word.")
+    role: str | None
+    org: str | None = Field(None, description="The id of the organization they work for.")
+    org_name: str | None = Field(None, description="That organization's name, for showing.")
+    aliases: list[str] = []
+    status: Literal["active", "left"] = "active"
+    is_pm: bool = False
+    track_only: bool = False
+    open_items: int = Field(0, description="Open actions and questions with them.")
+    last_contact: str | None = Field(None, description="When something was last sent or told to them (a date).")
+    how_to_reach: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="How to reach them: a kind of contact detail mapped to every address, number or handle they have "
+        "of it, the first being the one used when a single one is needed.",
+    )
+    relation: str | None = Field(None, description="How they relate to the person, in plain words ('my sister').")
+    side: Literal["personal", "business", "both"] | None = Field(
+        None,
+        description="Which side of the person's life they belong to, worked out from `sides` (only Personal: "
+        "personal; some other side and not Personal: business; both kinds: both); empty when not known.",
+    )
+    sides: list[str] = Field(
+        default_factory=list,
+        description="The ids of the top-level projects that hold the sides they belong to; empty when not known.",
+    )
+    forgotten_on: str | None = Field(
+        None, description="The day the person was forgotten (a date); their name is then a marker and nothing is held."
+    )
+
+
+class PersonIn(BaseModel):
+    full_name: str = Field(min_length=1)
+    first_name: str | None = Field(
+        None, description="The name a greeting uses; empty means the first word of the name."
+    )
+    role: str | None = None
+    org: str | None = Field(None, description="An organization's id, from GET /api/organizations.")
+    aliases: list[str] = []
+    relation: str | None = Field(None, description="How they relate to the person, in plain words ('my sister').")
+    how_to_reach: dict[str, list[str]] | None = Field(
+        None,
+        description="How to reach them: a kind of contact detail the workspace offers (email, phone) mapped to its "
+        "addresses or numbers (one text is a list of one). A blank value is left out.",
+    )
+
+    @field_validator("how_to_reach", mode="before")
+    @classmethod
+    def _each_kind_a_list(cls, value: Any) -> Any:
+        from engine.contacts import reach_lists
+
+        return reach_lists(value) if isinstance(value, dict) else value
+
+    side: Literal["personal", "business", "both"] | None = Field(
+        None,
+        description="Which side of life they belong to. Refused for business or both when there is more than one "
+        "side besides the personal one: name the side in `sides`.",
+    )
+    sides: list[str] | None = Field(
+        None, description="The ids of the top-level projects that hold the sides they belong to."
+    )
+
+
+class PersonSuggestion(BaseModel):
+    """Someone the person's mail shows often and who isn't on file yet: `name` as the mail gives it, `address`, in how
+    many messages they appear (`count`), and whether those were the person's own sent mail."""
+
+    name: str
+    address: str
+    count: int
+    from_sent: bool
+
+
+class SetupPersonIn(PersonIn):
+    """A person added from the people step: as PersonIn, with the `address` their mail showed, kept as the way to reach
+    them (their email), so a later message from that address is known to be theirs."""
+
+    address: str | None = Field(None, max_length=300, description="Their email address, from the mail it was seen in.")
+
+
+class PeopleSuggestionsView(BaseModel):
+    """The people to suggest in the people step, most mail first, at most `ui.walkthrough.suggested_people`."""
+
+    people: list[PersonSuggestion]
+
+
+class PeoplePasteIn(BaseModel):
+    """A list of people typed or pasted, one per line: a name, or `Name <address>`, each optionally followed by how
+    they relate (`Name, my sister`). They go on the side `side` or `sides` names, as PersonIn's do."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(max_length=20000)
+    side: Literal["personal", "business", "both"] | None = None
+    sides: list[str] | None = None
+
+
+class PeoplePasteDone(BaseModel):
+    added: list[str] = Field(description="The names added, in the order given.")
+    skipped: list[str] = Field(description="The names left out because someone of that name is on file already.")
+    left_out: list[str] = Field(
+        default_factory=list,
+        description="The lines left out because they don't read as a person (numbers, marks, a web address).",
+    )
+
+
+class PeoplePasteEntry(BaseModel):
+    name: str
+    relation: str | None = Field(None, description="How they relate (or their part), when the line said.")
+    address: str | None = None
+    on_file: bool = Field(description="Someone of that name or address is on file already, so nothing is added.")
+
+
+class PeoplePastePreview(BaseModel):
+    """What a pasted list would add, shown before it is added; nothing is changed."""
+
+    people: list[PeoplePasteEntry]
+    left_out: list[str] = Field(description="The lines that don't read as a person, which would be left out.")
+
+
+class PersonPatch(BaseModel):
+    full_name: str | None = Field(None, min_length=1)
+    first_name: str | None = Field(None, description="The name a greeting uses; null clears it.")
+    role: str | None = None
+    org: str | None = Field(None, description="An organization's id; null for none.")
+    aliases: list[str] | None = None
+    status: Literal["active", "left"] | None = None
+    relation: str | None = Field(None, description="How they relate to the person; null clears it.")
+    how_to_reach: dict[str, list[str]] | None = Field(
+        None,
+        description="How to reach them, replacing what is kept: a kind of contact detail the workspace offers (email, "
+        "phone) mapped to its addresses or numbers (one text is a list of one). A blank value is left out; an empty "
+        "map clears them all.",
+    )
+
+    @field_validator("how_to_reach", mode="before")
+    @classmethod
+    def _each_kind_a_list(cls, value: Any) -> Any:
+        from engine.contacts import reach_lists
+
+        return reach_lists(value) if isinstance(value, dict) else value
+
+    side: Literal["personal", "business", "both"] | None = Field(
+        None,
+        description="Which side they belong to. Refused for business or both when there is more than one side "
+        "besides the personal one: name the side in `sides`.",
+    )
+    sides: list[str] | None = Field(
+        None, description="The ids of the top-level projects that hold the sides they belong to."
+    )
+
+
+class OrganizationView(BaseModel):
+    id: str
+    name: str
+    aliases: list[str] = []
+    notes: str | None = None
+    people: int = Field(0, description="How many people on file work for it.")
+    side: str | None = Field(None, description="The id of the business or job it is, when it is one of the sides.")
+    side_kind: Literal["job", "business"] | None = Field(None, description="Whether that side is a job or a business.")
+
+
+class OrganizationIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1)
+    aliases: list[str] = []
+    notes: str | None = None
+
+
+class OrganizationPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(None, min_length=1)
+    aliases: list[str] | None = None
+    notes: str | None = None
+
+
+class ProjectView(BaseModel):
+    id: str
+    name: str
+    aliases: list[str] = Field(
+        default_factory=list, description="Other forms it is called by: another name, a code or a ticket-key prefix."
+    )
+    group: str | None
+    status: str | None
+    phase: str | None
+    priority: str | None = None
+    target: str | None
+    owner: str | None
+    owner_name: str | None
+    summary: str | None
+    parent: str | None = Field(None, description="The project this one belongs to.")
+    language: str = Field("en-US", description="The language work on it is written in, its own or inherited.")
+    language_own: bool = Field(False, description="Whether the language is set on this project rather than inherited.")
+    role: Literal["run", "design", "watch"] = Field(
+        "run", description="The person's part in the project; a project with no role for them is one they run."
+    )
+    content_levels: list[str] = Field(default_factory=list)
+    budget_usd: float | None = None
+    spent_usd: float = Field(0.0, description="What AI work on it and everything in it has cost.")
+    open_actions: int = 0
+    open_questions: int = 0
+    last_change: str | None = Field(None, description="When the project record last changed.")
+    completed: bool = Field(
+        False,
+        description="Its status means finished (done), or is the one the settings name: it is listed under Completed, "
+        "not removed.",
+    )
+    status_tone: Literal["ok", "warn", "danger", "neutral"] | None = Field(
+        None, description="How its status is colored, from the status list; plain when none."
+    )
+    status_meaning: Literal["not_started", "open", "at_risk", "blocked", "done"] | None = Field(
+        None, description="What its status means, from the status list; empty when it has none."
+    )
+    status_rank: int | None = Field(
+        None,
+        description="How urgent its status is by its meaning (0 first): at risk, blocked, open, not started, none, "
+        "done.",
+    )
+    no_end: bool = Field(False, description="The personal project or an area: ongoing, so it has no target day.")
+    side: bool = Field(
+        False,
+        description="Personal or another side: a group that holds projects, never a project itself. A screen lists "
+        "its projects under it, and shows only its name, other names and description.",
+    )
+
+
+class NoteView(BaseModel):
+    id: str
+    text: str
+    project: str | None
+    project_name: str | None
+    side_name: str | None = Field(
+        None,
+        description="The side it is filed on directly, when it is in a side and in no project of it; its project "
+        "name is then empty.",
+    )
+    created_at: str | None = Field(None, description="When the note was filed, from the first record of it.")
+    trust: Literal["trusted", "untrusted"]
+
+
+class UnfiledItem(BaseModel):
+    kind: Literal["note", "action", "question", "fact"]
+    id: str
+    version: int
+    text: str = Field(
+        description="The item in one line: a note's or fact's words, an action's text, a question's title."
+    )
+    created_at: str | None = Field(None, description="When the assistant filed it.")
+    trust: Literal["trusted", "untrusted"] = "trusted"
+
+
+class UnfiledView(BaseModel):
+    """What the assistant filed under no project (design 7.14), newest first. `count` is the length of `items`, so the
+    screen never shows a zero: it shows nothing when there is none."""
+
+    count: int
+    items: list[UnfiledItem]
+
+
+class UnfiledRef(BaseModel):
+    kind: Literal["note", "action", "question", "fact"]
+    id: str
+    read_version: int | None = Field(
+        None,
+        description="The version of the item the person was looking at; the filing is refused if it changed since. "
+        "Left out, the current version is used.",
+    )
+
+
+class UnfiledFile(BaseModel):
+    project: str = Field(description="The project to file them under, from GET /api/projects.")
+    items: list[UnfiledRef] = Field(min_length=1)
+
+
+class FilingItem(BaseModel):
+    kind: Literal["note", "action", "question", "fact"]
+    id: str
+    version: int
+    text: str = Field(description="The item in one line.")
+
+
+class FilingSide(BaseModel):
+    """A side an item could move to."""
+
+    side: str = Field(description="The id of the side's top project.")
+    name: str = Field(description="The side's name.")
+
+
+class FilingQuestion(BaseModel):
+    """The question for a set of sides (design 6.32): the items that wait under Personal (or sit beside another side on
+    the rules' guess, `kept_under`) and could be on any of them.
+    Each item is in one question only; with several `sides` the person picks where they go, and the pick starts on
+    `side`."""
+
+    side: str = Field(description="The id of the side's top project the choice starts on: the first of `sides`.")
+    name: str = Field(description="The name of the side the choice starts on.")
+    sides: list[FilingSide] = Field(description="The sides the items could move to, in the person's order.")
+    items: list[FilingItem]
+    kept_under: FilingSide | None = Field(
+        None,
+        description="For items the rules filed beside this side on a guess (not under Personal): the side they sit on "
+        "now, which Keep leaves them on, and Personal is among `sides`; none for items under Personal.",
+    )
+
+
+class FilingQuestions(BaseModel):
+    """The grouped questions of which side unsure items belong to: each unsure item in one question, with a choice of
+    the sides it could be on, at most once a day for a set of sides."""
+
+    questions: list[FilingQuestion]
+
+
+class FilingMove(BaseModel):
+    side: str = Field(description="The side's top project, from GET /api/filing/questions.")
+    items: list[UnfiledRef] = Field(min_length=1)
+
+
+class FilingMoved(BaseModel):
+    """What a move did: `changeset` is what Undo takes, `count` how many items moved and `rule` the standing rule it
+    proposed (for Keep on Today's learned line), when the same sender's items were moved a second time."""
+
+    changeset: str
+    count: int
+    rule: str | None = None
+
+
+class FilingKept(BaseModel):
+    signal: str
+
+
+class ProjectIn(BaseModel):
+    name: str = Field(min_length=1)
+    aliases: list[str] = Field(default_factory=list, description="Other forms it is called by.")
+    group: str | None = Field(None, description="From the project-group list.")
+    status: str | None = Field(None, description="From the project-status list.")
+    phase: str | None = Field(None, description="From the project-phase list.")
+    priority: str | None = Field(None, description="From the project-priority list.")
+    target: str | None = Field(None, description="A date, YYYY-MM-DD.")
+    owner: str | None = None
+    summary: str | None = None
+    parent: str | None = None
+    language: str | None = Field(None, description="A language tag such as en-US; unset to inherit.")
+    budget_usd: float | None = Field(None, ge=0)
+    content_levels: list[str] = Field(default_factory=list)
+
+
+class ProjectPatch(BaseModel):
+    name: str | None = Field(None, min_length=1)
+    aliases: list[str] | None = Field(None, description="Other forms it is called by; replaces the list.")
+    parent: str | None = None
+    language: str | None = Field(None, description="A language tag such as en-US; null to inherit.")
+    budget_usd: float | None = Field(None, ge=0, description="null for no cap.")
+    content_levels: list[str] | None = Field(
+        None, description="Content levels its material carries, from the AI settings; the person's choice."
+    )
+    group: str | None = None
+    status: str | None = None
+    phase: str | None = None
+    priority: str | None = None
+    target: str | None = None
+    owner: str | None = None
+    summary: str | None = None
+
+
+class ProjectRoleIn(BaseModel):
+    """The person's own part in a project."""
+
+    model_config = ConfigDict(extra="forbid")
+    role: Literal["run", "design", "watch"] = Field(description="run, design or watch.")
+
+
+class SideRemoveIn(BaseModel):
+    """Remove a side after setup: what happens to the projects and to-dos filed under it."""
+
+    model_config = ConfigDict(extra="forbid")
+    where: Literal["personal", "end"] = Field(
+        description="personal: its projects and to-dos move to Personal. end: they end with it."
+    )
+    organization: Literal["keep", "remove"] = Field(
+        "keep",
+        description="What happens to the organization the side made: keep it (the default), or remove it with the "
+        "side, which is refused while other people work for it.",
+    )
+
+
+class Created(BaseModel):
+    id: str
+
+
+class BackupTarget(BaseModel):
+    label: str | None
+    last_success: str | None
+    last_error: ScreenText | None
+
+
+class SessionOpened(BaseModel):
+    session: str = Field(
+        description="A sign-in for this browser, kept in the page's own storage and sent as a bearer header, "
+        "never as a cookie."
+    )
+
+
+class RuntimeConfig(BaseModel):
+    base_path: str
+    api_base: str
+    assistant_name: str
+    assistant_named: bool = Field(
+        True,
+        description="The assistant has a name to show (the default or the person's own); false when blank.",
+    )
+    workspace_name: str
+    version: str
+    pm: str | None
+    narrow_below_px: int
+    toast_seconds: float
+    request_timeout_seconds: int
+    long_request_timeout_seconds: int
+    title_words: int = Field(12, description="The most words a row's title holds before it is cut (ui.title_words).")
+    twin_window_minutes: int = Field(
+        10,
+        description="How close in time the same change read from two accounts must be to show as one row naming both "
+        "(ui.twin_window_minutes); zero shows each on its own.",
+    )
+    rail_rows: int = Field(
+        3, description="The rows each card of Today's side column shows before Show more (ui.today.rail_rows)."
+    )
+    heavy_day_from: int = Field(
+        30, description="From this many things that need the person Today is a heavy day (ui.today.heavy_day_from)."
+    )
+    group_rows: int = Field(
+        5, description="On a heavy day, the lines each group of Today shows before Show more (ui.today.group_rows)."
+    )
+    time_format: Literal["auto", "12h", "24h"] = Field(
+        "auto",
+        description="How times of day are written: by the language, or on the 12 or 24-hour clock (ui.time_format).",
+    )
+    time_step: int = Field(15, description="The minutes between the times a time box lists (ui.time_step).")
+    shortcuts: dict[str, str]
+    wording: dict[str, str]
+    demo: bool = Field(False, description="The workspace holds made-up example data; every screen says so.")
+    instance: str | None = Field(
+        None, description="Changes every time the app starts, so a screen can tell it restarted."
+    )
+    feedback_to: str | None = Field(None, description="Where the feedback button writes its email, if anywhere.")
+    brand_color: str | None = Field(None, description="The accent color as #rrggbb; none uses the app's own.")
+    logo: bool = Field(False, description="The workspace has a logo, served at the API's brand/logo address.")
+    theme: Literal["system", "light", "dark"] = Field("system", description="The workspace's default theme.")
+    density: Literal["comfortable", "compact"] = Field("comfortable", description="The workspace's default density.")
+    timezone: str = Field(
+        "UTC",
+        description="The person's time zone (workspace.user.timezone), an IANA name: the screens write every time of "
+        "day "
+        "on that clock, whatever the computer showing them is set to.",
+    )
+    language: str = Field(
+        "en-US",
+        description="The workspace's language tag (workspace.language): the screens write numbers and amounts of money "
+        "in its number format.",
+    )
+
+
+class PluginStatusView(BaseModel):
+    name: str
+    state: str
+    version: str | None = None
+    reason: ScreenText | None = None
+    tools: dict[str, ScreenText] = Field(default_factory=dict, description="Each declared program and what was found.")
+    notes: list[ScreenText] = Field(default_factory=list, description="What the person should know, though it loaded.")
+
+
+class RecordReference(BaseModel):
+    kind: str
+    id: str
+
+
+class StageLabel(BaseModel):
+    id: str
+    label: str
+
+
+class StageCheckView(BaseModel):
+    id: str
+    passed: bool
+    reason: ScreenText
+
+
+class StageView(BaseModel):
+    record: RecordReference
+    title: str
+    version: int
+    current: str | None
+    current_label: str | None
+    next: StageLabel | None
+    stages: list[StageLabel]
+    checks: list[StageCheckView]
+    ready: bool
+    project: str | None = Field(None, description="The name of the item's first project, when it has one.")
+    side_name: str | None = Field(
+        None, description="The side the item's first project field names, when that is a side and no project."
+    )
+    owners: list[str] = Field(default_factory=list, description="The item's owners, in the workspace's owner format.")
+    due: str | None = Field(None, description="The item's due date, when it has one.")
+
+
+class StageHistoryEntry(BaseModel):
+    sequence: int
+    at: str
+    from_stage: str | None
+    to_stage: str | None
+    version: int
+    actor: str
+    op: str
+    changeset: str | None
+    request: str | None
+    source: dict[str, Any] | None
+
+
+class RecordRefName(BaseModel):
+    kind: str
+    id: str
+    name: str
+    removed: bool = Field(
+        False,
+        description="The record this names has been deleted (a reference that doesn't block deleting keeps the id): "
+        "the screen says it was removed, and `name` is empty.",
+    )
+
+
+class FiledMove(BaseModel):
+    """A side an item can move to: the id of its top project and its name."""
+
+    project: str
+    name: str
+
+
+class FiledView(BaseModel):
+    """Why the assistant filed an item under a project when words or a mail domain did (design 6.32): `by` is the
+    signal (`source`: the watched source it was read from, `word` its label; `domain`: the sender's mail domain;
+    `alias`, `name`: a project's alias or name; `word`: a configured side word) and `word` what matched, under
+    `project_name`; `side_name` is that name again when the project is a side (a group, not a project), so it reads
+    "filed in <side>, not in a project". `move_options` lists every other side it can move to (Personal first), each
+    by its top project and name; `move_to` and `move_to_name` name the one when there is exactly one (a one-click
+    move) and are empty when there are several, which the person picks from. The item moves to a side in one step:
+    POST /api/records/edit with `{field: id}` (a list for `projects`) and `read_version` set to `version`. Absent once
+    the item is anywhere else."""
+
+    by: Literal["source", "domain", "alias", "name", "word"]
+    word: str | None = None
+    project: str
+    project_name: str
+    side_name: str | None = Field(
+        None, description="The same name when the project is a side, a group rather than a project."
+    )
+    move_to: str | None = None
+    move_to_name: str | None = None
+    move_options: list[FiledMove] = Field(default_factory=list)
+    field: Literal["project", "projects"]
+    version: int
+
+
+class RecordDetail(BaseModel):
+    """One field of a record, with any references in it resolved to names."""
+
+    field: str
+    value: Any
+    type: Literal["date", "number", "bool", "enum", "list", "map", "text"]
+    refs: list[RecordRefName] = Field(default_factory=list)
+
+
+class OpenAction(BaseModel):
+    id: str
+    text: str
+    due: str | None = None
+    owners: list[str] = Field(default_factory=list, description="The owners, written in the workspace's owner format.")
+    project: str | None = None
+    project_name: str | None = None
+    side_name: str | None = Field(
+        None, description="The side it is filed on directly, when it is in a side and in no project of it."
+    )
+    origin: Origin | None = Field(None, description="Where the action came from, for its link.")
+    series: str | None = Field(None, description="The series of meetings it is for, when it is on one.")
+    series_title: str | None = None
+    meeting_on: str | None = Field(
+        None, description='The day of the meeting it sits on (YYYY-MM-DD), for "for Thursday\'s print sync".'
+    )
+
+
+class OpenQuestion(BaseModel):
+    id: str
+    title: str
+    to: str | None = None
+    to_name: str | None = None
+    status: str | None = None
+    kind: str | None = None
+    origin: Origin | None = Field(None, description="Where the question came from, for its link.")
+    series: str | None = None
+    series_title: str | None = None
+    meeting_on: str | None = None
+
+
+class CompletedAction(BaseModel):
+    """Finished work: credited to who did it, with who said it was done (a nudge is never completion)."""
+
+    id: str
+    text: str
+    project: str | None = None
+    project_name: str | None = None
+    side_name: str | None = Field(
+        None, description="The side it is filed on directly, when it is in a side and in no project of it."
+    )
+    done_by: list[str] = Field(default_factory=list, description="Names of the people who did the work.")
+    reported_by: str | None = Field(None, description="Name of the person who said it was done.")
+    done_on: str | None = Field(None, description="The day it was closed, YYYY-MM-DD.")
+
+
+class FactLine(BaseModel):
+    """A fact recorded about a record, for the record's page: the statement, the day it held as of, and whether it is
+    one of the facts that matter most."""
+
+    id: str
+    text: str
+    as_of: str | None = Field(None, description="The day it was true as of, YYYY-MM-DD.")
+    key: bool = False
+    said_by: str | None = Field(
+        None, description="Who said it, by name, when it is one person's claim; the line keeps whose word it is."
+    )
+
+
+class FactSource(BaseModel):
+    """Who a fact rests on and where it came from, for the label in its meta line (never part of copied or published
+    text). `basis` is person (the person said it), said (someone else did: `by`, reported by `reported_by` when another
+    person's input carried it) or inferred (the assistant worked it out, so it feeds the record only until the person
+    confirms it); null for a fact recorded before this was kept."""
+
+    basis: Literal["person", "inferred", "said"] | None = None
+    by: str | None = Field(None, description="Name of the person who said it, when someone else did.")
+    reported_by: str | None = Field(None, description="Name of the person whose input carried what was said.")
+    kind: Literal["email", "calendar", "change", "note", "pasted"] | None = Field(
+        None, description="The kind of input it came from, never the input's own title."
+    )
+    sender: str | None = Field(None, description="Name of the person whose input it was, when that is known.")
+    on: str | None = Field(None, description="The day it was confirmed, true as of, or filed, YYYY-MM-DD.")
+    title: str | None = Field(
+        None, description="The input's own short name (a message's subject), for a short label in the facts list."
+    )
+    origin: Origin | None = Field(None, description="Where it came from, for the link that is the label.")
+
+
+class ActivityEntry(BaseModel):
+    """One change to the record, or to something open with it."""
+
+    at: str
+    kind: str
+    id: str
+    name: str
+    op: str
+    field: str | None = None
+    made: Literal["added", "setup"] | None = Field(
+        None,
+        description="Set when the entry is the record being made, with every value written in that change folded in "
+        "(then there is no field): added by the person, or by the workspace's own setup.",
+    )
+    actor: str
+    by_assistant: bool
+    moved_again: int | None = Field(
+        None,
+        description="For a second or later move of the same date within the configured days: how many times the date "
+        "has moved in that run (2 for the second). A first move isn't an entry at all.",
+    )
+    moved_since: str | None = Field(None, description="For a move that moved again: the day the run of moves began.")
+
+
+class SeriesMeeting(BaseModel):
+    """One meeting of a series: its calendar entry, when it starts (as written) and its day in the person's zone."""
+
+    id: str
+    title: str
+    start: str
+    on: str | None = Field(None, description="The day it falls on, YYYY-MM-DD.")
+
+
+class SeriesItem(BaseModel):
+    kind: Literal["action", "question"]
+    id: str
+    text: str = Field(description="An action's words or a question's title.")
+    status: str | None = None
+    due: str | None = None
+    rolled_from: SeriesMeeting | None = Field(
+        None, description="The meeting the item sat on before it moved to this one, when it moved."
+    )
+
+
+class SeriesMovedItem(BaseModel):
+    kind: Literal["action", "question"]
+    id: str
+    text: str
+    status: str | None = None
+    to: SeriesMeeting | None = Field(None, description="The meeting it moved to.")
+
+
+class SeriesPersonGroup(BaseModel):
+    person: str | None = Field(None, description="The person the items are with; null when it is not known.")
+    name: str | None = None
+    is_pm: bool = Field(description='The person themselves, listed last and shown as "You".')
+    items: list[SeriesItem]
+
+
+class SeriesNext(SeriesMeeting):
+    open: int = Field(description="How many open items sit on it.")
+    groups: list[SeriesPersonGroup]
+
+
+class SeriesPast(SeriesMeeting):
+    settled: list[SeriesMovedItem]
+    moved: list[SeriesMovedItem]
+
+
+class SeriesRegular(BaseModel):
+    """Someone who is on most of a series' meetings (design 7.14, answer 30)."""
+
+    person: str
+    name: str
+    meetings: int = Field(description="How many of the meetings with a known guest list they are on.")
+    of: int = Field(description="How many of the series' meetings have a known guest list.")
+
+
+class SeriesPageView(BaseModel):
+    """A series' page (design 7.14): the next meeting's open items by person, then the meetings that passed."""
+
+    id: str
+    title: str
+    repeats: str | None = Field(None, description="How often it repeats, in the person's own words.")
+    project: str | None = None
+    project_name: str | None = None
+    usually_with: list[SeriesRegular] = Field(
+        default_factory=list,
+        description="The people who are on most of its meetings, from the guest lists the calendar gave, resolved to "
+        "people the workspace knows; empty when too few meetings have a guest list.",
+    )
+    next: SeriesNext | None = Field(None, description="The next meeting; null when none is scheduled.")
+    past: list[SeriesPast] = Field(description="Meetings that passed, newest first.")
+    open_without_next: int = Field(0, description="Open items waiting when no later meeting exists.")
+    agenda: list[AgendaLine] = Field(
+        default_factory=list,
+        description="What is to be taken up at its meetings: the series' own agenda items, then those of its next "
+        "meeting.",
+    )
+
+
+class KnowsInput(BaseModel):
+    id: str
+    title: str = Field(description="The input's short name.")
+    received_at: datetime
+
+
+class KnowsSource(BaseModel):
+    """One place a project's inputs come from, with how many it gave and the latest. A watched source has its own
+    `label`; any other input is grouped by the `kind` of way it arrived."""
+
+    key: str
+    label: str | None = Field(None, description="A watched source's name as set up.")
+    kind: str | None = Field(
+        None, description="How the input arrived (pasted, email and so on), for inputs not watched."
+    )
+    inputs: int = Field(description="How many inputs it gave about the project.")
+    last: KnowsInput
+
+
+class KnowsFact(BaseModel):
+    id: str
+    version: int
+    text: str = Field(description="The fact as a statement, without its source.")
+    key: bool = Field(description="One of the facts that matter most.")
+    source: FactSource
+
+
+class KnowsTerm(BaseModel):
+    id: str
+    term: str
+    meaning: str
+    confidence: Literal["confirmed", "assumed", "unknown"]
+
+
+class KnowsRouting(BaseModel):
+    id: str
+    topic: str
+    who: str = Field(description="The person's or team's name.")
+    negative: bool = Field(description="True when they don't answer it.")
+    look_up: str | None = Field(None, description="Where to look it up instead, in plain words.")
+
+
+class KnowsQuestion(BaseModel):
+    id: str
+    title: str
+    to: str
+    to_name: str
+    status: Literal["open", "sent"]
+    asked_on: str = Field("", description="The day it was asked, as YYYY-MM-DD.")
+
+
+class KnowsUnknown(BaseModel):
+    """Something about the project nobody has said: one of its own blank fields (`field`) or a term with no meaning
+    yet (`term`, and the `entry` that holds it), with the question already asked for it when there is one."""
+
+    kind: Literal["field", "term"]
+    field: Literal["status", "phase", "target", "owner", "summary"] | None = None
+    term: str | None = None
+    entry: str | None = None
+    question: KnowsQuestion | None = Field(None, description="The open question that asks about it, if one does.")
+
+
+class AreaKeep(BaseModel):
+    word: str = Field(min_length=1, description="The word the offered area is for (the line's `subject`).")
+    name: str | None = Field(
+        None, description="The name the person chose for the area; the offered name (the line's `text`) when empty."
+    )
+
+
+class AreaKept(BaseModel):
+    """What keeping an offered area did: the area it started, and the two changes (filing, then starting) that Undo
+    takes back in that order."""
+
+    project: str
+    filed: str
+    started: str
+
+
+class ProjectReader(BaseModel):
+    account: str = Field(description="The account's short name.")
+    name: str = Field(description="The name the person gave the account, as it is shown.")
+    leaves: bool = Field(description="Whether reading the material sends it away from this computer to reach it.")
+
+
+class ReaderChoice(BaseModel):
+    """An account the picker on an area's page offers: whether it may read the area now, whether reading sends the
+    material away from this computer, and `locked` when it can't be ticked (`parent`: a level the project above carries
+    keeps it out)."""
+
+    account: str = Field(description="The account's short name.")
+    name: str = Field(description="The name the person gave the account, as it is shown.")
+    reads: bool = Field(description="Whether it may read the area's material now.")
+    leaves: bool = Field(description="Whether reading sends the material away from this computer to reach it.")
+    locked: Literal["parent"] | None = Field(None, description="Why it can't be ticked, when it can't.")
+
+
+class AreaReadersIn(BaseModel):
+    """POST /api/projects/{id}/readers: the accounts that may read the area, as the person ticked them."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    accounts: list[str] = Field(description="The short names of the accounts that may read it; the rest may not.")
+
+
+class ProjectReading(BaseModel):
+    """Who may read a project's material (design 6.32): `state` is none (no account may), local (each that may runs
+    on this computer) or away (at least one sends what it reads away from this computer). `levels` are the content
+    levels the material carries, its own and those of the projects above it."""
+
+    state: Literal["none", "local", "away"]
+    levels: list[str]
+    readers: list[ProjectReader]
+    choices: list[ReaderChoice] = Field(
+        default_factory=list,
+        description="For an area: every account that could read it, ticked when it may, for the picker on its page. "
+        "Empty for a project that isn't an area.",
+    )
+
+
+class ProjectKnowsView(BaseModel):
+    """What the assistant knows about one project (design 7.18), for its page."""
+
+    id: str
+    name: str
+    sources: list[KnowsSource] = Field(description="Where its inputs come from, the latest first.")
+    facts: list[KnowsFact] = Field(description="Its facts that nothing replaces, key ones first, then newest.")
+    terms: list[KnowsTerm] = Field(description="The glossary terms used there.")
+    routing: list[KnowsRouting] = Field(description="Who answers what, for work on it.")
+    unknown: list[KnowsUnknown] = Field(description="What is still unknown.")
+    area: bool = Field(False, description="Whether the project is an area of life, which has no end day.")
+    reading: ProjectReading = Field(description="Which accounts read the project's material and where it goes.")
+
+
+class RepeatShapeView(BaseModel):
+    """A repeat as data the screen says back from its wording sheet (`engine/repeat_phrases.py`): `kind` says which of
+    the others are set. daily: interval. weekdays: none. weekly: interval and weekday. weekly_days: interval and
+    weekdays. monthly_day: interval and day. monthly_days: interval and days. monthly_last_day: interval. monthly_nth:
+    ordinal and weekday. monthly_nths: ordinals and weekday. monthly_weekday: position (first or last). yearly: month
+    and day. yearly_nth: month, ordinal and weekday. Weekdays, months and ordinals are English words used as keys."""
+
+    kind: Literal[
+        "daily",
+        "weekdays",
+        "weekly",
+        "weekly_days",
+        "monthly_day",
+        "monthly_days",
+        "monthly_last_day",
+        "monthly_nth",
+        "monthly_nths",
+        "monthly_weekday",
+        "yearly",
+        "yearly_nth",
+    ]
+    interval: int | None = None
+    weekday: str | None = None
+    weekdays: list[str] = Field(default_factory=list)
+    day: int | None = None
+    days: list[int] = Field(default_factory=list)
+    ordinal: str | None = None
+    ordinals: list[str] = Field(default_factory=list)
+    position: Literal["first", "last"] | None = None
+    month: str | None = None
+
+
+class RepeatView(BaseModel):
+    """How a to-do repeats: the words as typed, and what they were read as."""
+
+    phrase: str = Field(description="The words the person typed.")
+    rule: str = Field(description="The standard repeat rule the words were read as.")
+    start: date = Field(description="The day of the first occurrence.")
+    shape: RepeatShapeView
+
+
+class EarlierOccurrence(BaseModel):
+    """An occurrence of a repeating to-do that has ended: its day and how it ended."""
+
+    id: str
+    due: date | None = None
+    how: Literal["done", "dropped"]
+
+
+class RepeatCheckIn(BaseModel):
+    phrase: str = Field(description="The words typed for the repeat.")
+    start: date | None = Field(None, description="The to-do's day; left out, the repeat is read from today.")
+
+
+class RepeatCheckView(BaseModel):
+    """What words typed for a repeat say (POST /api/repeats/check). `ok`: the repeat starts on `start` with `shape`
+    and `rule`. `off_start`: the words are clear but the day given isn't one of theirs; `start` is the first that is.
+    `unclear`: nothing is read, and nothing repeats."""
+
+    status: Literal["ok", "off_start", "unclear"]
+    rule: str | None = None
+    shape: RepeatShapeView | None = None
+    start: date | None = None
+
+
+class RepeatSetIn(BaseModel):
+    phrase: str = Field(min_length=1, max_length=120, description="The words typed for the repeat.")
+    start: date | None = Field(
+        None, description="The first day; the to-do's own day, or, when it has none, the first day the words fall on."
+    )
+
+
+class TodoDayCheckIn(BaseModel):
+    words: str = Field(description="The words typed for a to-do's day, such as 'next Friday'.")
+
+
+class TodoDayView(BaseModel):
+    """What words typed for a to-do's day say (POST /api/todos/day). `ok`: `day` is the day. `unclear`: the rules
+    decline the words and nothing is guessed. `none`: no words, so the to-do has no day."""
+
+    status: Literal["ok", "unclear", "none"]
+    day: date | None = None
+
+
+class TodoAddIn(BaseModel):
+    text: str = Field(min_length=1, max_length=300, description="What to do, in the person's words.")
+    when: str | None = Field(
+        None, max_length=120, description="The day in plain words; left out, the to-do has no day."
+    )
+    owners: list[str] = Field(description="The people who do it, by person id.")
+    project: str | None = Field(None, description="The project it belongs to, by id.")
+    repeat: str | None = Field(
+        None, max_length=120, description="How it repeats, in plain words; left out, it doesn't."
+    )
+    effort_minutes: int | None = Field(
+        None, ge=1, le=1440, description="About how long it takes, in minutes; left out, it says none."
+    )
+
+
+class TodoAdded(BaseModel):
+    """The to-do added by hand: its `action` and the `changesets` made (the to-do, then its repeat when it has one).
+    Undo takes them back from the last to the first."""
+
+    action: str
+    changesets: list[str]
+
+
+class TieDone(BaseModel):
+    """A calendar entry tied to a to-do (POST /api/actions/{id}/tie): `changeset` is what Undo (POST
+    /api/changesets/{id}/undo) takes back."""
+
+    changeset: str
+
+
+class AttentionChosen(BaseModel):
+    """The person's answer to the question about a kind of suggestion (POST /api/attention/{kind}/quiet, /stop or
+    /show): `state` is what is kept now, `quiet` for the morning brief, `stopped` for not offered, `shown` for neither.
+    Undo is POST /api/attention/{kind}/show."""
+
+    kind: str
+    state: Literal["quiet", "stopped", "shown"]
+
+
+class GuestsDone(BaseModel):
+    """The people proposed for a calendar entry, recorded as on it (POST /api/events/{id}/guests/confirm): `changeset`
+    is what Undo (POST /api/changesets/{id}/undo) takes back."""
+
+    changeset: str
+
+
+class TieProposal(BaseModel):
+    """The calendar entry proposed for a to-do, on its page: the `entry` and its `title`, and the `day` it is on. The
+    answer is POST /api/actions/{id}/tie or POST /api/actions/{id}/not-this."""
+
+    entry: str
+    title: str
+    day: date
+
+
+class RecordPageView(BaseModel):
+    """A record's page (design 7.14): its name, details in declared order with names resolved, what is open with
+    it, and its activity, newest first."""
+
+    kind: str
+    id: str
+    version: int
+    name: str
+    details: list[RecordDetail]
+    open_actions: list[OpenAction]
+    open_questions: list[OpenQuestion]
+    completed_actions: list[CompletedAction] = Field(
+        default_factory=list,
+        description="Finished actions credited to this person (who did the work) or in this project, newest first.",
+    )
+    facts: list[FactLine] = Field(
+        default_factory=list,
+        description="The facts recorded about this record (a to-do, a question, a person, an organization, a pack's "
+        "record), key facts first, then the newest.",
+    )
+    fact_source: FactSource | None = Field(None, description="For a fact: who it rests on and where it came from.")
+    filed: FiledView | None = Field(
+        None, description="For an item the assistant filed by words or the sender's domain: why, and where it can move."
+    )
+    agenda: list[AgendaLine] = Field(
+        default_factory=list,
+        description="For a calendar entry: what is to be taken up at it, its own items and, when it is the next "
+        "meeting of a series, the series' after them.",
+    )
+    tie: TieProposal | None = Field(
+        None,
+        description="For a to-do with a calendar entry proposed for it: the entry, to tie it to (POST "
+        "/api/actions/{id}/tie) or not (POST /api/actions/{id}/not-this).",
+    )
+    repeat: RepeatView | None = Field(None, description="For a to-do that repeats: how, said back from data.")
+    earlier_occurrences: list[EarlierOccurrence] = Field(
+        default_factory=list,
+        description="For a to-do that repeats: the occurrences that ended, oldest first, with how each ended.",
+    )
+    activity: list[ActivityEntry]
+
+
+class RecordView(BaseModel):
+    kind: str
+    id: str
+    version: int
+    data: dict[str, Any]
+    stages: StageView
+    stage_history: list[StageHistoryEntry]
+
+
+class StageMove(BaseModel):
+    record: RecordReference
+    to: str = Field(min_length=1)
+    read_version: int = Field(ge=1)
+
+
+class StageMoved(BaseModel):
+    changeset: str
+    stages: StageView
+
+
+class ReadVersion(BaseModel):
+    read_version: int = Field(ge=1)
+
+
+class TreatAsIn(ReadVersion):
+    """Treat a message as work, optionally as one of the person's sides."""
+
+    side: str | None = Field(
+        None,
+        description="The id of the side (a top-level project) to file it under; left out, the message is filed where "
+        "its people and words place it.",
+    )
+
+
+class StageTaskOrigin(BaseModel):
+    kind: str
+    record: str
+    stage: str
+    changeset: str
+
+
+class StageRequestView(BaseModel):
+    id: str
+    version: int
+    task: str
+    state: str
+    approval: Literal["required", "granted"]
+    waiting: ScreenText | None
+    stage_start: StageTaskOrigin
+    estimate_usd: float | None = Field(None, description="What the run was estimated to cost, once it has an estimate.")
+
+
+class FileView(BaseModel):
+    """A file a person added or a program wrote; its content is fetched separately."""
+
+    id: str
+    version: int
+    name: str
+    media_type: str
+    size: int
+    file_kind: str
+    kind_label: str = Field(description="What to call the file kind on screen.")
+    project: str | None
+    meta: dict[str, Any]
+    origin: Literal["upload", "tool"]
+    replaces: str | None
+    from_person: str | None = Field(
+        None, description="The id of the person it came from; none when no one in particular."
+    )
+    added_at: str
+    data_level: Literal["open", "internal", "restricted"] = Field(
+        "internal", description="How sensitive its content is: it goes only to AI accounts allowed this level."
+    )
+    description: str | None = Field(
+        None,
+        description="What the person said about it when they added it or later, empty when nothing; none when its kind "
+        "of file keeps no description.",
+    )
+
+
+class FileEdit(BaseModel):
+    """POST /api/files/{id}/edit: a new name, a new description, or both, resting on the version the person read."""
+
+    read_version: int = Field(ge=1, description="The version of the file that was read; the change waits on it.")
+    name: str | None = Field(None, description="The new name; left out to keep the name.")
+    description: str | None = Field(None, description="The new description; left out to keep it.")
+
+
+class FileRemove(BaseModel):
+    """POST /api/files/{id}/remove: take a file away, resting on the version the person read."""
+
+    read_version: int = Field(ge=1, description="The version of the file that was read; the removal waits on it.")
+
+
+class FileForget(BaseModel):
+    """POST /api/files/{id}/forget: remove a file and forget its stored copy, resting on the version the person read."""
+
+    read_version: int = Field(ge=1, description="The version of the file that was read; the forget waits on it.")
+
+
+class PersonForget(BaseModel):
+    """POST /api/records/person/{id}/forget: forget a person, resting on the version the person read."""
+
+    read_version: int = Field(
+        ge=1, description="The version of the person's record that was read; the forget waits on it."
+    )
+
+
+class PersonForgotten(BaseModel):
+    """What forgetting a person came to: the `changeset` (it has no Undo), or none and `refused` saying in a kind why
+    it was not done: `changed` (the record changed since it was read), `forgotten` (they were forgotten already),
+    `you` (the person this workspace is for can't be forgotten) or `history` (the workspace's export history is
+    copied elsewhere and can't be rebuilt from here; `reason` says why). The screen words the kind."""
+
+    changeset: str | None = None
+    refused: Literal["changed", "forgotten", "you", "history"] | None = None
+    reason: str | None = None
+
+
+class FileChanged(BaseModel):
+    """What changing or removing a file came to: the `changeset` (Undo is POST /api/changesets/{changeset}/undo; a
+    forgotten file's changeset has none, the screen offers no Undo for it), or
+    none and `refused` saying in a kind why it was not done: `changed` (the file changed since it was read) or
+    `referred_to` (a newer version, a working copy or an add-on's record still needs it). The screen words the kind."""
+
+    changeset: str | None = None
+    refused: Literal["changed", "referred_to"] | None = None
+
+
+class FileUse(BaseModel):
+    """One record that refers to a file: a newer version of it, a working copy made from it, or an add-on's record."""
+
+    kind: str = Field(description="The record's kind, for its page.")
+    id: str
+    kind_label: str = Field(description="What to call the kind of record on screen.")
+    label: str = Field(description="The record's own name, title or text, else its id.")
+
+
+class FileUsedBy(BaseModel):
+    """What refers to a file, so the person sees what removing or replacing it would touch."""
+
+    items: list[FileUse]
+
+
+class RetryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    use: str | None = Field(None, description='Another account to try, as "provider/model" from the AI settings.')
+
+
+class AccountChoice(BaseModel):
+    """An AI account the person may send this request to; named as in their settings, never by model."""
+
+    use: str
+    label: str
+
+
+class TextVersionView(BaseModel):
+    id: str
+    number: int
+    version: int = Field(description="The record version, to state when reviewing it.")
+    status: str
+    source: str
+    words: int
+    base: int | None
+    note: str | None
+    unmapped: list[str] = Field(
+        default_factory=list, description="Taken back from a working copy: what couldn't be read back, to show."
+    )
+    questions: list[str] = Field(default_factory=list, description="A draft's questions for the person, to show.")
+    created_at: str
+
+
+class AuthorSpan(BaseModel):
+    start: int
+    end: int
+    kind: str = Field(description="person, assistant (drafted) or assistant_edit (the person's text changed).")
+    words: int = 0
+
+
+class TextFieldView(BaseModel):
+    """A long text field: its current text, who wrote what, and every version."""
+
+    text: str
+    current: int | None
+    authorship: list[AuthorSpan]
+    versions: list[TextVersionView]
+
+
+class TextRegion(BaseModel):
+    id: str = Field(description="The change's id for the choices; empty for the current text's own changes (kept).")
+    side: str = Field(description="pending, current (kept as is) or both (a conflict).")
+    base: str
+    current: str
+    pending: str
+
+
+class TextReview(BaseModel):
+    """What reviewing a pending version needs."""
+
+    version: TextVersionView
+    current: int | None
+    three_way: bool = Field(description="The text moved on since the version's base; changes are against both.")
+    regions: list[TextRegion]
+    pending_text: str
+
+
+class TextChoices(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    read_version: int = Field(ge=1)
+    choices: dict[str, Literal["accept", "reject"]] = Field(default_factory=dict)
+
+
+class TextEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: str
+    id: str
+    field: str
+    text: str
+
+
+class Applied(BaseModel):
+    changeset: str
+
+
+class DropDone(BaseModel):
+    """A to-do dropped (POST /api/actions/{id}/drop) or answered as no longer needed: `changeset` is the drop. When it
+    had reached people, `drafts` are the changes that drafted a note to each of them and `acts` the notes, each
+    waiting in Waiting to go out for the person's yes on its exact content; Undo takes the drafts and the drop back
+    together. Both are empty when nobody had been told."""
+
+    changeset: str
+    drafts: list[str]
+    acts: list[str]
+
+
+class EntryTodoMade(BaseModel):
+    """The to-do made from a calendar entry: its `action` and the `changeset` Undo takes."""
+
+    action: str
+    changeset: str
+
+
+class ReminderIn(BaseModel):
+    """The person's own change to an action's reminder: a snooze choice, or a time they picked (one without a zone is
+    on their own clock). Neither clears the reminder."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    choice: Literal["in 1 hour", "later today", "this evening", "tomorrow morning", "next week"] | None = Field(
+        None, description="A snooze choice, moved to the time it resolves to now."
+    )
+    at: datetime | None = Field(None, description="The time the person picked, which must still be ahead.")
+    read_version: int | None = Field(
+        None, ge=1, description="The action's version the person saw; the latest if unset."
+    )
+
+
+class WorkingCopyFormatView(BaseModel):
+    name: str
+    label: str
+    extension: str
+
+
+class WorkingCopyOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    format: str
+    kind: str
+    id: str
+    field: str
+
+
+class WorkingCopyView(BaseModel):
+    """A long text field handed out as a file, and what came back."""
+
+    id: str
+    format: str
+    label: str
+    field: str
+    base: int | None
+    status: str
+    stale: bool = Field(description="The text moved on since it was handed out; taking it back merges three ways.")
+    file: str = Field(description="The file handed out; download it from /files/<id>/content.")
+    proposal: str | None
+    handed_at: str
+    returned_at: str | None
+
+
+class TakenBack(BaseModel):
+    unchanged: bool = Field(description="The file came back untouched, so nothing was proposed.")
+    version: str | None = Field(description="The text version it became, to review.")
+    unmapped: list[str] = Field(description="What couldn't be read back into the text.")
+
+
+class FieldView(BaseModel):
+    name: str
+    description: ScreenText = ""
+    long_text: str | None = Field(None, description="The long text format, for a long text field.")
+    refers_to: str | None = Field(None, description="The kind of record the field holds an id of.")
+    type: Literal["text", "long_text", "number", "yes_no", "date", "choice", "reference", "list", "other"] = Field(
+        "other", description="What kind of value it holds, for the edit form."
+    )
+    options: list[str] = Field(
+        default_factory=list,
+        description="For a choice: the values allowed. For a number: the values to pick from, when it has a known set.",
+    )
+    value_list: str | None = Field(
+        None, description="For a field whose values come from a value list: its name, so the form can add to it."
+    )
+    required: bool = False
+    editable: bool = Field(True, description="The person can change it with a field edit (not the id or stage).")
+
+
+class ValueListView(BaseModel):
+    """A value list: what a field's dropdown offers."""
+
+    id: str
+    name: str
+    label: str
+    values: list[str] = Field(description="The values offered, in order.")
+    retired: list[str] = Field(description="Values no longer offered that records may still hold.")
+    used_by: list[str] = Field(description="The fields that take their values from it, as kind.field.")
+    status: bool | None = Field(
+        None, description="Whether its values carry a meaning (a status list), asked for when one is added."
+    )
+    tones: dict[str, Literal["ok", "warn", "danger", "neutral"]] = Field(
+        default_factory=dict, description="How each value is colored; a value left out is neutral."
+    )
+    meanings: dict[str, Literal["not_started", "open", "at_risk", "blocked", "done"]] = Field(
+        default_factory=dict, description="What each value of a status list means; ranking and colors read this."
+    )
+
+
+class ListValueIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    value: str = Field(min_length=1, max_length=80)
+    tone: Literal["ok", "warn", "danger", "neutral"] | None = Field(
+        None, description="How the value is colored, when adding one; left out, the suggestion is used."
+    )
+    meaning: Literal["not_started", "open", "at_risk", "blocked", "done"] | None = Field(
+        None, description="What the value means, when adding one to a status list; left out, the suggestion is used."
+    )
+
+
+class ListSuggestionView(BaseModel):
+    """The tone and meaning offered for a typed value, which the person can change."""
+
+    tone: Literal["ok", "warn", "danger", "neutral"]
+    meaning: Literal["not_started", "open", "at_risk", "blocked", "done"] | None = Field(
+        None, description="Empty for a list whose values have no meanings."
+    )
+
+
+class ListRenameIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    value: str = Field(min_length=1)
+    to: str = Field(min_length=1, max_length=80)
+
+
+class ListMergeIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    value: str = Field(min_length=1, description="The value that goes away.")
+    into: str = Field(min_length=1, description="The value that takes its place; it must be offered on the list.")
+
+
+class DroppedQuestionView(BaseModel):
+    """A question that is closed as dropped, kept on record."""
+
+    id: str
+    title: str
+    text: str
+    to: str = Field(description="The id of the person it was for.")
+    to_name: str
+    reason: str | None = Field(None, description="Why the person dropped it; none when the app closed it itself.")
+    dropped_at: datetime | None = Field(None, description="When it was dropped.")
+    projects: list[str] = Field(default_factory=list)
+    origin: Origin | None = Field(None, description="Where the question came from, for its link.")
+
+
+class KindView(BaseModel):
+    """What a kind of record holds, for screens that show any record."""
+
+    kind: str
+    fields: list[FieldView]
+
+
+class RecordEdit(BaseModel):
+    """The person's own change to fields of a shown record."""
+
+    model_config = ConfigDict(extra="forbid")
+    kind: str
+    id: str
+    fields: dict[str, Any]
+    read_version: int = Field(ge=1)
+
+
+class GenericRecordView(BaseModel):
+    """Any shown record: its ordinary fields and the names of its long text fields (read those from /texts)."""
+
+    kind: str
+    id: str
+    version: int
+    fields: dict[str, Any]
+    long_text: list[str]
+    origin: Origin | None = Field(
+        None, description="For an action or a question: where it came from, for its link. Null for any other record."
+    )
+    changed_at: datetime | None = Field(
+        None,
+        description="When the record was last written. An edit refused because it changed meanwhile says when.",
+    )
+
+
+class OutsideEditView(BaseModel):
+    path: str = Field(description="The file in the synced folder.")
+    proposal: str | None = Field(None, description="The changeset it became, to review.")
+    version: str | None = Field(None, description="The text version it became, to review.")
+    problem: ScreenText | None = Field(None, description="Why it couldn't be read back.")
+
+
+class SyncView(BaseModel):
+    """The synced folder's state."""
+
+    folder: str = Field(description="The configured folder; empty when off.")
+    problem: ScreenText | None = Field(description="Why it can't be written now, if it can't.")
+    stopped: bool = Field(description="Another computer opened the workspace; this copy stopped writing.")
+    changed_outside: list[str]
+    removed_outside: list[str]
+    rebuilt: list[str]
+    outside_edits: list[OutsideEditView]
+    conflict_copies: list[str]
+    shared: bool = Field(description="Anyone else can change the folder, so outside edits are content to check.")
+    handover: Literal["diverged", "chosen", "elsewhere", "taken"] | None = Field(
+        None,
+        description="Why the folder isn't being written, when the person has something to settle "
+        "(GET /api/sync/handover).",
+    )
+
+
+class HandoverSideView(BaseModel):
+    """What one side has that the other lacks."""
+
+    computer: str = Field(description="The computer that made the changes; empty when it isn't known.")
+    changes: int = Field(description="How many changes the other side doesn't have.")
+    latest: datetime | None = Field(None, description="When the latest of them was made, on the person's own clock.")
+
+
+class HandoverView(BaseModel):
+    """Why the synced folder isn't being used and what the person can do about it (design 5.0). `diverged`: this
+    computer and the folder each changed while they couldn't sync; the person chooses which copy to keep, and the
+    choice is carried out at the next start (`chosen` once noted). `elsewhere`: another computer opened the workspace
+    (`computer`, `last_seen`, `minutes_left` until it can be opened here without it closing first); there is nothing to
+    choose. `taken`: another copy of the app took over the workspace on this computer (`computer`), so nothing more is
+    saved here; the person closes this copy. `clear`: nothing to settle."""
+
+    state: Literal["clear", "diverged", "chosen", "elsewhere", "taken"]
+    here: HandoverSideView | None = Field(None, description="This computer's side (diverged, chosen).")
+    folder: HandoverSideView | None = Field(None, description="The synced folder's side (diverged, chosen).")
+    computer: str = Field("", description="The other computer (elsewhere).")
+    last_seen: datetime | None = Field(None, description="When the other computer was last seen (elsewhere).")
+    minutes_left: int = Field(0, description="Minutes until the workspace can be opened here (elsewhere).")
+    chosen: Literal["here", "folder"] | None = Field(None, description="The copy the person chose to keep.")
+    folder_set: bool = Field(False, description="A synced folder is set up, so there is a copy to be in step with.")
+    last_checked: datetime | None = Field(
+        None, description="When the app last looked over the synced folder without a problem; none before the first."
+    )
+
+
+class HandoverChoice(BaseModel):
+    which: Literal["here", "folder"] = Field(description="Keep this computer's copy or the synced folder's.")
+
+
+class AgendaLine(BaseModel):
+    """One thing on a meeting's agenda: the action, question or note it came from, in the words it is there under."""
+
+    kind: Literal["action", "question", "note"] = Field(description="The kind of record it came from.")
+    id: str = Field(description="The id of the record it came from, to link to its page.")
+    text: str = Field(description="The words it is on the agenda under.")
+    added_by: str | None = Field(
+        None, description="The id of the person who put it there; none when the assistant did."
+    )
+    added_by_name: str | None = Field(None, description="Their name.")
+    added_at: datetime = Field(description="When it was put on the agenda.")
+
+
+class AgendaSpanView(BaseModel):
+    """The first and last day the agenda covers."""
+
+    first: date
+    last: date
+
+
+class DeliveryView(BaseModel):
+    """What makes an own calendar entry a delivery: the parcel or order and how far it has got."""
+
+    order: str | None = Field(None, description="The order number, as the mail gave it.")
+    tracking: str | None = Field(None, description="The tracking number, as the mail gave it.")
+    carrier: str | None = Field(None, description="Who carries it, as the mail gave it.")
+    status: Literal["on_its_way", "out_for_delivery", "arrived"] = Field(
+        "on_its_way", description="How far it has got; it only moves forward."
+    )
+    dated: bool = Field(
+        True,
+        description="Whether a date or window is known. When false the entry is on no day: show it under an "
+        "'On its way' heading, not on a day.",
+    )
+
+
+class AgendaItemView(BaseModel):
+    """An event from a watched calendar, or an entry in the app's own calendar, on today or the next configured days."""
+
+    snapshot: str = Field(description="The item's id: the snapshot of a watched event, or the id of an own entry.")
+    source: str = Field(
+        description="The watched source's id; its label is in GET /api/sources. For an own entry, the source it came "
+        "from, or empty."
+    )
+    title: str
+    start: str = Field(description="ISO 8601: a date-time with its offset, or a date for an all-day event.")
+    end: str | None = None
+    all_day: bool
+    where: str | None = None
+    link: str | None = Field(None, description="Where to open it; untrusted, so show its real domain.")
+    cancelled: bool = Field(description="The organizer called it off.")
+    days: list[date] = Field(description="The days it falls on, in the person's time zone.")
+    held: bool | None = Field(
+        None,
+        description="True when it is called off and waiting for a new date or a drop (design 6.33): the screen says it "
+        "is on hold, and its to-dos wait with it.",
+    )
+    own: bool = Field(
+        False,
+        description="An entry in the app's own calendar (recorded from what came in), not an event read from a "
+        "connected calendar. Its end is the last day or moment, included.",
+    )
+    entry: str | None = Field(
+        None,
+        description="For an event read from a connected calendar: the id of the calendar entry kept for this date "
+        "(its page shows who is asked), when there is one.",
+    )
+    series: str | None = Field(None, description="The series this date or entry is one meeting of, when it is.")
+    repeats: Literal["day", "week", "two_weeks", "month"] | None = Field(
+        None, description="For one date of the person's own entry that happens again: how often it does."
+    )
+    occurrence: str | None = Field(
+        None,
+        description="For such a date: when the repeat rule had it, as ISO 8601 text, to move or cancel that date alone "
+        "(POST /api/events/{id}/move and /cancel with `occurrence`).",
+    )
+    open_items: int = Field(
+        0, description="For a meeting of a series: how many open actions and questions sit on it (never shown as zero)."
+    )
+    todo_offer: str | None = Field(
+        None,
+        description="For a plain entry (nobody else invited, no description) whose title starts with a task verb and "
+        "that has no to-do yet: the to-do it is offered as, in its own words. Posting to `/api/events/{entry}/todo` "
+        "makes it.",
+    )
+    agenda: list[AgendaLine] = Field(
+        default_factory=list,
+        description="What is to be taken up at this meeting: its own agenda items and, for the next meeting of a "
+        "series, the series' agenda after them.",
+    )
+    delivery: DeliveryView | None = Field(
+        None,
+        description="For an own entry that is a parcel or order on its way: its order, tracking number, carrier and "
+        "status. One whose `dated` is false has no days (`days` is empty) and is shown under 'On its way'.",
+    )
+    side: str | None = Field(
+        None,
+        description="The id of the side's top project the entry is on: that of the entry the app keeps for it, else "
+        "the one side the calendar it comes from serves; none for neither. The screen's side filter shows an entry "
+        "with none under every choice.",
+    )
+    views: list[str] = Field(
+        default_factory=list,
+        description="The ids of the views its project is in (design 6.32); empty when its project is in none. A view "
+        "only changes what a screen shows.",
+    )
+    also_in: list[str] = Field(
+        default_factory=list,
+        description="The ids of the other watched sources that hold the same invitation (the same identity and start): "
+        "it is listed once, under `source`, and these are the other accounts' calendars that hold it too.",
+    )
+    made_by: Literal["assistant", "person"] | None = Field(
+        None,
+        description="For an own entry: who added it. assistant: an AI run found it in something that came in. person: "
+        "typed in or made from a screen. None for an event read from a connected calendar.",
+    )
+
+
+class ScheduleEntryView(AgendaItemView):
+    """One entry on one day of the schedule: the agenda item and the part of it that falls on that day."""
+
+    sides: list[str] = Field(
+        default_factory=list,
+        description="Every side the entry is on when the calendar it comes from serves more than one (and `side` is "
+        "none): the side filter shows it under each of them and under no other side. Empty otherwise.",
+    )
+
+    slot: Literal["all_day", "timed"] = Field(
+        description="Where it sits in its day: with the all-day entries at the top, or among the timed ones in time "
+        "order. An entry with no time of day, or one that goes on through the whole day, is all-day."
+    )
+    begins: str | None = Field(
+        None,
+        description="When it starts, as a date-time on the person's clock, when that is on this day; none for an entry "
+        "that came in from the day before.",
+    )
+    ends: str | None = Field(
+        None,
+        description="When it ends, as a date-time on the person's clock, when that is on this day; none for an entry "
+        "that goes on past it or names no end.",
+    )
+    kind: Literal["event", "own", "delivery", "due"] = Field(
+        "event",
+        description="What the entry is: an event of a connected calendar, an entry of the app's own calendar, a parcel "
+        "or order (an own entry with `delivery`), or the due date of one of the person's own open to-dos.",
+    )
+    action: str | None = Field(
+        None,
+        description="For a due date: the id of the to-do, whose page is at GET /api/records/{id}. `snapshot` is the "
+        "same id.",
+    )
+
+
+class ScheduleDayView(BaseModel):
+    """One day of the schedule."""
+
+    date: date
+    all_day: list[ScheduleEntryView] = Field(
+        description="The all-day entries: the calendars' first, then the app's own."
+    )
+    timed: list[ScheduleEntryView] = Field(description="The timed entries by when they begin that day.")
+
+
+class ConnectedPersonView(BaseModel):
+    """Someone on a connected calendar's event, as the calendar names them."""
+
+    address: str | None = None
+    name: str | None = None
+    response: str | None = Field(None, description="Their answer to the invitation as the calendar says it.")
+
+
+class ConnectedEventView(BaseModel):
+    """What a connected calendar says about one date of an event the app keeps no entry for (GET
+    /api/schedule/events/{snapshot}). Read-only; every word is the calendar's, so it is untrusted text."""
+
+    snapshot: str
+    source: str = Field(description="The watched source's id; its label is in GET /api/watch.")
+    title: str
+    start: str = Field(description="A date-time on the person's clock, or a date for an all-day event.")
+    end: str | None = Field(
+        None, description="When it ends, or for an all-day event its last day; none when it names none."
+    )
+    all_day: bool
+    where: str | None = None
+    cancelled: bool = Field(description="The organizer called it off.")
+    link: str | None = Field(None, description="Where to open it in the calendar; untrusted, so show its real domain.")
+    repeats: str | None = Field(None, description="The repeat rule as the calendar wrote it, for an item of a series.")
+    organizer: ConnectedPersonView | None = None
+    attendees: list[ConnectedPersonView] = Field(default_factory=list)
+
+
+class ScheduleClashEntryView(BaseModel):
+    """One of the two entries of a clash: the `snapshot` and `start` of its schedule entry (`ScheduleEntryView`)."""
+
+    snapshot: str
+    start: str
+
+
+class ScheduleClashView(BaseModel):
+    """Two entries that clash, by the rules Today's clash lines follow (`kind`, `minutes`)."""
+
+    group: str = Field(
+        description="Names the run of clashes this pair counts in: pairs that share a meeting on a day are one group, "
+        "and a group is one clash wherever clashes are counted (Today's lines, the schedule, the timeline)."
+    )
+    day: date = Field(description="The day the later of the two starts, on the person's clock.")
+    first: ScheduleClashEntryView = Field(description="The entry that starts first.")
+    second: ScheduleClashEntryView
+    kind: Literal["overlap", "travel"] = Field(
+        description="overlap: they are on at the same time; travel: they are in different places with less time "
+        "between them than `travel_minutes`."
+    )
+    minutes: int = Field(
+        description="For an overlap, how long they are on at once; for travel, how many minutes short."
+    )
+    travel_minutes: int = Field(
+        description="The travel time the rules ask for between two places (`steward.clashes.travel_minutes`)."
+    )
+
+
+class ScheduleView(BaseModel):
+    """The schedule (GET /api/schedule): a run of days from `first`, in the person's time zone."""
+
+    today: date = Field(description="The person's today, so a screen can mark it and return to it.")
+    first: date
+    days: list[ScheduleDayView]
+    on_its_way: list[ScheduleEntryView] = Field(
+        default_factory=list,
+        description="The parcels and orders with no date yet: on no day, so listed apart.",
+    )
+    clashes: list[ScheduleClashView] = Field(
+        default_factory=list,
+        description="The pairs of entries on these days that clash, by the same rules as Today's clash lines (design "
+        "6.32): never an all-day entry, one called off, declined or not accepted, or a pair the person said is fine. "
+        "The screen draws a clash only for these pairs.",
+    )
+    work_days: list[int] = Field(
+        description="The days of the working week, Monday as 0 through Sunday as 6, from "
+        "`steward.reminders.working_first_day` and `working_last_day`."
+    )
+    week_starts_on: int = Field(description="The first day of a week, Monday as 0 (`ui.schedule.week_starts_on`).")
+    grid_starts: str = Field(description="The first time of day the time grid shows (`ui.schedule.day_starts`).")
+    grid_ends: str = Field(description="The last time of day the time grid shows (`ui.schedule.day_ends`).")
+    event_minutes: int = Field(
+        description="How long a new entry lasts when only its start is given (`ui.schedule.event_minutes`)."
+    )
+    month_entries: int = Field(
+        description="How many entries a day lists in the month view (`ui.schedule.month_entries`)."
+    )
+
+
+class TimelineOffView(BaseModel):
+    """A day people don't work, on the timeline."""
+
+    day: date
+    kind: Literal["weekend", "holiday", "team", "away"] = Field(
+        description="weekend: a weekly rest day of the workspace; holiday: a named holiday of its calendar; team: a "
+        "day off of the team the lane's owner is in; away: a period the lane's owner is away."
+    )
+    reason: str = Field(
+        "", description="Why, in words for a reader (a holiday's name, a closure's label); empty for a weekend."
+    )
+
+
+class TimelineItemView(BaseModel):
+    """One thing on a timeline lane: a circle (a calendar entry), a square (a to-do or promise), a diamond (a project's
+    target day or a dated fact); a bar when it runs over several days."""
+
+    kind: Literal["entry", "todo", "promise", "target", "fact"]
+    id: str = Field(
+        description="The id of the record it is: the entry's (or connected event's), the to-do's, the project's for "
+        "its target day, the fact's."
+    )
+    title: str
+    start: date
+    end: date = Field(description="The last day; the same as `start` for a thing on one day.")
+    state: Literal["open", "overdue", "done"]
+    owners: list[OwnerNameView]
+    detail: str | None = Field(
+        None, description="For a dated fact: what kind of day it is (deadline, renewal, expiry, warranty, bill)."
+    )
+    entry: ScheduleEntryView | None = Field(
+        None, description="For a calendar entry: the schedule's own entry, to open its details."
+    )
+
+
+class TimelineLaneView(BaseModel):
+    """One project's lane, with its side and views so the side filter narrows it as it narrows every schedule view."""
+
+    project: str | None = Field(
+        None, description="The project's id; none for the lane of entries filed under no project."
+    )
+    name: str = Field(description="The project's name; empty for the lane of entries filed under no project.")
+    side: str | None = Field(None, description="The id of the side it is on; none when it is on none.")
+    in_project: bool = Field(description="True for a project; false for a lane that is a side itself or none.")
+    views: list[str] = Field(description="The ids of the views its project is in.")
+    parent: str | None = None
+    parent_name: str | None = Field(
+        None, description="The name of its parent project when that has no lane of its own."
+    )
+    depth: int = Field(description="How far in it is shown: its parent lane's depth plus one.")
+    owner: str | None = Field(None, description="The person id of the project's owner (its parent's when it has none).")
+    team: str | None = Field(None, description="The id of the owner's team.")
+    days_off: list[TimelineOffView] = Field(
+        description="The days off beyond the workspace's: its owner's team's and the owner's own away periods.",
+    )
+    items: list[TimelineItemView]
+
+
+class TimelineView(BaseModel):
+    """The schedule's timeline (GET /api/schedule/timeline): lanes of what falls between `first` and `last`."""
+
+    today: date
+    first: date
+    last: date
+    range: Literal["two_weeks", "ten_weeks", "quarter"] = Field(description="The range shown, by name.")
+    days: int = Field(description="How many days it is.")
+    lanes: list[TimelineLaneView]
+    off_days: list[TimelineOffView] = Field(
+        description="The days off of the whole workspace (weekly rest days and holidays), the same for every lane."
+    )
+    clashes: list[ScheduleClashView] = Field(
+        default_factory=list,
+        description="The pairs of calendar entries in the range that clash, by the same rules as the other views "
+        "(`GET /api/schedule`): `first` and `second` name the entries by the id they have on a lane.",
+    )
+    work_days: list[int]
+    week_starts_on: int
+    default_range: Literal["two_weeks", "ten_weeks", "quarter"] = Field(
+        description="The range to show when the person has picked none (`ui.schedule.timeline_range`)."
+    )
+
+
+class ArrivedView(BaseModel):
+    """A message from a watched mailbox, received within the configured hours."""
+
+    snapshot: str
+    source: str
+    title: str
+    sender: str | None = Field(
+        None,
+        description="Who it came from, as a name when the message gives one or the sender is a person on file, else "
+        "as written.",
+    )
+    sender_address: str | None = Field(
+        None, description="The sender's bare address when `sender` is shown as a name; for a tooltip."
+    )
+    received: str = Field(description="ISO 8601 date-time with its offset.")
+    unread: bool | None = None
+    link: str | None = None
+    version: int = Field(0, description="The version of the saved message read, for a correction made from the list.")
+    saved: str | None = Field(
+        None,
+        description="The id of the saved copy of the message, when it was handed in; its page is where a row opens.",
+    )
+    also_in: list[str] = Field(
+        default_factory=list,
+        description="The ids of the other watched sources that hold a copy of the same message or thread (they share a "
+        "message id): it is listed once, under `source`, and these are the other mailboxes that hold it too.",
+    )
+    sides: list[str] = Field(
+        default_factory=list,
+        description="The ids of the sides (top projects) its source serves. The screen's side filter shows a message "
+        "under each of them, and under every choice when the source serves none.",
+    )
+
+
+class TodoView(BaseModel):
+    """One of the person's own open actions."""
+
+    action: str = Field(description="The action's id; its record is at GET /api/records/{id}.")
+    text: str
+    project: str | None = None
+    due: date | None = None
+    overdue: bool = Field(
+        description="Whether it is past its due date; never true while it is on hold or its date is to be checked."
+    )
+    due_check: bool | None = Field(
+        None,
+        description="Its date is one the rules couldn't read for certain: the row says to check it, and it is never "
+        "overdue until the person confirms it.",
+    )
+    on_hold: str | None = Field(None, description="What it waits for while it is on hold; its due date is kept.")
+    blocker: BlockerView | None = Field(
+        None,
+        description="What its hold is blocked on, when the hold names a blocker. When the blocker is over (the "
+        "question answered, the action finished) it says so, `on_hold` is empty and the to-do is first on the list.",
+    )
+    origin: Origin | None = Field(None, description="Where the action came from, for its link.")
+    remind_at: datetime | None = Field(
+        None, description="When the person asked to be reminded of it, on their own clock (their time zone)."
+    )
+    repeat: RepeatView | None = Field(None, description="How it repeats, when it does, said back from data.")
+    effort_minutes: int | None = Field(None, description="About how long it takes, in minutes, when it says.")
+
+
+class HeldAsk(BaseModel):
+    """A held item as the question the person is asked (design 7.6): `ask` is what is proposed (close an item, change
+    its date, give it to another owner, send a question to someone else instead, drop it, or, for an ending of a
+    promise, move its date or record a part delivered, or keep a guess at how long it takes (`effort`, with the minutes
+    in `value`), or keep a reminder proposed for a dated fact or a to-do (`remind`, with the moment in `value`, the day
+    it is for in `day` and the reminder it has now in `from_value`); `ending`: the words said only that it is closed,
+    so the person is asked whether it is done by its owners or no longer needed), `item` the words of what it is about,
+    `value` and `from_value` the new and the present date, `to_name` the person it would go to, `told` the people a
+    drop would leave out of the loop (told on `told_on`) and `quote` the words the assistant rested it on. An ending of
+    an action also carries what the input says happened: the action's id in `record`, its `owners` in the owner
+    format, `reporter` (who said it), and by ask the words of a new date (`due_words`) with the promise's own earlier
+    words (`earlier`), what was `delivered` and what is `left`, or the `reason` it is called off. The screen words the
+    title and the answers from these."""
+
+    ask: Literal["close", "date", "owner", "routing", "drop", "move", "part", "ending", "effort", "remind"]
+    item: str
+    value: str | None = None
+    from_value: str | None = None
+    day: str | None = None
+    to_name: str | None = None
+    told: list[str] = Field(default_factory=list)
+    told_on: str | None = None
+    quote: str | None = None
+    record: str | None = None
+    owners: list[str] = Field(default_factory=list)
+    reporter: str | None = None
+    due_words: str | None = None
+    earlier: str | None = None
+    delivered: str | None = None
+    left: str | None = None
+    reason: str | None = None
+
+
+class PromisePerson(BaseModel):
+    id: str
+    name: str = Field(description="The person's name; for an owner, written in the workspace's owner format.")
+
+
+class PromiseNews(BaseModel):
+    """Something heard about a promise that didn't end it. A part that was delivered is `delivered` and credited to the
+    owners (in the owner format), so it reads as done."""
+
+    on: date
+    text: str
+    quote: str | None = None
+    delivered: bool = False
+    credited: list[str] = Field(default_factory=list)
+
+
+class PromiseView(BaseModel):
+    """Why a promise exists and what is known of it (design 6.33): the exact words (`quote`) and where they came from
+    (`origin`), who owes it (`owners`, in the owner format) and to whom (`promised_to`), its day with the words it was
+    read from (`due_words`, and `due_check` when the reading is doubtful), how it is known (`basis`: said outright or
+    worked out; never a score), and what was heard since (`news`, newest first). `mine` is true when the person owes it.
+    `version` is what a correction states it read."""
+
+    action: str
+    version: int
+    text: str
+    status: Literal["held", "open", "done", "dropped"]
+    quote: str | None = None
+    owners: list[PromisePerson]
+    mine: bool
+    promised_to: list[PromisePerson]
+    due: date | None = None
+    due_words: str | None = None
+    due_check: bool = False
+    basis: Literal["inferred", "said"] | None = None
+    said_by: str | None = None
+    origin: Origin | None = None
+    news: list[PromiseNews]
+
+
+class PromiseCorrection(BaseModel):
+    """One correction to a promise, picked from a list: who owes it (a person's id), to whom (person ids), how it is
+    known, or a new day. Only the fields given change; `read_version` is the version the screen showed."""
+
+    read_version: int = Field(ge=1)
+    owner: str | None = Field(None, description="The person who owes it now; they become its only owner.")
+    promised_to: list[str] | None = Field(None, description="The people it is promised to, replacing the list.")
+    basis: Literal["inferred", "said"] | None = None
+    due: date | None = Field(None, description="The new day; the words the old one came from are dropped.")
+
+
+class AfterMoveCheck(BaseModel):
+    """The one structured answer a question after a move has (design 7.7). `date`: the question asks whether an
+    action's day (`from_day`) should move to the day the record moved to (`to_day`); the answers are Move it (the
+    person's own edit of the action's due day, POST /api/records/edit with `version`, then the answer) and Keep it (the
+    answer alone). `plan`: it asks whether the plan for the moved record still holds; the answers are It holds and
+    Needs a change, which carries the person's note. Each is the question's answer, POST /api/questions/{id}/answer."""
+
+    kind: Literal["date", "plan"]
+    action: str | None = Field(None, description="For a date question: the action it asks about.")
+    version: int | None = Field(None, description="The action's version as read, to state when moving its day.")
+    text: str | None = Field(None, description="The action's words.")
+    from_day: str | None = Field(None, description="The action's own day now, YYYY-MM-DD.")
+    to_day: str | None = Field(None, description="The day the record moved to, YYYY-MM-DD.")
+    record: str | None = Field(None, description="For a plan question: the record that moved.")
+
+
+class AfterMoveRow(BaseModel):
+    """One question of a moved group, and its structured answer when it has one."""
+
+    question: str
+    check: AfterMoveCheck | None = None
+
+
+class AfterMove(BaseModel):
+    """The move a question (or a group of them) came after (design 7.7): the record that moved, by its own name, the day
+    it moved to and whether that is earlier than where it was. `others` names the people the same follow-on run asked
+    questions of; those wait in Follow-ups."""
+
+    kind: str = Field(description="What moved: event, action or fact.")
+    record: str
+    title: str
+    to: str | None = Field(None, description="The day it moved to, YYYY-MM-DD.")
+    earlier: bool = False
+    by: Literal["assistant", "pm"] = Field(description="Whether the person or the assistant (from an input) moved it.")
+    replaced: bool = Field(False, description="A fact that was replaced rather than a date that moved.")
+    request: str
+    changeset: str | None = Field(None, description="The follow-on run's own change, which Undo takes back.")
+    others: list[str] = Field(default_factory=list)
+    check: AfterMoveCheck | None = Field(
+        None, description="For a question that stands as a row of its own: its structured answer, when it has one."
+    )
+    rows: list[AfterMoveRow] = Field(
+        default_factory=list, description="For the line that groups several: each question and its structured answer."
+    )
+
+
+class SnoozeDayView(BaseModel):
+    """A day a line can be snoozed to: `days` from today, and `on` the day it comes back (a date)."""
+
+    days: int
+    on: date
+
+
+class SnoozeChoiceView(BaseModel):
+    choice: Literal["in 1 hour", "later today", "this evening", "tomorrow morning", "next week"]
+    at: datetime = Field(description="The moment the choice moves the reminder to, on the person's own clock.")
+
+
+class ReminderItemView(BaseModel):
+    action: str
+    text: str
+    at: datetime = Field(description="When the reminder was set for, on the person's own clock.")
+
+
+class ReviewDid(BaseModel):
+    """What one op did: its name (`action.drop`) and the words of the item it is about."""
+
+    op: str
+    item: str
+
+
+class MadeByRule(BaseModel):
+    id: str = Field(description="The rule's id as the change names it.")
+    label: str | None = Field(None, description="The rule's own name when a rule record has one; none otherwise.")
+
+
+class MadeBySource(BaseModel):
+    title: str = Field(description="The input's own short name, shown as the link's words.")
+    origin: Origin = Field(description="One click to the input: its page or its saved text.")
+
+
+class MadeByAnswer(BaseModel):
+    how: Literal["kept", "answered", "dropped"] = Field(
+        description="kept: the person said yes to a suggested change. answered: the person gave an answer. dropped: "
+        "the person set the question aside."
+    )
+    on: date | None = Field(None, description="The day, on the person's own clock.")
+    answer: str | None = Field(None, description="The answer given, for answered.")
+
+
+class MadeBy(BaseModel):
+    """Who made the item a Today line is about (design 7.7). `kind`: the assistant's run, a rule (`rule`) or the
+    person's own entry, which the screen says nothing about. `state`: suggested (waits for the person's yes) or added
+    (applied, with Undo). `source` is the input it came from; `answered` how the person answered a suggestion;
+    `inferred` that the assistant worked it out rather than being told."""
+
+    kind: Literal["assistant", "rule", "person"]
+    rule: MadeByRule | None = None
+    source: MadeBySource | None = None
+    state: Literal["suggested", "added"]
+    answered: MadeByAnswer | None = None
+    inferred: bool = False
+
+
+class NudgeDueItem(BaseModel):
+    """One to-do a nudge line names: its words and the day it is (or was) due."""
+
+    id: str
+    text: str
+    due: str = Field(description="The day it is due, as an ISO date.")
+    overdue: bool = Field(description="Whether that day has passed, where the workspace is.")
+
+
+class QueueLineView(BaseModel):
+    """One line of Today's queue (design 7.7), in rank order. The screen words it from `kind` and the counts. `stuck`
+    is background work that stopped checking in (`waiting_since`, when it last did; the screen offers Restart
+    now). `restart`
+    is work held until the person restarts the app (`count` waiting; the screen offers Restart now, which is
+    POST /api/restart); `paused` is an AI account waiting for its usage limit to reset (`account`, `until`, `count`
+    waiting), after which the work runs again by itself; `borrow` asks whether another kind of work's free account
+    (`account`, `model`) may take the `tier`'s work that waits on the paused account named in `text`, until `until`,
+    when that account's limit resets (`count` waiting items it would take, `estimate_usd`, `unpriced`; the answer is
+    POST /api/ai/borrow); `offline` is work that has waited for the network longer than
+    the configured time (`count` waiting, `waiting_since`), which runs again by itself once the network is back;
+    `catch_up_go` is the learning runs for the catch-up list held together for one go (`count`, `estimate_usd`,
+    `unpriced`; the go is POST /api/knowledge/catch-up/go); `intake_go` is a newly added source (`source`, `subject` its
+    label) whose first read is held for one go (`count` items, `estimate_usd` and `unpriced` for the total, `days` how
+    far back its mail was read, none for a source with no mail; the go is POST /api/watch/{source}/intake/go);
+    `no_effect` is the person's answer or correction to a question that was handled twice and changed nothing
+    (`subject` the question's title, `question` its id, `text` the person's own words, cut short; the line opens the
+    question to answer again, and Leave it is POST /api/requests/{request}/dismiss);
+    `sent_folder` is a connected mailbox that reads no sent folder, so promises the person makes in their own mail
+    can't be found (`source` its first source's id, `subject` the mailbox's name; it opens where the source's folders
+    are chosen, and Dismiss is POST /api/watch/{source}/sent-folder/dismiss, which ends it for good);
+    `folder_rename` offers once to rename a folder made under the product's earlier name (`state` backups or
+    workspace, `subject` the folder as it is named now, `text` as it would be named; Rename is POST
+    /api/folder-offers/{state}/rename and Keep POST /api/folder-offers/{state}/keep; nothing moves without the
+    person's yes, and the workspace folder is renamed the next time the app starts);
+    `restore` is a restore of a backup copy over the workspace (`state` pending, restored or not_restored, `at` the
+    moment the workspace goes back to or went back to, `text` the folder holding what was there before, or why the swap
+    didn't happen); Restart now is POST /api/restart, Cancel is POST /api/backups/restore/cancel, Put back what was
+    there before is POST /api/restore/put-back and Dismiss is POST /api/restore/dismiss;
+    `intake_review` is what the first read of a newly added source found (`source`, `subject`, `count` items with
+    something to look over, `outcome` their results counted, `items` what needs a look), one line in place of a line
+    for each; the list opens on Today and "All looks good" confirms it (POST /api/changesets/confirm); `batches` is
+    the batches left unopened for `ui.today.fold_batches_after_days`, folded into one line (`count` of them, each in
+    `parts`, oldest first); `credential` is a key or sign-in that stops working on
+    `due` or already has (`credential_kind`, `credential_name`, `waiting_days` left, below zero once past, and
+    `places`, everywhere the same credential is used); `switch_failed` is a switch of the `tier`'s account or model
+    whose check found problems or couldn't finish (the new `account`, the earlier one in `text`, `count` and `names`
+    of what didn't come out right, `check_failed` when it couldn't finish; Switch back is POST
+    /api/ai/switch/{tier}/back and Keep it POST /api/ai/switch/{tier}/keep); `account_move` is a saved account
+    (`account`, its service's name in `subject`) that uses the generic connection to a service that has its own (the
+    read-back is GET /api/ai/accounts/{account}/move, Move is POST to it and Not now POST .../move/not-now);
+    `model_watch` is news about an account's models (`account`, the tiers in `names`): with `state` newer, a newer model
+    of each tier's own family exists (`candidates`, by tier), `usd_per_day` what it would change in cost per day at
+    the current use (none when a price isn't known), `reason` why it isn't moved to on its own (asks, costs_more,
+    price_unknown, check_failed with `count` cases and `check_failed` when the check couldn't finish, or check_cost
+    with the check's `estimate_usd`); Switch is the settings' own switch with its check and Not now is POST
+    /api/ai/model-watch/{account}/{state}/not-now; with `state` price, a tier's current model went up in price by
+    `usd_per_day`; `model_moved` is a tier (`tier`) moved on its own to a newer model of its family after a check passed
+    (the new `account`, the earlier one in `text`, `usd_per_day` the change in cost; Switch back and Keep are the
+    switch routes above); `identity` is a command-line agent
+    account (`account`) whose sign-in changed (`state` changed: the sign-in found now in `text`, the recorded one in
+    `subject`; Keep is POST /api/ai/accounts/{account}/identity/keep, Sign in again opens the account) or isn't set
+    for the level of the work waiting on it (`state` level: `text` the sign-in, none when unknown, `names` the levels
+    of the waiting work, `count` the requests); `work_access` is an account (`account`) the person answered "Not now"
+    about reading their work mail and notes (Allow is POST /api/ai/accounts/{account}/allow-work, with Undo, and the
+    line goes once the account may see the internal level); `no_account` is work with no AI account
+    at all (`count` kinds of work, their tiers in `names`, the first in `tier`); `pack_tier` is a tier an add-on
+    declared for its own work (`tier` its id, `subject` its label, `count` its kinds of work) that the person hasn't
+    mapped to an account, so that work runs on the core tier named in `text` until they do (GET /api/ai/pack-tiers
+    lists it for mapping); `extractor` is a kind of file that
+    isn't being read (`file_kind`, and `text` says why), which clears once a file of that kind reads well;
+    `source_unread` is a watched source that has failed for longer than its usual gap (`source` its id, `subject` its
+    label, `problem_kind` the kind of failure, `text` what went wrong and what to do, `waiting_since` when it was last
+    read, or first tried when it never was), which clears once it is read again; `promise` is one open action that
+    needs a look: the person's own past its date, or one someone else owes with its date near or past, or with none and
+    nothing heard for a while (its id in `actions`, its words in `text` and `subject`, its day in `due`, none when it is
+    undated, `waiting_days` past that day, below zero while it is ahead, or days with nothing heard when undated, and
+    `person`, the one to chase, none when it is the person's own; its choices are the action's own routes and GET
+    /api/promises/{id} says why it exists); `reminder` is an open action whose reminder has reached the person (its id
+    in `actions`, its words in `text` and `subject`, `at` the moment it was set for, `late` when it came due while the
+    app or the computer was not running, and `snoozes` the choices that still have a time, each with the moment it
+    moves the reminder to; a snooze is POST /api/reminders/{id}); `reminder_digest` is the reminders that waited, shown
+    together: those that fell in quiet hours (`late` false) or, when the person chose one summary, those missed while
+    the computer slept (`late` true), each in `reminders`; `reply` is a reply the person owes, one open action (its id
+    in `actions`, its words in `text`, the message's `subject`, who it is to in `person` or, for nobody known, `sender`
+    as written, and the drafted `reply` with `reply_reviewed`; Copy reply and Edit are POST /api/actions/{id}/reply, No
+    reply needed is POST /api/actions/{id}/drop and Answered another way is POST /api/replies/{id}/answered, each with
+    Undo); `sent_check` asks whether a message the person copied went out (`sent_copy` its copy's id, `person` who it
+    was for, `questions` and `actions` what it covered; the answers are POST /api/copies/{id}/settle with `how`,
+    each undone by POST /api/copies/{id}/unsettle; it is there only while a sent folder is being read and no sent
+    message has matched the copy); `since_yesterday` is what the assistant or a rule did that the person hasn't looked
+    over, one line for all of it (`count` entries, counted by act in `outcome`; Look over opens GET
+    /api/since-yesterday, and opening it is POST /api/since-yesterday/seen);
+    `away` is one row for the lines that waited for the person's working hours (or
+    for quiet hours to end) and arrived together with them (`count` of them; it has no choices and goes with the day);
+    `escalate` suggests asking someone else about one thing (`text` its words, in `questions` or `actions` its id,
+    `person` who hasn't answered, `count` the follow-ups it has had, `waiting_days` the days since the last word; Pick
+    who is POST /api/questions/{id}/reroute for a question and POST /api/records/edit on the action's owners for an
+    action, each with Undo; nothing is ever sent); `capacity` says the to-dos due today need more time than the calendar
+    leaves (`minutes` free, `needed_minutes` needed, `count` to-dos proposed to move with their ids in `actions`, and in
+    `due` the day to offer; the proposal is GET /api/capacity and each move is the person's own date change, with Undo);
+    `clash` is two meetings that overlap or leave too little time to get from one place to the next (`state` overlap or
+    travel, `minutes`, `text` and `other` the two titles, `due` the day and `at` the later one's start,
+    `entry` the entry to open); `tie` is a calendar entry proposed for an open to-do whose words and the entry's
+    title contain one another on its day (the to-do's id in `actions` and its words in `text`, the entry in `entry`
+    and its title in `other`, `due` the day; Tie it is POST /api/actions/{id}/tie and Not this is
+    POST /api/actions/{id}/not-this, both with Undo); `attention` is the question of whether to quiet a kind of
+    suggestion the person keeps putting off (the kind in `text`, how many times in `count`, `state` quiet or stopped;
+    Quiet them is POST /api/attention/{kind}/quiet or /stop, Keep showing is POST /api/attention/{kind}/keep, both
+    with Undo); `stale` is the person's own open to-dos nobody has touched for
+    `ui.today.stale_after_days` (`count` of them, their ids in `actions`, `waiting_days` the oldest's days untouched;
+    Look over opens GET /api/open-items narrowed to them); `pattern` is
+    something the person keeps putting off (`state` moved, redated or replies; `count` how many times or how many
+    replies, `text` the first to-do's words, `person` who the replies are owed to, the to-dos' ids in `actions`) with
+    its `choices`; a `stale` line also carries `choices`; `unfiled` is
+    what the assistant filed under no project (`count` items, never zero: with none there is no line; they are listed
+    by GET /api/unfiled; `state` which_side when a business is set, so the line is the one question of which side
+    they belong to, the business's name in `subject`); `nudge` is the one follow-up line for a person the person is
+    waiting on (`person`, `count` their items, `overdue` how many are past their date with the oldest in `due`,
+    `waiting_days` the longest wait; it opens the one message to them, GET /api/followups); `backup` is no backup
+    that works (`state`, and `age_hours` since the last one that did; Back up now is POST /api/backup);
+    `invitation` is a calendar entry that came as an invitation, has not been answered and starts within
+    `steward.meetings.invitation_days_ahead` days (`event`, its title in `text`, who invited in `subject`, `at` when it
+    starts; it opens the entry's page, where Accept, Maybe, Decline and Propose a time draft the answer for the
+    person's yes, and it goes once the person has answered); `meeting_prep` is a calendar entry with other people on it
+    that starts soon (`event`, its title in `text`, `at`
+    when it starts, `names` the known people coming, `count` how many others are on it and `open_items` how many things
+    are open with them; it opens GET /api/meetings/{id}/prep and goes when the entry starts); `meeting_capture` is an
+    entry with other people on it that has ended with nothing written down (`event`, `text`, `at` when it ended; it
+    goes when the person writes down what happened or says there is nothing to note, POST /api/meetings/{id}/capture);
+    `quiet_promise` is an open promise with no news for `steward.people.quiet_promise_days` (its id in `actions`, its
+    words in `text`, `person` to follow up with, `state` to when the person promised it to them and from when they
+    promised it to the person, `due` and `waiting_days` with no news; GET /api/people/{id}/memory says what else is
+    open with them); `terms` is the questions the assistant asked about unknown words, as one line (`count` of them,
+    their ids in `questions`; each is answered or dropped with the question routes, and a dropped one is never asked
+    again); `project_ending` is an ending of the project named in `subject` that was read from an input and waits for
+    the person, with the open items it would drop (`count`, their ids in `actions` and `questions`); the changeset is in
+    `changeset` and the held op in `op`; GET /api/changesets/{id}/ops/{index}/project-ending lists the items to keep
+    and what the add-ons leave open, and POST to it keeps the ticked items and ends the project with the rest."""
+
+    key: str = Field(description="Stable while the thing it stands for waits.")
+    group: Literal["decide", "risk", "review", "send", "setup"]
+    kind: Literal[
+        "decision",
+        "question",
+        "who_is",
+        "owner",
+        "held",
+        "go",
+        "first_go",
+        "catch_up_go",
+        "intake_go",
+        "intake_review",
+        "batches",
+        "batch_item",
+        "refused",
+        "no_effect",
+        "restart",
+        "stuck",
+        "slow_screen",
+        "handover",
+        "failed",
+        "paused",
+        "borrow",
+        "offline",
+        "overdue",
+        "promise",
+        "reminder",
+        "reminder_digest",
+        "reply",
+        "sent_check",
+        "account_check",
+        "switch_failed",
+        "account_move",
+        "sent_folder",
+        "folder_rename",
+        "model_watch",
+        "model_moved",
+        "identity",
+        "work_access",
+        "credential",
+        "no_account",
+        "pack_tier",
+        "backup",
+        "extractor",
+        "source_unread",
+        "review",
+        "rule_review",
+        "learned",
+        "catch_up",
+        "send",
+        "nudge",
+        "escalate",
+        "stale",
+        "needs_date",
+        "capacity",
+        "clash",
+        "tie",
+        "guests",
+        "attention",
+        "unfiled",
+        "moved",
+        "since_yesterday",
+        "away",
+        "invitation",
+        "called_off",
+        "called_off_todos",
+        "meeting_prep",
+        "meeting_capture",
+        "quiet_promise",
+        "date_reminder",
+        "answer",
+        "area",
+        "pattern",
+        "terms",
+        "project_ending",
+        "restore",
+    ]
+    count: int
+    fact: str | None = Field(
+        None,
+        description="For a date_reminder line: the id of the dated fact it is about; `due` is its day, `state` its "
+        "kind (deadline, renewal, expiry, warranty or bill), `at` the moment of the reminder and `text` the fact.",
+    )
+    event: str | None = Field(
+        None,
+        description="For an invitation, meeting_prep or meeting_capture line: the id of the calendar entry; its page "
+        "is GET /api/meetings/{id}/prep and what happened at it is written down with POST /api/meetings/{id}/capture.",
+    )
+    open_items: int | None = Field(
+        None, description="For a meeting_prep line: how many things are open with the people coming."
+    )
+    minutes: int | None = Field(
+        None,
+        description="For a capacity line: the working minutes left today that no meeting takes. For a clash line: the "
+        "minutes the two meetings overlap, or that the travel time between them falls short by.",
+    )
+    needed_minutes: int | None = Field(
+        None, description="For a capacity line: the effort, in minutes, of the to-dos due today or late."
+    )
+    other: str | None = Field(
+        None, description="For a clash line: the title of the second meeting; `text` is the first."
+    )
+    entry: str | None = Field(
+        None, description="For a clash line: the calendar entry to open, when one is kept for the first meeting."
+    )
+    source_name: str | None = Field(
+        None, description="For a clash line: the calendar the first meeting comes from; none for the app's own."
+    )
+    other_source_name: str | None = Field(
+        None, description="For a clash line: the calendar the second meeting comes from; none for the app's own."
+    )
+    starts: str | None = Field(
+        None, description="For a clash line: when the first meeting starts, on the person's clock."
+    )
+    ends: str | None = Field(None, description="For a clash line: when the first meeting ends, on the person's clock.")
+    other_starts: str | None = Field(None, description="For a clash line: when the second meeting starts.")
+    other_ends: str | None = Field(None, description="For a clash line: when the second meeting ends.")
+    other_entry: str | None = Field(
+        None, description="For a clash line: the calendar entry to open, when one is kept for the second meeting."
+    )
+    event_page: str | None = Field(
+        None,
+        description="For a clash line: the page of what its calendar says about the first meeting (the event and the "
+        "date of it), when the app keeps no entry for it.",
+    )
+    other_event_page: str | None = Field(
+        None, description="For a clash line: the same for the second meeting, when the app keeps no entry for it."
+    )
+    calendar_link: str | None = Field(
+        None, description="For a clash line: the first meeting's address in its calendar, shown with its real domain."
+    )
+    other_calendar_link: str | None = Field(
+        None, description="For a clash line: the second meeting's address in its calendar, shown with its real domain."
+    )
+    travel_minutes: int | None = Field(
+        None,
+        description="For a clash line where the meetings are in different places: the travel time the app asks for "
+        "between them, so the line can say how much time is between them and how much is needed.",
+    )
+    place: str | None = Field(None, description="For a travel clash line: where the first meeting is, when it says.")
+    other_place: str | None = Field(
+        None, description="For a travel clash line: where the second meeting is, when it says."
+    )
+    overdue: int | None = Field(
+        None, description="For a nudge line: how many of its items are past their date; `due` is the oldest of those."
+    )
+    due_items: list[NudgeDueItem] = Field(
+        default_factory=list,
+        description="For a nudge line: its to-dos that are overdue or due within the follow-up window, earliest "
+        "first. The line names the first two with their days; a line with none reads as waiting.",
+    )
+    replies: int | None = Field(
+        None,
+        description="For a promise or nudge line: how many replies that didn't answer its promise has had since the "
+        'line began (the most of its promises, for a nudge). The line says it: "replied twice without a date".',
+    )
+    age_hours: float | None = Field(
+        None, description="For a backup line: the hours since the last backup that worked; none when none has."
+    )
+    seconds: float | None = Field(
+        None,
+        description="For a slow_screen line: how many seconds the screen's latest load took. `subject` is the screen "
+        "(today, todos, people or changes); Draft a report is GET /api/slow-screens/{screen}/report.",
+    )
+    text: str | None = Field(None, description="The decision, question, name or held item in one line.")
+    title: ItemTitle | None = Field(None, description="The input the line is about.")
+    person: str | None = Field(None, description="Whom the line is about (send, nudge).")
+    person_name: str | None = None
+    told_names: list[str] = Field(
+        default_factory=list,
+        description="For a line about one action: the people it reached (told or chased), as shown, who dropping it "
+        "tells. Empty when nobody.",
+    )
+    project: str | None = None
+    project_name: str | None = None
+    side_name: str | None = Field(
+        None,
+        description="The side it is filed on directly, when it is in a side and in no project of it; its project "
+        "name is then empty.",
+    )
+    parent_name: str | None = Field(None, description="The name of the project its project is part of, if any.")
+    notes: str | None = Field(
+        None,
+        description="For a line about one action: that action's notes, which the screen shows on hover and in the "
+        "inspector.",
+    )
+    side: str | None = Field(
+        None,
+        description="Which side the line is on, from its project: the id of that side's top project (the "
+        "personal project's or another side's), or none for neither (the screen's side filter shows such lines "
+        "under every choice).",
+    )
+    sides: list[str] = Field(
+        default_factory=list,
+        description="For a line about entries or messages on more than one side (a clash between two calendars that "
+        "serve different sides): the ids of every side it is on. The screen's side filter shows it under each of them. "
+        "Empty for a line that is on one side or none, which `side` says.",
+    )
+    views: list[str] = Field(
+        default_factory=list,
+        description="The ids of the views its project is in (design 6.32); empty when its project is in none. A view "
+        "only changes what a screen shows.",
+    )
+    area: str | None = Field(
+        None,
+        description="Which area of life the line is in, from its project: the id of that area's project, or none "
+        "for a line in no area, which Today's area filter shows only under All.",
+    )
+    area_name: str | None = Field(None, description="The area's name, for the tag on the line.")
+    due: date | None = None
+    waiting_days: int | None = None
+    waiting: ScreenText | None = Field(None, description="Why the work stopped, in plain words.")
+    subject: str | None = Field(
+        None,
+        description="The one thing's own words when a review or overdue line covers exactly one, which the screen "
+        "uses as the line's title; null when the line groups several.",
+    )
+    request: str | None = None
+    changeset: str | None = None
+    question: str | None = None
+    op: int | None = Field(None, description="The held item's index in its changeset.")
+    actions: list[str] = Field(default_factory=list)
+    questions: list[str] = Field(default_factory=list)
+    outcome: dict[str, int] = Field(
+        default_factory=dict,
+        description="What needs a look, counted: actions_added, questions, drafts; and held, refused. Facts, sources "
+        "and notes are filed quietly and never counted.",
+    )
+    did: ReviewDid | None = Field(
+        None,
+        description="For a review line that covers one applied op: what it did, as the op's name and the item's own "
+        "words, which the screen says in the past tense; null when the line groups several.",
+    )
+    draft: str | None = Field(
+        None, description="For a `batch_item` that is a draft: the drafted text, shown so it can be approved."
+    )
+    deciding: list[str] = Field(
+        default_factory=list,
+        description="For a review line: the keys of the lines under Decide that ask about its own held ops, which the "
+        "line leaves out of its count and the screen links to.",
+    )
+    what: Literal["action", "question", "draft"] | None = Field(
+        None, description="For a `batch_item`: whether it is a to-do, a question or a draft the assistant made."
+    )
+    items: list[QueueLineView] = Field(
+        default_factory=list,
+        description="For a batch to look over (review, intake_review): what in it needs a look, one `batch_item` line "
+        "for each (its `what` says which kind; `request`, `changeset` and `op` say where it came from) "
+        "and a `held` line for each thing that waits for the person's yes, answered where it is.",
+    )
+    parts: list[QueueLineView] = Field(
+        default_factory=list,
+        description="For `batches`: the review and intake_review lines folded into it, oldest first.",
+    )
+    changesets: list[str] = Field(
+        default_factory=list,
+        description='For a batch to look over, and `batches`: the changesets "All looks good" confirms '
+        "(POST /api/changesets/confirm, undone by POST /api/changesets/unconfirm).",
+    )
+    untrusted: bool = Field(False, description="Built from outside content.")
+    estimate_usd: float | None = Field(
+        None,
+        description="The estimated cost of everything the line starts (first_go, catch_up_go, intake_go), when any has "
+        "a price.",
+    )
+    unpriced: int = Field(
+        0, description="How many of the things the line starts have no price (first_go, catch_up_go, intake_go)."
+    )
+    account: str | None = Field(None, description="The AI account waiting for its limit to reset (paused).")
+    until: datetime | None = Field(
+        None,
+        description="When the account's limit resets and the work waiting on it runs again by itself (paused), or "
+        "when the line comes back if the person says Not now (rule_review), on the person's own clock (their time "
+        "zone).",
+    )
+    waiting_since: datetime | None = Field(
+        None,
+        description="When the oldest request waiting for the network began waiting (offline), on the person's own "
+        "clock (their time zone).",
+    )
+    ready_since: str | None = Field(
+        None,
+        description="For a send line: the day (a date) the oldest of the messages to send became ready to send, where "
+        "the workspace is; the screen says it only when it is before today.",
+    )
+    state: (
+        Literal[
+            "diverged",
+            "chosen",
+            "elsewhere",
+            "taken",
+            "changed",
+            "level",
+            "unset",
+            "never",
+            "failed",
+            "overdue",
+            "which_side",
+            "newer",
+            "price",
+            "to",
+            "from",
+            "overlap",
+            "travel",
+            "deadline",
+            "renewal",
+            "expiry",
+            "warranty",
+            "bill",
+            "moved",
+            "redated",
+            "replies",
+            "quiet",
+            "stopped",
+            "backups",
+            "workspace",
+            "pending",
+            "restored",
+            "not_restored",
+            "no_person",
+            "own",
+            "connected",
+            "no_agenda",
+        ]
+        | None
+    ) = Field(
+        None,
+        description="For a date_reminder line: the kind of day, deadline, renewal, expiry, warranty or bill. For a "
+        "clash line: overlap (the two meetings overlap) or travel (they are in different places with "
+        "less than the configured travel time between them). For a model_watch line: newer (a newer model of a tier's "
+        "family exists) or price (a tier's current model went up in price). For a handover line: diverged (this "
+        "computer and the synced folder each changed; the person chooses which copy to keep), chosen (the choice "
+        "waits for the restart) or elsewhere "
+        "(another computer opened the workspace, so this copy stopped writing to the folder) or taken (another copy of "
+        "the app took the workspace over, so nothing more is saved here). `text` is the other "
+        "computer's name. For an "
+        "identity line: changed (the agent's sign-in is a different one than the one recorded) or level (its sign-in "
+        "isn't set for the level of the work waiting). For a backup line: unset (no backup folder is chosen), never (a "
+        "folder, and no backup has worked yet), failed (the last try failed and none has worked) or overdue (the last "
+        "one that worked is older than it should be; `age_hours` says how old). For an unfiled line: which_side when a "
+        "business is set, so the line asks which side the items belong to, once, for all of them. For a quiet_promise "
+        "line: to (the person promised it to them) or from (they promised it to the person). For a pattern line: "
+        "moved (one of the person's own to-dos whose day has moved again and again), redated (a promise they made, "
+        "moved the same way) or replies (the same person was owed `count` replies). For a folder_rename line: backups "
+        "or workspace, which folder is offered a rename. For a restore line: pending (a restore waits for the "
+        "restart that swaps it in), restored (the swap was made; `text` is the folder holding what was there before) "
+        "or not_restored (it wasn't; `text` says why and the workspace is as it was). For a refused or failed line "
+        "that stands for several requests with one cause: no_person when no one is set as the person the app is for.",
+    )
+    choices: list[str] = Field(
+        default_factory=list,
+        description="For a pattern line and a stale line: the choices it offers, in order, each acting at once with "
+        "Undo (POST /api/suggestions/choose, which names the line's key and the choice): drop, weekly, hold, "
+        "no_reply, leave, keep or snooze. The first is the line's main button.",
+    )
+    rules: list[str] = Field(
+        default_factory=list, description="For a rule_review line: the ids of the rules flagged, most present first."
+    )
+    stable_size: int | None = Field(
+        None,
+        description="For a rule_review line: the size of what every run is sent, in characters, on the latest run.",
+    )
+    stable_budget: int | None = Field(
+        None, description="For a rule_review line: the size that section may be before rules move out of it."
+    )
+    moved: int | None = Field(
+        None,
+        description="For a rule_review line: how many rules the latest run had moved out of the always-sent part, so "
+        "they go only to the runs they cover.",
+    )
+    days: int | None = Field(
+        None,
+        description="For a rule_review line: how many days the flagged rules have been given and never applied. For "
+        "an intake_go line: how many days back the source's mail was read; none when it holds no mail.",
+    )
+    origins: dict[str, int] = Field(
+        default_factory=dict,
+        description="For a learned line: how many of the proposals came from an input (`input`) and how many from one "
+        "of the person's corrections (`correction`).",
+    )
+    expired: int | None = Field(
+        None,
+        description="For a learned line: how many proposals from inputs expired unreviewed since the person last "
+        "looked at what was learned.",
+    )
+    left_out: int | None = Field(
+        None,
+        description="For a catch_up line: how many kinds of earlier correction were too many for the list and expired "
+        "unread.",
+    )
+    file_kind: str | None = Field(
+        None,
+        description="For an extractor line: the kind of file that isn't being read (document, spreadsheet, "
+        "presentation, pdf or text), or the label an add-on gave its own kind. `text` says why.",
+    )
+    source: str | None = Field(
+        None, description="For a source_unread line: the watched source's id; its label is in GET /api/watch."
+    )
+    problem_kind: str | None = Field(
+        None,
+        description="For a source_unread line: the kind of failure (auth, no_access, not_found, outage, or another "
+        "kind a connector reports), which the screen words as what to do.",
+    )
+    credential_kind: Literal["account", "sign_in"] | None = Field(
+        None, description="For a credential line: an AI account's key or an add-on's sign-in."
+    )
+    credential_name: str | None = Field(
+        None, description="For a credential line: the account's short name or the sign-in's name."
+    )
+    places: list[str] = Field(
+        default_factory=list,
+        description="For a credential line: every place the same credential is used, in plain words.",
+    )
+    tier: str | None = Field(
+        None,
+        description="For an account_check line: the tier whose fallback chain holds the account. For a switch_failed "
+        "line: the tier that was switched.",
+    )
+    names: list[str] = Field(
+        default_factory=list,
+        description="For a switch_failed line: what the check found didn't come out right, by name, the first few. "
+        "For a sent_folder line that covers several mailboxes: their names.",
+    )
+    sources: list[str] = Field(
+        default_factory=list,
+        description="For a sent_folder line that covers several mailboxes: the watched sources' ids, one for each.",
+    )
+    model: str | None = Field(
+        None, description="For an account_check line: the short name of the account's model in that chain."
+    )
+    check_failed: bool | None = Field(
+        None,
+        description="For an account_check line: true when the account's last check failed, false when it was never "
+        "checked for that work. For a switch_failed line: true when the check couldn't finish.",
+    )
+    usd_per_day: float | None = Field(
+        None,
+        description="For a model_watch or model_moved line: what the change costs per day at the current use, in US "
+        "dollars (below zero: less); none when a price isn't known.",
+    )
+    reason: str | None = Field(
+        None,
+        description="For a model_watch line of a newer model: why it isn't moved to on its own (asks, costs_more, "
+        "price_unknown, check_failed or check_cost).",
+    )
+    candidates: dict[str, str] = Field(
+        default_factory=dict,
+        description="For a model_watch line of a newer model: the newer model of each tier's family, by tier, to send "
+        "with Switch; never shown.",
+    )
+    suggestion: OwnerSuggestionView | None = Field(
+        None,
+        description="For an owner line: who the routing entries suggest owns the action and why, and the nearest open "
+        "action to fold it into; none when nothing applies.",
+    )
+    at: datetime | None = Field(
+        None, description="For a reminder line: when it was set for, on the person's own clock (their time zone)."
+    )
+    late: bool | None = Field(
+        None,
+        description="For a reminder line: true when it came due and was not shown in time. For a reminder_digest "
+        "line: true when it lists reminders that were missed, false when it lists those that waited for quiet hours "
+        "to end.",
+    )
+    asleep: bool | None = Field(
+        None,
+        description="For a late reminder line, or a reminder_digest line of missed ones: true only when the app knows "
+        "it was not running (the computer asleep or the app closed) when each came due. Otherwise the screen says "
+        "only that the reminder is overdue.",
+    )
+    snoozes: list[SnoozeChoiceView] = Field(
+        default_factory=list,
+        description="For a reminder line: the snooze choices that still have a time, in order, each with the moment it "
+        "resolves to. A choice with no time left today is not listed.",
+    )
+    snooze_days: list[SnoozeDayView] = Field(
+        default_factory=list,
+        description="For a quiet_promise line: the days it can be snoozed for, each with the day it comes back "
+        "(POST /api/quiet-promises/{id}/snooze, taken back by POST /api/suggestions/not-now/{signal}/undo).",
+    )
+    reminders: list[ReminderItemView] = Field(
+        default_factory=list, description="For a reminder_digest line: the reminders it lists, oldest first."
+    )
+    reply: str | None = Field(
+        None,
+        description="For a reply line: the reply the assistant drafted, none when no recorded fact holds the answer.",
+    )
+    reply_reviewed: bool | None = Field(
+        None,
+        description="For a reply line: whether the person has approved or written the reply; until then it is a draft.",
+    )
+    sender: str | None = Field(
+        None, description="For a reply line to nobody known: who the message is from, as the message writes it."
+    )
+    stance: Literal["manage", "alongside", "report_to", "watch"] | None = Field(
+        None,
+        description="For a promise line someone else owes: who they are to the person (design 6.34). The screen says "
+        "Chase for manage and alongside, and Waiting on, with no follow-up, for report_to; null for the person's own.",
+    )
+    sent_copy: str | None = Field(
+        None, description="For a sent_check line: the id of the copy the person is asked about."
+    )
+    after_move: AfterMove | None = Field(
+        None,
+        description="For a question the person was asked after something moved, and for the moved line that groups "
+        "several: the move it came after. A moved line's `questions` are its rows and `changeset` is the follow-on "
+        "run's change.",
+    )
+    held: HeldAsk | None = Field(
+        None,
+        description="For a held line that rests on an inference or would drop something that reached someone: the "
+        "question it asks. Keeping things as they are is POST /api/changesets/{id}/ops/{index}/decline.",
+    )
+    made_by: MadeBy | None = Field(
+        None,
+        description="For a line about one item: who made it, read from the change that made it and the item itself, "
+        "for the inspector to say (never put in anything copied, shared or sent). None for a line about several "
+        "things and for an item no maker is known for.",
+    )
+
+
+class FirstGoStarted(BaseModel):
+    started: int = Field(description="How many runs the first go started.")
+
+
+class CatchUpStarted(BaseModel):
+    started: int = Field(description="How many learning runs for the catch-up list the go started.")
+
+
+class FirstPromise(BaseModel):
+    """One open promise on the walkthrough's first-result screen: its words, who owes it (in the owner format, `mine`
+    when the person does), to whom, its day and the exact words it was read from."""
+
+    action: str
+    text: str
+    owner: str
+    mine: bool
+    promised_to: list[str]
+    due: date | None = None
+    quote: str | None = None
+
+
+class FirstFollowUp(BaseModel):
+    """The one follow-up ready to copy on the first-result screen: whom it is to (`person`, a person id), and the
+    message the Follow-ups screen composes for them. Copying it is POST /api/followups/{person}/mark-sent."""
+
+    person: str
+    name: str
+    message: str
+    to_send: int
+
+
+class FirstFolder(BaseModel):
+    """One source the first result reads: its `name` (its label), the mailbox `folder` its settings name, whether it
+    holds the person's own `sent` mail, how its latest try went (`outcome`: read, failed, offline, throttled or
+    not_yet) and the day mail is read from (`from_date`, none for a source that isn't mail)."""
+
+    source: str
+    name: str
+    folder: str | None = None
+    sent: bool
+    outcome: Literal["read", "failed", "offline", "throttled", "not_yet"]
+    from_date: date | None = None
+
+
+class FirstPlace(BaseModel):
+    """The sources of one kind read as one account on the first-result screen: `account` is its label (none when it
+    isn't known), and `missing_sent` says a mail account reads no sent folder, so promises made in mail the person sent
+    can't be found until one is added (Connections: POST /api/watch/{source}/sent-folder)."""
+
+    kind: Literal["mail", "calendar", "other"]
+    account: str | None = None
+    folders: list[FirstFolder]
+    missing_sent: bool
+
+
+class FirstPromisesView(BaseModel):
+    """Where the walkthrough's first result stands. `stage`: no_mail (no mail or calendar is read), no_ai (no AI
+    account is chosen), reading (the first read hasn't happened), offer (the look back over the last `days` of mail is
+    held for the person's go: `count` items, about `estimate_usd`, `unpriced` of them with no price), working
+    (`finished` of `count` done) or ready (up to the setting's number of `promises` and the `more` that aren't shown,
+    with one `follow_up` ready when there is someone to send it to). The go is POST /api/setup/first-promises/go."""
+
+    stage: Literal["no_mail", "no_ai", "reading", "offer", "working", "ready"]
+    sources: list[str] = Field(description="What is read, by its label.")
+    coverage: list[FirstPlace] = Field(
+        description="What is read, by kind and account, from the settings the reads use, with how each source went."
+    )
+    complete: bool = Field(
+        description="Every source was read and no mail account lacks its sent folder; false whenever the list could "
+        "be missing something."
+    )
+    days: int | None = Field(None, description="How many days of mail the look back covers; none without mail.")
+    count: int = Field(description="The items the look back takes in.")
+    finished: int = Field(description="How many of them are done.")
+    estimate_usd: float | None = Field(
+        None, description="About what the look back costs; none when nothing has a price."
+    )
+    unpriced: int = Field(description="How many of the items have no price.")
+    promises: list[FirstPromise]
+    more: int = Field(description="Open promises beyond the ones shown.")
+    follow_up: FirstFollowUp | None = None
+    messages_read: int = Field(
+        0, description="With no promise found: how many messages the look back covered, sent mail included."
+    )
+    meetings_week: int = Field(0, description="With no promise found: how many meetings fall in the next seven days.")
+
+
+class IntakeStarted(BaseModel):
+    started: int = Field(description="How many requests of the source's intake the go started.")
+
+
+class IntakeSeen(BaseModel):
+    requests: list[str] = Field(
+        description="The requests of the source's intake marked seen, which Undo "
+        "(POST /api/watch/{source}/intake/unseen) gives back."
+    )
+
+
+class IntakeUnseenIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    requests: list[str] = Field(description="The requests POST /api/watch/{source}/intake/seen marked.")
+
+
+class IntakeUnseen(BaseModel):
+    restored: int = Field(description="How many requests were put back as not yet seen.")
+
+
+class LookBackIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    days: int = Field(ge=1, description="How many days further back to look, one of the source's choices.")
+
+
+class LookBackView(BaseModel):
+    """What looking further back takes in (GET) or took in (POST): the items, what they cost and how far the source
+    reaches."""
+
+    days: int
+    from_date: date = Field(description="The day asked for: mail from this day on is looked at.")
+    count: int = Field(description="Items the look takes in (before: would take in); none that a rule closes.")
+    estimate_usd: float | None = Field(
+        None,
+        description="About what they cost; after the look, what everything held for the source's go costs. None when "
+        "no price is known.",
+    )
+    unpriced: int = Field(0, description="How many of the items have no price.")
+    reaches: bool = Field(
+        description="False when the source holds no mail as far back as asked: `available_from` is where its mail "
+        "starts and nothing earlier can be taken in."
+    )
+    available_from: date | None = Field(None, description="The oldest mail the source has returned, when it is later.")
+    taken: int = Field(0, description="After the look: the requests made.")
+    started: bool = Field(
+        False, description="After the look: they started at once; False when they wait for the go or none was made."
+    )
+
+
+class FirstGoSorting(BaseModel):
+    """The sorting run the first go also makes, for mail handed in unsorted while the go was pending."""
+
+    runs: int = Field(description="How many sorting runs the go makes; none when no mail waits for sorting.")
+    estimate_usd: float | None = Field(
+        None, description="What the runs that have a price cost together; none when none has one."
+    )
+    unpriced: int = Field(0, description="How many of the runs have no price (they use the plan's allowance).")
+
+
+class InboxView(BaseModel):
+    items: list[ArrivedView]
+    left_out: int = Field(description="Messages in the same hours that a triage rule closed (newsletters, say).")
+    set_aside: int = Field(0, description="Messages in the same hours that are in the Set aside folder.")
+
+
+class InboxCheckView(InboxView):
+    """Came in after reading every source now, with what the read found."""
+
+    new_items: int = Field(
+        description="Everything the sources handed in during this read (new, changed or gone), wherever it shows: in "
+        "Came in or only in What changed."
+    )
+    sources_read: int = Field(description="How many sources were read.")
+    sources_failed: int = Field(description="Sources that could not be read this time; their problem shows on Sources.")
+    sources_busy: int = Field(description="Sources that were already being read, so this read left them alone.")
+    problems: list[ScreenText] = Field(
+        default_factory=list,
+        description="One sentence for each source that couldn't be read this time: why, and what to do.",
+    )
+
+
+class TodayLineView(BaseModel):
+    """A line a plugin adds to Today."""
+
+    plugin: str
+    id: str
+    text: str
+    about: RecordReference | None = None
+    action: str | None = Field(None, description="The one thing to do from it: a person action or a kind of work.")
+    action_is: Literal["action", "task", "core"] | None = Field(
+        None,
+        description="action: run it as a person action (/plugin-actions); task: start it as AI work; core: one of the "
+        "core's own (open, review, go, answer, move-stage) on `about`.",
+    )
+    why: ScreenText = ""
+    until: str | None = None
+    group: Literal["decide", "risk", "review", "send"] | None = Field(
+        None,
+        description="Which of the queue's groups the line sits in; none puts it under the fallback heading at the end.",
+    )
+
+
+class PanelView(BaseModel):
+    """A plugin's screen, described as data (design 7.2)."""
+
+    name: str
+    title: str
+    tab: str
+    kind: str
+    view: str = Field(description='"list", "table" or "board" for records; "document" for a composed page.')
+    columns: list[str]
+    column_labels: dict[str, str] = Field(
+        default_factory=dict,
+        description="For a computed column, the wording key of its heading (from the add-on's wording); a column "
+        "with none is headed by its key made readable.",
+    )
+    primary_action: str | None
+    row_actions: list[str]
+    new_action: str | None = Field(None, description="A person action on the workspace that adds one, shown above.")
+
+
+class DocumentInline(BaseModel):
+    """A run of text in a document: plain, strong, emphasis or code, or a link to a record or to a page outside."""
+
+    text: str
+    strong: bool = False
+    em: bool = False
+    code: bool = False
+    record: RecordReference | None = Field(None, description="A record the link opens.")
+    url: str | None = Field(None, description="A page outside the app; show `domain` beside it.")
+    domain: str | None = None
+
+
+class DocumentBlock(BaseModel):
+    """One block of a document panel, drawn by the screens as their own elements (never HTML)."""
+
+    type: Literal["heading", "paragraph", "list", "table", "rule"]
+    level: int | None = Field(None, description="A heading's level, 1 to 3.")
+    inlines: list[DocumentInline] = Field(default_factory=list, description="A heading's or paragraph's text.")
+    ordered: bool = False
+    items: list[list[DocumentInline]] = Field(default_factory=list, description="A list's items.")
+    header: list[list[DocumentInline]] = Field(default_factory=list, description="A table's header cells.")
+    rows: list[list[list[DocumentInline]]] = Field(default_factory=list, description="A table's rows of cells.")
+
+
+class DocumentView(BaseModel):
+    """A document panel as it reads now; `blocks` is None when the add-on has nothing to show yet."""
+
+    blocks: list[DocumentBlock] | None
+
+
+class PanelRow(BaseModel):
+    id: str
+    values: dict[str, Any]
+
+
+class JobView(BaseModel):
+    """A plugin's scheduled work and its last run."""
+
+    name: str
+    plugin: str
+    enabled: bool
+    every_minutes: int
+    last_run_at: str | None
+    last_outcome: str | None
+    last_error: ScreenText | None
+
+
+class TaskKindView(BaseModel):
+    """AI work the person can start, on a record of kind `on` or on the whole workspace."""
+
+    name: str
+    label: str
+    on: str | None
+
+
+class TaskStart(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    about: RecordReference | None = None
+    note: str = Field("", description="Anything the person wants to say about this run; their own words.")
+
+
+class TaskStarted(BaseModel):
+    request: str
+
+
+class PersonActionView(BaseModel):
+    """Something a person can start on a record, a file or the workspace."""
+
+    name: str
+    label: str
+    on: str | None = Field(description="The record kind it works on; none means the whole workspace.")
+
+
+class ActionRun(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    target: RecordReference | None = None
+    choices: dict[str, str | bool] = Field(default_factory=dict)
+    previous: str | None = Field(
+        None, description="The review this one replaces; its ticks carry over to unchanged items."
+    )
+    kept: dict[str, bool] = Field(default_factory=dict, description="Items to keep (true) or drop (false), by id.")
+
+
+class ActionApply(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    token: str
+    kept: dict[str, bool] = Field(default_factory=dict, description="The person's final ticks, by item id.")
+    kept_requests: dict[str, bool] = Field(
+        default_factory=dict, description="The person's final ticks on the AI work it would queue, by request id."
+    )
+
+
+class ChoiceOption(BaseModel):
+    value: str
+    label: str
+
+
+class ActionChoice(BaseModel):
+    id: str
+    label: str
+    value: str | bool
+    options: list[ChoiceOption] = Field(description="The values to pick from; none means on or off.")
+    help: str = ""
+    group: str | None = None
+    text: bool = Field(False, description="The person types the value, up to max_length characters.")
+    max_length: int = 200
+
+
+class ActionGroup(BaseModel):
+    id: str
+    heading: str
+    explanation: str = ""
+
+
+class ActionItem(BaseModel):
+    """A change the person keeps or drops without running the action again."""
+
+    id: str
+    label: str
+    group: str | None = None
+    kept: bool
+    ops: list[ProposedOp]
+    refused: ScreenText | None = Field(None, description="Why this would be refused if applied now; it starts dropped.")
+
+
+class ActionPreviewItem(BaseModel):
+    name: str
+    media_type: str
+    caption: str = ""
+    alt: str = Field("", description="What an image shows, for people who can't see it.")
+    data_base64: str = Field(description="The preview's bytes; pictures or plain text only.")
+
+
+class ProposedFile(BaseModel):
+    name: str
+    media_type: str
+    size: int
+    file_kind: str
+
+
+class ProposedOp(BaseModel):
+    op: str
+    label: str
+
+
+class ActionRequestView(BaseModel):
+    id: str = Field(description="Its id in this review, for keeping or dropping it.")
+    task: str
+    label: str
+    about: RecordReference | None = None
+    note: str = ""
+    kept: bool = True
+    group: str | None = Field(None, description="The group it belongs to, so setting a group sets it too.")
+    item: str | None = Field(None, description="The item it goes with: dropping that item drops it too.")
+
+
+class ActionProposalView(BaseModel):
+    """One action's proposal for the person's review; applying it needs the token."""
+
+    token: str
+    action: str
+    summary: str
+    ops: list[ProposedOp] = Field(description="Everything that applies with the ticks as they are now.")
+    items: list[ActionItem] = Field(default_factory=list)
+    groups: list[ActionGroup] = Field(default_factory=list)
+    files: list[ProposedFile]
+    previews: list[ActionPreviewItem]
+    choices: list[ActionChoice]
+    notes: list[ScreenText]
+    requests: list[ActionRequestView] = Field(
+        default_factory=list, description="AI work queued when it is applied, each waiting for the person's go."
+    )
+    problems: list[ScreenText] = Field(
+        default_factory=list, description="Why parts outside the items would be refused if it were applied now."
+    )
+    expires_at: str
+
+
+class ActionApplied(BaseModel):
+    changeset: str
+    applied: int
+    held: int
+    refused: int
+
+
+class FileKindView(BaseModel):
+    """A kind of file that can be added, with the details it asks for (as a JSON schema) and what it accepts."""
+
+    name: str
+    label: str
+    accept: list[str]
+    max_mb: float
+    details_schema: dict[str, Any]
+
+
+# ---- settings and setup ----------------------------------------------------------------------------------------------
+
+
+class SettingItem(BaseModel):
+    """One config key, for the Settings forms."""
+
+    key: str = Field(description="Its dotted key, as in `thimbleby config show`.")
+    file: str
+    group: str = Field(description="The section it belongs to: the file, or the file and its first part.")
+    description: ScreenText
+    type: Literal["text", "number", "integer", "yes_no", "choice", "list", "other"]
+    options: list[str] = Field(default_factory=list)
+    value: Any = None
+    default: Any = None
+    source: Literal["default", "file", "env", "flag"]
+    locked: bool = Field(description="Set by an environment variable or a flag, so the screen can't change it.")
+    basic: bool = Field(description="Shown first; the rest sit behind More settings.")
+    editable: bool = Field(description="The screen can change it; others are changed in the file.")
+    enabled_by: str | None = Field(
+        None,
+        description="The key of the switch this setting only matters with: shown after it, and greyed while that "
+        "switch is off (a yes/no) or empty (a folder, say).",
+    )
+    picker: Literal["folder", "file"] | None = Field(
+        None, description="Offer a chooser for this path instead of typing it."
+    )
+    file_types: list[str] = Field(
+        default_factory=list,
+        description="With a file chooser: the endings of the files it offers (such as .ics), so it lists only those.",
+    )
+    widget: Literal["color", "image"] | None = Field(
+        None,
+        description="The control this setting has instead of a box to type in: a color picker, or the upload of a "
+        "picture (the picture is kept by `POST /api/brand/logo`, and the setting holds its file name).",
+    )
+    renamed_from: str | None = Field(
+        None,
+        description="The old name of this setting that is still in use (in a file, an environment variable or a "
+        "flag); it is read for one more release, and saving the setting writes the new name only.",
+    )
+    plugin: str | None = Field(
+        None,
+        description="The add-on whose setting this is (its file is plugins/<name>); its name and label are in "
+        "GET /api/plugins. None for the app's own settings.",
+    )
+    choices: str | None = Field(
+        None,
+        description="The name of the list a choice setting picks from (time_zones, languages, times_of_day), when it "
+        "has one.",
+    )
+    secret: bool | None = Field(
+        None,
+        description="True when the value is a reference to a secret (a password, a key, a private address): the "
+        "screen offers a box to type it in, kept by the app, instead of asking where it is kept.",
+    )
+    advanced: bool | None = Field(
+        None,
+        description="True when it is technical: a form lists it only behind Advanced, and Settings lists it under "
+        "Advanced, so the setup path never shows it.",
+    )
+    page: Literal["you", "ai", "today", "backups", "appearance", "business", "advanced"] | None = Field(
+        None,
+        description="The page of Settings it is a row of, or advanced for one whose topic has no page of its own; "
+        "empty for a setting that is no row (an add-on's, or one a part of a screen edits in its own way). A setting "
+        "with `advanced` set sits in its page's closed More settings fold.",
+    )
+    topic: (
+        Literal["ai", "backups", "appearance", "learns", "followups", "notices", "filing", "mail", "meetings"] | None
+    ) = Field(None, description="For an advanced setting: the topic it belongs to.")
+    money: bool | None = Field(
+        None,
+        description="True when the value is an amount of US dollars: the screen shows it as currency with two "
+        'decimals in the person\'s number format and reads "1.5" and "$1.50" alike.',
+    )
+    max_length: int | None = Field(
+        None, description="For a text setting: the most characters it takes, so the box stops there."
+    )
+    by_setup: bool | None = Field(
+        None,
+        description="The value held in the files was written by setup, so it reads as set up for the person, never as "
+        "changed by them (no Changed mark, no Reset); false once they change it or put it back.",
+    )
+
+
+class SettingsView(BaseModel):
+    fingerprint: str = Field(description="Send it back with a save, so two saves never race.")
+    changed_at: datetime | None = Field(
+        None,
+        description="When the settings files were last written. A save refused because they changed meanwhile says "
+        "when, so the person can see what changed underneath them.",
+    )
+    items: list[SettingItem]
+    search_words: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="Words a person may search Settings by that the settings themselves don't use, each with the "
+        "words that find the same things (`language.settings_search_words`, shipped data a workspace can replace).",
+    )
+
+
+class LogoUploaded(BaseModel):
+    """A picture kept as the workspace's logo file; the setting `ui.brand.logo` is not changed until it is saved."""
+
+    name: str = Field(description="The file's name in the configuration folder, to save as `ui.brand.logo`.")
+
+
+class SettingsSave(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    changes: dict[str, Any] = Field(default_factory=dict, description="Key to its new value.")
+    reset: list[str] = Field(default_factory=list, description="Keys going back to their defaults.")
+    fingerprint: str
+    by_setup: bool | None = Field(
+        None,
+        description="True when a setup step makes the save: the values it writes read as set up in Settings, not as "
+        "changed by the person.",
+    )
+
+
+class SettingChangeView(BaseModel):
+    key: str
+    before: Any = None
+    after: Any = None
+    was_default: bool
+    is_default: bool
+
+
+class SettingsSaved(BaseModel):
+    changes: list[SettingChangeView] = Field(description="What changed, for the read-back and Undo.")
+    fingerprint: str
+    needs_restart: bool = Field(
+        description="These settings take effect after a restart. Nothing restarts until the person chooses to: ask "
+        "them first, then POST /api/restart. False when the change is in use already (AI accounts are)."
+    )
+    kept_secrets_going: int | None = Field(
+        None,
+        description="How many passwords or keys kept on this computer go with what was just removed (a source or an "
+        "account). They are removed once Undo can no longer need them; left out when nothing was kept for it.",
+    )
+    kept_secrets_undo_minutes: int | None = Field(
+        None,
+        description="How many minutes they stay so Undo can bring them back "
+        "(`storage.kept_secrets.undo_grace_minutes`); left out with the count.",
+    )
+
+
+class DataLevelAllowed(BaseModel):
+    request: str = Field(description="The request, queued again.")
+    account: str = Field(description="The account that was let see the level.")
+    level: Literal["open", "internal", "restricted"]
+    saved: SettingsSaved = Field(description="What changed in the settings, for the read-back and Undo.")
+
+
+class SetupStepView(BaseModel):
+    id: str = Field(
+        description="A core step (workspace, ai, mail, backup, people, template, first_note, addons) or a plugin's."
+    )
+    done: bool
+    skipped: bool
+    label: str = Field("", description="A plugin step's own words; core steps take theirs from the wording sheet.")
+    explanation: str = ""
+    action: str | None = Field(None, description="A plugin step's person action, if it has one.")
+    plugin: str | None = None
+    settings: dict[str, Any] = Field(
+        default_factory=dict, description="Core settings a plugin step suggests, applied with the step's Apply."
+    )
+    adds: dict[str, list[Any]] = Field(
+        default_factory=dict,
+        description="Values a step suggests adding to list settings, by setting: only those the person's list lacks "
+        "now. Apply (the same route as `settings`) adds them to the person's own list, with Undo.",
+    )
+    kind: Literal["file_types", "tiers"] | None = Field(
+        None,
+        description="For a step the core adds for an add-on (`plugin`): file_types adds the media types its file kinds "
+        "take to the accepted ones (`adds`); tiers maps its own tiers to accounts (GET /api/ai/pack-tiers).",
+    )
+    sign_in: str | None = Field(None, description="For a step the core adds per sign-in: the sign-in's name.")
+    group: Literal["you", "work", "ai", "mail", "backup", "people", "done"] = Field(
+        "done",
+        description="The walkthrough screen the step is on. A step on the last screen is an optional extra.",
+    )
+    counted: bool = Field(False, description="The step counts toward finishing the setup.")
+    place: int | None = Field(
+        None,
+        description='A counted step\'s place in the one list of counted steps, from 1 (the 1 of "You · 1 of 7"); the '
+        "walkthrough, its last screen and Today's setup line all read it from here.",
+    )
+    reason: Literal["none_added"] | None = Field(
+        None,
+        description="Why a skipped step was skipped: none_added, when the person moved on from People without adding "
+        "anyone.",
+    )
+    applies: bool | None = Field(
+        None, description="False when there is nothing for the person to do here, so the step isn't offered."
+    )
+
+
+WalkthroughScreen = Literal["welcome", "you", "work", "ai", "mail", "backup", "people", "done"]
+
+
+class WalkthroughView(BaseModel):
+    """Where the new-start walkthrough stands, kept on this computer so it resumes after a restart."""
+
+    open: bool = Field(description="It should open by itself now: not closed, not finished, setup still to do.")
+    step: WalkthroughScreen = Field(description="The screen to open at.")
+    closed: bool = Field(description="The person chose Finish later; it stays closed until they open it again.")
+    finished: bool = Field(description="The person pressed the last button.")
+
+
+class WalkthroughIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    step: WalkthroughScreen | None = None
+    closed: bool | None = None
+    finished: bool | None = None
+
+
+class SetupView(BaseModel):
+    steps: list[SetupStepView]
+    finished: bool = Field(description="Every step that counts is done or skipped; the optional extras never count.")
+    total: int = Field(
+        description='How many steps count (the "7" of "1 of 7"), the same on every screen that shows it.'
+    )
+    settled: int = Field(description='How many of the counted steps are done or skipped (Today\'s "Setup n of 7").')
+    local: bool = Field(description="The app runs on the person's own computer, so folders can be picked here.")
+    walkthrough: WalkthroughView
+    first_go_waiting: int = Field(
+        0,
+        description="How many runs wait for the person's first go now, which is what Today's Start the assistant line "
+        "holds; zero once it was pressed. The last screen says what Today shows from this.",
+    )
+
+
+class TemplateAdds(BaseModel):
+    name: str = Field(description="What the list it adds is called, such as Requests.")
+    fields: list[str] = Field(description="What each entry in it holds, by label.")
+    stages: list[str] = Field(description="The steps an entry goes through, in order.")
+
+
+class TemplateView(BaseModel):
+    id: str
+    name: str
+    description: str
+    adds: list[TemplateAdds] = Field(default_factory=list, description="What applying it sets up.")
+    set_up: bool = Field(False, description="This workspace already has everything it adds.")
+    audience: Literal["personal", "work", "any"] = Field(
+        "work",
+        description="Who it is for: a person's own life, running work for others, or either. A person with nothing "
+        "beside their own life is offered the first and the last.",
+    )
+
+
+class TemplateApply(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+
+
+class TemplateApplied(BaseModel):
+    plugins: list[str]
+    needs_restart: bool = Field(description="The template's add-ons start after a restart the person chooses.")
+
+
+class RestartAsked(BaseModel):
+    restarting: bool = Field(description="The app is restarting now; it is back in a few seconds.")
+
+
+class FolderCheckView(BaseModel):
+    path: str
+    ok: bool
+    problem: ScreenText | None = None
+    free_mb: float | None = None
+
+
+class FolderStepView(BaseModel):
+    """One step of the way down to the folder being looked at."""
+
+    name: str
+    path: str
+    home: bool = Field(False, description="This step is the person's home folder, which the screen names in words.")
+
+
+class FolderMake(BaseModel):
+    """POST /api/setup/folders/new: a new folder inside the one being looked at."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    inside: str = Field(description="The folder to make it in, as the chooser lists it.")
+    name: str = Field(description="The new folder's name: one plain name.")
+
+
+class FolderMade(BaseModel):
+    path: str = Field(description="Where the new folder is.")
+
+
+class FolderListView(BaseModel):
+    path: str
+    parent: str | None = None
+    folders: list[str]
+    files: list[str] = Field(default_factory=list, description="With a file ending asked for: the files that match.")
+    home: bool = Field(False, description="The folder is the person's home folder, which the screen names in words.")
+    trail: list[FolderStepView] = Field(
+        default_factory=list,
+        description="The folders from where the person can start down to this one, for the breadcrumb: never a folder "
+        "the computer keeps for itself.",
+    )
+
+
+class CloudFolderView(BaseModel):
+    name: str = Field(description="The cloud drive's name, as the person knows it.")
+    recommended: bool = Field(description="The first one found, which the guide recommends.")
+
+
+class CloudFoldersView(BaseModel):
+    """The cloud drives found on this computer, by name; never where they are."""
+
+    folders: list[CloudFolderView]
+    names: list[str] = Field(
+        default_factory=list,
+        description="The names of every cloud drive the app looks for, found or not, in order, for a hint that says "
+        "where to pick a folder.",
+    )
+    shown: ScreenText = Field(
+        description='The folder made inside a drive, as plain names joined with arrows ("Backups › App").'
+    )
+
+
+class CloudFolderChoice(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(description="A drive from GET /api/setup/backup-folders.")
+    fingerprint: str
+
+
+class BackupFolderAdd(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    label: str = ""
+    fingerprint: str
+
+
+class BackupFolderRemove(BaseModel):
+    """DELETE /api/setup/backup-folder: take one place out of where backups go. Copies already made stay."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(description="The place to take out, as the settings list it.")
+    fingerprint: str
+
+
+class EndpointView(BaseModel):
+    id: str
+    name: str = Field(description="The service's name, as the person knows it.")
+    adapter: str = Field(description="The adapter to send when adding an account of this kind.")
+    base_url: str = Field(description="Its address; empty when the person enters it.")
+    key_url: str = Field("", description="Where the person makes a key, to open in a new tab; empty when none.")
+    signup_url: str | None = Field(None, description="Where the person makes an account with the service, if anywhere.")
+    credit_url: str | None = Field(None, description="Where the person adds credit to the account, if anywhere.")
+    install_url: str | None = Field(
+        None, description="For a server that runs on this computer: where the person gets it, if anywhere."
+    )
+    needs_key: bool = False
+    local: bool = Field(False, description="A server on this computer: nothing leaves it.")
+    recommended: bool | None = Field(
+        None, description="True for the one service the setup guide offers first, with a Recommended tag."
+    )
+    alternative: bool | None = Field(None, description="True for the one other service the guide offers beside it.")
+    allowed_data: list[Literal["open", "internal", "restricted"]] = Field(
+        default_factory=lambda: ["open"], description="The data levels offered by default for an account of this kind."
+    )
+    settings: dict[str, Any] = Field(
+        default_factory=dict, description="Provider settings a new account of this kind starts with."
+    )
+    program: str = Field("", description="For a command-line agent: the program it runs.")
+    installed: bool | None = Field(
+        None, description="Whether that program is on this computer (None when it can't be told: a hosted app)."
+    )
+    model_examples: list[str] = Field(default_factory=list, description="Model names the program accepts.")
+    model_roles: dict[str, Literal["recommended", "stronger", "faster"]] = Field(
+        default_factory=dict,
+        description="What each example model is for, by name: the one chosen first, a stronger one or a faster one.",
+    )
+    model_optional: bool = Field(False, description="The program picks its own model when none is named.")
+    note: str = Field("", description="What the service or program is, in a line or more; shown once it is chosen.")
+    summary: str | None = Field(
+        None, description="One short line for its card; the card shows the note when there is none."
+    )
+
+
+class AiAccountView(BaseModel):
+    """An AI account in the settings, for the screens: never its key."""
+
+    name: str = Field(description="Its short name in ai.yaml; an identifier, never shown to the person.")
+    label: str = Field(
+        "", description="The name the person gave it; empty when they gave none (the screen says the service's name)."
+    )
+    kind: str | None = Field(None, description="The kind of account it was made from (GET /api/ai/endpoints).")
+    adapter: str
+    base_url: str | None = None
+    models: dict[str, str]
+    used_for: list[str] = Field(description="The tiers whose main account it is.")
+    backup_for: list[str] = Field(default_factory=list, description="The tiers it stands in for as a backup.")
+    has_key: bool = Field(description="A key or a reference to one is set.")
+    key_state: Literal["saved", "missing", "none"] = Field(
+        "none",
+        description="saved: its key is there to use. missing: it refers to a key that isn't there (an environment "
+        "variable not set, a file not found). none: no key is set.",
+    )
+    key_where: ScreenText | None = Field(
+        None, description="Where a missing key is looked for, in plain words; never a key."
+    )
+    credential_expires: date | None = Field(
+        None, description="The day its key stops working, when one was entered; Today says so ahead of it."
+    )
+    key_ending: bool = Field(
+        False, description="Its key stops working within the days Today warns ahead (`ai.credential_warn_days`)."
+    )
+    answered_at: datetime | None = Field(
+        None, description="When it last answered a call, on the person's own clock; none before the first."
+    )
+    spent_today_usd: float = Field(0.0, description="What its calls cost today, in the person's day.")
+    checked_for: list[str] = Field(
+        default_factory=list,
+        description="The kinds of work (tiers) it passed the connection check for, with their exact settings.",
+    )
+    check_failed_for: list[str] = Field(
+        default_factory=list, description="The kinds of work (tiers) whose last check of it failed."
+    )
+    checked_at: datetime | None = Field(
+        None, description="When it was last checked as it is set up now; none when it never was."
+    )
+    paused_until: datetime | None = Field(
+        None, description="When the usage limit holding it resets, on the person's own clock; none when not paused."
+    )
+    runs_as: str | None = Field(
+        None,
+        description="For a command-line agent: the account it runs as, as its own program said when it was last read "
+        "(by the connection check or a run); none when never read or not an agent.",
+    )
+    runs_as_how: str | None = Field(
+        None, description="For `runs_as`: which command and which part of its answer it was read from, in plain words."
+    )
+    identity_unknown: str | None = Field(
+        None,
+        description="For a command-line agent whose last reading couldn't tell which sign-in it uses: why, in plain "
+        "words. None when it could tell or was never read.",
+    )
+    identity_changed_to: str | None = Field(
+        None,
+        description="A different account than `runs_as` that the agent runs as now, waiting for Keep it or Sign in "
+        "again on Today (POST /api/ai/accounts/{name}/identity/keep).",
+    )
+    identity_level: list[Literal["open", "internal", "restricted"]] | None = Field(
+        None,
+        description="The data levels the sign-in it runs as may see; none: no limit beyond what the account may see.",
+    )
+    accepted_unchecked: bool = Field(
+        False,
+        description='The person accepted it as a backup without its connection check passing ("Use it anyway"); the '
+        "choice is set with POST /api/settings on `ai.providers.<name>.accepted_unchecked`.",
+    )
+    check_usd: float | None = Field(
+        None,
+        description="About what one connection check of it costs, from the prices in the settings or kept from earlier "
+        "runs; none when its price isn't known.",
+    )
+
+
+SettingLayer = Literal["default", "file", "env", "flag"]
+
+
+class AiKindFit(BaseModel):
+    """What the measurements hold for the model one tier uses, over the skills a kind of work needs (design 6.16)."""
+
+    tier: str
+    skills: int = Field(description="How many skills the kind of work needs, as the cases that run it name them.")
+    measured: int = Field(description="Of those, how many have at least one run.")
+    stale: int = Field(description="Of the measured, how many are out of date: unknown, never a pass.")
+    below: int = Field(description="Of the measured, how many are under the minimum score (`ai.skills.min_score`).")
+    runs: int = Field(description="All runs of those skills, out-of-date ones included.")
+    passes: int
+    cost_per_pass_usd: float | None = Field(None, description="What a passing run cost on average; none without one.")
+    status: Literal["ok", "below_min", "stale", "not_measured"] = Field(
+        description="ok: every skill measured, fresh and above the minimum. Anything else is not a pass."
+    )
+
+
+class AiWorkKindView(BaseModel):
+    """One kind of AI work and the tier it uses now (design 7.9, which model does what)."""
+
+    name: str = Field(description="The kind of work's name, as `ai.tasks.<name>` and the routing rules name it.")
+    label: str = Field(description="The kind of work in plain words; the screen's own wording sheet may say it better.")
+    tier: str = Field(description="The tier it uses now: the workspace's choice, else its role's, else its own.")
+    default_tier: str = Field(description="The tier it uses when the workspace has made no choice for it.")
+    custom: bool = Field(description="The workspace chose this kind of work's tier (`ai.tasks.<name>.tier` is set).")
+    source: SettingLayer = Field(
+        description="The layer that set `ai.tasks.<name>.tier`; env and flag can't be changed here."
+    )
+    fits: list[AiKindFit] = Field(description="What was measured for it, for the model each tier uses.")
+    suggested_tier: str | None = Field(
+        None,
+        description="The cheapest tier whose model passed every skill this kind of work needs; none when none did.",
+    )
+    suggestion_why_not: Literal["no_accounts", "no_cases", "not_measured", "stale", "none_passes"] | None = Field(
+        None, description="Why there is no suggestion: nothing to run it on, no case that measures it, or the results."
+    )
+
+
+class AiTierView(BaseModel):
+    """One tier: the account it uses and the stronger tier it tries once more on."""
+
+    name: str = Field(description="The tier's name in the settings; the screen words it.")
+    account: str | None = Field(None, description="The short name of the account that does its work; none when unset.")
+    escalate_to: str | None = Field(
+        None, description="The stronger tier tried once more when the answer keeps failing the app's checks."
+    )
+    escalate_source: SettingLayer = Field(description="The layer that set `ai.tiers.<name>.escalate_to`.")
+    runs: int = Field(0, description="Calls made on the tier over the last `cost_days` days.")
+    unpriced_runs: int = Field(
+        0, description="Of those, calls whose cost isn't known, so the cost is the least it was."
+    )
+    cost_days: int = Field(7, description="The days the cost is worked out over (`ai.models.use_days`).")
+    cost_per_day_usd: float | None = Field(
+        None, description="What the tier's calls cost a day over those days; none when it had no calls."
+    )
+
+
+class PackTierPick(BaseModel):
+    """An account and one of its models, by short name."""
+
+    account: str
+    model: str
+
+
+class PackTierView(BaseModel):
+    """A tier an add-on declares for its own work (design 3.3, 4.8), and where it stands: mapped to an account and model
+    by the person, or running on the core tier it falls back to."""
+
+    id: str = Field(description="The tier's id, `<add-on>/<name>`: the key of `ai.tiers.<id>`.")
+    plugin: str = Field(description="The add-on that declares it.")
+    label: str = Field(description="What the add-on calls the tier, in its own words.")
+    description: str = Field(description="What the work needs from a model, in the add-on's words.")
+    falls_back_to: str = Field(description="The core tier its work runs on until it is mapped.")
+    mapped: bool = Field(description="The person gave it an account; otherwise its work runs on `falls_back_to`.")
+    account: str | None = Field(None, description="The short name of the account it is mapped to.")
+    model: str | None = Field(None, description="The model of that account, by short name.")
+    used_by: list[str] = Field(description="The add-on's kinds of work that name this tier, by their labels.")
+    recommended: PackTierPick | None = Field(
+        None,
+        description="The account and model the capability measurements back for this work: the cheapest that passed "
+        "every skill its kinds of work need. Offered only, never applied.",
+    )
+    recommended_why_not: Literal["no_accounts", "no_cases", "not_measured", "stale", "none_passes"] | None = Field(
+        None, description="Why nothing is recommended."
+    )
+
+
+class PackTiersView(BaseModel):
+    """The tiers the running add-ons declare, to map to an account and model under each add-on."""
+
+    tiers: list[PackTierView]
+
+
+class AiRouteRuleView(BaseModel):
+    """One routing rule: all the parts given must match, and then the request goes to the tier."""
+
+    task: str | None = None
+    input_chars_over: int | None = None
+    quoted_messages_over: int | None = None
+    data_level: Literal["open", "internal", "restricted"] | None = None
+    tier: str
+
+
+class AiRuleSuggestion(BaseModel):
+    """A routing rule the measurements back, offered only; nothing is added until the person says so."""
+
+    rule: AiRouteRuleView
+    skills: list[str] = Field(description="The labels of the skills the tier in use is measured under the minimum on.")
+
+
+class AiRoutingView(BaseModel):
+    """Which model does what: every kind of work with its tier, the tiers with their second tries, the routing rules in
+    the order they are checked, and the spending limits that apply to a stronger model."""
+
+    kinds: list[AiWorkKindView]
+    tiers: list[AiTierView]
+    rules: list[AiRouteRuleView]
+    rules_source: SettingLayer = Field(
+        description="The layer that set `ai.routing`; env and flag can't be changed here."
+    )
+    rule_suggestions: list[AiRuleSuggestion] = Field(
+        description="Rules the measurements back, at most one for each kind of work."
+    )
+    min_score: float = Field(description="`ai.skills.min_score`: the pass rate a skill needs to count.")
+    confirm_above_usd: float = Field(
+        description="`ai.budgets.confirm_above_usd`: work estimated above it waits for a go."
+    )
+    per_run_usd: float = Field(description="`ai.budgets.per_run_usd`: no single run is started above it.")
+
+
+class AiSkillView(BaseModel):
+    """What the measurements hold for one model and one skill (design 6.16): a skill is one kind of thing a run can get
+    right or wrong. A skill nobody measured has no runs."""
+
+    id: str
+    label: ScreenText = Field(description="The skill in plain words.")
+    description: ScreenText = Field(description="What the skill covers, in plain words.")
+    measured: bool = Field(description="At least one run of a case that proves this skill was counted.")
+    runs: int = 0
+    passes: int = 0
+    pass_rate: float | None = Field(None, description="Share of runs that passed, 0 to 1; none when never measured.")
+    age_days: int | None = Field(None, description="Days since the last run counted; none when never measured.")
+    cost_per_pass_usd: float | None = Field(
+        None, description="What a passing run cost on average; none when no run passed."
+    )
+    stale: Literal["program", "age", "cases"] | None = Field(
+        None,
+        description="Why the measurement can't be trusted any more: the agent program changed, it is older than the "
+        "configured number of days, or the cases that measured it changed. It counts as unknown for routing.",
+    )
+    below_min: bool = Field(False, description="The pass rate is under the configured minimum score.")
+
+
+class AiModelSkills(BaseModel):
+    model: str = Field(description="The short name the person gave the model, never its id.")
+    measure: Literal["waiting", "measuring", "failed"] | None = Field(
+        None,
+        description="Where a measuring the person asked for stands: waiting its turn, running, or failed (then "
+        "`measure_why` says why). None when none is asked for.",
+    )
+    measure_why: ScreenText | None = Field(None, description="Why the last measuring failed, in plain words.")
+    skills: list[AiSkillView]
+
+
+class AiAccountSkills(BaseModel):
+    name: str = Field(description="The account's short name in ai.yaml.")
+    models: list[AiModelSkills]
+
+
+class AiSkillsView(BaseModel):
+    """Every account's models against every skill, for the grid in Settings."""
+
+    min_score: float = Field(description="ai.skills.min_score: the pass rate a skill needs to count as able.")
+    stale_days: int = Field(description="ai.skills.stale_days: how long a measurement is trusted.")
+    accounts: list[AiAccountSkills]
+
+
+class AiMeasureIn(BaseModel):
+    """What to measure: one of the account's models, or all of them."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: str | None = Field(
+        None, description="The short name of the model to measure; left out, every model of the account is measured."
+    )
+    confirmed: bool = Field(
+        False,
+        description="The person's go for a cost above the amount they asked to be asked about; without it such a "
+        "measuring is refused.",
+    )
+
+
+class AiMeasureEstimate(BaseModel):
+    """What measuring an account would run and cost, shown before anything is spent."""
+
+    models: list[str] = Field(description="The short names of the models that would be measured, each on its own.")
+    level: Literal["open", "internal", "restricted"] | None = Field(
+        None, description="The most private material the account is allowed to see; none when it is allowed none."
+    )
+    cases: int = Field(description="How many cases and pairs each model runs: only those the account may see.")
+    skipped: int = Field(description="How many are left out because their material is more private than allowed.")
+    runs: int = Field(description="How many times each runs.")
+    usd: float | None = Field(None, description="About what all of it costs; none when a model has no known price.")
+    confirm_above_usd: float = Field(description="The amount above which the person is asked first.")
+    per_day_usd: float = Field(
+        description="The most the assistant's work may spend in a day (`ai.budgets.per_day_usd`). A measuring is "
+        "counted in it, like any other work; the screen says so beside the price.",
+    )
+    left_today_usd: float = Field(
+        description="What may still be spent today: the day's limit or the month's, whichever is nearer, less what "
+        "every recorded run (a measuring's too) has cost, never below nothing."
+    )
+    passes_limit: bool = Field(
+        description="The estimate is more than `left_today_usd`: the measuring would stop when the limit is reached, "
+        "keeping what it measured, so starting it needs `confirmed`."
+    )
+    needs_go: bool = Field(
+        description="Starting it needs `confirmed`: the estimate is above the amount to be asked about, or more than "
+        "is left today."
+    )
+
+
+class AiMeasureStarted(BaseModel):
+    started: list[str] = Field(description="The models whose measuring was started, by short name.")
+    already: list[str] = Field(description="The models already waiting or running, left as they were.")
+    estimate: AiMeasureEstimate
+
+
+class AiAccountChange(BaseModel):
+    """A change to an existing account: a new key, other models, or the work it does."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str | None = Field(None, description="A new pasted key; kept on this computer.")
+    key_ref: str | None = Field(None, description="Or where the key is now: env:NAME or file:/path.")
+    credential_expires: date | None = Field(
+        None, description="The day its key stops working, when the service gives one."
+    )
+    clear_credential_expires: bool | None = Field(
+        None, description="Forget the end date of its key (it has none, or is renewed)."
+    )
+    label: str | None = Field(None, description="The name the person gives it; empty clears it.")
+    models: dict[str, str] | None = Field(None, description="Its models, replacing the ones it has.")
+    use: dict[str, str] = Field(default_factory=dict, description="Tiers to one of its models by short name.")
+    backup: dict[str, str] = Field(
+        default_factory=dict,
+        description="Tiers to one of its models by short name, added to each tier's backups: the accounts tried in "
+        "order when the main one can't answer. An account already a backup there with another model has that entry "
+        "moved to this one. Only a checked account, or one accepted unchecked, may be one.",
+    )
+    stop_backup: bool | None = Field(None, description="Take the account out of every kind of work's backups.")
+    fingerprint: str
+
+
+class AiAccountRemove(BaseModel):
+    """Remove an account, saying which backup takes over the work it did."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    fingerprint: str
+    take_over: str | None = Field(
+        None,
+        description="The name of a backup account that does the removed account's work in its place, for each kind of "
+        "work it stands in for; left out, that work has no account until one is chosen.",
+    )
+
+
+class AiCheckSize(BaseModel):
+    """What one account's connection check involves, for pricing it with a model's price per million tokens."""
+
+    calls: int = Field(description="How many small calls the check makes.")
+    input_tokens: int = Field(description="About how many tokens they read together.")
+    output_tokens: int = Field(description="About how many tokens they write together.")
+
+
+class AiSwitchEstimate(BaseModel):
+    """What the check that comes with a change of account or model would cost, and whether one is offered."""
+
+    offered: bool = Field(
+        description="Whether the change switches a tier's account or model while checks on a switch are on."
+    )
+    usd: float | None = Field(
+        None, description="About what the check would cost; none when the new choice has no known price."
+    )
+    cases: int = Field(0, description="How many cases the check runs, each `runs` times.")
+    runs: int = Field(0, description="How many times each case runs.")
+
+
+class AiSwitched(BaseModel):
+    saved: SettingsSaved = Field(description="What changed in the settings, for the read-back and Undo.")
+    checking: bool = Field(
+        description="A check of the new choice is running in the background; a failure comes to Today."
+    )
+
+
+class AiMoveReadback(BaseModel):
+    """What a saved account's move to its service's own connection would sign in as, from what is known without a
+    call, so the person sees it before saying yes."""
+
+    account: str = Field(description="The account's name as the person knows it; it doesn't change.")
+    service: str = Field(description="The service's name.")
+    key_ending: str = Field(
+        description="The last four characters of the key the new connection would use; empty when it can't be read or "
+        "is too short to show any."
+    )
+    key_known: bool = Field(description="Whether the key could be read now.")
+    key_differs: bool = Field(description="The new connection would use another key than the account does now.")
+    address: str = Field(description="The new connection's host.")
+    address_was: str = Field(description="The host the account uses now.")
+    address_differs: bool = Field(description="The new connection's host isn't the one used now.")
+
+
+class AiMoved(BaseModel):
+    moved: bool = Field(description="The account now uses its service's own connection.")
+    detail: str | None = Field(
+        None, description="When it didn't move: why, from the check's own words. The account is as it was."
+    )
+    saved: SettingsSaved | None = Field(None, description="What changed in the settings, for the read-back and Undo.")
+
+
+class AiBorrowAnswer(BaseModel):
+    """The person's answer to the question of using another kind of work's account while the work's own are paused."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tier: str = Field(description="The tier whose work waits (the line's `tier`).")
+    account: str = Field(description="The account the question offered (the line's `account`).")
+    model: str = Field(description="Its model's short name (the line's `model`).")
+    use: bool = Field(description="True: use it until the paused account's limit resets. False: keep the work waiting.")
+
+
+class AiBorrowed(BaseModel):
+    released: int = Field(description="How many waiting requests were let go to run on the account at once.")
+
+
+class AiModelsAsk(BaseModel):
+    """Ask a service for its models before the account is saved, with the key the person just pasted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    endpoint: str = Field(description="The kind of account, from GET /api/ai/endpoints.")
+    base_url: str | None = Field(None, description="Its address, for a kind whose address the person enters.")
+    key: str | None = Field(None, description="A pasted key; used for this request only and never kept.")
+    key_ref: str | None = Field(None, description="Or where the key is: env:NAME or file:/path.")
+
+
+class AiAccountCheck(BaseModel):
+    """Check a new account before it is saved: with the key the person just pasted, every kind of work is tried with the
+    exact settings it will use. Nothing is kept."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    endpoint: str = Field(description="The kind of account, from GET /api/ai/endpoints.")
+    base_url: str | None = Field(None, description="Its address, for a kind whose address the person enters.")
+    key: str | None = Field(None, description="A pasted key; used for this request only and never kept.")
+    key_ref: str | None = Field(None, description="Or where the key is: env:NAME or file:/path.")
+    models: dict[str, str] = Field(description="Short names for the account's models, to their ids.")
+    use: dict[str, str] = Field(
+        default_factory=dict,
+        description="The model each tier would use, by its short name; a tier left out uses the first.",
+    )
+    agent: dict[str, Any] | None = Field(None, description="For a command-line agent: its `agent` settings.")
+
+
+class AiAccountChecked(BaseModel):
+    """How a new account's check went, in words that fit the kind of account."""
+
+    ok: bool
+    reason: Literal[
+        "works",
+        "key_missing",
+        "key_refused",
+        "no_credit",
+        "unreachable",
+        "wait",
+        "not_signed_in",
+        "model_retired",
+        "failed",
+    ]
+    message: ScreenText = Field(description="What to do about it, in plain words; empty when it works.")
+    model: str | None = Field(None, description="When the service no longer offers a model: its id.")
+    next_model: str | None = Field(
+        None, description="When the service no longer offers a model: the next model that fits, if the listing has one."
+    )
+    identity: str | None = Field(None, description="The sign-in the account runs as, when the check found it.")
+    identity_unknown: ScreenText | None = Field(
+        None, description="Why that can't be told, in plain words, when the account works but it can't."
+    )
+
+
+class AiModelView(BaseModel):
+    id: str
+    context_tokens: int | None = None
+    input_per_million: float | None = Field(None, description="Its price per million tokens read, when listed.")
+    output_per_million: float | None = Field(None, description="Its price per million tokens written, when listed.")
+
+
+class AiModelsView(BaseModel):
+    models: list[AiModelView] = Field(
+        default_factory=list,
+        description="The models the app may use: those listed as retired, or as not answering in text, are left out.",
+    )
+    suggested: str | None = Field(None, description="The model to offer first for everyday work.")
+    suggested_harder: str | None = Field(None, description="The model to offer first for harder work.")
+    problem: ScreenText | None = Field(None, description="Why the list couldn't be read, in plain words.")
+
+
+class LocalServerView(BaseModel):
+    """A model server found running on this computer."""
+
+    endpoint: str = Field(description="Its kind of account, from GET /api/ai/endpoints.")
+    name: str
+    models: list[str]
+
+
+class AiPriceIn(BaseModel):
+    """What a model costs, in US dollars per million tokens, as the person gave it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    input_per_million: float = Field(ge=0, description="Per million input tokens, in US dollars.")
+    output_per_million: float = Field(ge=0, description="Per million output tokens, in US dollars.")
+
+
+class AiPricesAsk(BaseModel):
+    """Which of these models has no price the app knows."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    endpoint: str = Field(description="The kind of account chosen, from GET /api/ai/endpoints.")
+    models: list[str] = Field(description="Model ids the person picked.")
+    base_url: str | None = Field(
+        None, description="The address the person typed, for a kind of account that asks for one."
+    )
+
+
+class AiPricesMissing(BaseModel):
+    unpriced: list[str] = Field(
+        description="The asked models that have no price in the app's own table, so the form asks the person for it. "
+        "Empty for a service on this computer or a program that is not paid by the token."
+    )
+
+
+class AiAccountAdd(BaseModel):
+    """A new AI account from the Add account screen. A pasted key is kept on this computer, never in ai.yaml."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(description="The account's short name in ai.yaml: lowercase letters, digits and dashes.")
+    label: str | None = Field(
+        None, description='The name the person gives it, shown in lists; left out: the service\'s name and "account".'
+    )
+    adapter: str = Field(description="The adapter of the kind of account chosen, from GET /api/ai/endpoints.")
+    endpoint: str | None = Field(
+        None, description="The kind of account chosen; its starting provider settings are added to the account's."
+    )
+    base_url: str | None = None
+    key: str | None = Field(None, description="A key pasted on the screen; kept in this computer's private folder.")
+    key_ref: str | None = Field(None, description="Or a reference: env:NAME or file:/path.")
+    credential_expires: date | None = Field(
+        None, description="The day its key stops working, when the service gives one."
+    )
+    models: dict[str, str] = Field(description="Short names for the account's models, to their ids.")
+    allowed_data: list[Literal["open", "internal", "restricted"]] = Field(default_factory=lambda: ["open"])
+    work_data: Literal["", "not_now"] | None = Field(
+        None,
+        description="not_now when the person was asked whether this account may read their work mail and notes and "
+        "chose Not now: Today then offers Allow until they do. Left out when they allowed it or were not asked.",
+    )
+    agent: dict[str, Any] | None = Field(None, description="For a command-line agent: its `agent` settings.")
+    use_for: list[str] = Field(
+        default_factory=list, description='Tiers this account\'s first model should do ("routine", "deep").'
+    )
+    use: dict[str, str] = Field(
+        default_factory=dict,
+        description="Tiers to one of this account's models by its short name, such as an everyday model for "
+        "routine and a stronger one for deep; it wins over use_for for the tiers it names.",
+    )
+    prices: dict[str, AiPriceIn] = Field(
+        default_factory=dict,
+        description="What the person said a model costs when neither the service's list nor the app's own table has a "
+        "price for it, by the model's short name from `models`: each is kept as a price in the settings "
+        "(`ai.prices`, under the account and the short name), where the estimates and the spending limits read it.",
+    )
+    flat_rate: bool | None = Field(
+        None,
+        description="The person's answer to whether the account costs nothing more per run (a subscription): kept as "
+        "`ai.providers.<name>.flat_rate`. True lets a run on a model with no known price go without waiting for the "
+        "person's go; left out, the account's kind decides (a command-line agent or a server on this computer is flat, "
+        "any other account is not).",
+    )
+    fingerprint: str
+
+
+class AiAccountAdded(SettingsSaved):
+    """The settings saved for a new account, and what filling its tiers on its own could not do."""
+
+    unmatched_tiers: list[str] = Field(
+        default_factory=list,
+        description="Tiers the service's recommended setup names but none of the account's models matched: each is "
+        "left as it would be with no recommendation (a tier made for the recommendation is not made).",
+    )
+    price_filled_tiers: list[str] = Field(
+        default_factory=list,
+        description="Tiers filled by price because the service has no recommended setup: they are not checked until "
+        "the connection test passes, like any account the person has not accepted unchecked.",
+    )
+
+
+class AiTestResult(BaseModel):
+    """One kind of work's account, tested: whether it answered, in plain words."""
+
+    tier: str = Field(description='The kind of work: "routine" (everyday) or "deep" (harder), or another tier.')
+    account: str = Field(description="The account's short name, as the person named it.")
+    main: bool = Field(description="It is the tier's main account; otherwise a fallback.")
+    ok: bool
+    detail: ScreenText = Field(
+        description='"answered", followed by any setting that was left out and why, or what went wrong in plain words.'
+    )
+    reason: Literal["model_retired"] | None = Field(
+        None,
+        description="When the test stopped because the service no longer offers the model it used for that work: "
+        "model_retired. The account remembers the refusal.",
+    )
+    work: str | None = Field(
+        None, description="With model_retired: the kind of work (a tier) whose model the service refused."
+    )
+    model_short: str | None = Field(
+        None, description="With model_retired: the short name, under the account's models, of the model refused."
+    )
+    next_model: str | None = Field(
+        None,
+        description="With model_retired: the id of the next model the service's own listing says fits that kind of "
+        "work, never the one refused or one it refused before; none when the listing has no other. Never shown.",
+    )
+
+
+# ---- asking the assistant --------------------------------------------------------------------------------------------
+
+
+class AskIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    question: str = Field(min_length=1, max_length=2000)
+
+
+class AnswerCorrectionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    note: str = Field(min_length=1, max_length=2000, description="What the answer got wrong, in the person's words.")
+
+
+class AnswerVerdictIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    helpful: bool = Field(description="True for Helpful, false for Not helpful.")
+
+
+class CiteView(BaseModel):
+    quote: str = Field(description="The exact words from the cited material; the input's own text, never checked.")
+    source: str | None = None
+
+
+class AnswerView(BaseModel):
+    text: ScreenText
+    cites: list[CiteView]
+
+
+class SettingProposalView(BaseModel):
+    id: str
+    version: int
+    key: str
+    value: Any = None
+    why: ScreenText
+    status: Literal["open", "applied", "dismissed"]
+
+
+class ReportView(BaseModel):
+    id: str
+    version: int
+    title: str
+    text: str
+    status: Literal["draft", "sent", "dismissed"]
+
+
+class AskView(BaseModel):
+    """One question the PM asked and what came of it."""
+
+    id: str
+    version: int = Field(1, description="The request's version, sent back with the go when it waits for one.")
+    question: str
+    state: Literal["queued", "running", "review", "done", "needs_you", "failed"]
+    waiting: ScreenText | None = None
+    created_at: str
+    changeset: str | None = None
+    answer: AnswerView | None = None
+    verdict: Literal["helpful", "not_helpful"] | None = Field(
+        None, description="What the person said about the answer, when they did (and haven't taken back)."
+    )
+    verdict_signal: str | None = Field(None, description="The signal behind the verdict, which Undo takes back.")
+    proposals: list[SettingProposalView] = Field(default_factory=list)
+    reports: list[ReportView] = Field(default_factory=list)
+    about: RecordRef | None = Field(
+        None, description="For a message in a conversation on a record: the record it is about."
+    )
+    waiting_for_go: bool = Field(
+        False, description="The work is estimated and waits for the person's go (Today has its line)."
+    )
+    estimate_usd: float | None = Field(None, description="What the work was estimated to cost, when it waits for a go.")
+    reviewed: bool = Field(
+        False, description="The person has kept what the assistant changed (Keep all, or looked it over)."
+    )
+    ops: list[OpView] = Field(
+        default_factory=list,
+        description="The changes the assistant proposed with its answer, other than the answer itself, a suggested "
+        "setting and a drafted report, each kept or dropped by the person: an applied one is dropped with POST "
+        "/api/changesets/{id}/undo naming its index; one held for the person is kept with POST "
+        "/api/changesets/{id}/ops/{index}/release or dropped with .../decline.",
+    )
+
+
+class ConversationIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=4000, description="What the person says about the record.")
+
+
+class ConversationView(BaseModel):
+    """The conversation kept on one record: each message and what came of it, oldest first."""
+
+    kind: str
+    id: str
+    turns: list[AskView]
+
+
+class ProposalApply(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    fingerprint: str
+    read_version: int
+
+
+class WatchRunView(BaseModel):
+    started_at: str
+    outcome: Literal["ok", "baseline", "failed", "offline", "throttled"]
+    retry_at: str | None = Field(None, description="For a throttled read: not read again before this time.")
+    error_kind: str | None = None
+    error: ScreenText | None = None
+    error_own: bool | None = Field(
+        None,
+        description="The error is in the app's own words and may be the sentence; otherwise it is a service's reply, "
+        "shown only behind a button and never as the sentence.",
+    )
+    error_advice: str | None = Field(
+        None,
+        description="For a failed read: the wording key of what to do about it, when the connector named one. The "
+        "screen words it from its sheet; without one the kind's usual advice applies.",
+    )
+    new: int = 0
+    changed: int = 0
+    removed: int = 0
+    unsorted: ScreenText | None = Field(
+        None,
+        description="When some of the read's mail wasn't sorted by the assistant: why, in plain words. That mail was "
+        "handed in as work. None when all of it was sorted or placed by the rules.",
+    )
+
+
+class SourceSecretView(BaseModel):
+    """Where one of a source's secret settings (a password, a private address) is read from, never its value."""
+
+    field: str = Field(description="The setting's dotted name, as in the kind's form items.")
+    where: Literal["kept", "env", "file", "other"] = Field(
+        description="kept: typed on this screen and kept by the app on this computer; env: read from a named "
+        "environment variable; file: read from a file of the person's own; other: another way of keeping it."
+    )
+    name: str | None = Field(None, description="The variable's name, or the file's path; empty when it is kept.")
+
+
+class WatchSourceView(BaseModel):
+    """One place the assistant keeps reading, from watch.yaml, with its last read."""
+
+    id: str
+    label: str
+    connector: str
+    connector_label: str = Field(description="What kind of place it is, in words; empty when no connector runs it.")
+    reads: list[Literal["mail", "calendar"]] = Field(
+        default_factory=list, description="Whether the place is mail, a calendar, or neither (empty)."
+    )
+    enabled: bool
+    every_minutes: int
+    stance: Literal["follow", "understand"] | None = Field(
+        None,
+        description="follow (Mine to track) or understand (Only to understand: another group's work, read and kept "
+        "as facts, with nothing chased from it). Always given by the app.",
+    )
+    holds: Literal["meetings", "absence"] | None = Field(
+        None,
+        description="For a calendar: meetings (Meetings) or absence (Who is away: its entries are read into the days "
+        "the people they name are away). Always given by the app.",
+    )
+    unmatched_names: list[str] = Field(
+        default_factory=list,
+        description="For a calendar that holds who is away: the names its last read gave that no known person has, "
+        'each offered with "Add as a person" (POST /api/people, then read it again).',
+    )
+    author: str | None = Field(None, description="The person or team whose work all it holds is, as an id.")
+    author_name: str | None = Field(None, description="Their name, for showing; empty when none is set or it is gone.")
+    account: str | None = Field(
+        None, description="For a source of an add-on that signs in as you: the account it reads, by its address."
+    )
+    account_state: Literal["signed_in", "expired", "signed_out"] | None = Field(
+        None,
+        description="For a source that reads through a sign-in: where that sign-in stands for the account it reads "
+        "(signed in; expired, which includes the service having refused it at the last read; or signed out). None "
+        "for a source that signs in to nothing. Only a source whose account is signed in is being read: the screens "
+        "never say Read for another.",
+    )
+    sides: list[str] = Field(
+        default_factory=list,
+        description="The sides (top projects) it serves, in the order they are kept; empty when it names none.",
+    )
+    color: CalendarColor | None = Field(
+        None, description="For a calendar: the color of its mark on the schedule, from a short named list."
+    )
+    shown_color: CalendarColor | None = Field(
+        None,
+        description="For a calendar: the color its mark has on the schedule: the one the person picked, else one the "
+        "app gave it by its place among the calendars, so no two of the first eight share one. None for a source "
+        "that isn't a calendar.",
+    )
+    capture: bool | None = Field(
+        None,
+        description="For a mail source: whether everything it reads is mail the person sent themselves to keep track "
+        "of; the mail in it from their own address is handed in as their own words.",
+    )
+    capture_address: str | None = Field(
+        None,
+        description="For a mail source: an address such as an alias of their own, mail to which from their own address "
+        "is handed in as their own words.",
+    )
+    items: int = Field(description="Items it held at the last read.")
+    data_level: Literal["open", "internal", "restricted"] | None = Field(
+        None, description="How sensitive what it holds is: its items go only to AI accounts allowed this level."
+    )
+    data_level_from: Literal["source", "side", "kind", "default"] | None = Field(
+        None,
+        description="Where that level comes from: the source's own setting, the sides it serves, its kind of source, "
+        "or the default for all sources.",
+    )
+    data_level_sides: list[str] = Field(
+        default_factory=list,
+        description="When the level comes from the sides it serves: the names of the sides that give it.",
+    )
+    data_level_own: Literal["open", "internal", "restricted"] | None = Field(
+        None, description="The level the source itself sets, when it sets one."
+    )
+    data_level_side_level: Literal["open", "internal", "restricted"] | None = Field(
+        None,
+        description="The level the sides it serves give it, whether or not the source sets its own; none when it "
+        "serves no side.",
+    )
+    last: WatchRunView | None = None
+    read_at: str | None = Field(
+        None, description="When it was last actually read; a try that found no network or failed doesn't count."
+    )
+    stale: bool | None = Field(
+        None,
+        description="On, read before, and not read successfully within `watch.stale_after_hours`: Today names it "
+        "instead of saying nothing needs the person.",
+    )
+    failures: int = Field(0, description="Failed reads in a row.")
+    problem: ScreenText | None = Field(None, description="Why it can't be read, and what to do, while it fails.")
+    looked_back_to: date | None = Field(
+        None,
+        description="For a source whose first read took it in quietly: the day before which its mail wasn't looked "
+        "at. None for a source with no mail or another kind of first read.",
+    )
+    look_back_choices: list[int] = Field(
+        default_factory=list,
+        description="When `looked_back_to` is set and the source can be asked for older mail: how many more days the "
+        "person can ask to look, to pick from. Empty when the source can't be asked, so none is offered.",
+    )
+    secrets: list[SourceSecretView] = Field(
+        default_factory=list, description="Where each secret setting it has set is read from."
+    )
+
+
+class MailFoldersView(BaseModel):
+    """The folders of a mail source to pick from (design 6.33): every folder that can be read, `sent` the one the mail
+    server marks as the sent mail (none when it marks none, so the person picks), and `taken` the folders already read
+    by a source of the same mailbox, the source's own included."""
+
+    folders: list[str]
+    sent: str | None = None
+    taken: list[str] = Field(default_factory=list)
+    listed: bool = Field(
+        True,
+        description="Whether `folders` is the mailbox's own list. False for an add-on's mail, which can't be asked for "
+        "its folders: `folders` is then the usual names for sent mail, the likeliest first, and the person may name "
+        "another.",
+    )
+    reason: Literal["unavailable"] | None = Field(
+        None,
+        description="Why `folders` is empty when the mailbox could not be asked (its settings are incomplete); the "
+        "screen words it.",
+    )
+
+
+class SentFolderIn(BaseModel):
+    """Read a mailbox source's sent folder as a source of its own: the `folder`, picked from GET
+    /api/watch/{source}/folders, and the `label` the new source is shown by."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    folder: str | None = Field(
+        None, description="The folder to read; left out, the one the mail server itself marks as sent mail."
+    )
+    label: str | None = Field(None, description="What the new source is shown as; left out, the account and folder.")
+    fingerprint: str
+
+
+class WatchAuthorOption(BaseModel):
+    """Someone a source can be credited to: the person themselves, a colleague or a team."""
+
+    id: str
+    name: str
+    kind: Literal["you", "person", "team"]
+
+
+ItemKind = Literal["mail", "calendar", "file", "page", "action", "question", "other"]
+
+
+class AutoClosedView(BaseModel):
+    """A watched change a triage rule closed before the assistant read it."""
+
+    id: str
+    version: int
+    title: str
+    source: str = Field(description="The watched source's label.")
+    change: Literal["new", "changed", "removed"]
+    rule: str
+    reason: str
+    created_at: str
+
+
+class SilentCloseView(BaseModel):
+    """Something closed, dropped, set aside or answered that the person neither made nor saw: what, when, by which rule
+    or run, and why."""
+
+    ref: str = Field(description="Names the close, for marking it seen.")
+    kind: Literal["rule", "set_aside", "assistant"] = Field(
+        description="rule: a triage rule closed a change before it was read. set_aside: mail set aside as not work by "
+        "a rule or the assistant's sorting. assistant: an action or question the assistant closed as data."
+    )
+    how: Literal["closed", "set_aside", "dropped", "answered"]
+    title: str = Field(description="What was closed: the change's or mail's title, the action's or question's words.")
+    when: str
+    why: str = Field(description="The rule's reason, the assistant's reason or the words it cited.")
+    rule: str | None = Field(None, description="The rule's name, for a close a rule made.")
+    run: str | None = Field(None, description="The assistant's run that made the close, if one did.")
+    request: str | None = None
+    changeset: str | None = None
+    snapshot: str | None = Field(None, description="The mail item, for one set aside.")
+    record: RecordRef | None = Field(None, description="The record that was closed.")
+    item: ItemKind = Field("other", description="What kind of item was closed (mail, a file, a page, an action...).")
+
+
+class CloseKindCountView(BaseModel):
+    kind: Literal["rule", "set_aside", "assistant"]
+    total: int = Field(description="Closes of this kind in the period.")
+    silent: int = Field(description="Of those, the ones nobody has seen.")
+
+
+class CloseMeasureView(BaseModel):
+    """Silent closes out of all closes in the period, with the counts behind the rate."""
+
+    days: int = Field(description="How many days back the period looks (the quality window).")
+    since: str
+    until: str
+    total: int = Field(description="All closes in the period, the person's own and approved ones included.")
+    silent: int
+    by_person: int = Field(description="Closes the person made themselves.")
+    approved: int = Field(description="Closes the assistant or a rule made that the person then saw and approved.")
+    rate: float | None = Field(None, description="Silent over total; empty when nothing was closed.")
+    kinds: list[CloseKindCountView]
+
+
+class SilentClosesView(BaseModel):
+    count: int = Field(description="How many closes nobody has seen, in the period.")
+    closes: list[SilentCloseView] = Field(description="Those closes, newest first.")
+    measure: CloseMeasureView
+
+
+class SilentCloseSeen(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ref: str = Field(description="The close's `ref`, from the list.")
+
+
+class SinceEntryView(BaseModel):
+    """One thing the assistant or a rule did since yesterday (design 6.32, 6.35), the newest thing done to its record.
+    The screen words it from `act`, `title` and `because`: `quote` is the exact words it rested on, said by `said_by`
+    (a person's id when they are a known person) under `said_by_name`, their name or the sender as written; `by_you`
+    when it was the person themselves), `reason` the rule's own words (or the assistant's, for a
+    drop), `day` the date a move or a reply carries and `detail` what was heard (news, a delivered part, an answer).
+    `seen` follows the silent-close rule for closes and is whether the person looked the change over for the rest.
+    `undo` says how to put it back: `changeset` (POST /api/changesets/{changeset}/undo with `ops: [op]`),
+    `closer_look` (POST /api/requests/{request}/closer-look with `version`) or `set_aside` (POST
+    /api/set-aside/{snapshot}/work with `version`); none when it can no longer be put back."""
+
+    ref: str
+    act: Literal["added", "closed", "moved", "merged", "dropped", "set_aside", "news"]
+    title: str
+    when: str
+    because: Literal["said", "rule", "sorting", "replied", "meeting"]
+    seen: bool
+    undo: Literal["changeset", "closer_look", "set_aside"] | None = None
+    quote: str | None = None
+    said_by: str | None = None
+    said_by_name: str | None = None
+    by_you: bool = False
+    reason: str | None = None
+    day: date | None = None
+    detail: str | None = None
+    record: RecordRef | None = Field(None, description="The action or question it is about, which the screen opens.")
+    filed: FiledView | None = Field(
+        None, description="For a new item filed by words or the sender's domain: why, and where it can move."
+    )
+    changeset: str | None = None
+    op: int | None = None
+    request: str | None = None
+    snapshot: str | None = None
+    version: int | None = Field(None, description="The version of the request or mail item read, for its undo.")
+
+
+class SinceYesterdayView(BaseModel):
+    """What changed since yesterday as drawn at `as_of`, newest first, from `since` (the start of the previous day on
+    the person's clock, or when they last opened this list, if later). `unseen` counts the entries not yet seen.
+    Opening the list is POST /api/since-yesterday/seen with `as_of`, which marks everything made up to then as seen."""
+
+    as_of: datetime
+    since: datetime
+    unseen: int
+    entries: list[SinceEntryView]
+    rows_shown: int = Field(25, description="How many rows a day shows before Show more (`ui.since_rows_shown`).")
+
+
+class SideCount(BaseModel):
+    side: str = Field(description="The id of the side's top project.")
+    count: int = Field(
+        description="How many wait on that side, counting what is on no side too (it shows on every side)."
+    )
+
+
+class ViewCount(BaseModel):
+    view: str = Field(description="The id of the view.")
+    count: int = Field(
+        description="How many wait in that view: those in its projects, those on no project at all in its side and "
+        "those on no side."
+    )
+
+
+class WaitingCount(BaseModel):
+    """How many things wait on one screen: all of them, and for each side the ones that show under its tab."""
+
+    total: int
+    sides: list[SideCount] = Field(
+        default_factory=list,
+        description="One entry for each side the person has, Personal first; empty with no side beside Personal.",
+    )
+    views: list[ViewCount] = Field(
+        default_factory=list,
+        description="One entry for each view the person has, in the views' order; empty with no views.",
+    )
+
+
+class WaitingCounts(BaseModel):
+    """What waits for the person on each screen that lists it, for the side menu and the side tabs."""
+
+    changed: WaitingCount = Field(description="What changed: finished work not yet checked.")
+    followups: WaitingCount = Field(description="Follow-ups: what is ready to send.")
+    open: WaitingCount = Field(description="To-dos and questions: what waits on the person themselves.")
+    handled: WaitingCount = Field(description="Handled for you: what was handled since the person last opened it.")
+
+
+class LookedAt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    screen: Literal["handled"] = Field(
+        description="The screen the person opened; what came before now is no longer new."
+    )
+
+
+class SinceSeen(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    until: datetime = Field(description="The `as_of` of the list the person opened.")
+
+
+class SetAsideView(BaseModel):
+    """A mail item in the Set aside folder: left with the person, never read by the assistant."""
+
+    id: str = Field(description="The mail item's snapshot.")
+    version: int
+    section: Literal["personal", "sales", "notices"]
+    title: str
+    sender: str | None = None
+    source: str = Field(description="The watched source's label.")
+    received: str | None = Field(None, description="ISO 8601 date-time with its offset, as the service gave it.")
+    reason: str = Field(description="Why it was set aside, in plain words.")
+    link: str | None = Field(None, description="Where the message opens in the person's mail service, when it has one.")
+    address: str = Field("", description="The sender's address, when the mail holds one.")
+    domain: str | None = Field(
+        None,
+        description="The sender's domain, when a rule for the whole domain may be offered: empty when the mail has no "
+        "address or the domain is a public mail domain.",
+    )
+
+
+class SetAsideFolder(BaseModel):
+    items: list[SetAsideView]
+    deleted: int = Field(0, description="Messages whose content the person had deleted from the app after confirming.")
+
+
+class SetAsideMark(BaseModel):
+    """What a message was set aside with: where, by which rule or by the person, why and when. Kept by Undo of a
+    Bring it in so the message goes back as it was and not as a new set-aside by hand."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    section: Literal["personal", "sales", "notices"]
+    rule: str | None = None
+    reason: str
+    by: str | None = None
+    at: str | None = None
+
+
+class SetAsideIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    restore: SetAsideMark | None = Field(
+        None,
+        description="The mark the message had before it was brought in: with it the message goes back exactly as it "
+        "was, with its original group and reason.",
+    )
+
+    section: Literal["personal", "sales", "notices"] = Field(
+        description="Where the message is set aside. The screens offer sales and notices; personal is accepted so Undo "
+        "of Treat as work puts back a message an earlier version set aside as personal."
+    )
+
+
+class SetAsideDone(BaseModel):
+    """A mail item set aside by hand, with its sender so the screen can offer a sorting rule."""
+
+    was: SetAsideMark | None = Field(
+        None, description="For a Bring it in: the mark the message left the folder with, for Undo."
+    )
+    id: str
+    version: int
+    section: Literal["personal", "sales", "notices"]
+    address: str = Field("", description="The sender's address, when the mail holds one.")
+    domain: str | None = Field(
+        None,
+        description="The sender's domain, when a rule for the whole domain may be offered: empty when the mail has no "
+        "address or the domain is a public mail domain.",
+    )
+
+
+class HandledRow(BaseModel):
+    """One item on the Handled for you screen: mail set aside before the assistant read it, a change a rule closed, or
+    mail read with nothing to do."""
+
+    id: str = Field(
+        description="The mail item's snapshot, which every choice on mail names; for a change a rule closed, its "
+        "request."
+    )
+    version: int
+    tab: Literal["set_aside", "closed", "read"] = Field(
+        description="How it was handled: mail set aside, a change a rule closed, or mail read with nothing to do. Set "
+        "aside and closed rows are both listed on the Set aside tab; this decides the choices the row offers."
+    )
+    item: ItemKind = Field(description="What kind of item it is (mail, a file, a page...); the screen words it.")
+    rule: str | None = Field(None, description="For a change a rule closed: the rule's name.")
+    change: Literal["new", "changed", "removed"] | None = Field(
+        None, description="For a change a rule closed: whether the item was new, changed or removed."
+    )
+    kind: Literal["bills", "orders", "deliveries", "personal", "sales", "notices", "other"] = Field(
+        description="What the mail is, for grouping and the search. The screen words it."
+    )
+    title: str
+    sender: str | None = None
+    source: str = Field(description="The watched source's label.")
+    side: str | None = Field(
+        None,
+        description="The side (a top-level project) of the one source it came from serves; empty when that source "
+        "serves none or several, so the side filter shows it under every choice.",
+    )
+    received: str | None = Field(None, description="ISO 8601 date-time with its offset, as the service gave it.")
+    reason: str | None = Field(
+        None,
+        description="Why it was set aside or closed, in plain words; empty for mail the assistant read.",
+    )
+    link: str | None = Field(None, description="Where the message opens in the person's mail service, when it has one.")
+    saved: str | None = Field(None, description="The saved source record of the message, whose page opens it.")
+    address: str = Field("", description="The sender's address, when the mail holds one.")
+    domain: str | None = Field(
+        None,
+        description="The sender's domain, when a rule for the whole domain may be offered: empty when the mail has no "
+        "address or the domain is a public mail domain.",
+    )
+    section: Literal["sales", "notices"] = Field(
+        description="The section Always set aside mail like this files it in: its own for set-aside mail (the "
+        "configured one, `watch.handled_rule_section`, for a message an earlier version set aside as personal), the "
+        "configured one for mail the assistant read."
+    )
+    request: str | None = Field(None, description="For mail the assistant read: the request that read it.")
+    older_version: bool = Field(
+        False,
+        description="A change a rule closed because the file is an older version of another copy: Not the same "
+        "document is offered on it, and hands it in after all.",
+    )
+
+
+class HandledGroup(BaseModel):
+    key: str = Field(
+        description="By kind: `kind:` and the mail's kind, or `item:` and the kind of item for anything but mail. By "
+        "reason: the reason (`kind:` and the mail's kind for mail read with nothing to do). By sender: the sender's "
+        "address. Empty for none known. Unique within a list."
+    )
+    label: str | None = Field(
+        None,
+        description="By reason: the reason in words. By sender: the sender's name or address. Empty when the screen "
+        "words it (a kind, or no known reason or sender).",
+    )
+    count: int
+    items: list[HandledRow] = Field(description="Newest first.")
+
+
+class HandledCounts(BaseModel):
+    set_aside: int = Field(
+        description="Mail set aside and changes a rule closed, both before they were read, whatever the search."
+    )
+    read: int = Field(description="Mail read with nothing to do, whatever the search.")
+
+
+class HandledCountsToday(HandledCounts):
+    """The counts of both lists with how many of their mail came in on the person's own day, for a line that counts."""
+
+    today: int = Field(description="How many of the mail in either list came in on the person's own day.")
+
+
+class HandledKindCount(BaseModel):
+    item: ItemKind
+    count: int = Field(description="Rows of this kind in the chosen list, whatever the search.")
+
+
+class HandledView(BaseModel):
+    """What the app handled for the person (design 7.20): the chosen list in groups, groups ordered by their newest
+    row."""
+
+    tab: Literal["set_aside", "read"]
+    group: Literal["kind", "reason", "sender", "account"] = Field(description="How the groups were made.")
+    query: str = Field(description="The search the rows match; empty for all.")
+    item: ItemKind | None = Field(None, description="The kind of item the rows are narrowed to; empty for all.")
+    kept_days: int = Field(description="How many days an item stays listed before it leaves the list.")
+    page_rows: int = Field(description="How many rows a group shows before Show more.")
+    counts: HandledCounts
+    kinds: list[HandledKindCount] = Field(description="The kinds of item the chosen list holds, most first.")
+    groups: list[HandledGroup]
+
+
+class HandledDone(BaseModel):
+    """What a choice on a mail did: the mail, its version now, and the request made for it, if one was."""
+
+    was: SetAsideMark | None = Field(
+        None, description="For a Bring it in: the mark the message left the folder with, for Undo."
+    )
+    id: str
+    version: int
+    section: Literal["personal", "sales", "notices"]
+    request: str | None = Field(None, description="The request now waiting for the assistant, if the choice made one.")
+    address: str = Field("", description="The sender's address, when the mail holds one.")
+    domain: str | None = Field(
+        None, description="The sender's domain, when a rule for the whole domain may be offered."
+    )
+
+
+class VersionFile(BaseModel):
+    key: str = Field(description="The file's path inside the watched folder.")
+    title: str = Field(description="The file's name.")
+
+
+class VersionsView(BaseModel):
+    """What the person can say about a file in a watched folder (design 6.2): which other files of its top folder it
+    can be linked to as one document, and whether it can be split from the copies its name puts it with."""
+
+    applicable: bool = Field(description="False when the saved copy isn't a file in a watched folder.")
+    file: str = Field("", description="The file's name.")
+    others: list[VersionFile] = Field(
+        default_factory=list, description="The other files in its top folder, to pick from for Same document as."
+    )
+    can_split: bool = Field(False, description="It is grouped with other copies, so Not the same document applies.")
+    family: list[VersionFile] = Field(default_factory=list, description="The other copies it is grouped with now.")
+
+
+class VersionLinkIn(BaseModel):
+    other: str = Field(description="The key of the file it is the same document as.")
+
+
+class VersionApartIn(BaseModel):
+    request: str | None = Field(
+        None, description="The change a rule closed as an older version, to hand in after all (Handled for you)."
+    )
+    read_version: int | None = Field(None, ge=1, description="The version of that request as listed.")
+
+
+class VersionChosen(BaseModel):
+    """A choice about versions, as saved: the settings it changed (sent back to Undo it) and the change handed in
+    after all, if there was one."""
+
+    changes: list[SettingChangeView]
+    request: str | None = None
+    asked: str | None = Field(None, description="The question the choice answered.")
+
+
+class VersionAnswerIn(BaseModel):
+    file: str = Field(description="The key of the copy that is the current one.")
+
+
+class VersionUndoIn(BaseModel):
+    changes: list[SettingChangeView]
+    request: str | None = Field(None, description="A change handed in after all by the choice, to set aside again.")
+    asked: str | None = Field(None, description="A question the choice answered, to open again.")
+
+
+class SortingRuleIn(BaseModel):
+    """Always set aside mail from these senders and domains in a section, or never set it aside (work)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    fingerprint: str
+    choice: Literal["sales", "notices", "never"]
+    mail: str | None = Field(
+        None, description="The set-aside message the choice was made on, so the choice is kept as a correction."
+    )
+    senders: list[str] = Field(default_factory=list)
+    domains: list[str] = Field(default_factory=list)
+
+
+class FolderRenameIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    fingerprint: str = Field(
+        "", description="The settings fingerprint the screen read, for the backup folder's rename."
+    )
+
+
+class FolderRenamed(BaseModel):
+    state: str = Field(description="Which folder: backups or workspace.")
+    renamed: int = Field(
+        description="How many folders were renamed now; the workspace folder is renamed at the next start."
+    )
+    saved: SettingsSaved | None = Field(
+        None, description="The backup targets that followed the rename, with Undo; none when none pointed there."
+    )
+
+
+class FingerprintIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    fingerprint: str
+
+
+class SignInAccount(BaseModel):
+    """One account signed in to a sign-in."""
+
+    key: str = Field(description="Its short key, for DELETE /api/sign-ins/{name}?account={key}.")
+    address: str | None = Field(None, description="The account's address, when the add-on can name it.")
+    status: Literal["signed_in", "expired"] = Field(
+        description="Expired: it can't be renewed, so the person signs in again."
+    )
+    missing: list[str] = Field(
+        default_factory=list, description="Scopes asked for that the person didn't allow for this account."
+    )
+    acting: bool = Field(
+        False, description="The person switched acting on for this account (the `watch.acting` setting)."
+    )
+    acting_id: str | None = Field(None, description="The account's id as `watch.acting` and an act name it.")
+    acting_missing: list[str] = Field(
+        default_factory=list,
+        description="With acting on: the acting scopes the service didn't grant, so the person signs in again with "
+        "acting to give them.",
+    )
+
+
+class SignInView(BaseModel):
+    name: str
+    can_act: bool = Field(False, description="The add-on declares acting scopes, so an account can be let act.")
+    label: str = Field(description="What to call the service's sign-in on screen.")
+    status: Literal["signed_in", "expired", "signed_out"]
+    ready: bool = Field(description="The add-on's app registration (its client id) is set, so signing in can start.")
+    callback: str = Field(description="The address the service's app registration must allow to send people back to.")
+    allows: list[ScreenText] = Field(
+        default_factory=list, description="What the person is asked to allow, in plain words."
+    )
+    account: str | None = Field(None, description="The first signed-in account, when the add-on can name it.")
+    accounts: list[SignInAccount] = Field(
+        default_factory=list,
+        description="Every account signed in (or needing to sign in again), the first signed in first. Signing out "
+        "one is DELETE /api/sign-ins/{name}?account={key}; adding another is starting the sign-in again.",
+    )
+    several: bool = Field(
+        False,
+        description="The add-on names its accounts, so the person can sign in to several at once; otherwise a new "
+        "sign-in replaces the old one.",
+    )
+    missing: list[str] = Field(
+        default_factory=list, description="Scopes asked for that the person didn't allow, while signed in."
+    )
+    app: Literal["workspace", "pasted", "add-on", "none"] = Field(
+        "none",
+        description="Where its app registration comes from: the workspace's settings, values pasted here, the "
+        "add-on's own, or nowhere yet.",
+    )
+    app_note: ScreenText | None = Field(
+        None, description="What using the add-on's own registration means, while in use."
+    )
+    can_paste: bool = Field(False, description="The person can paste their own registration here (on this computer).")
+    needs_secret: bool = Field(False, description="The service issues a client secret along with the client id.")
+    set_aside: bool = Field(False, description="A pasted registration was set aside and can be brought back.")
+    default_unusable: bool = Field(
+        False,
+        description="The add-on has its own registration, but it doesn't allow this app's address (served under "
+        "another path, or hosted), so the person's own is needed.",
+    )
+    own_app_steps: list[SignInStep] = Field(
+        default_factory=list, description="How to make one's own registration with the service."
+    )
+    not_reading: list[ScreenText] = Field(
+        default_factory=list,
+        description="While signed in: what the add-on reads by default (the inbox, the calendar) that nothing reads "
+        "yet; POST /api/sign-ins/{name}/sources starts them.",
+    )
+
+
+class SignInStep(BaseModel):
+    text: str
+    link: str | None = Field(None, description="The service's page for this step (https).")
+
+
+class SignInApp(BaseModel):
+    """A person's own app registration for a sign-in, pasted on the Sign-ins row."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    client_id: str = Field(min_length=1, max_length=500)
+    client_secret: str | None = Field(None, max_length=500)
+
+
+class SignInStarted(BaseModel):
+    url: str = Field(description="The service's sign-in page, to open in the person's browser.")
+
+
+class PackAdds(BaseModel):
+    item_types: list[str] = Field(description="The kinds of items it adds, in words.")
+    screens: int
+    today: int = Field(description="How many kinds of lines it puts on Today.")
+    ai_work: int = Field(description="How many kinds of AI work it adds.")
+    actions: int
+    setup_steps: int
+    sources: int = Field(description="Places it can keep reading.")
+
+
+class PackReaches(BaseModel):
+    sign_ins: list[str] = Field(
+        description="Services it signs in to as you, each by the label its add-on gives the sign-in; an entry is empty "
+        "where the add-on isn't running, so its label can't be read."
+    )
+    hosts: list[str] = Field(description="Internet hosts it may reach.")
+    programs: list[str] = Field(description="Programs it runs on this computer.")
+    keys: int = Field(description="How many keys or passwords you provide it.")
+
+
+class PackSummary(BaseModel):
+    adds: PackAdds
+    reaches: PackReaches
+    keeps: Literal["open", "internal", "restricted"] = Field(description="The most private material it holds.")
+    reads: list[Literal["mail", "calendar"]] = Field(
+        default_factory=list, description="Whether the places it can keep reading are mail, a calendar, or both."
+    )
+
+
+class PackCost(BaseModel):
+    label: str
+    tokens: int = Field(description="The job's typical size, input and answer together.")
+    usd: float | None = Field(description="Its price on this workspace's accounts, when the prices are known.")
+    account: bool = Field(description="False when no AI account is set up for this kind of work.")
+
+
+class PackPrice(BaseModel):
+    model: Literal["free", "one_time", "subscription", "see_publisher"]
+    amount: float | None
+    currency: str
+    period: Literal["month", "year"] | None
+    note: str
+
+
+class PackLibrary(BaseModel):
+    """A library a pack's release lists, as a name and a version."""
+
+    name: str
+    version: str
+
+
+class PackView(BaseModel):
+    id: str
+    name: str
+    summary: str
+    publisher: str
+    maintainers: bool = Field(description="Made by the app's maintainers rather than a third party.")
+    updated: str
+    version: str
+    price: PackPrice
+    homepage: str | None
+    homepage_domain: str | None = Field(description="The homepage's real domain, to show beside the link.")
+    install: str = Field(description="How to install it, as the feed says (a command or a short instruction).")
+    demo: bool = Field(description="It can be tried in the demo.")
+    compatible: bool | None = Field(description="Works with this version of the app; None when the feed doesn't say.")
+    installed_version: str | None
+    enabled: bool
+    what: PackSummary
+    costs: list[PackCost]
+    feed: str = Field(description="The domain of the feed that lists it.")
+    unsigned: bool | None = Field(
+        None,
+        description="Its feed is the person's own and carries no signature, so nothing vouches for what installs.",
+    )
+    installable: bool | None = Field(
+        None, description="True when the app can install it from here (POST /api/packs/{id}/install)."
+    )
+    libraries: list[PackLibrary] = Field(
+        default_factory=list,
+        description="The libraries an install would add besides the add-on itself (the ones its release lists that fit "
+        "this computer and aren't in place already), which the screen says before it installs.",
+    )
+    library_problem: ScreenText | None = Field(
+        None,
+        description="Why the app can't install it on this computer when a library it needs has no build for it.",
+    )
+    removable: bool = Field(False, description="The app installed it from this screen, so it can take it away again.")
+    release_host: str | None = Field(
+        None,
+        description="The host its release file is read from, which a read token for it is sent to; empty when it has "
+        "no release.",
+    )
+    file: str | None = Field(
+        None,
+        description="The checksum of its release file: entries with the same one come in one file, so the screen shows "
+        "them as one row. Empty when it has no release.",
+    )
+    signed_in: bool | None = Field(
+        None,
+        description="Whether it is signed in, for an add-on that is running and signs in; empty when it doesn't or "
+        "isn't running.",
+    )
+
+
+class InstalledPackView(BaseModel):
+    name: str
+    version: str | None
+    description: str
+    enabled: bool
+    state: str
+    reason: ScreenText | None
+    what: PackSummary
+    removable: bool = Field(
+        False, description="The app installed it from the Add-ons screen, so it can take it away again."
+    )
+    file: str | None = Field(
+        None,
+        description="The checksum of the release file its catalog entry names, when a catalog lists it: add-ons with "
+        "the same one come in one file, so the screen shows them as one row.",
+    )
+    signed_in: bool | None = Field(
+        None,
+        description="Whether it is signed in, for an add-on that is running and signs in; empty when it doesn't or "
+        "isn't running.",
+    )
+
+
+class PackFeedView(BaseModel):
+    domain: str
+    error: ScreenText | None
+    notes: list[ScreenText]
+    read_at: str | None
+    address: str | None = Field(None, description="The catalog's address, as the person gave it.")
+    removable: bool | None = Field(
+        None, description="The person added it (workspace.plugins.catalog.feeds), so it can be taken off again."
+    )
+    own: bool = Field(
+        False,
+        description="It is the app's own catalog (the one this build came with): the screen names it for the app, "
+        "never by its address.",
+    )
+    signed: bool | None = Field(None, description="Its signature verified against a key the app trusts.")
+    unsigned: bool | None = Field(
+        None,
+        description="The person marked it as their own and it carries no signature: anyone who can change the feed can "
+        "change what installs, and the screen says so beside each of its add-ons.",
+    )
+
+
+class CatalogAddress(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    address: str = Field(description="A catalog's address: https://, then where its list is kept.")
+    fingerprint: str
+    own: bool | None = Field(
+        None,
+        description="The catalog is the person's own and unsigned: it is used without a signature, with a warning "
+        "beside each of its add-ons.",
+    )
+
+
+class PackTokenIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: str | None = Field(
+        None,
+        description="A read token typed on the screen, for the host the add-on's release file is read from. A local "
+        "app keeps it in its private folder and writes only where it is kept; a hosted app refuses it. Never stored "
+        "in the settings or sent back.",
+    )
+    reference: str | None = Field(None, description="Where the token is kept instead: env:NAME or file:/path.")
+    fingerprint: str
+
+
+class AddonSecretView(BaseModel):
+    """One secret an add-on says it needs, and where it is read from now, never its value."""
+
+    secret: str = Field(description="The secret's name, as the add-on's manifest declares it.")
+    where: Literal["none", "kept", "env", "file", "other"] = Field(
+        description="none: not set; kept: typed on this screen and kept by the app on this computer; env: read from a "
+        "named environment variable; file: read from a file of the person's own; other: another way of keeping it."
+    )
+    name: str | None = Field(None, description="The variable's name, or the file's path; empty otherwise.")
+
+
+class AddonSecretsView(BaseModel):
+    """The secrets one running add-on declares (`requires.secrets`)."""
+
+    plugin: str
+    secrets: list[AddonSecretView]
+
+
+class AddonSecretIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    value: str | None = Field(
+        None,
+        description="The secret typed on the screen. A local app keeps it in its private folder and writes only where "
+        "it is kept into the settings; a hosted app refuses it. Never stored in the settings or sent back.",
+    )
+    reference: str | None = Field(None, description="Where the secret is kept instead: env:NAME or file:/path.")
+    fingerprint: str
+
+
+class NotifyWebhookView(BaseModel):
+    """Where the person's own address for notices is read from, never the address."""
+
+    where: Literal["none", "kept", "env", "file", "other"] = Field(
+        description="none: no address yet; kept: typed on this screen and kept by the app on this computer; env: read "
+        "from a named environment variable; file: read from a file of the person's own; other: another way of "
+        "keeping it."
+    )
+    name: str | None = Field(None, description="The variable's name, or the file's path; empty otherwise.")
+
+
+class NoticeAppView(BaseModel):
+    """An app a notice can go to, for the pick list: its name and where to find its address."""
+
+    id: str
+    name: str
+    where: str = Field(description="One line on where to find the address in that app.")
+
+
+class NotificationsView(BaseModel):
+    """What the notices (design 7.19) are set to, and what each way of getting them can do now."""
+
+    enabled: bool = Field(description="Notices are on. They are off until the person turns them on.")
+    browser: bool = Field(description="The browser target is on (it also needs the browser's own permission).")
+    webhook: NotifyWebhookView
+    app: str = Field(
+        description="The id of the app notices go to: the one picked, else the one the older format means."
+    )
+    apps: list[NoticeAppView] = Field(description='The apps to pick from, by name; "Something else" is last.')
+    quiet_now: bool = Field(description="The person's clock is inside quiet hours: nothing is sent until they end.")
+    mail_ready: bool = Field(
+        description="Mail to the person themselves can be used. False until the app can send mail: the screen says "
+        "that mail comes with mail sending."
+    )
+    problem: str | None = Field(
+        None,
+        description="Why the last note to the address didn't arrive, in plain words; left out once one has arrived.",
+    )
+
+
+class NoticeMailAccountView(BaseModel):
+    """An account that can send a notice by mail: acting is on for it and its channel can send a message."""
+
+    id: str
+    label: str
+
+
+class NoticeMailYesView(BaseModel):
+    """The person's standing yes for notices by mail as it stands. `stale` holds why it stopped approving, if it has
+    (template, acting, address, person, channel)."""
+
+    id: str
+    account: str
+    account_label: str | None = None
+    address: str
+    given_at: datetime
+    template_version: str
+    stale: list[str] = Field(default_factory=list)
+
+
+class NoticeMailTextView(BaseModel):
+    subject: str
+    body: str
+
+
+class NoticeMailView(BaseModel):
+    """GET /api/notifications/mail: the card for mail to yourself (design 7.19). The choice is a pick list of accounts
+    that can send mail with acting on, and a pick list of the person's own addresses; the standing yes records both.
+    `example` is the exact notice as it would go (a count; the titles form when titles are allowed), `test` the test."""
+
+    accounts: list[NoticeMailAccountView]
+    addresses: list[str] = Field(description="The person's own email addresses, from their record; never typed.")
+    standing: NoticeMailYesView | None = None
+    template_version: str
+    titles_level: Literal["none", "open", "internal"]
+    count: NoticeMailTextView
+    titles: NoticeMailTextView | None = Field(None, description="The titles form, shown when titles are allowed.")
+    test: NoticeMailTextView
+
+
+class NoticeMailYesIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    account: str = Field(description="An account from GET /api/notifications/mail.")
+    address: str = Field(description="One of the person's own addresses from GET /api/notifications/mail.")
+    template_version: str = Field(description="The template_version of the notice the person was shown.")
+
+
+class NoticeMailTestResult(BaseModel):
+    ok: bool
+    problem: str | None = Field(None, description="Why the test was not sent, in plain words.")
+    act: str | None = Field(None, description="The act that carried it, when one was made.")
+
+
+class NotifyWaiting(BaseModel):
+    """What the open screen shows a browser notice for."""
+
+    browser: bool = Field(
+        description="Show browser notices now: they are on, the browser target is on, and it is not quiet."
+    )
+    keys: list[str] = Field(description="One key for each item in Today's Decide group; a key not seen before is news.")
+    message: str = Field(description="The notice for these items: a count and the action, never what they are about.")
+
+
+class NotifyWebhookIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    value: str | None = Field(
+        None,
+        description="The address typed on the screen. A local app keeps it in its private folder and writes only where "
+        "it is kept; a hosted app refuses it. Never stored in the settings or sent back.",
+    )
+    reference: str | None = Field(None, description="Where the address is kept instead: env:NAME or file:/path.")
+    fingerprint: str
+
+
+class NotifyAppIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    app: str = Field(description="The id of an app from GET /api/notifications.")
+    fingerprint: str
+
+
+class NotifyTestIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target: Literal["browser", "webhook"] = Field(description="Which way of getting notices to try.")
+
+
+class NotifyTestResult(BaseModel):
+    ok: bool = Field(description="The note was sent (webhook) or is ready to show (browser).")
+    message: str = Field(description="The test note's words; the browser shows them itself.")
+    problem: str | None = Field(None, description="Why it was not sent, in plain words.")
+
+
+class BackupKeyView(BaseModel):
+    """Where the key that encrypts the backups is read from, never the key."""
+
+    where: Literal["none", "kept", "env", "file", "other"] = Field(
+        description="none: backups aren't encrypted; kept: typed or made on this screen and kept by the app on this "
+        "computer; env: read from a named environment variable; file: read from a file of the person's own; other: "
+        "another way of keeping it."
+    )
+    name: str | None = Field(None, description="The variable's name, or the file's path; empty otherwise.")
+
+
+class BackupKeyIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    value: str | None = Field(
+        None,
+        description="The key typed on the screen. A local app keeps it in its private folder and writes only where it "
+        "is kept; a hosted app refuses it. Never stored in the settings or sent back.",
+    )
+    reference: str | None = Field(None, description="Where the key is kept instead: env:NAME or file:/path.")
+    make: bool | None = Field(
+        None,
+        description="Make a strong key, keep it as a typed one is kept, and show it once in this answer (`made`). A "
+        "hosted app refuses.",
+    )
+    fingerprint: str
+
+
+class BackupKeySaved(SettingsSaved):
+    made: str | None = Field(
+        None,
+        description="The key that was just made, for the person to copy. It is in this one answer and nowhere else: "
+        "never in a later answer, the settings, the ledger or a log.",
+    )
+
+
+class PacksView(BaseModel):
+    enabled: bool = Field(description="The catalog is on in this workspace.")
+    feeds: list[PackFeedView]
+    available: list[PackView]
+    installed: list[InstalledPackView]
+
+
+class MeView(BaseModel):
+    """The person the app is for: their own person record, the one place their name is kept."""
+
+    person: str | None
+    full_name: str
+
+
+class MeIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    full_name: str = Field(min_length=1, max_length=200)
+    workspace_name: str | None = Field(
+        None,
+        max_length=200,
+        description="What to name the workspace after the person's name is saved, used only while the workspace still "
+        "has its default name; a name the person chose is left alone.",
+    )
+
+
+class BusinessIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=200, description="What the person's business or job is called.")
+    kind: Literal["job", "business"] | None = Field(
+        None,
+        description="What the side is: a job (the person works for someone) or a business of their own; empty means "
+        "a business.",
+    )
+    summary: str | None = Field(
+        None,
+        max_length=2000,
+        description="What the business or job is, in a sentence or two: kept as the side's description. It is never "
+        "made into a project; the side's projects are named apart.",
+    )
+
+
+class BusinessView(BaseModel):
+    """The side added by saying what it is called: its project, what it is, whether this call made it (a name a side
+    already has is that side, made by no call), and the changeset Undo takes (none when nothing changed)."""
+
+    project: str
+    name: str
+    kind: Literal["job", "business"] = "business"
+    created: bool
+    changeset: str | None
+
+
+class SideView(BaseModel):
+    """One side of the person's work beside their own life: the id of its top project, what it is and its name."""
+
+    project: str
+    kind: Literal["job", "business"]
+    name: str
+    summary: str | None = Field(None, description="The side's description, when it has one.")
+    organization: str | None = Field(None, description="The id of the organization the side is, when it has one.")
+    removable: bool = Field(
+        False,
+        description="Setup is not finished and nothing is filed under the side or its projects, so setup can take it "
+        "back out.",
+    )
+    filed: int = Field(
+        0,
+        description="How many people, items and other records are filed under the side or the projects inside it, so "
+        "the screen never says there is nothing under it while something is.",
+    )
+
+
+class SideRestoreIn(BaseModel):
+    """What Undo of a removed side needs: what it was and where it stood among the sides."""
+
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["job", "business"] = Field(description="What the side was: a job or a business.")
+    position: int = Field(ge=0, description="Its place in the sides' list, from 0; the end when there are fewer.")
+
+
+class BusinessState(BaseModel):
+    """The sides of the person's work, for the side filter on Today and Follow-ups: `business` is false until a side
+    beside the personal one is set (or once its project is undone), `name` is the first such side's project name,
+    rendered, `sides` lists them in order and `personal` is the personal project's id."""
+
+    business: bool
+    name: str | None = None
+    personal: str | None = Field(None, description="The id of the personal project, when there is one.")
+    sides: list[SideView] = Field(default_factory=list, description="The sides beside the personal one, in order.")
+    chosen: Literal["me", "work"] | None = Field(
+        None,
+        description="What the person said about their work at setup: Just me (`me`) or Me and my work (`work`); "
+        "`work` whenever a work side exists; none while the question is unanswered.",
+    )
+
+
+class WorkIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    choice: Literal["me", "work"] = Field(description="Just me, or Me and my work.")
+    name: str | None = Field(
+        None,
+        max_length=200,
+        description="What the work is called (an employer or a business); needed for `work`, ignored for `me`.",
+    )
+    kind: Literal["job", "business"] | None = Field(
+        None, description="With `work`: whether it is a job or a business of their own; empty means a business."
+    )
+    summary: str | None = Field(
+        None,
+        max_length=2000,
+        description="With `work`: what the work is, kept as the side's description and never made into a project.",
+    )
+
+
+# ---- data-file forms -------------------------------------------------------------------------------------------------
+
+
+class DataFormView(BaseModel):
+    """A kind of data file an add-on lets the person edit through a form."""
+
+    name: str
+    plugin: str
+    label: str
+    description: str = ""
+    pattern: str = Field("*.yaml", description="Which files are of this kind, relative to its folder.")
+    single: bool = Field(False, description="The kind is one file, named by the pattern; no other can be made.")
+    has_preview: bool = Field(False, description="The add-on shows a preview beside the form (a picture or a page).")
+
+
+class DataFile(BaseModel):
+    """One file of a kind, across the data layers."""
+
+    file: str
+    layers: list[Literal["shipped", "workspace", "project"]] = Field(description="The layers that hold a copy.")
+    layer: Literal["shipped", "workspace", "project"] | None = Field(
+        description="The copy in effect; none for a single-file kind not made yet."
+    )
+    problem: ScreenText | None = Field(None, description="Why the copy in effect doesn't fit the form, if it doesn't.")
+
+
+class DataFileView(BaseModel):
+    """One file as a form: the schema's fields with the values in effect."""
+
+    file: str
+    layer: Literal["shipped", "workspace", "project"] | None = Field(
+        description="The copy in effect; None for a new file, shown with the defaults."
+    )
+    layers: list[Literal["shipped", "workspace", "project"]]
+    problem: ScreenText | None = None
+    items: list[SettingItem]
+
+
+class DataFormPreview(BaseModel):
+    """A form's preview, as run for the person now. `state` says how it went: `ok` (a picture, text or document is
+    given), `failed` (the add-on's preview raised or gave something it may not) or `timeout` (it ran past
+    `workspace.plugins.preview_seconds`). The reason is the add-on's own, in `message` (plain text, never a screen
+    phrase). A preview never holds up or undoes a save."""
+
+    state: Literal["ok", "failed", "timeout"]
+    message: str = ""
+    preview: ActionPreviewItem | None = Field(None, description="The picture or text, when the state is ok.")
+    document: list[DocumentBlock] | None = Field(
+        None, description="For a short document (text/markdown): its blocks, drawn as elements and never as markup."
+    )
+
+
+class DataFileChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    file: str = Field(description="The file's name, like classic.yaml (or folder/item.yaml for such a kind).")
+    layer: Literal["workspace", "project"] = Field(description="Which copy to write or remove; never the shipped one.")
+    project: str | None = Field(None, description="The project, for its layer.")
+    changes: dict[str, Any] = Field(default_factory=dict, description="New values by field (dotted for groups).")
+    start_from: str | None = Field(None, description="For a new file: another file of the kind to start from.")
+
+
+class DataFileRestore(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    file: str
+    layer: Literal["workspace", "project"]
+    project: str | None = None
+    before: str | None = Field(description="The copy's text from before, or None to remove it.")
+
+
+class DataFileSaved(BaseModel):
+    before: str | None = Field(description="The layer's copy before this change, for Undo; None when there was none.")
+
+
+# ---- adding watched sources ------------------------------------------------------------------------------------------
+
+
+class MailServiceView(BaseModel):
+    """A mail service offered by name for connecting a mailbox with an app password: what to show, and the steps."""
+
+    id: str
+    name: str
+    user_hint: str = Field(description="One line on what to type as the user name.")
+    app_password_steps: list[str] = Field(description="Plain lines, in order, on making an app password.")
+    app_password_page: str = Field(description="The service's own page for making one; empty when it has none.")
+    calendar_steps: list[str] = Field(
+        description="Plain lines on finding the private address of the service's calendar; empty when it has none."
+    )
+
+
+class WatchKindView(BaseModel):
+    """A kind of source the assistant can keep reading, with the form its settings take."""
+
+    name: str
+    label: str
+    plugin: str | None = Field(None, description="The add-on it comes from; None for the app's own.")
+    accounts: list[str] | None = Field(
+        None,
+        description="For a kind from an add-on that signs in as you: the addresses of the accounts signed in, to pick "
+        "from (a source says which it reads); None for a kind with no account to choose.",
+    )
+    first_run: Literal["intake", "baseline", "recent", "all"] = Field(
+        "intake",
+        description="What the first read of a source of this kind added here does: intake takes it in quietly (one "
+        "summary and one list to look over), baseline only notes what is there, recent also hands in the last day's, "
+        "all hands everything in.",
+    )
+    reads: list[str] = Field(
+        default_factory=list,
+        description='What the kind reads, for the words a form uses: "mail" or "calendar"; empty for any other kind.',
+    )
+    default_stance: Literal["follow", "understand"] | None = Field(
+        None,
+        description="What a source of this kind added now starts as: understand (Another group's, with the question "
+        "'Whose work is on it?') for a page, feed or tracker; follow (Mine to track) for mail, a calendar, a capture "
+        "mailbox or a folder.",
+    )
+    items: list[SettingItem]
+
+
+class WatchSourceIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    connector: str = Field(description="The kind of source, from GET /api/watch/kinds.")
+    label: str = ""
+    every_minutes: int = Field(60, ge=5)
+    project: str | None = None
+    stance: Literal["follow", "understand"] | None = Field(
+        None,
+        description="Whose work the source holds: follow (Mine to track) or understand (Only to understand: another "
+        "group's, read and kept as facts, nothing chased from it). Left out, a page, feed or tracker starts as "
+        "understand and mail, a calendar, a capture mailbox or a folder as follow (see WatchKindView.default_stance).",
+    )
+    holds: Literal["meetings", "absence"] | None = Field(
+        None,
+        description="For a calendar: meetings (Meetings) or absence (Who is away: vacations and days off, read into "
+        "the days the people they name are away, never meetings). Refused for a source that isn't a calendar.",
+    )
+    author: str | None = Field(None, description="A person's or team's id, from GET /api/watch/authors.")
+    account: str | None = Field(
+        None,
+        description="For a kind with accounts (GET /api/watch/kinds): the address of the signed-in account it reads. "
+        "Required when several are signed in; the only one is used when it is left out.",
+    )
+    color: CalendarColor | None = Field(None, description="For a calendar: the color of its mark on the schedule.")
+    capture: bool | None = Field(
+        None, description="For a mail source: whether everything it reads is the person's own capture."
+    )
+    capture_address: str | None = Field(
+        None, description="For a mail source: an address mail to which from the person's own address is their capture."
+    )
+    service: str | None = Field(
+        None,
+        description="For a mailbox: a mail service from GET /api/watch/mail-services. Its server, port and sent folder "
+        "are filled in, so only the address and the app password are given; the sign-in is tried before anything is "
+        "saved, and a refusal is said in words that name the service's steps. Not given together with a host or port.",
+    )
+    settings: dict[str, Any] = Field(default_factory=dict, description="Its settings, by field (nested as objects).")
+    secrets: dict[str, str] = Field(
+        default_factory=dict,
+        description="Passwords, keys and private addresses typed on the screen, by the setting's dotted name. A "
+        "local app keeps each in its private folder and writes only where it is kept into the settings; a hosted app "
+        "refuses them. Never stored in the settings, the ledger or any answer.",
+    )
+    fingerprint: str
+
+
+class WatchSourceChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: str | None = None
+    every_minutes: int | None = Field(None, ge=5)
+    enabled: bool | None = None
+    stance: Literal["follow", "understand"] | None = Field(
+        None,
+        description="Whose work the source holds: follow (Mine to track) or understand (Only to understand: another "
+        "group's, read and kept as facts, nothing chased from it). Left out, a page, feed or tracker starts as "
+        "understand and mail, a calendar, a capture mailbox or a folder as follow (see WatchKindView.default_stance).",
+    )
+    holds: Literal["meetings", "absence"] | None = Field(
+        None,
+        description="For a calendar: meetings (Meetings) or absence (Who is away: vacations and days off, read into "
+        "the days the people they name are away, never meetings). Refused for a source that isn't a calendar.",
+    )
+    author: str | None = Field(
+        None, description="A person's or team's id, from GET /api/watch/authors; empty, when sent, clears it."
+    )
+    account: str | None = Field(
+        None,
+        description="The address of the signed-in account it reads (GET /api/watch/kinds); empty, when sent, goes "
+        "back to the only account, and is refused while several are signed in.",
+    )
+    color: CalendarColor | None = Field(
+        None, description="For a calendar: the color of its mark on the schedule; null, when sent, clears it."
+    )
+    sides: list[str] | None = Field(
+        None,
+        description="The sides (top projects, from GET /api/business) the source serves; sent, it replaces the list, "
+        "and an empty list says none is named. A side that isn't one is refused.",
+    )
+    capture: bool | None = Field(
+        None,
+        description="For a mail source: whether everything it reads is the person's own capture (mail in a folder or "
+        "label they move mail to); sent, it is set or cleared.",
+    )
+    capture_address: str | None = Field(
+        None,
+        description="For a mail source: an address mail to which from the person's own address is their capture, such "
+        "as name+capture@example.com; empty, when sent, clears it.",
+    )
+    data_level: Literal["open", "internal", "restricted"] | None = Field(
+        None,
+        description="How sensitive what the source holds is, as the person sets it; null, when sent, goes back to "
+        "following the sides it serves (else its kind of source, else the default).",
+    )
+    settings: dict[str, Any] | None = None
+    secrets: dict[str, str] = Field(
+        default_factory=dict,
+        description="Secret settings typed on the screen, by dotted name; see the same field when adding a source. "
+        "A field not named keeps what it holds.",
+    )
+    fingerprint: str
+
+
+class PackInstalled(BaseModel):
+    name: str = Field(description="The installed package's name.")
+    version: str
+    needs_restart: bool = Field(description="It is used after a restart the person chooses; turning it on is separate.")
+    file_kept: bool = Field(
+        False,
+        description="Only this add-on was removed: other installed add-ons come in the same file, so the file stays.",
+    )
+    still_used_by: list[str] = Field(
+        default_factory=list,
+        description="The add-ons that still use the file when it was kept, by the name they run under.",
+    )
+    libraries: list[PackLibrary] = Field(
+        default_factory=list, description="The libraries the install added or shared (none after a removal)."
+    )
+
+
+class KnowledgeUse(BaseModel):
+    """How much the runs used a piece of knowledge, from their knowledge logs (design 6.22): `given` runs listed it,
+    `used` runs applied it, and `last_used` is when the latest of those began. All zero for one no run was given."""
+
+    used: int = Field(0, description="How many runs applied it.")
+    given: int = Field(0, description="How many runs were given it.")
+    last_used: datetime | None = Field(None, description="When the latest run that applied it began.")
+
+
+class KnowledgeView(KnowledgeUse):
+    """One piece of what the assistant learned: a lesson, glossary entry, routing entry or style note. `learned_from`
+    says whose words it is (person, input, assistant, pack, seed or import); `origin` is the link to where it came from,
+    decided on the server like an action's. The fields after `applies_to` are those of its kind and are empty for
+    the others."""
+
+    id: str
+    kind: Literal["lesson", "glossary_entry", "routing_entry", "style_note"]
+    version: int
+    text: str = Field(description="The entry in plain words.")
+    status: Literal["proposed", "active", "discarded", "expired", "retired"]
+    learned_from: Literal["person", "input", "assistant", "pack", "seed", "import"]
+    pack: str | None = None
+    trust: Literal["trusted", "untrusted"]
+    learned_at: datetime
+    kept_by: str | None = Field(None, description="The person who kept it, and so the author of its wording.")
+    kept_at: datetime | None = None
+    discard_reason: str | None = None
+    applies_to: Scope
+    evidence: KnowledgeEvidence | None = Field(None, description="The words and records it was learned from.")
+    origin: Origin | None = Field(None, description="Where it came from, for its link.")
+    guard: str | None = None
+    signal: str | None = None
+    term: str | None = None
+    meaning: str | None = None
+    confidence: Literal["confirmed", "assumed", "unknown"] | None = None
+    project: str | None = None
+    id_patterns: list[str] = Field(default_factory=list)
+    topic: str | None = None
+    person: str | None = None
+    team: str | None = None
+    negative: bool | None = None
+    look_up: str | None = None
+    audience: str | None = None
+    observation: str | None = None
+
+
+class RuleView(KnowledgeUse):
+    """One standing rule, as the Knowledge screen lists it: its wording, what it applies to and constrains, where it
+    came from and how much the runs used it."""
+
+    id: str
+    version: int
+    name: str = Field(description="The rule's own name.")
+    text: str = Field(description="The rule in the person's wording.")
+    status: Literal["proposed", "active", "discarded", "expired", "retired"]
+    learned_from: Literal["person", "input", "assistant", "pack", "seed", "import"]
+    trust: Literal["trusted", "untrusted"]
+    learned_at: datetime | None = None
+    kept_by: str | None = Field(None, description="The person who made it active.")
+    kept_at: datetime | None = None
+    discard_reason: str | None = None
+    applies_to: Scope
+    constrains: list[str] = Field(
+        default_factory=list,
+        description="What it is about: op kinds or op fields. Empty means nothing is checked, so it is only present.",
+    )
+    enforced: bool = Field(
+        False, description="A code check enforces it, so it holds whether or not anything triggers it."
+    )
+    evidence: KnowledgeEvidence | None = Field(None, description="The words and records it was learned from.")
+    origin: Origin | None = Field(None, description="Where it came from, for its link.")
+
+
+class KnowledgeKeep(BaseModel):
+    """Keep a proposed entry. A new wording or target made here is the person's own."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    read_version: int = Field(ge=1, description="The entry's version that was read.")
+    text: str | None = Field(None, min_length=1, description="The entry's wording, when the person changed it.")
+    applies_to: Scope | None = Field(None, description="What it applies to, when the person changed it.")
+
+
+class KnowledgeTermAdd(BaseModel):
+    """A word of the person's own and what it means here: kept as an active glossary entry in their words."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    term: str = Field(min_length=1, description="The word, acronym or name as the person writes it.")
+    meaning: str = Field(min_length=1, description="What it means here.")
+
+
+class KnowledgeNarrow(BaseModel):
+    """Narrow what a rule or entry applies to: the person's own change to its scope."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    read_version: int = Field(ge=1, description="The entry's version that was read.")
+    applies_to: Scope = Field(description="What it applies to from now on.")
+
+
+class RuleReviewRule(BaseModel):
+    """A standing rule offered for review: given to runs and never shown to apply."""
+
+    id: str
+    version: int = Field(description="The rule's version, to send back with Keep, Narrow or Retire.")
+    name: str
+    text: str = Field(description="The rule in the person's wording.")
+    applies_to: Scope
+    present: int = Field(description="How many runs in the window were given it without it showing as applied.")
+    applied: int = Field(description="How many runs in the window showed it applied.")
+
+
+class RuleReviewView(BaseModel):
+    """The weekly review of standing rules (design 6.22): the rules to look over, most present first, and how large the
+    always-sent section is against its budget."""
+
+    days: int = Field(description="The window the counts cover, in days.")
+    flagged: list[RuleReviewRule]
+    stable_chars: int = Field(description="The size of what every run is sent, in characters, on the latest run.")
+    stable_budget: int = Field(description="The size that section may be before rules move out of it.")
+    moved: int = Field(description="How many rules the latest run had moved out of the always-sent part.")
+    due: bool = Field(description="Whether Today offers the review now.")
+
+
+class RuleReviewPutOff(BaseModel):
+    """The answer to "Not now" on the rules review line: the review is off Today until this moment."""
+
+    until: datetime = Field(description="When the review is offered again, if it still has something to show.")
+    signal: str = Field(description="The id of what was recorded, which Undo takes back.")
+
+
+class KnowledgeDiscard(BaseModel):
+    """Discard a proposed entry; it is kept, with the reason if one is given."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    read_version: int = Field(ge=1, description="The entry's version that was read.")
+    reason: str | None = Field(None, description="Why, if the person says.")
+
+
+class OverlapView(BaseModel):
+    """The entry a proposal would merge with: one of its kind that says the same thing over a target that overlaps."""
+
+    id: str
+    kind: Literal["lesson", "glossary_entry", "routing_entry", "style_note", "rule"]
+    text: str = Field(description="The entry in plain words.")
+    status: Literal["proposed", "active"]
+
+
+class ProposalView(KnowledgeView):
+    """One proposal waiting for the person: a piece of what the assistant learned, or a standing rule, to keep, set
+    aside "just this time" or discard. `came_from` says where it came from (an input, or one of the person's
+    corrections); proposals from inputs expire at `expires_at`, those from corrections never do."""
+
+    kind: Literal["lesson", "glossary_entry", "routing_entry", "style_note", "rule"]
+    name: str | None = Field(None, description="A rule's own name.")
+    came_from: Literal["input", "correction"]
+    batch: Literal["daily", "catch_up"] = Field(
+        description="daily: reviewed on Today's one line for what was learned. catch_up: part of the one list made "
+        "from corrections recorded before the assistant could learn from them."
+    )
+    more_evidence: list[KnowledgeEvidence] = Field(
+        default_factory=list, description="What other proposals of the same thing were learned from, merged into it."
+    )
+    just_this_time_before: int = Field(
+        0, description='How many times the person said "just this time" to the same correction before.'
+    )
+    overlaps_with: OverlapView | None = Field(
+        None,
+        description="The other entry it would merge with (an active one first, else the oldest proposed), when it "
+        "says what that one says over an overlapping target; none when it stands alone.",
+    )
+    expires_at: datetime | None = Field(None, description="When it expires unreviewed; none for one that never does.")
+    from_changeset: str | None = Field(
+        None,
+        description="For one learned from a correction: the change the correction was about, so its card can show "
+        "the proposal.",
+    )
+
+
+class LearnedLine(BaseModel):
+    """What the assistant learned from one correction, for the line under that correction's card (design 7.18).
+    `learning`: the assistant is still working on it (`waiting` says why and until when). `proposed`: there is a
+    `proposal` to keep. `kept`: the person's own words were kept at once; `undo` is the change that makes Undo."""
+
+    signal: str = Field(description="The id of the correction.")
+    kind: str = Field(description="What the person did (sent_back, answered_assistant, change_requested and so on).")
+    changeset: str | None = Field(None, description="The change the correction was about, when it was about one.")
+    refs: list[str] = Field(default_factory=list, description="The records the correction was about.")
+    state: Literal["learning", "proposed", "kept"]
+    waiting: ScreenText | None = Field(None, description="While learning: why it waits, in plain words.")
+    proposal: ProposalView | None = Field(None, description="The entry, for a proposal or one kept at once.")
+    undo: str | None = Field(None, description="For one kept at once: the change to undo.")
+
+
+class LearnedView(BaseModel):
+    """The learning of the corrections that have something to show: still being learned, a proposal to keep, or the
+    person's own words kept at once. The catch-up list's proposals are not here."""
+
+    lines: list[LearnedLine]
+
+
+class ProposalsView(BaseModel):
+    """Everything the assistant learned that waits for the person, oldest first, apart from the catch-up list."""
+
+    proposals: list[ProposalView]
+    origins: dict[str, int] = Field(description="How many came from an input and how many from a correction.")
+    expired: int = Field(description="How many from inputs expired unreviewed since the person last looked.")
+
+
+class CatchUpView(BaseModel):
+    """The one list of what the assistant learned from corrections made before it could learn from them (design
+    6.22): at most the configured number of kinds of correction, the most repeated first."""
+
+    proposals: list[ProposalView]
+    made_at: datetime | None = Field(None, description="When the list was made; none before it has been.")
+    waiting: int = Field(description="Kinds of correction chosen that the assistant hasn't learned from yet.")
+    left_out: int = Field(description="Kinds of correction too many for the list; they expired unread.")
+    most: int = Field(description="The most kinds of correction one list holds.")
+
+
+class QualityKnowledgeUsed(BaseModel):
+    """How often one kind of work used what it was given (design 6.20): the runs whose answer listed an entry it had
+    been given, over the runs given at least one."""
+
+    task: str = Field(description="The kind of work.")
+    runs_given: int = Field(description="Runs in the window that were given at least one lesson, rule or fact.")
+    runs_applied: int = Field(description="Of those, the runs whose answer listed at least one entry it was given.")
+    dropped: int = Field(description="Entries answers named as applied that the run had not been given; left out.")
+    rate: float | None = Field(None, description="Applied over given; none when no run was given anything.")
+
+
+class QualityRepeatWeek(BaseModel):
+    """One kind of work in one week: how many corrections repeated a mistake the assistant had been taught about."""
+
+    task: str = Field(description="The kind of work that was corrected.")
+    week: date = Field(description="The Monday of the week, in the person's time zone.")
+    corrections: int = Field(description="Corrections of that work in the week.")
+    repeats: int = Field(description="Of those, the ones whose run had been given a lesson or rule for the same item.")
+    enough: bool = Field(description="Whether the week had enough corrections to say anything.")
+    rate: float | None = Field(None, description="Repeats over corrections; none for a week without enough.")
+
+
+class QualityMissingGroup(BaseModel):
+    """What several answers said no op could do, in one wording."""
+
+    wording: str = Field(description="What was needed, in the most recent wording.")
+    count: int = Field(description="How many answers said it.")
+    tasks: list[str] = Field(description="The kinds of work that said it.")
+    changesets: list[str] = Field(description="The answers that said it, newest first.")
+    last_seen: datetime | None = Field(None, description="When the newest answer was made.")
+
+
+class QualityMissingWeek(BaseModel):
+    """The missing-op list for one week, most said first."""
+
+    week: date = Field(description="The Monday of the week, in the person's time zone.")
+    groups: list[QualityMissingGroup]
+
+
+class QualityMissedWeek(BaseModel):
+    """ "Missed one" for one person in one week (design 6.32): how often they said the assistant missed something."""
+
+    person: str = Field(description="The id of the person.")
+    person_name: str = Field(description="The person's name, as shown.")
+    week: date = Field(description="The Monday of the week, in the person's time zone.")
+    week_end: date = Field(description="The Sunday of the week, or today when the week is still under way.")
+    count: int = Field(description="How many times they said the assistant missed something that week.")
+
+
+class QualityApartWeek(BaseModel):
+    """Missed, declined and dropped for one week, each counted on its own (design 6.20, 6.22)."""
+
+    week: date = Field(description="The Monday of the week, in the person's time zone.")
+    week_end: date = Field(description="The Sunday of the week, or today when the week is still under way.")
+    missed: int = Field(description="Times the person said the assistant failed to find something.")
+    declined: int = Field(description="Held changes the person declined: not theirs, or not a promise.")
+    dropped: int = Field(description="Questions and actions the person dropped as no longer needed.")
+
+
+class QualityApart(BaseModel):
+    """The three signals the person gives, never added together: missed, declined and dropped. A drop is not a
+    correction of the assistant, so it is in no correction count and not in the repeat-correction rate."""
+
+    missed: int = Field(description="Times in the window the person said the assistant failed to find something.")
+    declined: int = Field(description="Held changes declined in the window: not the person's, or not a promise.")
+    dropped: int = Field(description="Questions and actions dropped in the window as no longer needed.")
+    weeks: list[QualityApartWeek] = Field(description="The same for each week of the window, oldest first.")
+
+
+class QualityAnswerWeek(BaseModel):
+    """Helpful and not helpful answers for one week, each counted on its own (design 6.20)."""
+
+    week: date = Field(description="The Monday of the week, in the person's time zone.")
+    week_end: date = Field(description="The Sunday of the week, or today when the week is still under way.")
+    helpful: int = Field(description="Answers from Ask the person marked helpful.")
+    not_helpful: int = Field(description="Answers from Ask the person marked not helpful.")
+
+
+class QualityAnswers(BaseModel):
+    """What the person said about the answers from Ask, a measure counted beside the corrections and never added to
+    them: a verdict they took back isn't counted."""
+
+    helpful: int = Field(description="Answers marked helpful in the window.")
+    not_helpful: int = Field(description="Answers marked not helpful in the window.")
+    weeks: list[QualityAnswerWeek] = Field(description="The same for each week of the window, oldest first.")
+
+
+class QualityCloseDay(BaseModel):
+    day: date = Field(description="The day, on the person's own clock.")
+    total: int = Field(description="Closes made that day.")
+    silent: int = Field(description="Of those, the ones the person hasn't seen.")
+
+
+class QualityCloses(BaseModel):
+    """Silent closes out of all closes in the window (design 6.32)."""
+
+    total: int = Field(description="Every close made in the window: by a rule, set aside, or by the assistant.")
+    silent: int = Field(description="Of those, the ones the person hasn't made, seen or approved.")
+    days: list[QualityCloseDay] = Field(description="Each day with a close, oldest first.")
+
+
+class QualityEndingDay(BaseModel):
+    day: date = Field(description="The day the endings were made, on the person's own clock.")
+    made: int = Field(description="Endings the assistant made that day.")
+    wrong: int = Field(description="Of those, the wrong ones.")
+
+
+class QualityEndings(BaseModel):
+    """Wrong endings out of endings made in the window (design 6.32): an ending is a close, drop, move, part or unhold
+    the assistant made; it is wrong when the person declined it, undid it, or reopened an action a nudge had recorded
+    as done. One still waiting for the person's Keep is not counted yet."""
+
+    made: int = Field(description="Endings made in the window that applied or that the person decided about.")
+    wrong: int = Field(description="Of those, the wrong ones: declined, undone or reopened.")
+    declined: int = Field(description="Wrong because the person kept things as they were.")
+    undone: int = Field(description="Wrong because the person undid it.")
+    reopened: int = Field(description="Wrong because a nudge was recorded as done and the person reopened it.")
+    days: list[QualityEndingDay] = Field(description="Each day with an ending made, oldest first.")
+
+
+class QualityCountDay(BaseModel):
+    day: date = Field(description="The day counted.")
+    present: int = Field(description="Promises the person counted on their own list that day.")
+    missed: int = Field(description="Of those, how many the app didn't have.")
+
+
+class QualityCounts(BaseModel):
+    """Missed out of present in the window (design 6.32): the person's own daily entries, summed. The app never works
+    these out."""
+
+    person: str | None = Field(None, description="The id of the person whose entries these are.")
+    present: int = Field(description="Promises counted over the days entered.")
+    missed: int = Field(description="Of those, how many the app didn't have.")
+    entered: int = Field(description="How many days have an entry.")
+    days: list[QualityCountDay] = Field(description="Each day with an entry, oldest first.")
+
+
+class QualityReplays(BaseModel):
+    """The replay set (design 6.32): the misses kept as cases."""
+
+    count: int = Field(description="How many replay files the workspace has.")
+    last_run: datetime | None = Field(
+        None, description="When they last ran; none, because nothing records it apart from other runs."
+    )
+
+
+class QualityCountIn(BaseModel):
+    present: int = Field(ge=0, description="How many promises the person counted on their own list that day.")
+    missed: int = Field(ge=0, description="Of those, how many the app didn't have.")
+
+
+class QualityCountBefore(BaseModel):
+    """What a day's count held before a save, which Undo puts back."""
+
+    present: int
+    missed: int
+
+
+class QualityCountSaved(BaseModel):
+    id: str = Field(description="The id of the day's count.")
+    day: date
+    present: int
+    missed: int
+    previous: QualityCountBefore | None = Field(
+        None, description="What the day held before this save; none when it had nothing. Undo takes it back."
+    )
+
+
+class QualityCountUndo(BaseModel):
+    previous: QualityCountBefore | None = Field(None, description="What `previous` was in the save to undo.")
+
+
+class QualityOutcomeWeek(BaseModel):
+    """What the assistant's work came to in one week (design 6.20, 6.32 "Measured"). Each figure is its own count."""
+
+    week: date = Field(description="The Monday of the week, in the person's time zone.")
+    week_end: date = Field(description="The Sunday of the week, or today when the week is still under way.")
+    promises_found: int = Field(description="Promises of the person's the assistant found this week.")
+    promises_kept: int = Field(
+        description="Promises the assistant had found, from any week, that the person closed as done this week."
+    )
+    dismissed: int = Field(description="Suggestions the person left or kept as they were this week: false alerts.")
+    corrected: int = Field(
+        description="Work the person declined, undid, pulled back, edited or said needed no reply this week: false "
+        "alerts."
+    )
+    review_seconds: int = Field(
+        description="Seconds the screens that look over the assistant's work were open and in view this week."
+    )
+    review_visits: int = Field(description="How many visits those seconds were spread over.")
+    follow_ups_completed: int = Field(
+        description="Things the person chased that were settled this week: a promise someone owed that was followed "
+        "up and then done, a question that was followed up and then answered."
+    )
+
+
+class QualityOutcome(BaseModel):
+    """The outcome measures over the window and for each week, readable for the gate week's exit. The totals are the
+    weeks added up, each measure on its own."""
+
+    promises_found: int
+    promises_kept: int
+    dismissed: int
+    corrected: int
+    review_seconds: int
+    review_visits: int
+    follow_ups_completed: int
+    weeks: list[QualityOutcomeWeek] = Field(description="Each week of the window, oldest first.")
+
+
+class ReviewTimeIn(BaseModel):
+    screen: Literal["review", "changes", "since", "today", "handled", "followups", "open", "knowledge"] = Field(
+        description="The screen that looks over the assistant's work: review (the review mode), changes (what "
+        "changed), since (since yesterday), today (the review pane opened on Today), handled (what was handled for "
+        "the person), followups (the follow-ups), open (the to-dos and questions) or knowledge (what the assistant "
+        "knows)."
+    )
+    seconds: int = Field(ge=0, le=86400, description="How long the screen was open and in view on this visit.")
+
+
+class ReviewTimeSaved(BaseModel):
+    seconds: int = Field(description="The seconds recorded, held to the configured most for one visit; 0 when none.")
+
+
+class QualityReviewDay(BaseModel):
+    day: date = Field(description="The day, on the person's own clock.")
+    seconds: int = Field(description="Seconds the screens that look over the assistant's work were open and in view.")
+    visits: int = Field(description="How many visits those seconds were spread over.")
+
+
+class QualityReview(BaseModel):
+    """Review time a day over the window (design 6.32; the pass bar's median): each day with any review, and the median
+    of those days' totals. A day with none is not a day of review, so it is left out."""
+
+    median_seconds: int | None = Field(
+        None, description="The median of a day's review seconds over the days with any; none when no day has any."
+    )
+    days_reviewed: int = Field(description="How many days have any review time.")
+    total_seconds: int = Field(description="All the review seconds in the window.")
+    visits: int = Field(description="All the visits in the window.")
+    days: list[QualityReviewDay] = Field(description="Each day with review time, newest first.")
+
+
+class QualityLostItem(BaseModel):
+    id: str = Field(description="The promise's id.")
+    text: str = Field(description="The promise in its own words.")
+    day: date = Field(description="The day it vanished, on the person's own clock.")
+
+
+class QualityLostDay(BaseModel):
+    day: date
+    existed: int = Field(description="Promises that existed in the window, the same on every day.")
+    lost: int = Field(description="Promises that vanished that day with no ending anyone saw.")
+
+
+class QualityLost(BaseModel):
+    """Lost promises in the window (design 6.32): promises that existed and then vanished with no ending op, no person
+    action and no undo trail. `existed` is the denominator."""
+
+    existed: int = Field(description="Promises that were open at some time in the window.")
+    lost: int = Field(description="Of those, how many vanished with no ending anyone saw in the window.")
+    days: list[QualityLostDay] = Field(description="Each day a promise was lost, oldest first.")
+    items: list[QualityLostItem] = Field(description="The lost promises, newest first, at most twenty.")
+
+
+class QualitySourceDay(BaseModel):
+    day: date
+    checked: int = Field(description="Connected sources checked at the end of that day.")
+    over_a_day: int = Field(description="Of those, how many were unread for more than a day.")
+    silent: int = Field(description="Of those, how many Today had no line about.")
+
+
+class QualitySources(BaseModel):
+    """Sources not read (design 6.32): for each day, the connected sources checked, how many were unread for more than
+    a day and how many of those Today said nothing about. Counted in source-days."""
+
+    checked: int
+    over_a_day: int
+    silent: int
+    days: list[QualitySourceDay] = Field(description="Each day with a source connected, oldest first.")
+
+
+class QualitySampleItem(BaseModel):
+    source: str = Field(description="The message's id.")
+    title: str = Field(description="Its subject, for the person to find it in their own mail.")
+    received_at: datetime = Field(description="When it arrived.")
+    present: int | None = Field(None, description="The promises the person found in it; none until read.")
+    missed: int | None = Field(None, description="Of those, how many the app didn't have; none until read.")
+
+
+class QualitySample(BaseModel):
+    """The sample drawn for the person's own reading (design 6.32): the messages chosen and what was found in those
+    read so far. `size` is how many messages it holds, `candidates` how many the window had to draw from."""
+
+    id: str
+    drawn_at: datetime
+    since: date
+    until: date
+    candidates: int
+    size: int
+    read: int = Field(description="How many of its messages have been read.")
+    present: int = Field(description="Promises found in the messages read.")
+    missed: int = Field(description="Of those, how many the app didn't have.")
+    items: list[QualitySampleItem] = Field(description="The messages, oldest first.")
+
+
+class QualityMissedTotal(BaseModel):
+    """Missed out of present as the pass bar counts it: the person's daily counts and the messages they read from the
+    sample, added."""
+
+    present: int
+    missed: int
+    days: int = Field(description="Days with a daily count.")
+    messages: int = Field(description="Messages of the sample that were read.")
+
+
+class QualitySampleReadIn(BaseModel):
+    present: int = Field(ge=0, description="How many promises the person found in the message.")
+    missed: int = Field(ge=0, description="Of those, how many the app didn't have.")
+
+
+class QualitySampleReadSaved(BaseModel):
+    source: str
+    present: int
+    missed: int
+    previous: QualityCountBefore | None = Field(
+        None, description="What the message held before this save; none when it was not read. Undo takes it back."
+    )
+
+
+class QualityView(BaseModel):
+    """The quality view (design 6.20, 6.13): the knowledge-used rate, the repeat-correction rate by week, the weekly
+    missing-op list and "Missed one" for each person and week, over the configured window."""
+
+    days: int = Field(description="The window the figures cover, in days.")
+    min_corrections_per_week: int = Field(description="The fewest corrections a week needs for its rate to show.")
+    min_promises: int = Field(
+        description="The fewest promises found in the window before the figures show; with fewer, it is too early."
+    )
+    knowledge_used: list[QualityKnowledgeUsed]
+    repeat_corrections: list[QualityRepeatWeek]
+    missing: list[QualityMissingWeek]
+    missed: list[QualityMissedWeek] = Field(
+        default_factory=list,
+        description='"Missed one" for each person and week, oldest week first; a person with any in the window has a '
+        "row for every week, so a week with none is zero. It should fall from week to week.",
+    )
+    apart: QualityApart = Field(
+        description="Missed, declined and dropped, each counted on its own, over the window and for each week."
+    )
+    answers: QualityAnswers = Field(
+        description="Answers from Ask marked helpful and not helpful, over the window and for each week."
+    )
+    since: date = Field(description="The first day of the window the gate-week measures cover.")
+    until: date = Field(description="The last day of the window: today, on the person's own clock.")
+    closes: QualityCloses
+    endings: QualityEndings
+    counts: QualityCounts
+    replays: QualityReplays
+    outcome: QualityOutcome
+    review: QualityReview
+    lost: QualityLost
+    sources: QualitySources
+    sample: QualitySample | None = Field(
+        None, description="The latest sample drawn in the window, with what was found in it; none before one is drawn."
+    )
+    sample_allowed: bool = Field(False, description="`dispatch.knowledge.sample_consent`: a sample may be drawn.")
+    missed_total: QualityMissedTotal
+
+
+class OwnerNameView(BaseModel):
+    person: str = Field(description="The owner's person id.")
+    name: str = Field(
+        description="The owner as the workspace writes one: the full name, with the team when it has one."
+    )
+    team: str | None = Field(
+        None, description="The id of the team they act for here, if any; kept when another owner changes."
+    )
+
+
+class AlikeView(BaseModel):
+    """The open action another nearly repeats, for the row's "Merge with ..." choice."""
+
+    id: str
+    text: str
+    version: int = Field(description="Its version as read; sent back with the merge.")
+
+
+class OpenActionView(BaseModel):
+    """One open action for the screen that lists them all (GET /api/open-items). `state` is exactly one of: no_owner
+    (waiting for an owner), on_hold, overdue, stale (the person's own to-do with no date that nothing has changed for
+    `stale_days`) or open."""
+
+    id: str
+    version: int
+    text: str
+    state: Literal["no_owner", "on_hold", "overdue", "stale", "open"]
+    owners: list[OwnerNameView]
+    due: date | None = None
+    project: str | None = None
+    project_name: str = ""
+    side_name: str | None = Field(
+        None,
+        description="The side it is filed on directly, when it is in a side and in no project of it; its project "
+        "name is then empty.",
+    )
+    side: str | None = Field(
+        None,
+        description="The id of the side's top project it is on, whether it is filed on the side itself or in a project "
+        "of it; none for neither. The screen's side filter shows an item with none under every choice.",
+    )
+    views: list[str] = Field(
+        default_factory=list,
+        description="The ids of the views its project is in (design 6.32); empty when its project is in none. A view "
+        "only changes what a screen shows.",
+    )
+    parent_name: str | None = Field(None, description="The name of the project its project is part of, if any.")
+    notes: str | None = Field(None, description="Its notes, which the screen shows on hover.")
+    since: str = Field("", description="The day it was made, as an ISO date.")
+    on_hold: str | None = Field(None, description="What it waits for, while it is on hold.")
+    blocker: BlockerView | None = None
+    duplicate: AlikeView | None = Field(
+        None, description="The open action of the same project and owners it nearly repeats."
+    )
+    origin: Origin | None = Field(None, description="Where it came from, for its link.")
+    untouched_days: int | None = Field(None, description="For a stale one, the days nothing has changed on it.")
+    needs_date: bool | None = Field(
+        None,
+        description="It is open with no date, and the person's own or one they told someone about: the screen's "
+        '"Needs a date" group at the top, where a date picker sets its day as the person\'s own change.',
+    )
+    followed_up: str | None = Field(
+        None,
+        description="The latest day a follow-up to its owners was recorded; the to-do stays open (a nudge is never "
+        "completion).",
+    )
+    needs_you: bool | None = Field(
+        None,
+        description="It waits on the person: theirs, or with no owner yet, and not on hold. The count the side menu "
+        "shows is of these, so the screen's own count is worked out from the same rows.",
+    )
+    to_send: bool = Field(
+        False, description="An owner other than the person hasn't been told about it yet (design 6.10)."
+    )
+    told_names: list[str] = Field(
+        default_factory=list,
+        description="The people it reached (told or chased), as shown: who dropping it tells. Empty when nobody.",
+    )
+    due_check: bool | None = Field(
+        None,
+        description="Its date is one the rules couldn't read for certain: the row says to check it, and it is never "
+        "overdue or a deadline until the person confirms it.",
+    )
+    owner_question: str | None = Field(
+        None,
+        description="For one with no owner, the open question asking who owns it (answered with POST "
+        "/api/questions/{id}/answer).",
+    )
+    repeat: RepeatView | None = Field(None, description="How it repeats, when it does, said back from data.")
+    effort_minutes: int | None = Field(None, description="About how long it takes, in minutes, when it says.")
+    remind_at: datetime | None = Field(
+        None, description="When the person asked to be reminded of it, on their own clock (their time zone)."
+    )
+
+
+class MeetingIn(BaseModel):
+    what: str = Field(description="What the meeting is, in a few words.")
+    day: str = Field(description="The day, as 2026-10-16.")
+    time: str | None = Field(
+        None, description="The time of day, as 15:00, in the person's time zone; none for all day."
+    )
+    until: str | None = Field(
+        None,
+        description="The time of day it ends, as 16:00, on the same day; needs a start time. None for no end.",
+    )
+    side: str | None = Field(
+        None,
+        description="The id of the side it belongs to (a side's top project, as GET /api/setup/business lists them); "
+        "none when it is on no side in particular.",
+    )
+    where: str | None = Field(None, description="Where it happens, in a few words; none for no place.")
+    repeat: Literal["day", "week", "two_weeks", "month"] | None = Field(
+        None, description="How often it happens again: every day, week, two weeks or month; none for once."
+    )
+    repeat_until: str | None = Field(
+        None,
+        description="With `repeat`: the last day it can happen, as 2026-12-31 (that day included); none for no end.",
+    )
+    role: Literal["run", "attend", "brief_only"] | None = Field(
+        None,
+        description="What the person does at it: run it (a notes outline for after), attend it (what to raise, ask and "
+        "listen for) or brief only (a line in the brief, no prep page, as for a daily stand-up). None is no part "
+        "chosen: no preparation unless other people are on it, which reads as attend.",
+    )
+
+
+class EventEditIn(BaseModel):
+    """POST /api/events/{id}/edit: change the place, the repeat or the role of an entry the app keeps itself. What is
+    the same as before is left alone; an empty place or no `repeat` clears it, and a new repeat starts with no moved
+    or called-off dates."""
+
+    read_version: int = Field(ge=1, description="The version of the entry that was read; the change waits on it.")
+    where: str | None = Field(None, description="Where it happens, in a few words; none for no place.")
+    repeat: Literal["day", "week", "two_weeks", "month"] | None = Field(
+        None, description="How often it happens again; none for once."
+    )
+    repeat_until: str | None = Field(None, description="With `repeat`: the last day, as 2026-12-31; none for no end.")
+    role: Literal["run", "attend", "brief_only"] | None = Field(None, description="What the person does at it.")
+
+
+class MeetingAdded(BaseModel):
+    """What adding a meeting in one line did. `merged`: it was already there, so nothing was added: `where` says in the
+    person's own entries (`own`, and `entry` is that entry) or in a connected calendar (`calendar`); `merged_with` is
+    its title. Otherwise `entry` is the new entry and `changeset` undoes it (POST /api/changesets/{id}/undo)."""
+
+    entry: str | None = None
+    changeset: str | None = None
+    merged: bool
+    merged_with: str | None = None
+    where: Literal["own", "calendar"] | None = None
+
+
+class HandOverIn(BaseModel):
+    note: str | None = Field(None, description="What the person wants from the work, in their own words.")
+
+
+class HandedOver(BaseModel):
+    request: str = Field(description="The id of the request that was queued; it waits like any other for the go.")
+
+
+class HandedActionView(BaseModel):
+    """An action the assistant has in hand (GET /api/actions/handed). `state`: working (queued or running), needs_go
+    (held for the person's go, `estimate_usd` is about what it costs) or draft (a draft of the action's work waits for
+    review: `draft` is its version, opened with GET /api/text-versions/{id}/review)."""
+
+    action: str
+    request: str
+    state: Literal["working", "needs_go", "draft"]
+    draft: str | None = None
+    estimate_usd: float | None = None
+
+
+class OpenQuestionView(BaseModel):
+    """One open question for the same screen. `state` is exactly one of: yours (waiting for the person), waiting (sent,
+    no answer yet), not_sent, or later (held for a meeting or a day, `held_until`)."""
+
+    id: str
+    version: int
+    title: str
+    text: str
+    kind: Literal["question", "decision", "action-notice", "routing", "impact"]
+    state: Literal["yours", "waiting", "not_sent", "later"]
+    to: str = Field(description="The person it waits on, as an id.")
+    to_name: str
+    project_name: str = ""
+    side_name: str | None = Field(
+        None,
+        description="The sides it is filed on directly, by name and joined with commas, apart from its projects.",
+    )
+    side: str | None = Field(
+        None,
+        description="The id of the side's top project it is on; none for neither. The screen's side filter shows an "
+        "item with none under every choice.",
+    )
+    views: list[str] = Field(
+        default_factory=list,
+        description="The ids of the views its project is in (design 6.32); empty when its project is in none. A view "
+        "only changes what a screen shows.",
+    )
+    projects: list[str] = Field(default_factory=list, description="The ids of the projects it is about.")
+    since: str = Field("", description="The day it was sent, else the day it was made, as an ISO date.")
+    waiting_days: int | None = Field(None, description="For one that was sent, the days since the last word to them.")
+    chases: int = Field(0, description="How many follow-ups it has had.")
+    held_until: str | None = None
+    origin: Origin | None = None
+
+
+class OpenItemsView(BaseModel):
+    """Every open action and every open question (design 7.5): GET /api/open-items."""
+
+    actions: list[OpenActionView]
+    questions: list[OpenQuestionView]
+    stale_days: int = Field(description="Days with no change before a person's own undated to-do is stale; 0 is off.")
+    rows_shown: int = Field(15, description="How many to-dos a group shows before Show more (`ui.open_rows_shown`).")
+
+
+class DoneActionView(BaseModel):
+    """One to-do finished in the last days, for the Done tab (design 7.13)."""
+
+    id: str
+    version: int
+    text: str
+    closed_at: datetime = Field(description="When it was closed.")
+    day: date = Field(description="The day it was closed, on the person's own clock.")
+    closed_by: Literal["you", "assistant"] = Field(
+        description="`you` for the person's own close, `assistant` for one the assistant made on its own."
+    )
+    done_by: list[str] = Field(description="The people credited with the work, other than the person.")
+    reported_by: str | None = Field(None, description="Who said it was done, when that is somebody else.")
+    reason: str | None = Field(
+        None,
+        description="For the assistant's close, the exact words it quoted from the input. A screen shows them only "
+        "when the person opens the row.",
+    )
+    source_kind: Literal["reply", "notice", "calendar", "note"] | None = Field(
+        None,
+        description="For the assistant's close, what kind of input its quoted words came from, as the app holds it; "
+        "none when the evidence names no input the app can say more about.",
+    )
+    notice: str | None = Field(None, description="For a notice, which kind: bill, order or delivery.")
+    source_by: str | None = Field(None, description="For a reply, the sender's name as the input gives it.")
+    source_day: date | None = Field(None, description="The day the input arrived, on the person's own clock.")
+    origin: Origin | None = Field(None, description='Where the input can be opened, for "Open the message".')
+    project: str | None = None
+    project_name: str = ""
+    side_name: str | None = None
+    side: str | None = None
+    views: list[str] = Field(default_factory=list)
+
+
+class DoneItemsView(BaseModel):
+    """The to-dos finished in the last `days` days, newest first: GET /api/open-items/done."""
+
+    actions: list[DoneActionView]
+    days: int = Field(description="How far back the list goes (`ui.done_days`).")
+
+
+class PriorityThingView(BaseModel):
+    """One thing inside a Top priorities line, for the line's tooltip: an action or a question, and why it is there."""
+
+    kind: Literal["action", "question"]
+    id: str
+    text: str
+    why: Literal["overdue", "due_soon", "chase", "send", "answer", "waiting", "at_risk"]
+    due: date | None = None
+    waiting_days: int | None = Field(None, description="For something sent, the days since the last word to them.")
+    holds_up: int | None = Field(None, description="How many blocked actions this question or action holds up.")
+
+
+class PriorityLineView(BaseModel):
+    """One line of Top priorities (design 7.7). `kind` is action or question (the person's own, one thing: `action` or
+    `question` is its id, and for an action `owners` and `version` are what Reassign needs) or person (everything one
+    other person holds: the counts `send`, `chase`, `overdue` and `due_soon`, and `waiting_days`, the longest wait; its
+    Follow-ups group is `person`). `rank` is why it is listed, `due` its day, `days` how many days past its day it is
+    (none while the day is ahead) and `things` everything in it."""
+
+    key: str
+    rank: Literal["overdue", "due_soon", "waiting", "at_risk"]
+    kind: Literal["person", "action", "question"]
+    person: str | None = None
+    person_name: str | None = None
+    text: str = Field(description="The one thing's own words; for a person line, the person's name.")
+    project: str | None = None
+    project_name: str | None = None
+    side_name: str | None = Field(
+        None, description="The side it is filed on directly, when it is in a side and in no project of it."
+    )
+    due: date | None = None
+    days: int | None = None
+    action: str | None = None
+    question: str | None = None
+    version: int | None = Field(None, description="The action's version, to state when reassigning it.")
+    owners: list[OwnerNameView] = Field(default_factory=list, description="The action's owners, for Reassign.")
+    holds_up: int | None = Field(
+        None,
+        description="How many blocked actions this line's question or action holds up, in all for a person line. A "
+        "blocked action is never listed itself: its blocker is.",
+    )
+    send: int = 0
+    chase: int = 0
+    overdue: int = 0
+    due_soon: int = 0
+    waiting_days: int | None = None
+    things: list[PriorityThingView] = Field(default_factory=list)
+
+
+class ComingView(BaseModel):
+    """A dated to-do due in the next days that isn't on a Top priorities line."""
+
+    action: str
+    text: str
+    due: date
+    project: str | None = None
+    project_name: str | None = None
+    side_name: str | None = Field(
+        None, description="The side it is filed on directly, when it is in a side and in no project of it."
+    )
+    owners: list[OwnerNameView] = Field(default_factory=list)
+    mine: bool = False
+
+
+class TopPrioritiesView(BaseModel):
+    """Top priorities (design 7.7): GET /api/today/priorities. `lines` are the most pressing first, `more` how many
+    more rank beyond them (the settings give the number of lines), `blocked` how many open actions wait on a person, an
+    action or a question that still blocks them, and `coming` the dated to-dos of the next days after the lines."""
+
+    lines: list[PriorityLineView]
+    more: int
+    blocked: int
+    coming: list[ComingView]
+
+
+class WeekDueView(BaseModel):
+    """A to-do due by the week's end."""
+
+    action: str
+    text: str
+    due: date
+    project: str | None = None
+    project_name: str | None = None
+    side_name: str | None = Field(
+        None, description="The side it is filed on directly, when it is in a side and in no project of it."
+    )
+    owners: list[OwnerNameView] = Field(default_factory=list)
+    mine: bool = False
+    kind: Literal["due", "lead", "setup", "hold"] = "due"
+    side: str | None = Field(
+        None, description="The id of the side's top project it is on; none for neither (shown under every choice)."
+    )
+    views: list[str] = Field(
+        default_factory=list,
+        description="The ids of the views its project is in (design 6.32); empty when its project is in none. A view "
+        "only changes what a screen shows.",
+    )
+
+
+class WeekWaitingView(BaseModel):
+    """Someone waiting on the person: how many of their to-dos are promised or owed to them, and the earliest day."""
+
+    person: str
+    person_name: str
+    count: int
+    due: date | None = None
+    side: str | None = Field(
+        None,
+        description="The side those to-dos are on. A person waiting on the person from several sides has a row for "
+        "each side; the screen's side filter shows a row with none under every choice.",
+    )
+    views: list[str] = Field(
+        default_factory=list,
+        description="The ids of the views its project is in (design 6.32); empty when its project is in none. A view "
+        "only changes what a screen shows.",
+    )
+
+
+class ThisWeekView(BaseModel):
+    """This week (design 7.7): GET /api/today/week. From today (`first`) through the configured last working day
+    (`last`): what is `due`, who is `waiting` on the person and the `meetings` to hold, across projects."""
+
+    first: date
+    last: date
+    due: list[WeekDueView]
+    waiting: list[WeekWaitingView]
+    meetings: list[AgendaItemView]
+
+
+# ---- the outward act and the publisher (design 6.12) -----------------------------------------------------------------
+
+
+class ActRecipientView(BaseModel):
+    """A recipient of an act as the person sees it before their yes: who, the address as it resolves now and, when they
+    must be acknowledged, why (`new`, `outside`, `untrusted`, `flagged`)."""
+
+    key: str = Field(description="What the yes names this recipient by: the person's id, else the lowercased address.")
+    person: str | None = Field(None, description="The known person's id; none for an address no known person holds.")
+    name: str = Field(description="The person's name, or the address when no known person holds it.")
+    address: str = Field(description="The address as it resolves now.")
+    role: Literal["to", "cc"]
+    reasons: list[Literal["new", "outside", "untrusted", "flagged"]] = Field(
+        default_factory=list, description="Why they are called out; empty when nothing about them needs a look."
+    )
+
+
+class ActFailureView(BaseModel):
+    kind: Literal["auth", "refused", "outage", "offline"]
+    reason: str
+    at: datetime
+
+
+class ActAboutView(BaseModel):
+    """One thing an act is about, labeled for the screen: a saved message by its sender, subject and date, or a
+    calendar entry by its title and time."""
+
+    id: str = Field(description="The id of the saved message or calendar entry.")
+    kind: Literal["message", "event", "missing"] = Field(
+        description="message: a saved message; event: a calendar entry; missing: the record is gone."
+    )
+    title: str = Field(description="The message's subject or the event's title; empty when the record is gone.")
+    sender: str | None = Field(None, description="For a message, who it is from, as the source said.")
+    when: str | None = Field(None, description="For a message the day it arrived; for an event its start.")
+    end: str | None = Field(None, description="For an event, when it ends.")
+
+
+class ActChangeView(BaseModel):
+    """One thing in a stale act that is different now from what the person's yes was given on: the part of the yes it
+    belongs to, the field, and the text then and now (none when it wasn't there)."""
+
+    part: Literal["content", "target", "about", "account", "channel", "template"]
+    field: str = Field(
+        description="The name of a content part, `to` or `cc` for recipients, a target field (calendar, when, folder, "
+        "start, end, title...), or the id of the thing the act is about."
+    )
+    name: str | None = Field(None, description="For a thing the act is about, what it is called.")
+    before: str | None = Field(None, description="What it said when the person said yes; none when it wasn't there.")
+    after: str | None = Field(None, description="What it says now; none when it is gone.")
+
+
+class ActView(BaseModel):
+    """One outward act: its exact content and target, its state, the fingerprint a yes would cover and the recipients
+    called out."""
+
+    id: str
+    version: int
+    channel: str
+    channel_label: str = Field(description="What the channel is called, or its name when its add-on isn't running.")
+    kind: Literal["message", "mailbox", "calendar", "file"]
+    action: str = Field(
+        description="What it does: send, reply, reply_all, forward, archive, move, label, mark_read, create, cancel, "
+        "answer or write."
+    )
+    about: list[ActAboutView] = Field(
+        default_factory=list, description="What it is about: the saved messages a mailbox act changes, or the event."
+    )
+    account: str | None = Field(None, description="The account that carries it, as its id.")
+    account_label: str | None = Field(None, description="What that account is called on screen.")
+    acting: bool = Field(False, description="Whether the person switched acting on for that account.")
+    copied_because: Literal["acting_off"] | None = Field(
+        None, description="Why Copy carries it instead of the channel the draft named: acting is off for its account."
+    )
+    intended_channel: str | None = Field(None, description="The channel the draft named, when Copy carries it instead.")
+    label: str | None = Field(None, description="The label a mailbox act applies.")
+    start: str | None = None
+    end: str | None = None
+    title: str | None = Field(None, description="What an event is called.")
+    alarm_minutes: int | None = None
+    answer: Literal["accepted", "tentative", "declined", "propose"] | None = None
+    proposed_start: str | None = None
+    proposed_end: str | None = None
+    undoable: bool = Field(
+        False,
+        description="A sent act the person can take back: its channel can, and what it did is the kind that can be "
+        "undone.",
+    )
+    undone_at: datetime | None = None
+    undo_failure: ActFailureView | None = Field(
+        None, description="Why the channel could not take it back; the act stays sent."
+    )
+    status: Literal["draft", "approved", "sending", "sent", "failed", "uncertain", "stale", "withdrawn", "undone"]
+    parts: dict[str, str] = Field(description="The content exactly as it will go, by part.")
+    recipients: list[ActRecipientView] = Field(default_factory=list)
+    calendar: str | None = None
+    when: str | None = None
+    folder: str | None = Field(
+        None,
+        description="The folder a move puts the messages in, as the channel is handed it (an id, or the typed name).",
+    )
+    folder_name: str | None = Field(
+        None, description="What the person saw the picked folder called, when it differs from `folder`; show this."
+    )
+    label_name: str | None = Field(
+        None, description="What the person saw the picked label called, when it differs from `label`; show this."
+    )
+    template: str | None = Field(None, description="The name of the template the content was rendered from.")
+    fingerprint: str = Field(
+        description="What a yes would cover now; approving names it, and a different one is refused."
+    )
+    approved_by: str | None = Field(None, description="The id of the person whose yes stands.")
+    approved_at: datetime | None = None
+    withheld: str | None = Field(
+        None, description="Why the content isn't offered to approve or send: a part still names the assistant."
+    )
+    failure: ActFailureView | None = None
+    why: list[str] = Field(default_factory=list, description="Codes for why it is stale or uncertain.")
+    changes: list[ActChangeView] = Field(
+        default_factory=list,
+        description="For a stale act: each thing that is different now from what the yes was given on, with both "
+        "texts. Empty when it isn't stale or the yes was given before the exact content was kept.",
+    )
+    changes_known: bool = Field(
+        False, description="Whether the exact content the yes was given on is kept, so `changes` is the whole answer."
+    )
+    approved_before_by: str | None = Field(None, description="For a stale act, whose yes stopped covering it.")
+    approved_before_at: datetime | None = Field(None, description="For a stale act, when that yes was given.")
+    service_id: str | None = None
+    sent_at: datetime | None = None
+    sent_by: Literal["publisher", "person"] | None = None
+    made_by: Literal["assistant", "person", "reminders", "notices"]
+    sensitivity: Literal["open", "internal", "restricted"]
+
+
+class ActListView(BaseModel):
+    """GET /api/acts: the acts, newest first, optionally of some states and at most `limit`."""
+
+    acts: list[ActView]
+
+
+class ActDraftIn(BaseModel):
+    """POST /api/acts: the person drafts an act (a reply, a change to their mail, an answer to an invitation) on a saved
+    message or a calendar entry. `kind` and `action` say what it does and `about` what it is about; `account` is left
+    out to use the account the message or entry came in on. A reply or reply all with no `recipients` goes to the
+    message's sender (reply all: and everyone else on it but the person). The channel is the one that serves the
+    account; when acting is off for the account, Copy carries it and the answer says so (`copied_because`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["message", "mailbox", "calendar"]
+    action: str | None = Field(
+        None, description="What it does: reply, reply_all, forward or send; archive, move, label or mark_read; answer."
+    )
+    account: str | None = Field(None, description="The account that carries it, as GET /api/acts/options names it.")
+    about: list[str] = Field(
+        default_factory=list, description="The saved messages a mailbox act changes, or the entry."
+    )
+    in_reply_to: str | None = Field(None, description="The saved message a reply, reply all or forward is about.")
+    recipients: list[ActRecipientIn] = Field(default_factory=list, description="Who a message goes to.")
+    parts: dict[str, str] = Field(default_factory=dict, description="The content by part, for a message.")
+    folder: str | None = Field(None, description="The folder a move puts the messages in.")
+    label: str | None = Field(None, description="The label a label act puts on the messages.")
+    answer: Literal["accepted", "tentative", "declined", "propose"] | None = Field(
+        None, description="How an invitation is answered."
+    )
+    proposed_start: str | None = Field(None, description="The start a proposed new time suggests, as ISO 8601 text.")
+    proposed_end: str | None = Field(None, description="The end a proposed new time suggests, as ISO 8601 text.")
+    calendar: str | None = Field(
+        None,
+        description="The calendar a new event goes on; left out for the account's own calendar.",
+    )
+    when: str | None = Field(None, description="The day or time of a new event, when it has no start and end.")
+    start: str | None = Field(
+        None, description="When a new event starts, or the new start of one that is moved, as ISO 8601 text."
+    )
+    end: str | None = Field(
+        None, description="When a new event ends, or the new end of one that is moved, as ISO 8601 text."
+    )
+    title: str | None = Field(None, description="What a new event is called.")
+    alarm_minutes: int | None = Field(None, ge=0, le=40320, description="Minutes before the start an alarm rings.")
+
+
+class EventMoveIn(BaseModel):
+    """POST /api/events/{id}/move: the new start, and the new end if the entry has one, of an entry the app keeps
+    itself, with the version of the entry the person read."""
+
+    start: str = Field(min_length=1, description="The new start, as ISO 8601 text.")
+    end: str | None = Field(None, description="The new end, as ISO 8601 text; left out for an entry with no end.")
+    read_version: int = Field(ge=1, description="The version of the entry that was read; the move waits on it.")
+    occurrence: str | None = Field(
+        None,
+        description="For an entry that repeats: the date to move alone, as `occurrence` of its entry on the schedule "
+        "gives it. Left out, the entry itself moves, and with it every date.",
+    )
+
+
+class EventCancelIn(BaseModel):
+    """POST /api/events/{id}/cancel: remove an entry the app keeps itself, resting on the version the person read."""
+
+    read_version: int = Field(ge=1, description="The version of the entry that was read; the removal waits on it.")
+    occurrence: str | None = Field(
+        None,
+        description="For an entry that repeats: the date to call off alone, as `occurrence` of its entry on the "
+        "schedule gives it. Left out, the entry is removed, and with it every date.",
+    )
+
+
+class EventNewDateIn(BaseModel):
+    """POST /api/events/{id}/new-date: give a called-off entry the app keeps itself a new time. It is on again, and the
+    to-dos tied to it come off hold with the new day, as one change with Undo."""
+
+    start: str = Field(description="The new start: a day or a date-time, in ISO 8601 text.")
+    end: str | None = Field(None, description="The new end, in the same form; left out for none.")
+
+
+class EventDropIn(BaseModel):
+    """POST /api/events/{id}/drop: drop a called-off entry, with the reason in the person's words."""
+
+    reason: str = Field(min_length=1, max_length=500, description="Why it is dropped, in the person's words.")
+
+
+class EventChanged(BaseModel):
+    """What moving or cancelling the person's own entry came to: the `changeset` (Undo is POST
+    /api/changesets/{changeset}/undo), or none and `refused` saying in a kind why it was not done: `changed` (the entry
+    changed since it was read) or `referred_to` (another record still needs it). The screen words the kind."""
+
+    changeset: str | None = None
+    refused: Literal["changed", "referred_to"] | None = None
+
+
+class ActOptionsView(BaseModel):
+    """GET /api/acts/options: what the person can do about one saved message, calendar entry or reply owed. The
+    `account` it came in on (none when it came in another way) and whether acting is on for it; `can_act` is true when
+    the account carries the act itself, after the person's yes, rather than by Copy."""
+
+    record: str = Field(
+        description="The saved message or calendar entry it is about (for a reply owed, the message that asked); "
+        "the id asked when there is none."
+    )
+    kind: Literal["message", "event", "missing"]
+    account: str | None = None
+    account_label: str | None = None
+    acting: bool = False
+    can_act: bool = Field(False, description="Acting is on and the account's channel does what is offered.")
+    channel_label: str | None = Field(None, description="What carries it for the account, when one serves it.")
+    actions: list[str] = Field(
+        default_factory=list,
+        description="The actions on a message: reply, reply_all and forward (Copy carries them when nothing else can), "
+        "and the changes to the mail the account's channel does: archive, move, label and mark_read.",
+    )
+    answers: list[Literal["accepted", "tentative", "declined", "propose"]] = Field(
+        default_factory=list, description="How a calendar entry's invitation can be answered through this account."
+    )
+    propose_refusal: str | None = Field(
+        None, description="Why proposing another time isn't offered, when it isn't and an answer is."
+    )
+    event_actions: list[Literal["move", "cancel"]] = Field(
+        default_factory=list,
+        description="What the person can do to an event that is theirs on a connected calendar (not an invitation "
+        "from someone else, not called off), when acting is on for its account and its channel declares it.",
+    )
+    event_own: bool = Field(
+        False,
+        description="The calendar entry is one the app keeps itself, not read from a connected calendar: the person "
+        "moves or cancels it directly (POST /api/events/{id}/move and /cancel), with Undo.",
+    )
+    event_why: Literal["acting_off", "app_only"] | None = Field(
+        None,
+        description="For the person's own event on a connected calendar that can't be moved or cancelled through its "
+        "account: acting is turned off for the account (`acting_off`), or its service does neither (`app_only`, the "
+        "person changes it in their calendar app). None when the actions are offered or nothing can be said.",
+    )
+    folder_source: str | None = Field(
+        None, description="The mail source whose folders GET /api/watch/{source}/folders lists, for Move to."
+    )
+    folders_listed: bool = Field(
+        False,
+        description="Whether Move to has a list of the account's folders to pick from. False for an account whose "
+        "service can't be asked for its folders (an add-on's sign-in), where Move to is offered with the folder named "
+        "by the person and the screen says plainly that the account doesn't list its folders. True when "
+        "`folder_source` names a plain mailbox's source, or `folders_account` an account whose channel lists its "
+        "folders and labels.",
+    )
+    folders_account: str | None = Field(
+        None,
+        description="The account whose channel lists its folders and labels "
+        "(GET /api/acts/accounts/{account}/folders), for Move to and Label; none for a plain mailbox "
+        "(see `folder_source`) and for an account whose channel can't.",
+    )
+
+
+class ActBatchIn(BaseModel):
+    """POST /api/acts/batch: the person drafts one change to their mail for several saved messages at once, selected
+    from a list of saved mail. Each message gets its own act, on the account it came in on, all drafted in one change
+    that Undo takes back together; nothing is carried out until the person's one yes (POST /api/acts/batch/send)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["archive", "move", "label", "mark_read"]
+    about: list[str] = Field(min_length=1, description="The saved messages selected.")
+    folder: str | None = Field(None, description="The folder a move puts the messages in.")
+    label: str | None = Field(None, description="The label a label act puts on the messages.")
+
+
+class ActBatchSkipped(BaseModel):
+    """A selected message no act was drafted for, and why (the screen words it)."""
+
+    record: str
+    title: str = ""
+    why: Literal["gone", "no_account", "acting_off", "cannot"] = Field(
+        description="gone: the message isn't saved any more; no_account: it didn't come in through an account that can "
+        "act on it; acting_off: the person hasn't let the assistant act on its account; cannot: the account's service "
+        "doesn't do this."
+    )
+    account_label: str | None = Field(None, description="For acting_off and cannot: the account's name on screen.")
+
+
+class ActBatchView(BaseModel):
+    """The acts drafted for a selection, one for each message that could be acted on, and those that could not."""
+
+    acts: list[ActView]
+    skipped: list[ActBatchSkipped] = Field(default_factory=list)
+    changeset: str | None = Field(None, description="The one change that drafted them all; Undo takes it back.")
+
+
+class ActBatchOptionsView(BaseModel):
+    """GET /api/acts/batch-options: what Move to can offer for a selection of saved messages: the one account they all
+    came in on, and whether it lists its folders. Messages from several accounts get no folder list, because a folder
+    belongs to one account."""
+
+    account: str | None = Field(None, description="The one account every selected message came in on; none otherwise.")
+    account_label: str | None = None
+    several_accounts: bool = Field(False, description="The messages came in on more than one account.")
+    folder_source: str | None = Field(None, description="The mail source whose folders can be listed, for Move to.")
+    folders_listed: bool = False
+    folders_account: str | None = Field(
+        None,
+        description="The account whose channel lists its folders and labels "
+        "(GET /api/acts/accounts/{account}/folders); none for a plain mailbox "
+        "(see `folder_source`) and for an account whose channel can't.",
+    )
+
+
+class ActSendOptionsView(BaseModel):
+    """GET /api/acts/send-options: whether a new message the person writes can be carried out after their yes, and by
+    which account: the one their latest act named when acting is on for it and its channel sends messages, else the
+    only account that can. With more than one candidate and none chosen, or none, `can_act` is false and Copy carries
+    the message; no account is picked by default."""
+
+    can_act: bool = False
+    account: str | None = None
+    account_label: str | None = None
+
+
+class ActAccountView(BaseModel):
+    """An account an act can go through, and whether the person let the assistant act on it after their yes."""
+
+    id: str = Field(description="As `watch.acting` and an act name it.")
+    label: str
+    acting: bool
+    sign_in: str | None = Field(
+        None,
+        description="The sign-in it belongs to (POST /api/sign-ins/{name}/start with `acting`); none for a mailbox.",
+    )
+    can_act: bool = Field(True, description="Its service has acting access to ask for (a mailbox always can).")
+
+
+class ActAccountsView(BaseModel):
+    """GET /api/acts/accounts."""
+
+    accounts: list[ActAccountView]
+
+
+class AccountFolderView(BaseModel):
+    """One folder or label an account has."""
+
+    id: str = Field(description="What the act is given when the person picks it (the act's `folder` or `label`).")
+    name: str = Field(description="What the person sees; a nested folder's whole path.")
+    kind: Literal["folder", "label"] = Field(description="Move to offers folders and Label offers labels.")
+
+
+class AccountFoldersView(BaseModel):
+    """GET /api/acts/accounts/{account}/folders: the folders and labels the account's channel lists, for Move to and
+    Label. `listed` is false when the account's channel can't list them (the person types the name). `reason` says why
+    a channel that can list gave none: auth (sign in again), refused, outage, offline, or unavailable (it raised, took
+    too long or answered badly); the screen words it, never the service."""
+
+    listed: bool = False
+    folders: list[AccountFolderView] = Field(default_factory=list)
+    reason: Literal["auth", "refused", "outage", "offline", "unavailable"] | None = None
+
+
+class ActCalendarOptionsView(BaseModel):
+    """GET /api/acts/calendar-options: the connected calendar accounts a new event can be put on after the person's
+    yes: acting is on for the account and its channel declares `calendar: create`. Empty when none can."""
+
+    accounts: list[ActAccountView]
+
+
+class FreeSlotView(BaseModel):
+    """A free time to propose: as long as the invitation, starting a gap in the working week."""
+
+    start: str
+    end: str
+
+
+class FreeSlotsView(BaseModel):
+    """GET /api/acts/free-slots: the free times to offer for another time, earliest first."""
+
+    slots: list[FreeSlotView]
+
+
+class ActApproveIn(BaseModel):
+    """The person's yes: the fingerprint their screen showed and the recipients called out that they acknowledged."""
+
+    fingerprint: str
+    acknowledged: list[str] = Field(default_factory=list)
+
+
+class ActYesOne(ActApproveIn):
+    """The person's yes on one of several acts at once: which act, with the fingerprint their screen showed."""
+
+    id: str
+
+
+class DropNoteDone(BaseModel):
+    """POST /api/changesets/{id}/ops/{index}/release-with-note: the held drop was applied and a note was drafted for
+    each person who had been told. `changesets` are every change made, which Undo takes back together; `acts` are
+    the drafts, each waiting for the person's yes on its exact content."""
+
+    changesets: list[str]
+    acts: list[str]
+
+
+class ActSettleIn(BaseModel):
+    """The person's answer for an act the app can't confirm went out, or one they carried out themselves: `sent` (it
+    was sent) or `again` (send it again)."""
+
+    answer: Literal["sent", "again"]
+
+
+class ActResultView(BaseModel):
+    """What happened to an act after the person's choice: its state now and, for a failure, the channel's reason."""
+
+    id: str
+    status: Literal["draft", "approved", "sending", "sent", "failed", "uncertain", "stale", "withdrawn", "undone"]
+    reason: str | None = None
+    changeset: str | None = Field(None, description="The change the person's own choice made, which Undo takes.")
+
+
+class ActBatchYesIn(BaseModel):
+    """POST /api/acts/batch/send: the person's one yes on several acts, each with the fingerprint their screen
+    showed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    acts: list[ActYesOne] = Field(min_length=1)
+
+
+class ActBatchResultView(BaseModel):
+    """What the person's one yes did, act by act: each one's state now and, for a failure, the channel's reason."""
+
+    results: list[ActResultView]
+
+
+class ReminderTextView(BaseModel):
+    """A reminder as it will say it: the mail's subject and body, and an event's title."""
+
+    subject: str
+    body: str
+    event_title: str
+
+
+class ReminderExampleView(BaseModel):
+    """The reminder template's own example in both forms: the to-do's words (`item`), and the plain form that carries
+    none of them (`plain`)."""
+
+    item: ReminderTextView
+    plain: ReminderTextView
+
+
+class ReminderAccountView(BaseModel):
+    """An account that can act and can carry a reminder: as a mail (`mail`), as an event on its own calendar
+    (`calendar`), or both."""
+
+    id: str
+    label: str
+    mail: bool
+    calendar: bool
+
+
+class StandingYesView(BaseModel):
+    """The person's standing yes for reminders as it stands: what it covers and the reasons, if any, it has gone stale
+    (`template`, `acting`, `address`, `person`, `channel`)."""
+
+    id: str
+    form: Literal["mail", "calendar"]
+    account: str
+    account_label: str | None = None
+    given_at: datetime
+    template_version: str
+    stale: list[str] = Field(default_factory=list)
+
+
+class ReminderWhereView(BaseModel):
+    """Where reminders reach the person when the app isn't open (design 6.12): the choice (`where`, with its `account`
+    for the two that need one), the standing yes that lets them go without asking, why the choice can't work now
+    (`stale`, the yes's reasons or `acting` when the chosen account can't act), the accounts to pick from, the reminder
+    as it would go (`example`) and the version of the template that wording is from."""
+
+    where: Literal["nowhere", "app", "calendar", "mail"]
+    account: str | None = None
+    account_label: str | None = None
+    standing: StandingYesView | None = None
+    stale: list[str] = Field(default_factory=list)
+    accounts: list[ReminderAccountView] = Field(default_factory=list)
+    missing: dict[str, Literal["no_account", "acting_off", "no_channel"]] = Field(
+        default_factory=dict,
+        description="For `mail` and `calendar` when no account can carry that form, what is really missing: no account "
+        "signed in or connected (`no_account`), accounts there but none switched on to act (`acting_off`), or accounts "
+        "switched on whose add-on can't carry it (`no_channel`). Absent for a form some account carries.",
+    )
+    template_version: str
+    example: ReminderExampleView
+    look_ahead_hours: int
+
+
+class StandingYesIn(BaseModel):
+    """The person's yes: the form and account they chose, and the version of the reminder template they saw."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    form: Literal["mail", "calendar"]
+    account: str = Field(min_length=1)
+    template_version: str = Field(min_length=1)
+
+
+class BriefLineView(BaseModel):
+    """One thing in a section of the morning brief, the evening wrap-up or the Monday briefing (design 6.32). The screen
+    words it from its `kind`, with `change` or `state` when the kind has variants. `queue` is the key of the Today line
+    the person opens (the lines that wait for their yes), `link` the record it opens. `ready` says a message is already
+    drafted for it, and `you` that the person themselves owns it or did it. An `on_today` line is a count of what Today
+    already has lines for (`change` need, late or clash; `count` of them) that opens the first of those lines (`queue`):
+    the brief never lists a line Today has."""
+
+    key: str
+    kind: str
+    text: str | None = None
+    person: str | None = None
+    person_name: str | None = None
+    other: str | None = None
+    detail: str | None = None
+    change: str | None = None
+    state: str | None = None
+    day: date | None = None
+    at: str | None = Field(None, description="A time of day on the person's own clock, such as 14:30.")
+    from_day: date | None = None
+    from_at: str | None = None
+    days: int | None = None
+    minutes: int | None = None
+    needed_minutes: int | None = Field(
+        None,
+        description="For the capacity line: the effort, in minutes, of the to-dos due today or late. For a clash with "
+        "too little travel time: the minutes the travel between the two meetings needs.",
+    )
+    place: str | None = Field(None, description="For a clash with too little travel time: where the first meeting is.")
+    other_place: str | None = Field(
+        None, description="For a clash with too little travel time: where the second meeting is."
+    )
+    when: datetime | None = Field(
+        None, description="For a reminder offer: the moment the reminder would be set for, on the person's own clock."
+    )
+    count: int | None = None
+    queue: str | None = None
+    link: RecordRef | None = None
+    ready: bool = False
+    you: bool = False
+    on_today_line: bool = Field(
+        False, description="Today already has a line for this one (a late or due-today to-do, say); it is marked."
+    )
+    quieted: str | None = Field(
+        None,
+        description="For a line kept for the brief because the person chose to quiet its kind of suggestion: that "
+        "kind. "
+        "Show on Today again is POST /api/attention/{kind}/show, and Undo is POST /api/attention/{kind}/quiet.",
+    )
+    subjects: list[str] = Field(
+        default_factory=list,
+        description="For the count of what needs the person (`on_today`, change `need`): what each of those things is "
+        "about, in its own words, so the line says what they are and not only how many.",
+    )
+    side: str | None = Field(
+        None,
+        description="The id of the side's top project the record it opens is on; none for neither. The screen's side "
+        "filter shows a line with none under every choice.",
+    )
+
+
+class BriefSectionView(BaseModel):
+    """A heading and its lines; `more` is how many more there are than the most a section shows."""
+
+    key: str
+    lines: list[BriefLineView]
+    more: int = 0
+
+
+class BriefGoalsView(BaseModel):
+    """The goals for the week from `first` to `last`: the `confirmed` ones the person gave, else the ones `proposed`
+    from what is due and open. Between `fewest` and `most` are kept when confirmed."""
+
+    first: date
+    last: date
+    confirmed: bool
+    goals: list[str]
+    proposed: list[str]
+    fewest: int
+    most: int
+
+
+class BriefChoiceView(OwnerNameView):
+    """Someone the person can pick as the one they report to: a person on the job, with the part they have there."""
+
+    role: str | None = Field(None, description="Their part at the job, in the person's words, when they gave one.")
+
+
+class BriefMessageView(BaseModel):
+    """Where the message to whoever the person reports to stands: `none` (not asked for), `working` (with the
+    assistant), `needs_go` (held for the person's go, about `estimate_usd`), `draft` (a draft waits, not yet reviewed:
+    its `text`), `kept` (the person copied it) or `ask` (nobody is marked as someone the person reports to, and they
+    haven't said nobody: `choices` are the people to pick from). `to` are the people it is for."""
+
+    state: Literal["none", "working", "needs_go", "draft", "kept", "ask"]
+    to: list[OwnerNameView]
+    choices: list[BriefChoiceView] = Field(
+        default_factory=list,
+        description="For `ask`: the people on the job the person can pick as the one they report to.",
+    )
+    text: str | None = None
+    estimate_usd: float | None = None
+
+
+class BriefView(BaseModel):
+    """A form of the brief (GET /api/brief). `form` is none when nothing is due yet today; `forms` are the forms that
+    can show now, the one to open with first. `quiet` is a day with nothing to say. `on_today` counts what the Monday
+    briefing left out because Today holds it. `goals` carry the week's goals (the Monday briefing always, the morning
+    brief once they are confirmed); `message` is present when the person reports to someone."""
+
+    form: Literal["morning", "evening", "monday"] | None
+    day: date
+    forms: list[Literal["morning", "evening", "monday"]]
+    sections: list[BriefSectionView]
+    quiet: bool
+    afternoon_from_hour: int = Field(
+        description="`ui.afternoon_from_hour`: the hour of the person's day from which the morning form is called the "
+        "afternoon brief."
+    )
+    on_today: int = 0
+    goals: BriefGoalsView | None = None
+    message: BriefMessageView | None = None
+
+
+class BriefGoalsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    goals: list[str] = Field(
+        description="The goals for this week in the person's own words; none takes the week's goals back out."
+    )
+
+
+class BriefGoalsKept(BaseModel):
+    previous: list[str] = Field(description="The goals the week held before; sending them again is Undo.")
+
+
+class BriefMessageFor(BaseModel):
+    """POST /api/brief/message/for: who the Monday message is for, asked once. Give `person` (marked as someone the
+    person reports to) or `nobody` true (the briefing stops asking); `nobody` false takes that back."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    person: str | None = Field(None, description="The id of the person they report to.")
+    nobody: bool | None = Field(None, description="True: they report to nobody. False: ask again.")
+
+    @model_validator(mode="after")
+    def _one_answer(self) -> BriefMessageFor:
+        if (self.person is None) == (self.nobody is None):
+            raise ValueError("answer with a person or with nobody, not both and not neither")
+        return self
+
+
+class BriefMessageForSaved(BaseModel):
+    changeset: str | None = Field(
+        None, description="The change that marked the person, which Undo takes back; none when no person was marked."
+    )
+
+
+class BriefMessageAsk(BaseModel):
+    note: str | None = Field(None, description="What the person wants from the message, in their own words.")
+
+
+class OpenItemView(BaseModel):
+    """One thing open with a person (design 6.32). `kind`: promised_to (the person promised it to them), promised_by
+    (they promised it to the person), asked_of (a question to them), asked_by (a reply the person owes them) or
+    left_open (tied to the last entry with them) or changed (open on a repeating entry and made or heard of since its
+    last date). `quote` is the exact words it was made from, when the record has
+    them, and `source` the input they came from. `quiet` is the days with no news."""
+
+    kind: Literal["promised_to", "promised_by", "asked_of", "asked_by", "left_open", "changed"]
+    record: Literal["action", "question"]
+    id: str
+    text: str
+    due: date | None = None
+    quote: str | None = None
+    source: str | None = None
+    quiet: int = 0
+    since: date | None = None
+
+
+class TouchView(BaseModel):
+    """The last contact with a person: `kind` from (mail from them), to (mail or a copied message to them) or met (an
+    entry they were on). `record_kind` and `record` name the record that shows it, `subject` its title and `untrusted`
+    says that title came from outside."""
+
+    kind: Literal["from", "to", "met"]
+    on: date
+    record_kind: str | None = None
+    record: str | None = None
+    subject: str | None = None
+    untrusted: bool = False
+
+
+class PrepGuestView(BaseModel):
+    """Someone else on an entry: their person id and name when the workspace knows them, else the name or address as the
+    calendar wrote it, and their answer to the invitation."""
+
+    person: str | None = None
+    name: str | None = None
+    address: str | None = None
+    response: str | None = None
+
+
+class LeftOpenView(BaseModel):
+    """The last entry before this one that a person was on, `on` the day it ended, with what is still open on it."""
+
+    event: str
+    title: str
+    on: date
+    items: list[OpenItemView]
+    untrusted: bool = False
+
+
+class PersonPrepView(BaseModel):
+    """One person coming: what is open with them, `more` counting what the cap left out, the last time in touch and what
+    the last entry with them left open."""
+
+    person: str
+    name: str
+    asked_of: list[OpenItemView]
+    asked_by: list[OpenItemView]
+    promised_to: list[OpenItemView]
+    promised_by: list[OpenItemView]
+    more: int = 0
+    last_in_touch: TouchView | None = None
+    left_open: LeftOpenView | None = None
+
+
+class PrepNoteView(BaseModel):
+    """Where the prep note stands: none, working, needs_go (held for the person's go, about `estimate_usd`), draft (a
+    draft waits for review on the entry's page) or kept."""
+
+    state: Literal["none", "working", "needs_go", "draft", "kept"]
+    request: str | None = None
+    estimate_usd: float | None = None
+
+
+class InvitationChangeView(BaseModel):
+    """One thing that changed in a calendar entry that came as an invitation (`MeetingPrepView.changes`). The screen
+    words it from `kind` (cancelled, restored, title_changed, moved, now_timed, now_all_day, end_changed,
+    location_changed, location_removed, organizer_changed, organizer_renamed, attendee_added, attendee_removed,
+    attendee_renamed, attendee_replied, or one that could not be compared: `*_unknown`). `day` and `at` are the new time
+    (a day alone for an all-day entry), `from_day` and `from_at` the old one; `text` is the new title or place, `name`
+    the person it is about, `status` their answer, `reason` why a value could not be read."""
+
+    kind: str
+    text: str | None = None
+    name: str | None = None
+    status: str | None = None
+    reason: str | None = None
+    day: str | None = None
+    at: str | None = None
+    from_day: str | None = None
+    from_at: str | None = None
+
+
+class PrepGuideView(BaseModel):
+    """One part of the outline a role gives (GET /api/meetings/{id}/prep, `guide`): for an entry the person runs,
+    `decisions`, `actions` and `questions` to write down after it (no `items`); for one they attend, `raise`, `ask` and
+    `listen`, each with the open things that belong under it."""
+
+    key: Literal["decisions", "actions", "questions", "raise", "ask", "listen"]
+    items: list[OpenItemView] = Field(default_factory=list)
+
+
+class MeetingPrepView(BaseModel):
+    """The prep for one calendar entry (GET /api/meetings/{id}/prep), worked out by rules: who is coming, what is open
+    with each of them and the last time in touch. `over` says the entry has ended; `captured_at` is when what happened
+    was written down."""
+
+    event: str
+    title: str
+    start: str
+    end: str | None = None
+    where: str | None = None
+    untrusted: bool = False
+    over: bool = False
+    captured_at: datetime | None = None
+    changed_at: datetime | None = Field(
+        None, description="When the invitation last changed, within the days looked back."
+    )
+    changes: list[InvitationChangeView] = Field(
+        default_factory=list,
+        description="What changed in the invitation within `steward.meetings.changes_days` days, in a stable order.",
+    )
+    coming: list[PrepGuestView]
+    people: list[PersonPrepView]
+    note: PrepNoteView
+    role: Literal["run", "attend", "brief_only"] | None = Field(
+        None, description="For an entry the person added: what they do at it; none reads as attend."
+    )
+    occurrence: str | None = Field(
+        None,
+        description="For one date of a repeating entry: when its rule had it, as ISO 8601 text; `start` and `end` are "
+        "that date's. Pass it as `occurrence` to ask for another date.",
+    )
+    since_last: list[OpenItemView] = Field(
+        default_factory=list,
+        description="For a date of a repeating entry: what is open on the entry that was made or heard of since the "
+        "date before it. Shown first.",
+    )
+    guide: list[PrepGuideView] = Field(
+        default_factory=list,
+        description="The outline the person's role gives: notes to write after an entry they run, or what to raise, "
+        "ask and listen for at one they attend. Empty for a brief-only entry and for an entry read from a calendar.",
+    )
+    no_agenda: bool | None = Field(None, description="True for an entry the person added with nothing on its agenda.")
+
+
+class MeetingCaptureIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(
+        "",
+        description="What happened at the entry, in the person's own words; empty says there is nothing to note.",
+    )
+
+
+class MeetingCaptureUndo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    captured_at: datetime = Field(description="The moment the entry was marked, as the capture answered it.")
+
+
+class MeetingCaptured(BaseModel):
+    request: str | None = Field(
+        None,
+        description="The request queued to read the words, none when there were none or only a bare confirmation.",
+    )
+    captured_at: datetime
+
+
+class PrepNoteAsk(BaseModel):
+    note: str | None = Field(None, description="What the person wants from the note, in their own words.")
+
+
+class ReachView(BaseModel):
+    """How a person likes to be reached: the ways kept on their record (channel to address), and the channel of the mail
+    they last wrote from, with the input it was read from. Each channel holds every address or handle kept for it."""
+
+    kept: dict[str, list[str]] = Field(default_factory=dict)
+    replies_on: str | None = None
+    replies_record: str | None = None
+
+
+class DatedView(BaseModel):
+    """A fact about a person that carries a date: `on` the next day it falls on (none when no month and day could be
+    read), `yearly` when it comes round every year, with the words it rests on."""
+
+    fact: str
+    text: str
+    on: date | None = None
+    yearly: bool = False
+    quote: str | None = None
+    source: str | None = None
+
+
+class KeptView(BaseModel):
+    """A fact the person kept about someone, with the day it was true as of and the words it rests on."""
+
+    fact: str
+    text: str
+    as_of: date | None = None
+    quote: str | None = None
+    source: str | None = None
+
+
+class PersonMemoryView(BaseModel):
+    """What the records say about one person (GET /api/people/{id}/memory), by rules, each part with the words or the
+    record it rests on: the last time in touch, what they asked of the person and the person of them, the promises both
+    ways, how they like to be reached, their dates and what matters to them."""
+
+    person: str
+    name: str
+    last_in_touch: TouchView | None = None
+    asked_of: list[OpenItemView]
+    asked_by: list[OpenItemView]
+    promised_to: list[OpenItemView]
+    promised_by: list[OpenItemView]
+    reach: ReachView
+    dates: list[DatedView]
+    matters: list[KeptView]
+
+
+class CapacityMoveView(BaseModel):
+    """A to-do proposed to move out of today: its `text`, its effort in `minutes`, whether it was `promised` to someone,
+    where its date stands (`due_state`: none, overdue, today or later) and the `version` a change of its date states it
+    read. Moving it is the person's own date change, applied at once with Undo."""
+
+    action: str
+    version: int
+    text: str
+    minutes: int
+    promised: bool
+    due: date | None = None
+    due_state: Literal["none", "overdue", "today", "later"]
+
+
+class CapacityView(BaseModel):
+    """Whether the rest of today holds the to-dos due today or late (design 6.32). `fits` is true when it does, or when
+    there is nothing to count (the day is over, or not a working day); then the rest is empty. Otherwise `free_minutes`
+    is what the calendar leaves, `needed_minutes` what the to-dos with an effort need, `over_minutes` the difference,
+    `moves` what is proposed to move, `still_over` how much would be over even with those moved (to-dos fixed to a
+    meeting never move) and `next_day` the next working day, offered as where to move them. Nothing is scheduled."""
+
+    fits: bool
+    free_minutes: int = 0
+    needed_minutes: int = 0
+    over_minutes: int = 0
+    still_over: int = 0
+    next_day: date | None = None
+    moves: list[CapacityMoveView] = Field(default_factory=list)
+
+
+class NotNowIn(BaseModel):
+    key: str = Field(description="The key of the suggestion line on Today that the person puts off.")
+
+
+class ChooseIn(BaseModel):
+    key: str = Field(description="The key of the suggestion line on Today the choice is about.")
+    choice: Literal["drop", "weekly", "hold", "no_reply", "leave", "keep", "snooze"] = Field(
+        description="One of the choices the line lists."
+    )
+    reason: str = Field(
+        "", description="For drop and no_reply: why, in the person's wording, kept as the to-do's reason."
+    )
+    waiting: str = Field("", description="For hold: what the promise waits for, in the person's wording.")
+    weekly: str = Field("", description="For weekly: the words of the repeat, such as 'every week'.")
+
+
+class ChooseDone(BaseModel):
+    """A choice made and done. Undo is POST /api/suggestions/choose/{signal}/undo, which also takes back the change
+    it made, when it made one (`changeset`)."""
+
+    signal: str
+    changeset: str | None = None
+
+
+class SnoozeIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    until: date = Field(description="The day the line comes back: after today, and one of the days it offers.")
+
+
+class SnoozeDone(BaseModel):
+    """A line snoozed until a day. `signal` is what Undo takes back."""
+
+    signal: str
+    until: date
+
+
+class QuietFollowUpView(BaseModel):
+    """GET /api/quiet-promises/{id}/follow-up: the follow-up written for someone who owes the person a promise that has
+    gone quiet, to draft as an act with POST /api/acts (a message to `person`, in `parts`)."""
+
+    person: str
+    person_name: str
+    parts: dict[str, str] = Field(description="The message by part: subject and body.")
+
+
+class NotNowDone(BaseModel):
+    """A suggestion put off until something about it changes. `signal` is what Undo takes back."""
+
+    signal: str
+
+
+class SearchHit(BaseModel):
+    kind: Literal["person", "project", "action", "file", "lesson", "glossary_entry", "routing_entry", "style_note"]
+    id: str
+    title: str = Field(description="The name or words that matched.")
+    detail: str | None = Field(None, description="A few more words to tell it from another, when there are any.")
+
+
+class SearchResults(BaseModel):
+    results: list[SearchHit]
+
+
+class ViewProjectView(BaseModel):
+    id: str = Field(description="The project's id.")
+    name: str = Field(description="The project's name.")
+
+
+class WorkViewView(BaseModel):
+    """A view (design 6.32): a named list of projects inside one side, so a project can show under several roles."""
+
+    id: str = Field(description="The view's id; the side filter's choice is `view:<id>`.")
+    name: str = Field(description="What the view is called.")
+    label: str = Field(description="The short word on the tag of a line that is in this view.")
+    side: str = Field(description="The id of the side's top project the view is inside.")
+    side_name: str = Field(description="The side's name.")
+    projects: list[ViewProjectView] = Field(
+        description="The projects in the view that still exist, in the order the view lists them."
+    )
+
+
+class ViewAddIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=80)
+    label: str | None = Field(None, min_length=1, max_length=20, description="Left out, the first word of the name.")
+    side: str = Field(description="The id of the side's top project.")
+    projects: list[str] = Field(default_factory=list, description="The ids of the projects in the view.")
+
+
+class ViewRenameIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=80)
+    label: str | None = Field(None, min_length=1, max_length=20, description="Left out, the tag follows the name.")
+
+
+class ViewProjectsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    projects: list[str] = Field(description="The projects the view now holds, replacing the list it had.")
+
+
+class ViewApplied(BaseModel):
+    changeset: str
+    view: str | None = Field(None, description="The id of the view that was added; none for a change or a removal.")
+
+
+class EraseItemView(BaseModel):
+    kind: Literal["workspace", "backup", "unfinished_backup", "synced_folder"] = Field(
+        description="workspace: an entry of the workspace folder (the database, its history, the readable export, the "
+        "text of what came in, files, settings, private files). backup: a finished backup copy of this workspace. "
+        "unfinished_backup: a backup copy that was never finished. synced_folder: the folder shared with another "
+        "computer, which stays."
+    )
+    path: str = Field(description="Where it is on this computer.")
+    name: str = Field(description="The entry's own name.")
+    files: int = Field(description="How many files are in it.")
+    bytes: int = Field(description="How much space it takes.")
+    commits: int | None = Field(None, description="For the workspace's own history: how many changes it holds.")
+
+
+class ErasePlanView(BaseModel):
+    """Exactly what deleting this workspace removes, and what stays because the app can't reach it."""
+
+    name: str = Field(description="The workspace folder's name.")
+    items: list[EraseItemView] = Field(description="Everything that is deleted.")
+    stays: list[EraseItemView] = Field(description="What stays: shared with another computer, so deleted there.")
+    token: str = Field(description="Identifies this list; deleting needs it back, so only this list is deleted.")
+
+
+class EraseIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(description="The token of the list the person was shown.")
+
+
+class EraseFailedView(BaseModel):
+    path: str
+    why: str = Field(description="Why it was not deleted, in the operating system's words.")
+
+
+class EraseDone(BaseModel):
+    removed: int = Field(description="How many places were deleted.")
+    failed: list[EraseFailedView] = Field(description="The places that could not be deleted; the rest are gone.")

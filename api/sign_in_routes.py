@@ -1,0 +1,275 @@
+"""API routes for signing in to a service an add-on connects to: the sign-ins add-ons declare and whether each is
+signed in, starting one (the screen opens the service's page), the address the service sends the person back to, and
+signing out."""
+
+from __future__ import annotations
+
+import logging
+from html import escape
+from urllib.parse import quote, urlencode
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import HTMLResponse
+
+from api.schemas import Ok, SignInAccount, SignInApp, SignInStarted, SignInStep, SignInView
+from engine import act_accounts, audit
+from engine import sign_in as flow
+from engine.config import Config
+from engine.connectors import ConnectorError
+from engine.legacy_names import private_dir
+from engine.sign_in_sources import not_read, refused_accounts, start_sources
+from engine.storage import Store
+from engine.worker import Worker
+from engine.workspace import Workspace
+
+log = logging.getLogger(__name__)
+
+
+def build_sign_in_router(ws: Workspace, cfg: Config, store: Store, worker: Worker) -> APIRouter:
+    r = APIRouter(prefix="/api")
+    host = store.plugins
+    prefix = "" if cfg.server.base_path == "/" else cfg.server.base_path
+
+    def keys(plugin: str):
+        return private_dir(ws.root) / "keys" / plugin
+
+    def find(name: str) -> flow.SignIn:
+        found = host.sign_ins().get(name)
+        if found is None:
+            raise HTTPException(status_code=404, detail=f"there is no sign-in {name}")
+        return found
+
+    local = cfg.server.mode == "local"
+
+    def lost_with_registration(s: flow.SignIn, had: bool) -> None:
+        """Changing the app registration forgets the sign-in made with the one it replaces; that is a sign-out."""
+        if had:
+            audit.record(store, "sign_out", s.name, label=s.label, detail="The app registration it used was changed.")
+
+    def acting_of(s: flow.SignIn, a: flow.Account) -> dict:
+        """What an account says about acting: the switch, its id and any acting scope not granted when it is on."""
+        if not a.address or not s.acting_scopes:
+            return {}
+        account = act_accounts.account_id(s.name, a.address)
+        on = act_accounts.acting_on(cfg, account)
+        return {
+            "acting": on,
+            "acting_id": account,
+            "acting_missing": flow.missing_acting(s, flow.allowed_scopes(s, a.tokens)) if on else [],
+        }
+
+    def view(s: flow.SignIn) -> SignInView:
+        refused_ids = refused_accounts(store, cfg)
+        client_id, _, source = host.sign_in_app(s, ws.root)
+        status = flow.status(keys(s.plugin), s)
+        accounts = flow.list_accounts(keys(s.plugin), s)
+        # An account whose sources the service refused at their last read needs signing in again, though its own
+        # tokens look valid here.
+        refused = {
+            flow.account_key(src.account)
+            for src in cfg.watch.sources
+            if src.account and src.connector.split("/", 1)[0] == s.plugin and src.id in refused_ids
+        }
+        return SignInView(
+            can_act=bool(s.acting_scopes),
+            name=s.name,
+            label=s.label,
+            status=status,
+            ready=bool(client_id),
+            callback=flow.redirect_uri(cfg.server),
+            allows=list(s.allows),
+            account=accounts[0].address if accounts else None,
+            accounts=[
+                SignInAccount(
+                    key=a.key,
+                    address=a.address,
+                    status="expired"  # type: ignore[arg-type]
+                    if flow.account_status(a) == "expired" or (a.address and flow.account_key(a.address) in refused)
+                    else "signed_in",
+                    missing=flow.missing(s, flow.allowed_scopes(s, a.tokens)),
+                    **acting_of(s, a),
+                )
+                for a in accounts
+            ],
+            several=s.account is not None,
+            missing=flow.missing(s, flow.granted(keys(s.plugin), s)) if status == "signed_in" else [],
+            app=source,  # type: ignore[arg-type]
+            app_note=s.default_app_note if source == "add-on" else None,
+            can_paste=local and source != "workspace",
+            needs_secret=bool(s.client_secret),
+            set_aside=(keys(s.plugin) / f"{s.client_id}.set-aside").is_file(),
+            default_unusable=bool(s.default_client_id) and not host.default_app_fits(s),
+            own_app_steps=[SignInStep(text=text, link=link) for text, link in s.own_app_steps],
+            not_reading=not_read(ws, s, host.connectors()) if status == "signed_in" else [],
+        )
+
+    @r.get("/sign-ins")
+    def sign_ins() -> list[SignInView]:
+        return [view(s) for s in host.sign_ins().values()]
+
+    @r.post("/sign-ins/{name:path}/sources")
+    def start_reading(name: str) -> SignInView:
+        """Start reading what the add-on reads by default for this sign-in (the inbox, the calendar), where nothing
+        reads with that connector yet: one click instead of filling in a source by hand."""
+        s = find(name)
+        if flow.status(keys(s.plugin), s) != "signed_in":
+            raise HTTPException(status_code=409, detail=f"Sign in to {s.label} first.")
+        from engine.settings import SettingsConflict, SettingsError
+
+        try:
+            if start_sources(ws, cfg, store, s, again=True):
+                worker.read_sources_now()
+        except (SettingsConflict, SettingsError) as err:
+            raise HTTPException(status_code=409, detail=str(err)) from None
+        return view(s)
+
+    @r.post("/sign-ins/{name:path}/app")
+    def paste_app(name: str, body: SignInApp) -> SignInView:
+        """Use the person's own app registration for this sign-in, kept on this computer. Signing in starts over."""
+        s = find(name)
+        if not local:
+            raise HTTPException(
+                status_code=400,
+                detail="On a hosted app, the registration is set in the workspace's settings, as references to "
+                "where its values are kept.",
+            )
+        if host.sign_in_app(s, ws.root)[2] == "workspace":
+            raise HTTPException(status_code=409, detail="The workspace's settings already set this registration.")
+        if s.client_secret and not (body.client_secret or "").strip():
+            raise HTTPException(status_code=400, detail="This service also gives a client secret: paste it too.")
+        had = flow.kept(keys(s.plugin), s) is not None
+        flow.paste_app(keys(s.plugin), s, body.client_id, body.client_secret if s.client_secret else None)
+        lost_with_registration(s, had)
+        return view(s)
+
+    @r.post("/sign-ins/{name:path}/app/set-aside")
+    def set_aside_app(name: str) -> SignInView:
+        """Stop using the pasted registration (the add-on's own is used, if it has one); it can be brought back."""
+        s = find(name)
+        had = flow.kept(keys(s.plugin), s) is not None
+        if not flow.set_aside_app(keys(s.plugin), s):
+            raise HTTPException(status_code=404, detail="No registration was pasted for this sign-in.")
+        lost_with_registration(s, had)
+        return view(s)
+
+    @r.post("/sign-ins/{name:path}/app/bring-back")
+    def bring_back_app(name: str) -> SignInView:
+        s = find(name)
+        had = flow.kept(keys(s.plugin), s) is not None
+        if not flow.bring_back_app(keys(s.plugin), s):
+            raise HTTPException(status_code=404, detail="There is no registration to bring back.")
+        lost_with_registration(s, had)
+        return view(s)
+
+    @r.post("/sign-ins/{name:path}/start")
+    def start(name: str, acting: bool = False, account: str | None = None) -> SignInStarted:
+        """The address of the service's sign-in page. With `acting` it asks for the acting access as well as reading
+        (the person turned acting on for the account); without it, reading only. With `account` (an address), the
+        sign-in is for that account: if the service answers with another address, nothing is kept."""
+        s = find(name)
+        if acting and not s.acting_scopes:
+            raise HTTPException(status_code=409, detail=f"{s.label} has no acting access to ask for.")
+        try:
+            url = flow.start(
+                s, host.sign_in_app(s, ws.root)[0] or "", flow.redirect_uri(cfg.server), acting=acting, expected=account
+            )
+        except flow.SignInError as err:
+            raise HTTPException(status_code=409, detail=str(err)) from None
+        return SignInStarted(url=url)
+
+    def back(query: str) -> HTMLResponse:
+        """A page that takes the person back into the app. The page it gives is the app's own address, where the
+        browser's stored session is found again."""
+        target = escape(f"{prefix}/?{query}", quote=True)
+        page = (
+            '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+            f'<meta http-equiv="refresh" content="0;url={target}"><title>Back to the app</title></head>'
+            f'<body><p><a href="{target}">Back to the app</a></p></body></html>'
+        )
+        return HTMLResponse(page, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+
+    @r.get("/sign-ins/callback", include_in_schema=False)
+    def callback(state: str = "", code: str = "", error: str = "", error_description: str = "") -> HTMLResponse:
+        """The service sends the person back here; the screen then says how it went, with the service's own code
+        and words when it refused (shown as text). Served with no session (see OPEN_PATHS): only a
+        state this app issued, unexpired and unused, does anything."""
+        s = flow.pending_sign_in(state)
+        if error:
+            if s is not None:
+                flow.drop_pending(state)
+            words = urlencode(
+                {"sign_in": "refused", "error": error[:80], "detail": " ".join(error_description.split())[:300]}
+            )
+            return back(words)
+        if s is None or not code:
+            return back("sign_in=expired")
+        from engine.net import WebClient
+
+        web = WebClient(list(host.manifests[s.plugin].requires.network))
+        expected = flow.pending_expected(state)
+        try:
+            client_id, client_secret, _ = host.sign_in_app(s, ws.root)
+            done, tokens = flow.finish(state, code, web, client_id or "", client_secret)
+            # Whose account this is is read with the new tokens before they are kept, so each account is kept under
+            # its own address; signing in again to an account replaces its tokens.
+            address = host.read_account(done, ws.root, tokens)
+            # Signing in again to one account, as another: nothing is kept and the other account isn't added. The
+            # person is told which address came back and which one to sign in as.
+            if expected and address and not flow.same_account(address, expected):
+                return back(
+                    f"sign_in=different&name={quote(done.name)}&address={quote(address[:200])}&expected={quote(expected[:200])}"
+                )
+            # Signing in again to an account that is already signed in replaces its tokens: the screen says it was
+            # refreshed, not added.
+            refreshed = bool(address) and any(
+                a.address and flow.same_account(a.address, address) for a in flow.list_accounts(keys(done.plugin), done)
+            )
+            flow.keep(keys(done.plugin), done, tokens, address)
+        except (flow.SignInError, ConnectorError):
+            return back(f"sign_in=failed&name={quote(s.name)}")
+        finally:
+            web.close()
+        host.signed_in(done, ws.root, address)
+        audit.record(store, "sign_in", done.name, label=done.label, detail=address)
+        try:
+            if start_sources(ws, cfg, store, done, accounts=[address]):
+                worker.read_sources_now()
+        except Exception as err:  # the sign-in stands; the person can still add the sources by hand
+            log.warning("Couldn't start the sources for %s: %s", done.name, err)
+        # Every source of this account is read at once, signing in again included.
+        worker.read_account_soon(done, address)
+        again = f"&again={quote(address[:200])}" if refreshed and address else ""
+        return back(f"sign_in=done&name={quote(s.name)}{again}")
+
+    @r.delete("/sign-ins/{name:path}")
+    def sign_out(name: str, account: str | None = None) -> Ok:
+        """Sign out of a service: one account, by its key (`?account=`), or every account when none is named. Only the
+        sources reading with a signed-out account stop, with the usual line asking to sign in again."""
+        s = find(name)
+        accounts = [a for a in flow.list_accounts(keys(s.plugin), s) if account is None or a.key == account]
+        if account is not None and not accounts:
+            raise HTTPException(status_code=404, detail="That account isn't signed in.")
+        withdrawn_all = {}
+        if s.revoke_url:
+            from engine.net import WebClient
+
+            web = WebClient(list(host.manifests[s.plugin].requires.network))
+            try:
+                client_id = host.sign_in_app(s, ws.root)[0]
+                for a in accounts:
+                    withdrawn_all[a.key] = flow.revoke(web, s, a.tokens, client_id)
+            finally:
+                web.close()
+        for a in accounts:
+            if flow.forget(keys(s.plugin), s, a.key):
+                detail = "The service was told to withdraw the access." if withdrawn_all.get(a.key) else None
+                audit.record(
+                    store,
+                    "sign_out",
+                    s.name,
+                    label=s.label,
+                    detail=" ".join(x for x in (a.address, detail) if x) or None,
+                )
+        return Ok(ok="signed_out")
+
+    return r

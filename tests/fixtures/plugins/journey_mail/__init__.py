@@ -1,0 +1,239 @@
+"""A fictional mail and calendar add-on for the journey tests. It signs in to a made-up service through that service's
+own sign-in page, and its two connectors read a small JSON API over HTTPS: the messages in the inbox and the events on
+the main calendar. Reading changes nothing there. Its channel changes mail on the person's yes (archive, move, label,
+mark as read) through the same service, which keeps what it was asked so a test can read it, and lists the account's own
+folders and labels. The service's address comes from the environment of the process that runs the app, so the same files
+serve any port.
+"""
+
+from __future__ import annotations
+
+import os
+
+from pydantic import BaseModel, Field
+
+from engine.plugin_api import (
+    ChannelFailed,
+    ChannelFolder,
+    ChannelNotSent,
+    ChannelSent,
+    ChannelUndone,
+    ChannelUnknown,
+    ConnectorError,
+    EventDetails,
+    MessageDetails,
+    Poll,
+    Settings,
+    SourceItem,
+)
+
+SERVICE = os.environ.get("JOURNEY_SERVICE_ADDRESS", "https://127.0.0.1:1").rstrip("/")
+SIGN_IN = "journey-mail/account"
+#: Whether the sign-in also names the account's sent mail, as a real mail service's add-on does: it is named unless the
+#: process that runs the app says not (a journey about a service that names no sent folder). Whether the made-up service
+#: has a message there is the service's own switch, so the two can never disagree about whether setup reads it.
+SENT_MAIL = os.environ.get("JOURNEY_SENT_MAIL", "1") != "0"
+#: The app registration this add-on ships, as the made-up service knows it.
+DEFAULT_CLIENT_ID = "journey-mail-app"
+CHANNEL = "journey-mail/mail-channel"
+#: What the person allows by turning acting on: the service refuses a change unless the token holds it.
+ACTING_SCOPES = ["mail.modify"]
+
+
+class Config(Settings):
+    pass
+
+
+class InboxSettings(BaseModel):
+    folder: str = Field("inbox", description="Which folder of the mailbox to read.")
+
+
+class CalendarSettings(BaseModel):
+    calendar: str = Field("main", description="Which calendar to read.")
+
+
+def _get(context, path: str, params: dict[str, str] | None = None) -> dict:
+    token = context.access_token(SIGN_IN)
+    try:
+        response = context.web.get(
+            f"{SERVICE}{path}", params=params or {}, headers={"Authorization": f"Bearer {token}"}
+        )
+    except ConnectorError as err:
+        # A service that explains a refusal in its own words (an error with a message): the problem carries them, with
+        # advice for a service that wants an app password.
+        body = err.json()
+        said = body.get("error") if isinstance(body, dict) else None
+        if err.kind == "no_access" and isinstance(said, dict) and said.get("message"):
+            raise ConnectorError(
+                "no_access", str(said["message"]), advice_key="sources.advice.create_app_password"
+            ) from None
+        raise
+    try:
+        body = response.json()
+    except ValueError:
+        raise ConnectorError("outage", "the service's answer couldn't be read") from None
+    if not isinstance(body, dict):
+        raise ConnectorError("outage", "the service's answer wasn't what was expected")
+    return body
+
+
+def poll_inbox(settings: InboxSettings, state: dict, context) -> Poll:
+    items = []
+    for message in _get(context, "/mail/v1/messages", {"folder": settings.folder}).get("messages", []):
+        sender = message["from"]
+        who = f"{sender['name']} <{sender['address']}>"
+        text = f"From: {who}\nReceived: {message['received']}\n\n{message['body']}"
+        items.append(
+            SourceItem(
+                key=message["id"],
+                title=message["subject"],
+                text=text,
+                author=sender["name"],
+                changed_at=message["received"],
+                message=MessageDetails(
+                    sender=who,
+                    received=message["received"],
+                    unread=message["unread"],
+                    bulk=message.get("bulk"),
+                    categories=tuple(message.get("categories", ())),
+                    message_id=message.get("message_id"),
+                    references=tuple(message.get("references", ())),
+                ),
+            )
+        )
+    return Poll(items, {})
+
+
+def poll_calendar(settings: CalendarSettings, state: dict, context) -> Poll:
+    items = []
+    for event in _get(context, "/calendar/v1/events", {"calendar": settings.calendar}).get("events", []):
+        text = (
+            f"{event['title']}\nWhen: {event['start']} to {event['end']}\nWhere: {event['where']}\n\n{event['notes']}"
+        )
+        items.append(
+            SourceItem(
+                key=event["id"],
+                title=event["title"],
+                text=text,
+                author=event.get("organizer"),
+                changed_at=event["start"],
+                event=EventDetails(
+                    start=event["start"],
+                    end=event["end"],
+                    where=event["where"],
+                    cancelled=event["cancelled"],
+                    all_day=event.get("all_day", False),
+                    uid=event.get("uid"),
+                ),
+            )
+        )
+    return Poll(items, {})
+
+
+def account(context) -> str:
+    return str(_get(context, "/account/v1/me")["email"])
+
+
+def _failed(err: ConnectorError) -> ChannelFailed:
+    """What a refused or unreachable request means for the person, decided from the kind and never from the words."""
+    if err.kind in ("auth", "no_access"):
+        return ChannelFailed("auth", "Sign in to Example mail again.")
+    return ChannelFailed("offline" if err.kind == "offline" else "outage", "Example mail didn't answer.")
+
+
+def _call(context, method: str, path: str, **kwargs):
+    token = context.access_token()
+    return context.web.request(method, f"{SERVICE}{path}", headers={"Authorization": f"Bearer {token}"}, **kwargs)
+
+
+def folders(account: str, context) -> list[ChannelFolder] | ChannelFailed:
+    try:
+        listed = _call(context, "GET", "/mail/v1/folders").json().get("folders", [])
+    except ConnectorError as err:
+        return _failed(err)
+    return [ChannelFolder(f["id"], f["name"], f["kind"]) for f in listed]
+
+
+def send(act, attempt_key: str, context):
+    body = {
+        "attempt": attempt_key,
+        "action": act.action,
+        "messages": [about.service_id for about in act.about],
+        "folder": act.folder,
+        "label": act.label,
+    }
+    try:
+        return ChannelSent(str(_call(context, "POST", "/mail/v1/acts", json=body).json()["id"]))
+    except ConnectorError as err:
+        return _failed(err)
+
+
+def status(attempt_key: str, context):
+    try:
+        found = _call(context, "GET", "/mail/v1/acts/status", params={"attempt": attempt_key}).json().get("id")
+    except ConnectorError:
+        return ChannelUnknown()
+    return ChannelSent(str(found)) if found else ChannelNotSent()
+
+
+def undo(act, service_id: str, context):
+    try:
+        _call(context, "POST", "/mail/v1/acts/undo", json={"id": service_id, "action": act.action})
+    except ConnectorError as err:
+        return _failed(err)
+    return ChannelUndone()
+
+
+def register(registrar) -> None:
+    registrar.connector(
+        "journey-mail/mail", label="Example mail", settings=InboxSettings, poll=poll_inbox, reads="mail"
+    )
+    registrar.connector(
+        "journey-mail/calendar",
+        label="Example calendar",
+        settings=CalendarSettings,
+        poll=poll_calendar,
+        reads="calendar",
+    )
+    registrar.sign_in(
+        SIGN_IN,
+        label="Example mail",
+        authorize_url=f"{SERVICE}/account/authorize",
+        token_url=f"{SERVICE}/account/token",
+        revoke_url=f"{SERVICE}/account/revoke",
+        scopes=["mail.read", "calendar.read", "offline"],
+        acting_scopes=ACTING_SCOPES,
+        allows=["Read your mail", "Read your calendar"],
+        account=account,
+        default_client_id=DEFAULT_CLIENT_ID,
+        default_redirects=["http://127.0.0.1/api/sign-ins/callback"],
+        sources=[
+            {"connector": "journey-mail/mail", "label": "Your inbox", "settings": {}, "every_minutes": 15},
+            {"connector": "journey-mail/calendar", "label": "Your calendar", "settings": {}, "every_minutes": 15},
+            *(
+                [
+                    {
+                        "connector": "journey-mail/mail",
+                        "label": "Your sent mail",
+                        "settings": {"folder": "sent"},
+                        "every_minutes": 15,
+                        "sent": True,
+                    }
+                ]
+                if SENT_MAIL
+                else []
+            ),
+        ],
+    )
+    registrar.channel(
+        CHANNEL,
+        label="Example mail",
+        # Only files messages: a saved message's mailbox acts are offered whether or not the account's channel replies.
+        kinds=["mailbox"],
+        send=send,
+        status=status,
+        undo=undo,
+        actions={"mailbox": ["archive", "move", "label", "mark_read"]},
+        accounts=[SIGN_IN],
+        folders=folders,
+    )

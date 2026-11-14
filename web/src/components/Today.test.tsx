@@ -1,0 +1,1608 @@
+import "@testing-library/jest-dom/vitest";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import userEvent from "@testing-library/user-event";
+import { vi } from "vitest";
+import type { S } from "../lib/api";
+import { day, setClockZone, time, todayOn } from "../lib/dates";
+import { resetInputMode } from "../lib/input-mode";
+import { useShortcuts } from "../lib/keys";
+import { takeFilters } from "../lib/open-items";
+import { showNewLines } from "../lib/queue-hold";
+import { RestartProvider } from "../lib/restart";
+import { forgetLine } from "../lib/today";
+import { fakeApi, renderApp, setupStep, setupView, statusFixture, type Routes, optionsOf } from "../test-utils";
+import { Today } from "./Today";
+
+type Line = S["QueueLineView"];
+
+function line(kind: Line["kind"], over: Partial<Line> = {}): Line {
+  const group: Line["group"] = ["decision", "question", "who_is", "owner", "held", "go", "first_go", "restart"].includes(kind)
+    ? "decide"
+    : kind === "review" || kind === "intake_review" || kind === "batches" || kind === "batch_item"
+      ? "review"
+      : kind === "send" || kind === "nudge"
+        ? "send"
+        : "risk";
+  return { key: `${kind}:1`, group, kind, count: 1, untrusted: false, unpriced: 0, actions: [], questions: [], outcome: {}, ...over };
+}
+
+const emptyTitle: S["ItemTitle"] = { kind: "email", person_name: "Sam Example", topic: "proof copies" };
+
+const decision: Line = line("decision", { key: "question:Q-1", text: "Matte or soft-touch?", question: "Q-1", project: "PRJ-1", project_name: "Spring book" });
+/** One thing in a batch that needs a look: a to-do the assistant added. */
+const todo = (n: number, text: string, over: Partial<Line> = {}): Line =>
+  line("batch_item", { key: `item:CS-1:${n}`, what: "action", text, request: "REQ-1", changeset: "CS-1", op: n, title: emptyTitle, ...over });
+const review: Line = line("review", {
+  key: "review:REQ-1",
+  count: 3,
+  request: "REQ-1",
+  changeset: "CS-1",
+  changesets: ["CS-1"],
+  items: [todo(0, "Send two spine options"), todo(1, "Book the proof run"), todo(2, "Confirm the hall")],
+  title: emptyTitle,
+  outcome: { actions_added: 3, held: 1 },
+});
+const send: Line = line("send", { key: "send:PER-2", person: "PER-2", person_name: "Robin Sample", count: 2, questions: ["Q-2"], actions: ["ACT-2"] });
+
+const pm = (questions: S["FollowupQuestion"][] = []): S["FollowupSection"] => ({
+  person: "PER-1",
+  name: "Pat Example",
+  is_pm: true,
+  questions,
+  actions: [],
+  message: "",
+  to_send: 0,
+});
+const decisionQuestion: S["FollowupQuestion"] = {
+  id: "Q-1",
+  title: "Matte or soft-touch?",
+  text: "",
+  links: [],
+  kind: "decision",
+  status: "open",
+  sent: null,
+  waiting_days: null,
+  chase_due: false, chases: 0,
+  about: null,
+  options: [],
+};
+const robin: S["FollowupSection"] = {
+  person: "PER-2",
+  name: "Robin Sample",
+  is_pm: false,
+  questions: [{ ...decisionQuestion, id: "Q-2", title: "Is the index final?", kind: "question" }],
+  actions: [{ id: "ACT-2", text: "Send the index", due: null, project_name: "", told: null, to_send: true, told_days: null, followed_up: null, chase_due: false, chases: 0 }],
+  message: "Hi Robin,\n\nIs the index final?",
+  to_send: 2,
+};
+
+function change(id: string): S["ChangeItem"] {
+  return {
+    id,
+    version: 4,
+    dismissed: false,
+    stage_task: false,
+    first_go: false,
+    refused: false,
+    state: "review",
+    waiting: null,
+    created_at: "2026-10-09T14:00:00Z",
+    note: null,
+    source: null,
+    source_title: "Email from Sam Example",
+    changeset: {
+      id: "CS-1",
+      summary: "Three actions.",
+      status: "applied",
+      reviewed: false,
+      trust: "untrusted",
+      ops: [{ index: 0, op: "action.add", status: "applied", reason: null, group: "op0", title: "Send two spine options", meta: { owners: [] }, evidence: null, record: { kind: "action", id: "ACT-7" }, ask: null }],
+    },
+  } as S["ChangeItem"];
+}
+
+/** The window's shortcut keys, as the app registers them. */
+function Keys() {
+  useShortcuts({ next: "j", previous: "k", primary: "a", show_new: "N", next_pane: "]", previous_pane: "[" }, { undo: () => undefined, hand_in: () => undefined, ask: () => undefined, help: () => undefined, show_new: showNewLines });
+  return null;
+}
+
+const emptyWeek: S["ThisWeekView"] = { first: "2026-10-19", last: "2026-10-23", due: [], waiting: [], meetings: [] };
+
+function show(lines: Line[], extra: Routes = {}, over: { wide?: boolean; unnamed?: boolean } = {}) {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: !!over.wide && /min-width: 1680px/.test(query),
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+  }));
+  const calls = fakeApi({
+    "GET today/queue": () => lines,
+    "GET changes": () => [change("REQ-1")],
+    "GET followups": () => [pm([decisionQuestion]), robin],
+    "GET plugin-today": () => [],
+    "GET stages/records": () => [],
+    "GET stages/ready": () => [],
+    "GET stages/requests": () => [],
+    "GET today/agenda": () => [],
+    "GET today/arrived": () => ({ items: [], left_out: 0, set_aside: 0 }),
+    "GET today/week": () => emptyWeek,
+    "GET setup": () => ({ finished: false, steps: [], settled: 0, total: 3 }),
+    "GET watch": () => [],
+    "GET projects": () => [],
+    // An assistant that has already worked on something: an empty Today then says nothing needs the person.
+    "GET status": () => statusFixture({}, { assistant: { last_run_at: "2026-10-20T08:00:00Z" } }),
+    "GET runtime-config": () => ({ instance: null }),
+    ...extra,
+  });
+  const onView = vi.fn();
+  const onOpenGuide = vi.fn();
+  const onHandIn = vi.fn();
+  const { client } = renderApp(
+    <RestartProvider hellos={1}>
+      <Keys />
+      <Today workspace="Workspace" onView={onView} onAddSource={vi.fn()} onOpenGuide={onOpenGuide} onHandIn={onHandIn} onOpenRecord={vi.fn()} shortcuts={{ next: "j", previous: "k" }} />
+    </RestartProvider>,
+    {},
+    { unnamed: over.unnamed },
+  );
+  /** What the live stream does when something changed elsewhere: the screen asks again. */
+  const refresh = () => act(() => client.invalidateQueries());
+  return { calls, onView, refresh, onOpenGuide, onHandIn };
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  forgetLine();
+});
+
+const row = (kind: string) => document.querySelector<HTMLElement>(`[data-queue-line="${kind}"]`)!;
+
+test("the queue is one ranked list in the engine's order, each line starting with a verb and offering one primary", async () => {
+  show([decision, review, send]);
+  await screen.findByText("Matte or soft-touch?", { selector: "li *" });
+  const lines = Array.from(document.querySelectorAll("[data-queue-line]")).map((el) => el.getAttribute("data-queue-line"));
+  expect(lines).toEqual(["decision", "review", "send"]);
+  // The groups head the lists, in the engine's order.
+  expect(screen.getAllByRole("heading", { level: 3 }).map((h) => h.childNodes[0].textContent)).toEqual(["Decide", "Review", "Send and follow up"]);
+  expect(within(row("decision")).getByRole("button", { name: "Answer" })).toBeInTheDocument();
+  expect(within(row("review")).getByRole("button", { name: "Look over" })).toBeInTheDocument();
+  expect(within(row("send")).getByRole("button", { name: "Review & copy" })).toBeInTheDocument();
+  // One primary per row: the rest is in the menu.
+  for (const kind of ["decision", "review", "send"]) {
+    expect(within(row(kind)).getAllByRole("button").filter((b) => b.getAttribute("data-variant") === "primary")).toHaveLength(1);
+  }
+});
+
+test("a send line that has waited says since when, and one ready today says nothing", async () => {
+  const ago = new Date();
+  ago.setDate(ago.getDate() - 2);
+  const stamp = `${ago.getFullYear()}-${String(ago.getMonth() + 1).padStart(2, "0")}-${String(ago.getDate()).padStart(2, "0")}`;
+  show([{ ...send, ready_since: stamp }]);
+  const weekday = new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(ago);
+  expect(await screen.findByText(new RegExp(`ready since ${weekday}`))).toBeInTheDocument();
+  cleanup();
+  const today = new Date();
+  const todayStamp = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  show([{ ...send, ready_since: todayStamp }]);
+  await screen.findByText("Send 2 items to Robin Sample");
+  expect(screen.queryByText(/ready since/)).toBeNull();
+});
+
+test("the heading says how many lines need the person, and the same number is the menu's", async () => {
+  show([decision, review, send], { "GET plugin-today": () => [{ plugin: "demo", id: "L-1", text: "Look at the proof", about: null, action: null, action_is: null, why: "", until: null }] });
+  // The heading line says it, and so does the pane's own count for a screen reader.
+  await waitFor(() => expect(screen.getAllByText(/4 things need you/)).toHaveLength(2));
+  expect(screen.getByRole("heading", { level: 2, name: "Needs you" })).toBeInTheDocument();
+  expect(within(screen.getByRole("region", { name: "Needs you" })).getByText("4", { selector: "[aria-hidden]" })).toBeInTheDocument();
+});
+
+test("an empty queue says so in one line", async () => {
+  show([]);
+  expect(await screen.findByText("Nothing needs you right now.")).toBeInTheDocument();
+  expect(screen.getByText(/Nothing needs you$/)).toBeInTheDocument();
+});
+
+test("with no AI service an empty Today says to connect one, and its button goes on with setup", async () => {
+  const user = userEvent.setup();
+  const { onOpenGuide } = show([], { "GET status": () => statusFixture({}, { ai: { state: "not_set_up", detail: null } }) });
+  expect(await screen.findByText(/Connect an AI service to get started\./)).toBeInTheDocument();
+  expect(screen.queryByText("Nothing needs you right now.")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Missed something?" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Continue setup" }));
+  expect(onOpenGuide).toHaveBeenCalledWith("ai");
+});
+
+test("with setup unfinished an empty Today says which step is next, never that nothing needs the person (X91)", async () => {
+  const user = userEvent.setup();
+  const steps = ["workspace", "work", "ai", "mail", "promises", "backup", "people"].map((id) => setupStep(id, id === "workspace" ? { done: true } : {}));
+  const { onOpenGuide } = show([], { "GET setup": () => setupView(steps), "GET status": () => statusFixture({}, { ai: { state: "not_set_up", detail: null } }) });
+  expect(await screen.findByText("Setup isn't finished. Next in setup: Say what you'll use it for.")).toBeInTheDocument();
+  expect(screen.getByText(/Next in setup: Say what you'll use it for$/)).toBeInTheDocument();
+  expect(screen.queryByText(/Nothing needs you/)).toBeNull();
+  await user.click(within(document.querySelector<HTMLElement>('[data-queue-empty="setup"]')!).getByRole("button", { name: "Continue setup" }));
+  expect(onOpenGuide).toHaveBeenCalledWith("work");
+});
+
+test("with a service connected and nothing worked on yet, an empty Today says what to hand in", async () => {
+  const user = userEvent.setup();
+  const { onHandIn } = show([], { "GET status": () => statusFixture() });
+  expect(await screen.findByText(/Paste an email or meeting notes to see what your assistant does\./)).toBeInTheDocument();
+  expect(screen.queryByText("Nothing needs you right now.")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Missed something?" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Hand something in" }));
+  expect(onHandIn).toHaveBeenCalled();
+});
+
+test("Missed one appears only once the assistant has worked on something", async () => {
+  show([]);
+  expect(await screen.findByText("Nothing needs you right now.")).toBeInTheDocument();
+  expect(screen.getAllByRole("button", { name: "Missed something?" }).length).toBeGreaterThan(0);
+});
+
+const watched = (id: string, over: Partial<S["WatchSourceView"]> = {}): S["WatchSourceView"] => ({
+  id,
+  label: id,
+  connector: "kind-a",
+  connector_label: "A kind",
+  enabled: true,
+  every_minutes: 15,
+  items: 0,
+  last: null,
+  read_at: null,
+  failures: 0,
+  problem: null,
+  ...over,
+});
+
+test("an empty Today says nothing needs you together with what was read", async () => {
+  const read = new Date().toISOString();
+  show([], { "GET watch": () => [watched("a", { read_at: read, last: { outcome: "ok", started_at: read, new: 0, changed: 0, removed: 0 } })] });
+  // Every source read, setup done and a run has happened: the all-clear card, with what was read as a quiet line under it.
+  const empty = await screen.findByText((_, el) => el?.hasAttribute("data-all-clear") === true && /Checked 1 connection, last at /.test(el.textContent ?? ""));
+  expect(empty).toBeInTheDocument();
+  expect(within(empty).getByRole("heading", { name: "Nothing needs you" })).toBeInTheDocument();
+  expect(screen.getAllByText(/Checked 1 connection, last at /)).toHaveLength(1); // the empty state's: the header's popover holds the other line
+});
+
+test("when a source couldn't be read, neither the heading nor the empty Today says nothing needs you alone", async () => {
+  const read = new Date().toISOString();
+  show([], { "GET watch": () => [watched("m", { label: "Work mail", read_at: read, last: { outcome: "failed", started_at: read, new: 0, changed: 0, removed: 0 } })] });
+  const empty = await screen.findByText((_, el) => el?.hasAttribute("data-queue-empty") === true && /couldn't be read/.test(el.textContent ?? ""));
+  expect(empty.textContent).toMatch(/^Nothing found that needs you/);
+  expect(screen.getByText(/Nothing found that needs you$/)).toBeInTheDocument();
+  expect(screen.queryByText(/Nothing needs you/)).toBeNull();
+  expect(screen.getAllByText(/Work mail couldn't be read since/)).toHaveLength(1);
+});
+
+test("a source not read lately is named where Today would say nothing needs you, with its own label", async () => {
+  const old = new Date(Date.now() - 3 * 86_400_000).toISOString();
+  show([], { "GET watch": () => [watched("m", { label: "Work mailbox", read_at: old, stale: true, last: { outcome: "ok", started_at: old, new: 0, changed: 0, removed: 0 } })] });
+  const empty = await screen.findByText((_, el) => el?.hasAttribute("data-queue-empty") === true && /hasn't been read since/.test(el.textContent ?? ""));
+  expect(empty.textContent).toMatch(/^Nothing found that needs you/);
+  expect(screen.getByText(/Nothing found that needs you$/)).toBeInTheDocument();
+  expect(screen.queryByText(/Nothing needs you/)).toBeNull();
+  expect(screen.getAllByText(/Work mailbox hasn't been read since/)).toHaveLength(1);
+  expect(screen.queryByText(/Checked 1 connection/)).toBeNull();
+});
+
+test("a title leaves out the due day its meta line already shows, and writes any other date as a day", async () => {
+  const due = line("owner", { key: "question:Q-8", text: "Send the venue list by 2026-11-02.", due: "2026-11-02", question: "Q-8" });
+  const other = line("owner", { key: "question:Q-7", text: "Send the headcount by 2026-11-04.", due: "2026-11-06", question: "Q-7" });
+  show([due, other]);
+  await screen.findByText("Pick an owner for “Send the venue list.”");
+  expect(screen.getByText(/^Pick an owner for “Send the headcount by .*Nov 4.*\.”$/)).toBeInTheDocument();
+  expect(screen.queryByText(/2026-11/)).toBeNull();
+});
+
+test("an owner question's line opens the question itself, with the choice of who, since What changed only links to it", async () => {
+  const user = userEvent.setup();
+  const item = change("REQ-1");
+  item.changeset!.ops[0] = { ...item.changeset!.ops[0], op: "action.add", title: "Print the agenda.", meta: { owners: [], action_status: "held" }, ask: { id: "Q-9", status: "open", about: "owner", name: null, options: [] } };
+  const calls = show([line("owner", { key: "question:Q-9", text: "Print the agenda.", question: "Q-9" })], { "GET changes": () => [item], "GET people": () => [{ id: "PER-2", name: "Robin Sample", role: null }], "POST questions/Q-9/answer": () => ({ ok: "Q-9" }) }).calls;
+  await user.click(await screen.findByRole("button", { name: "Pick an owner" }));
+  const picker = await screen.findByRole("combobox", { name: "Who owns this?" });
+  await waitFor(async () => expect((await optionsOf(picker)).map((o) => o.textContent)).toContain("Robin Sample"));
+  await user.selectOptions(picker, "Robin Sample");
+  await user.click(screen.getByRole("button", { name: "Add the to-do" }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST questions/Q-9/answer")?.body).toEqual({ person: "PER-2" }));
+  expect(screen.queryByText("Already dealt with.")).toBeNull();
+});
+
+test("a row names its project only when the screen holds more than one", async () => {
+  const other = line("owner", { key: "question:Q-9", text: "Plan the launch", project: "PRJ-2", project_name: "Autumn book", question: "Q-9" });
+  show([decision, other]);
+  await screen.findByText("Pick an owner for “Plan the launch”");
+  expect(within(row("decision")).getByText("Spring book")).toBeInTheDocument();
+  expect(within(row("owner")).getByText("Autumn book")).toBeInTheDocument();
+});
+
+test("with one project on screen the tag is left out", async () => {
+  show([decision, review]);
+  await screen.findByText("Matte or soft-touch?", { selector: "li *" });
+  expect(screen.queryByText("Spring book")).toBeNull();
+});
+
+test("a review card is titled by what it holds", async () => {
+  show([
+    review,
+    line("review", { key: "review:REQ-2", count: 4, request: "REQ-2", changeset: "CS-2", outcome: { actions_added: 2, questions: 1, notes: 1 } }),
+  ]);
+  expect(await screen.findByText("Look over 3 to-dos Helper added")).toBeInTheDocument();
+  expect(screen.getByText("Look over 4 things Helper did")).toBeInTheDocument();
+  expect(within(row("review")).getByText(/1 waits for you/)).toBeInTheDocument();
+});
+
+test("a review card whose every change was refused says so instead of counting nothing", async () => {
+  show([line("review", { key: "review:REQ-3", count: 2, request: "REQ-3", changeset: "CS-3", outcome: { refused: 2 } })]);
+  expect(await screen.findByText("See why 2 things Helper found couldn't be recorded")).toBeInTheDocument();
+});
+
+test("Look over opens the batch in the details, and All looks good there confirms it with Undo", async () => {
+  const user = userEvent.setup();
+  const { calls, onView } = show([review], {
+    "POST changesets/confirm": () => ({ changesets: ["CS-1"], signals: ["SIG-1"] }),
+    "POST changesets/unconfirm": () => ({ reopened: 1 }),
+  });
+  await user.click(await screen.findByRole("button", { name: "Look over" }));
+  const open = row("review");
+  // Each thing that needs a look is one line with Not right; nothing was marked or left.
+  expect(await within(open).findByText("Send two spine options")).toBeInTheDocument();
+  const corrections = within(open).getAllByRole("button", { name: /^Not right/ });
+  expect(corrections).toHaveLength(3);
+  expect(corrections[0]).toHaveAttribute("data-variant", "quiet");
+  expect(calls.filter((c) => c.route.startsWith("POST"))).toEqual([]);
+  expect(onView).not.toHaveBeenCalled();
+  await user.click(within(open).getByRole("button", { name: /^Keep (it|all \d+)$/ }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST changesets/confirm")?.body).toEqual({ changesets: ["CS-1"] }));
+  await user.click(await screen.findByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST changesets/unconfirm")?.body).toEqual({ changesets: ["CS-1"], signals: ["SIG-1"] }));
+});
+
+test("the open review's items carry no raw dates: a date in the words reads as a day", async () => {
+  const user = userEvent.setup();
+  const dated: Line = line("review", {
+    key: "review:REQ-2",
+    count: 1,
+    request: "REQ-2",
+    changeset: "CS-2",
+    changesets: ["CS-2"],
+    items: [todo(0, "Send the venue list by 2026-11-02.", { changeset: "CS-2", request: "REQ-2", key: "item:CS-2:0" })],
+  });
+  show([dated]);
+  await user.click(await screen.findByRole("button", { name: "Look over" }));
+  const open = row("review");
+  expect(await within(open).findByText(/^Send the venue list by .*2\.$/)).toBeInTheDocument();
+  expect(open.textContent).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+  expect(within(open).getByRole("button", { name: /^Not right/ }).getAttribute("aria-label")).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+});
+
+const intakeReview: Line = line("intake_review", {
+  key: "intake_review:m",
+  group: "review",
+  source: "m",
+  subject: "Inbox",
+  count: 4,
+  outcome: { actions_added: 3, questions: 2, held: 4 },
+});
+
+test("what a new source's intake found is one review line that counts it in plain words", async () => {
+  show([intakeReview]);
+  // The title counts what its own words list (3 to-dos and 2 questions), not the 4 inputs they were found in.
+  expect(await screen.findByText("Look over what was found in Inbox: 5 items")).toBeInTheDocument();
+  expect(within(row("intake_review")).getByText("3 to-dos, 2 questions, 4 waiting for you")).toBeInTheDocument();
+});
+
+test("the intake line's number is the number of things its words count, and a source named Your inbox reads naturally mid-sentence (X87, X69)", async () => {
+  show([{ ...intakeReview, subject: "Your inbox", count: 3, outcome: { actions_added: 4 } }]);
+  expect(await screen.findByText("Look over what was found in your inbox: 4 items")).toBeInTheDocument();
+  expect(within(row("intake_review")).getByText("4 to-dos")).toBeInTheDocument();
+});
+
+test("Look over on an intake opens its items in the details: nothing is marked seen and nothing navigates", async () => {
+  const user = userEvent.setup();
+  const found: Line = {
+    ...intakeReview,
+    changesets: ["CS-1", "CS-2"],
+    items: [todo(0, "Send the headcount"), todo(1, "Book the hall", { key: "item:CS-2:0", changeset: "CS-2", request: "REQ-2" })],
+  };
+  const { calls, onView } = show([found], { "POST changesets/confirm": () => ({ changesets: ["CS-1", "CS-2"], signals: ["SIG-1", "SIG-2"] }) });
+  await user.click(await screen.findByRole("button", { name: "Look over" }));
+  const open = row("intake_review");
+  expect(await within(open).findByText("Send the headcount")).toBeInTheDocument();
+  expect(within(open).getByText("Book the hall")).toBeInTheDocument();
+  expect(calls.filter((c) => c.route.startsWith("POST"))).toEqual([]);
+  expect(onView).not.toHaveBeenCalled();
+  expect(window.location.hash).not.toMatch(/changed/);
+  await user.click(within(open).getByRole("button", { name: /^Keep (it|all \d+)$/ }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST changesets/confirm")?.body).toEqual({ changesets: ["CS-1", "CS-2"] }));
+});
+
+test("what the first look back over the mail found is one line, Look over what was found, with its count, and Look over opens the review", async () => {
+  const user = userEvent.setup();
+  const found: Line = {
+    ...intakeReview,
+    count: 2,
+    outcome: { actions_added: 2 },
+    changesets: ["CS-1", "CS-2"],
+    items: [todo(0, "Send the headcount"), todo(1, "Book the hall", { key: "item:CS-2:0", changeset: "CS-2", request: "REQ-2" })],
+  };
+  show([found]);
+  expect(await screen.findByText("Look over what was found in Inbox: 2 items")).toBeInTheDocument();
+  expect(document.querySelectorAll('[data-queue-line="intake_review"]')).toHaveLength(1);
+  expect(screen.queryByText("Send the headcount")).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Look over" }));
+  const open = row("intake_review");
+  expect(await within(open).findByText("Send the headcount")).toBeInTheDocument();
+  expect(within(open).getByRole("button", { name: /^Keep (it|all \d+)$/ })).toBeInTheDocument();
+  expect(within(open).getAllByRole("button", { name: /^Not right/ }).length).toBeGreaterThan(0);
+});
+
+test("the intake line has no Mark as seen: the only way off Today is to look it over and say it looks good", async () => {
+  const user = userEvent.setup();
+  show([intakeReview]);
+  await screen.findByRole("button", { name: "Look over" });
+  expect(screen.queryByRole("button", { name: /More|Actions|Menu/ })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Look over" }));
+  expect(screen.queryByRole("menuitem", { name: "Mark as seen" })).toBeNull();
+});
+
+test("Not right on an item opens the note to send it back with, the correction the assistant learns from", async () => {
+  const user = userEvent.setup();
+  const { calls } = show([review], { "POST changesets/CS-1/send-back": () => ({ request: "REQ-9" }) });
+  await user.click(await screen.findByRole("button", { name: "Look over" }));
+  await user.click(await screen.findByRole("button", { name: "Not right: Book the proof run" }));
+  const note = await screen.findByRole("textbox", { name: "What should Helper do differently about: Book the proof run?" });
+  expect(note).toHaveFocus();
+  await user.type(note, "This is not a to-do.");
+  await user.click(screen.getByRole("button", { name: "Send back" }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST changesets/CS-1/send-back")?.body).toEqual({ note: "This is not a to-do.", ops: [1] }));
+});
+
+test("the note to send an item back with asks about the item's words, with no stop left before the question mark (X19)", async () => {
+  const user = userEvent.setup();
+  show([{ ...review, items: [todo(0, "Bring the floor plan.")], count: 1, outcome: { actions_added: 1 } }]);
+  await user.click(await screen.findByRole("button", { name: "Look over" }));
+  await user.click(await screen.findByRole("button", { name: /^Not right/ }));
+  expect(await screen.findByRole("textbox", { name: "What should Helper do differently about: Bring the floor plan?" })).toBeInTheDocument();
+});
+
+test("batches left unopened are one line, and each opens with its own All looks good, oldest first", async () => {
+  const user = userEvent.setup();
+  const older: Line = { ...review, key: "review:REQ-0", request: "REQ-0", changeset: "CS-0", changesets: ["CS-0"], items: [todo(0, "Return the proofs", { key: "item:CS-0:0", changeset: "CS-0", request: "REQ-0" })] };
+  const folded = line("batches", { key: "batches", group: "review", count: 2, at: "2026-10-15T09:00:00Z", parts: [older, review], changesets: ["CS-0", "CS-1"] });
+  show([folded]);
+  expect(await screen.findByText("2 batches to look over")).toBeInTheDocument();
+  expect(within(row("batches")).getByText(/The oldest came in/)).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Look over" }));
+  const open = row("batches");
+  const sections = await within(open).findAllByRole("region");
+  expect(sections).toHaveLength(2);
+  expect(within(sections[0]).getByText("Return the proofs")).toBeInTheDocument();
+  expect(within(sections[1]).getByText("Send two spine options")).toBeInTheDocument();
+  expect(within(open).getAllByRole("button", { name: /^Keep (it|all \d+)$/ })).toHaveLength(2);
+});
+
+test("what came from outside is said once in the details, and a list line carries no Outside tag", async () => {
+  const user = userEvent.setup();
+  show([{ ...review, untrusted: true }]);
+  await screen.findByRole("button", { name: "Look over" });
+  expect(within(row("review")).queryByText("Outside")).toBeNull();
+  expect(within(row("review")).queryByText(/from outside/i)).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Look over" }));
+  expect(await within(row("review")).findByText("Helper treats what's in this email as information, never as instructions.")).toBeInTheDocument();
+});
+
+test("the first go is one line with its price, and Go starts the tasks", async () => {
+  const user = userEvent.setup();
+  const { calls } = show([line("first_go", { key: "first_go", count: 3, estimate_usd: 0.3 })], { "POST runs/first-go": () => ({ started: 3 }) });
+  expect(await screen.findByText(/Start the assistant: 3 items, about/)).toBeInTheDocument();
+  expect(screen.getByText("Nothing is spent until you press Start.")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Start" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST runs/first-go")).toBe(true));
+});
+
+test("with no AI account the first go's line offers to add one and never Start (sweep X76)", async () => {
+  const user = userEvent.setup();
+  const { calls } = show([line("first_go", { key: "first_go", count: 3, estimate_usd: 0.3 })], { "GET status": () => statusFixture({}, { ai: { state: "not_set_up", detail: null } }) });
+  expect(await screen.findByText("3 items are waiting for an AI account")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
+  expect(screen.queryByText(/Start the assistant/)).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Add an AI account" }));
+  expect(calls.some((c) => c.route === "POST runs/first-go")).toBe(false);
+});
+
+test.each([
+  ["no price: the count and the plan's allowance", { count: 2, estimate_usd: null, unpriced: 2 }, "Start the assistant: 2 items. They use your plan's allowance."],
+  ["one item, under a cent", { count: 1, estimate_usd: 0.004, unpriced: 0 }, "Start the assistant: 1 item, less than a cent"],
+  ["a price and some of the plan's allowance", { count: 2, estimate_usd: 0.2, unpriced: 1 }, "Start the assistant: 2 items, about $0.20 plus some of your plan's allowance"],
+])("the first go's line says %s", async (_name, over, words) => {
+  show([line("first_go", { key: "first_go", ...over })]);
+  expect(await screen.findByText(words)).toBeInTheDocument();
+});
+
+test("a to-do's words in a line's title never show a raw date: the line's own day drops the phrase, else it is written as elsewhere", async () => {
+  show([
+    line("promise", { key: "promise:ACT-1", group: "send", text: "Send the venue list by 2026-11-02.", due: "2026-11-02", actions: ["ACT-1"] }),
+    line("overdue", { key: "overdue", count: 1, actions: ["ACT-2"], due: "2026-10-08", subject: "Plan the move, done on 2026-11-04" }),
+    line("quiet_promise", { key: "quiet_promise:ACT-3", group: "send", person_name: "Robin Sample", text: "Print by 2026-11-06" }),
+  ]);
+  expect(await screen.findByText(new RegExp(`^Send the venue list, due ${day("2026-11-02").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`))).toBeInTheDocument();
+  expect(await screen.findByText(`Plan the move, done on ${day("2026-11-04")}`)).toBeInTheDocument();
+  expect(await screen.findByText(`Follow up with Robin Sample: Print by ${day("2026-11-06")} has gone quiet`)).toBeInTheDocument();
+  expect(document.body.textContent).not.toMatch(/2026-11-0\d/);
+});
+
+test("a line that has items opens them under itself below 1680px, and the primary says it is open", async () => {
+  const user = userEvent.setup();
+  show([decision]);
+  const answer = await screen.findByRole("button", { name: "Answer" });
+  expect(answer).toHaveAttribute("aria-expanded", "false");
+  await user.click(answer);
+  expect(answer).toHaveAttribute("aria-expanded", "true");
+  const open = row("decision");
+  expect(await within(open).findByRole("textbox", { name: "Your answer" })).toBeInTheDocument();
+  // Close puts it away again.
+  await user.click(within(open).getByRole("button", { name: "Close" }));
+  expect(within(row("decision")).queryByRole("textbox")).toBeNull();
+});
+
+test("from 1680px the items open in the inspector beside the queue, and the row stays one line", async () => {
+  const user = userEvent.setup();
+  show([decision], {}, { wide: true });
+  const inspector = await screen.findByRole("complementary", { name: "Details" });
+  // The first line is open from the start, with the items to answer; showing it changes nothing.
+  expect(await within(inspector).findByRole("textbox", { name: "Your answer" })).toBeInTheDocument();
+  expect(within(row("decision")).queryByRole("textbox")).toBeNull();
+  await waitFor(() => expect(row("decision")).not.toBeNull());
+  await user.click(within(row("decision")).getByRole("button", { name: "Answer" }));
+  expect(await within(inspector).findByRole("textbox", { name: "Your answer" })).toHaveFocus();
+});
+
+test("Review & copy opens the message to copy, with the cursor able to edit it", async () => {
+  const user = userEvent.setup();
+  show([send]);
+  await user.click(await screen.findByRole("button", { name: "Review & copy" }));
+  const box = await screen.findByRole("textbox", { name: /Message to Robin Sample/ });
+  expect(box).toHaveValue("Hi Robin,\n\nIs the index final?");
+  expect(screen.getByText("Send 2 items to Robin Sample")).toBeInTheDocument();
+});
+
+test("a card's menu has Look closer and Send back, which opens the note to send it back with", async () => {
+  const user = userEvent.setup();
+  show([review]);
+  await user.click(await screen.findByRole("button", { name: /More actions for Look over 3 to-dos/ }));
+  await user.click(await screen.findByRole("menuitem", { name: "Send back with a note" }));
+  // The note to send it back with, beside the one-line meeting form under the agenda.
+  expect((await screen.findAllByRole("textbox")).some((box) => !box.closest('[aria-label="Add a meeting"]'))).toBe(true);
+  expect(screen.getByRole("button", { name: "Send back" })).toBeDisabled();
+});
+
+test("an overdue line is one summary line, whose button opens To-dos and questions filtered to the overdue ones", async () => {
+  const user = userEvent.setup();
+  const overdue = line("overdue", { key: "overdue", group: "risk", count: 2, actions: ["ACT-1", "ACT-2"], due: "2026-10-08", waiting_days: 5 });
+  const { onView, calls } = show([overdue], { "GET me": () => ({ person: "P-1", full_name: "Quinn Sample" }) });
+  expect(await screen.findByText("Finish 2 overdue to-dos")).toBeInTheDocument();
+  // The to-dos are ticked in their own list, so the line lists none of them and has no tick of its own.
+  expect(within(row("overdue")).queryByRole("checkbox")).toBeNull();
+  await waitFor(() => expect(calls.some((c) => c.route === "GET me")).toBe(true));
+  await user.click(within(row("overdue")).getByRole("button", { name: "Open the list" }));
+  expect(onView).toHaveBeenCalledWith("work/open");
+  // Narrowed to the person's own overdue to-dos, the ones the line counts.
+  expect(takeFilters()).toEqual({ project: "", person: "P-1", state: "overdue" });
+});
+
+test("the restart and paused lines are rows of the queue, drawn with their own words", async () => {
+  show([line("restart", { key: "restart", count: 2 }), line("paused", { key: "paused:main", group: "risk", account: "main", count: 1, until: "2099-01-01T15:30:00+00:00" })], {
+    "GET status": () => statusFixture({ can_restart: true }),
+  });
+  const restart = await screen.findByRole("region", { name: "Restart needed" });
+  expect(restart).toHaveTextContent("Restart to resume 2 waiting tasks");
+  expect(await within(restart).findByRole("button", { name: "Restart now" })).toBeInTheDocument();
+  const paused = screen.getByRole("region", { name: "Paused account" });
+  expect(paused).toHaveTextContent("main");
+  expect(within(paused).getByRole("button", { name: "Open AI accounts" })).toBeInTheDocument();
+  // Restart comes first, then the group of what is at risk.
+  expect(document.querySelectorAll("[data-queue-line]")[0]).toBe(restart);
+});
+
+test("the cursor starts on the first line, and the arrows and Enter walk and open it", async () => {
+  const user = userEvent.setup();
+  show([decision, review, send]);
+  await screen.findByText("Matte or soft-touch?", { selector: "li *" });
+  await waitFor(() => expect(row("decision")).toHaveFocus());
+  await user.keyboard("{ArrowDown}");
+  expect(row("review")).toHaveFocus();
+  await user.keyboard("{ArrowUp}");
+  expect(row("decision")).toHaveFocus();
+  await user.keyboard("{Enter}");
+  expect(await within(row("decision")).findByRole("textbox", { name: "Your answer" })).toBeInTheDocument();
+});
+
+test("the line that has the keyboard focus is the cursor row once a key is pressed, and the cursor leaves with the focus; before that the first line shows no cursor", async () => {
+  const user = userEvent.setup();
+  resetInputMode();
+  show([decision, review, send]);
+  await screen.findByText("Matte or soft-touch?", { selector: "li *" });
+  await waitFor(() => expect(row("decision")).toHaveFocus());
+  // The first line took the cursor by itself as Today opened, so it has neither the cursor's fill and bar nor a ring (VP06).
+  expect(row("decision")).not.toHaveAttribute("data-selected");
+  expect(row("decision")).not.toHaveAttribute("aria-current");
+  await user.keyboard("{ArrowDown}");
+  expect(row("review")).toHaveAttribute("data-selected");
+  expect(row("review")).toHaveAttribute("aria-current", "true");
+  expect(row("decision")).not.toHaveAttribute("data-selected");
+  await user.keyboard("{ArrowUp}");
+  expect(row("decision")).toHaveAttribute("data-selected");
+  expect(row("decision")).toHaveAttribute("aria-current", "true");
+});
+
+test("a line opened in place is an inset card under its row, closed by its own Close", async () => {
+  const user = userEvent.setup();
+  show([decision, review, send]);
+  await screen.findByText("Matte or soft-touch?", { selector: "li *" });
+  expect(document.querySelector("[data-inset]")).toBeNull();
+  await waitFor(() => expect(row("decision")).toHaveFocus());
+  await user.keyboard("{Enter}");
+  const inset = await waitFor(() => {
+    const el = row("decision").querySelector<HTMLElement>("[data-inset]");
+    expect(el).not.toBeNull();
+    return el as HTMLElement;
+  });
+  expect(within(inset).getByRole("button", { name: "Close" })).toBeInTheDocument();
+});
+
+test("the pane keys take the cursor from the queue into the details and the rail and back, so neither is reached only by the mouse", async () => {
+  const user = userEvent.setup();
+  show([decision, review, send], {}, { wide: true });
+  await screen.findByText("Matte or soft-touch?", { selector: "li *" });
+  await waitFor(() => expect(row("decision")).toHaveFocus());
+  const inspector = document.querySelector<HTMLElement>("[data-queue-inspector]")!;
+  await user.keyboard("]");
+  expect(inspector.contains(document.activeElement)).toBe(true);
+  await user.keyboard("]");
+  expect(document.querySelector("[role='group'][data-region]")?.contains(document.activeElement) ?? false).toBe(true);
+  await user.keyboard("]");
+  expect(document.querySelector("[data-queue-line]")?.closest("[data-region]")?.contains(document.activeElement)).toBe(true);
+  await user.keyboard("[[");
+  expect(document.querySelector("[role='group'][data-region]")?.contains(document.activeElement) ?? false).toBe(true);
+});
+
+test("the arrow keys and the shortcut letters never act while the cursor is in a field", async () => {
+  const user = userEvent.setup();
+  show([decision, review]);
+  await user.click(await screen.findByRole("button", { name: "Answer" }));
+  const box = await within(row("decision")).findByRole("textbox", { name: "Your answer" });
+  box.focus();
+  await user.keyboard("jk{ArrowDown}");
+  expect(box).toHaveFocus();
+  expect(box).toHaveValue("jk");
+});
+
+test("lines that arrive while the person is working in the queue wait behind 'N new · Show'", async () => {
+  const user = userEvent.setup();
+  let lines = [decision, review];
+  show([], {
+    "GET today/queue": () => lines,
+    "POST changesets/confirm": () => {
+      // While the cursor is in the queue, the engine now has a line that wasn't there before, and the old one is done.
+      lines = [decision, send];
+      return { changesets: ["CS-1"], signals: ["SIG-1"] };
+    },
+  });
+  await user.click(await screen.findByRole("button", { name: "Look over" }));
+  await user.click(await within(row("review")).findByRole("button", { name: /^Keep (it|all \d+)$/ }));
+  const pill = await screen.findByRole("button", { name: "Show 1 new item" });
+  expect(document.querySelector('[data-queue-line="send"]')).toBeNull();
+  // Nothing moved under the cursor; Show brings the new line in.
+  await user.click(pill);
+  expect(await screen.findByText("Send 2 items to Robin Sample")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Show 1 new item" })).toBeNull();
+});
+
+test("the queue's own starting cursor holds the list: a line that arrives after the first draw waits behind 'Show 1 new item', which says so", async () => {
+  let lines = [decision];
+  const { refresh } = show([], { "GET today/queue": () => lines });
+  await screen.findByText("Matte or soft-touch?", { selector: "li *" });
+  lines = [decision, review];
+  await refresh();
+  await waitFor(() => {
+    const drawn = document.querySelector('[data-queue-line="review"]') !== null;
+    const announced = screen.queryByRole("button", { name: "Show 1 new item" }) !== null;
+    expect(drawn || announced).toBe(true);
+  });
+  expect(document.querySelector('[data-queue-line="review"]') !== null).toBe(false);
+  await userEvent.setup().click(screen.getByRole("button", { name: "Show 1 new item" }));
+  expect(await screen.findByRole("button", { name: "Look over" })).toBeInTheDocument();
+});
+
+test("a request to look at a changeset opens its line", async () => {
+  const { reveal } = await import("../lib/reveal");
+  show([review]);
+  await screen.findByText("Look over 3 to-dos Helper added");
+  let handled = false;
+  await act(async () => {
+    handled = reveal("changeset", "CS-1");
+  });
+  expect(handled).toBe(true);
+  expect(await within(row("review")).findByText("Send two spine options")).toBeInTheDocument();
+});
+
+// ---- one-item lines are titled by the item (designer answer 34) ----------------------------------------------------
+
+test("a line that holds one item is titled by the item itself; a line that groups several keeps its count", async () => {
+  const one = line("review", { key: "review:REQ-5", count: 1, request: "REQ-5", changeset: "CS-5", subject: "Send two spine options", outcome: { actions_added: 1 } });
+  const overdueOne = line("overdue", { key: "overdue", count: 1, actions: ["ACT-1"], due: "2026-10-08", waiting_days: 5, subject: "Approve the proof" });
+  show([decision, one, review, overdueOne]);
+  expect(await screen.findByText("Matte or soft-touch?", { selector: "li *" })).toBeInTheDocument();
+  expect(screen.queryByText("Make 1 decision")).toBeNull();
+  expect(within(row("decision")).getByRole("button", { name: "Answer" })).toBeInTheDocument();
+  expect(screen.getByText("Send two spine options")).toBeInTheDocument();
+  expect(screen.getByText(/Look over 1 to-do Helper added/)).toBeInTheDocument();
+  expect(screen.getByText("Look over 3 to-dos Helper added")).toBeInTheDocument();
+  expect(screen.getByText("Approve the proof", { selector: "li *" })).toBeInTheDocument();
+  expect(screen.queryByText("Finish 1 overdue to-do")).toBeNull();
+  expect(screen.getByText(/Was due .*5 days ago/)).toBeInTheDocument();
+});
+
+// ---- the details pane follows the line that has the cursor (designer answer 34) ------------------------------------
+
+const inspector = () => screen.findByRole("complementary", { name: "Details" });
+
+test("from 1680px the pane opens on the first line at once, headed by the line's subject and where it is in the list", async () => {
+  show([decision, review, send], {}, { wide: true });
+  const pane = await inspector();
+  expect(await within(pane).findByRole("heading", { name: "Matte or soft-touch?" })).toBeInTheDocument();
+  expect(within(pane).getByText("1 of 3 · j / k")).toBeInTheDocument();
+  expect(await within(pane).findByRole("textbox", { name: "Your answer" })).toBeInTheDocument();
+  expect(within(pane).queryByText("Choose an item to see its details.")).toBeNull();
+});
+
+test("the pane shows the line that has the cursor, and showing a line marks nothing", async () => {
+  const user = userEvent.setup();
+  const { calls } = show([decision, review, send], {}, { wide: true });
+  const pane = await inspector();
+  await within(pane).findByRole("textbox", { name: "Your answer" });
+  await waitFor(() => expect(row("decision")).toHaveFocus());
+  await user.keyboard("j");
+  expect(row("review")).toHaveFocus();
+  expect(await within(pane).findByRole("heading", { name: "Look over 3 to-dos Helper added" })).toBeInTheDocument();
+  expect(within(pane).getByText("2 of 3 · j / k")).toBeInTheDocument();
+  expect(await within(pane).findByText("Send two spine options")).toBeInTheDocument();
+  await user.keyboard("j");
+  expect(await within(pane).findByRole("heading", { name: "Send 2 items to Robin Sample" })).toBeInTheDocument();
+  // Looking at lines wrote nothing.
+  expect(calls.filter((c) => c.route.startsWith("POST"))).toEqual([]);
+});
+
+test("a click on a line shows it in the pane, and clicking it again keeps it there", async () => {
+  const user = userEvent.setup();
+  show([decision, review], {}, { wide: true });
+  const pane = await inspector();
+  await screen.findByText(/Look over 3 to-dos Helper added/, { selector: "li *" });
+  await user.click(within(row("review")).getByText(/Look over 3 to-dos/));
+  expect(await within(pane).findByRole("heading", { name: "Look over 3 to-dos Helper added" })).toBeInTheDocument();
+  await user.click(within(row("review")).getByText(/Look over 3 to-dos/));
+  expect(within(pane).getByRole("heading", { name: "Look over 3 to-dos Helper added" })).toBeInTheDocument();
+});
+
+test("after a line is settled the cursor and the pane move to the next line, not back to the top", async () => {
+  const user = userEvent.setup();
+  let lines = [decision, review, send];
+  show([], {
+    "GET today/queue": () => lines,
+    "POST changesets/confirm": () => {
+      lines = [decision, send];
+      return { changesets: ["CS-1"], signals: ["SIG-1"] };
+    },
+  }, { wide: true });
+  const pane = await inspector();
+  await within(pane).findByRole("textbox", { name: "Your answer" });
+  await waitFor(() => expect(row("decision")).toHaveFocus());
+  await user.keyboard("j");
+  await user.click(await within(pane).findByRole("button", { name: /^Keep (it|all \d+)$/ }));
+  await waitFor(() => expect(row("send")).toHaveFocus());
+  expect(await within(pane).findByRole("heading", { name: "Send 2 items to Robin Sample" })).toBeInTheDocument();
+  expect(within(pane).getByText("2 of 2 · j / k")).toBeInTheDocument();
+});
+
+test("the pane remembers its line when Today is opened again in the same session", async () => {
+  const user = userEvent.setup();
+  const first = show([decision, review, send], {}, { wide: true });
+  void first;
+  const pane = await inspector();
+  await screen.findByText(/Send 2 items/, { selector: "li *" });
+  await user.click(within(row("send")).getByText(/Send 2 items/));
+  expect(await within(pane).findByRole("heading", { name: "Send 2 items to Robin Sample" })).toBeInTheDocument();
+  cleanup();
+  show([decision, review, send], {}, { wide: true });
+  expect(await within(await inspector()).findByRole("heading", { name: "Send 2 items to Robin Sample" })).toBeInTheDocument();
+  // If its line is gone, the pane takes the line now in its position.
+  cleanup();
+  show([decision, review], {}, { wide: true });
+  expect(await within(await inspector()).findByRole("heading", { name: "Look over 3 to-dos Helper added" })).toBeInTheDocument();
+});
+
+test("with nothing that needs the person the pane says so and what comes next, and is never blank", async () => {
+  show([], {
+    "GET watch": () => [
+      { id: "mail-1", label: "Inbox", connector: "x", connector_label: "", reads: ["mail"], enabled: true, every_minutes: 30, items: 0, read_at: "2026-10-16T11:00:00+00:00", failures: 0, secrets: [] },
+    ],
+  }, { wide: true });
+  const pane = await inspector();
+  expect(await within(pane).findByText("Nothing needs you")).toBeInTheDocument();
+  expect(within(pane).getByText(/Next check /)).toBeInTheDocument();
+});
+
+test("below 1680px nothing changes: there is no pane, and Enter expands the line in place", async () => {
+  const user = userEvent.setup();
+  show([decision, review]);
+  await screen.findByText("Matte or soft-touch?", { selector: "li *" });
+  expect(screen.queryByRole("complementary", { name: "Details" })).toBeNull();
+  await waitFor(() => expect(row("decision")).toHaveFocus());
+  await user.keyboard("{Enter}");
+  expect(await within(row("decision")).findByRole("textbox", { name: "Your answer" })).toBeInTheDocument();
+});
+
+// ---- N new, held for the pointer too, removals held, Shift+N (designer answer 38) ----------------------------------
+
+test("the list holds still while the pointer is over it, and the new lines come in once the pointer leaves", async () => {
+  const user = userEvent.setup();
+  let lines = [decision, review];
+  const { refresh } = show([], { "GET today/queue": () => lines });
+  await screen.findByText(/Look over 3 to-dos/);
+  (document.activeElement as HTMLElement | null)?.blur();
+  await user.hover(row("review"));
+  lines = [decision, review, send];
+  await refresh();
+  expect(await screen.findByRole("button", { name: "Show 1 new item" })).toBeInTheDocument();
+  expect(document.querySelector('[data-queue-line="send"]')).toBeNull();
+  await user.unhover(row("review"));
+  expect(await screen.findByText("Send 2 items to Robin Sample")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Show 1 new item" })).toBeNull();
+});
+
+test("an empty list holds nothing: the first lines come straight in even with the cursor in the queue", async () => {
+  let lines: typeof decision[] = [];
+  const { refresh } = show([], { "GET today/queue": () => lines });
+  const needs = await screen.findByRole("heading", { level: 2, name: "Needs you" });
+  const region = needs.closest("section") ?? needs.parentElement!;
+  region.setAttribute("tabindex", "-1");
+  region.focus();
+  lines = [decision, review];
+  await refresh();
+  expect(await screen.findByText(/Look over 3 to-dos/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /^Show \d+ new/ })).toBeNull();
+});
+
+test("with nothing holding the list new lines appear at once", async () => {
+  let lines = [decision];
+  const { refresh } = show([], { "GET today/queue": () => lines });
+  await screen.findByText("Matte or soft-touch?", { selector: "li *" });
+  (document.activeElement as HTMLElement | null)?.blur();
+  lines = [decision, send];
+  await refresh();
+  expect(await screen.findByText("Send 2 items to Robin Sample")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /new · Show/ })).toBeNull();
+});
+
+test("a line settled elsewhere stays in place, struck through and muted, until the person moves on or presses Show", async () => {
+  const user = userEvent.setup();
+  let lines = [decision, review, send];
+  const { refresh } = show([], { "GET today/queue": () => lines });
+  await screen.findByText(/Look over 3 to-dos/);
+  await waitFor(() => expect(row("decision")).toHaveFocus());
+  lines = [decision, send];
+  await refresh();
+  // The line is still there where it was, said to be settled, with no button to press by mistake.
+  const ghost = await waitFor(() => {
+    const el = row("review");
+    expect(el).toHaveAttribute("data-ghost");
+    return el;
+  });
+  expect(within(ghost).getByText(/Settled elsewhere/)).toBeInTheDocument();
+  expect(within(ghost).queryByRole("button")).toBeNull();
+  expect(screen.getAllByRole("listitem").some((li) => li.contains(ghost))).toBe(true);
+  // Show lets it go.
+  await user.keyboard("{Shift>}N{/Shift}");
+  await waitFor(() => expect(document.querySelector('[data-queue-line="review"]')).toBeNull());
+  expect(row("send")).toBeInTheDocument();
+});
+
+test("lines the person settled one after another here all leave at once, only one settled elsewhere is a ghost", async () => {
+  const user = userEvent.setup();
+  const other: Line = line("send", { key: "send:PER-3", person: "PER-3", person_name: "Casey Moor", count: 1, questions: ["Q-3"], actions: [] });
+  let lines = [decision, review, send, other];
+  const { refresh } = show([], { "GET today/queue": () => lines });
+  await screen.findByText(/Look over 3 to-dos/);
+  await waitFor(() => expect(row("decision")).toHaveFocus());
+  // The person acts on the review line, then on the send line, before the data of the first has come back.
+  await user.click(row("review"));
+  await user.click(document.querySelector<HTMLElement>('[data-line-key="send:PER-2"]')!);
+  lines = [decision, other];
+  await refresh();
+  await waitFor(() => expect(document.querySelector('[data-queue-line="review"]')).toBeNull());
+  expect(document.querySelector('[data-line-key="send:PER-2"]')).toBeNull();
+  expect(document.querySelector("[data-ghost]")).toBeNull();
+});
+
+test("a ghost leaves when the cursor moves off it", async () => {
+  const user = userEvent.setup();
+  let lines = [decision, review, send];
+  const { refresh } = show([], { "GET today/queue": () => lines });
+  await screen.findByText(/Look over 3 to-dos/);
+  await waitFor(() => expect(row("decision")).toHaveFocus());
+  await user.keyboard("j");
+  expect(row("review")).toHaveFocus();
+  lines = [decision, send];
+  await refresh();
+  await waitFor(() => expect(row("review")).toHaveAttribute("data-ghost"));
+  expect(row("review")).toHaveFocus();
+  await user.keyboard("j");
+  expect(row("send")).toHaveFocus();
+  await waitFor(() => expect(document.querySelector('[data-queue-line="review"]')).toBeNull());
+});
+
+test("Shift+N shows the waiting lines and keeps the cursor on the line it was on", async () => {
+  const user = userEvent.setup();
+  let lines = [decision, review];
+  const { refresh } = show([], { "GET today/queue": () => lines });
+  await screen.findByText(/Look over 3 to-dos/);
+  await waitFor(() => expect(row("decision")).toHaveFocus());
+  await user.keyboard("j");
+  expect(row("review")).toHaveFocus();
+  lines = [decision, line("owner", { key: "question:Q-9", text: "Plan the launch", question: "Q-9" }), review, send];
+  await refresh();
+  expect(await screen.findByRole("button", { name: "Show 2 new items" })).toBeInTheDocument();
+  expect(screen.getByRole("status")).toHaveTextContent("2 new lines");
+  await user.keyboard("{Shift>}N{/Shift}");
+  expect(await screen.findByText("Send 2 items to Robin Sample")).toBeInTheDocument();
+  expect(screen.getByText("Pick an owner for “Plan the launch”")).toBeInTheDocument();
+  expect(row("review")).toHaveFocus();
+  expect(screen.queryByRole("button", { name: /new · Show/ })).toBeNull();
+});
+
+test("the sidebar's count follows the queue at once, whatever the list is holding back", async () => {
+  let lines = [decision, review];
+  const { refresh } = show([], { "GET today/queue": () => lines });
+  await screen.findByText(/Look over 3 to-dos/);
+  await waitFor(() => expect(screen.getAllByText(/2 things need you/).length).toBeGreaterThan(0));
+  lines = [decision, review, send];
+  await refresh();
+  await screen.findByRole("button", { name: "Show 1 new item" });
+  expect(screen.getAllByText(/3 things need you/).length).toBeGreaterThan(0);
+});
+
+// ---- add-on lines sit in the queue's own groups (designer answer 37) ------------------------------------------------
+
+const pluginLine = (over: Partial<S["TodayLineView"]> = {}): S["TodayLineView"] => ({
+  plugin: "publishing",
+  id: "L-1",
+  text: "Approve the post for Friday",
+  about: null,
+  action: null,
+  action_is: null,
+  why: "",
+  until: null,
+  group: "review",
+  ...over,
+});
+
+test("an add-on's line sits in the group it names, after the queue's own lines, with its source said quietly", async () => {
+  show([decision, review], {
+    "GET plugin-today": () => [
+      pluginLine({ id: "late", text: "Later post", until: "2026-10-30" }),
+      pluginLine({ id: "soon", text: "Sooner post", until: "2026-10-20" }),
+      pluginLine({ id: "loose", text: "Loose end", group: null }),
+    ],
+  });
+  await screen.findByText(/Look over 3 to-dos/);
+  const group = (name: string) => screen.getByRole("heading", { level: 3, name }).closest("section")!;
+  const review_ = within(group("Review")).getAllByRole("listitem");
+  // The queue's own line first, then the add-on's by the soonest date; it can't put itself first.
+  expect(review_.map((li) => li.textContent)).toEqual([
+    expect.stringContaining("Look over 3 to-dos"),
+    expect.stringContaining("Sooner post"),
+    expect.stringContaining("Later post"),
+  ]);
+  expect(review_[1]).toHaveTextContent("from Publishing");
+  // A line naming no group is under "More for today", at the end.
+  const headings = screen.getAllByRole("heading", { level: 3 }).map((h) => h.childNodes[0].textContent);
+  expect(headings).toEqual(["Decide", "Review", "More for today"]);
+  expect(within(group("More for today")).getByText("Loose end")).toBeInTheDocument();
+});
+
+test("with every add-on line in a group the fallback heading is not drawn", async () => {
+  show([decision], { "GET plugin-today": () => [pluginLine({ group: "decide" })] });
+  await screen.findByText("Approve the post for Friday");
+  expect(screen.queryByRole("heading", { level: 3, name: "More for today" })).toBeNull();
+  expect(within(screen.getByRole("heading", { level: 3, name: "Decide" }).closest("section")!).getAllByRole("listitem")).toHaveLength(2);
+});
+
+// ---- Draft a nudge (designer answer 36) ---------------------------------------------------------------------------
+
+test("a person who hasn't answered gets a nudge line whose button drafts it, open at once in the details", async () => {
+  const user = userEvent.setup();
+  const waiting: S["FollowupSection"] = {
+    ...robin,
+    questions: [{ ...decisionQuestion, id: "Q-8", title: "Is the index final?", kind: "question", status: "sent", sent: "2026-10-10", waiting_days: 6, chase_due: true, chases: 0, followed_up: null }],
+    actions: [],
+    to_send: 0,
+    nudge: { text: "Hi Robin,\n\nFollowing up on one thing.", round: 1, question_ids: ["Q-8"], action_ids: [] },
+  };
+  show([line("nudge", { key: "nudge:PER-2", person: "PER-2", person_name: "Robin Sample", count: 1, waiting_days: 6, questions: ["Q-8"] })], {
+    "GET followups": () => [pm(), waiting],
+  });
+  await user.click(await screen.findByRole("button", { name: "Draft a nudge" }));
+  const box = await screen.findByRole("textbox", { name: /Message to Robin Sample/ });
+  expect(box).toHaveValue("Hi Robin,\n\nFollowing up on one thing.");
+  expect(screen.getByText("1st follow-up")).toBeInTheDocument();
+});
+
+test("a line open under itself holds the list too, even with the cursor and the pointer elsewhere", async () => {
+  const user = userEvent.setup();
+  let lines = [decision, review];
+  const { refresh } = show([], { "GET today/queue": () => lines });
+  await user.click(await within((await screen.findByText(/Look over 3 to-dos/, { selector: "li *" }).then(() => row("decision")))).findByRole("button", { name: "Answer" }));
+  await within(row("decision")).findByRole("textbox", { name: "Your answer" });
+  (document.activeElement as HTMLElement | null)?.blur();
+  await user.unhover(row("decision"));
+  lines = [decision, review, send];
+  await refresh();
+  expect(await screen.findByRole("button", { name: "Show 1 new item" })).toBeInTheDocument();
+  expect(document.querySelector('[data-queue-line="send"]')).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Show 1 new item" }));
+  expect(await screen.findByText("Send 2 items to Robin Sample")).toBeInTheDocument();
+});
+
+test("a line that counts things and holds none is not shown, so no line says zero", async () => {
+  show([
+    decision,
+    line("overdue", { key: "overdue:none", count: 0 }),
+    line("send", { key: "send:none", count: 0, person: "PER-9", person_name: "Nobody Example" }),
+    line("review", { key: "review:none", count: 0 }),
+    line("first_go", { key: "first_go:none", count: 0 }),
+  ]);
+  expect(await screen.findByText("Matte or soft-touch?")).toBeInTheDocument();
+  expect(document.querySelectorAll("[data-queue-line]")).toHaveLength(1);
+  expect(document.body.textContent).not.toMatch(/\b0 (things|to-dos|questions|items|overdue)/);
+});
+
+test("with nothing to do the Needs you panel has no count, in words or as a badge", async () => {
+  show([]);
+  expect(await screen.findByText("Nothing needs you right now.")).toBeInTheDocument();
+  const panel = screen.getByRole("heading", { level: 2, name: "Needs you" }).closest("section") as HTMLElement;
+  expect(within(panel).queryByText("0")).toBeNull();
+  expect(panel).not.toHaveTextContent(/\b0 things need you/);
+});
+
+
+// ---- the project tag on review and send lines, and This week -----------------------------------------------------------
+
+test("a review line and a send line carry their project's tag when the screen holds more than one project", async () => {
+  show([
+    { ...review, project: "PRJ-1", project_name: "Spring book" },
+    { ...send, project: "PRJ-2", project_name: "Autumn book" },
+  ]);
+  await screen.findByText("Look over 3 to-dos Helper added");
+  expect(within(row("review")).getByText("Spring book")).toBeInTheDocument();
+  expect(within(row("send")).getByText("Autumn book")).toBeInTheDocument();
+});
+
+test("a line filed on a side and in none of its projects shows no project chip, never the side as a project", async () => {
+  show([
+    { ...review, project: "PRJ-1", project_name: "Spring book" },
+    { ...send, project: "PRJ-side", project_name: null, side_name: "Orchard Press" },
+  ]);
+  await screen.findByText("Look over 3 to-dos Helper added");
+  expect(within(row("send")).queryByText(/not in a project/)).toBeNull();
+  expect(within(row("send")).queryByText("Orchard Press")).toBeNull();
+});
+
+test("a review line with a project alone on the screen has no tag", async () => {
+  show([{ ...review, project: "PRJ-1", project_name: "Spring book" }]);
+  await screen.findByText("Look over 3 to-dos Helper added");
+  expect(screen.queryByText("Spring book")).toBeNull();
+});
+
+const busyWeek: S["ThisWeekView"] = {
+  first: "2026-10-19",
+  last: "2026-10-23",
+  due: [{ action: "ACT-1", text: "Send the proofs", due: "2026-10-21", project: null, project_name: null, owners: [], mine: true, kind: "due" }],
+  waiting: [{ person: "PER-5", person_name: "Robin Sample", count: 2, due: "2026-10-22" }],
+  meetings: [{ snapshot: "EVT-1", source: "", title: "Print sync", start: "2026-10-22T10:00:00", end: null, all_day: false, cancelled: false, own: true, open_items: 0, days: ["2026-10-22"] }],
+};
+
+test("The Schedule card is today's view, and the week with what is due, who is waiting and later meetings is the inspector's", async () => {
+  show([decision], { "GET today/week": () => busyWeek, "GET today/agenda": () => [meeting()] });
+  const panel = await screen.findByRole("region", { name: "Schedule" });
+  expect(panel.closest("[data-col='schedule']")).not.toBeNull();
+  expect(screen.queryByRole("region", { name: "This week" })).toBeNull();
+  expect(await within(panel).findByText("Print sync")).toBeInTheDocument();
+  expect(within(panel).queryByText("Send the proofs")).toBeNull();
+  expect(within(panel).queryByText("Robin Sample · 2 things")).toBeNull();
+  expect(within(panel).queryByText(/^Through /)).toBeNull();
+  expect(document.querySelector("[data-week='section']")).toBeNull();
+});
+
+test("the week's one-line summary names a to-do counted ahead by its own lead time with the day it must be started by", async () => {
+  const week: S["ThisWeekView"] = {
+    ...busyWeek,
+    due: [{ action: "ACT-2", text: "Prepare the board pack", due: "2026-10-26", project: null, project_name: null, owners: [], mine: true, kind: "lead" }],
+  };
+  show([], { "GET today/week": () => week }, { wide: true });
+  const pane = await screen.findByRole("complementary", { name: "Details" });
+  expect(await within(pane).findByText(`Start 1 to-do by ${day("2026-10-26")} · 1 person waiting on you · 1 meeting`)).toBeInTheDocument();
+});
+
+test("The Schedule card is not counted in the heading or the menu", async () => {
+  show([decision], { "GET today/week": () => busyWeek, "GET today/agenda": () => [meeting()] });
+  await screen.findByRole("region", { name: "Schedule" });
+  expect((await screen.findAllByText(/1 thing needs you/)).length).toBeGreaterThan(0);
+  expect(screen.queryByText(/2 things need you/)).toBeNull();
+});
+
+// ---- the rail: at most three cards, none drawn empty, an empty Today one line (design 7.7, check U10) -------------------------
+
+const todayIso = (): string => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+const RAIL = "Briefing, schedule and mail";
+const briefing: S["BriefView"] = {
+  form: "morning",
+  day: "2026-10-20",
+  forms: ["morning"],
+  quiet: false,
+  afternoon_from_hour: 12,
+  on_today: 0,
+  sections: [{ key: "changed", more: 0, lines: [{ key: "since:1", kind: "moved", text: "Send the draft", change: "said", day: "2026-10-22", ready: false, you: false, on_today_line: false }] }],
+};
+const meeting = (): S["AgendaItemView"] => ({ snapshot: "EVT-1", source: "", title: "Print sync", start: todayIso(), all_day: true, cancelled: false, own: true, open_items: 0, days: [todayIso()] });
+const mail = (): S["InboxView"] => ({ items: [{ snapshot: "SNAP-1", source: "mail-1", title: "Proof is ready", sender: "Robin Sample", received: new Date().toISOString(), unread: true, version: 1 }], left_out: 0, set_aside: 0 });
+
+test("the rail is at most three cards, Briefing, Schedule and Came in, and has no Top priorities or Your to-dos", async () => {
+  show([decision], { "GET brief": () => briefing, "GET today/agenda": () => [meeting()], "GET today/arrived": () => mail(), "GET today/week": () => busyWeek });
+  const rail = await screen.findByRole("group", { name: RAIL });
+  await within(rail).findByRole("region", { name: /^(Morning|Afternoon) brief$/ });
+  await within(rail).findByRole("region", { name: "Schedule" });
+  await within(rail).findByRole("region", { name: "Came in" });
+  expect(within(rail).getAllByRole("region")).toHaveLength(3);
+  expect(within(rail).getAllByRole("region").map((r) => r.parentElement?.getAttribute("data-col") ?? "briefing")).toEqual(["schedule", "arrived", "briefing"]);
+  for (const gone of ["Top priorities", "Your to-dos", "This week", "Agenda"]) {
+    expect(screen.queryByRole("heading", { name: gone })).toBeNull();
+  }
+  expect(screen.queryByText("Nothing else needs you today")).toBeNull();
+});
+
+test("a message in the rail shows the sender's name only, with the address in the tooltip, and a meeting's title has the row under its time", async () => {
+  const address = "robin.sample@example.com";
+  const sent = (): S["InboxView"] => ({ items: [{ snapshot: "SNAP-1", source: "mail-1", title: "Proof is ready", sender: "Robin Sample", sender_address: address, received: new Date().toISOString(), unread: true, version: 1 }], left_out: 0, set_aside: 0 });
+  show([decision], { "GET today/arrived": () => sent(), "GET today/agenda": () => [meeting()], "GET today/week": () => busyWeek });
+  const rail = await screen.findByRole("group", { name: RAIL });
+  await within(rail).findByText("Proof is ready");
+  const who = rail.querySelector<HTMLElement>('[data-col="arrived"] .tb-meta, .tb-meta[title]')!;
+  expect(who).toHaveTextContent(/^Robin Sample/);
+  expect(who).toHaveAttribute("title", address);
+  expect(rail).not.toHaveTextContent(address);
+  const title = await within(rail).findByText("Print sync");
+  expect(title.closest("li")).toHaveClass("stacked");
+  const row = title.closest("li")!;
+  expect(Array.from(row.children).map((c) => c.className.split(" ")[0]).slice(0, 2)).toEqual(["tb-when", "tb-what"]);
+});
+
+test("a card with nothing in it is not drawn, except Schedule, which says so: a rail with only mail has two cards", async () => {
+  show([decision], { "GET today/arrived": () => mail() });
+  const rail = await screen.findByRole("group", { name: RAIL });
+  await within(rail).findByRole("region", { name: "Came in" });
+  expect(within(rail).getAllByRole("region").map((r) => r.getAttribute("aria-label") ?? r.querySelector("h2,h3")?.textContent)).toEqual(["Schedule", "Came in"]);
+  expect(await within(within(rail).getByRole("region", { name: "Schedule" })).findByText(/^Nothing on your calendar/)).toBeInTheDocument();
+});
+
+test("a quiet day's brief is not drawn as a card of its own", async () => {
+  show([decision], { "GET brief": () => ({ ...briefing, quiet: true, sections: [] }), "GET today/arrived": () => mail() });
+  const rail = await screen.findByRole("group", { name: RAIL });
+  await within(rail).findByRole("region", { name: "Came in" });
+  expect(within(rail).queryByRole("region", { name: /^(Morning|Afternoon) brief$/ })).toBeNull();
+});
+
+test("with nothing in any card and an empty queue, Today says one line: nothing else needs you", async () => {
+  show([]);
+  expect(await screen.findByText("Nothing else needs you today")).toBeInTheDocument();
+  expect(screen.getAllByText("Nothing else needs you today")).toHaveLength(1);
+  // The Schedule card is the one card always drawn, so the side column is never blank: it says there is nothing today.
+  const regions = within(screen.getByRole("group", { name: RAIL })).getAllByRole("region");
+  expect(regions).toHaveLength(1);
+  expect(within(regions[0]).getByText(/^Nothing on your calendar/)).toBeInTheDocument();
+});
+
+test("the empty line is left out while the queue has a line", async () => {
+  show([decision]);
+  await screen.findByText("Matte or soft-touch?", { selector: "li *" });
+  await waitFor(() => expect(screen.getByRole("group", { name: RAIL })).toBeInTheDocument());
+  expect(screen.queryByText("Nothing else needs you today")).toBeNull();
+});
+
+test("an add-on's Today panel stays below the cards, folded to one line, and is not one of the three", async () => {
+  const user = userEvent.setup();
+  const panel: S["PanelView"] = { name: "demo/board", title: "Board", tab: "today", kind: "demo/item", view: "list", columns: [], row_actions: [], primary_action: null };
+  show([decision], { "GET panels": () => [panel], "GET panels/demo/board/rows": () => [], "GET today/arrived": () => mail(), "GET today/agenda": () => [meeting()] });
+  const rail = await screen.findByRole("group", { name: RAIL });
+  const fold = await within(rail).findByRole("button", { name: "Board" });
+  expect(fold).toHaveAttribute("aria-expanded", "false");
+  const cameIn = await within(rail).findByRole("region", { name: "Came in" });
+  expect(cameIn.compareDocumentPosition(fold) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(rail.querySelectorAll("[data-col]:not([data-col='plugin-panels'])")).toHaveLength(2);
+  await user.click(fold);
+  expect(fold).toHaveAttribute("aria-expanded", "true");
+});
+
+test("the inspector shows the week when nothing needs the person", async () => {
+  show([], { "GET today/week": () => busyWeek }, { wide: true });
+  const pane = await screen.findByRole("complementary", { name: "Details" });
+  expect(await within(pane).findByText("Send the proofs")).toBeInTheDocument();
+  expect(within(pane).getByRole("heading", { name: /This week/ })).toBeInTheDocument();
+});
+
+test("with the default name the lines say \"your assistant\" instead of reading it as a name", async () => {
+  show([review], {}, { unnamed: true });
+  expect(await screen.findByText("Look over 3 to-dos your assistant added")).toBeInTheDocument();
+  expect(screen.queryByText(/Helper/)).toBeNull();
+});
+
+test("a name the person chose is used as it is", async () => {
+  show([review]);
+  expect(await screen.findByText("Look over 3 to-dos Helper added")).toBeInTheDocument();
+});
+
+// ---- an action's project with its parent, and its notes (roadmap B-6a) ---------------------------------------------------
+
+const aboutAction = line("owner", {
+  key: "question:Q-9",
+  text: "Plan the launch",
+  project: "PRJ-2",
+  project_name: "Autumn book",
+  parent_name: "Upper Shelf",
+  notes: "Ask about the paper too",
+  actions: ["ACT-9"],
+  question: "Q-9",
+});
+
+test("a line about an action tags its project with the project it is part of", async () => {
+  show([decision, aboutAction]);
+  await screen.findByText("Pick an owner for “Plan the launch”");
+  expect(within(row("owner")).getByText("Upper Shelf › Autumn book")).toBeInTheDocument();
+  expect(within(row("decision")).getByText("Spring book")).toBeInTheDocument();
+});
+
+test("a line's notes are on hover and read by a screen reader, and a line with none has neither", async () => {
+  show([decision, aboutAction]);
+  await screen.findByText("Pick an owner for “Plan the launch”");
+  const owner = row("owner");
+  expect(owner.querySelector('[title="Ask about the paper too"]')).not.toBeNull();
+  const described = owner.getAttribute("aria-describedby")!;
+  expect(document.getElementById(described)).toHaveTextContent("Ask about the paper too");
+  // A line with no notes has no hover of its own; its whole title is drawn as a tip only where the title is cut, which a browser
+  // measures (the browser test of a clamped line with notes covers both).
+  expect(row("decision").querySelectorAll("[title]")).toHaveLength(0);
+  expect(row("decision")).not.toHaveAttribute("aria-describedby");
+});
+
+test("opened, a line reads its notes where there is no hover", async () => {
+  const user = userEvent.setup();
+  show([decision, aboutAction]);
+  await user.click(await within(await screen.findByRole("group", { name: /Plan the launch/ })).findByRole("button", { name: "Pick an owner" }));
+  const detail = await waitFor(() => {
+    const found = row("owner").querySelector<HTMLElement>("p[data-notes]");
+    expect(found).not.toBeNull();
+    return found!;
+  });
+  expect(detail).toHaveTextContent("Ask about the paper too");
+});
+
+// A time the server wrote with an offset (UTC, from a connected calendar or a mailbox) is written on the person's own clock,
+// the clock "Now" is on, never as the digits it was sent in (sweep X16, X73).
+test("the Schedule card and Came in write a time on the person's own clock, not in UTC", async () => {
+  setClockZone("Pacific/Kiritimati");
+  try {
+    const start = new Date(Date.now() + 2 * 3_600_000);
+    const heard: S["AgendaItemView"] = { ...meeting(), snapshot: "EVT-9", title: "Venue walk", own: false, all_day: false, start: start.toISOString(), end: null, days: [todayOn(new Date())] };
+    const arrived = new Date();
+    const sent = (): S["InboxView"] => ({ items: [{ snapshot: "SNAP-1", source: "mail-1", title: "Proof is ready", sender: "Robin Sample", received: arrived.toISOString(), unread: true, version: 1 }], left_out: 0, set_aside: 0 });
+    show([decision], { "GET today/agenda": () => [heard], "GET today/arrived": () => sent(), "GET today/week": () => busyWeek });
+    const rail = await screen.findByRole("group", { name: RAIL });
+    const schedule = await within(rail).findByRole("region", { name: "Schedule" });
+    await within(schedule).findByText("Venue walk");
+    const inUtc = (when: Date) => new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", timeZone: "UTC" }).format(when);
+    expect(schedule.textContent).toContain(time(start));
+    expect(time(start)).not.toBe(inUtc(start));
+    expect(schedule.textContent).not.toContain(inUtc(start));
+    const came = await within(rail).findByRole("region", { name: "Came in" });
+    await within(came).findByText("Proof is ready");
+    expect(came.querySelector("time.tb-when")?.textContent).toBe(time(arrived));
+    expect(time(arrived)).not.toBe(inUtc(arrived));
+  } finally {
+    setClockZone(undefined);
+  }
+});
+
+// ---- The 4.6 `today` and `today-review` mockups (section 316) ------------------------------------------------------------
+
+const clashLine: Line = line("clash", {
+  key: "clash:a:b:2026-10-27",
+  text: "Venue walk-through",
+  other: "Budget check-in",
+  state: "overlap",
+  minutes: 30,
+  due: "2026-10-27",
+  source_name: "Studio calendar",
+  other_source_name: "Clinic calendar",
+  entry: "EVT-1",
+  other_entry: "EVT-2",
+  starts: "2026-10-27T14:30:00+00:00",
+  ends: "2026-10-27T15:30:00+00:00",
+  other_starts: "2026-10-27T14:45:00+00:00",
+  other_ends: "2026-10-27T15:15:00+00:00",
+});
+const calendarSource = (id: string, label: string, color: S["WatchSourceView"]["color"]): S["WatchSourceView"] => ({ id, label, connector: "k", connector_label: "Calendar", enabled: true, every_minutes: 15, items: 1, last: null, read_at: null, failures: 0, problem: null, reads: ["calendar"], color });
+
+test("the heading greets the person by their first name for the time of day, and the count in the line under it is in bold", async () => {
+  show([decision], { "GET me": () => ({ person: "PER-1", full_name: "Robin Sample" }) });
+  const heading = await screen.findByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening), Robin$/ });
+  expect(heading).toBeInTheDocument();
+  expect(heading.closest("[data-page-header]")?.querySelector("strong")).toHaveTextContent("1 thing needs you");
+});
+
+test("with no name known the greeting is the time of day alone", async () => {
+  show([decision], { "GET me": () => ({ person: null, full_name: "" }) });
+  expect(await screen.findByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening)$/ })).toBeInTheDocument();
+});
+
+test("the queue has no title of its own on the page: its groups are labelled with their counts, and the pane is still named for a screen reader", async () => {
+  show([decision, clashLine]);
+  await screen.findByText("Matte or soft-touch?");
+  const region = screen.getByRole("region", { name: "Needs you" });
+  expect(within(region).getByRole("heading", { level: 2, name: "Needs you" })).toHaveClass("sr");
+  const groups = within(region).getAllByRole("heading", { level: 3 });
+  expect(groups.map((g) => g.textContent)).toEqual(["Decide1", "At risk1"]);
+  expect(groups[1]).toHaveAttribute("data-tone", "danger");
+});
+
+test("the first decision has the screen's one filled button, a tint and an edge; a line at risk has its own tint, edge and an icon in its lead slot", async () => {
+  const second = line("decision", { key: "question:Q-2", text: "Which cover?", question: "Q-2" });
+  show([decision, second, clashLine]);
+  await screen.findByText("Matte or soft-touch?");
+  const first = row("decision");
+  expect(first).toHaveAttribute("data-state", "decide");
+  expect(within(first).getByRole("button", { name: "Answer" })).toHaveAttribute("data-weight", "filled");
+  const other = document.querySelectorAll<HTMLElement>('[data-queue-line="decision"]')[1];
+  expect(other).not.toHaveAttribute("data-state");
+  expect(within(other).getByRole("button", { name: "Answer" })).toHaveAttribute("data-weight", "outline");
+  const risk = row("clash");
+  expect(risk).toHaveAttribute("data-state", "danger");
+  expect(risk.querySelector("[data-row-lead] [data-icon=alert]")).not.toBeNull();
+  // One filled button on the whole screen.
+  expect(document.querySelectorAll('[data-weight="filled"]')).toHaveLength(1);
+});
+
+test("at risk, only the most urgent line is tinted and edged and has the one filled button; the others are plain lines with an outlined button", async () => {
+  const failed = (n: number) => line("failed", { key: `failed:REQ-${n}`, group: "risk", request: `REQ-${n}`, waiting: "The service refused it", title: { kind: "email", sender: `Sender ${n}`, topic: "" } });
+  show([failed(1), failed(2), failed(3)]);
+  await screen.findAllByText(/The service refused it/);
+  const rows = Array.from(document.querySelectorAll<HTMLElement>('[data-queue-line="failed"]'));
+  expect(rows).toHaveLength(3);
+  expect(rows[0]).toHaveAttribute("data-state", "danger");
+  expect(rows[1]).not.toHaveAttribute("data-state");
+  expect(rows[2]).not.toHaveAttribute("data-state");
+  expect(rows[1].querySelector("[data-row-lead] [data-icon=alert]")).not.toBeNull();
+  expect(within(rows[1]).getByRole("button")).toHaveAttribute("data-weight", "outline");
+  expect(document.querySelectorAll('[data-weight="filled"]')).toHaveLength(1);
+});
+
+test("a run of clashes that share meetings is one line that says how many meetings clash, never a line for each pair", async () => {
+  show([{ ...clashLine, count: 4 }]);
+  expect(await screen.findByText("4 meetings overlap · Tue 2:30 PM")).toBeInTheDocument();
+  expect(document.querySelectorAll('[data-queue-line="clash"]')).toHaveLength(1);
+  expect(document.querySelector("[data-clashes-fold]")).toBeNull();
+});
+
+test("a clash line says how many meetings overlap in its title and names both meetings and both calendars in its meta, each after a mark in its calendar's color, with Open for each", async () => {
+  const user = userEvent.setup();
+  show([clashLine], { "GET watch": () => [calendarSource("c1", "Studio calendar", "purple"), calendarSource("c2", "Clinic calendar", "teal")] });
+  expect(await screen.findByText("2 meetings overlap · Tue 2:30 PM")).toBeInTheDocument();
+  const clash = row("clash");
+  const marks = clash.querySelectorAll("[data-mark=calendar]");
+  expect(Array.from(marks).map((m) => m.getAttribute("data-color"))).toEqual(["purple", "teal"]);
+  const named = Array.from(clash.querySelectorAll("[data-mark=calendar] + [title]")).map((el) => el.getAttribute("title"));
+  expect(named).toEqual(["Studio calendar", "Clinic calendar"]);
+  // No word joins them: each is a part of the meta line of its own.
+  expect(clash).toHaveTextContent("Studio calendarClinic calendar");
+  // The title says how many overlap and when; the meta names the two meetings.
+  expect(clash).toHaveTextContent("Venue walk-through and Budget check-in");
+  expect(clash).toHaveTextContent("They overlap by 30 minutes");
+  // The meta of a clash may wrap, so the second calendar is never the part that is cut off.
+  expect(clash.querySelector("p")?.className).not.toMatch(/oneLine/);
+  await user.click(within(clash).getByRole("button", { name: /More|menu/i }));
+  expect(await screen.findByRole("menuitem", { name: "Open Budget check-in" })).toBeInTheDocument();
+});
+
+test("a clash between two meetings of one calendar names that calendar once", async () => {
+  show([{ ...clashLine, source_name: "Studio calendar", other_source_name: "Studio calendar" }], { "GET watch": () => [calendarSource("c1", "Studio calendar", "purple")] });
+  await screen.findByText("2 meetings overlap · Tue 2:30 PM");
+  const clash = row("clash");
+  expect(clash.querySelectorAll("[data-mark=calendar]")).toHaveLength(1);
+  expect(clash.textContent?.match(/Studio calendar/g)).toHaveLength(1);
+});
+
+test("a line a person has no decision on carries the screen's one filled button when it is the first thing to act on", async () => {
+  show([{ ...clashLine, group: "risk" }]);
+  await screen.findByText("2 meetings overlap · Tue 2:30 PM");
+  expect(document.querySelectorAll('[data-weight="filled"]')).toHaveLength(1);
+  expect(within(row("clash")).getByRole("button", { name: /Open Venue walk-through/ })).toHaveAttribute("data-weight", "filled");
+});
+
+test("a line's kind and state is a dot and a word at the start of its meta, never a chip after its title", async () => {
+  show([decision]);
+  await screen.findByText("Matte or soft-touch?");
+  expect(row("decision").querySelector("[data-pill]")).toBeNull();
+  expect(row("decision").querySelector("[data-state-mark]")).not.toBeNull();
+});
+
+test("a line on one of the person's sides names it in its meta after a mark in the side's color, by the side's place in their list", async () => {
+  const sides = [
+    { project: "PRJ-1", kind: "business", name: "Northwind Clinic", removable: false, filed: 0 },
+    { project: "PRJ-2", kind: "job", name: "Lantern Row Studio", removable: false, filed: 0 },
+  ];
+  show([{ ...decision, side: "PRJ-2", side_name: "Lantern Row Studio" }], {
+    "GET setup/business": () => ({ business: true, name: "Northwind Clinic", personal: "PRJ-0", sides, chosen: null }),
+    "GET views": () => [],
+  });
+  await screen.findByText("Matte or soft-touch?");
+  const mark = await waitFor(() => {
+    const found = row("decision").querySelector("[data-mark=side]");
+    expect(found).not.toBeNull();
+    return found!;
+  });
+  // Personal is the first slot, Northwind the second, Lantern Row the third.
+  expect(mark).toHaveAttribute("data-color", "3");
+  expect(row("decision")).toHaveTextContent("Lantern Row Studio");
+});
+
+test("the overdue lines of two sides are told apart by the side drawn in each one's meta line", async () => {
+  const sides = [
+    { project: "PRJ-1", kind: "business", name: "Northwind Clinic", removable: false, filed: 0 },
+    { project: "PRJ-2", kind: "job", name: "Lantern Row Studio", removable: false, filed: 0 },
+  ];
+  const mine = (side: string, name: string) => line("overdue", { key: `overdue:${side}`, group: "risk", count: 2, actions: ["ACT-1", "ACT-2"], due: "2026-10-08", waiting_days: 5, side, side_name: name });
+  show([mine("PRJ-1", "Northwind Clinic"), mine("PRJ-2", "Lantern Row Studio")], {
+    "GET setup/business": () => ({ business: true, name: "Northwind Clinic", personal: "PRJ-0", sides, chosen: null }),
+    "GET views": () => [],
+  });
+  const rows = await screen.findAllByText("Finish 2 overdue to-dos");
+  expect(rows).toHaveLength(2);
+  await waitFor(() => expect(document.querySelectorAll("[data-key^='overdue:'] [data-mark=side], [data-mark=side]").length).toBeGreaterThanOrEqual(2));
+  expect(screen.getAllByText("Northwind Clinic").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("Lantern Row Studio").length).toBeGreaterThan(0);
+});
+
+test("while a review is open its Keep all is the one filled button, and the first decision keeps its tint but is drawn as the other lines are", async () => {
+  const user = userEvent.setup();
+  show([decision, review]);
+  await screen.findByText("Matte or soft-touch?");
+  expect(within(row("decision")).getByRole("button", { name: "Answer" })).toHaveAttribute("data-weight", "filled");
+  await user.click(await screen.findByRole("button", { name: "Look over" }));
+  const open = row("review");
+  const keep = await within(open).findByRole("button", { name: "Keep all 3" });
+  expect(keep).toHaveAttribute("data-weight", "filled");
+  expect(row("decision")).toHaveAttribute("data-state", "decide");
+  expect(within(row("decision")).getByRole("button", { name: "Answer" })).toHaveAttribute("data-weight", "outline");
+  expect(document.querySelectorAll('[data-weight="filled"]')).toHaveLength(1);
+  // The review is an inset card under its row.
+  expect(open.querySelector("[data-inset]")).not.toBeNull();
+});
+
+test("while the lines load the Decide heading and five skeleton rows are drawn, as the loaded list will be, so nothing shifts", async () => {
+  show([], { "GET today/queue": () => new Promise<Line[]>(() => undefined) });
+  expect(await screen.findByRole("heading", { name: "Decide" })).toBeInTheDocument();
+  const skeleton = document.querySelector('[data-skeleton=""]')!;
+  expect(skeleton.children).toHaveLength(5);
+});
+
+test("a clash's meta is two lines: the facts, then the calendars, each part whole so a wrap never strands a separator", async () => {
+  show([{ ...clashLine, group: "risk" }], { "GET watch": () => [calendarSource("c1", "Studio calendar", "purple"), calendarSource("c2", "Clinic calendar", "teal")] });
+  await screen.findByText("2 meetings overlap · Tue 2:30 PM");
+  const lines = row("clash").querySelectorAll("[data-row-title] ~ p > span");
+  expect(lines).toHaveLength(2);
+  expect(lines[0]).toHaveTextContent("They overlap by 30 minutes");
+  expect(lines[0]).not.toHaveTextContent("Studio calendar");
+  expect(lines[1]).toHaveTextContent("Studio calendarClinic calendar");
+  expect(row("clash").textContent).not.toMatch(/·\s*$/);
+});
+
+test("with three or more clashes at risk the first is a row and the rest fold under it until the person shows them", async () => {
+  const user = userEvent.setup();
+  const more = (n: number): Line => ({ ...clashLine, key: `clash:x:${n}`, group: "risk", text: `Meeting ${n}`, other: `Other ${n}`, entry: `EVT-a${n}`, other_entry: `EVT-b${n}` });
+  show([{ ...clashLine, group: "risk" }, more(1), more(2)]);
+  await screen.findByText("2 meetings overlap · Tue 2:30 PM");
+  expect(document.querySelectorAll('[data-queue-line="clash"]')).toHaveLength(1);
+  await user.click(screen.getByRole("button", { name: "Show 2 more clashes" }));
+  expect(document.querySelectorAll('[data-queue-line="clash"]')).toHaveLength(3);
+  expect(screen.queryByRole("button", { name: /more clashes/ })).toBeNull();
+});
+
+test("two clashes are two rows: folding one would save no room", async () => {
+  show([{ ...clashLine, group: "risk" }, { ...clashLine, key: "clash:x:1", group: "risk", text: "Meeting 1", other: "Other 1" }]);
+  await screen.findByText("Meeting 1 and Other 1");
+  expect(document.querySelectorAll('[data-queue-line="clash"]')).toHaveLength(2);
+  expect(screen.queryByRole("button", { name: /more clash/ })).toBeNull();
+});
+
+test("the setup line is under the work, never a row of controls above the one decision, and the queue and rail end at their own last row", async () => {
+  const steps = ["workspace", "work", "ai"].map((id) => setupStep(id, id === "workspace" ? { done: true } : {}));
+  show([decision], { "GET setup": () => setupView(steps) });
+  const line = await waitFor(() => {
+    const found = document.querySelector("[data-setup-card]");
+    expect(found).not.toBeNull();
+    return found as HTMLElement;
+  });
+  const queue = document.querySelector("[data-queue-line]") as HTMLElement;
+  // In the page's order the queue's line comes first, then the rail, then the setup line.
+  expect(queue.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const css = readFileSync(join(__dirname, "Today.module.css"), "utf8");
+  expect(css).not.toMatch(/align-items:\s*stretch/);
+  expect(css).toMatch(/\.metaLine \{[^}]*flex-wrap: wrap/);
+  // Round 4 (r4-t4): in one column the schedule and what came in follow the list, then the setup card, then the briefing.
+  expect(css).toMatch(/@media \(max-width: 1099\.98px\) \{\s*\.queue, \.rail \{ display: contents; \}[\s\S]*setup-card\]\) \{ order: 3; \}[\s\S]*data-brief\]\) \{ order: 4; \}/);
+  // The rail's card titles are plain ink, underlined only under the pointer or the keyboard, never always.
+  expect(css).not.toMatch(/:is\(p, :global\(\.tb-title\)\)/);
+});
+
+// A row that redraws when its data refreshes keeps its own nodes: a press that is under way lands on the button the person aimed at.
+test("a refresh that changes a line's words, its count, or what comes before it keeps its button (the same node)", async () => {
+  const lines: Line[] = [decision, line("first_go", { key: "first_go", count: 3, estimate_usd: 0.3 }), send];
+  const { refresh } = show(lines);
+  await screen.findByText(/Start the assistant: 3 items/);
+  const start = screen.getByRole("button", { name: "Start" });
+  const answer = screen.getByRole("button", { name: "Answer" });
+  // The data changes: the first go's count and price, a new line first, another's words.
+  lines.splice(0, lines.length, line("restart", { key: "restart" }), { ...decision, text: "Matte or soft-touch paper?" }, line("first_go", { key: "first_go", count: 2, estimate_usd: 0.2 }), send);
+  await refresh();
+  await screen.findByText(/Start the assistant: 2 items/);
+  expect(screen.getByRole("button", { name: "Start" })).toBe(start);
+  expect(screen.getByRole("button", { name: "Answer" })).toBe(answer);
+});
+
+test("a press that began on a line's button when the line was replaced under it says so, never nothing", async () => {
+  const user = userEvent.setup();
+  const lines: Line[] = [line("first_go", { key: "first_go", count: 3, estimate_usd: 0.3 })];
+  const { refresh, calls } = show(lines);
+  await screen.findByText(/Start the assistant: 3 items/);
+  const start = screen.getByRole("button", { name: "Start" });
+  // The button is pressed down; before it is let go the first go is replaced by the line of a source that was just read.
+  await user.pointer({ keys: "[MouseLeft>]", target: start });
+  lines.splice(0, lines.length, line("intake_go", { key: "intake_go:SRC-1", source: "SRC-1", subject: "Inbox, Sam Example", count: 3, estimate_usd: 0.3 }));
+  await refresh();
+  await waitFor(() => expect(start.isConnected).toBe(false));
+  // Let go over what is under the pointer now, as a browser does.
+  await user.pointer({ keys: "[/MouseLeft]", target: document.querySelector<HTMLElement>("[data-queue-line]")! });
+  expect(await screen.findByText(/changed as you pressed it/)).toBeInTheDocument();
+  expect(calls.some((c) => c.route === "POST runs/first-go")).toBe(false);
+});
+
+test("a line that the engine replaces with the held lines of the same change keeps its place and its cursor: the press lands on a live button, never on a ghost", async () => {
+  // The line was read before an Undo reached the queue; the next read carries what the Undo brought back as its own line
+  // (same request, same change), so the person who is about to press on it must find that line, not a struck-through one.
+  const reviewed: Line = { ...review, key: "review:REQ-7", request: "REQ-7", changeset: "CS-7", outcome: { refused: 1 } };
+  const held: Line = line("held", { key: "held:CS-7:1", request: "REQ-7", changeset: "CS-7", op: 1, text: "Start the project Harbor tour", waiting: "Add it, or say where this belongs?" });
+  let lines = [decision, reviewed];
+  const { refresh } = show([], { "GET today/queue": () => lines });
+  await screen.findByText(/Look over/);
+  await waitFor(() => expect(row("decision")).toHaveFocus());
+  lines = [decision, held];
+  await refresh();
+  await waitFor(() => expect(document.querySelector('[data-line-key="held:CS-7:1"]')).not.toBeNull());
+  expect(document.querySelector("[data-ghost]")).toBeNull();
+  expect(screen.queryByRole("button", { name: /new item/ })).toBeNull();
+  expect(document.querySelector('[data-line-key="review:REQ-7"]')).toBeNull();
+});

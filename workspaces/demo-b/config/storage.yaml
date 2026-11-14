@@ -1,0 +1,38 @@
+version: 1
+backend: sqlite
+export:
+  every_minutes: 30
+  commit: true
+backups:
+  targets:
+    - path: ~/CloudDrive/lantern-backups
+      label: cloud folder
+  cloud_folders:    # the cloud drives the setup guide offers, found by where each keeps its folder
+    - name: Example Drive
+      macos: ["ExampleDrive"]
+      windows: ["ExampleDrive"]
+      linux: ["ExampleDrive"]
+  cloud_path: [Backups, Thimbleby]
+  former_cloud_path: [Backups, PM Cockpit]
+  every_hours: 12
+  keep: 30
+  automatic: true
+  retry_minutes: 30
+  before_changes: false   # a backup first before a change that is hard to take back (restoring, installing an add-on, releasing all, loading files, removing many records); true by default, off here because this sandbox's backup folder is made up
+  bulk_change_records: 30   # a removal touching this many records counts as many
+  key_min_chars: 12   # the fewest characters a backup key typed on a screen may have
+  key_max_chars: 256   # the most characters a backup key typed on a screen may have
+  encrypt: ""   # e.g. file:~/keys/backup.key; empty: backups are not encrypted
+files:
+  max_file_mb: 50
+  max_total_mb: 2000
+  read_max_mb: 25
+  read_max_chars: 30000
+sync:
+  folder: ""   # e.g. ~/CloudDrive/cockpit; off until set
+  watch_outside_edits: true
+  shared: false
+  lease_stale_after_minutes: 10
+kept_secrets:
+  keep_days: 30
+  undo_grace_minutes: 10

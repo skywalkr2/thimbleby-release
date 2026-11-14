@@ -1,0 +1,40 @@
+/* A screen's header (design 7.12): the title row, then the tab strip and the filter chips. Nothing is crowded onto the title row. */
+.header { display: grid; gap: var(--space-2); min-width: 0; }
+.crumb { color: var(--text-muted); font-size: var(--text-sm); line-height: var(--lh-sm); display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-2); }
+.top { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--space-2) var(--space-4); min-width: 0; }
+.titles { flex: 1 1 16rem; min-width: 0; display: grid; gap: var(--space-2); }
+.titleLine { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-3); min-width: 0; }
+.title { margin: 0; min-width: 0; font-size: var(--text-xl); line-height: var(--lh-xl); font-weight: var(--weight-semibold); overflow-wrap: anywhere; }
+h2.title, h3.title { font-size: var(--text-section); line-height: var(--lh-section); }
+/* A page's title (the h1) is the one place the display face is used besides the brand: 30px, 28px on a phone. */
+h1.title { font-family: var(--font-display); font-size: var(--text-title); line-height: var(--lh-title); font-weight: var(--weight-medium); letter-spacing: -0.02em; }
+@media (max-width: 639.98px) { h1.title { font-size: var(--text-2xl); line-height: var(--lh-2xl); } }
+:global([data-narrow]) h1.title { font-size: var(--text-2xl); line-height: var(--lh-2xl); }
+.sub { margin: 0; color: var(--text-muted); font-size: var(--text-sm); line-height: var(--lh-sm); overflow-wrap: anywhere; }
+/* A subtitle held for a line that comes and goes is as tall as a press target, so a button in the line never changes the page's height. */
+.sub[data-sub-held] { min-height: var(--hit-min); }
+/* While the line is being read, a quiet bar stands where its words will be, the height of one line, so nothing moves when they come. */
+.sub[data-sub-reserved] { display: flex; align-items: center; }
+.subBar { display: block; width: 14rem; max-width: 60%; height: var(--lh-sm); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--text) 13%, var(--surface)); }
+.actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--space-2); min-width: 0; }
+/* The tab strip, then the filter chips on a row of their own under it, both starting on the content area's left edge: a strip never
+   moves to the right of its row or hangs off a tab's end, whatever the window's width. */
+.bar { display: grid; justify-items: start; gap: var(--space-3); margin-top: var(--space-2); min-width: 0; }
+.ruled .tabs { border-bottom: 1px solid var(--border); }
+/* A header whose filters are not offered (a person with no sides) draws no second row. */
+.bar:not(:has(.tabs, .chips > *)) { display: none; }
+.tabs { min-width: 0; max-width: 100%; justify-self: stretch; }
+.chips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); min-width: 0; max-width: 100%; }
+.chips:not(:has(> *)) { display: none; }
+.more { flex: none; order: 1; display: flex; align-items: center; }
+:global([data-narrow]) .more { order: 0; }
+:global([data-narrow]) .actions { order: 1; }
+:global([data-narrow]) .actions { justify-content: flex-start; flex: 1 1 100%; }
+@media (max-width: 639.98px) {
+  .more { order: 0; }
+  .actions { order: 1; }
+  .actions { justify-content: flex-start; flex: 1 1 100%; }
+}
+/* The banner slot under the title: the offline banner, then the screen's own, one style; empty it takes no room. */
+.banners { display: grid; gap: var(--space-2); min-width: 0; }
+.banners:empty { display: none; }

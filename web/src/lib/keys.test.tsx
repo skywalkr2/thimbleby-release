@@ -1,0 +1,201 @@
+import "@testing-library/jest-dom/vitest";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import React from "react";
+import { useRowKeys, useShortcuts } from "./keys";
+
+const SHORTCUTS = { undo: "u", hand_in: "n", help: "?", ask: "/" };
+
+function Harness(props: { keys: Record<string, string>; ask: () => void }) {
+  useShortcuts(props.keys, { undo: () => {}, hand_in: () => {}, help: () => {}, ask: props.ask });
+  return <input aria-label="Typing" />;
+}
+
+test("the Ask key opens the box, and never while typing or with a dialog open", async () => {
+  const user = userEvent.setup();
+  const ask = vi.fn();
+  render(<Harness keys={SHORTCUTS} ask={ask} />);
+  await user.keyboard("/");
+  expect(ask).toHaveBeenCalledTimes(1);
+  await user.click(screen.getByLabelText("Typing"));
+  await user.keyboard("/");
+  expect(ask).toHaveBeenCalledTimes(1);
+  await user.click(document.body);
+  const dialog = document.createElement("div");
+  dialog.setAttribute("data-modal-open", "");
+  document.body.append(dialog);
+  await user.keyboard("/");
+  expect(ask).toHaveBeenCalledTimes(1);
+  dialog.remove();
+});
+
+test("a configured key for Ask is used instead of the usual one", async () => {
+  const user = userEvent.setup();
+  const ask = vi.fn();
+  render(<Harness keys={{ ...SHORTCUTS, ask: "g" }} ask={ask} />);
+  await user.keyboard("/");
+  expect(ask).not.toHaveBeenCalled();
+  await user.keyboard("g");
+  expect(ask).toHaveBeenCalledTimes(1);
+});
+
+test("on a row the arrow keys walk the rows as j and k do, and in a field they are left alone", async () => {
+  const user = userEvent.setup();
+  render(
+    <>
+      <Harness keys={{ ...SHORTCUTS, next: "j", previous: "k" }} ask={() => {}} />
+      <div data-row="" tabIndex={-1} aria-label="first" />
+      <div data-row="" tabIndex={-1} aria-label="second" />
+    </>,
+  );
+  const [first, second] = [screen.getByLabelText("first"), screen.getByLabelText("second")];
+  first.focus();
+  await user.keyboard("{ArrowDown}");
+  expect(second).toHaveFocus();
+  await user.keyboard("{ArrowUp}");
+  expect(first).toHaveFocus();
+  // In a field, the arrow keys stay the field's.
+  await user.click(screen.getByLabelText("Typing"));
+  await user.keyboard("{ArrowDown}");
+  expect(screen.getByLabelText("Typing")).toHaveFocus();
+});
+
+test("Shift+N runs the show-new action, and never while typing", async () => {
+  const user = userEvent.setup();
+  const show_new = vi.fn();
+  function Probe() {
+    useShortcuts({ ...SHORTCUTS, show_new: "N" }, { undo: () => undefined, hand_in: () => undefined, ask: () => undefined, help: () => undefined, show_new });
+    return <input aria-label="field" />;
+  }
+  render(<Probe />);
+  await user.keyboard("{Shift>}N{/Shift}");
+  expect(show_new).toHaveBeenCalledTimes(1);
+  await user.click(screen.getByRole("textbox"));
+  await user.keyboard("{Shift>}N{/Shift}");
+  expect(show_new).toHaveBeenCalledTimes(1);
+});
+
+test("the move key goes to the row that has the cursor, and only when it is configured", async () => {
+  const user = userEvent.setup();
+  const moved = vi.fn();
+  function Row() {
+    return (
+      <div data-testid="row" data-row tabIndex={-1} onKeyDownCapture={undefined} ref={(el) => el?.addEventListener("rowkey", (e) => moved((e as CustomEvent).detail))}>
+        a card
+      </div>
+    );
+  }
+  const { rerender } = render(
+    <>
+      <Harness keys={{ ...SHORTCUTS, move: "m" }} ask={() => {}} />
+      <Row />
+    </>,
+  );
+  screen.getByTestId("row").focus();
+  await user.keyboard("m");
+  expect(moved).toHaveBeenCalledWith("move");
+  moved.mockClear();
+  rerender(
+    <>
+      <Harness keys={SHORTCUTS} ask={() => {}} />
+      <Row />
+    </>,
+  );
+  screen.getByTestId("row").focus();
+  await user.keyboard("m");
+  expect(moved).not.toHaveBeenCalled();
+});
+
+test("the pane keys move the cursor between the list, the details and the rail, wrapping round, and never while typing", async () => {
+  const user = userEvent.setup();
+  function Panes() {
+    useShortcuts({ ...SHORTCUTS, next_pane: "]", previous_pane: "[" }, { undo: () => undefined, hand_in: () => undefined, ask: () => undefined, help: () => undefined });
+    return (
+      <>
+        <section data-region="" aria-label="list">
+          <div data-row="" tabIndex={-1} aria-label="first row" />
+        </section>
+        <aside data-region="" aria-label="details">
+          <button type="button">Open it</button>
+        </aside>
+        <div data-region="" aria-label="rail">
+          <button type="button">Came in</button>
+        </div>
+        <div data-region="" aria-label="hidden" style={{ display: "none" }}>
+          <button type="button">Never reached</button>
+        </div>
+        <input aria-label="field" />
+      </>
+    );
+  }
+  render(<Panes />);
+  // From nowhere the first pane is entered, on its first row.
+  await user.keyboard("]");
+  expect(screen.getByLabelText("first row")).toHaveFocus();
+  await user.keyboard("]");
+  expect(screen.getByRole("button", { name: "Open it" })).toHaveFocus();
+  await user.keyboard("]");
+  expect(screen.getByRole("button", { name: "Came in" })).toHaveFocus();
+  // After the last, it wraps to the first; the hidden pane is skipped.
+  await user.keyboard("]");
+  expect(screen.getByLabelText("first row")).toHaveFocus();
+  await user.keyboard("[[");
+  expect(screen.getByRole("button", { name: "Came in" })).toHaveFocus();
+  await user.keyboard("[[");
+  expect(screen.getByRole("button", { name: "Open it" })).toHaveFocus();
+  // In a field the keys are typed, not run.
+  await user.click(screen.getByLabelText("field"));
+  await user.keyboard("]");
+  expect(screen.getByLabelText("field")).toHaveFocus();
+});
+
+function RowHarness(props: { onPrimary: () => void; onToggle: () => void }) {
+  useShortcuts({ ...SHORTCUTS, primary: "a", next: "j" }, { undo: () => {}, hand_in: () => {}, help: () => {}, ask: () => {} });
+  const ref = React.useRef<HTMLDivElement>(null);
+  useRowKeys(ref, { primary: props.onPrimary, toggle: props.onToggle });
+  return <div ref={ref} data-row="" tabIndex={0} aria-label="row" />;
+}
+
+test("a held key acts once: the repeats of the primary key and of Enter on a row do nothing", () => {
+  const onPrimary = vi.fn();
+  const onToggle = vi.fn();
+  render(<RowHarness onPrimary={onPrimary} onToggle={onToggle} />);
+  const row = screen.getByLabelText("row");
+  row.focus();
+  for (const key of ["a", "Enter"]) {
+    row.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    for (let i = 0; i < 5; i += 1) row.dispatchEvent(new KeyboardEvent("keydown", { key, repeat: true, bubbles: true, cancelable: true }));
+  }
+  expect(onPrimary).toHaveBeenCalledTimes(1);
+  expect(onToggle).toHaveBeenCalledTimes(1);
+});
+
+test("a held Enter on a focused button presses it once, so a paid Start is never started again by the repeat", () => {
+  const press = vi.fn();
+  render(
+    <>
+      <RowHarness onPrimary={() => {}} onToggle={() => {}} />
+      <button onClick={press}>Start</button>
+    </>,
+  );
+  const button = screen.getByRole("button", { name: "Start" });
+  button.focus();
+  const first = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+  const repeat = new KeyboardEvent("keydown", { key: "Enter", repeat: true, bubbles: true, cancelable: true });
+  button.dispatchEvent(first);
+  button.dispatchEvent(repeat);
+  expect(first.defaultPrevented).toBe(false);
+  expect(repeat.defaultPrevented).toBe(true);
+});
+
+test("holding the walk keys still walks the rows", () => {
+  render(
+    <>
+      <RowHarness onPrimary={() => {}} onToggle={() => {}} />
+      <div data-row="" tabIndex={-1} aria-label="second" />
+    </>,
+  );
+  screen.getByLabelText("row").focus();
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "j", repeat: true, bubbles: true, cancelable: true }));
+  expect(screen.getByLabelText("second")).toHaveFocus();
+});

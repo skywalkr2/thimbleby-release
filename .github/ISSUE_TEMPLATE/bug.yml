@@ -1,0 +1,56 @@
+name: Bug report
+description: Something in Thimbleby didn't work, or worked differently from what you expected.
+title: "Bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for trying Thimbleby. Don't put anything private in this form: this repository is public. For a
+        security problem, don't open an issue; use **Report a vulnerability** on the Security tab instead.
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps from a fresh start
+      description: What you did, in order, starting from opening the app (or from a new workspace).
+      placeholder: |
+        1. Open the app.
+        2. Go to ...
+        3. Press ...
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+      description: What you saw, including any message word for word.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The version shown at the top of Settings in the app, or the line in `EXPORTED_FROM` if you run from a checkout.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: computer
+    attributes:
+      label: Your computer and system
+      description: For example, a Mac with an Apple chip on macOS 15, or Windows 11.
+    validations:
+      required: true
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: A picture of the screen helps. Cover anything private first.
+    validations:
+      required: false

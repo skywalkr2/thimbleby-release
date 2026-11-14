@@ -1,0 +1,666 @@
+import "@testing-library/jest-dom/vitest";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { S } from "../lib/api";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fakeApi, renderApp, type Routes } from "../test-utils";
+import en from "../wording/en.json";
+import { Handled } from "./Handled";
+
+// Made-up addresses are built from parts, so none is written out whole.
+const AT = "@";
+const addr = (name: string, domain = "lists.example.com") => `${name}${AT}${domain}`;
+
+const row = (id: string, extra: Partial<S["HandledRow"]> = {}): S["HandledRow"] => ({
+  id,
+  version: 3,
+  tab: "set_aside",
+  kind: "sales",
+  title: `Offer ${id}`,
+  sender: `Sender <${addr(id)}>`,
+  source: "Inbox",
+  received: "2026-10-11T08:30:00+00:00",
+  reason: "it was sent to many people, as a mailing list or bulk mail",
+  link: null,
+  saved: null,
+  address: addr(id),
+  domain: "lists.example.com",
+  section: "sales",
+  request: null,
+  item: "mail",
+  rule: null,
+  change: null,
+  older_version: false,
+  ...extra,
+});
+
+const BULK = "it was sent to many people, as a mailing list or bulk mail";
+const NOTICE = "it is an automated notice";
+
+const closedRow = (id: string, extra: Partial<S["HandledRow"]> = {}): S["HandledRow"] =>
+  row(id, {
+    tab: "closed",
+    id: `REQ-${id}`,
+    title: `Plan ${id}`,
+    sender: null,
+    address: "",
+    domain: null,
+    kind: "other",
+    item: "file",
+    rule: "Spacing",
+    change: "changed",
+    reason: "only the spacing changed",
+    link: null,
+    saved: `SRC-${id}`,
+    request: `REQ-${id}`,
+    section: "notices",
+    ...extra,
+  });
+
+const read = (id: string, extra: Partial<S["HandledRow"]> = {}) =>
+  row(id, { tab: "read", kind: "other", reason: null, saved: `SRC-${id}`, request: `REQ-${id}`, section: "notices", ...extra });
+
+const group = (key: string, items: S["HandledRow"][], label: string | null = null): S["HandledGroup"] => ({ key, label, count: items.length, items });
+
+const ASIDE: S["HandledView"] = {
+  tab: "set_aside",
+  group: "kind",
+  query: "",
+  item: null,
+  kept_days: 30,
+  page_rows: 25,
+  counts: { set_aside: 6, read: 2 },
+  kinds: [
+    { item: "mail", count: 3 },
+    { item: "file", count: 2 },
+    { item: "page", count: 1 },
+  ],
+  groups: [
+    group("kind:sales", [row("a"), row("b")]),
+    group("kind:notices", [row("n", { kind: "notices", section: "notices", reason: NOTICE })]),
+    group("item:file", [closedRow("a"), closedRow("b")]),
+    group("item:page", [closedRow("c", { item: "page", reason: "a scratch file", rule: "Scratch" })]),
+  ],
+};
+
+const BY_REASON: S["HandledView"] = {
+  ...ASIDE,
+  group: "reason",
+  groups: [group(BULK, [row("a"), row("b")], BULK), group(NOTICE, [row("n", { kind: "notices", section: "notices", reason: NOTICE })], NOTICE)],
+};
+
+const SALES = /^Sales, promotions and social updates · 2$/;
+
+const NO_CLOSES: S["SilentClosesView"] = {
+  count: 0,
+  closes: [],
+  measure: { days: 14, since: "2026-10-12T00:00:00+00:00", until: "2026-10-26T00:00:00+00:00", total: 0, silent: 0, by_person: 0, approved: 0, rate: null, kinds: [] },
+};
+
+const READ: S["HandledView"] = {
+  tab: "read",
+  group: "kind",
+  query: "",
+  item: null,
+  kept_days: 30,
+  page_rows: 25,
+  counts: { set_aside: 6, read: 2 },
+  kinds: [{ item: "mail", count: 2 }],
+  groups: [group("kind:bills", [read("p", { kind: "bills", title: "Statement p" })]), group("kind:other", [read("q", { title: "Lunch q" })])],
+};
+
+const SAVED: S["SettingsSaved"] = {
+  changes: [{ key: "watch.triage", before: [], after: [{ name: "x" }], was_default: true, is_default: false }],
+  fingerprint: "fp-2",
+  needs_restart: false,
+};
+
+const done = (id: string, extra: Partial<S["HandledDone"]> = {}): S["HandledDone"] => ({
+  id,
+  version: 5,
+  section: "sales",
+  request: `REQ-new-${id}`,
+  address: addr(id),
+  domain: "lists.example.com",
+  ...extra,
+});
+
+function open(extra: Routes = {}) {
+  const calls = fakeApi({
+    "GET handled?tab=set_aside&q=": () => ASIDE,
+    "GET handled?tab=read&q=": () => READ,
+    "GET silent-closes": () => NO_CLOSES,
+    "GET settings": () => ({ fingerprint: "fp-1", items: [] }),
+    ...extra,
+  });
+  renderApp(<Handled />);
+  return calls;
+}
+
+const body = (calls: ReturnType<typeof fakeApi>, route: string) => calls.find((c) => c.route === route)?.body;
+const open_ = async (user: ReturnType<typeof userEvent.setup>, name: RegExp) => {
+  const header = await screen.findByRole("button", { name });
+  if (header.getAttribute("aria-expanded") === "false") await user.click(header);
+  return header.closest("section") as HTMLElement;
+};
+
+test("the time this screen is open and in view is counted as time spent looking over the assistant's work, once, when the person leaves it", async () => {
+  const start = Date.now();
+  const clock = vi.spyOn(Date, "now").mockReturnValue(start);
+  const calls = open({ "POST quality/review-time": () => ({ seconds: 30 }) });
+  await screen.findByRole("button", { name: "Set aside 6" });
+  clock.mockReturnValue(start + 30_000);
+  cleanup();
+  clock.mockRestore();
+  expect(calls.filter((c) => c.route === "POST quality/review-time").map((c) => c.body)).toEqual([{ screen: "handled", seconds: 30 }]);
+});
+
+test("two tabs with their counts, each saying in one line what it holds, and the cursor starts on the heading", async () => {
+  const user = userEvent.setup();
+  const calls = open();
+  expect(await screen.findByRole("heading", { level: 1, name: "Handled for you" })).toBeInTheDocument();
+  expect(await screen.findByRole("button", { name: "Set aside 6" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: "Read 2" })).toHaveAttribute("aria-pressed", "false");
+  expect(screen.queryByRole("button", { name: /Closed by a rule/ })).not.toBeInTheDocument();
+  expect(within(screen.getByRole("group", { name: "Which list" })).getAllByRole("button")).toHaveLength(2);
+  // One line under the title says what the list holds and how long it is kept, not two paragraphs.
+  expect(screen.getByText("Sorted away before Helper read it. Kept for 30 days.")).toBeInTheDocument();
+  expect(screen.getByRole("heading", { level: 1, name: "Handled for you" })).toHaveFocus();
+  await user.click(screen.getByRole("button", { name: "Read 2" }));
+  expect(await screen.findByText("Mail Helper read with nothing for you to do. Kept for 30 days.")).toBeInTheDocument();
+  expect(calls.some((c) => c.route === "GET handled?tab=read&q=")).toBe(true);
+  expect(screen.queryByText(/Sorted away before/)).not.toBeInTheDocument();
+});
+
+test("rows are grouped by kind with a count, collapsed, and a group opens to its mails with a chip for the kind, sender, date and why", async () => {
+  const user = userEvent.setup();
+  open();
+  const sales = (await screen.findByRole("button", { name: "Sales, promotions and social updates · 2" })).closest("section") as HTMLElement;
+  expect(screen.getByRole("button", { name: "Automated notices · 1" })).toHaveAttribute("aria-expanded", "false");
+  expect(screen.getByRole("button", { name: "Files · 2" })).toHaveAttribute("aria-expanded", "false");
+  expect(screen.getByRole("button", { name: "Pages · 1" })).toHaveAttribute("aria-expanded", "false");
+  expect(screen.queryByText("Offer a")).not.toBeInTheDocument();
+  await user.click(within(sales).getByRole("button", { name: "Sales, promotions and social updates · 2" }));
+  const rows = within(sales).getAllByRole("listitem");
+  expect(rows).toHaveLength(2);
+  // Mail, the ordinary kind, is not said on each row.
+  expect(rows[0]).not.toHaveTextContent(/^Mail/);
+  expect(rows[0]).toHaveTextContent("Offer a");
+  expect(rows[0]).toHaveTextContent("Sender");
+  // A sender is shown by name, never as "Name <address>".
+  expect(rows[0]).not.toHaveTextContent(`<${addr("a")}>`);
+  expect(rows[0]).toHaveTextContent("Inbox");
+  expect(rows[0]).toHaveTextContent("Set aside because it was sent to many people, as a mailing list or bulk mail");
+  expect(rows[0]).toHaveTextContent("The message text was never sent to the AI.");
+  expect(screen.queryByText("Offer n")).not.toBeInTheDocument();
+});
+
+test("the Kind, Reason, Sender and Account buttons are shown, Kind first and pressed, and the group keys of one view are all different", async () => {
+  open();
+  await screen.findByRole("button", { name: "Sales, promotions and social updates · 2" });
+  const buttons = within(screen.getByRole("radiogroup", { name: "Group by" })).getAllByRole("radio");
+  expect(buttons.map((b) => b.textContent)).toEqual(["Kind", "Reason", "Sender", "Account"]);
+  expect(buttons[0]).toBeChecked();
+  const keys = Array.from(document.querySelectorAll("[data-group]")).map((e) => e.getAttribute("data-group"));
+  expect(keys).toEqual(["kind:sales", "kind:notices", "item:file", "item:page"]);
+  expect(new Set(keys).size).toBe(keys.length);
+});
+
+test("a row on the read list says it was read with nothing to do", async () => {
+  const user = userEvent.setup();
+  open();
+  await user.click(await screen.findByRole("button", { name: "Read 2" }));
+  const bills = await open_(user, /^Bills and statements · 1$/);
+  expect(within(bills).getByRole("listitem")).toHaveTextContent("Read: nothing for you to do.");
+  expect(screen.getByRole("button", { name: "Other mail · 1" })).toBeInTheDocument();
+});
+
+test("the other groupings, by reason and by sender, are one click away and group by what the server names", async () => {
+  const user = userEvent.setup();
+  const bySender: S["HandledView"] = {
+    ...ASIDE,
+    group: "sender",
+    groups: [group(addr("a"), [row("a"), row("b")], "Sender"), group("", [row("z", { sender: null, address: "" })], null)],
+  };
+  const calls = open({ "GET handled?tab=set_aside&q=&group=sender": () => bySender, "GET handled?tab=set_aside&q=&group=reason": () => BY_REASON });
+  await screen.findByRole("button", { name: "Sales, promotions and social updates · 2" });
+  expect(screen.getByRole("radio", { name: "Kind" })).toBeChecked();
+  await user.click(screen.getByRole("radio", { name: "Reason" }));
+  expect(await screen.findByRole("button", { name: `${BULK} · 2` })).toHaveAttribute("aria-expanded", "false");
+  expect(screen.getByRole("button", { name: `${NOTICE} · 1` })).toBeInTheDocument();
+  expect(screen.getByRole("radio", { name: "Reason" })).toBeChecked();
+  await user.click(screen.getByRole("radio", { name: "Sender" }));
+  expect(await screen.findByRole("button", { name: "Sender · 2" })).toHaveAttribute("aria-expanded", "false");
+  expect(screen.getByRole("button", { name: "No known sender · 1" })).toBeInTheDocument();
+  expect(screen.getByRole("radio", { name: "Sender" })).toBeChecked();
+  expect(calls.some((c) => c.route === "GET handled?tab=set_aside&q=&group=sender")).toBe(true);
+  expect(calls.some((c) => c.route === "GET handled?tab=set_aside&q=&group=reason")).toBe(true);
+});
+
+test("a fourth grouping is by account, with a name for rows from no known account", async () => {
+  const user = userEvent.setup();
+  const byAccount: S["HandledView"] = {
+    ...ASIDE,
+    group: "account",
+    groups: [group("work account", [row("a"), row("b")], "Work account"), group("", [row("z")], null)],
+  };
+  open({ "GET handled?tab=set_aside&q=&group=account": () => byAccount });
+  await screen.findByRole("button", { name: "Sales, promotions and social updates · 2" });
+  await user.click(screen.getByRole("radio", { name: "Account" }));
+  expect(await screen.findByRole("button", { name: "Work account · 2" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "No known account · 1" })).toBeInTheDocument();
+});
+
+test("a search asks for the words, opens the groups it found, and says when nothing matches", async () => {
+  const user = userEvent.setup();
+  const found: S["HandledView"] = { ...ASIDE, query: "offer b", groups: [group("kind:sales", [row("b")])] };
+  const none: S["HandledView"] = { ...ASIDE, query: "zzz", groups: [] };
+  const calls = open({ "GET handled?tab=set_aside&q=offer+b": () => found, "GET handled?tab=set_aside&q=zzz": () => none });
+  await screen.findByRole("button", { name: "Sales, promotions and social updates · 2" });
+  await user.type(screen.getByRole("searchbox", { name: "Search by sender, subject, kind or reason" }), "offer b");
+  expect(await screen.findByRole("button", { name: "Sales, promotions and social updates · 1" })).toHaveAttribute("aria-expanded", "true");
+  expect(screen.getByText("Offer b")).toBeInTheDocument();
+  expect(screen.queryByText("Offer a")).not.toBeInTheDocument();
+  expect(calls.filter((c) => c.route === "GET handled?tab=set_aside&q=offer+b").length).toBeGreaterThan(0);
+  await user.clear(screen.getByRole("searchbox", { name: "Search by sender, subject, kind or reason" }));
+  await user.type(screen.getByRole("searchbox", { name: "Search by sender, subject, kind or reason" }), "zzz");
+  expect(await screen.findByText("No mail matches your search.")).toBeInTheDocument();
+});
+
+test("each list says so when it is empty", async () => {
+  const user = userEvent.setup();
+  open({
+    "GET handled?tab=set_aside&q=": () => ({ ...ASIDE, groups: [], kinds: [], counts: { set_aside: 0, read: 0 } }),
+    "GET handled?tab=read&q=": () => ({ ...READ, groups: [], kinds: [], counts: { set_aside: 0, read: 0 } }),
+  });
+  expect(await screen.findByText("Nothing has been set aside yet. Newsletters, sales and automated notices are listed here once mail arrives.")).toBeInTheDocument();
+  // With nothing to find there is nothing to search or group, so those controls are not drawn.
+  expect(screen.queryByRole("searchbox")).toBeNull();
+  expect(screen.queryByRole("radio", { name: "Sender" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Read 0" }));
+  expect(await screen.findByText("Nothing has been read with nothing to do yet. Mail that needed nothing from you is listed here once mail arrives.")).toBeInTheDocument();
+});
+
+test("a set-aside row offers Bring it in, and in its menu Always set aside mail like this and Open the message, with no Keep set aside and no Treat as anywhere", async () => {
+  const user = userEvent.setup();
+  open({
+    "GET handled?tab=set_aside&q=": () => ({ ...ASIDE, groups: [group("kind:sales", [row("a", { link: "message-a" })])] }),
+  });
+  const sales = await open_(user, /^Sales, promotions and social updates · 1$/);
+  expect(within(sales).getByRole("button", { name: "Bring it in: Offer a" })).toHaveTextContent("Bring it in");
+  await user.click(within(sales).getByRole("button", { name: "More actions for Offer a" }));
+  expect(await screen.findByRole("menuitem", { name: "Always set aside mail like this" })).toBeInTheDocument();
+  expect(screen.getByRole("menuitem", { name: "Open the message" })).toBeInTheDocument();
+  expect(screen.queryByRole("menuitem", { name: /Treat as/ })).not.toBeInTheDocument();
+  expect(screen.queryByText(/Keep (it|them all)? ?set aside/i)).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /keep|Treat as/i })).not.toBeInTheDocument();
+});
+
+test("a row of the read list has Take a closer look, and in its menu the other choices", async () => {
+  const user = userEvent.setup();
+  open();
+  await user.click(await screen.findByRole("button", { name: "Read 2" }));
+  const other = await open_(user, /^Other mail · 1$/);
+  expect(within(other).getByRole("button", { name: "Take a closer look at Lunch q" })).toBeInTheDocument();
+  await user.click(within(other).getByRole("button", { name: "More actions for Lunch q" }));
+  expect(await screen.findByRole("menuitem", { name: "Treat as personal" })).toBeInTheDocument();
+  expect(screen.getByRole("menuitem", { name: "Always set aside mail like this" })).toBeInTheDocument();
+  expect(screen.getByRole("menuitem", { name: "Open the message" })).toBeInTheDocument();
+});
+
+test("Open the message goes to the saved page when the message has no link in the mail service", async () => {
+  const user = userEvent.setup();
+  open({ "GET handled?tab=set_aside&q=": () => ({ ...ASIDE, groups: [group("kind:sales", [row("a", { saved: "SRC-a" })])] }) });
+  const sales = await open_(user, /^Sales, promotions and social updates · 1$/);
+  await user.click(within(sales).getByRole("button", { name: "More actions for Offer a" }));
+  await user.click(await screen.findByRole("menuitem", { name: "Open the message" }));
+  expect(window.location.hash).toBe("#records/source/SRC-a");
+});
+
+test("Open the message is not offered for a message with neither a link nor a saved page", async () => {
+  const user = userEvent.setup();
+  open();
+  const sales = await open_(user, SALES);
+  await user.click(within(sales).getAllByRole("button", { name: /^More actions for/ })[0]);
+  expect(await screen.findByRole("menuitem", { name: "Always set aside mail like this" })).toBeInTheDocument();
+  expect(screen.queryByRole("menuitem", { name: "Open the message" })).not.toBeInTheDocument();
+});
+
+test("Bring it in with no side to choose hands the mail in with the version read, offers Always for the sender, and Undo sets it aside again", async () => {
+  const user = userEvent.setup();
+  const calls = open({
+    "POST handled/a/work": () => done("a"),
+    "POST mail/a/set-aside": () => ({ id: "a", version: 6, section: "sales", address: addr("a"), domain: null }),
+    "POST watch/sorting": () => SAVED,
+  });
+  const sales = await open_(user, SALES);
+  await user.click(within(sales).getByRole("button", { name: "Bring it in: Offer a" }));
+  await waitFor(() => expect(body(calls, "POST handled/a/work")).toEqual({ read_version: 3 }));
+  expect(await screen.findByText("Handed in Offer a. Helper is on it.")).toBeInTheDocument();
+  expect(screen.queryByRole("group", { name: "Bring it in as" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Always bring in mail from this email domain" })).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(body(calls, "POST mail/a/set-aside")).toEqual({ section: "sales" }));
+});
+
+test("Take a closer look on a mail read with nothing to do offers no sorting rule, and Undo takes the new read back", async () => {
+  const user = userEvent.setup();
+  const calls = open({
+    "POST handled/q/work": () => done("q", { section: "notices" }),
+    "POST handled/q/undo": () => done("q", { section: "notices", request: null, version: 6 }),
+  });
+  await user.click(await screen.findByRole("button", { name: "Read 2" }));
+  const other = await open_(user, /^Other mail · 1$/);
+  await user.click(within(other).getByRole("button", { name: "Take a closer look at Lunch q" }));
+  await waitFor(() => expect(body(calls, "POST handled/q/work")).toEqual({ read_version: 3 }));
+  expect(await screen.findByText("Handed in Lunch q. Helper is on it.")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /^Apply to this/ })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(body(calls, "POST handled/q/undo")).toEqual({ read_version: 5 }));
+  expect(calls.some((c) => c.route === "POST mail/q/set-aside")).toBe(false);
+});
+
+test("Always set aside mail like this saves a rule for the sender in the row's section, kept as a correction, and reads it back", async () => {
+  const user = userEvent.setup();
+  const calls = open({ "POST watch/sorting": () => SAVED });
+  await user.click(await screen.findByRole("button", { name: "Read 2" }));
+  const other = await open_(user, /^Other mail · 1$/);
+  await user.click(within(other).getByRole("button", { name: "More actions for Lunch q" }));
+  await user.click(await screen.findByRole("menuitem", { name: "Always set aside mail like this" }));
+  await waitFor(() =>
+    expect(body(calls, "POST watch/sorting")).toEqual({ fingerprint: "fp-1", choice: "notices", senders: [addr("q")], domains: [], mail: "q" }),
+  );
+  expect(await screen.findByText(`From now on, mail from ${addr("q")} is set aside as automated notices.`)).toBeInTheDocument();
+});
+
+test("a list that can't be loaded says so and tries again", async () => {
+  const user = userEvent.setup();
+  let attempts = 0;
+  open({
+    "GET handled?tab=set_aside&q=": () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("down");
+      return ASIDE;
+    },
+  });
+  expect(await screen.findByText(/The list couldn't be loaded/)).toBeInTheDocument();
+  // A list that isn't there has nothing to search or group: the controls, and the tabs' counts, wait for it.
+  expect(screen.queryByRole("searchbox")).toBeNull();
+  expect(screen.queryByRole("radio", { name: "Reason" })).toBeNull();
+  expect(screen.queryByText("…")).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Try again" }));
+  expect(await screen.findByRole("button", { name: "Sales, promotions and social updates · 2" })).toBeInTheDocument();
+});
+
+test("an assistant with no name of its own is called your assistant", async () => {
+  fakeApi({ "GET handled?tab=set_aside&q=": () => ASIDE, "GET handled?tab=read&q=": () => READ });
+  renderApp(<Handled />, {}, { unnamed: true });
+  expect(await screen.findByText("Sorted away before your assistant read it. Kept for 30 days.")).toBeInTheDocument();
+});
+
+test("a change a rule closed is a row of the set-aside tab: a chip for its kind of item, the rule and the reason, and Take a closer look in one click", async () => {
+  const user = userEvent.setup();
+  const calls = open({
+    "POST requests/REQ-a/closer-look": () => ({ id: "REQ-a" }),
+    "POST requests/REQ-a/closer-look/undo": () => ({ id: "REQ-a" }),
+  });
+  const files = await open_(user, /^Files · 2$/);
+  const first = within(files).getAllByRole("listitem")[0];
+  expect(first).toHaveTextContent("File");
+  expect(first).toHaveTextContent("Plan a");
+  expect(first).toHaveTextContent("Changed");
+  expect(first).toHaveTextContent("Closed by the rule Spacing: only the spacing changed");
+  const pages = await open_(user, /^Pages · 1$/);
+  expect(within(pages).getByRole("listitem")).toHaveTextContent("Page");
+  const sales = await open_(user, SALES);
+  expect(within(sales).getAllByRole("listitem")[0]).toHaveTextContent("Set aside because");
+  expect(within(sales).getByRole("button", { name: "Bring it in: Offer a" })).toBeInTheDocument();
+  await user.click(within(files).getByRole("button", { name: "Take a closer look at Plan a" }));
+  await waitFor(() => expect(body(calls, "POST requests/REQ-a/closer-look")).toEqual({ read_version: 3 }));
+  expect(await screen.findByText("Handed in Plan a. Helper is on it.")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST requests/REQ-a/closer-look/undo")).toBe(true));
+});
+
+test("a closed row's menu has Looks right, which marks the close as seen, and Open it", async () => {
+  const user = userEvent.setup();
+  const calls = open({ "POST silent-closes/seen": () => ({ id: "request:REQ-a" }) });
+  const files = await open_(user, /^Files · 2$/);
+  await user.click(within(files).getByRole("button", { name: "More actions for Plan a" }));
+  expect(await screen.findByRole("menuitem", { name: "Open it" })).toBeInTheDocument();
+  await user.click(screen.getByRole("menuitem", { name: "Looks right" }));
+  await waitFor(() => expect(body(calls, "POST silent-closes/seen")).toEqual({ ref: "request:REQ-a" }));
+});
+
+test("Closed without you seeing sits under the Read tab, not under Set aside, with the kind of item of each close and Looks right", async () => {
+  const user = userEvent.setup();
+  const calls = open({
+    "GET silent-closes": () => ({
+      ...NO_CLOSES,
+      count: 2,
+      closes: [
+        { ref: "request:REQ-a", kind: "rule", how: "closed", title: "Plan a", when: "2026-10-11T08:30:00+00:00", why: "x", rule: "Spacing", item: "file" },
+        { ref: "changeset:CS-1:0", kind: "assistant", how: "dropped", title: "Ask about the venue", when: "2026-10-11T09:30:00+00:00", why: "no longer needed", item: "question" },
+      ],
+      measure: { ...NO_CLOSES.measure, total: 4, silent: 2, rate: 0.5 },
+    }),
+    "POST silent-closes/seen": () => ({ id: "changeset:CS-1:0" }),
+  });
+  await screen.findByRole("button", { name: "Sales, promotions and social updates · 2" });
+  expect(screen.queryByRole("heading", { name: "Closed without you seeing" })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Read 2" }));
+  const heading = await screen.findByRole("heading", { name: "Closed without you seeing" });
+  const section = heading.closest("section") as HTMLElement;
+  expect(within(section).getByText("2 of 4 closed without you seeing them")).toBeInTheDocument();
+  const rows = within(section).getAllByRole("listitem");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toHaveTextContent("Question");
+  expect(rows[0]).toHaveTextContent("Ask about the venue");
+  await user.click(within(rows[0]).getByRole("button", { name: "Looks right: Ask about the venue" }));
+  await waitFor(() => expect(body(calls, "POST silent-closes/seen")).toEqual({ ref: "changeset:CS-1:0" }));
+  await user.click(screen.getByRole("button", { name: "Set aside 6" }));
+  await screen.findByRole("button", { name: "Sales, promotions and social updates · 2" });
+  expect(screen.queryByRole("heading", { name: "Closed without you seeing" })).not.toBeInTheDocument();
+});
+
+test("closes counted but made by rules leave one empty state on the tab and claim nothing about what was seen (X30)", async () => {
+  const user = userEvent.setup();
+  open({
+    "GET silent-closes": () => ({
+      ...NO_CLOSES,
+      count: 2,
+      closes: [{ ref: "request:REQ-a", kind: "rule", how: "closed", title: "Plan a", when: "2026-10-11T08:30:00+00:00", why: "x", rule: "Spacing", item: "file" }],
+      measure: { ...NO_CLOSES.measure, total: 2, silent: 2, rate: 1 },
+    }),
+  });
+  await user.click(await screen.findByRole("button", { name: /^Read \d/ }));
+  // Two empty states on one tab would contradict each other: with nothing of the assistant's own to list, the section is not there.
+  await waitFor(() => expect(screen.queryByRole("heading", { name: "Closed without you seeing" })).toBeNull());
+  expect(screen.queryByText(/Nothing here was closed by the assistant itself/)).toBeNull();
+  expect(screen.queryByText("Everything that was closed, you made or saw.")).toBeNull();
+});
+
+test("one close that was not seen reads 1 of 3 closed without you seeing it, and none reads that everything was seen", async () => {
+  const user = userEvent.setup();
+  const closes = (silent: number): S["SilentClosesView"] => ({
+    ...NO_CLOSES,
+    count: silent,
+    closes: silent ? [{ ref: "changeset:CS-1:0", kind: "assistant", how: "dropped", title: "Ask about the venue", when: "2026-10-11T09:30:00+00:00", why: "no longer needed", item: "question" }] : [],
+    measure: { ...NO_CLOSES.measure, total: 3, silent, rate: silent / 3 },
+  });
+  open({ "GET silent-closes": () => closes(1) });
+  await user.click(await screen.findByRole("button", { name: "Read 2" }));
+  expect(await screen.findByText("1 of 3 closed without you seeing it")).toBeInTheDocument();
+  cleanup();
+  open({ "GET silent-closes": () => closes(0) });
+  await user.click(await screen.findByRole("button", { name: "Read 2" }));
+  expect(await screen.findByText("You saw everything closed in the last 14 days.")).toBeInTheDocument();
+});
+
+test("a kind filter narrows the list to one kind of item and asks the server for it", async () => {
+  const user = userEvent.setup();
+  const onlyFiles: S["HandledView"] = { ...ASIDE, item: "file", groups: [group("item:file", [closedRow("a"), closedRow("b")])] };
+  const calls = open({ "GET handled?tab=set_aside&q=&item=file": () => onlyFiles });
+  const filter = await screen.findByRole("group", { name: "Kind of item" });
+  expect(within(filter).getByRole("button", { name: "All kinds" })).toHaveAttribute("aria-pressed", "true");
+  expect(within(filter).getByRole("button", { name: "Page · 1" })).toBeInTheDocument();
+  await user.click(within(filter).getByRole("button", { name: "File · 2" }));
+  expect(await screen.findByRole("button", { name: "Files · 2" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Pages · 1" })).not.toBeInTheDocument();
+  expect(within(filter).getByRole("button", { name: "File · 2" })).toHaveAttribute("aria-pressed", "true");
+  expect(calls.some((c) => c.route === "GET handled?tab=set_aside&q=&item=file")).toBe(true);
+});
+
+test("a group shows a page of rows and Show more adds the next page, newest first", async () => {
+  const user = userEvent.setup();
+  const many = Array.from({ length: 7 }, (_, n) => row(`m${n}`, { title: `Offer m${n}` }));
+  open({ "GET handled?tab=set_aside&q=": () => ({ ...ASIDE, page_rows: 3, groups: [group("kind:sales", many)] }) });
+  const section = await open_(user, /^Sales, promotions and social updates · 7$/);
+  expect(within(section).getAllByRole("listitem", { name: /^Offer/ })).toHaveLength(3);
+  await user.click(within(section).getByRole("button", { name: "Show more (4 more)" }));
+  expect(within(section).getAllByRole("listitem", { name: /^Offer/ })).toHaveLength(6);
+  await user.click(within(section).getByRole("button", { name: "Show more (1 more)" }));
+  expect(within(section).getAllByRole("listitem", { name: /^Offer/ })).toHaveLength(7);
+  expect(within(section).queryByRole("button", { name: /Show more/ })).not.toBeInTheDocument();
+});
+
+test("the screen says how long items are kept, in the singular for one day", async () => {
+  open({ "GET handled?tab=set_aside&q=": () => ({ ...ASIDE, kept_days: 1 }) });
+  expect(await screen.findByText("Sorted away before Helper read it. Kept for 1 days.")).toBeInTheDocument();
+});
+
+// ---- Just me has no work words; with sides the button names the side (design 6.32, 7.20) ------------------------------
+
+const project = (id: string, name: string, parent: string | null = null) => ({ id, name, parent }) as S["ProjectView"];
+const JUST_ME: Routes = {
+  "GET setup/business": () => ({ business: false, name: null, personal: "PRJ-personal", sides: [], chosen: "me" }),
+  "GET projects": () => [project("PRJ-personal", "Personal")],
+};
+const TWO_SIDES: Routes = {
+  "GET setup/business": () => ({
+    business: true,
+    name: "Hale Upholstery",
+    personal: "PRJ-personal",
+    sides: [
+      { project: "PRJ-shop", name: "Hale Upholstery", kind: "business", removable: false },
+      { project: "PRJ-day", name: "Day job", kind: "job", removable: false },
+    ],
+    chosen: "work",
+  }),
+  "GET projects": () => [project("PRJ-personal", "Personal"), project("PRJ-shop", "Hale Upholstery"), project("PRJ-day", "Day job")],
+};
+
+test("with nothing beside Personal Bring it in hands the mail in at once, with no side to choose and no Treat as", async () => {
+  const user = userEvent.setup();
+  const calls = open({ ...JUST_ME, "POST handled/a/work": () => done("a") });
+  const sales = await open_(user, SALES);
+  await waitFor(() => expect(within(sales).getByRole("button", { name: "Bring it in: Offer a" })).toBeInTheDocument());
+  await user.click(within(sales).getByRole("button", { name: "More actions for Offer a" }));
+  expect(screen.queryByRole("menuitem", { name: /Treat as/ })).toBeNull();
+  expect(screen.queryByRole("button", { name: /Treat as/ })).toBeNull();
+  await user.keyboard("{Escape}");
+  await user.click(within(sales).getByRole("button", { name: "Bring it in: Offer a" }));
+  await waitFor(() => expect(body(calls, "POST handled/a/work")).toEqual({ read_version: 3 }));
+  expect(screen.queryByRole("group", { name: "Bring it in as" })).toBeNull();
+});
+
+test("the reworded line for mail that is not sales or notices says nothing about work", () => {
+  expect(en["setaside.what.mixed"]).not.toMatch(/work/i);
+});
+
+test("with sides Bring it in asks which side, Personal and each business, and brings the mail in as the one chosen", async () => {
+  const user = userEvent.setup();
+  const calls = open({ ...TWO_SIDES, "POST handled/a/work": () => done("a"), "POST mail/a/set-aside": () => ({ id: "a", version: 6, section: "sales", address: addr("a"), domain: null }) });
+  const sales = await open_(user, SALES);
+  const button = await within(sales).findByRole("button", { name: "Bring it in: Offer a" });
+  expect(button).toHaveTextContent("Bring it in");
+  expect(screen.queryByText(/Treat as/)).toBeNull();
+  await waitFor(() => expect(window.fetch).toHaveBeenCalledWith(expect.stringContaining("setup/business"), expect.anything()));
+  await user.click(button);
+  const picker = await within(sales).findByRole("group", { name: "Bring it in as" });
+  // Nothing is sent until a side is chosen, and the first side has the cursor.
+  expect(calls.some((c) => c.route === "POST handled/a/work")).toBe(false);
+  const choices = within(picker).getAllByRole("button");
+  expect(choices.map((c) => c.textContent)).toEqual(["Personal", "Hale Upholstery", "Day job", "Cancel"]);
+  expect(choices[0]).toHaveFocus();
+  await user.click(within(picker).getByRole("button", { name: "Bring it in as Day job: Offer a" }));
+  await waitFor(() => expect(body(calls, "POST handled/a/work")).toEqual({ read_version: 3, side: "PRJ-day" }));
+  expect(await screen.findByText(/Handed in Offer a for Day job/)).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(body(calls, "POST mail/a/set-aside")).toEqual({ section: "sales" }));
+});
+
+test("choosing Personal brings the mail in under the Personal project, and Cancel or Escape closes the choice and sends nothing", async () => {
+  const user = userEvent.setup();
+  const calls = open({ ...TWO_SIDES, "POST handled/a/work": () => done("a") });
+  const sales = await open_(user, SALES);
+  const button = await within(sales).findByRole("button", { name: "Bring it in: Offer a" });
+  await user.click(button);
+  await user.keyboard("{Escape}");
+  expect(within(sales).queryByRole("group", { name: "Bring it in as" })).toBeNull();
+  expect(button).toHaveFocus();
+  await user.click(button);
+  await user.click(within(sales).getByRole("button", { name: "Cancel" }));
+  expect(within(sales).queryByRole("group", { name: "Bring it in as" })).toBeNull();
+  expect(calls.some((c) => c.route === "POST handled/a/work")).toBe(false);
+  await user.click(button);
+  await user.click(within(sales).getByRole("button", { name: "Bring it in as Personal: Offer a" }));
+  await waitFor(() => expect(body(calls, "POST handled/a/work")).toEqual({ read_version: 3, side: "PRJ-personal" }));
+});
+
+test("the menu of a set-aside row does not name the sides, and a mail read with nothing to do keeps Take a closer look with the sides in its menu", async () => {
+  const user = userEvent.setup();
+  open(TWO_SIDES);
+  const sales = await open_(user, SALES);
+  await user.click(await within(sales).findByRole("button", { name: "More actions for Offer a" }));
+  expect(await screen.findByRole("menuitem", { name: "Always set aside mail like this" })).toBeInTheDocument();
+  expect(screen.queryByRole("menuitem", { name: /Treat as/ })).toBeNull();
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByRole("button", { name: "Read 2" }));
+  const other = await open_(user, /^Other mail · 1$/);
+  expect(within(other).getByRole("button", { name: "Take a closer look at Lunch q" })).toBeInTheDocument();
+  await user.click(within(other).getByRole("button", { name: "More actions for Lunch q" }));
+  expect(await screen.findByRole("menuitem", { name: "Treat as Personal" })).toBeInTheDocument();
+  expect(screen.getByRole("menuitem", { name: "Treat as Day job" })).toBeInTheDocument();
+});
+
+// What is new here counts from when the person last left the screen (design 7.1): leaving marks it looked at.
+test("leaving Handled for you marks it looked at, so what came after counts as new on the menu", async () => {
+  const calls = open({ "POST waiting/looked": () => ({ ok: "handled" }) });
+  await screen.findByRole("heading", { name: "Handled for you" });
+  // While the person is there nothing is marked: what is new still counts as new.
+  expect(calls.some((c) => c.route === "POST waiting/looked")).toBe(false);
+  cleanup();
+  await waitFor(() => expect(body(calls, "POST waiting/looked")).toEqual({ screen: "handled" }));
+});
+
+const FIRST_GO = { key: "first_go", group: "decide", kind: "first_go", count: 2, untrusted: false, unpriced: 0, actions: [], questions: [], outcome: {} };
+
+test("Bring it in while Today waits for Start says it waits until the person chooses Start, never that the assistant is on it", async () => {
+  const user = userEvent.setup();
+  open({
+    "GET today/queue": () => [FIRST_GO],
+    "POST handled/a/work": () => done("a"),
+    "POST mail/a/set-aside": () => ({ id: "a", version: 6, section: "sales", address: addr("a"), domain: null }),
+    "POST watch/sorting": () => SAVED,
+  });
+  const sales = await open_(user, SALES);
+  await user.click(within(sales).getByRole("button", { name: "Bring it in: Offer a" }));
+  expect(await screen.findByText("Handed in. It waits until you choose Start on Today.")).toBeInTheDocument();
+  expect(screen.queryByText(/is on it/)).toBeNull();
+});
+
+test("Take a closer look while Today waits for Start says it waits until the person chooses Start", async () => {
+  const user = userEvent.setup();
+  open({ "GET today/queue": () => [FIRST_GO], "POST requests/REQ-a/closer-look": () => ({ id: "REQ-a" }), "POST requests/REQ-a/closer-look/undo": () => ({ id: "REQ-a" }) });
+  const files = await open_(user, /^Files · 2$/);
+  await user.click(within(files).getByRole("button", { name: "Take a closer look at Plan a" }));
+  expect(await screen.findByText("Handed in. It waits until you choose Start on Today.")).toBeInTheDocument();
+  expect(screen.queryByText(/is on it/)).toBeNull();
+});
+
+test("the rows keep a reading width, so a row's words and its action stay close on a wide window", () => {
+  const css = readFileSync(join(__dirname, "Handled.module.css"), "utf8");
+  expect(css).toMatch(/\.groups \{[^}]*max-width: 56rem/);
+});

@@ -1,0 +1,234 @@
+// The Came in card of Today's rail (design 7.7): the mail that arrived, with a button that reads every source now, and one
+// quiet line counting the mail handled without the person today. A card with nothing in it is not drawn; it is drawn when
+// mail arrived, a mailbox couldn't be read, a source is connected (so "Check now" is there even when nothing came in), mail
+// was handled today, or there is a mailbox to connect (given only once setup is finished).
+import { withoutAddress } from "../lib/calendar";
+import { breakAddresses } from "../lib/break-address";
+import { keepNumber } from "../lib/keep-number";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { api, type S } from "../lib/api";
+import { useAct } from "../lib/act";
+import { listOf } from "../lib/packs";
+import { clockDay, clockTime, todayOn, weekday } from "../lib/dates";
+import { useSetAside } from "../lib/set-aside";
+import { onAnySide, useSideFilter, useSides } from "../lib/sides";
+import { useSideSlot } from "../lib/marks";
+import { SideMark } from "../ui/SideMark";
+import { useRailRows } from "../lib/today";
+import { anyReading } from "../lib/sources";
+import { recordView, viewHref } from "../lib/views";
+import { Button } from "../ui/Button";
+import { useWords } from "../lib/wording";
+import { Skeleton } from "../ui/Skeleton";
+import { Empty, Failed, RailPanel } from "./RailPanel";
+import { SourceProblems, useNow, useSourceNames, useSourceState } from "./RailSources";
+import { FailedSaveLine } from "../ui/NotSaved";
+import { RowMenu, type MenuAction } from "./RowMenu";
+import { SafeLink } from "./SafeText";
+
+type T = ReturnType<typeof useWords>["t"];
+
+/** A mailbox's label with the account's address left out ("Your inbox, avery@example.com" is "Your inbox"): the address is on Connections and in the tooltip. */
+
+/** What a check says in a toast: what arrived, then any source that couldn't be read or was already being read. */
+function checkedText(result: S["InboxCheckView"], t: T, tn: ReturnType<typeof useWords>["tn"]): string {
+  const parts = [result.new_items > 0 ? tn("today.arrived.check_new", result.new_items) : t("today.arrived.check_none")];
+  // A source that couldn't be read says why and what to do, not only that it failed.
+  if (result.sources_failed > 0) {
+    const problems = result.problems ?? [];
+    parts.push(...(problems.length > 0 ? problems.map((p) => p.replace(/\.$/, "")) : [tn("today.arrived.check_failed", result.sources_failed)]));
+  }
+  if (result.sources_busy > 0) parts.push(tn("today.arrived.check_busy", result.sources_busy));
+  return parts.join(". ") + (parts.length > 1 ? "." : "");
+}
+
+/** The button that reads every source now and shows what arrived; it never replaces the sources' own schedule. */
+function CheckNow(props: { quiet?: boolean }) {
+  const { t, tn } = useWords();
+  const act = useAct();
+  const client = useQueryClient();
+  const [checking, setChecking] = useState(false);
+  const button = useRef<HTMLButtonElement>(null);
+  const keepFocus = useRef(false);
+  // A button that turns off while it works loses the keyboard's place; put it back once it is on again.
+  useEffect(() => {
+    if (!checking && keepFocus.current) {
+      keepFocus.current = false;
+      button.current?.focus();
+    }
+  }, [checking]);
+  const run = async () => {
+    keepFocus.current = document.activeElement === button.current;
+    setChecking(true);
+    await act(
+      async () => {
+        const result = await api.checkArrived();
+        // Show the new list at once, without waiting for it to be fetched again.
+        client.setQueryData<S["InboxView"]>(["today", "arrived"], {
+          items: result.items,
+          left_out: result.left_out,
+          set_aside: result.set_aside,
+        });
+        return result;
+      },
+      (result) => ({ message: checkedText(result, t, tn) }),
+    );
+    setChecking(false);
+  };
+  return (
+    <Button ref={button} variant={props.quiet ? "quiet" : "secondary"} size="sm" disabled={checking} aria-busy={checking} onClick={() => void run()}>
+      {t(checking ? "today.arrived.checking" : "today.arrived.check")}
+    </Button>
+  );
+}
+
+/** The Came in card and whether to draw it; `settled` is true once what it asks has answered. */
+export function useCameInCard(onAddSource?: () => void): { settled: boolean; drawn: boolean; card: ReactNode } {
+  const { t, tn } = useWords();
+  const sourceState = useSourceState(onAddSource, t("today.arrived.connect"), "mail");
+  const watch = useQuery({ queryKey: ["watch"], queryFn: api.watchSources });
+  const arrived = useQuery({ queryKey: ["today", "arrived"], queryFn: api.arrived });
+  const handled = useQuery({ queryKey: ["handled", "counts"], queryFn: api.handledCounts });
+  const handledToday = handled.data?.today ?? 0;
+  const now = useNow();
+  const today = todayOn(now);
+  const filter = useSideFilter();
+  // The side filter narrows what came in by the sides its mailbox serves; mail from one that serves none shows under every choice.
+  const items = (arrived.data?.items ?? []).filter((m) => onAnySide(m.sides, filter.picked));
+  // The card holds a few lines and one line for the rest, so the rail is never longer than the queue beside it.
+  const [all, setAll] = useState(false);
+  const railRows = useRailRows();
+  const slotOf = useSideSlot();
+  const shown = all ? items : items.slice(0, railRows);
+  const more = items.length - shown.length;
+  const { setAside: moveToFolder, isPersonal, isSideCorrection } = useSetAside();
+  const { justMe, personal, sides } = useSides();
+  // Treat as: brought in under a side by name, as Handled for you offers it for mail read with nothing to do. With only
+  // Personal there is one choice; with nothing beside Personal and no work words, none.
+  const named = sides.map((side) => ({ id: side.project, name: side.name }));
+  const asSides = [...(personal ? [{ id: personal, name: t("sides.filter.personal") }] : []), ...named];
+  const treatAs = (message: S["ArrivedView"]): MenuAction[] => {
+    const mail = { id: message.snapshot, title: message.title, version: message.version ?? 0, tab: "read" as const };
+    if (justMe) return [];
+    return named.length > 0
+      ? asSides.map((side) => ({ id: `side-${side.id}`, label: t("setaside.treat_as", { side: side.name }), run: () => void isSideCorrection(side)(mail) }))
+      : [{ id: "personal", label: t("setaside.personal"), run: () => void isPersonal(mail) }];
+  };
+  const sourceName = useSourceNames(items.flatMap((m) => [m.source, ...(m.also_in ?? [])]));
+  const received = (iso: string) => (clockDay(iso) === today ? clockTime(iso) : weekday(clockDay(iso)));
+  const settled = !arrived.isPending && !watch.isPending;
+  // A source that reads mail is connected: the card is there to read it now, even when nothing came in.
+  const connected = !!watch.data && watch.data.some((s) => s.enabled && (s.reads ?? ["mail"]).includes("mail"));
+  const drawn = arrived.isError || items.length > 0 || sourceState.problems.length > 0 || !!sourceState.button || connected || handledToday > 0;
+
+  const card = (
+    <RailPanel
+      id="arrived"
+      title={t("today.arrived.title")}
+      count={arrived.data ? items.length : null}
+      countText={tn("today.arrived.count", items.length)}
+      summary={
+        arrived.data
+          ? items.length > 0
+            ? String(items.length)
+            : sourceState.problems.length > 0
+              ? t("today.rail.not_read")
+              : t("today.rail.nothing")
+          : ""
+      }
+      action={watch.data && anyReading(watch.data) ? <CheckNow quiet /> : undefined}
+      footer={
+        handledToday > 0 ? (
+          <a href={viewHref("work/handled")} data-handled-today="">
+            {t("today.handled", { n: handledToday })}
+          </a>
+        ) : undefined
+      }
+    >
+      {arrived.isPending ? (
+        <Skeleton />
+      ) : arrived.isError ? (
+        <Failed text={t("today.arrived.load_failed")} retry={() => void arrived.refetch()} />
+      ) : items.length === 0 ? (
+        sourceState.problems.length > 0 ? (
+          <Empty inline text={t("today.arrived.not_read")}>
+            <SourceProblems problems={sourceState.problems} />
+          </Empty>
+        ) : (
+          <Empty inline text={t("today.arrived.empty")} button={sourceState.button} />
+        )
+      ) : (
+        <ul className="tb-list">
+          {shown.map((message, i) => {
+            // A thread held by two mailboxes is one row, naming the others that hold it.
+            const also = (message.also_in ?? []).map(sourceName).filter(Boolean);
+            const sideSlot = (message.sides ?? []).length === 1 ? slotOf((message.sides ?? [])[0]) : null;
+            // The mailbox is told by its side, never by its address (that is the tooltip); a mailbox that serves several sides is named by its label.
+            // With another mailbox holding the thread the address stays: it is what tells the two apart.
+            const mailbox = sideSlot === null ? (also.length > 0 ? sourceName(message.source) : withoutAddress(sourceName(message.source))) : "";
+            const meta = [message.sender, mailbox, also.length > 0 ? t("today.arrived.also_in", { names: listOf(also) }) : ""].filter(Boolean).join(" · ");
+            const side = sideSlot === null ? undefined : (message.sides ?? [])[0];
+            return (
+              <Fragment key={`${message.snapshot}:${i}`}>
+              <li className={message.unread ? "tb-row unread" : "tb-row"} data-came-in="">
+                <div className="tb-what">
+                  <div className="tb-title">
+                    {message.unread && (
+                      <span className="tb-unread-dot" data-unread-dot="">
+                        <span className="sr">{t("today.arrived.new")}</span>
+                      </span>
+                    )}
+                    <span>
+                      {message.saved ? (
+                        <a href={viewHref(recordView("source", message.saved))}>{keepNumber(message.title)}</a>
+                      ) : message.link ? (
+                        <SafeLink label={keepNumber(message.title)} url={message.link} />
+                      ) : (
+                        keepNumber(message.title)
+                      )}
+                    </span>
+                  </div>
+                  {(meta || side) && (
+                    <div className="tb-meta" title={[message.sender_address, sourceName(message.source)].filter(Boolean).join(" · ") || undefined}>
+                      {breakAddresses(meta)}
+                      {side && (
+                        <>
+                          {meta && " · "}
+                          <SideMark side={side} />
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <time className="tb-when" dateTime={message.received}>
+                  {received(message.received)}
+                </time>
+                <RowMenu
+                  label={message.title}
+                  actions={[
+                    ...treatAs(message),
+                    { id: "sales", label: t("setaside.menu_sales"), run: () => void moveToFolder({ id: message.snapshot, title: message.title }, "sales") },
+                    ...(message.saved && message.link
+                      ? [{ id: "open", label: t("setaside.open"), run: () => void window.open(message.link ?? "", "_blank", "noopener,noreferrer") }]
+                      : []),
+                  ]}
+                />
+              </li>
+              <FailedSaveLine failedId={message.snapshot} asItem className="tb-failed" />
+              </Fragment>
+            );
+          })}
+          {(more > 0 || all) && items.length > railRows && (
+            <li className="tb-more">
+              <Button variant="quiet" size="sm" aria-expanded={all} onClick={() => setAll(!all)}>
+                {all ? t("today.arrived.fewer") : tn("today.arrived.more", more)}
+              </Button>
+            </li>
+          )}
+        </ul>
+      )}
+    </RailPanel>
+  );
+  return { settled, drawn, card };
+}

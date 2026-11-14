@@ -1,0 +1,375 @@
+"""Handing something in: the PM's note and any pasted content become a Source and a queued Request.
+
+Pasted content is saved as a file by content hash and marked untrusted. The PM's own note stays on the request and is
+trusted.
+
+A note typed on a button of an action or a question (Mark done, They finished it, Followed up, an answer) is an input
+too: `note_as_input` saves it as a trusted source with the item as its context and its author, and queues the usual
+notes work, unless it is a bare confirmation. A note asking for a change to the record it is on is always read.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
+
+from engine import audience
+from engine.config import Config
+from engine.config.schema import ReportedSpeech
+from engine.html_text import as_text
+from engine.language_words import language_words
+from engine.names import People
+from engine.state_file import write_whole
+from engine.storage import Store, WriteContext
+from engine.workspace import Workspace
+
+_PM = WriteContext(actor="pm", trust="trusted", op="hand-in")
+
+
+class IntakeError(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class HandedIn:
+    request: str
+    source: str | None
+
+
+def hand_in(
+    ws: Workspace,
+    store: Store,
+    *,
+    note: str = "",
+    pasted: str = "",
+    now: datetime | None = None,
+    data_level: str | None = None,
+    project: str | None = None,
+    cfg: Config | None = None,
+) -> HandedIn:
+    note, pasted = note.strip(), as_text(pasted).strip()
+    if not note and not pasted:
+        raise IntakeError("Nothing to hand in: add a note or paste something.")
+    if project is not None and store.read().get("project", project) is None:
+        raise IntakeError(f"There is no project {project}.")
+    now = now or datetime.now(UTC)
+    source_id = None
+    limit = None
+    if pasted:
+        settings = cfg or ws.config()
+        limit = audience.limit_of(pasted, language_words(settings.language, "limit_markings"), People(store, settings))
+    with store.transaction() as tx:
+        if pasted:
+            digest = hashlib.sha256(pasted.encode("utf-8")).hexdigest()
+            ws.sources_dir.mkdir(parents=True, exist_ok=True)
+            path = ws.sources_dir / f"{digest}.txt"
+            if not path.exists():
+                write_whole(path, pasted)
+            title = next((line.strip() for line in pasted.splitlines() if line.strip()), "Pasted content")[:120]
+            source_id = tx.create(
+                "source",
+                {
+                    "received_at": now.isoformat(),
+                    "kind": "pasted",
+                    "title": title,
+                    "content_hash": digest,
+                    "trust": "untrusted",
+                    "sensitivity": data_level or "internal",
+                    **({"audience": limit} if limit else {}),
+                },
+                _PM,
+            ).id
+        request = tx.create(
+            "request",
+            {
+                "task": "notes",
+                "note": note or None,
+                "source": source_id,
+                "origin": "pm",
+                "state": "queued",
+                "waiting": "With the assistant, starting now",
+                "created_at": now.isoformat(),
+                **({"sensitivity": data_level} if data_level else {}),
+                **({"project": project} if project else {}),
+            },
+            _PM,
+        )
+    return HandedIn(request.id, source_id)
+
+
+def source_text(ws: Workspace, store: Store, source_id: str | None) -> str:
+    if source_id is None:
+        return ""
+    src = store.read().get("source", source_id)
+    if src is None:
+        return ""
+    path = ws.sources_dir / f"{src.data['content_hash']}.txt"
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+#: The buttons a note can be typed on, each with the words the assistant is told it was typed under.
+NOTE_ROUTES = {
+    "mark_done": "marked the action done",
+    "reopened": "reopened the action",
+    "they_finished": "said the person it waits on finished the action",
+    "followed_up": "chased the person the action waits on",
+    "owner_picked": "picked the owner of the action",
+    "notes_edited": "added to the notes of the record",
+    "answered": "answered the question",
+    "answered_for": "recorded the answer of the person the question was asked of",
+    "change_requested": "asked for this record to be changed",
+    "missed_one": "said the assistant missed something",
+    "meeting_capture": "wrote down what happened at the calendar entry",
+}
+
+#: What a route tells the assistant to do with the note beyond reading it, for the buttons that need it.
+ROUTE_HINTS = {
+    "meeting_capture": (
+        "The note says what happened at the calendar entry in the record. Every action, question or fact it gives came "
+        'out of that meeting: name the entry\'s id in "event" on each, and keep the exact words that justify it.'
+    ),
+}
+
+#: The buttons whose note is the whole point of pressing them, so it is read however short it is.
+ALWAYS_READ_ROUTES = frozenset({"change_requested", "missed_one"})
+
+#: The buttons whose note is content the person reports, not their own words: what someone else did or said, as the
+#: person tells it. Such a note is authored by that other person, and nothing it says changes how the product behaves
+#: until the person confirms it.
+REPORTED_ROUTES = frozenset({"they_finished", "followed_up", "answered_for"})
+NOTE_KIND = "note:"
+#: The source kind of a sentence the person typed to say what the assistant missed: no record, no source.
+MISSED_KIND = NOTE_KIND + "missed_one"
+
+
+def is_reported_note(source_kind: str | None) -> bool:
+    """Whether a source's kind is a note typed on a button that relays someone else's words."""
+    kind = source_kind or ""
+    return kind.startswith(NOTE_KIND) and kind.removeprefix(NOTE_KIND) in REPORTED_ROUTES
+
+
+def is_reported(source: Mapping[str, Any] | None) -> bool:
+    """Whether a source is content the person reports: marked so when it was saved, or typed on a relaying button."""
+    return source is not None and (bool(source.get("reported")) or is_reported_note(source.get("kind")))
+
+
+def _words(words: list[str]) -> str:
+    return "|".join(re.escape(w) for w in words)
+
+
+def repeats_someone(text: str, speech: ReportedSpeech) -> bool:
+    """Whether a note repeats someone else's words: a speaker other than the person next to a word of speech (before
+    it, or after a leading word such as "per"), a passage in quotation marks of at least the configured length, or a
+    chat pasted in. A speech word followed by a request to the person ("<name> asked me to ...") is not."""
+    own = {w.casefold() for w in language_words(speech, "own_speakers")}
+    verbs = language_words(speech, "verbs")
+    if verbs:
+        request_words = language_words(speech, "request_words")
+        asked = f"(?!\\s+(?:{_words(request_words)})\\b)" if request_words else ""
+        pattern = rf"(?i)\b([^\W\d_][\w'’.-]*)\s+(?:{_words(verbs)})\b{asked}"
+        if any(found.group(1).casefold() not in own for found in re.finditer(pattern, text)):
+            return True
+    lead_words = language_words(speech, "lead_words")
+    if lead_words:
+        pattern = rf"(?i:\b(?:{_words(lead_words)}))\s+([^\W\d_a-z][\w'’.-]*)"
+        if any(found.group(1).casefold() not in own for found in re.finditer(pattern, text)):
+            return True
+    for quoted in re.finditer(r'"([^"]+)"|“([^”]+)”', text):
+        if len((quoted.group(1) or quoted.group(2)).split()) >= speech.quote_min_words:
+            return True
+    chat = [re.compile(p, re.MULTILINE) for p in language_words(speech, "chat_line_patterns")]
+    return sum(1 for p in chat for _ in p.finditer(text)) >= speech.chat_min_lines
+
+
+_LINK = re.compile(r"(?i)(?:[a-z][a-z0-9+.-]*://|www\.)\S+|\b[\w-]+(?:\.[\w-]+)+/\S*")
+
+
+def is_bare_confirmation(text: str, words: int) -> bool:
+    """Whether a note says too little to be worth the assistant's time: fewer than `words` words and no link."""
+    note = text.strip()
+    return len(note.split()) < words and not _LINK.search(note)
+
+
+def note_as_input(
+    ws: Workspace,
+    store: Store,
+    cfg: Config,
+    *,
+    item: tuple[str, str],
+    text: str,
+    route: str,
+    author: str | None = None,
+    now: datetime | None = None,
+) -> str | None:
+    """Hand in the note typed on a button of `item` (a kind and an id), once the button's own change is saved. A bare
+    confirmation is kept with the change and makes no request. Otherwise the note is saved as a trusted source whose
+    context is the item and its project, and the usual notes work is queued about the item, under the usual cost rules.
+    Returns the request's id, or None for a bare confirmation. Undoing the button's change never takes the note back:
+    it is kept, and what the assistant makes of it is reviewed and undone on its own.
+
+    Whose words it is follows the button. Most buttons record the person's own words, authored by the person running
+    the app. A button that relays someone else (`REPORTED_ROUTES`) records that other person as `author`, which the
+    caller names, and the source counts as reported content. So does a note on any button that repeats what someone
+    else said (`repeats_someone`); its author stays the person who typed it."""
+    if route not in NOTE_ROUTES:
+        raise ValueError(f"unknown route {route}")
+    if route in REPORTED_ROUTES and not author:
+        raise ValueError(f"a note on {route} names the person it is reported about")
+    note = text.strip()
+    if not note or (
+        route not in ALWAYS_READ_ROUTES and is_bare_confirmation(note, cfg.language.bare_confirmation_words)
+    ):
+        return None
+    record = store.read().get(*item)
+    if record is None:
+        raise IntakeError(f"There is no {item[0]} {item[1]}.")
+    project = record.data.get("project")
+    if not isinstance(project, str) or store.read().get("project", project) is None:
+        project = None
+    now = now or datetime.now(UTC)
+    author = author if route in REPORTED_ROUTES else People(store, cfg).pm
+    reported = route in REPORTED_ROUTES or repeats_someone(note, cfg.language.reported_speech)
+    digest = hashlib.sha256(note.encode("utf-8")).hexdigest()
+    ws.sources_dir.mkdir(parents=True, exist_ok=True)
+    path = ws.sources_dir / f"{digest}.txt"
+    if not path.exists():
+        write_whole(path, note)
+    ctx = WriteContext(actor="pm", trust="trusted", op=f"note.{route}")
+    with store.transaction() as tx:
+        source = tx.create(
+            "source",
+            {
+                "received_at": now.isoformat(),
+                "kind": f"note:{route}",
+                "title": " ".join(note.split())[:120],
+                "content_hash": digest,
+                "trust": "trusted",
+                "projects": [project] if project else [],
+                **({"author": author} if author else {}),
+                **({"reported": True} if reported else {}),
+            },
+            ctx,
+        )
+        request = tx.create(
+            "request",
+            {
+                "task": "notes",
+                "source": source.id,
+                "about": {"kind": item[0], "id": item[1]},
+                "origin": "pm",
+                "state": "queued",
+                "waiting": "With the assistant, starting now",
+                "created_at": now.isoformat(),
+                **({"project": project} if project else {}),
+            },
+            ctx,
+        )
+    return request.id
+
+
+def missed_note(ws: Workspace, store: Store, cfg: Config, *, text: str, now: datetime | None = None) -> str:
+    """Hand in a sentence the person typed to say what the assistant missed: saved as the person's own trusted words,
+    kept whole, and the usual notes work queued with it, under the usual cost rules. It is about no record and has no
+    source to read; the packet marks it as a miss so the run adds what the words name. Returns the request's id."""
+    note = text.strip()
+    if not note:
+        raise IntakeError("Say what the assistant missed.")
+    now = now or datetime.now(UTC)
+    digest = hashlib.sha256(note.encode("utf-8")).hexdigest()
+    ws.sources_dir.mkdir(parents=True, exist_ok=True)
+    path = ws.sources_dir / f"{digest}.txt"
+    if not path.exists():
+        write_whole(path, note)
+    ctx = WriteContext(actor="pm", trust="trusted", op="note.missed_one")
+    author = People(store, cfg).pm
+    with store.transaction() as tx:
+        source = tx.create(
+            "source",
+            {
+                "received_at": now.isoformat(),
+                "kind": MISSED_KIND,
+                "title": " ".join(note.split())[:120],
+                "content_hash": digest,
+                "trust": "trusted",
+                **({"author": author} if author else {}),
+            },
+            ctx,
+        )
+        request = tx.create(
+            "request",
+            {
+                "task": "notes",
+                "source": source.id,
+                "origin": "pm",
+                "state": "queued",
+                "waiting": "With the assistant, starting now",
+                "created_at": now.isoformat(),
+            },
+            ctx,
+        )
+    return request.id
+
+
+def own_words_in(
+    ws: Workspace,
+    store: Store,
+    cfg: Config,
+    *,
+    text: str,
+    title: str,
+    kind: str,
+    project: str | None = None,
+    data_level: str | None = None,
+    now: datetime | None = None,
+) -> HandedIn:
+    """Hand in words the person put there themselves (a file dropped in a capture folder, a voice note turned into
+    text): saved as a trusted source authored by the person, with the usual notes work queued about it under the usual
+    cost rules. Words that repeat what someone else said are marked as reported, as in any note, so what they say about
+    others is never the person's own word. Returns the request and its source."""
+    words = text.strip()
+    if not words:
+        raise IntakeError("Nothing to hand in: there are no words in it.")
+    now = now or datetime.now(UTC)
+    digest = hashlib.sha256(words.encode("utf-8")).hexdigest()
+    ws.sources_dir.mkdir(parents=True, exist_ok=True)
+    path = ws.sources_dir / f"{digest}.txt"
+    if not path.exists():
+        write_whole(path, words)
+    ctx = WriteContext(actor="pm", trust="trusted", op=f"capture.{kind}")
+    author = People(store, cfg).pm
+    reported = repeats_someone(words, cfg.language.reported_speech)
+    with store.transaction() as tx:
+        source = tx.create(
+            "source",
+            {
+                "received_at": now.isoformat(),
+                "kind": f"capture:{kind}",
+                "title": " ".join(title.split())[:120] or "Captured words",
+                "content_hash": digest,
+                "trust": "trusted",
+                "projects": [project] if project else [],
+                "sensitivity": data_level or "internal",
+                **({"author": author} if author else {}),
+                **({"reported": True} if reported else {}),
+            },
+            ctx,
+        )
+        request = tx.create(
+            "request",
+            {
+                "task": "notes",
+                "source": source.id,
+                "origin": "pm",
+                "state": "queued",
+                "waiting": "With the assistant, starting now",
+                "created_at": now.isoformat(),
+                **({"sensitivity": data_level} if data_level else {}),
+                **({"project": project} if project else {}),
+            },
+            ctx,
+        )
+    return HandedIn(request.id, source.id)

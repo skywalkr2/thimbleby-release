@@ -1,0 +1,279 @@
+// A project's form, in a drawer from the right so the list or screen it was opened from stays in view (design 7.14). It adds a
+// project or edits one; both act at once with Undo. `onSaved` hears the project's id, so a picker can select the project
+// that was just added without the person leaving the screen.
+import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { api, type S } from "../lib/api";
+import { useAct } from "../lib/act";
+import { useFirstField } from "../lib/focus";
+import { languageChoices, languageLabel } from "../lib/languages";
+import { parseAmount } from "../lib/money";
+import { placeGroups } from "../lib/project-choices";
+import { useMovedToSide } from "../lib/sides";
+import { useWords } from "../lib/wording";
+import { Button } from "../ui/Button";
+import { Drawer } from "../ui/Drawer";
+import { Field, list } from "./PersonForm";
+import { PersonPicker } from "./PersonPicker";
+import { placeOptions } from "./PlaceOptions";
+import { SideDrawer } from "./SideForm";
+import { ValueSelect } from "./ValueSelect";
+import { Select } from "../ui/Select";
+import { FormField } from "../ui/FormField";
+
+/** The value lists a project's fields take their choices from. */
+const PROJECT_LISTS = {
+  status: "project-status",
+  phase: "project-phase",
+  group: "project-group",
+  priority: "project-priority",
+} as const;
+
+/** The parts a person can have in a project, as the pick list offers them. */
+const ROLES = ["run", "design", "watch"] as const;
+type Role = (typeof ROLES)[number];
+
+/** The form for a project, or the small one for a side, which is a group and has no project fields. */
+export function ProjectDrawer(props: {
+  project?: S["ProjectView"];
+  /** For a new project, what it starts inside (the page it is added from). */
+  inside?: string;
+  onClose: () => void;
+  onSaved?: (id: string, name: string) => void;
+}) {
+  return props.project?.side ? <SideDrawer side={props.project} onClose={props.onClose} onSaved={props.onSaved} /> : <ProjectFormDrawer {...props} />;
+}
+
+function ProjectFormDrawer(props: {
+  project?: S["ProjectView"];
+  inside?: string;
+  onClose: () => void;
+  onSaved?: (id: string, name: string) => void;
+}) {
+  const { t, tn, locale } = useWords();
+  const act = useAct();
+  const people = useQuery({ queryKey: ["people"], queryFn: api.people });
+  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
+  const all = useQuery({ queryKey: ["projects"], queryFn: api.projects });
+  const p = props.project;
+  const first = useFirstField<HTMLFormElement>();
+  const [name, setName] = useState(p?.name ?? "");
+  const [aliases, setAliases] = useState((p?.aliases ?? []).join(", "));
+  const [status, setStatus] = useState(p?.status ?? "");
+  const [phase, setPhase] = useState(p?.phase ?? "");
+  const [group, setGroup] = useState(p?.group ?? "");
+  const [priority, setPriority] = useState(p?.priority ?? "");
+  const [target, setTarget] = useState(p?.target ?? "");
+  const [owner, setOwner] = useState(p?.owner ?? "");
+  const [summary, setSummary] = useState(p?.summary ?? "");
+  const [parent, setParent] = useState(p?.parent ?? props.inside ?? "");
+  const [language, setLanguage] = useState(p?.language_own ? p.language : "");
+  const [budget, setBudget] = useState(p?.budget_usd != null ? String(p.budget_usd) : "");
+  const [role, setRole] = useState<Role>(p?.role ?? "run");
+  const key = p?.id ?? "new";
+  // What it can be inside: every side and project except itself and what is inside it.
+  const inItself = new Set<string>(p ? [p.id] : []);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const x of all.data ?? []) {
+      if (!x.parent || !inItself.has(x.parent) || inItself.has(x.id)) continue;
+      inItself.add(x.id);
+      grew = true;
+    }
+  }
+  const others = (all.data ?? []).filter((x) => !inItself.has(x.id));
+  // A project is inside a side (design 6.32): a new one must say which, and the only side is chosen already.
+  const sides = placeGroups(all.data ?? [], (a, b) => `${a} › ${b}`).groups;
+  const lonely = sides.length === 1 ? sides[0].id : "";
+  const placed = !p || sides.some((g) => g.projects.some((c) => c.id === p.id));
+  const inside = parent || (!p ? lonely : "");
+  const startsInside = props.inside ?? lonely;
+  const mustChoose = sides.length > 0 && placed && inside === "";
+  const movedTo = useMovedToSide(p?.parent, inside);
+  // An empty language means it follows the project it is inside, so that one's language is what the box suggests.
+  const inherited = others.find((x) => x.id === inside)?.language ?? (p && !p.language_own ? p.language : "");
+  // A budget is typed as the person writes an amount: "250", "$250.00" and "250,00" in a language that writes a comma.
+  const budgetNumber = budget.trim() === "" ? null : (parseAmount(budget, locale) ?? Number.NaN);
+  const save = async () => {
+    const body = {
+      parent: inside || null,
+      language: language.trim() || null,
+      budget_usd: budgetNumber,
+      name: name.trim(),
+      aliases: list(aliases),
+      status: status.trim() || null,
+      phase: phase.trim() || null,
+      group: group.trim() || null,
+      priority: priority.trim() || null,
+      ...(p?.no_end ? {} : { target: target || null }),
+      owner: owner || null,
+      summary: summary.trim() || null,
+    };
+    const before = p && {
+      parent: p.parent ?? null,
+      language: p.language_own ? p.language : null,
+      budget_usd: p.budget_usd ?? null,
+      name: p.name,
+      aliases: p.aliases ?? [],
+      status: p.status,
+      phase: p.phase,
+      group: p.group,
+      priority: p.priority ?? null,
+      ...(p.no_end ? {} : { target: p.target }),
+      owner: p.owner,
+      summary: p.summary,
+    };
+    if (p && role !== p.role) {
+      await act(
+        () => api.setProjectRole(p.id, role),
+        (applied) => ({
+          message: t("toast.role_set", { name: p.name, role: t(`role.${role}`) }),
+          undo: async () => {
+            const report = await api.undo(applied.changeset);
+            if (!report.restored.length) throw new Error("not undone");
+          },
+        }),
+      );
+      if (JSON.stringify(body) === JSON.stringify(before)) {
+        props.onClose();
+        return;
+      }
+    }
+    const done = p
+      ? await act(
+          () => api.editProject(p.id, body),
+          () => ({
+            message: t("toast.saved", { name: body.name }),
+            undo: () => api.editProject(p.id, before!),
+          }),
+        )
+      : await act(
+          () => api.addProject(body),
+          (created) => ({ message: t("toast.added", { name: body.name }), undo: () => api.removeProject(created.id) }),
+        );
+    if (!done) return;
+    props.onSaved?.(p?.id ?? (done as S["Created"]).id, body.name);
+    props.onClose();
+  };
+  const dirty =
+    p === undefined
+      ? [name, aliases, status, phase, group, priority, target, owner, summary, language, budget].some((v) => v !== "") || inside !== startsInside
+      : name !== p!.name ||
+        aliases !== (p!.aliases ?? []).join(", ") ||
+        status !== (p!.status ?? "") ||
+        phase !== (p!.phase ?? "") ||
+        group !== (p!.group ?? "") ||
+        priority !== (p!.priority ?? "") ||
+        target !== (p!.target ?? "") ||
+        owner !== (p!.owner ?? "") ||
+        summary !== (p!.summary ?? "") ||
+        inside !== (p!.parent ?? "") ||
+        language !== (p!.language_own ? p!.language : "") ||
+        budget !== (p!.budget_usd != null ? String(p!.budget_usd) : "") ||
+        role !== p!.role;
+  const formId = `project-form-${key}`;
+  const invalid = !name.trim() || mustChoose || (budgetNumber !== null && !(budgetNumber >= 0));
+  return (
+    <Drawer
+      open
+      title={t(p ? "project.edit_title" : "project.add_title")}
+      dirty={dirty}
+      wide
+      onClose={props.onClose}
+      footer={
+        <>
+          <Button onClick={props.onClose}>{t("action.cancel")}</Button>
+          <Button
+            variant="primary"
+            type="submit"
+            form={formId}
+            disabled={invalid}
+            reason={t(!name.trim() ? "setup.name_missing" : mustChoose ? "setup.inside_missing" : "setup.budget_invalid")}
+          >
+            {t(p ? "setup.save" : "setup.add_project")}
+          </Button>
+        </>
+      }
+    >
+    <form
+      id={formId}
+      ref={first}
+      className="setup-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void save();
+      }}
+    >
+      <Field id={`jn-${key}`} label={t("setup.project_name")} value={name} onChange={setName} required />
+      <Field id={`ja-${key}`} label={t("setup.aliases")} value={aliases} onChange={setAliases} hint={t("setup.project_aliases_hint")} />
+      {!p?.no_end && <Field id={`jt-${key}`} label={t("setup.target")} value={target} onChange={setTarget} type="date" />}
+      <ValueSelect id={`js-${key}`} list={PROJECT_LISTS.status} label={t("setup.status")} value={status} onChange={setStatus} />
+      <ValueSelect id={`jp-${key}`} list={PROJECT_LISTS.phase} label={t("setup.phase")} value={phase} onChange={setPhase} />
+      <ValueSelect
+        id={`jr-${key}`}
+        list={PROJECT_LISTS.priority}
+        label={t("setup.priority")}
+        value={priority}
+        onChange={setPriority}
+      />
+      <ValueSelect
+        id={`jg-${key}`}
+        list={PROJECT_LISTS.group}
+        label={t("setup.group")}
+        value={group}
+        onChange={setGroup}
+        hint={t("setup.group_hint")}
+      />
+      <PersonPicker
+        label={t("setup.owner")}
+        value={owner}
+        onChange={setOwner}
+        suggested={[]}
+        people={(people.data ?? []).filter((x) => x.status === "active")}
+      />
+      {p && (
+        <FormField id={`jo-${key}`} label={<>{t("setup.my_role")} <span className="hint">{t("setup.my_role_hint")}</span></>}>
+          <Select id={`jo-${key}`} value={role} onChange={(e) => setRole(e.target.value as Role)}>
+            {ROLES.map((r) => (
+              <option key={r} value={r}>
+                {t(`role.${r}`)}
+              </option>
+            ))}
+          </Select>
+        </FormField>
+      )}
+      <FormField id={`jw-${key}`} label={t("setup.inside")}>
+        <Select id={`jw-${key}`} value={inside} required={mustChoose} onChange={(e) => setParent(e.target.value)}>
+          {mustChoose ? <option value="" disabled>{t("setup.inside_choose")}</option> : (sides.length === 0 || !placed) && <option value="">{t("setup.inside_none")}</option>}
+          {placeOptions(others, t, true)}
+        </Select>
+        {movedTo && <span className="hint">{tn("filing.visible", 1, { side: movedTo })}</span>}
+      </FormField>
+      <FormField id={`jl-${key}`} label={<>{t("setup.language")} <span className="hint">{p && !p.language_own ? t("setup.language_inherited") : t("setup.language_hint")}</span></>}>
+        <Select id={`jl-${key}`} value={language} onChange={(e) => setLanguage(e.target.value)}>
+          <option value="">{inherited ? t("setup.language_same_as", { language: languageLabel(inherited) }) : t("setup.language_same_workspace")}</option>
+          {languageChoices([...(settings.data?.items.find((i) => i.key === "workspace.language")?.options ?? []), ...(language ? [language] : [])]).map((c) => (
+            <option key={c.tag} value={c.tag}>
+              {c.label}
+            </option>
+          ))}
+        </Select>
+      </FormField>
+      <FormField id={`jb-${key}`} label={<>{t("setup.budget")} <span className="hint">{t("setup.budget_hint")}</span></>}>
+        <input
+          id={`jb-${key}`}
+          type="number"
+          min="0"
+          step="any"
+          value={budget}
+          onChange={(e) => setBudget(e.target.value)}
+        />
+      </FormField>
+      <FormField id={`jm-${key}`} label={t("setup.summary")}>
+        <textarea id={`jm-${key}`} className="short" value={summary} onChange={(e) => setSummary(e.target.value)} />
+      </FormField>
+    </form>
+    </Drawer>
+  );
+}
+

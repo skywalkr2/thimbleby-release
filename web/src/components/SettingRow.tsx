@@ -1,0 +1,481 @@
+// One setting as a form control, with its label, hint, default and a way back to the default. Used by the Settings screen
+// and by every other form built from setting items (a source's settings, an add-on's data file).
+import { useQuery } from "@tanstack/react-query";
+import { useRef, useState } from "react";
+import { api } from "../lib/api";
+import { useTierName } from "../lib/ai-routing";
+import { depthOf, fromDraft, isChanged, isOff, labelOf, switchOf, toDraft, type Draft, type Item } from "../lib/settings";
+import { settingChoices, settingValue, type SettingWordsContext } from "../lib/setting-words";
+import { useWriteAmount } from "../lib/money";
+import { useWords } from "../lib/wording";
+import { ClampedHint } from "../ui/ClampedHint";
+import { BrandContrast, ColorControl, LogoControl } from "./BrandControls";
+import { ChipList } from "./ChipList";
+import { MoneyField } from "./MoneyField";
+import { FolderPicker, useFolderListing } from "./FolderPicker";
+import { Marked } from "./Marked";
+import { TimeZoneSelect } from "./TimeZoneSelect";
+import { restoreFocus } from "./ModalPanel";
+import { SecretField, type SecretInput } from "./SecretField";
+import { Button } from "../ui/Button";
+import { Select } from "../ui/Select";
+export function SettingRow(props: {
+  item: Item;
+  /** The words for the label when the screen knows better than the sheet (a name it holds); else the sheet's. */
+  label?: string;
+  draft: Draft;
+  onChange: (draft: Draft) => void;
+  /** Puts the setting back to its default; "Reset" is shown beside the label only while the value differs from it. */
+  onReset?: () => void;
+  /** Its save is waiting or under way: the row says so in place of "Changed · Reset". */
+  saving?: boolean;
+  /** Saves as it is made: a choice or a switch when it changes, a box when the cursor leaves it or Enter is pressed (a
+   * list on leaving only). Given the value, since the draft held by the caller may not have caught up yet. */
+  commit?: (draft: Draft, enter?: boolean) => void;
+  /** What went wrong with the last save of this setting, said on its own row. */
+  problem?: string | null;
+  /** Lays the row out with its help (the description and the default) in a column beside the field. */
+  beside?: boolean;
+  /** Leaves out what only the Settings screen needs: the "Changed · Reset" mark and the default value. */
+  plain?: boolean;
+  /** Added to the control's id, so two forms on a screen never share one. */
+  idPrefix?: string;
+  disabled: boolean;
+  depth: number;
+  /** The switch this setting depends on, when it is off. */
+  gate: Item | null;
+  /** Why the row can't be on now (a switch whose folder isn't chosen yet): it shows as off, can't be changed, and says why. */
+  reason?: string;
+  canList: boolean;
+  /** Where a secret setting can be typed: given, a setting that holds a secret offers a password box. */
+  secret?: SecretInput;
+  /** The words a search matched: they are marked in the label. */
+  mark?: string;
+  /** A note about this setting set against another (an amount above a limit that stops the work first); it changes nothing. */
+  cross?: string;
+}) {
+  const { t, has, locale } = useWords();
+  const writeAmount = useWriteAmount();
+  const [picking, setPicking] = useState(false);
+  const chooser = useRef<HTMLButtonElement>(null);
+  const { item, draft } = props;
+  const id = `${props.idPrefix ?? ""}setting-${item.key}`;
+  const label = props.label ?? labelOf(item, t, has);
+  const readOnly = item.type === "other" || (!item.locked && !item.editable);
+  const note = item.locked
+    ? t(item.source === "env" ? "settings.locked_env" : "settings.locked_flag")
+    : item.renamed_from
+      ? t("settings.renamed_from")
+      : readOnly
+        ? t("settings.changed_in_addon")
+        : null;
+  const hint = label !== item.description ? item.description : null;
+  const parsed = !readOnly && !item.locked && draft !== toDraft(item) ? fromDraft(item, draft, locale) : null;
+  const invalid =
+    parsed && !parsed.ok ? (item.money === true ? t("settings.invalid.amount", { example: writeAmount(1.5) }) : t(`settings.invalid.${parsed.problem}`)) : null;
+  // Changed from the default by the person: what is on screen, so it shows as soon as it is typed and Reset undoes it. A
+  // value setup wrote is the person's answer to a question, not a change.
+  const edited = !readOnly && !item.locked ? fromDraft(item, draft, locale) : null;
+  const changed = isChanged(item, edited);
+  const showDefault = changed && item.type !== "other" && !props.plain;
+  const problem = props.problem || null;
+  const waiting = props.gate ? t(props.gate.type === "yes_no" ? "settings.needs_on" : "settings.needs_value", { label: labelOf(props.gate, t, has) }) : null;
+  const describedBy = [
+    hint && `${id}-hint`,
+    waiting && `${id}-waiting`,
+    props.reason && `${id}-reason`,
+    props.cross && `${id}-cross`,
+    item.type === "list" && (item.options ?? []).length === 0 && `${id}-list`,
+    invalid && `${id}-bad`,
+    problem && `${id}-problem`,
+    note && `${id}-note`,
+    showDefault && `${id}-default`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const off = item.locked || props.disabled || props.gate !== null || !!props.reason;
+  // Lists the person's own records and settings keep show them by name: people, and the tiers by their plain names.
+  const people = useQuery({ queryKey: ["people"], queryFn: api.people, enabled: item.choices === "people" });
+  const tierName = useTierName();
+  const personName = (id: string) => (people.data ?? []).find((p) => p.id === id)?.name ?? id;
+  const words: SettingWordsContext = { t, has, writeAmount, tierName, personName };
+  // A setting that may be empty starts its list with a line that says so.
+  const mayBeEmpty = item.default === "" || item.default == null;
+  const choices = settingChoices(item, words);
+
+  /** A value in words: a choice by its label (the spelling of English, a city), anything else as the sheet writes values. */
+  const valueWords = (value: unknown) => settingValue(item, value, words);
+  const typedSecret = !!props.secret && item.secret === true && item.type === "text" && !readOnly && !item.locked;
+  let control;
+  if (typedSecret && props.secret) {
+    const secret = props.secret;
+    control = (
+      <SecretField
+        id={id}
+        labelId={`${id}-label`}
+        label={label}
+        local={secret.local}
+        held={secret.held[item.key] ?? null}
+        reference={String(draft)}
+        onReference={(reference) => props.onChange(reference)}
+        pasted={secret.pasted[item.key] ?? ""}
+        onPaste={(value) => secret.onPaste(item.key, value)}
+        disabled={off}
+        describedBy={describedBy}
+        offerWhere={secret.offerWhere}
+      />
+    );
+  } else if (readOnly) {
+    control = (
+      <p className="setting-value" id={id}>
+        {valueWords(item.value)}
+      </p>
+    );
+  } else if (item.widget === "color") {
+    control = (
+      <>
+        <ColorControl
+          id={id}
+          label={label}
+          value={String(draft)}
+          disabled={off}
+          describedBy={describedBy}
+          onChange={props.onChange}
+          commit={props.commit}
+          onReset={props.onReset}
+        />
+        <BrandContrast color={String(draft)} />
+      </>
+    );
+  } else if (item.widget === "image") {
+    control = (
+      <LogoControl
+        id={id}
+        labelId={`${id}-label`}
+        label={label}
+        value={String(draft)}
+        disabled={off}
+        describedBy={describedBy}
+        onChange={props.onChange}
+        commit={props.commit}
+        onReset={props.onReset}
+      />
+    );
+  } else if (item.type === "yes_no") {
+    control = (
+      <input
+        id={id}
+        type="checkbox"
+        checked={draft === true && !props.reason}
+        disabled={off}
+        aria-describedby={describedBy}
+        onChange={(e) => {
+          props.onChange(e.target.checked);
+          props.commit?.(e.target.checked);
+        }}
+      />
+    );
+  } else if (item.type === "choice" && item.choices === "time_zones") {
+    control = (
+      <TimeZoneSelect
+        id={id}
+        value={String(draft)}
+        options={item.options ?? []}
+        disabled={off}
+        describedBy={describedBy}
+        onChange={(zone) => {
+          props.onChange(zone);
+          props.commit?.(zone);
+        }}
+      />
+    );
+  } else if (item.type === "choice") {
+    control = (
+      <Select
+        id={id}
+        value={String(draft)}
+        disabled={off}
+        aria-describedby={describedBy}
+        onChange={(e) => {
+          props.onChange(e.target.value);
+          props.commit?.(e.target.value);
+        }}
+      >
+        {mayBeEmpty && !choices.some((c) => c.tag === "") && (
+          <option value="">{t(item.choices === "people" ? "settings.no_one_chosen" : "settings.none_chosen")}</option>
+        )}
+        {choices.map((c) => (
+          <option key={c.tag} value={c.tag}>
+            {c.label}
+          </option>
+        ))}
+      </Select>
+    );
+  } else if (item.type === "list" && (item.options ?? []).length > 0) {
+    // A list drawn from a fixed set of values is ticked, never typed.
+    const held = String(draft).split("\n").filter(Boolean);
+    const toggle = (value: string, on: boolean) => {
+      const next = (item.options ?? []).filter((o) => (o === value ? on : held.includes(o))).join("\n");
+      props.onChange(next);
+      props.commit?.(next);
+    };
+    control = (
+      <div id={id} role="group" aria-labelledby={`${id}-label`} aria-describedby={describedBy} className="check-group">
+        {choices.map((c) => (
+          <label key={c.tag} className="check-line">
+            <input type="checkbox" checked={held.includes(c.tag)} disabled={off} onChange={(e) => toggle(c.tag, e.target.checked)} />
+            <span>{c.label}</span>
+          </label>
+        ))}
+      </div>
+    );
+  } else if (item.type === "list") {
+    // A list of words is chips: a word typed and added with Enter, each one removable, saved as it is made.
+    control = (
+      <ChipList
+        id={id}
+        label={label}
+        value={String(draft)}
+        disabled={off}
+        describedBy={describedBy}
+        onChange={(next) => {
+          props.onChange(next);
+          props.commit?.(next);
+        }}
+      />
+    );
+  } else if (item.type === "number" && item.money === true) {
+    control = (
+      <MoneyField
+        id={id}
+        value={String(draft)}
+        disabled={off}
+        invalid={!!(invalid || problem)}
+        describedBy={describedBy}
+        onChange={props.onChange}
+        onCommit={props.commit}
+      />
+    );
+  } else {
+    const input = (
+      <input
+        id={id}
+        type="text"
+        inputMode={item.type === "text" ? undefined : "decimal"}
+        maxLength={item.type === "text" && item.max_length ? item.max_length : undefined}
+        value={String(draft)}
+        disabled={off}
+        aria-invalid={invalid || problem ? true : undefined}
+        aria-describedby={describedBy}
+        onChange={(e) => props.onChange(e.target.value)}
+        onBlur={props.commit ? (e) => props.commit?.(e.target.value) : undefined}
+        onKeyDown={
+          props.commit
+            ? (e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  props.commit?.(e.currentTarget.value, true);
+                }
+              }
+            : undefined
+        }
+      />
+    );
+    // A folder or a file can be picked from a list where the app can list folders; otherwise it is typed, with no fuss.
+    control =
+      item.picker && props.canList ? (
+        <div className="inline-field">
+          {input}
+          <Button ref={chooser} disabled={off} onClick={() => setPicking(true)}>
+            {t(item.picker === "file" ? "settings.choose_file" : "settings.choose_folder")}
+            <span className="sr"> {label}</span>
+          </Button>
+          {String(draft) !== "" && (
+            <Button variant="quiet"
+              disabled={off}
+              onClick={() => {
+                props.onChange("");
+                props.commit?.("");
+              }}
+            >
+              {t("settings.clear_value")}
+              <span className="sr"> {label}</span>
+            </Button>
+          )}
+        </div>
+      ) : (
+        input
+      );
+  }
+
+  const checkbox = item.type === "yes_no" && !readOnly;
+  const ticked = item.type === "list" && (item.options ?? []).length > 0 && !readOnly;
+  const labelText = <Marked text={label} query={props.mark} />;
+  const labelNode = checkbox ? (
+    <label className="check-line" htmlFor={id}>
+      {control}
+      <span>{labelText}</span>
+    </label>
+  ) : readOnly ? (
+    <span className="setting-label">{label}</span>
+  ) : typedSecret || ticked || item.widget === "image" ? (
+    <span className="setting-label" id={`${id}-label`}>
+      {labelText}
+    </span>
+  ) : (
+    <label className="setting-label" htmlFor={id}>
+      {labelText}
+    </label>
+  );
+  return (
+    <div
+      className={`setting${props.depth ? " dependent" : ""}${props.gate ? " waiting" : ""}${props.beside ? " beside" : ""}`}
+      data-key={item.key}
+      style={props.depth ? { marginInlineStart: `${Math.min(props.depth, 3) * 20}px` } : undefined}
+    >
+      <div className="setting-main" data-main>
+        <div className="setting-head">
+          {labelNode}
+          {props.saving && !props.plain && (
+            <span className="setting-changed" data-saving="">
+              {t("settings.saving")}
+            </span>
+          )}
+          {changed && !props.saving && props.onReset && !props.plain && (
+            <span className="setting-changed">
+              <span>{t("settings.changed")}</span>
+              <span aria-hidden="true"> · </span>
+              <button
+                type="button"
+                className="link-button"
+                disabled={props.disabled}
+                aria-label={t("settings.reset_named", { label })}
+                title={showDefault ? t("settings.default", { value: valueWords(item.default) }) : undefined}
+                onClick={props.onReset}
+              >
+                {t("settings.reset")}
+              </button>
+            </span>
+          )}
+        </div>
+        {checkbox ? null : control}
+        {waiting && (
+          <p className="hint" id={`${id}-waiting`}>
+            {waiting}
+          </p>
+        )}
+        {props.reason && (
+          <p className="hint" id={`${id}-reason`}>
+            {props.reason}
+          </p>
+        )}
+        {props.cross && (
+          <p className="hint" id={`${id}-cross`}>
+            {props.cross}
+          </p>
+        )}
+        {item.type === "list" && !readOnly && !ticked && (
+          <p className="hint" id={`${id}-list`}>
+            {t("settings.chips_hint")}
+          </p>
+        )}
+        {invalid && (
+          <p className="problem-note" id={`${id}-bad`}>
+            {invalid}
+          </p>
+        )}
+        {problem && (
+          <p className="problem-note" id={`${id}-problem`} role="alert">
+            {problem}
+          </p>
+        )}
+        {note && (
+          <p className="hint" id={`${id}-note`}>
+            {note}
+          </p>
+        )}
+      </div>
+      <div className="setting-help" data-help>
+        {hint && <ClampedHint id={`${id}-hint`} text={hint} />}
+        {showDefault && (
+          <span className="sr" id={`${id}-default`}>
+            {t("settings.default", { value: valueWords(item.default) })}
+          </span>
+        )}
+      </div>
+      {picking && (
+        <FolderPicker
+          start={String(draft) || undefined}
+          files={item.picker === "file" ? (item.file_types ?? []) : undefined}
+          onClose={() => {
+            setPicking(false);
+            restoreFocus(() => chooser.current);
+          }}
+          onPick={(picked) => {
+            setPicking(false);
+            props.onChange(picked);
+            props.commit?.(picked);
+            restoreFocus(() => chooser.current);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/** A form made of setting items, one row each, with the drafts held by the caller. A setting that depends on a switch
+ * is indented under it and greyed while the switch is off. */
+export function ItemFields(props: {
+  items: Item[];
+  edits: Record<string, Draft>;
+  onEdit: (key: string, draft: Draft) => void;
+  disabled?: boolean;
+  idPrefix: string;
+  /** A short label for a setting, by item; one that returns nothing keeps the sheet's. */
+  labelFor?: (item: Item) => string | undefined;
+  /** Lets secret settings be typed (a source's form); left out, they are plain text boxes for where they are kept. */
+  secret?: SecretInput;
+  /** What a refused save said about a setting, by its key, shown on that setting's own row. */
+  problems?: Record<string, string>;
+  /** A form for adding or changing something (not the Settings screen): no "Changed · Reset" and no "Default: …" beside a value. */
+  plain?: boolean;
+}) {
+  const { t } = useWords();
+  const canList = useFolderListing(props.items.some((i) => i.picker));
+  const rows = (items: Item[]) =>
+    items.map((item) => {
+      const gate = switchOf(item, props.items);
+      return (
+        <SettingRow
+          key={item.key}
+          item={item}
+          idPrefix={props.idPrefix}
+          draft={item.key in props.edits ? props.edits[item.key] : toDraft(item)}
+          onChange={(draft) => props.onEdit(item.key, draft)}
+          onReset={() => props.onEdit(item.key, toDraft({ ...item, value: item.default }))}
+          disabled={props.disabled ?? false}
+          depth={depthOf(item, props.items)}
+          gate={gate && isOff(gate, props.edits) ? gate : null}
+          canList={canList}
+          secret={props.secret}
+          problem={props.problems?.[item.key] ?? null}
+          plain={props.plain}
+          label={props.labelFor?.(item)}
+          beside
+        />
+      );
+    });
+  // Technical settings (a port, a wait in seconds) sit behind Advanced, so the form asks only what a person can answer.
+  const technical = props.items.filter((i) => i.advanced);
+  return (
+    <>
+      {rows(props.items.filter((i) => !i.advanced))}
+      {technical.length > 0 && (
+        <details className="more-options advanced" open={technical.some((i) => props.problems?.[i.key]) || undefined}>
+          <summary>{t("settings.advanced_items")}</summary>
+          {rows(technical)}
+        </details>
+      )}
+    </>
+  );
+}

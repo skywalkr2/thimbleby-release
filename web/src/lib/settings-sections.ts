@@ -1,0 +1,135 @@
+// The sections of Settings (design 7.9): which section each setting belongs to, which sections are listed down the side,
+// and how Advanced is grouped by topic. A setting lives in exactly one section, the page the app places it on.
+import type { Item } from "./settings";
+import { SETTINGS_SECTIONS, type SettingsSection } from "./views";
+
+/** The topics of settings that are rarely changed, in the order they are listed. A topic that has a page of its own (AI and
+ * spending, Backups, Appearance, Notices) keeps its settings in that page's "More settings" fold; Advanced lists only the
+ * others, so no setting is named twice in Settings. */
+export const TOPICS = ["ai", "backups", "appearance", "learns", "followups", "notices", "filing", "mail", "meetings"] as const;
+
+/** The section a setting is shown in: the page the app places it on, or an add-on's own section. */
+export function sectionOfItem(item: Pick<Item, "plugin" | "page">): SettingsSection {
+  if (item.plugin) return `addon/${item.plugin}`;
+  return (item.page ?? "advanced") as SettingsSection;
+}
+
+/** Settings that a part of their section edits in its own way, so they aren't also listed as rows: the tier each kind of
+ * work uses, what a tier tries once more on, the routing rules (Which model does what), the backup key, the keys an
+ * add-on needs (password boxes of their own), the notices' address and the list of the person's quick links, and the
+ * business and its sides. */
+const OWN_PART = [
+  "ai.tasks",
+  "ai.tiers",
+  "ai.routing",
+  "storage.backups.encrypt",
+  "workspace.plugins.secrets",
+  "ui.notifications.webhook",
+  "ui.notifications.webhook_app",
+  "ui.links",
+  // Where reminders reach you away from the app is one choice with its own yes, not two rows.
+  "steward.reminders.where",
+  "steward.reminders.where_account",
+  // The accounts the assistant may act on are a switch on each account, not a list to tick.
+  "watch.acting",
+  // The cloud drives the backup step looks for are a list of records, changed in the file; the step shows what it found.
+  "storage.backups.cloud_folders",
+  // The business is its name with Rename and Remove, and the words that mean each side are two lists beside it.
+  "workspace.project.business",
+  "workspace.project.sides",
+  // The synced folder and its sharing choice are edited together in the dedicated section.
+  "storage.sync.folder",
+  "storage.sync.shared",
+];
+
+/** Whether a setting is listed as a row of its own: an add-on's, or one the app places on a page or under a topic that no
+ * part of a screen edits in its own way. The rest are kept in files. */
+export const isListed = (item: Pick<Item, "key" | "plugin" | "page">): boolean =>
+  !OWN_PART.includes(item.key) && (item.plugin != null || item.page != null);
+
+/** A section's settings, in the order the app lists them. */
+export const sectionItems = (items: Item[], section: SettingsSection): Item[] =>
+  items.filter((i) => isListed(i) && sectionOfItem(i) === section);
+
+/** The sections to list down the side, in order: the pages of the basic settings, Quick links, Your business where there is
+ * one, Lists where a list is left to show there, Connections and Add-ons, the add-on files where there are some, Advanced,
+ * then one for each add-on that has settings. AI accounts, Connections and Add-ons are always there: they hold lists of
+ * their own rather than settings. Quick links is there wherever the app keeps the person's list of them. */
+export function navSections(items: Item[], has: { business: boolean; lists: boolean; files: boolean; keyed?: string[]; loading?: boolean }): SettingsSection[] {
+  const present = new Set(items.filter(isListed).map(sectionOfItem));
+  // An add-on that needs keys has a section for them even when it has no settings of its own.
+  for (const plugin of has.keyed ?? []) present.add(`addon/${plugin}`);
+  const out: SettingsSection[] = [];
+  for (const id of SETTINGS_SECTIONS) {
+    const shown =
+      id === "ai" ||
+      id === "connections" ||
+      id === "addons" ||
+      // Until the settings have loaded the list is the one a typical install has, so it does not jump when they arrive.
+      (has.loading && id !== "lists" && id !== "files") ||
+      (id === "links"
+        ? items.some((i) => i.key === "ui.links")
+        : id === "business"
+          ? has.business
+          : id === "lists"
+            ? has.lists
+            : id === "files"
+              ? has.files
+                : id === "backups"
+                ? present.has(id) || items.some((i) => i.key === "storage.sync.folder" || i.key === "storage.sync.shared")
+                : present.has(id));
+    if (shown) out.push(id);
+  }
+  const addons = [...present].filter((s) => s.startsWith("addon/"));
+  return [...out, ...addons];
+}
+
+export interface Topic {
+  group: string;
+  items: Item[];
+}
+
+/** A section's settings by topic: the topics of Advanced in their order, then any other group in the order it first
+ * appears. A topic holds its settings in the order the app lists them. */
+export function topics(items: Item[]): Topic[] {
+  const out = new Map<string, Item[]>();
+  for (const item of items) {
+    const name = item.topic ?? item.group;
+    out.set(name, [...(out.get(name) ?? []), item]);
+  }
+  const rank = (name: string) => {
+    const at = (TOPICS as readonly string[]).indexOf(name);
+    return at < 0 ? TOPICS.length : at;
+  };
+  return [...out].map(([group, list]) => ({ group, items: list })).sort((a, b) => rank(a.group) - rank(b.group));
+}
+
+/** Rows that edit several settings at once, by the id of the row: each keeps its own keys, and the app counts the row once.
+ * The first key is where the row sits on its page or topic. */
+export const MERGED_ROWS: Record<string, string[]> = {
+  working_hours: [
+    "steward.reminders.working_first_day",
+    "steward.reminders.working_last_day",
+    "steward.reminders.working_start",
+    "steward.reminders.working_end",
+  ],
+  brief_times: ["steward.brief.morning_from", "steward.brief.evening_from", "steward.brief.weekly_day"],
+  quiet_hours: ["steward.reminders.quiet_start", "steward.reminders.quiet_end"],
+};
+
+/** What a list of settings shows, in order: a setting as a row of its own, or a merged row. A row is merged only when every
+ * setting of it is in the list, so a page that holds some of them shows those as they are. */
+export type Entry = { kind: "item"; item: Item } | { kind: "merged"; id: string; items: Item[] };
+
+export function entriesOf(items: Item[]): Entry[] {
+  const byKey = new Map(items.map((i) => [i.key, i]));
+  const rows = Object.entries(MERGED_ROWS).filter(([, keys]) => keys.every((k) => byKey.has(k)));
+  const inRow = new Map(rows.flatMap(([id, keys]) => keys.map((k) => [k, id] as const)));
+  return items.flatMap((item): Entry[] => {
+    const id = inRow.get(item.key);
+    if (id === undefined) return [{ kind: "item", item }];
+    const keys = MERGED_ROWS[id];
+    // The row sits where its first setting sits; the others of it have no row of their own.
+    return item.key === keys[0] ? [{ kind: "merged", id, items: keys.map((k) => byKey.get(k)!) }] : [];
+  });
+}

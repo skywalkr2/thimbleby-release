@@ -1,0 +1,39 @@
+# A fictional packs catalog feed. Every name here is invented.
+version: 1
+packs:
+  - id: harbor
+    name: Harbor pack
+    summary: Tracks shipments and the dock schedule.
+    publisher: Tidewater Tools
+    maintainers: true
+    updated: "2030-03-01"
+    version: 1.2.0
+    plugin_api: ">=0.3,<0.4"
+    price: {model: subscription, amount: 9, currency: USD, period: month, note: Free for one port}
+    homepage: https://packs.example.com/harbor
+    install: uv tool install --with harbor-pack thimbleby
+    demo: true
+    ai_jobs:
+      - {label: Summarizing a shipment, input_tokens: 6000, output_tokens: 4000}
+      - {label: A full manifest check, input_tokens: 90000, output_tokens: 30000, role: check, data_level: restricted}
+    provides:
+      record_types: [harbor/shipment, harbor/berth]
+      panels: [harbor/shipments]
+      today: [harbor/next-steps]
+      ai_task_kinds: [harbor/summarize, harbor/check]
+      sign_ins: [harbor/port-service]
+    requires:
+      network: [port.example.com]
+      secrets: [client-id]
+      data_levels: [open, internal, restricted]
+      tools: [{name: manifest-checker, version_command: manifest-checker --version}]
+  - id: Not-Valid
+    name: Broken
+  - id: harbor
+    name: Harbor again
+  - id: ledgerline
+    name: Ledgerline
+    summary: Orders and invoices for a small shop.
+    plugin_api: ">=0.9"
+    price: {model: free}
+    homepage: http://packs.example.com/ledgerline

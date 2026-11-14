@@ -1,0 +1,131 @@
+import { EVENT_PAGE, canonical, eventPageView, fromHash, movedTo, panelView, parseView, recordView, settingsSectionOf, settingsView, toHash, viewHref } from "./views";
+
+const routes = [
+  "today",
+  "schedule",
+  "work/changed",
+  "work/handled",
+  "work/followups",
+  "work/open",
+  "work/stages",
+  "records/projects",
+  "records/people",
+  "records/files",
+  "records/knowledge",
+  "records/rules-review",
+  "settings",
+  "settings/ai-compare",
+  "setup",
+  "quality",
+  "styleguide",
+] as const;
+
+test("every view's fragment names it, and Today is the empty fragment's view", () => {
+  for (const view of routes) {
+    expect(toHash(view)).toBe(view);
+    expect(fromHash(`#${view}`)).toBe(view);
+  }
+  expect(fromHash("")).toBe("today");
+  expect(fromHash("#")).toBe("today");
+  // An address nobody knows is the Not here page, never a silent fallback to Today.
+  expect(fromHash("#nonsense")).toBe("not-here");
+});
+
+test("fragments from earlier versions still open the matching view", () => {
+  expect(fromHash("#stages")).toBe("work/stages");
+  expect(fromHash("#files")).toBe("records/files");
+  expect(fromHash("#settings")).toBe("settings");
+  // The guide had two names; both open it.
+  expect(fromHash("#welcome")).toBe("setup");
+  expect(fromHash("#setup")).toBe("setup");
+  expect(fromHash("#panel:demo%2Fgoals")).toBe(panelView("demo/goals", "work"));
+  expect(fromHash("#record:demo%2Fchapter:CH%201")).toBe(recordView("demo/chapter", "CH 1"));
+});
+
+test("the fragments of the screens that moved redirect: Waiting to go out to Follow-ups, Connections and Add-ons to Settings", () => {
+  expect(fromHash("#work/outgoing")).toBe("work/followups");
+  expect(fromHash("#sources")).toBe("settings/connections");
+  expect(fromHash("#addons")).toBe("settings/addons");
+  // A moved view written by code is written as the fragment of the view that took its place.
+  expect(toHash("work/outgoing")).toBe("work/followups");
+  expect(toHash("sources")).toBe("settings/connections");
+  expect(toHash("addons")).toBe("settings/addons");
+  expect(canonical("addons")).toBe("settings/addons");
+  expect(canonical("work/changed")).toBe("work/changed");
+  expect(movedTo("#work/outgoing")).toBe("work/followups");
+  expect(movedTo("#sources")).toBe("settings/connections");
+  expect(movedTo("#work/followups")).toBeNull();
+  expect(movedTo("#settings/connections")).toBeNull();
+  expect(parseView("sources")).toEqual({ type: "core", view: "settings", section: "connections" });
+});
+
+test("a plugin's panel round trips under Work or Records, with awkward characters in its name", () => {
+  for (const group of ["work", "records"] as const) {
+    const panel = panelView("demo/goals #1", group);
+    expect(parseView(panel)).toEqual({ type: "panel", group, name: "demo/goals #1" });
+    expect(toHash(panel)).not.toContain("#");
+    expect(fromHash(`#${toHash(panel)}`)).toBe(panel);
+  }
+  // A hand-typed address with the slash unencoded is understood too.
+  expect(fromHash("#work/panel/demo/goals")).toBe(panelView("demo/goals", "work"));
+});
+
+test("a record page round trips with awkward characters in its kind and id", () => {
+  const record = recordView("demo/chapter", "CH 1:2#3");
+  expect(parseView(record)).toEqual({ type: "record", kind: "demo/chapter", id: "CH 1:2#3" });
+  expect(fromHash(`#${toHash(record)}`)).toBe(record);
+  expect(parseView(recordView("person", "PER-1"))).toEqual({ type: "record", kind: "person", id: "PER-1" });
+  expect(toHash(recordView("person", "PER-1"))).toBe("records/person/PER-1");
+});
+
+test("a core view parses as one", () => {
+  expect(parseView("work/changed")).toEqual({ type: "core", view: "work/changed" });
+});
+
+test("a fragment that names nothing known is the Not here page, which has a fragment of its own and parses as a core view", () => {
+  expect(fromHash("#work/panel/")).toBe("not-here");
+  expect(fromHash("#panel:")).toBe("not-here");
+  expect(fromHash("#record:demo%2Fchapter")).toBe("not-here");
+  expect(fromHash("#records/person")).toBe("not-here");
+  expect(fromHash("#records/%E0%A4%A/x")).toBe("not-here");
+  expect(parseView("not-here")).toEqual({ type: "core", view: "not-here" });
+  expect(fromHash("#not-here")).toBe("not-here");
+});
+
+test("a view's link keeps this page's path and query, so it works in a new tab", () => {
+  window.history.replaceState(null, "", "/admin/?token=t");
+  expect(viewHref("work/stages")).toBe("/admin/?token=t#work/stages");
+  window.history.replaceState(null, "", "/");
+});
+
+test("the address of the Lists page names the Lists section", () => {
+  expect(settingsSectionOf("settings/lists")).toBe("lists");
+});
+
+test("each section of Settings has its own address, and an add-on's section carries the add-on's name", () => {
+  for (const section of ["you", "ai", "today", "backups", "appearance", "business", "lists", "connections", "addons", "files", "advanced"] as const) {
+    const view = settingsView(section);
+    expect(toHash(view)).toBe(`settings/${section}`);
+    expect(fromHash(`#${toHash(view)}`)).toBe(view);
+    expect(parseView(view)).toEqual({ type: "core", view: "settings", section });
+    expect(settingsSectionOf(view)).toBe(section);
+  }
+  const addon = settingsView("addon/sample pack");
+  expect(toHash(addon)).toBe("settings/addon/sample%20pack");
+  expect(fromHash(`#${toHash(addon)}`)).toBe(addon);
+  expect(parseView(addon)).toEqual({ type: "core", view: "settings", section: "addon/sample pack" });
+});
+
+test("Settings without a section, the grid of what accounts can do, and a section nobody knows are not sections", () => {
+  expect(settingsSectionOf("settings")).toBeNull();
+  expect(settingsSectionOf("settings/ai-compare")).toBeNull();
+  expect(parseView("settings")).toEqual({ type: "core", view: "settings" });
+  expect(fromHash("#settings/nonsense")).toBe("not-here");
+  expect(fromHash("#settings/addon/")).toBe("not-here");
+});
+
+test("the page of a connected calendar's event survives the address, with the date it names", () => {
+  const view = eventPageView("SNAP-1", "2026-10-26T09:00:00+00:00");
+  const parsed = parseView(fromHash(`#${toHash(view)}`));
+  expect(parsed).toEqual({ type: "record", kind: EVENT_PAGE, id: "SNAP-1@2026-10-26T09:00:00+00:00" });
+});

@@ -1,0 +1,368 @@
+import "@testing-library/jest-dom/vitest";
+import { screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { S } from "../lib/api";
+import { project } from "../lib/records-fixtures";
+import { ConnectionProvider } from "../lib/connection";
+import { fakeApi, Refuse, renderApp } from "../test-utils";
+import { BusinessSides } from "./BusinessSides";
+
+// Removing a business after setup (design 7.8, 6.32): Remove is offered whenever there is a business, asks each time whether
+// its projects and to-dos move to Personal or end with it, and is one change with Undo.
+
+const SHOP = "Hale Upholstery";
+const DAY = "Day job";
+const sides: S["SideView"][] = [
+  { project: "PRJ-shop", kind: "business", name: SHOP, removable: false, filed: 0 },
+  { project: "PRJ-day", kind: "job", name: DAY, removable: false, filed: 0 },
+];
+
+function show() {
+  return fakeApi({
+    "GET setup/business": () => ({ business: true, name: SHOP, personal: "PRJ-personal", sides, chosen: "work" }),
+    "GET projects": () => [project("PRJ-personal", "Personal"), project("PRJ-shop", SHOP), project("PRJ-day", DAY), project("PRJ-quotes", "Quotes", { parent: "PRJ-shop" })],
+    "POST sides/PRJ-shop/remove": () => ({ changeset: "CS-7", drafts: [], acts: [], names: [] }),
+    "POST sides/PRJ-day/remove": () => ({ changeset: "CS-8", drafts: [], acts: [], names: [] }),
+    "POST changesets/CS-7/undo": () => ({ restored: [0], skipped: [] }),
+  });
+}
+
+async function remove(user: ReturnType<typeof userEvent.setup>, name: string) {
+  const row = await screen.findByRole("listitem", { name });
+  // Rename and Remove are in the row's one menu.
+  await user.click(within(row).getByRole("button", { name: `More actions for ${name}` }));
+  await user.click(await screen.findByRole("menuitem", { name: "Remove" }));
+  return within(row).findByRole("group", { name: `What happens to the projects and to-dos in ${name}?` });
+}
+
+test("Remove is there even though something is filed under the business, and it asks what happens to its projects and to-dos", async () => {
+  const user = userEvent.setup();
+  show();
+  renderApp(<BusinessSides />);
+  const ask = await remove(user, SHOP);
+  expect(within(ask).getByRole("button", { name: "Move them to Personal" })).toBeInTheDocument();
+  expect(within(ask).getByRole("button", { name: "Remove them too" })).toBeInTheDocument();
+  expect(within(ask).getByRole("button", { name: "Cancel" })).toBeInTheDocument();
+  await user.click(within(ask).getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("group", { name: /What happens to the projects/ })).toBeNull();
+});
+
+test("moving them to Personal is one request with Undo that takes the whole change back", async () => {
+  const user = userEvent.setup();
+  const calls = show();
+  renderApp(<BusinessSides />);
+  const ask = await remove(user, SHOP);
+  await user.click(within(ask).getByRole("button", { name: "Move them to Personal" }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST sides/PRJ-shop/remove")?.body).toEqual({ where: "personal", organization: "keep" }));
+  expect(await screen.findByText(`Removed ${SHOP}. Its projects and to-dos are in Personal now.`)).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST changesets/CS-7/undo")).toBe(true));
+});
+
+test("ending them with it is the other choice, and it asks again for the next business", async () => {
+  const user = userEvent.setup();
+  const calls = show();
+  renderApp(<BusinessSides />);
+  await user.click(within(await remove(user, DAY)).getByRole("button", { name: "Remove them too" }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST sides/PRJ-day/remove")?.body).toEqual({ where: "end", organization: "keep" }));
+  expect(await screen.findByText(`Removed ${DAY}, with its projects and to-dos.`)).toBeInTheDocument();
+  // Nothing is chosen for the next one: it asks.
+  const again = await remove(user, SHOP);
+  expect(calls.some((c) => c.route === "POST sides/PRJ-shop/remove")).toBe(false);
+  expect(again).toBeInTheDocument();
+});
+
+test("a refusal is said in words and nothing is announced as removed", async () => {
+  const user = userEvent.setup();
+  fakeApi({
+    "GET setup/business": () => ({ business: true, name: SHOP, personal: "PRJ-personal", sides, chosen: "work" }),
+    "GET projects": () => [],
+    "POST sides/PRJ-shop/remove": () => {
+      throw new Error("never reached");
+    },
+  });
+  renderApp(<BusinessSides />);
+  const ask = await remove(user, SHOP);
+  await user.click(within(ask).getByRole("button", { name: "Move them to Personal" }));
+  expect(await screen.findByRole("alert")).toBeInTheDocument();
+  expect(screen.queryByText(/Removed Hale/)).toBeNull();
+});
+
+test("ending them with a side says a note waits for the yes, and one Undo takes the note and the removal back", async () => {
+  const user = userEvent.setup();
+  const calls = fakeApi({
+    "GET setup/business": () => ({ business: true, name: SHOP, personal: "PRJ-personal", sides, chosen: "work" }),
+    "GET projects": () => [project("PRJ-personal", "Personal"), project("PRJ-shop", SHOP), project("PRJ-day", DAY)],
+    "POST sides/PRJ-day/remove": () => ({ changeset: "CS-8", drafts: ["CS-50"], acts: ["XACT-1"], names: ["Casey Moor"] }),
+    "POST changesets/CS-8/undo": () => ({ restored: [0], skipped: [] }),
+    "POST changesets/CS-50/undo": () => ({ restored: [0], skipped: [] }),
+  });
+  renderApp(<BusinessSides />);
+  await user.click(within(await remove(user, DAY)).getByRole("button", { name: "Remove them too" }));
+  expect(await screen.findByText(`Removed ${DAY}, with its projects and to-dos. A note to Casey Moor is waiting for your yes.`)).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(calls.filter((c) => c.route.endsWith("/undo")).map((c) => c.route)).toEqual(["POST changesets/CS-8/undo"]));
+});
+
+// ---- adding a job or a business here, and the organization that goes with a removal (the UI/UX review, X42) -------------
+
+test("a person with only their own life has Add a business and Add a job here, with no list of sides", async () => {
+  fakeApi({
+    "GET setup/business": () => ({ business: false, name: "", personal: "PRJ-personal", sides: [], chosen: "me" }),
+    "GET projects": () => [project("PRJ-personal", "Personal")],
+  });
+  renderApp(<BusinessSides />);
+  expect(await screen.findByRole("button", { name: "Add a business" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Add a job" })).toBeInTheDocument();
+  expect(screen.getByText(/Your own life is always here/)).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "What it is called" })).toBeNull();
+});
+
+test("Add a business is a short form with its name and what it is; the toast's Undo takes it back out", async () => {
+  const user = userEvent.setup();
+  const calls = fakeApi({
+    "GET setup/business": () => ({ business: false, name: "", personal: "PRJ-personal", sides: [], chosen: "me" }),
+    "GET projects": () => [project("PRJ-personal", "Personal")],
+    "POST setup/business": () => ({ project: "PRJ-new", name: "Quarry Studio", kind: "business", created: true, changeset: "CS-20" }),
+    "POST changesets/CS-20/undo": () => ({ restored: [0], skipped: [] }),
+  });
+  renderApp(<BusinessSides />);
+  await user.click(await screen.findByRole("button", { name: "Add a business" }));
+  const dialog = await screen.findByRole("dialog", { name: "Add a business" });
+  await waitFor(() => expect(within(dialog).getByRole("textbox", { name: /^Business name/ })).toHaveFocus());
+  expect(within(dialog).getByRole("button", { name: "Add the business" })).toBeDisabled();
+  await user.type(within(dialog).getByRole("textbox", { name: /^Business name/ }), "Quarry Studio");
+  await user.type(within(dialog).getByRole("textbox", { name: /^What it is/ }), "Prints and binds small books.");
+  await user.click(within(dialog).getByRole("button", { name: "Add the business" }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST setup/business")?.body).toEqual({ name: "Quarry Studio", kind: "business", summary: "Prints and binds small books." }));
+  expect(await screen.findByText("Added Quarry Studio.")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST changesets/CS-20/undo")).toBe(true));
+});
+
+test("Add a job asks for the employer only, and a name that is already a side is said so in the form", async () => {
+  const user = userEvent.setup();
+  const calls = fakeApi({
+    "GET setup/business": () => ({ business: true, name: SHOP, personal: "PRJ-personal", sides, chosen: "work" }),
+    "GET projects": () => [project("PRJ-personal", "Personal")],
+    "POST setup/business": () => ({ project: "PRJ-day", name: DAY, kind: "job", created: false, changeset: null }),
+  });
+  renderApp(<BusinessSides />);
+  await user.click(await screen.findByRole("button", { name: "Add a job" }));
+  const dialog = await screen.findByRole("dialog", { name: "Add a job" });
+  expect(within(dialog).queryByRole("textbox", { name: /^What it is/ })).toBeNull();
+  await user.type(within(dialog).getByRole("textbox", { name: /^Employer/ }), DAY);
+  await user.click(within(dialog).getByRole("button", { name: "Add the job" }));
+  expect(await within(dialog).findByRole("alert")).toHaveTextContent(`${DAY} is already one of yours.`);
+  expect(calls.find((c) => c.route === "POST setup/business")?.body).toEqual({ name: DAY, kind: "job" });
+});
+
+test("removing a business can take its organization with it, and one Undo brings back the organization first, then the business", async () => {
+  const user = userEvent.setup();
+  const withOrg: S["SideView"][] = [{ project: "PRJ-shop", kind: "business", name: SHOP, removable: false, filed: 0, organization: "ORG-1" }];
+  const calls = fakeApi({
+    "GET setup/business": () => ({ business: true, name: SHOP, personal: "PRJ-personal", sides: withOrg, chosen: "work" }),
+    "GET projects": () => [project("PRJ-personal", "Personal")],
+    "POST sides/PRJ-shop/remove": () => ({ changeset: "CS-7", drafts: [], acts: [], names: [], companions: ["CS-8"] }),
+    "POST changesets/CS-7/undo": () => ({ restored: [0], skipped: [] }),
+    "POST changesets/CS-8/undo": () => ({ restored: [0], skipped: [] }),
+  });
+  renderApp(<BusinessSides />);
+  const ask = await remove(user, SHOP);
+  await user.click(within(ask).getByRole("checkbox", { name: /Also take .* off your list of organizations/ }));
+  await user.click(within(ask).getByRole("button", { name: "Move them to Personal" }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST sides/PRJ-shop/remove")?.body).toEqual({ where: "personal", organization: "remove" }));
+  await user.click(await screen.findByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST changesets/CS-7/undo")).toBe(true));
+  const order = calls.filter((c) => c.route.startsWith("POST changesets/")).map((c) => c.route);
+  expect(order).toEqual(["POST changesets/CS-8/undo", "POST changesets/CS-7/undo"]);
+});
+
+test("the organization is kept unless it is ticked", async () => {
+  const user = userEvent.setup();
+  const withOrg: S["SideView"][] = [{ project: "PRJ-shop", kind: "business", name: SHOP, removable: false, filed: 0, organization: "ORG-1" }];
+  const calls = fakeApi({
+    "GET setup/business": () => ({ business: true, name: SHOP, personal: "PRJ-personal", sides: withOrg, chosen: "work" }),
+    "GET projects": () => [project("PRJ-personal", "Personal")],
+    "POST sides/PRJ-shop/remove": () => ({ changeset: "CS-7", drafts: [], acts: [], names: [], companions: [] }),
+  });
+  renderApp(<BusinessSides />);
+  const ask = await remove(user, SHOP);
+  expect(within(ask).getByRole("checkbox", { name: /Also take .* off your list of organizations/ })).not.toBeChecked();
+  await user.click(within(ask).getByRole("button", { name: "Remove them too" }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST sides/PRJ-shop/remove")?.body).toEqual({ where: "end", organization: "keep" }));
+});
+
+test("adding a business with mailboxes and calendars already connected asks which of them serve it, each tick saved at once", async () => {
+  const user = userEvent.setup();
+  const item = (id: string, label: string): S["WatchSourceView"] => ({ id, label, connector: "k", connector_label: "Mail", enabled: true, every_minutes: 15, items: 1, last: null, read_at: null, failures: 0, problem: null, reads: ["mail"] });
+  const saved: Array<{ changes: Record<string, Array<{ id: string; sides?: string[] }>> }> = [];
+  const held = [
+    { id: "inbox-a", settings: {}, sides: ["PRJ-personal"] },
+    { id: "inbox-b", settings: {}, sides: [] },
+  ];
+  const calls = fakeApi({
+    "GET setup/business": () => ({ business: false, name: "", personal: "PRJ-personal", sides: [], chosen: "me" }),
+    "GET projects": () => [project("PRJ-personal", "Personal")],
+    "GET watch": () => [item("inbox-a", "Inbox, alex@example.com"), item("inbox-b", "Inbox, blake@example.com"), { ...item("old", "Switched off"), enabled: false }, { ...item("docs", "Docs"), reads: [] }],
+    "GET settings": () => ({ fingerprint: "fp-1", items: [{ key: "watch.sources", file: "watch", group: "", description: "", type: "other", options: [], value: held, default: [], source: "file", locked: false, basic: false, editable: false }] }),
+    "POST settings": (body) => {
+      saved.push(body as (typeof saved)[number]);
+      return { changes: [], fingerprint: "fp-2", needs_restart: false };
+    },
+    "POST setup/business": () => ({ project: "PRJ-new", name: "Quarry Studio", kind: "business", created: true, changeset: "CS-20" }),
+  });
+  renderApp(<BusinessSides />);
+  await user.click(await screen.findByRole("button", { name: "Add a business" }));
+  const dialog = await screen.findByRole("dialog", { name: "Add a business" });
+  await user.type(within(dialog).getByRole("textbox", { name: /^Business name/ }), "Quarry Studio");
+  await user.click(within(dialog).getByRole("button", { name: "Add the business" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST setup/business")).toBe(true));
+  // The same drawer now asks which connections serve it: only the ones that are on and read mail or a calendar.
+  const next = await screen.findByRole("dialog", { name: "Which of your connections serve Quarry Studio?" });
+  const group = within(next).getByRole("group", { name: "Serve Quarry Studio" });
+  expect(within(group).getAllByRole("checkbox").map((c) => c.getAttribute("aria-label") ?? c.parentElement?.textContent)).toEqual(["Inbox, alex@example.com", "Inbox, blake@example.com"]);
+  await user.click(within(group).getByRole("checkbox", { name: "Inbox, blake@example.com" }));
+  await waitFor(() => expect(saved).toHaveLength(1));
+  expect(saved[0].changes["watch.sources"].find((s) => s.id === "inbox-b")?.sides).toEqual(["PRJ-new"]);
+  expect(saved[0].changes["watch.sources"].find((s) => s.id === "inbox-a")?.sides).toEqual(["PRJ-personal"]);
+  await user.click(within(next).getByRole("button", { name: "Done" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+test("two ticks made in a row are both saved, even when a screen is slow to read again after the first, and Done closes with them still going", async () => {
+  const user = userEvent.setup();
+  const item = (id: string, label: string): S["WatchSourceView"] => ({ id, label, connector: "k", connector_label: "Mail", enabled: true, every_minutes: 15, items: 1, last: null, read_at: null, failures: 0, problem: null, reads: ["mail"] });
+  const saved: Array<{ changes: Record<string, Array<{ id: string; sides?: string[] }>> }> = [];
+  const held = [
+    { id: "inbox-a", settings: {}, sides: ["PRJ-personal"] },
+    { id: "calendar-a", settings: {}, sides: ["PRJ-personal"] },
+  ];
+  let slow = false;
+  fakeApi({
+    "GET setup/business": () => ({ business: false, name: "", personal: "PRJ-personal", sides: [], chosen: "me" }),
+    "GET projects": () => [project("PRJ-personal", "Personal")],
+    // Once the first tick is saved, a read of another screen never answers.
+    "GET watch": () => (slow ? new Promise(() => undefined) : [item("inbox-a", "Inbox, alex@example.com"), item("calendar-a", "Calendar, alex@example.com")]),
+    "GET settings": () => ({ fingerprint: "fp-1", items: [{ key: "watch.sources", file: "watch", group: "", description: "", type: "other", options: [], value: held, default: [], source: "file", locked: false, basic: false, editable: false }] }),
+    "POST settings": (body) => {
+      saved.push(body as (typeof saved)[number]);
+      slow = true;
+      return { changes: [], fingerprint: `fp-${saved.length + 1}`, needs_restart: false };
+    },
+    "POST setup/business": () => ({ project: "PRJ-new", name: "Quarry Studio", kind: "business", created: true, changeset: "CS-20" }),
+  });
+  renderApp(<BusinessSides />);
+  await user.click(await screen.findByRole("button", { name: "Add a business" }));
+  const dialog = await screen.findByRole("dialog", { name: "Add a business" });
+  await user.type(within(dialog).getByRole("textbox", { name: /^Business name/ }), "Quarry Studio");
+  await user.click(within(dialog).getByRole("button", { name: "Add the business" }));
+  const next = await screen.findByRole("dialog", { name: "Which of your connections serve Quarry Studio?" });
+  const group = within(next).getByRole("group", { name: "Serve Quarry Studio" });
+  await user.click(within(group).getByRole("checkbox", { name: "Inbox, alex@example.com" }));
+  await user.click(within(group).getByRole("checkbox", { name: "Calendar, alex@example.com" }));
+  await user.click(within(next).getByRole("button", { name: "Done" }));
+  await waitFor(() => expect(saved).toHaveLength(2));
+  expect(saved[1].changes["watch.sources"].find((s) => s.id === "calendar-a")?.sides).toEqual(["PRJ-personal", "PRJ-new"]);
+});
+
+test("a tick refused because the settings moved on is made again from what is there now, so it is not lost", async () => {
+  const user = userEvent.setup();
+  const item = (id: string, label: string): S["WatchSourceView"] => ({ id, label, connector: "k", connector_label: "Mail", enabled: true, every_minutes: 15, items: 1, last: null, read_at: null, failures: 0, problem: null, reads: ["mail"] });
+  const saved: Array<{ changes: Record<string, Array<{ id: string; sides?: string[] }>>; fingerprint: string }> = [];
+  let tries = 0;
+  fakeApi({
+    "GET setup/business": () => ({ business: false, name: "", personal: "PRJ-personal", sides: [], chosen: "me" }),
+    "GET projects": () => [project("PRJ-personal", "Personal")],
+    "GET watch": () => [item("inbox-a", "Inbox, alex@example.com")],
+    "GET settings": () => ({ fingerprint: `fp-${tries + 1}`, items: [{ key: "watch.sources", file: "watch", group: "", description: "", type: "other", options: [], value: [{ id: "inbox-a", settings: {}, sides: ["PRJ-personal"] }], default: [], source: "file", locked: false, basic: false, editable: false }] }),
+    "POST settings": (body) => {
+      tries += 1;
+      if (tries === 1) return new Refuse(409, "Changed since you opened it.");
+      saved.push(body as (typeof saved)[number]);
+      return { changes: [], fingerprint: "fp-9", needs_restart: false };
+    },
+    "POST setup/business": () => ({ project: "PRJ-new", name: "Quarry Studio", kind: "business", created: true, changeset: "CS-20" }),
+  });
+  renderApp(<BusinessSides />);
+  await user.click(await screen.findByRole("button", { name: "Add a business" }));
+  const dialog = await screen.findByRole("dialog", { name: "Add a business" });
+  await user.type(within(dialog).getByRole("textbox", { name: /^Business name/ }), "Quarry Studio");
+  await user.click(within(dialog).getByRole("button", { name: "Add the business" }));
+  const next = await screen.findByRole("dialog", { name: "Which of your connections serve Quarry Studio?" });
+  await user.click(within(within(next).getByRole("group", { name: "Serve Quarry Studio" })).getByRole("checkbox", { name: "Inbox, alex@example.com" }));
+  await waitFor(() => expect(saved).toHaveLength(1));
+  expect(tries).toBe(2);
+  expect(saved[0].fingerprint).toBe("fp-2");
+  expect(saved[0].changes["watch.sources"].find((s) => s.id === "inbox-a")?.sides).toEqual(["PRJ-personal", "PRJ-new"]);
+});
+
+test("adding a business with nothing connected closes at once and asks nothing more", async () => {
+  const user = userEvent.setup();
+  fakeApi({
+    "GET setup/business": () => ({ business: false, name: "", personal: "PRJ-personal", sides: [], chosen: "me" }),
+    "GET projects": () => [project("PRJ-personal", "Personal")],
+    "GET watch": () => [],
+    "POST setup/business": () => ({ project: "PRJ-new", name: "Quarry Studio", kind: "business", created: true, changeset: "CS-20" }),
+  });
+  renderApp(<BusinessSides />);
+  await user.click(await screen.findByRole("button", { name: "Add a business" }));
+  const dialog = await screen.findByRole("dialog", { name: "Add a business" });
+  await user.type(within(dialog).getByRole("textbox", { name: /^Business name/ }), "Quarry Studio");
+  await user.click(within(dialog).getByRole("button", { name: "Add the business" }));
+  expect(await screen.findByText("Added Quarry Studio.")).toBeInTheDocument();
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+test("Add a business is the one filled button, and a row's Rename and Remove are in its one menu", async () => {
+  const user = userEvent.setup();
+  show();
+  renderApp(<BusinessSides />);
+  const row = await screen.findByRole("listitem", { name: SHOP });
+  expect(screen.getByRole("button", { name: "Add a business" })).toHaveAttribute("data-weight", "filled");
+  expect(screen.getByRole("button", { name: "Add a job" })).toHaveAttribute("data-weight", "outline");
+  expect(within(row).getAllByRole("button")).toHaveLength(1);
+  await user.click(within(row).getByRole("button", { name: `More actions for ${SHOP}` }));
+  await user.click(await screen.findByRole("menuitem", { name: "Rename" }));
+  expect(within(row).getByRole("textbox", { name: `New name for ${SHOP}` })).toBeInTheDocument();
+});
+
+test("a row's one meta line says its kind and what is under it in few words", async () => {
+  fakeApi({
+    "GET setup/business": () => ({ business: true, name: SHOP, personal: "PRJ-personal", sides: [{ ...sides[0], filed: 2 }, sides[1]], chosen: "work" }),
+    "GET projects": () => [],
+  });
+  renderApp(<BusinessSides />);
+  const row = await screen.findByRole("listitem", { name: SHOP });
+  expect(row).toHaveTextContent("Business · 2 items");
+  expect(row).not.toHaveTextContent("filed under it");
+});
+
+test("while the sides load the add buttons wait, and a load that fails is one card with Try again in place of the list", async () => {
+  fakeApi({ "GET setup/business": () => { throw new Error("down"); }, "GET projects": () => [] });
+  renderApp(<BusinessSides />);
+  expect(await screen.findByText("Your jobs and businesses didn't load.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+});
+
+test("while the app is offline nothing can be added or changed", async () => {
+  show();
+  renderApp(
+    <ConnectionProvider live={{ state: "offline", lastUpdate: null, refresh: () => undefined, reconnect: () => undefined }}>
+      <BusinessSides />
+    </ConnectionProvider>,
+  );
+  const row = await screen.findByRole("listitem", { name: SHOP });
+  expect(screen.getByRole("button", { name: "Add a business" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Add a job" })).toBeDisabled();
+  await userEvent.setup().click(within(row).getByRole("button", { name: `More actions for ${SHOP}` }));
+  expect(await screen.findByRole("menuitem", { name: "Rename" })).toHaveAttribute("aria-disabled", "true");
+});
+
+test("while the sides load, the add buttons wait and the list is a skeleton", async () => {
+  fakeApi({ "GET setup/business": () => new Promise(() => undefined), "GET projects": () => [] });
+  renderApp(<BusinessSides />);
+  expect(await screen.findByRole("status", { name: "Loading…" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Add a business" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Add a job" })).toBeDisabled();
+});

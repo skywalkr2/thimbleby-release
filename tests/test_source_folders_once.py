@@ -1,0 +1,252 @@
+"""Choosing what an add-on's mail account reads (sweep X05): a folder the account doesn't have is refused in plain words
+before anything is saved, the same folder of the same account is never read by two sources, and a message two sources
+of one account both list is one item, not two. The words are the screen's own wording sheet."""
+
+import json
+from pathlib import Path
+
+import yaml
+
+from engine.config import load_config
+from engine.storage import Store
+from tests.test_sign_in import SIGNING
+from tests.test_sign_in import signing as signing  # noqa: F401 - the fixture
+from tests.test_sign_in_accounts import inboxes, world  # noqa: F401 - the fixture
+from tests.test_sign_in_accounts import sign_in as sign_in_account
+from tests.test_sign_in_sources import _app, _with_sources, sign_in, sources
+
+WORDS = json.loads((Path(__file__).parents[1] / "web" / "src" / "wording" / "en.json").read_text("utf-8"))
+ADVICE = yaml.safe_load((Path(__file__).parents[1] / "engine" / "defaults" / "source_advice.yaml").read_text("utf-8"))
+HAS = ("INBOX", "Archive")
+
+READING = SIGNING.replace(
+    '        scopes=["read", "offline"], params={"access_type": "offline"},\n',
+    '        scopes=["read", "offline"], params={"access_type": "offline"},\n'
+    '        sources=[{"connector": "p18/inbox", "label": "Your inbox", "settings": {}}],\n',
+).replace(
+    "def register(registrar):\n",
+    "from pydantic import BaseModel, Field\n"
+    "from engine.connectors import ConnectorError, MessageDetails, SourceItem\n"
+    "from engine.plugin_api import Poll\n\n"
+    "class InboxSettings(BaseModel):\n"
+    "    folder: str = Field('INBOX', description='Which folder of the mailbox to read.')\n\n"
+    "def poll_inbox(settings, state, context):\n"
+    f"    if settings.folder not in {HAS!r}:\n"
+    "        raise ConnectorError('not_found', 'there is no such folder')\n"
+    "    # The first read finds nothing (the baseline); later ones find three messages.\n"
+    "    if not state:\n"
+    "        return Poll([], {'read': True})\n"
+    "    when = '2030-01-02T09:00:00+00:00'\n"
+    "    details = MessageDetails(sender='Sender <s@example.com>', received=when)\n"
+    "    items = [SourceItem(key=f'm-{n}', title=f'Message {n}', text=f'Message {n} says hello', author='Sender',\n"
+    "                        changed_at=when, message=details) for n in range(3)]\n"
+    "    return Poll(items, {'read': True})\n\n"
+    "def register(registrar):\n"
+    "    registrar.connector('p18/inbox', label='Inbox', settings=InboxSettings, poll=poll_inbox)\n",
+)
+
+
+def _signed_in(signing):  # noqa: F811
+    ws, cfg, store = signing[:3]
+    store.close()
+    _with_sources(ws, READING)
+    c, api = _app(ws, cfg)
+    sign_in(c, api)
+    return ws, c, api
+
+
+def _add(c, api, ws, folder: str | None, label: str = "Another folder"):
+    inbox = next(s for s in sources(ws) if s["label"] == "Your inbox")
+    settings = {} if folder is None else {"folder": folder}
+    return c.post(
+        f"{api}/watch/sources",
+        json={
+            "connector": "p18/inbox",
+            "label": label,
+            "every_minutes": 15,
+            "account": inbox["account"],
+            "settings": settings,
+            "fingerprint": c.get(f"{api}/settings").json()["fingerprint"],
+        },
+    )
+
+
+def test_the_sentences_are_in_both_sheets():
+    for key in ("sources.refuse.same_folder", "sources.refuse.no_such_folder"):
+        assert WORDS[key] == ADVICE[key], key
+
+
+def test_the_same_folder_of_the_same_account_is_refused_however_it_is_named(signing):  # noqa: F811
+    ws, c, api = _signed_in(signing)
+    before = len(sources(ws))
+    # The sign-in already reads the inbox: by its default name and by its name typed out.
+    for folder in (None, "INBOX"):
+        refused = _add(c, api, ws, folder)
+        assert refused.status_code == 400, refused.text
+        assert refused.json()["detail"] == ADVICE["sources.refuse.same_folder"].format(label="Your inbox")
+    assert len(sources(ws)) == before
+    # Another folder the account has is taken once, and then refused as the same.
+    assert _add(c, api, ws, "Archive").status_code == 200
+    again = _add(c, api, ws, "Archive", label="Archive again")
+    assert again.status_code == 400 and "Another folder" in again.json()["detail"]
+    assert len(sources(ws)) == before + 1
+
+
+def test_a_folder_the_account_doesnt_have_is_refused_before_anything_is_saved(signing):  # noqa: F811
+    ws, c, api = _signed_in(signing)
+    before = sources(ws)
+    refused = _add(c, api, ws, "Nonsense folder 123")
+    assert refused.status_code == 400, refused.text
+    assert refused.json()["detail"] == ADVICE["sources.refuse.no_such_folder"].format(folder="Nonsense folder 123")
+    assert sources(ws) == before
+
+
+def test_each_refusal_says_its_own_reason_whatever_the_folder_is_spelled_like(signing):  # noqa: F811
+    ws, c, api = _signed_in(signing)
+    before = sources(ws)
+    # A folder the account lacks is never called one that is read already, with or without stray slashes and spaces.
+    for spelled in ("Nonsense folder 123", "Nonsense folder 123/", " Nonsense folder 123 ", "inbox-not"):
+        refused = _add(c, api, ws, spelled)
+        assert refused.status_code == 400, spelled
+        assert refused.json()["detail"].startswith("This account has no folder called"), spelled
+        assert "already reads this" not in refused.json()["detail"], spelled
+    # And the folder that is read already is never called missing.
+    for spelled in ("INBOX", "INBOX/", " INBOX "):
+        said = _add(c, api, ws, spelled).json()["detail"]
+        assert said == ADVICE["sources.refuse.same_folder"].format(label="Your inbox"), spelled
+    assert sources(ws) == before
+
+
+def test_a_message_two_sources_of_one_account_both_list_is_one_item(signing):  # noqa: F811
+    from engine import watch
+
+    ws, c, api = _signed_in(signing)
+    inbox = next(s for s in sources(ws) if s["label"] == "Your inbox")
+    # A twin the review found already there: the same account and folder, read by a second source.
+    config = yaml.safe_load((ws.config_dir / "watch.yaml").read_text())
+    config["sources"].append({**inbox, "id": "twin", "label": "Twin of the inbox"})
+    (ws.config_dir / "watch.yaml").write_text(yaml.safe_dump(config))
+    cfg = load_config(ws.config_dir, env={})
+    store = Store(ws.db_path, cfg=cfg)
+    try:
+        for source in (inbox["id"], "twin"):
+            assert watch.refresh(ws, store, cfg, source).new == []  # the baseline
+        first = watch.refresh(ws, store, cfg, inbox["id"])
+        second = watch.refresh(ws, store, cfg, "twin")
+        assert len(first.new) == 3
+        assert second.new == [], "the twin handed in the same messages again"
+    finally:
+        store.close()
+
+
+def test_a_folder_with_a_slash_or_spaces_at_the_end_is_the_same_folder(signing):  # noqa: F811
+    ws, c, api = _signed_in(signing)
+    assert _add(c, api, ws, "Archive").status_code == 200
+    before = len(sources(ws))
+    for spelled in ("Archive/", " Archive ", "Archive//"):
+        again = _add(c, api, ws, spelled, label="Archive once more")
+        assert again.status_code == 400 and "Another folder" in again.json()["detail"], spelled
+    assert len(sources(ws)) == before
+
+
+def test_with_three_accounts_the_refusal_names_the_account_that_reads_the_folder(world):  # noqa: F811
+    ws, c, api = world
+    addresses = [f"{name}@example.com" for name in ("alice", "bob", "carol")]
+    for name in ("alice", "bob", "carol"):
+        sign_in_account(c, api, name)
+    held = inboxes(ws)
+    assert sorted(held) == sorted(addresses)
+    for address in addresses:
+        refused = c.post(
+            f"{api}/watch/sources",
+            json={
+                "connector": "p18/inbox",
+                "label": "Inbox again",
+                "every_minutes": 15,
+                "account": address,
+                "settings": {"folder": "INBOX"},
+                "fingerprint": c.get(f"{api}/settings").json()["fingerprint"],
+            },
+        )
+        assert refused.status_code == 400, refused.text
+        # The refusal names the source of that account, never another account's.
+        assert refused.json()["detail"] == ADVICE["sources.refuse.same_folder"].format(label=held[address]["label"])
+        assert address in held[address]["label"]
+        assert all(other not in refused.json()["detail"] for other in addresses if other != address)
+
+
+READING_WITH_MESSAGE_IDS = READING.replace("key=f'm-{n}'", "key=f'{context.account}-m-{n}'").replace(
+    "message=details)",
+    "message=MessageDetails(sender='Sender <s@example.com>', received=when, message_id=f'<m-{n}@example.com>'))",
+)
+
+
+def test_one_message_held_by_the_mailboxes_of_several_accounts_is_one_item(signing):  # noqa: F811
+    """A message the person sent to themselves, or one every mailbox of theirs holds, has one Message-ID and a key of
+    each account's own: the second and third mailbox that read it take in nothing more, so there is one item and so
+    one to-do, never three (S-0356)."""
+    from engine import watch
+
+    ws, cfg, store = signing[:3]
+    store.close()
+    _with_sources(ws, READING_WITH_MESSAGE_IDS)
+    c, api = _app(ws, cfg)
+    sign_in(c, api)
+    inbox = next(s for s in sources(ws) if s["label"] == "Your inbox")
+    config = yaml.safe_load((ws.config_dir / "watch.yaml").read_text())
+    for n in (2, 3):
+        config["sources"].append(
+            {**inbox, "id": f"mailbox-{n}", "label": f"Mailbox {n}", "account": f"person{n}@example.com"}
+        )
+    (ws.config_dir / "watch.yaml").write_text(yaml.safe_dump(config))
+    cfg = load_config(ws.config_dir, env={})
+    store = Store(ws.db_path, cfg=cfg)
+    try:
+        ids = [inbox["id"], "mailbox-2", "mailbox-3"]
+        for source in ids:
+            assert watch.refresh(ws, store, cfg, source).new == []  # the baseline
+        handed = [len(watch.refresh(ws, store, cfg, source).new) for source in ids]
+        assert handed == [3, 0, 0], "a message every mailbox holds was handed in once for each"
+    finally:
+        store.close()
+
+
+def test_one_message_held_by_the_mailboxes_of_several_accounts_is_taken_in_once_by_the_first_read_too(signing):  # noqa: F811
+    """The first read of each newly added mailbox hands in what the window takes at the Start: a message
+    all three mailboxes hold (one Message-ID) is handed in by the first of them and by none of the others (S-0356)."""
+    from datetime import UTC, date, datetime
+
+    from engine import source_intake, watch
+
+    ws, cfg, store = signing[:3]
+    store.close()
+    # Every read finds the messages, so the first read keeps them without handing them in (a newly added mailbox).
+    first_finds = READING_WITH_MESSAGE_IDS.replace("    if not state:\n        return Poll([], {'read': True})\n", "")
+    _with_sources(ws, first_finds)
+    c, api = _app(ws, cfg)
+    sign_in(c, api)
+    inbox = next(s for s in sources(ws) if s["label"] == "Your inbox")
+    config = yaml.safe_load((ws.config_dir / "watch.yaml").read_text())
+    for n in (2, 3):
+        config["sources"].append(
+            {**inbox, "id": f"mailbox-{n}", "label": f"Mailbox {n}", "account": f"person{n}@example.com"}
+        )
+    (ws.config_dir / "watch.yaml").write_text(yaml.safe_dump(config))
+    cfg = load_config(ws.config_dir, env={})
+    store = Store(ws.db_path, cfg=cfg)
+    try:
+        ids = [inbox["id"], "mailbox-2", "mailbox-3"]
+        for source in ids:
+            watch.refresh(ws, store, cfg, source)
+        now = datetime(2030, 1, 3, tzinfo=UTC)  # after the messages' day, as the Start is after the first read
+        made = [
+            len(
+                source_intake.take_in(
+                    ws, store, cfg, next(s for s in cfg.watch.sources if s.id == i), now, back_to=date(2000, 1, 1)
+                )
+            )
+            for i in ids
+        ]
+        assert made[0] > 0 and made[1:] == [0, 0], f"handed in once for each mailbox: {made}"
+    finally:
+        store.close()

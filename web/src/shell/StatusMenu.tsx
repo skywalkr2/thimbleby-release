@@ -1,0 +1,268 @@
+// The status chip and its popover (design 7.1). The chip says the worst state in a word; the popover lists every state
+// with its action: when the screen last updated and Refresh, the backup and Back up now, a restart waiting for the person's
+// Restart now (the app never restarts on its own), the assistant when it can't do its work yet, and the spend near a limit.
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { DialogTrigger } from "react-aria-components";
+import { RestartNotice, useRestart } from "../lib/restart";
+import { useRestartWhat } from "../lib/restart-for";
+import { api, type S } from "../lib/api";
+import { useAct } from "../lib/act";
+import { backupText } from "../lib/backup";
+import { time, whenText } from "../lib/dates";
+import type { LiveState } from "../lib/live";
+import { useTotal } from "../lib/money";
+import { useIsNarrow } from "../lib/media";
+import { useWords } from "../lib/wording";
+import { Button, ButtonLink } from "../ui/Button";
+import { Icon } from "../ui/Icon";
+import { Popover } from "../ui/Popover";
+import { Sheet } from "../ui/Sheet";
+import { RowList } from "../ui/RowList";
+import { StatusChip } from "../ui/StatusChip";
+import { AccountRow } from "../components/AccountRow";
+import { CoverageRows } from "../components/Coverage";
+import { accountStates, accountsNeedingYou } from "../lib/connections";
+import { useCoverage } from "../lib/coverage";
+import { settingsView, viewHref } from "../lib/views";
+import { afterClose } from "../ui/afterClose";
+import { useAlive } from "./AssistantLine";
+import { ASSISTANT_OWN, connectionState, toneOf, worstState, type StatusKind } from "./status";
+import styles from "./StatusMenu.module.css";
+
+type T = (key: string, vars?: Record<string, string | number>) => string;
+
+/** The assistant's cost so far, with the limit it is near said in words; nothing until a run has cost something. */
+function spendText(sp: S["SpendStatus"], t: T, total: (usd: number) => string): { text: string; near: boolean } | null {
+  if (sp.today_usd <= 0 && sp.month_usd <= 0) return null;
+  const line = t("spend.line", { today: total(sp.today_usd), month: total(sp.month_usd) });
+  if (!sp.warn) return { text: line, near: false };
+  const both = sp.warn_today && sp.warn_month;
+  const near = t(both ? "spend.near_both" : sp.warn_today ? "spend.near_day" : "spend.near_month");
+  return { text: t("spend.with_near", { line, near }), near: true };
+}
+
+/** Closes the popover, then runs an action that takes focus somewhere of its own. */
+function leave(close: () => void, run: () => void) {
+  close();
+  afterClose(run);
+}
+
+const CHIP_WORD: Record<StatusKind, string> = {
+  connecting: "live.connecting",
+  offline: "live.offline",
+  network: "status.chip_network",
+  restart: "status.chip_restart",
+  restarting: "status.chip_restarting",
+  restart_failed: "status.chip_restart_failed",
+  assistant_stopped: "status.chip_assistant_stopped",
+  assistant_held: "status.chip_assistant_held",
+  connection_failed: "status.chip_connection_failed",
+  connection_signed_out: "status.chip_connection_signed_out",
+  connection_retrying: "status.chip_connection_retrying",
+  backup: "status.chip_backup",
+  spend: "status.chip_spend",
+  live: "status.chip_live",
+};
+
+/** A state's name with a dot, and in words when it needs a look (the dot's colour is never the only sign). */
+function StateName(props: { name: string; warn?: boolean }) {
+  const { t } = useWords();
+  return (
+    <p className={styles.name}>
+      {props.name}
+      {props.warn && <span className={styles.needs}> · {t("status.needs_look")}</span>}
+    </p>
+  );
+}
+
+export function StatusMenu(props: {
+  live: { state: LiveState; lastUpdate: Date | null; refresh: () => void };
+  demo: boolean;
+  /** Opens the setup guide, at a step when one is named. */
+  onOpenGuide: (step?: string) => void;
+  /** A phone or a mid-width window: the header has no room for the assistant's own line, so the popover says its state. The popover also says it whenever the assistant has a problem, as the chip then carries it. */
+  narrow?: boolean;
+}) {
+  const { t, tn } = useWords();
+  const act = useAct();
+  const phone = useIsNarrow();
+  const [sheet, setSheet] = useState(false);
+  const restart = useRestart();
+  const what = useRestartWhat();
+  const total = useTotal();
+  const status = useQuery({ queryKey: ["status"], queryFn: api.status });
+  const alive = useAlive();
+  const found = useCoverage();
+  // The accounts are read from the same sources as Connections and say the same thing there: each is listed once, whatever
+  // number of its connections can't be read, and the chip counts the ones that need the person to sign in.
+  const watch = useQuery({ queryKey: ["watch"], queryFn: api.watchSources });
+  const accounts = accountStates(watch.data ?? []);
+  const needing = accountsNeedingYou(accounts);
+  const assistant = alive && alive.tone !== "ok" && ASSISTANT_OWN.includes(alive.kind) ? alive.tone : undefined;
+  const kind = worstState({ live: props.live.state, status: status.data, restartPhase: restart.phase, connections: connectionState(found), assistant });
+  const ai = status.data?.ai;
+  // The assistant's own section below says an account that is missing or failing; the line above it would say the same twice.
+  const accountSaid = !!ai && ai.state !== "ok" && (alive?.kind === "not_set_up" || alive?.kind === "failing");
+  const assistantShown = !!alive && (props.narrow || assistant !== undefined) && !accountSaid;
+  const word = (kind === "connection_failed" || kind === "connection_signed_out") && needing.length > 0 ? tn("status.chip_accounts_need", needing.length) : t(CHIP_WORD[kind]);
+  const b = status.data?.backup;
+  const spend = status.data ? spendText(status.data.spend, t, total) : null;
+  const wait = status.data?.network_wait;
+  const restartShown = restart.phase !== "idle" || !!status.data?.restart_needed;
+  const backupNow = () => void act(() => api.backup(), () => ({ message: t("toast.backup_ran") }));
+  const updates =
+    props.live.state === "live" && props.live.lastUpdate
+      ? t("live.on", { time: time(props.live.lastUpdate) })
+      : t(`live.${props.live.state}`);
+  const aiText =
+    ai && ai.state !== "ok"
+      ? ai.state === "failing"
+        ? ai.detail
+          ? t("ai.failing.what", { reason: ai.detail })
+          : t("ai.failing.what_unknown")
+        : t(`ai.${ai.state}.what`)
+      : "";
+  const body = (close: () => void) => (
+          <ul className={styles.states}>
+            {restartShown && (
+              <li className={[styles.state, styles.warn].join(" ")} data-state="restart">
+                <StateName name={t("status.restart")} warn />
+                {restart.phase === "idle" ? (
+                  <>
+                    <p className={`${styles.text} ${styles.full}`}>{t(status.data?.can_restart ? "restart.needed" : "restart.needed_manual")}</p>
+                    {what && (
+                      <p className={styles.note} data-restart-for>
+                        {what}
+                      </p>
+                    )}
+                    {status.data?.can_restart && (
+                      <Button size="sm" disabled={restart.busy || restart.waiting} onClick={() => void restart.now()}>
+                        {t("restart.now")}
+                      </Button>
+                    )}
+                  </>
+                ) : (
+                  <div className={styles.full}>
+                    <RestartNotice what={what} live={false} />
+                  </div>
+                )}
+              </li>
+            )}
+            {assistantShown && alive && (
+              <li className={[styles.state, alive.tone === "ok" ? "" : styles.warn].join(" ")} data-state="alive" data-tone={alive.tone}>
+                <StateName name={t("alive.name")} warn={alive.tone !== "ok"} />
+                <p className={`${styles.text} ${styles.full}`}>
+                  <span className={styles.sayIcon}>
+                    <Icon name={alive.icon} size={16} label={t(`alive.icon.${alive.tone}`)} />
+                  </span>
+                  <span>{alive.say}</span>
+                </p>
+                {alive.kind === "stuck" && status.data?.can_restart && (
+                  <Button size="sm" disabled={restart.busy || restart.waiting} onClick={() => void restart.now()}>
+                    {t("restart.now")}
+                  </Button>
+                )}
+              </li>
+            )}
+            {wait && wait.count > 0 && (
+              <li className={[styles.state, styles.warn].join(" ")} data-state="network">
+                <StateName name={t("status.network")} warn />
+                <p className={`${styles.text} ${styles.full}`}>
+                  {tn("status.network_waiting", wait.count, { time: whenText(wait.since) })}
+                </p>
+                <p className={styles.note}>{t("status.network_todo")}</p>
+              </li>
+            )}
+            {ai && ai.state !== "ok" && (
+              <li className={[styles.state, styles.warn].join(" ")} data-state="assistant" data-ai-state={ai.state}>
+                <StateName name={t("status.assistant")} warn />
+                <p className={`${styles.text} ${styles.full}`}>{t(`ai.${ai.state}.title`)}</p>
+                <p className={styles.note}>{aiText}</p>
+                <p className={styles.note}>{t(`ai.${ai.state}.todo`)}</p>
+                <Button size="sm" onClick={() => leave(close, () => props.onOpenGuide("ai"))}>
+                  {t("status.assistant_open")}
+                </Button>
+              </li>
+            )}
+            {b && (
+              <li className={[styles.state, b.needs_attention ? styles.warn : ""].join(" ")} data-state="backup">
+                <StateName name={t("status.backup")} warn={b.needs_attention} />
+                <p className={styles.text}>{backupText(b, t)}</p>
+                {b.configured ? (
+                  <Button size="sm" onClick={backupNow}>
+                    {t("backup.now")}
+                  </Button>
+                ) : (
+                  <Button size="sm" onClick={() => leave(close, () => props.onOpenGuide("backup"))}>
+                    {t("status.backup_set_up")}
+                  </Button>
+                )}
+              </li>
+            )}
+            {found && (
+              <li className={[styles.state, styles.wide, kind === "connection_failed" || kind === "connection_signed_out" || kind === "connection_retrying" ? styles.warn : ""].join(" ")} data-state="connections">
+                <StateName name={t("status.connections")} warn={kind === "connection_failed" || kind === "connection_signed_out" || kind === "connection_retrying"} />
+                <CoverageRows without={["unread"]} className={`${styles.full} ${styles.coverageRows}`} />
+                {accounts.length > 0 && (
+                  <RowList className={`${styles.full} ${styles.accounts}`} aria-label={t("account.list")} data-accounts="">
+                    {[...needing, ...accounts.filter((a) => a.need === null)].map((account) => (
+                      <AccountRow key={account.key} account={account} />
+                    ))}
+                  </RowList>
+                )}
+                {!found.complete && (
+                  <ButtonLink size="sm" href={viewHref(settingsView("connections"))} onClick={() => close()}>
+                    {t("status.connections_open")}
+                  </ButtonLink>
+                )}
+              </li>
+            )}
+            <li className={[styles.state, props.live.state === "offline" ? styles.warn : ""].join(" ")} data-state="updates">
+              <StateName name={t("status.updates")} warn={props.live.state === "offline"} />
+              <p className={styles.text}>{updates}</p>
+              <Button size="sm" icon="refresh" onClick={props.live.refresh}>
+                {t("status.refresh")}
+              </Button>
+            </li>
+            {spend && (
+              <li className={[styles.state, spend.near ? styles.warn : ""].join(" ")} data-state="spend" data-spend>
+                <StateName name={t("status.spend")} warn={spend.near} />
+                <p className={`${styles.text} ${styles.full}`}>{spend.text}</p>
+              </li>
+            )}
+            {props.demo && (
+              <li className={styles.state} data-state="demo">
+                <p className={styles.name}>{t("demo.region")}</p>
+                <p className={`${styles.text} ${styles.full}`}>{t("demo.text")}</p>
+              </li>
+            )}
+          </ul>
+  );
+  const chip = (
+    <StatusChip tone={toneOf(kind)} aria-label={t("status.chip_named", { state: word })} data-status={kind} {...(phone ? { onPress: () => setSheet(true) } : {})}>
+      {word}
+    </StatusChip>
+  );
+  // On a phone the states are a sheet from the bottom edge, with a title and a Close that is easy to hit; elsewhere, a popover.
+  if (phone) {
+    return (
+      <>
+        {chip}
+        {sheet && (
+          <Sheet title={t("status.title")} onClose={() => setSheet(false)} className={styles.sheet}>
+            {body(() => setSheet(false))}
+          </Sheet>
+        )}
+      </>
+    );
+  }
+  return (
+    <DialogTrigger>
+      {chip}
+      <Popover label={t("status.title")} className={styles.dialog} scrim>
+        {(close) => body(close)}
+      </Popover>
+    </DialogTrigger>
+  );
+}

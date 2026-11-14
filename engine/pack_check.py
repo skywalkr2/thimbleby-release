@@ -1,0 +1,294 @@
+"""Checking a pack before it is published: `thimbleby pack check <plugin folder> [--entry <catalog entry>]`.
+
+Publishing a pack (the process every plugin repository follows; the catalog's PUBLISHING.md says the same):
+
+1. **Release it in its own repository.** Raise the version in `plugin.yaml` (and the package's own metadata), say
+   what changed, run its tests, tag the release, and let its own checks build the package from the tag. Attach the
+   built wheel to the tagged release: the app installs from the Add-ons screen the file the entry's `release` names.
+
+2. **Write its catalog entry** as `catalog/pack.yaml` in that repository, in the catalog's format (the catalog
+   repository's README): `provides` and `requires` copied exactly from `plugin.yaml`, its price, how to get it, and
+   its typical AI jobs. Its `release` gives the address of the attached wheel and the wheel's SHA-256, which the
+   download must match. For a private repository, give the release asset's API address (not the page address) in the
+   request; when the host publishes it, the catalog keeps a copy of that package file and the entry points at the copy,
+   so people install it with no access key while the repository stays private. A catalog that keeps no copy can still
+   point at a private address, read with a read token the person adds on the Add-ons screen, kept on their computer
+   and sent only to that address's host. Leave `release` out and the screen shows the entry's own install text instead
+   of an Install button.
+
+   A pack that needs libraries besides the app's own lists them in `release.libraries`: every wheel it needs, its
+   dependencies' and theirs, one entry for each build (`name`, `version`, `platform`: `any` or a wheel platform tag
+   such as `win_amd64` or `macosx_11_0_arm64`, the wheel's `url` and its `sha256`). Install shows what it will add,
+   takes the build that fits the computer, installs exactly those wheels and never reads a package index. It refuses
+   a library that isn't a built wheel, one with no build for the computer, a need the app and the list don't meet,
+   and one that clashes with a package the app has or one installed another way. Remove takes out only the
+   libraries no other installed pack uses. The pack's own wheel stays pure Python. Quote each checksum in the entry
+   file: one made only of digits reads as a number.
+
+3. **Check it:** `thimbleby pack check <its plugin folder> --entry catalog/pack.yaml`, with the host at the version the
+   pack declares. Every line must pass. A pack whose plugins share a helper package from the same distribution is
+   checked installed: install the built package beside the host and name the plugin instead of its folder
+   (`thimbleby pack check <plugin name> --entry catalog/pack.yaml`). An entry file listing several packs is matched
+   to the plugin by its id.
+
+4. **Ask for it to be published:** add a "Publish request" to its `docs/host-questions.md` (the pack, the version and
+   tag, what changed, the check's output, and whether the owner has said it may be listed publicly) and tell the
+   host's session. A plugin repository never writes to the catalog itself.
+
+5. **The host verifies and proposes:** the host's session checks the release again itself (the same check, the
+   pack's tests, a run in the demo sandbox) and opens a pull request on the catalog with the entry, saying what the
+   pack adds, reaches and keeps, and what changed in what it asks for since its last listing.
+
+6. **The owner decides:** the pack is listed only once the owner has said it may be, and the pull request is merged
+   (by the owner, or by the host's session when the owner has handed it that). Updates follow the same path.
+
+A pack that ships files its source control ignores (an app registration written by the release build, say) builds
+its wheel straight from the checkout: a wheel built from the source archive leaves such files out. Check the built
+package holds them before publishing.
+
+The check reports each finding in plain words and passes only when every one does.
+"""
+
+from __future__ import annotations
+
+import tempfile
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from engine.legacy_names import addon_entry_points, distribution_version
+from engine.yaml_load import load_yaml
+
+
+@dataclass
+class Report:
+    passed: list[str] = field(default_factory=list)
+    failed: list[str] = field(default_factory=list)
+    warned: list[str] = field(default_factory=list)  # worth fixing, but they don't fail the check
+
+    @property
+    def ok(self) -> bool:
+        return not self.failed
+
+    def lines(self) -> list[str]:
+        return (
+            [f"PASS  {p}" for p in self.passed]
+            + [f"WARN  {w}" for w in self.warned]
+            + [f"FAIL  {f}" for f in self.failed]
+        )
+
+
+def _declared(values: dict[str, Any]) -> dict[str, Any]:
+    """The parts of `provides` or `requires` that say something, lists compared as sets."""
+    out = {}
+    for key, value in values.items():
+        if value in (None, [], {}, ""):
+            continue
+        if isinstance(value, list):
+            items = [yaml.safe_dump(v, sort_keys=True) if isinstance(v, dict) else str(v) for v in value]
+            out[key] = sorted(items)
+        else:
+            out[key] = value
+    return out
+
+
+def check(plugin: Path | str, entry_path: Path | None = None) -> Report:
+    """Check a pack, given its plugin folder (the one holding plugin.yaml) or an installed plugin's name."""
+    from engine import addons, api_window
+    from engine.plugin_api import PLUGIN_API_COMPAT, PLUGIN_API_VERSION
+    from engine.plugin_manifest import read_manifest
+
+    addons.activate()  # an add-on installed from the app is found on the import path
+    report = Report()
+    folder = Path(plugin).expanduser()
+    installed = not (folder / "plugin.yaml").is_file()
+    if installed:
+        found = _installed(str(plugin))
+        if found is None:
+            report.failed.append(f"{plugin} isn't a plugin folder (no plugin.yaml in it) or an installed plugin's name")
+            return report
+        folder = found
+    folder = folder.resolve()
+    try:
+        manifest = read_manifest(folder / "plugin.yaml")
+    except (OSError, ValueError) as err:
+        report.failed.append(f"plugin.yaml can't be read: {err}")
+        return report
+    report.passed.append(f"plugin.yaml reads: {manifest.name} {manifest.version}")
+    window = api_window.served(manifest.plugin_api)
+    if window == "earlier":
+        report.passed.append(
+            f"plugin_api {manifest.plugin_api} is built for the earlier version this host still serves "
+            f"({PLUGIN_API_COMPAT}.x); {api_window.EARLIER_NOTE.lower()}"
+        )
+    else:
+        (report.passed if window == "current" else report.failed).append(
+            f"plugin_api {manifest.plugin_api} {'includes' if window == 'current' else 'excludes'} "
+            f"this host's {PLUGIN_API_VERSION}"
+        )
+    _load_in_demo(manifest.name if installed else str(folder), manifest.name, report)
+    if entry_path is not None:
+        _check_entry(entry_path, manifest, report, folder)
+    return report
+
+
+def _installed(name: str) -> Path | None:
+    """The folder of an installed plugin with this name, found without importing it."""
+
+    from engine.plugin_manifest import installed_manifest
+
+    for ep in addon_entry_points():
+        if ep.name == name:
+            path = installed_manifest(ep)
+            return path.parent if path.is_file() else None
+    return None
+
+
+def _load_in_demo(plugin: str, name: str, report: Report) -> None:
+    """Turn the pack on in a throwaway demo workspace (its folder linked, or installed by name) and see whether it
+    loads."""
+    from engine.cli import add_plugin
+    from engine.config import load_config
+    from engine.shipped import demo
+    from engine.storage import Store
+    from engine.workspace import Workspace, init_workspace
+
+    with tempfile.TemporaryDirectory(prefix="cockpit-pack-check-") as tmp:
+        ws = init_workspace(Path(tmp) / "demo", template=demo("demo-b"), git=False)
+        add_plugin(Workspace(ws.root), plugin)
+        try:
+            cfg = load_config(ws.config_dir, env={})
+        except Exception as err:  # noqa: BLE001 - any refusal is the finding
+            report.failed.append(f"the demo workspace refused its settings with the pack on: {err}")
+            return
+        store = Store(ws.db_path, cfg=cfg)
+        try:
+            status = store.plugins.status.get(name)
+            if store.plugins.active(name):
+                report.passed.append("it loads and registers in a demo workspace")
+                for note in status.notes if status else []:
+                    report.failed.append(f"it loads, with a note: {note}")
+                if any(line.group is None for owner, line in store.plugins.today() if owner == name):
+                    report.warned.append(
+                        "some of its Today lines name no group, so they show under the fallback heading at the "
+                        "end: set group= on each line to one of decide, risk, review or send"
+                    )
+            else:
+                reason = status.reason if status else "it wasn't found"
+                report.failed.append(f"it doesn't load in a demo workspace: {reason}")
+        finally:
+            store.close()
+
+
+def _check_entry(entry_path: Path, manifest: Any, report: Report, manifest_folder: Path) -> None:
+    from engine import packs
+
+    try:
+        raw = load_yaml(entry_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as err:
+        report.failed.append(f"the catalog entry can't be read: {err}")
+        return
+    if isinstance(raw, dict) and "packs" in raw:
+        listed = [p for p in raw.get("packs") or [] if isinstance(p, dict)]
+        raw = next((p for p in listed if p.get("id") == manifest.name), None)
+        if raw is None:
+            report.failed.append(f"the catalog entry file lists no pack with the id {manifest.name}")
+            return
+    feed = packs.parse(str(entry_path), yaml.safe_dump({"version": 1, "packs": [raw]}))
+    if feed.error or feed.notes or not feed.entries:
+        report.failed.append(f"the catalog entry doesn't fit the catalog's format: {feed.error or feed.notes}")
+        return
+    entry = feed.entries[0]
+    report.passed.append("the catalog entry fits the catalog's format")
+    for label, ours, theirs in (
+        ("id", entry.id, manifest.name),
+        ("version", entry.version, manifest.version),
+        ("plugin_api", entry.plugin_api, manifest.plugin_api),
+    ):
+        (report.passed if ours == theirs else report.failed).append(
+            f"its {label} matches plugin.yaml ({ours})"
+            if ours == theirs
+            else f"its {label} is {ours!r}, plugin.yaml says {theirs!r}"
+        )
+    # Compared with plugin.yaml as written, since the entry is copied from it.
+    data = load_yaml((Path(manifest_folder) / "plugin.yaml").read_text(encoding="utf-8")) or {}
+    for part in ("provides", "requires"):
+        ours, theirs = _declared(getattr(entry, part)), _declared(data.get(part) or {})
+        if ours == theirs:
+            report.passed.append(f"its {part} matches plugin.yaml exactly")
+        else:
+            differ = sorted({k for k in {*ours, *theirs} if ours.get(k) != theirs.get(k)})
+            report.failed.append(f"its {part} differs from plugin.yaml in: {', '.join(differ)}")
+    if entry.release is not None:
+        _check_libraries(entry.release, manifest.name, report)
+
+
+def _check_libraries(release: Any, name: str, report: Report) -> None:
+    """The release's list of libraries: each a built wheel that doesn't clash with a package the app has, each with
+    builds for the platforms the others have, and, when the pack is installed here, every package it needs that the app
+    doesn't have listed at a version that meets the need."""
+    from importlib import metadata
+
+    from packaging.requirements import InvalidRequirement, Requirement
+    from packaging.utils import canonicalize_name
+
+    libraries = release.libraries
+    if not libraries:
+        report.passed.append("its release lists no libraries (it needs nothing beyond the app's own packages)")
+        return
+    names = sorted({lib.name for lib in libraries}, key=str.lower)
+    report.passed.append(f"its release lists {len(names)} libraries as built wheels with checksums: {', '.join(names)}")
+    clash = []
+    for lib in libraries:
+        try:
+            distribution_version(lib.name)
+            clash.append(lib.name)
+        except metadata.PackageNotFoundError:
+            pass
+    if clash:
+        report.failed.append(
+            f"its release lists {', '.join(sorted(set(clash)))}, which the app has: install refuses a library that "
+            "clashes with the app's own packages"
+        )
+    else:
+        report.passed.append("none of its libraries clashes with the app's own packages")
+    platforms = {lib.platform for lib in libraries}
+    for lib_name in names:
+        have = {lib.platform for lib in libraries if lib.name == lib_name}
+        if "any" in have:
+            continue
+        lacking = sorted(platforms - {"any"} - have)
+        if lacking:
+            report.warned.append(f"{lib_name} has no build for {', '.join(lacking)}, which the other libraries have")
+    found = next((ep for ep in addon_entry_points() if ep.name == name), None)
+    if found is None or found.dist is None:
+        report.warned.append("the pack isn't installed here, so its own needs weren't compared with the libraries")
+        return
+    listed = {str(canonicalize_name(lib.name)): lib.version for lib in libraries}
+    unmet = []
+    for line in found.dist.requires or []:
+        try:
+            requirement = Requirement(line)
+        except InvalidRequirement:
+            unmet.append(line)
+            continue
+        if requirement.marker is not None and not requirement.marker.evaluate({"extra": ""}):
+            continue
+        key = str(canonicalize_name(requirement.name))
+        if key in listed:
+            if requirement.specifier and not requirement.specifier.contains(listed[key], prereleases=True):
+                unmet.append(f"{requirement} (the release lists {listed[key]})")
+            continue
+        try:
+            have = distribution_version(requirement.name)
+        except metadata.PackageNotFoundError:
+            unmet.append(str(requirement))
+            continue
+        if requirement.specifier and not requirement.specifier.contains(have, prereleases=True):
+            unmet.append(f"{requirement} (the app has {have})")
+    if unmet:
+        report.failed.append(f"the pack needs {', '.join(unmet)}, which neither the app nor its release's list has")
+    else:
+        report.passed.append("everything the pack needs is the app's own or in its release's list")

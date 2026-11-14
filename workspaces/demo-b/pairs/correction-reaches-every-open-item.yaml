@@ -1,0 +1,94 @@
+id: correction-reaches-every-open-item
+title: A rule stated in a correction moves every open question it covers in the same change, and is learned once
+skills: [use-lesson, no-repeat-question]
+first:
+  received: '2026-10-10'
+  project: PRJ-1
+  # A second open question to the same person on the same subject, already waiting.
+  given:
+  - kind: question
+    id: Q-90
+    fields:
+      to: PER-6
+      title: Have the cover proofs shipped yet?
+      text: The cover proofs were in production last week.
+      projects: [PRJ-1]
+      matters_for: The date the cover proofs reach the designer
+      links:
+      - label: Book page
+        url: https://books.example.org/salt-orchard
+  pasted: |-
+    From: Jun Park
+
+    The cover proofs are in production. We will confirm the ship date when they leave the printer.
+  wrong:
+    summary: Asked Jun when the cover proofs ship.
+    ops:
+    - op: question.add
+      to: PER-6
+      title: When will the cover proofs ship?
+      text: The cover proofs are in production and no date was given.
+      links:
+      - label: Book page
+        url: https://books.example.org/salt-orchard
+      matters_for: The date the cover proofs reach the designer
+      project: PRJ-1
+      evidence:
+        quote: We will confirm the ship date when they leave the printer
+      would_change:
+        what: field
+        record: PRJ-1
+        field: target
+  correction:
+    kind: change_requested
+    id: '@question'
+    note: Not my job to chase Jun about ship dates. He tells us when they leave the printer, so drop every question to him about them.
+    answer:
+      summary: Dropped both questions to Jun about the ship date.
+      ops:
+      - op: question.drop
+        id: Q-91
+        reason: Not my job to chase Jun about ship dates
+        evidence:
+          quote: Not my job to chase Jun about ship dates
+      - op: question.drop
+        id: Q-90
+        reason: Not my job to chase Jun about ship dates
+        evidence:
+          quote: Not my job to chase Jun about ship dates
+  expect_proposal:
+  - op: lesson.add
+    text_has: [ship]
+  keep: true
+later:
+  received: '2026-10-17'
+  project: PRJ-1
+  pasted: |-
+    From: Jun Park
+
+    The spine proofs are in production. We will confirm the ship date when they leave the printer.
+  expect:
+  - op: fact
+    text_has: [spine]
+  forbid:
+  - op: question.add
+    to: PER-6
+  packet_has: ['# Lessons']
+ideal:
+  learn:
+    summary: Jun tells us ship dates when they are known; don't chase him about them.
+    topic: asking Jun about ship dates
+    ops:
+    - op: lesson.add
+      text: Don't ask Jun when proofs will ship; he says so when they leave the printer. Record the news and wait.
+      guard: When Jun says a ship date is coming, record it as a fact; never ask him for it.
+      evidence:
+        quote: Not my job to chase Jun about ship dates
+  later:
+    summary: The spine proofs are in production; the date comes later.
+    ops:
+    - op: fact
+      text: The spine proofs are in production and Jun will confirm the ship date when they leave the printer.
+      project: PRJ-1
+      evidence:
+        quote: The spine proofs are in production

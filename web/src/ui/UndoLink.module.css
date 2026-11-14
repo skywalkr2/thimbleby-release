@@ -1,0 +1,6 @@
+.undo {
+  display: inline; min-height: 0; padding: 0 var(--space-1); border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text); cursor: pointer;
+  font: inherit; font-weight: var(--weight-semibold); text-decoration: underline; text-underline-offset: 3px;
+}
+.undo:hover { background: var(--surface-sunk); }
+.undo:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }

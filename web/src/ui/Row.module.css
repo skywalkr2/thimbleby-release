@@ -1,0 +1,116 @@
+/* The row anatomy (design 7.14): a 24px leading slot that is always there, title and meta, actions. The slot is empty or holds a
+   check, an icon or a dot, so every title in a list starts on the same edge; a mark is a pill after the title's words. */
+.row {
+  position: relative; display: grid; grid-template-columns: var(--row-lead-w) minmax(0, 1fr) auto; column-gap: var(--row-gap); align-items: center;
+  min-height: var(--row-h); padding: var(--row-py) var(--row-px);
+  border-bottom: 1px solid var(--border); background: var(--surface); list-style: none; margin: 0;
+}
+.row:last-child { border-bottom: 0; }
+.row:hover { background: var(--surface-hover); }
+.row:focus { outline: none; }
+/* The cursor's row: a soft fill and a 2px bar at the left edge; its buttons are the same weight as every other row's. A row's
+   focus ring is drawn for the keyboard only (styles.css, lib/input-mode), so a row that took the cursor by itself as a screen
+   opened shows none. */
+.selected, .selected:hover { background: var(--row-selected-bg); box-shadow: var(--row-selected-bar); }
+.row.selected:focus-visible { box-shadow: var(--row-selected-bar); }
+:global(:root[data-input="keyboard"]) .row.selected:focus-visible { box-shadow: var(--row-selected-bar), inset 0 0 0 2px var(--focus-ring); }
+
+/* A row that needs the person: a 3px edge on its leading side and a soft tint that fades out across the row. */
+.warn, .danger { background: linear-gradient(90deg, var(--state-tint) 0, transparent 60%), var(--surface); }
+.warn { --state-tint: var(--warn-soft); --state-edge: var(--warn); }
+.danger { --state-tint: var(--danger-soft); --state-edge: var(--danger); }
+.warn::before, .danger::before { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 3px; background: var(--state-edge); }
+.warn:hover, .danger:hover { background: linear-gradient(90deg, var(--state-tint) 0, transparent 60%), var(--surface-hover); }
+@media (max-width: 639.98px) { .warn, .danger { background: var(--state-tint); } .warn:hover, .danger:hover { background: var(--state-tint); } }
+
+.lead { grid-column: 1; align-self: center; justify-self: stretch; width: var(--row-lead-w); height: var(--row-lead-w); min-width: 0; display: grid; place-items: center; overflow: visible; }
+/* A row with a meta line has two lines or more: its lead sits on the title's line (the icon centred on it), not at the middle of the row. */
+.row:has(> .main > .meta) > .lead { align-self: start; margin-top: var(--row-lead-nudge); }
+/* The mark after the title's words: it wraps with them and never draws over them. */
+.mark { margin-left: var(--space-2); vertical-align: 1px; }
+.mark > :global([data-pill]) { max-width: 100%; height: auto; min-height: var(--pill-h); white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.main { grid-column: 2; min-width: 0; }
+.title :global(a) { color: inherit; text-decoration-line: none; }
+.title :global(a):is(:hover, :focus-visible) { text-decoration-line: underline; }
+.title { margin: 0; font-size: var(--text-md); line-height: var(--lh-md); font-weight: var(--row-title-weight); overflow-wrap: anywhere; }
+.clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.meta { margin: var(--space-1) 0 0; color: var(--text-muted); font-size: var(--text-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
+/* An expandable row's title is one button that covers the whole text of the row (the meta opens it too): plain text to look at,
+   with the title underlined under the pointer. */
+.expandable { position: relative; }
+.expander { display: inline-block; border: 0; background: none; padding: 0; margin: 0; text-align: left; cursor: pointer; width: auto; height: auto; min-height: var(--hit-min); overflow: visible; font: inherit; color: inherit; }
+.expander::after { content: ""; position: absolute; inset: 0; }
+.expander:focus-visible { box-shadow: none; outline: 2px solid var(--focus-ring); outline-offset: 4px; border-radius: var(--radius-sm); }
+.expandable:hover .expander { text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 3px; }
+/* A title whose press would change nothing (its row is already chosen) neither looks nor feels clickable. */
+.expander[data-inert] { cursor: default; }
+.expandable:hover .expander[data-inert] { text-decoration: none; }
+.oneLine { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.actions { grid-column: 3; display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); min-width: 0; }
+.buttons { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-2); min-width: 0; }
+.menu { display: flex; align-items: center; flex: none; }
+.extra { grid-column: 1 / -1; margin-top: var(--space-2); min-width: 0; }
+.extra:empty { display: none; }
+
+/* A row's actions are never solid, and all the same size: a primary asked for here draws as the outline. */
+.actions :global([data-variant]) { height: var(--btn-h-sm); padding-inline: var(--btn-px-sm); font-size: var(--text-meta); line-height: var(--lh-meta); }
+.actions :global([data-variant="primary"]:not(:disabled)), .actions :global([data-variant="secondary"]:not(:disabled)) { background: var(--row-btn-bg); border-color: var(--row-btn-border); color: var(--row-btn-text); }
+.actions :global([data-variant="primary"]:not(:disabled):hover), .actions :global([data-variant="secondary"]:not(:disabled):hover) { background: var(--row-btn-hover); border-color: var(--row-btn-border); }
+.actions :global([data-variant="quiet"]) { padding-inline: var(--space-2); }
+/* The one exception: a button that names the filled weight (the screen's one primary, set up by the screen) keeps it in a row. */
+.actions :global([data-variant="primary"][data-weight="filled"]:not(:disabled)) { background: var(--accent); border-color: var(--accent); color: var(--text-on-accent); }
+.actions :global([data-variant="primary"][data-weight="filled"]:not(:disabled):hover) { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+/* Phone (the configured phone layout, and any window under 640px): the parts stack. The title and meta have the row's width
+   beside the lead slot, the buttons go under them, and the menu ("...") sits at the row's top right, whatever else the row has.
+   Written at the weight of the rules above, and after them. */
+@media (max-width: 639.98px) {
+  .row { grid-template-columns: var(--row-lead-w) minmax(0, 1fr); row-gap: var(--space-1); }
+  .hasMenu { padding-right: calc(var(--space-1) + var(--hit-icon) + var(--space-1)); }
+  .actions { display: contents; }
+  .buttons { grid-column: 2; justify-content: flex-start; margin-top: var(--space-1); }
+  .menu { position: absolute; top: var(--space-1); right: var(--space-1); }
+}
+:global([data-narrow]) .row { grid-template-columns: var(--row-lead-w) minmax(0, 1fr); row-gap: var(--space-1); }
+:global([data-narrow]) .hasMenu { padding-right: calc(var(--space-1) + var(--hit-icon) + var(--space-1)); }
+:global([data-narrow]) .actions { display: contents; }
+:global([data-narrow]) .buttons { grid-column: 2; justify-content: flex-start; margin-top: var(--space-1); }
+:global([data-narrow]) .menu { position: absolute; top: var(--space-1); right: var(--space-1); }
+
+/* Phone: a title and its meta wrap to their whole words (nothing cut at two lines or at one). */
+@media (max-width: 639.98px) {
+  .clamp, :global([data-narrow]) .clamp { display: block; -webkit-line-clamp: unset; line-clamp: unset; overflow: visible; }
+  .oneLine, :global([data-narrow]) .oneLine { white-space: normal; overflow: visible; text-overflow: clip; }
+/* A list that asks for it keeps a title to two lines on a phone too. */
+.clamp[data-phone-clamp], :global([data-narrow]) .clamp[data-phone-clamp] { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+}
+:global([data-narrow]) .clamp { display: block; -webkit-line-clamp: unset; line-clamp: unset; overflow: visible; }
+:global([data-narrow]) .oneLine { white-space: normal; overflow: visible; text-overflow: clip; }
+
+/* A line that holds content of its own: the row's padding and hairline, with its content in the flow. */
+.item { padding: var(--row-py) var(--row-px); border-bottom: 1px solid var(--border); background: var(--surface); list-style: none; margin: 0; min-width: 0; }
+.item:last-child { border-bottom: 0; }
+
+/* A list in which no row has a mark (no check, icon or dot) takes no width for the slot: the titles start at the row's padding. A
+   list in which any row has one keeps the slot on every row, so the titles still share one edge. The rules are at the weight of
+   the rows' own (`:where` adds none) and come after them and after the phone and narrow rules. */
+:where(:not(:has(> .row > .lead:not(:empty)))) > .row { grid-template-columns: minmax(0, 1fr) auto; }
+:where(:not(:has(> .row > .lead:not(:empty)))) > .row > .lead { display: none; }
+:where(:not(:has(> .row > .lead:not(:empty)))) > .row > .main { grid-column: 1; }
+:where(:not(:has(> .row > .lead:not(:empty)))) > .row > .actions { grid-column: 2; }
+@media (max-width: 639.98px) {
+  :where(:not(:has(> .row > .lead:not(:empty)))) > .row { grid-template-columns: minmax(0, 1fr); }
+  :where(:not(:has(> .row > .lead:not(:empty)))) > .row > .actions > .buttons { grid-column: 1; }
+}
+:global([data-narrow]) :where(:not(:has(> .row > .lead:not(:empty)))) > .row { grid-template-columns: minmax(0, 1fr); }
+:global([data-narrow]) :where(:not(:has(> .row > .lead:not(:empty)))) > .row > .actions > .buttons { grid-column: 1; }
+/* Among rows of one list or group where some have a menu ("..."), a row without one keeps the menu's width empty at its right, so the buttons of every
+   row end on the same edge. (Where the rows stack, the actions are not a box, so nothing is reserved.) */
+:global(:is(ul, ol):has([data-row-menu])) .row:not(.hasMenu) .actions { padding-inline-end: calc(var(--hit-icon) + var(--space-2)); }
+/* A screen whose lists share one trailing edge for their buttons (Today's queue, across its groups and cards) marks its pane
+   `data-menu-slot`: every row without a menu keeps the menu's width empty, whatever list it is in, and a short button takes one
+   minimum width, so the buttons of every row end on one edge. */
+:global([data-menu-slot]) .row:not(.hasMenu) .actions { padding-inline-end: calc(var(--hit-icon) + var(--space-2)); }
+:global([data-menu-slot]) .buttons :global([data-variant]) { min-width: 7rem; justify-content: center; }
+@media (max-width: 639.98px) { :global([data-menu-slot]) .buttons :global([data-variant]) { min-width: 0; } }
+:global([data-narrow]) :global([data-menu-slot]) .buttons :global([data-variant]) { min-width: 0; }

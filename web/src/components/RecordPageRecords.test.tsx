@@ -1,0 +1,763 @@
+import "@testing-library/jest-dom/vitest";
+import { screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { S } from "../lib/api";
+import { day, monthDay } from "../lib/dates";
+import { person, project } from "../lib/records-fixtures";
+import { fakeApi, Refuse, renderApp, type Routes, snapshotOf } from "../test-utils";
+import en from "../wording/en.json";
+import { RecordPage } from "./RecordPage";
+
+/** Made-up addresses are built from this, so no address is written out whole. */
+const WEB = "https" + "://";
+
+// A record's page as activity beside details (design 7.14): what is open with it, what was finished and by whom, what
+// happened to it, and for a fact where it came from (designer answer 29).
+
+const page = (over: Partial<S["RecordPageView"]> = {}): S["RecordPageView"] => ({
+  kind: "project",
+  id: "PRJ-1",
+  version: 2,
+  name: "Harbor",
+  details: [],
+  open_actions: [],
+  open_questions: [],
+  completed_actions: [],
+  facts: [],
+  fact_source: null,
+  activity: [],
+  ...over,
+});
+
+function api(kind: string, id: string, fields: Record<string, unknown>, shown: S["RecordPageView"], extra: Routes = {}) {
+  const k = encodeURIComponent(kind);
+  return fakeApi({
+    [`GET record?kind=${k}&id=${id}`]: () => ({ kind, id, version: 3, fields: { id, ...fields }, long_text: [] }),
+    [`GET kinds/${kind}`]: () => ({ kind, fields: [] }),
+    [`GET record-pages/${id}?kind=${k}`]: () => shown,
+    "GET people": () => [person("PER-1", "Robin Sample")],
+    "GET projects": () => [project("PRJ-1", "Harbor")],
+    "GET settings": () => ({ fingerprint: "fp", items: [] }),
+    "GET lists": () => [],
+    "GET organizations": () => [],
+    [`GET plugin-actions?kind=${k}&id=${id}`]: () => [],
+    [`GET task-kinds?kind=${k}&id=${id}`]: () => [],
+    ...extra,
+  });
+}
+
+test("a project's page shows what is open with it, what was finished and by whom, and what happened, beside its details", async () => {
+  api(
+    "project",
+    "PRJ-1",
+    { name: "Harbor", status: "On track" },
+    page({
+      open_actions: [{ id: "ACT-1", text: "Send the proof", due: "2026-10-20", owners: ["Robin Sample"], project: "PRJ-1", project_name: "Harbor", origin: null }],
+      open_questions: [{ id: "Q-1", title: "Which trim size?", to: "PER-1", to_name: "Robin Sample", status: "open", kind: "question", origin: null }],
+      completed_actions: [{ id: "ACT-2", text: "Book the printer", project: "PRJ-1", project_name: "Harbor", done_by: ["Jordan Pike"], reported_by: "Robin Sample", done_on: "2026-10-12" }],
+      activity: [{ at: "2026-10-12T09:00:00Z", kind: "action", id: "ACT-2", name: "Book the printer", op: "action.close#0", field: "status", actor: "assistant", by_assistant: true }],
+    }),
+  );
+  renderApp(<RecordPage kind="project" id="PRJ-1" onBack={() => {}} />);
+  const open = await screen.findByRole("region", { name: "Open items" });
+  expect(within(open).getByRole("link", { name: "Send the proof" })).toBeInTheDocument();
+  expect(within(open).getAllByText(/Robin Sample/).length).toBeGreaterThan(0);
+  expect(within(open).getByRole("link", { name: "Which trim size?" })).toBeInTheDocument();
+  const done = screen.getByRole("region", { name: "Completed" });
+  const row = within(done).getByRole("link", { name: "Book the printer" }).closest("li")!;
+  expect(row).toHaveTextContent("done by Jordan Pike");
+  expect(row).toHaveTextContent("reported by Robin Sample");
+  expect(row).toHaveTextContent(monthDay("2026-10-12"));
+  const activity = screen.getByRole("region", { name: "Activity" });
+  expect(activity).toHaveTextContent("Helper closed Book the printer");
+  expect(activity).not.toHaveTextContent("Status");
+  expect(screen.getByRole("region", { name: "Details" })).toBeInTheDocument();
+});
+
+test("activity says who changed which field of what, by the field's label and the assistant by its name", async () => {
+  const entry = (id: string, name: string, field: string, by_assistant: boolean): S["ActivityEntry"] => ({ at: "2026-10-12T09:00:00Z", kind: "action", id, name, op: "record.edit", field, actor: by_assistant ? "assistant" : "pm", by_assistant });
+  const shown = page({ activity: [entry("ACT-1", "Send two spine options", "due", true), entry("ACT-2", "Harbor", "why_they_matter", false), entry("ACT-3", "Harbor", "target", true)] });
+  api("project", "PRJ-1", { name: "Harbor" }, shown);
+  const first = renderApp(<RecordPage kind="project" id="PRJ-1" onBack={() => {}} />);
+  const activity = await screen.findByRole("region", { name: "Activity" });
+  const rows = entriesOf(activity);
+  expect(rows[0]).toHaveTextContent("Helper changed due date on Send two spine options");
+  expect(within(rows[0]).getByText("Send two spine options").tagName).toBe("STRONG");
+  expect(rows[1]).toHaveTextContent("You changed why they matter on Harbor");
+  expect(rows[2]).toHaveTextContent("Helper changed target date on Harbor");
+  expect(activity.textContent).not.toMatch(/·\s*(due|target|Why)/i);
+  first.unmount();
+  api("project", "PRJ-1", { name: "Harbor" }, shown);
+  renderApp(<RecordPage kind="project" id="PRJ-1" onBack={() => {}} />, {}, { unnamed: true });
+  expect(entriesOf(await screen.findByRole("region", { name: "Activity" }))[0]).toHaveTextContent("Your assistant changed due date on Send two spine options");
+});
+
+test("the making of a record is one line that says added, or added in setup, and never a change of one of its fields", async () => {
+  const made = (id: string, name: string, op: string, how: "added" | "setup"): S["ActivityEntry"] => ({ at: "2026-10-12T09:00:00Z", kind: "project", id, name, op, field: null, made: how, actor: "pm", by_assistant: false });
+  api("project", "PRJ-1", { name: "Harbor" }, page({ activity: [made("PRJ-2", "First catalog", "project.add#0", "added"), made("PRJ-1", "Harbor", "init", "setup")] }));
+  renderApp(<RecordPage kind="project" id="PRJ-1" onBack={() => {}} />);
+  const rows = entriesOf(await screen.findByRole("region", { name: "Activity" }));
+  expect(rows[0]).toHaveTextContent("You added First catalog");
+  expect(rows[1]).toHaveTextContent("Harbor was added in setup");
+  expect(rows[1].textContent).not.toMatch(/changed|You /);
+});
+
+// Every field a label exists for, and the ones the sheet leaves to the field's own name, in the sentence that names a change:
+// a label of any shape reads as English in it ("changed why they matter on", never "changed the why they matter of").
+/** The entries of a region's activity, one for each thing that happened (not the day headings that group them). */
+const entriesOf = (region: HTMLElement) => Array.from(region.querySelectorAll<HTMLElement>("[data-activity-entry]"));
+
+const FIELD_NAMES = [
+  ...Object.keys(en)
+    .filter((k) => /^field\.[a-z_]+(\.just_me)?$/.test(k))
+    .map((k) => k.split(".")[1]),
+  "why_they_matter", "how_to_reach", "name_verified", "track_only", "budget_usd", "first_name", "what_it_is", "who_decides", "which_stage", "when_due", "where_from",
+];
+
+test("the sentence for a changed field reads as English for every field that can appear", async () => {
+  const unique = Array.from(new Set(FIELD_NAMES));
+  const entry = (name: string): S["ActivityEntry"] => ({ at: "2026-10-12T09:00:00Z", kind: "project", id: "PRJ-1", name: "Harbor", op: "record.edit", field: name, actor: "pm", by_assistant: false });
+  api("project", "PRJ-1", { name: "Harbor" }, page({ activity: unique.map(entry) }));
+  renderApp(<RecordPage kind="project" id="PRJ-1" onBack={() => {}} />);
+  const region = await screen.findByRole("region", { name: "Activity" });
+  // The latest few show first; the rest are asked for.
+  expect(entriesOf(region)).toHaveLength(5);
+  await userEvent.click(within(region).getByRole("button", { name: "Show all activity" }));
+  const rows = entriesOf(region);
+  expect(rows).toHaveLength(unique.length);
+  for (const row of rows) {
+    const sentence = row.textContent ?? "";
+    expect(sentence, sentence).toMatch(/You changed [^ ].* on Harbor/);
+    expect(sentence, sentence).not.toMatch(/\bthe (why|how|what|who|whom|whose|when|where|which|whether)\b/i);
+    expect(sentence, sentence).not.toMatch(/\bof Harbor/);
+  }
+});
+
+test("a second move of the same date says it moved again, neutrally, with how many times and since when", async () => {
+  const moved = (n: number): S["ActivityEntry"] => ({ at: "2026-10-12T09:00:00Z", kind: "action", id: "ACT-1", name: "Send two spine options", op: "record.edit", field: "due", actor: "pm", by_assistant: false, moved_again: n, moved_since: "2026-10-06" });
+  api("project", "PRJ-1", { name: "Harbor" }, page({ activity: [moved(3), moved(2)] }));
+  renderApp(<RecordPage kind="project" id="PRJ-1" onBack={() => {}} />);
+  const rows = entriesOf(await screen.findByRole("region", { name: "Activity" }));
+  expect(rows[0]).toHaveTextContent("moved again (third time since Oct 6)");
+  expect(rows[1]).toHaveTextContent("moved again (second time since Oct 6)");
+  expect(rows[1].textContent).not.toMatch(/slip/i);
+});
+
+test("a meta line joins only the parts it has: no dot beside nothing, no lone dot", async () => {
+  api(
+    "project",
+    "PRJ-1",
+    { name: "Harbor" },
+    page({
+      open_actions: [
+        { id: "ACT-1", text: "Send the proof", due: "2026-10-20", owners: ["Robin Sample"], project: "PRJ-1", project_name: "Harbor", origin: null, series: null, series_title: null },
+        { id: "ACT-2", text: "Check the cover", owners: ["Robin Sample"], project: "PRJ-1", origin: null },
+        { id: "ACT-3", text: "Pick a printer", owners: [], origin: null },
+      ],
+      open_questions: [{ id: "Q-1", title: "Which trim size?", to: null, to_name: null, status: "open", kind: "question", origin: null }],
+    }),
+  );
+  renderApp(<RecordPage kind="project" id="PRJ-1" onBack={() => {}} />);
+  const open = await screen.findByRole("region", { name: "Open items" });
+  const rows = within(open).getAllByRole("listitem");
+  expect(rows).toHaveLength(4);
+  expect(rows[0]).toHaveTextContent(`Robin Sample · due ${day("2026-10-20")}`);
+  for (const row of rows) {
+    expect(row.textContent).not.toMatch(/·\s*·/);
+    expect(row.textContent).not.toMatch(/·\s*$/);
+    expect(row.textContent).not.toMatch(/^\s*·/);
+  }
+});
+
+test("a project's page has what the assistant knows about it, and a person's page does not", async () => {
+  api("project", "PRJ-1", { name: "Harbor" }, page(), {
+    "GET projects/PRJ-1/knows": () => ({ id: "PRJ-1", name: "Harbor", sources: [], facts: [{ id: "FACT-1", version: 1, text: "Trim size is fixed.", key: false, source: { basis: "person", on: "2026-10-08", origin: null } }], terms: [], routing: [], unknown: [], area: false, reading: { state: "none", levels: [], readers: [] } }),
+  });
+  const { unmount } = renderApp(<RecordPage kind="project" id="PRJ-1" onBack={() => {}} />);
+  const knows = await screen.findByRole("region", { name: "What Helper knows" });
+  expect(await within(knows).findByRole("link", { name: "Trim size is fixed." })).toBeInTheDocument();
+  expect(within(knows).getByText(`from you, ${monthDay("2026-10-08")}`)).toBeInTheDocument();
+  unmount();
+  api("person", "PER-1", { full_name: "Robin Sample" }, page({ kind: "person", id: "PER-1", name: "Robin Sample" }));
+  renderApp(<RecordPage kind="person" id="PER-1" onBack={() => {}} />);
+  await screen.findByRole("heading", { level: 1, name: "Robin Sample" });
+  expect(screen.queryByRole("region", { name: "What Helper knows" })).toBeNull();
+});
+
+test("a section with nothing in it isn't there: no Completed, no zero", async () => {
+  api("project", "PRJ-1", { name: "Harbor" }, page());
+  renderApp(<RecordPage kind="project" id="PRJ-1" onBack={() => {}} />);
+  await screen.findByRole("heading", { level: 1, name: "Harbor" });
+  expect(await screen.findByText("Nothing has happened here yet.")).toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Completed" })).toBeNull();
+  expect(screen.queryByRole("region", { name: /Open with/ })).toBeNull();
+});
+
+test("an item for a meeting says so and links to the series' page, by weekday within a week and by date after", async () => {
+  const soon = new Date();
+  soon.setDate(soon.getDate() + 2);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const near = `${soon.getFullYear()}-${pad(soon.getMonth() + 1)}-${pad(soon.getDate())}`;
+  api(
+    "project",
+    "PRJ-1",
+    { name: "Harbor" },
+    page({
+      open_actions: [
+        { id: "ACT-1", text: "Send the proof", owners: [], series: "SER-1", series_title: "Print sync", meeting_on: near, origin: null },
+        { id: "ACT-2", text: "Check the cover", owners: [], series: "SER-1", series_title: "Print sync", meeting_on: "2031-10-29", origin: null },
+      ],
+    }),
+  );
+  renderApp(<RecordPage kind="project" id="PRJ-1" onBack={() => {}} />);
+  const weekday = new Intl.DateTimeFormat(undefined, { weekday: "long" }).format(soon);
+  const link = await screen.findByRole("link", { name: `for ${weekday}'s print sync` });
+  expect(link.getAttribute("href")).toMatch(/#records\/series\/SER-1$/);
+  expect(screen.getByRole("link", { name: `for ${monthDay("2031-10-29")}'s print sync` })).toBeInTheDocument();
+});
+
+test("a person is edited in the same drawer as on the People screen", async () => {
+  const user = userEvent.setup();
+  api("person", "PER-1", { full_name: "Robin Sample" }, page({ kind: "person", id: "PER-1", name: "Robin Sample" }), {
+    "GET kinds/person": () => ({ kind: "person", fields: [{ name: "full_name", description: "", type: "text", required: true, editable: true }] }),
+  });
+  renderApp(<RecordPage kind="person" id="PER-1" onBack={() => {}} />);
+  await user.click(await screen.findByRole("button", { name: "Edit" }));
+  const dialog = await screen.findByRole("dialog", { name: "Edit person" });
+  expect(within(dialog).getByRole("textbox", { name: "Full name" })).toHaveValue("Robin Sample");
+});
+
+// ---- where a fact came from ------------------------------------------------------------------------------------------
+
+const fact = (source: S["FactSource"]) => api("fact", "FACT-1", { text: "Both spines are in the folder." }, page({ kind: "fact", id: "FACT-1", name: "Both spines are in the folder.", fact_source: source }));
+
+test("a fact the person said is 'from you' with the day, and is a link to where it came from", async () => {
+  fact({ basis: "person", on: "2026-10-08", origin: { kind: "link", url: `${WEB}example.com/notes`, source: "SRC-1" } });
+  renderApp(<RecordPage kind="fact" id="FACT-1" onBack={() => {}} />);
+  const link = await screen.findByRole("link", { name: `from you, ${monthDay("2026-10-08")}` });
+  expect(link.getAttribute("href")).toBe(`${WEB}example.com/notes`);
+  expect(screen.queryByText("Inferred")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Confirm it" })).toBeNull();
+});
+
+test("what someone said is named in their own words, or as reported by another person's input", async () => {
+  fact({ basis: "said", by: "Ben Person", kind: "email", sender: "Ben Person", on: "2026-10-08", origin: { kind: "source", source: "SRC-1" } });
+  const first = renderApp(<RecordPage kind="fact" id="FACT-1" onBack={() => {}} />);
+  expect(await screen.findByRole("button", { name: `from Ben Person's email, ${monthDay("2026-10-08")}` })).toBeInTheDocument();
+  first.unmount();
+  fact({ basis: "said", by: "Ana Person", reported_by: "Jordan Pike", kind: "pasted", sender: "Jordan Pike", on: "2026-10-11", origin: { kind: "source", source: "SRC-1" } });
+  const second = renderApp(<RecordPage kind="fact" id="FACT-1" onBack={() => {}} />);
+  expect(await screen.findByRole("button", { name: `said by Ana Person, in Jordan Pike's pasted message, ${monthDay("2026-10-11")}` })).toBeInTheDocument();
+  second.unmount();
+  fact({ basis: "said", kind: "calendar", on: "2026-10-12", origin: { kind: "source", source: "SRC-1" } });
+  renderApp(<RecordPage kind="fact" id="FACT-1" onBack={() => {}} />);
+  expect(await screen.findByRole("button", { name: `from a calendar entry, ${monthDay("2026-10-12")}` })).toBeInTheDocument();
+});
+
+test("an inference has a dashed Inferred tag, says the assistant worked it out, and Confirm it makes it the person's own with Undo", async () => {
+  const user = userEvent.setup();
+  const calls = api("fact", "FACT-1", { text: "Both spines are in the folder." }, page({ kind: "fact", id: "FACT-1", name: "Both spines are in the folder.", fact_source: { basis: "inferred", kind: "email", sender: "Robin Sample", on: "2026-10-12", origin: { kind: "source", source: "SRC-1" } } }), {
+    "POST records/edit": () => ({ changeset: "CS-5" }),
+    "POST changesets/CS-5/undo": () => ({ restored: [0], skipped: [] }),
+  });
+  renderApp(<RecordPage kind="fact" id="FACT-1" onBack={() => {}} />);
+  const line = (await screen.findByText("Inferred")).closest("[data-fact-source]") as HTMLElement;
+  expect(line.querySelector("[data-inferred]")).not.toBeNull();
+  expect(line).toHaveTextContent(`Helper inferred this from Robin Sample's email, ${monthDay("2026-10-12")}`);
+  // A screen reader hears what the tag means, not just the word.
+  expect(within(line).getByText("Inferred by the assistant, not stated")).toBeInTheDocument();
+  expect(getComputedStyle(line).fontStyle).not.toBe("italic");
+  await user.click(within(line).getByRole("button", { name: "Confirm it" }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST records/edit")?.body).toEqual({ kind: "fact", id: "FACT-1", fields: { basis: "person" }, read_version: 3 }));
+  expect(await screen.findByText("Confirmed. It is now from you.")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST changesets/CS-5/undo")).toBe(true));
+});
+
+test("a fact recorded before the source was kept says only when", async () => {
+  fact({ basis: null, on: "2026-09-01", origin: null });
+  renderApp(<RecordPage kind="fact" id="FACT-1" onBack={() => {}} />);
+  expect(await screen.findByText(`recorded ${monthDay("2026-09-01")}`)).toBeInTheDocument();
+});
+
+// A calendar entry kept from a calendar: who invited, who is asked and the person's own answer (design 7.14).
+
+const entryFields = {
+  title: "Floor plan walkthrough",
+  start: "2030-03-08T15:00:00+00:00",
+  invitation: true,
+  response: "tentative",
+  key: "invite-1#2030-03-08T15:00:00+00:00",
+  organizer: { address: "robin@example.com", name: "Robin S.", person: "PER-1", response: "accepted" },
+  attendees: [
+    { address: "robin@example.com", name: "Robin S.", person: "PER-1", response: "accepted" },
+    { address: "dara.keene@example.com", name: "Dara Keene", person: null, response: "needs-action" },
+    { address: "me@example.com", name: null, person: null, response: null },
+  ],
+  cancelled: false,
+  notes: [],
+};
+
+test("an invitation's page lists who invited, who is asked with their answers and the person's own answer", async () => {
+  api("event", "EVT-1", entryFields, page({ kind: "event", id: "EVT-1", name: "Floor plan walkthrough" }), {
+    "GET plugin-actions?kind=event&id=EVT-1": () => [],
+  });
+  renderApp(<RecordPage kind="event" id="EVT-1" onBack={() => {}} />);
+  const section = await screen.findByRole("region", { name: "Who is asked" });
+  expect(within(section).getByText(/Invited by/)).toBeInTheDocument();
+  expect(within(section).getByText("Your answer: Maybe")).toBeInTheDocument();
+  const rows = within(section).getAllByRole("listitem");
+  // A person the workspace knows is shown by their name there and links to their page; others by the name the calendar gave.
+  expect(rows[0]).toHaveTextContent("Robin Sample · robin@example.com · Accepted");
+  expect(within(rows[0]).getByRole("link", { name: "Robin Sample" })).toHaveAttribute("href", expect.stringContaining("person"));
+  expect(rows[1]).toHaveTextContent("Dara Keene · dara.keene@example.com · No answer yet");
+  expect(within(rows[1]).queryByRole("link")).toBeNull();
+  expect(rows[2]).toHaveTextContent("me@example.com");
+  // The entry's internal key and flags are not shown as details.
+  const details = screen.getByRole("heading", { name: "Details" }).closest("section") as HTMLElement;
+  expect(within(details).queryByText(/invite-1/)).toBeNull();
+  expect(within(details).queryByText("Key")).toBeNull();
+});
+
+test("an entry with nobody on it has no list of people, and one the person organizes says organized by", async () => {
+  api("event", "EVT-2", { title: "Walkthrough", start: "2030-03-08", attendees: [], organizer: null, invitation: false }, page({ kind: "event", id: "EVT-2", name: "Walkthrough" }), {
+    "GET plugin-actions?kind=event&id=EVT-2": () => [],
+    "GET task-kinds?kind=event&id=EVT-2": () => [],
+  });
+  const first = renderApp(<RecordPage kind="event" id="EVT-2" onBack={() => {}} />);
+  expect(await screen.findByRole("heading", { name: "Walkthrough" })).toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Who is asked" })).toBeNull();
+  first.unmount();
+  api("event", "EVT-3", { ...entryFields, invitation: false, response: "accepted" }, page({ kind: "event", id: "EVT-3", name: "Planning hour" }), {
+    "GET plugin-actions?kind=event&id=EVT-3": () => [],
+    "GET task-kinds?kind=event&id=EVT-3": () => [],
+  });
+  renderApp(<RecordPage kind="event" id="EVT-3" onBack={() => {}} />);
+  const section = await screen.findByRole("region", { name: "Who is asked" });
+  expect(within(section).getByText(/Organized by/)).toBeInTheDocument();
+  expect(within(section).queryByText(/Your answer/)).toBeNull();
+});
+
+test("a delivery entry's page says its status, carrier and numbers in words, never the stored object", async () => {
+  const delivery = { order: "ORD-4471-20", tracking: "TRK000123456", carrier: "Example Freight", status: "out_for_delivery", dated: true };
+  api("event", "EVT-8", { title: "Parcel from the corner shop", start: "2030-03-08", end: "2030-03-10", delivery }, page({ kind: "event", id: "EVT-8", name: "Parcel from the corner shop" }), {
+    "GET plugin-actions?kind=event&id=EVT-8": () => [],
+    "GET task-kinds?kind=event&id=EVT-8": () => [],
+  });
+  const first = renderApp(<RecordPage kind="event" id="EVT-8" onBack={() => {}} />);
+  const details = (await screen.findByRole("heading", { name: "Details" })).closest("section") as HTMLElement;
+  const row = (await within(details).findByText("Delivery")).closest("div") as HTMLElement;
+  expect(row).toHaveTextContent("Out for delivery");
+  expect(row).toHaveTextContent("Carried by Example Freight");
+  expect(row).toHaveTextContent("Tracking TRK000123456");
+  expect(row).toHaveTextContent("Order ORD-4471-20");
+  expect(details).not.toHaveTextContent(/\[object|\{|out_for_delivery|Dated/);
+  first.unmount();
+  // One with no date yet says so, and an arrived one says Arrived.
+  api("event", "EVT-9", { title: "Order shipped", start: "2030-03-01", delivery: { ...delivery, carrier: null, tracking: null, status: "on_its_way", dated: false } }, page({ kind: "event", id: "EVT-9", name: "Order shipped" }), {
+    "GET plugin-actions?kind=event&id=EVT-9": () => [],
+    "GET task-kinds?kind=event&id=EVT-9": () => [],
+  });
+  renderApp(<RecordPage kind="event" id="EVT-9" onBack={() => {}} />);
+  const waiting = (await screen.findByRole("heading", { name: "Details" })).closest("section") as HTMLElement;
+  expect(await within(waiting).findByText("On its way")).toBeInTheDocument();
+  expect(waiting).toHaveTextContent("No date yet");
+});
+
+const FILED = {
+  by: "alias" as const,
+  word: "RTE",
+  project: "PRJ-1",
+  project_name: "Business",
+  move_to: "PRJ-2",
+  move_to_name: "Personal",
+  field: "project" as const,
+  version: 3,
+};
+
+test("an item the assistant filed by words says why on its page, and Move to the other side edits its project with Undo", async () => {
+  const user = userEvent.setup();
+  const calls = api(
+    "action",
+    "ACT-5",
+    { text: "Send the proof", project: "PRJ-1", filed_by: { by: "alias", word: "RTE", project: "PRJ-1" } },
+    page({ kind: "action", id: "ACT-5", name: "Send the proof", filed: FILED }),
+    {
+      "POST records/edit": () => ({ changeset: "CS-30" }),
+      "POST changesets/CS-30/undo": () => ({ restored: ["ACT-5"], skipped: [] }),
+      // Personal is the other side, so moving there says only where it went.
+      "GET setup/business": () => ({ business: true, name: "Business", personal: "PRJ-2", sides: [{ project: "PRJ-1", kind: "business", name: "Business", removable: false, filed: 0 }], chosen: "work" }),
+    },
+  );
+  renderApp(<RecordPage kind="action" id="ACT-5" onBack={() => {}} />);
+  expect(await screen.findByText("Filed under Business: it names RTE")).toBeInTheDocument();
+  // The stored reason is the line above, never a detail row.
+  expect(screen.queryByText(/by: alias/)).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Move to Personal" }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST records/edit")?.body).toEqual({ kind: "action", id: "ACT-5", fields: { project: "PRJ-2" }, read_version: 3 }));
+  expect(await screen.findByText("Moved to Personal.")).toBeInTheDocument();
+  await user.click(await screen.findByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST changesets/CS-30/undo")).toBe(true));
+});
+
+test("a question waiting on the person links to its line on Today, and one waiting on someone else does not", async () => {
+  api("question", "Q-6", { title: "Which one?", status: "open", to: "PER-1" }, page({ kind: "question", id: "Q-6", name: "Which one?" }), {
+    "GET me": () => ({ full_name: "Robin Sample", person: "PER-1" }),
+  });
+  const mine = renderApp(<RecordPage kind="question" id="Q-6" onBack={() => {}} />);
+  expect(await screen.findByRole("link", { name: "Answer on Today" })).toHaveAttribute("href", expect.stringMatching(/#today$/));
+  expect(screen.queryByRole("button", { name: "Answer" })).toBeNull();
+  mine.unmount();
+  api("question", "Q-6", { title: "Which one?", status: "open", to: "PER-1" }, page({ kind: "question", id: "Q-6", name: "Which one?" }), {
+    "GET me": () => ({ full_name: "Casey Example", person: "PER-9" }),
+  });
+  renderApp(<RecordPage kind="question" id="Q-6" onBack={() => {}} />);
+  await screen.findByRole("heading", { level: 1, name: "Which one?" });
+  expect(screen.queryByRole("link", { name: "Answer on Today" })).toBeNull();
+});
+
+test("a question is moved by its list of projects, and an item nobody filed by words has no such line", async () => {
+  const user = userEvent.setup();
+  const calls = api("question", "Q-5", { title: "Which one?", projects: ["PRJ-1"] }, page({ kind: "question", id: "Q-5", name: "Which one?", filed: { ...FILED, by: "domain", word: "example.com", field: "projects" } }), {
+    "POST records/edit": () => ({ changeset: "CS-31" }),
+  });
+  renderApp(<RecordPage kind="question" id="Q-5" onBack={() => {}} />);
+  expect(await screen.findByText("Filed under Business: it's from example.com")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Move to Personal" }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST records/edit")?.body).toMatchObject({ fields: { projects: ["PRJ-2"] } }));
+});
+
+test("with several other sides the page offers Move to… as a list of them, and choosing one moves the item there with Undo", async () => {
+  const user = userEvent.setup();
+  const many = {
+    ...FILED,
+    move_to: null,
+    move_to_name: null,
+    move_options: [
+      { project: "PRJ-2", name: "Personal" },
+      { project: "PRJ-3", name: "Lantern Works" },
+    ],
+  };
+  const calls = api(
+    "action",
+    "ACT-7",
+    { text: "Send the proof", project: "PRJ-1", filed_by: { by: "alias", word: "RTE", project: "PRJ-1" } },
+    page({ kind: "action", id: "ACT-7", name: "Send the proof", filed: many }),
+    { "POST records/edit": () => ({ changeset: "CS-32" }), "POST changesets/CS-32/undo": () => ({ restored: ["ACT-7"], skipped: [] }) },
+  );
+  renderApp(<RecordPage kind="action" id="ACT-7" onBack={() => {}} />);
+  await screen.findByText("Filed under Business: it names RTE");
+  // No one-click button for either side: the choice is a list.
+  expect(screen.queryByRole("button", { name: /^Move to / })).toBeNull();
+  const list = screen.getByRole("combobox", { name: "Move to…" });
+  expect(within(await snapshotOf(list)).getAllByRole("option").map((o) => o.textContent)).toEqual(["Move to…", "Personal", "Lantern Works"]);
+  await user.selectOptions(list, "Lantern Works");
+  await waitFor(() => expect(calls.find((c) => c.route === "POST records/edit")?.body).toEqual({ kind: "action", id: "ACT-7", fields: { project: "PRJ-3" }, read_version: 3 }));
+  expect(await screen.findByText("Moved 1 item to Lantern Works. It is now visible with Lantern Works's work.")).toBeInTheDocument();
+  await user.click(await screen.findByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST changesets/CS-32/undo")).toBe(true));
+});
+
+test("an item with no filing reason shows no filed line", async () => {
+  api("action", "ACT-6", { text: "Call", project: "PRJ-1" }, page({ kind: "action", id: "ACT-6", name: "Call" }));
+  renderApp(<RecordPage kind="action" id="ACT-6" onBack={() => {}} />);
+  await screen.findByRole("heading", { level: 1, name: "Call" });
+  expect(screen.queryByText(/Filed under/)).toBeNull();
+});
+
+test("a to-do's page lists the facts recorded about it, each linking to the fact, with the day it holds as of", async () => {
+  api(
+    "action",
+    "ACT-1",
+    { text: "Prepare the board pack", status: "open" },
+    page({
+      kind: "action",
+      id: "ACT-1",
+      name: "Prepare the board pack",
+      facts: [
+        { id: "FACT-4", text: "The board wants the pack in two parts", as_of: "2026-10-12", key: true },
+        { id: "FACT-2", text: "The pack goes out on Friday", as_of: null, key: false },
+      ],
+    }),
+  );
+  renderApp(<RecordPage kind="action" id="ACT-1" onBack={() => {}} />);
+  const facts = await screen.findByRole("region", { name: "Facts" });
+  const first = within(facts).getByRole("link", { name: "The board wants the pack in two parts" });
+  expect(first.closest("li")).toHaveTextContent(`as of ${day("2026-10-12")}`);
+  expect(within(facts).getByRole("link", { name: "The pack goes out on Friday" }).closest("li")).not.toHaveTextContent("as of");
+});
+
+test("a page with no facts about it has no Facts section", async () => {
+  api("action", "ACT-1", { text: "Prepare the board pack" }, page({ kind: "action", id: "ACT-1", name: "Prepare the board pack" }));
+  renderApp(<RecordPage kind="action" id="ACT-1" onBack={() => {}} />);
+  await screen.findByRole("heading", { name: "Prepare the board pack" });
+  expect(screen.queryByRole("region", { name: "Facts" })).toBeNull();
+});
+
+test("a page opens with what is open, then what finished, the facts and the history, and the box to talk about it last", async () => {
+  api(
+    "project",
+    "PRJ-1",
+    { name: "Harbor" },
+    page({
+      open_actions: [{ id: "ACT-1", text: "Send the proof", due: null, owners: [], project: "PRJ-1", project_name: "Harbor", origin: null }],
+      completed_actions: [{ id: "ACT-2", text: "Book the printer", project: "PRJ-1", project_name: "Harbor", done_by: [], done_on: "2026-10-12" }],
+      activity: [{ at: "2026-10-12T09:00:00Z", kind: "action", id: "ACT-2", name: "Book the printer", op: "action.add#0", field: null, actor: "assistant", by_assistant: true }],
+    }),
+    { "GET records/project/PRJ-1/conversation": () => ({ kind: "project", id: "PRJ-1", turns: [] }) },
+  );
+  renderApp(<RecordPage kind="project" id="PRJ-1" onBack={() => {}} />);
+  const open = await screen.findByRole("region", { name: "Open items" });
+  const talk = await screen.findByRole("region", { name: /^Talk to/ });
+  const done = await screen.findByRole("region", { name: "Completed" });
+  const activity = await screen.findByRole("region", { name: "Activity" });
+  const before = (a: Element, b: Element) => expect(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  before(open, done);
+  before(done, activity);
+  before(activity, talk);
+});
+
+test("a fact that is one person's word keeps who said it, and a plain statement of the world is left as it is", async () => {
+  api(
+    "action",
+    "ACT-1",
+    { text: "Prepare the board pack" },
+    page({
+      kind: "action",
+      id: "ACT-1",
+      name: "Prepare the board pack",
+      facts: [
+        { id: "FACT-1", text: "The offsite is on a Friday.", as_of: "2026-10-27", key: false, said_by: "Pat Marsh" },
+        { id: "FACT-2", text: "Harbor ships on the 9th", as_of: null, key: false, said_by: "Lee Kin" },
+        { id: "FACT-3", text: "The pack goes out on Friday", as_of: null, key: false },
+      ],
+    }),
+  );
+  renderApp(<RecordPage kind="action" id="ACT-1" onBack={() => {}} />);
+  const facts = await screen.findByRole("region", { name: "Facts" });
+  // A plain first word is lower-cased after the name; a name at the start of the fact is never changed.
+  expect(within(facts).getByRole("link", { name: "Pat Marsh says the offsite is on a Friday" })).toBeInTheDocument();
+  expect(within(facts).getByRole("link", { name: "Lee Kin says Harbor ships on the 9th" })).toBeInTheDocument();
+  expect(within(facts).getByRole("link", { name: "The pack goes out on Friday" })).toBeInTheDocument();
+});
+
+test("a date written as year-month-day in a title is shown as a day wherever the page lists it, the activity included", async () => {
+  api(
+    "project",
+    "PRJ-1",
+    { name: "Harbor" },
+    page({
+      completed_actions: [{ id: "ACT-2", text: "Send the headcount by 2026-11-04.", project: "PRJ-1", project_name: "Harbor", done_by: [], done_on: "2026-10-12" }],
+      activity: [{ at: "2026-10-27T09:00:00Z", kind: "action", id: "ACT-3", name: "Send the headcount by 2026-11-04.", op: "action.add#0", field: null, actor: "assistant", by_assistant: true }],
+    }),
+    { "GET records/project/PRJ-1/conversation": () => ({ kind: "project", id: "PRJ-1", turns: [] }) },
+  );
+  renderApp(<RecordPage kind="project" id="PRJ-1" onBack={() => {}} />);
+  const activity = await screen.findByRole("region", { name: "Activity" });
+  expect(activity).toHaveTextContent(/Send the headcount by .*Nov 4/);
+  expect(screen.queryByText(/2026-11-04/)).toBeNull();
+});
+
+test("a meta line on a person's page never ends with a separator: the link to where it came from sits inline after the last one", async () => {
+  api(
+    "person",
+    "PER-1",
+    { full_name: "Robin Sample" },
+    page({
+      kind: "person",
+      id: "PER-1",
+      name: "Robin Sample",
+      open_actions: [{ id: "ACT-1", text: "Send the proof", due: "2026-10-20", owners: ["Robin Sample"], project: null, project_name: null, origin: { kind: "link", url: `${WEB}example.com/page`, source: "SRC-1" } }],
+      open_questions: [{ id: "Q-1", title: "Which trim size?", to: "PER-1", to_name: "Robin Sample", status: "open", kind: "question", origin: { kind: "source", source: "SRC-2" } }],
+    }),
+  );
+  renderApp(<RecordPage kind="person" id="PER-1" onBack={() => {}} />);
+  const open = await screen.findByRole("region", { name: "Open with Robin Sample" });
+  for (const meta of open.querySelectorAll("p")) {
+    expect(meta.textContent?.trim().endsWith("·")).toBe(false);
+    // A block inside the line would leave the separator at the end of the one before it.
+    expect(meta.querySelector("div")).toBeNull();
+  }
+  expect(open.querySelectorAll(".origin").length).toBe(2);
+});
+
+// The person's own page (design 7.14): it reads as theirs, never as someone else's.
+
+const OWN_FIELDS = { full_name: "Robin Sample", name_verified: false, track_only: false, status: "active", stance: null, relation: "my sister", role: "Editor" };
+
+function ownPage(extra: Routes = {}, over: Partial<S["RecordPageView"]> = {}) {
+  return api(
+    "person",
+    "PER-1",
+    OWN_FIELDS,
+    page({
+      kind: "person",
+      id: "PER-1",
+      name: "Robin Sample",
+      open_actions: [{ id: "ACT-1", text: "Send the proof to the printer before the end of the month so the books are on the shelves for the launch", due: null, owners: ["Robin Sample"], project: "PRJ-1", project_name: "Harbor", origin: null }],
+      open_questions: [{ id: "Q-1", title: "What does proof mean here?", to: "PER-1", to_name: "Robin Sample", status: "open", kind: "question", origin: null }],
+      ...over,
+    }),
+    { "GET me": () => ({ full_name: "Robin Sample", person: "PER-1" }), "GET person-memory/PER-1": () => { throw new Error("the person's own page asks for nothing about someone else"); }, ...extra },
+  );
+}
+
+test("the person's own page says You with their name, and lists what waits for them and the questions for them", async () => {
+  ownPage();
+  renderApp(<RecordPage kind="person" id="PER-1" onBack={() => {}} />);
+  expect(await screen.findByRole("heading", { level: 1, name: "You · Robin Sample" })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { level: 2, name: "What's waiting for you" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { level: 2, name: "Questions for you" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { level: 2, name: "Your details" })).toBeInTheDocument();
+  // The question is a question for them, not something they asked themselves.
+  expect(screen.getByRole("link", { name: "What does proof mean here?" })).toBeInTheDocument();
+  expect(screen.queryByText(/asked of/)).toBeNull();
+});
+
+test("the person's own page has nothing that describes someone else to them", async () => {
+  ownPage();
+  renderApp(<RecordPage kind="person" id="PER-1" onBack={() => {}} />);
+  await screen.findByRole("heading", { level: 1, name: "You · Robin Sample" });
+  for (const words of [/You asked/, /Open with/, /No contact on file/, /Who they are to you/, /What to remember/, /Name verified/, /Track only/, /^Status$/, /Relation/]) {
+    expect(screen.queryByText(words)).toBeNull();
+  }
+  expect(screen.queryByRole("combobox", { name: "Who they are to you" })).toBeNull();
+  // The details they keep are still there.
+  expect(screen.getByText("Editor")).toBeInTheDocument();
+});
+
+test("someone else's page keeps its own words, their details and who they are to you", async () => {
+  api("person", "PER-2", OWN_FIELDS, page({ kind: "person", id: "PER-2", name: "Sam Other", open_questions: [{ id: "Q-2", title: "Is it final?", to: "PER-2", to_name: "Sam Other", status: "open", kind: "question", origin: null }] }), {
+    "GET me": () => ({ full_name: "Robin Sample", person: "PER-1" }),
+    "GET people": () => [person("PER-1", "Robin Sample"), person("PER-2", "Sam Other", { relation: "my sister", role: "Editor" })],
+    "GET person-memory/PER-2": () => ({ person: "PER-2", name: "Sam Other", last_in_touch: null, you_asked: [], they_owe: [], you_owe: [], they_asked: [], reach: { kept: {}, replies_on: null }, dates: [], matters: [] }),
+  });
+  renderApp(<RecordPage kind="person" id="PER-2" onBack={() => {}} />);
+  expect(await screen.findByRole("heading", { level: 1, name: "Sam Other" })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { level: 2, name: "Open with Sam Other" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { level: 2, name: "Details" })).toBeInTheDocument();
+  // A flag that is off (the name not confirmed, not only followed) says nothing, and the name is the heading's.
+  expect(screen.queryByText("Name verified")).toBeNull();
+  // Who they are is said once, under the heading, and not again as a row of the card.
+  expect(screen.queryByText("Who they are")).toBeNull();
+  expect(screen.getAllByText("my sister")).toHaveLength(1);
+  // How the person works with them is a question about people at work, and a sister isn't one.
+  expect(screen.queryByText("How you work with them")).toBeNull();
+});
+
+test("a page for a record that isn't there says so with a title, and offers no Try again (X63)", async () => {
+  fakeApi({
+    "GET record?kind=person&id=PER-9": () => new Refuse(404, "person PER-9 doesn't exist"),
+    "GET kinds/person": () => ({ kind: "person", fields: [] }),
+    "GET record-pages/PER-9?kind=person": () => new Refuse(404, "no"),
+    "GET people/PER-9/removal": () => ({ state: "none", name: null, removed_at: null }),
+    "GET people": () => [],
+    "GET projects": () => [],
+    "GET settings": () => ({ fingerprint: "fp", items: [] }),
+    "GET lists": () => [],
+    "GET organizations": () => [],
+  });
+  renderApp(<RecordPage kind="person" id="PER-9" onBack={() => {}} />);
+  expect(await screen.findByText("This person was removed, or the link is old.")).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "People" })).toHaveAttribute("href", expect.stringMatching(/#records\/people$/));
+  // S-0361: a page that is not there has one filled way back, the same on every address.
+  expect(screen.getByRole("link", { name: "Back to People" })).toHaveAttribute("data-variant", "primary");
+  expect(screen.queryByRole("button", { name: "Restore" })).toBeNull();
+  expect(screen.getByRole("link", { name: "Back to People" })).toHaveAttribute("href", expect.stringMatching(/#records\/people$/));
+  expect(screen.getByRole("heading", { name: "This page has gone missing" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+  expect(screen.queryByText("This page didn't load.")).toBeNull();
+});
+
+test("a project page that is gone says so and offers the list it belongs to as its one next step, with no kind tag beside the title", async () => {
+  fakeApi({
+    "GET record?kind=project&id=PRJ-9": () => new Refuse(404, "project PRJ-9 doesn't exist"),
+    "GET kinds/project": () => ({ kind: "project", fields: [] }),
+    "GET record-pages/PRJ-9?kind=project": () => new Refuse(404, "no"),
+    "GET people": () => [],
+    "GET projects": () => [],
+    "GET settings": () => ({ fingerprint: "fp", items: [] }),
+    "GET lists": () => [],
+    "GET organizations": () => [],
+  });
+  renderApp(<RecordPage kind="project" id="PRJ-9" onBack={() => {}} />);
+  expect(await screen.findByText(/This page isn't here any more/)).toBeInTheDocument();
+  const heading = screen.getByRole("heading", { name: "This page has gone missing" });
+  expect(heading.closest("[data-page-header]")?.querySelector("[data-pill]")).toBeNull();
+  expect(screen.getByRole("link", { name: "Go to Projects" })).toHaveAttribute("href", expect.stringMatching(/#records\/projects$/));
+});
+
+test("a page for a person who was removed says so and when, and Restore brings them back with Undo", async () => {
+  const calls: string[] = [];
+  fakeApi({
+    "GET record?kind=person&id=PER-9": () => new Refuse(404, "person PER-9 doesn't exist"),
+    "GET kinds/person": () => ({ kind: "person", fields: [] }),
+    "GET record-pages/PER-9?kind=person": () => new Refuse(404, "no"),
+    "GET people/PER-9/removal": () => ({ state: "removed", name: "Sample Person", removed_at: "2026-10-28T09:30:00+00:00" }),
+    "POST people/PER-9/restore": () => {
+      calls.push("restore");
+      return { ok: "PER-9" };
+    },
+    "GET people": () => [],
+    "GET projects": () => [],
+    "GET settings": () => ({ fingerprint: "fp", items: [] }),
+    "GET lists": () => [],
+    "GET organizations": () => [],
+  });
+  renderApp(<RecordPage kind="person" id="PER-9" onBack={() => {}} />);
+  expect(await screen.findByText("Sample Person was removed")).toBeInTheDocument();
+  expect(screen.getByText(/Removed .*Their record is kept, so you can bring them back\./)).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Back to People" })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Restore" }));
+  await waitFor(() => expect(calls).toEqual(["restore"]));
+  expect(await screen.findByText("Restored Sample Person.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+});
+
+test("an organization's page says its note under the title with how many people and open items, and lists the people who work there or says no one does", async () => {
+  const shown = { ...page({ kind: "organization", id: "ORG-1" }), name: "Printing Works" };
+  api("organization", "ORG-1", { name: "Printing Works", notes: "Prints and binds small runs." }, shown, {
+    "GET people": () => [person("PER-1", "Robin Sample", { org: "ORG-1", org_name: "Printing Works", role: "Printer" })],
+  });
+  renderApp(<RecordPage kind="organization" id="ORG-1" onBack={() => {}} />);
+  expect(await screen.findByRole("heading", { level: 1, name: "Printing Works" })).toBeInTheDocument();
+  const head = document.querySelector<HTMLElement>("[data-page-header]")!;
+  expect(head).toHaveTextContent("Prints and binds small runs.");
+  expect(head).toHaveTextContent("1 person · 0 open items");
+  // The note is said once, under the title, never again as a row of a card.
+  expect(screen.getAllByText("Prints and binds small runs.")).toHaveLength(1);
+  const people = screen.getByRole("heading", { name: "People" }).closest("section")!;
+  expect(within(people).getByRole("link", { name: "Robin Sample" })).toHaveAttribute("href", expect.stringMatching(/#records\/person\/PER-1$/));
+});
+
+test("an organization nobody works for says so in its People section", async () => {
+  api("organization", "ORG-2", { name: "Quiet Works" }, { ...page({ kind: "organization", id: "ORG-2" }), name: "Quiet Works" });
+  renderApp(<RecordPage kind="organization" id="ORG-2" onBack={() => {}} />);
+  expect(await screen.findByText("No one works here yet.")).toBeInTheDocument();
+  expect(document.querySelector("[data-page-header]")).toHaveTextContent("0 people · 0 open items");
+});
+
+test("a side's page lists a to-do that is open in it once, never twice (the side page shows what is inside beside what is open)", async () => {
+  const shop = { business: true, name: "Shop", personal: "PRJ-personal", sides: [{ project: "PRJ-shop", name: "Shop", kind: "business" }], chosen: "both" };
+  api(
+    "project",
+    "PRJ-shop",
+    { name: "Shop" },
+    page({ id: "PRJ-shop", name: "Shop", open_actions: [{ id: "ACT-1", text: "Pay the deposit", due: null, owners: [], project: "PRJ-shop", project_name: "Shop", origin: null }] }),
+    {
+      "GET setup/business": () => shop,
+      "GET projects": () => [project("PRJ-personal", "Personal"), project("PRJ-shop", "Shop")],
+    },
+  );
+  renderApp(<RecordPage kind="project" id="PRJ-shop" onBack={() => {}} />);
+  await screen.findByRole("heading", { level: 1, name: "Shop" });
+  await screen.findAllByText("Pay the deposit");
+  expect(screen.getAllByText("Pay the deposit")).toHaveLength(1);
+});
+
+test("a project's page has Add a to-do as its one primary action, and a page with nothing to show has no empty details card", async () => {
+  api("project", "PRJ-1", { name: "Harbor" }, page());
+  const { container } = renderApp(<RecordPage kind="project" id="PRJ-1" onBack={() => {}} />);
+  expect(await screen.findByRole("button", { name: "Add a to-do" })).toBeInTheDocument();
+  await waitFor(() => expect(container.querySelector("[data-bare]")).not.toBeNull());
+});

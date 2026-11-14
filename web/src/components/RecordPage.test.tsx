@@ -1,0 +1,573 @@
+import { screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { S } from "../lib/api";
+import { Refuse, fakeApi, renderApp, type Routes, snapshotOf, dayValue } from "../test-utils";
+import { RecordPage } from "./RecordPage";
+
+const KIND = "demo/chapter";
+const PAGE = "https" + "://pages.example.com/notes/42";
+const ID = "CH-1";
+const on = `kind=${encodeURIComponent(KIND)}&id=${ID}`;
+const field = "body_text";
+const textUrl = `texts?kind=${encodeURIComponent(KIND)}&id=${ID}&field=${field}`;
+
+const kind: S["KindView"] = {
+  kind: KIND,
+  fields: [
+    { name: "id", description: "", type: "text", required: true, editable: false },
+    { name: "title", description: "What the chapter is called.", type: "text", required: true, editable: true },
+    { name: "owner", description: "", refers_to: "person", type: "reference", required: false, editable: true },
+    { name: "tags", description: "", type: "list", required: false, editable: true },
+    {
+      name: "body_text",
+      description: "The chapter itself.",
+      long_text: "plain",
+      type: "long_text",
+      required: false,
+      editable: false,
+    },
+  ],
+};
+
+function version(extra: Partial<S["TextVersionView"]> = {}): S["TextVersionView"] {
+  return {
+    id: "V-1",
+    number: 1,
+    version: 1,
+    status: "accepted",
+    source: "edit",
+    words: 12,
+    base: null,
+    note: null,
+    created_at: "2026-10-09T14:00:00Z",
+    questions: [],
+    unmapped: [],
+    ...extra,
+  };
+}
+
+function text(extra: Partial<S["TextFieldView"]> = {}): S["TextFieldView"] {
+  return {
+    text: "First paragraph.\n\nSecond <i>paragraph</i>.",
+    current: 1,
+    authorship: [
+      { start: 0, end: 10, kind: "person", words: 5 },
+      { start: 10, end: 20, kind: "assistant", words: 3 },
+      { start: 20, end: 30, kind: "assistant_edit", words: 2 },
+      { start: 30, end: 40, kind: "person", words: 1 },
+    ],
+    versions: [version()],
+    ...extra,
+  };
+}
+
+function routes(extra: Routes = {}): Routes {
+  return {
+    [`GET record?${on}`]: () => ({
+      kind: KIND,
+      id: ID,
+      version: 4,
+      fields: { id: ID, title: "The harbor", owner: "P-2", tags: ["one", "two"], notes: "", empty: [] },
+      long_text: [field],
+    }),
+    [`GET kinds/${KIND}`]: () => kind,
+    "GET people": () => [{ id: "P-2", name: "Robin Example" }],
+    "GET projects": () => [],
+    [`GET ${textUrl}`]: () => text(),
+    [`GET working-copies/formats?kind=${encodeURIComponent(KIND)}&field=${field}`]: () => [],
+    [`GET working-copies?${on}`]: () => [],
+    [`GET plugin-actions?${on}`]: () => [],
+    [`GET task-kinds?${on}`]: () => [],
+    ...extra,
+  };
+}
+
+test("ordinary fields are a labelled list: readable labels, names for people, one line per list item, and no help text while viewing", async () => {
+  fakeApi(routes());
+  renderApp(<RecordPage kind={KIND} id={ID} onBack={() => {}} />);
+  expect(await screen.findByRole("heading", { level: 1, name: "The harbor" })).toBeInTheDocument();
+  const details = screen.getByRole("region", { name: "Details" });
+  const terms = within(details).getAllByRole("term").map((x) => x.textContent);
+  expect(terms).toEqual(["Owner", "Tags"]);
+  expect(within(details).queryByText("What the chapter is called.")).toBeNull();
+  expect(within(details).getByText("Robin Example")).toBeInTheDocument();
+  expect(within(details).getByText("one")).toBeInTheDocument();
+  expect(within(details).getByText("two")).toBeInTheDocument();
+  expect(within(details).queryByText("P-2")).toBeNull();
+});
+
+test("a long text shows as plain text with three separate authorship counts", async () => {
+  fakeApi(routes());
+  renderApp(<RecordPage kind={KIND} id={ID} onBack={() => {}} />);
+  const section = await screen.findByRole("region", { name: "Body text" });
+  expect(await within(section).findByText("Second <i>paragraph</i>.")).toBeInTheDocument();
+  expect(section.querySelector("i")).toBeNull();
+  const who = within(section).getAllByRole("listitem").map((li) => li.textContent);
+  expect(who).toContain("6 words written by you");
+  expect(who).toContain("3 words drafted by Helper");
+  expect(who).toContain("2 words of yours changed by Helper");
+});
+
+test("the versions list marks each one waiting with Review, which opens the text review", async () => {
+  const user = userEvent.setup();
+  fakeApi(
+    routes({
+      [`GET ${textUrl}`]: () =>
+        text({
+          versions: [
+            version({ id: "V-2", number: 2, status: "pending", source: "draft", note: "A tighter opening", words: 9 }),
+            version(),
+          ],
+        }),
+      "GET text-versions/V-2/review": () => ({
+        version: version({ id: "V-2", number: 2, status: "pending", version: 3 }),
+        current: 1,
+        three_way: false,
+        regions: [],
+        pending_text: "",
+      }),
+    }),
+  );
+  renderApp(<RecordPage kind={KIND} id={ID} onBack={() => {}} />);
+  const section = await screen.findByRole("region", { name: "Body text" });
+  expect(await within(section).findByText("A tighter opening")).toBeInTheDocument();
+  expect(within(section).getByText(/Needs you · Draft · 9 words/)).toBeInTheDocument();
+  expect(within(section).getAllByRole("button", { name: /^Review version/ })).toHaveLength(1);
+  await user.click(within(section).getByRole("button", { name: "Review version 2" }));
+  expect(await screen.findByRole("dialog", { name: "Review the changes" })).toBeInTheDocument();
+});
+
+test("Edit swaps the text for a box; Save sends it and offers Undo", async () => {
+  const user = userEvent.setup();
+  const calls = fakeApi(
+    routes({
+      "POST texts/edit": () => ({ changeset: "CS-9" }),
+      "POST changesets/CS-9/undo": () => ({ restored: [{ kind: KIND, id: ID }], skipped: [] }),
+    }),
+  );
+  renderApp(<RecordPage kind={KIND} id={ID} onBack={() => {}} />);
+  await user.click(await screen.findByRole("button", { name: "Edit" }));
+  const box = screen.getByRole("textbox", { name: "Body text" });
+  expect(box).toHaveFocus();
+  expect(box).toHaveValue("First paragraph.\n\nSecond <i>paragraph</i>.");
+  await user.clear(box);
+  await user.type(box, "Rewritten.");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  expect(await screen.findByText("Text saved.")).toBeInTheDocument();
+  expect(calls.find((c) => c.route === "POST texts/edit")?.body).toEqual({ kind: KIND, id: ID, field, text: "Rewritten." });
+  await waitFor(() => expect(screen.queryByRole("textbox", { name: "Body text" })).toBeNull());
+  await waitFor(() => expect(screen.getByRole("button", { name: "Edit" })).toHaveFocus());
+  await user.click(screen.getByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(calls.map((c) => c.route)).toContain("POST changesets/CS-9/undo"));
+});
+
+test("Cancel leaves the text alone", async () => {
+  const user = userEvent.setup();
+  const calls = fakeApi(routes());
+  renderApp(<RecordPage kind={KIND} id={ID} onBack={() => {}} />);
+  await user.click(await screen.findByRole("button", { name: "Edit" }));
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("textbox")).toBeNull();
+  expect(calls.some((c) => c.route === "POST texts/edit")).toBe(false);
+});
+
+test("what the plugins offer: the first is the primary button, the rest are in the menu, and a person action opens its review", async () => {
+  const user = userEvent.setup();
+  const calls = fakeApi(
+    routes({
+      [`GET plugin-actions?${on}`]: () => [{ name: "demo/export", label: "Save a copy", on: KIND }],
+      [`GET task-kinds?${on}`]: () => [
+        { name: "demo/check", label: "Check it", on: KIND },
+        { name: "demo/polish", label: "Polish it", on: KIND },
+      ],
+      "POST plugin-actions/demo/export/preview": () => ({
+        token: "t",
+        action: "demo/export",
+        summary: "Export the chapter",
+        ops: [],
+        files: [],
+        previews: [],
+        choices: [],
+        notes: [],
+        expires_at: "2026-10-09T15:00:00Z",
+      }),
+      "POST task-kinds/demo/polish/start": () => ({ request: "REQ-2" }),
+    }),
+  );
+  renderApp(<RecordPage kind={KIND} id={ID} onBack={() => {}} />);
+  const group = await screen.findByRole("group", { name: "Things to do here" });
+  const primary = within(group).getByRole("button", { name: "Save a copy" });
+  await user.click(primary);
+  await screen.findByRole("dialog", { name: "Export the chapter" });
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await user.click(within(group).getByRole("button", { name: /^More actions/ }));
+  expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Check it", "Polish it"]);
+  await user.click(screen.getByRole("menuitem", { name: "Polish it" }));
+  expect(await screen.findByText("Started: Polish it")).toBeInTheDocument();
+  expect(calls.find((c) => c.route === "POST task-kinds/demo/polish/start")?.body).toEqual({ about: { kind: KIND, id: ID }, note: "" });
+});
+
+test("Back goes back", async () => {
+  const user = userEvent.setup();
+  const back = vi.fn();
+  fakeApi(routes());
+  renderApp(<RecordPage kind={KIND} id={ID} onBack={back} />);
+  await user.click(await screen.findByRole("button", { name: "Back" }));
+  expect(back).toHaveBeenCalled();
+});
+
+const editKind: S["KindView"] = {
+  kind: KIND,
+  fields: [
+    { name: "id", description: "", type: "text", required: true, editable: false },
+    { name: "title", description: "What the chapter is called.", type: "text", required: true, editable: true },
+    { name: "pages", description: "", type: "number", required: false, editable: true },
+    { name: "final", description: "", type: "yes_no", required: false, editable: true },
+    { name: "due", description: "", type: "date", required: false, editable: true },
+    { name: "state", description: "", type: "choice", options: ["draft", "revised", "locked"], required: false, editable: true },
+    { name: "mood", description: "", type: "choice", options: ["calm", "tense"], required: true, editable: true },
+    { name: "owner", description: "", refers_to: "person", type: "reference", required: false, editable: true },
+    { name: "book", description: "", refers_to: "project", type: "reference", required: false, editable: true },
+    { name: "link", description: "", refers_to: "demo/other", type: "reference", required: false, editable: true },
+    { name: "tags", description: "", type: "list", required: false, editable: true },
+    { name: "locked", description: "", type: "text", required: false, editable: false },
+    { name: "body_text", description: "", long_text: "plain", type: "long_text", required: false, editable: false },
+    { name: "raw", description: "", type: "other", required: false, editable: true },
+  ],
+};
+
+function editRoutes(extra: Routes = {}): Routes {
+  return routes({
+    [`GET kinds/${KIND}`]: () => editKind,
+    [`GET record?${on}`]: () => ({
+      kind: KIND,
+      id: ID,
+      version: 4,
+      fields: { id: ID, title: "The harbor", pages: 12, final: false, due: "2026-11-01", state: "draft", mood: "calm", owner: "P-2", tags: ["one", "two"], locked: "x" },
+      long_text: [field],
+    }),
+    "GET people": () => [
+      { id: "P-2", name: "Robin Example", status: "active" },
+      { id: "P-3", name: "Sam Sample", status: "active" },
+    ],
+    "GET projects": () => [
+      { id: "PRJ-1", name: "First book" },
+      { id: "PRJ-2", name: "Second book" },
+    ],
+    ...extra,
+  });
+}
+
+async function openForm(user: ReturnType<typeof userEvent.setup>) {
+  renderApp(<RecordPage kind={KIND} id={ID} onBack={() => {}} />);
+  await user.click(await screen.findByRole("button", { name: "Edit details" }));
+  return screen.getByRole("form", { name: "Edit details" });
+}
+
+test("Edit details offers the right control for each editable field and skips the rest", async () => {
+  const user = userEvent.setup();
+  fakeApi(editRoutes());
+  const form = await openForm(user);
+  expect(within(form).getByRole("textbox", { name: "Title" })).toHaveValue("The harbor");
+  expect(within(form).getByRole("textbox", { name: "Title" })).toBeRequired();
+  expect(within(form).getByRole("spinbutton", { name: "Pages" })).toHaveValue(12);
+  expect(within(form).getByRole("checkbox", { name: "Final" })).not.toBeChecked();
+  expect(within(form).getByRole("textbox", { name: "Due date" })).toHaveAttribute("data-kind", "date");
+  expect(dayValue(within(form).getByRole("textbox", { name: "Due date" }))).toBe("2026-11-01");
+  const state = within(form).getByRole("combobox", { name: "State" });
+  expect(within(await snapshotOf(state)).getAllByRole("option").map((o) => o.textContent)).toEqual(["None", "draft", "revised", "locked"]);
+  const mood = within(form).getByRole("combobox", { name: "Mood" });
+  expect(within(await snapshotOf(mood)).getAllByRole("option").map((o) => o.textContent)).toEqual(["calm", "tense"]);
+  expect(within(form).getByRole("combobox", { name: "Owner" })).toHaveValue("P-2");
+  const book = within(form).getByRole("combobox", { name: "Book" });
+  expect(within(await snapshotOf(book)).getAllByRole("option").map((o) => o.textContent)).toEqual(["None", "First book", "Second book", "Add a project…"]);
+  expect(within(form).getByRole("textbox", { name: /Tags/ })).toHaveValue("one\ntwo");
+  for (const skipped of ["Id", "Link", "Locked", "Body text", "Raw"]) expect(within(form).queryByLabelText(skipped)).toBeNull();
+});
+
+test("when a person is the kind's first field the form opens with the cursor in that list", async () => {
+  const user = userEvent.setup();
+  fakeApi(
+    editRoutes({
+      [`GET kinds/${KIND}`]: () => ({ kind: KIND, fields: [{ name: "owner", description: "", refers_to: "person", type: "reference", required: false, editable: true }] }),
+    }),
+  );
+  const form = await openForm(user);
+  await waitFor(() => expect(within(form).getByRole("combobox", { name: "Owner" })).toHaveFocus());
+});
+
+test("Save sends only the changed fields with the version that was read, then offers Undo", async () => {
+  const user = userEvent.setup();
+  const calls = fakeApi(
+    editRoutes({
+      "POST records/edit": () => ({ changeset: "CS-9" }),
+      "POST changesets/CS-9/undo": () => ({ restored: [{ kind: KIND, id: ID }], skipped: [] }),
+    }),
+  );
+  const form = await openForm(user);
+  const save = within(form).getByRole("button", { name: "Save" });
+  expect(save).toBeDisabled();
+  await user.clear(within(form).getByRole("textbox", { name: "Title" }));
+  await user.type(within(form).getByRole("textbox", { name: "Title" }), "The new harbor");
+  await user.click(within(form).getByRole("checkbox", { name: "Final" }));
+  await user.selectOptions(within(form).getByRole("combobox", { name: "Book" }), "PRJ-2");
+  await user.selectOptions(within(form).getByRole("combobox", { name: "Owner" }), "");
+  await user.clear(within(form).getByRole("spinbutton", { name: "Pages" }));
+  await user.clear(within(form).getByRole("textbox", { name: /Tags/ }));
+  await user.type(within(form).getByRole("textbox", { name: /Tags/ }), "a{Enter}b{Enter}");
+  await user.click(save);
+  await waitFor(() => expect(screen.queryByRole("form", { name: "Edit details" })).toBeNull());
+  expect(calls.find((c) => c.route === "POST records/edit")?.body).toEqual({
+    kind: KIND,
+    id: ID,
+    read_version: 4,
+    fields: { title: "The new harbor", final: true, book: "PRJ-2", owner: null, pages: null, tags: ["a", "b"] },
+  });
+  expect(await screen.findByText("Saved.")).toBeInTheDocument();
+  // Focus returns once the dialog's close finishes, which can take longer than a second when every test file runs at once.
+  await waitFor(() => expect(screen.getByRole("button", { name: "Edit details" })).toHaveFocus(), { timeout: 4000 });
+  await user.click(screen.getByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(calls.map((c) => c.route)).toContain("POST changesets/CS-9/undo"));
+});
+
+test("a number with a known set of values is a list of days to pick from, and the pick is saved as a number", async () => {
+  const user = userEvent.setup();
+  const leadKind: S["KindView"] = {
+    kind: KIND,
+    fields: [{ name: "lead_days", description: "How many working days before its day the work must start.", type: "number", options: ["0", "1", "2", "3"], required: false, editable: true }],
+  };
+  const calls = fakeApi(
+    editRoutes({
+      [`GET kinds/${KIND}`]: () => leadKind,
+      [`GET record?${on}`]: () => ({ kind: KIND, id: ID, version: 4, fields: { id: ID, title: "The harbor", lead_days: 2 }, long_text: [] }),
+      "POST records/edit": () => ({ changeset: "CS-9" }),
+    }),
+  );
+  const form = await openForm(user);
+  const lead = within(form).getByRole("combobox", { name: "Days of notice" });
+  expect(lead).toHaveValue("2");
+  expect(within(await snapshotOf(lead)).getAllByRole("option").map((o) => o.textContent)).toEqual(["None", "0", "1", "2", "3"]);
+  expect(within(form).queryByRole("spinbutton")).toBeNull();
+  await user.selectOptions(lead, "3");
+  await user.click(within(form).getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST records/edit")?.body).toEqual({ kind: KIND, id: ID, read_version: 4, fields: { lead_days: 3 } }));
+});
+
+test("a refusal shows the server's words and keeps the form open with what was typed", async () => {
+  const user = userEvent.setup();
+  fakeApi(editRoutes({ "POST records/edit": () => new Refuse(409, "This record changed after you opened it.") }));
+  const form = await openForm(user);
+  await user.type(within(form).getByRole("textbox", { name: "Title" }), "!");
+  await user.click(within(form).getByRole("button", { name: "Save" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("This record changed after you opened it.");
+  expect(screen.getByRole("form", { name: "Edit details" })).toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("The harbor!");
+  expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+});
+
+test("after a refusal because it changed meanwhile, fields not touched take what is saved now and are listed, and typed ones are kept", async () => {
+  const user = userEvent.setup();
+  let moved = false;
+  const calls = fakeApi(
+    editRoutes({
+      [`GET record?${on}`]: () => ({
+        kind: KIND,
+        id: ID,
+        version: moved ? 5 : 4,
+        changed_at: "2026-10-20T09:14:00Z",
+        fields: { id: ID, title: "The harbor", pages: moved ? 20 : 12, final: false, due: "2026-11-01", state: "draft", mood: "calm", owner: "P-2", tags: ["one", "two"], locked: "x" },
+        long_text: [field],
+      }),
+      "POST records/edit": (body) => {
+        if ((body as { read_version: number }).read_version === 4) {
+          moved = true;
+          return new Refuse(409, "This record changed after you opened it.");
+        }
+        return { changeset: "CS-9" };
+      },
+    }),
+  );
+  const form = await openForm(user);
+  await user.type(within(form).getByRole("textbox", { name: "Title" }), "!");
+  await user.click(within(form).getByRole("button", { name: "Save" }));
+  const lines = await screen.findByRole("status", { name: "Refreshed from what is saved now" });
+  expect(lines).toHaveTextContent(/refreshed: Pages is now 20, changed elsewhere at .*\d/);
+  await waitFor(() => expect(within(form).getByRole("spinbutton", { name: "Pages" })).toHaveValue(20));
+  expect(within(form).getByRole("textbox", { name: "Title" })).toHaveValue("The harbor!");
+  expect(screen.getByRole("alert")).toHaveTextContent("What you typed is still here");
+  await user.click(within(form).getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(calls.filter((c) => c.route === "POST records/edit")).toHaveLength(2));
+  expect(calls.filter((c) => c.route === "POST records/edit")[1].body).toEqual({ kind: KIND, id: ID, read_version: 5, fields: { title: "The harbor!" } });
+});
+
+test("a save that fails for any other reason keeps what was typed, says Not saved with Try again, and Try again saves it", async () => {
+  const user = userEvent.setup();
+  let fail = true;
+  const calls = fakeApi(editRoutes({ "POST records/edit": () => (fail ? new Refuse(500, "The app couldn't write to its folder.") : { changeset: "CS-9" }) }));
+  const form = await openForm(user);
+  await user.type(within(form).getByRole("textbox", { name: "Title" }), "!");
+  await user.click(within(form).getByRole("button", { name: "Save" }));
+  const note = await screen.findByRole("alert");
+  expect(note).toHaveTextContent("Not saved");
+  // A 500's own words are never shown (batch 15, S-0294): the wording sheet's plain lines say what happened.
+  expect(note).not.toHaveTextContent("The app couldn't write to its folder.");
+  expect(note).toHaveTextContent("Nothing is lost: your change is kept here until it saves.");
+  expect(within(form).getByRole("textbox", { name: "Title" })).toHaveValue("The harbor!");
+  fail = false;
+  await user.click(within(note).getByRole("button", { name: "Try again" }));
+  await waitFor(() => expect(calls.filter((c) => c.route === "POST records/edit")).toHaveLength(2));
+  expect(calls.filter((c) => c.route === "POST records/edit")[1].body).toMatchObject({ fields: { title: "The harbor!" } });
+});
+
+test("a field the person edited that was also changed elsewhere shows old, new and theirs, and they choose", async () => {
+  const user = userEvent.setup();
+  let moved = false;
+  fakeApi(
+    editRoutes({
+      [`GET record?${on}`]: () => ({
+        kind: KIND,
+        id: ID,
+        version: moved ? 5 : 4,
+        changed_at: "2026-10-20T09:14:00Z",
+        fields: { id: ID, title: moved ? "The harbor, renamed" : "The harbor", pages: 12, final: false, due: "2026-11-01", state: "draft", mood: "calm", owner: "P-2", tags: ["one", "two"], locked: "x" },
+        long_text: [field],
+      }),
+      "POST records/edit": (body) => {
+        if ((body as { read_version: number }).read_version === 4) {
+          moved = true;
+          return new Refuse(409, "This record changed after you opened it.");
+        }
+        return { changeset: "CS-9" };
+      },
+    }),
+  );
+  const form = await openForm(user);
+  await user.type(within(form).getByRole("textbox", { name: "Title" }), "!");
+  await user.click(within(form).getByRole("button", { name: "Save" }));
+  const box = await screen.findByText("Changed somewhere else");
+  const changed = box.closest("[data-changed-elsewhere]") as HTMLElement;
+  expect(changed.querySelector("[data-was]")).toHaveTextContent("The harbor");
+  expect(changed.querySelector("[data-now]")).toHaveTextContent("The harbor, renamed");
+  expect(changed).toHaveTextContent("Yours: The harbor!");
+  // Keep mine: the typed words stay and the notice goes.
+  await user.click(within(changed).getByRole("button", { name: "Keep mine" }));
+  expect(screen.queryByText("Changed somewhere else")).toBeNull();
+  expect(within(form).getByRole("textbox", { name: "Title" })).toHaveValue("The harbor!");
+});
+
+test("choosing the new one puts what is saved now in the field in place of what was typed", async () => {
+  const user = userEvent.setup();
+  let moved = false;
+  fakeApi(
+    editRoutes({
+      [`GET record?${on}`]: () => ({
+        kind: KIND,
+        id: ID,
+        version: moved ? 5 : 4,
+        fields: { id: ID, title: moved ? "The harbor, renamed" : "The harbor", pages: 12, final: false, due: "2026-11-01", state: "draft", mood: "calm", owner: "P-2", tags: ["one", "two"], locked: "x" },
+        long_text: [field],
+      }),
+      "POST records/edit": () => {
+        moved = true;
+        return new Refuse(409, "This record changed after you opened it.");
+      },
+    }),
+  );
+  const form = await openForm(user);
+  await user.type(within(form).getByRole("textbox", { name: "Title" }), "!");
+  await user.click(within(form).getByRole("button", { name: "Save" }));
+  await user.click(await screen.findByRole("button", { name: "Use the new one" }));
+  expect(within(form).getByRole("textbox", { name: "Title" })).toHaveValue("The harbor, renamed");
+  expect(screen.queryByText("Changed somewhere else")).toBeNull();
+});
+
+test("Cancel puts the values back and closes the form", async () => {
+  const user = userEvent.setup();
+  fakeApi(editRoutes());
+  const form = await openForm(user);
+  await user.type(within(form).getByRole("textbox", { name: "Title" }), " and more");
+  await user.click(within(form).getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("form", { name: "Edit details" })).toBeNull();
+  await user.click(await screen.findByRole("button", { name: "Edit details" }));
+  expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("The harbor");
+});
+
+test("a field bound to a value list is a list choice, with the record's dropped value kept and marked; a plain choice keeps its options", async () => {
+  const user = userEvent.setup();
+  const calls = fakeApi(
+    editRoutes({
+      [`GET kinds/${KIND}`]: () => ({
+        kind: KIND,
+        fields: [
+          ...editKind.fields,
+          { name: "stage_label", description: "Where it stands.", type: "choice", options: ["Draft", "Done"], value_list: "demo-stages", required: false, editable: true },
+        ],
+      }),
+      [`GET record?${on}`]: () => ({
+        kind: KIND,
+        id: ID,
+        version: 4,
+        fields: { id: ID, title: "The harbor", state: "draft", mood: "calm", stage_label: "Shelved" },
+        long_text: [field],
+      }),
+      "GET lists": () => [
+        { id: "L-1", name: "demo-stages", label: "Demo stages", values: ["Draft", "Done"], retired: ["Shelved"], used_by: [`${KIND}.stage_label`] },
+      ],
+      "POST records/edit": () => ({ changeset: "CS-4" }),
+    }),
+  );
+  const form = await openForm(user);
+  const stage = within(form).getByRole("combobox", { name: "Stage label" });
+  await waitFor(async () =>
+    expect(within(await snapshotOf(stage)).getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "Not set",
+      "Draft",
+      "Done",
+      "Shelved (no longer offered)",
+      "Add to the list…",
+    ]),
+  );
+  expect(stage).toHaveValue("Shelved");
+  expect(within(form).getByText("Where it stands.")).toBeInTheDocument();
+  // A plain choice still offers just its own options.
+  const state = within(form).getByRole("combobox", { name: "State" });
+  expect(within(await snapshotOf(state)).getAllByRole("option").map((o) => o.textContent)).toEqual(["None", "draft", "revised", "locked"]);
+  await user.selectOptions(stage, "Done");
+  await user.click(within(form).getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST records/edit")).toBe(true));
+  expect(calls.find((c) => c.route === "POST records/edit")?.body).toMatchObject({ fields: { stage_label: "Done" } });
+});
+
+test("an action's page shows where it came from as a link, in place of the input's id", async () => {
+  fakeApi(
+    routes({
+      [`GET record?${on}`]: () => ({
+        kind: KIND,
+        id: ID,
+        version: 4,
+        fields: { id: ID, title: "The harbor", source: "SRC-3" },
+        long_text: [],
+        origin: { kind: "link", url: PAGE, source: "SRC-3" },
+      }),
+    }),
+  );
+  renderApp(<RecordPage kind={KIND} id={ID} onBack={() => {}} />);
+  const link = await screen.findByRole("link", { name: "Where it came from" });
+  expect(link).toHaveAttribute("href", PAGE);
+  expect(screen.getByText("(pages.example.com)")).toBeInTheDocument();
+  const details = screen.getByRole("region", { name: "Details" });
+  expect(within(details).queryByText("SRC-3")).toBeNull();
+});
+
+test("a page with no origin shows no link, and an input's id it can't name is never shown", async () => {
+  fakeApi(
+    routes({
+      [`GET record?${on}`]: () => ({ kind: KIND, id: ID, version: 4, fields: { id: ID, title: "The harbor", source: "SRC-3" }, long_text: [] }),
+    }),
+  );
+  renderApp(<RecordPage kind={KIND} id={ID} onBack={() => {}} />);
+  const details = await screen.findByRole("region", { name: "Details" });
+  expect(within(details).queryByText("SRC-3")).toBeNull();
+  expect(screen.queryByText("Where it came from")).toBeNull();
+});

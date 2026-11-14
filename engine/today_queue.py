@@ -1,0 +1,2440 @@
+"""Today's queue: what needs the person, ranked (design 7.7).
+
+One line per thing to do, each starting with what to do. Lines fall in groups, in this order: decide (decisions and
+everything held for the person), risk (work that failed, the person's overdue to-dos), review (the assistant's work and
+incoming changes to look over), send (messages to send and people to follow up with), and last setup (what first-run
+setup has not finished: never counted among what needs the person today). Within a group the line that
+has waited longest, or is due first, comes first. Nothing here calls AI or reaches a service; it reads records only.
+Plugin Today lines and stage lines are added by the screen into their groups.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+from engine import (
+    areas,
+    attention_learning,
+    called_off,
+    dated_facts,
+    day_capacity,
+    day_clashes,
+    endings,
+    held_ask,
+    invitation_lines,
+    meeting_prep,
+    move_groups,
+    new_terms,
+    patterns,
+    people_memory,
+    promises,
+    release_hours,
+    reminder_lines,
+    reply_lines,
+    review_batches,
+    running,
+    sent_version,
+    sides,
+    since_yesterday,
+    source_intake,
+    suggestions,
+    watch,
+    week_plan,
+)
+from engine.blocked import standing_hold
+from engine.firm_due import firm_due
+from engine.followups import ROUTING, sections
+from engine.language_words import language_words
+from engine.names import People
+from engine.origin import from_outside
+from engine.owners import suggest_owner
+from engine.plugin_api import TODAY_GROUPS
+from engine.scope import stance_of
+from engine.storage.store import ByIdData
+from engine.titles import Title, head_of, subject_of, title_for
+from engine.today import zone
+
+#: The groups in the order the queue ranks them: the plugin-facing four, then the core's own last group, "setup" (what
+#: setup has not finished yet: not something that needs the person today, and never counted among the things that do).
+GROUPS: tuple[str, ...] = (*TODAY_GROUPS, "setup")
+#: The most characters of the person's own words a line quotes.
+NO_EFFECT_WORDS = 200
+
+
+@dataclass
+class Line:
+    """One line of the queue. `key` is stable while the thing it stands for waits. `kind`: decision, question (one
+    the person was asked), who_is (a name the assistant couldn't place), owner (an action with no owner), held (an
+    item waiting for the person's yes), go (a run waiting for the person's go), first_go (every run waiting for the
+    first go in the workspace, as one line: `estimate_usd` is their total estimate and `unpriced` how many have
+    none), catch_up_go (the learning runs for the catch-up list, held together for one go: `count` runs, their total
+    `estimate_usd` and `unpriced` how many have none), intake_go (a newly added `source`, `subject` its label, taken in
+    quietly: its `count` items held together for one go, their total `estimate_usd`, `unpriced` how many have none and
+    `days` how far back its mail was read, none for a source with no mail), intake_review (what was found in a newly
+    added `source`: `count` items with something to look over and their results counted in `outcome`, which replace
+    the lines each would have had; the list opens in the details pane, and "All looks good" there reviews it),
+    batches (batches left unopened for `ui.today.fold_batches_after_days`, folded into one line: `count` of them,
+    each a `review` or `intake_review` line in `parts`, oldest first), refused (and failed:
+    several with one cause are one line, `count` of them, each in `items`, `state` no_person for that cause),
+    restart (work held until the person
+    restarts the app: `count` is how many requests wait), stuck (background work that stopped checking in:
+    `waiting_since` is when it last did; the person restarts the app), handover (the synced folder can't be used until
+    the person settles it: `state` is diverged, chosen or elsewhere and `text` the other computer), failed,
+    paused (an AI account waiting for its usage limit to reset: `account`, `until` and `count` waiting), borrow (a
+    question: every account a kind of work can use is paused, so may another kind of work's free `account` (with its
+    `model`) take that work, the `tier`'s, until `until`, when the paused account `text` resets? `count` waiting items
+    it would take, their `estimate_usd` together and `unpriced` how many have no price), offline (work
+    that has waited for the network longer than the configured time: `count` waiting and `waiting_since`, when the
+    oldest began), overdue, account_check (an AI account in a fallback chain that can't stand in yet: its `account`, the
+    `tier` whose chain it is in, its `model`, and `check_failed` when its last check failed rather than it never having
+    been checked),
+    work_access (an account the person answered "Not now" about reading their work mail and notes: its `account`;
+    Allow is POST /api/ai/accounts/{account}/allow-work),
+    identity (an agent account whose sign-in changed or doesn't fit the work waiting on it: its `account`; with `state`
+    changed, the sign-in found now in `text` and the recorded one in `subject`, to keep or sign in again; with `state`
+    level, the sign-in in `text` (none when unknown), the levels of the waiting work in `names` and how many requests
+    wait in `count`),
+    switch_failed (a switch of the `tier`'s account or model whose check found problems, or couldn't finish: the new
+    `account`, the earlier one in `text`, `count` cases that didn't come out right with the first of them in `names`,
+    and `check_failed` when the check couldn't finish),
+    account_move (a saved account that uses the generic connection to a service that has its own: its `account`, the
+    service's name in `subject`; Move shows the identity the new connection signs in as and checks it first, Not now
+    puts it off for good),
+    model_watch (an account whose tiers have news about their models: `names` the tiers, `account`; with `state` newer,
+    a newer model of the tier's own family exists, `candidates` maps each such tier to it, `usd_per_day` is what it
+    would change in cost per day at the current use (none when a price isn't known), `reason` why it isn't moved to on
+    its own: asks, costs_more, price_unknown, check_failed (`count` cases that didn't come out right, `check_failed`
+    when the check couldn't finish) or check_cost (its check's `estimate_usd` is above the amount asked about); with
+    `state` price, a tier's current model went up in price by `usd_per_day`),
+    model_moved (a tier moved on its own to a newer model of its family after a check passed: the new `account`, the
+    earlier one in `text`, `usd_per_day` the change in cost; Keep clears it, Switch back restores the earlier model),
+    credential (a key or sign-in that stops working on `due`, or already has: `credential_kind` is account or
+    sign_in, `credential_name` its name, `waiting_days` the days left, below zero once it has passed, and `places`
+    every place the same credential is used),
+    moved (the questions a follow-on run asked the person about one move, as one line: `count` of them in
+    `questions`, the move in `after_move`), review, unfiled (what the assistant filed under no project: `count` of
+    them, with `state` which_side when a business is set: one question, personal or the business, whose name is in
+    `subject`),
+    rule_review (standing rules to look over: `count` flagged as never applying in `days`, their ids in `rules`,
+    the always-sent section's `stable_size` against its `stable_budget`, and `moved` rules sent only with the runs they
+    cover), learned (proposals of what the assistant learned from inputs and from the person's corrections, to look
+    over: `count` of them, `origins` counted by where they came from and `expired` how many from inputs expired since
+    the person last looked), catch_up (what the assistant learned from corrections made before it could: `count`
+    waiting and `left_out`, how many kinds of correction were too many for one list), extractor (a kind of file that
+    isn't being read: `file_kind` is the kind, and `text` why), source_unread (a source that has failed for longer than
+    its usual gap: `source` is its id, `subject` its label, `problem_kind` the kind of failure, `text` what went wrong
+    and what to do, and `waiting_since` when it was last read, or first tried when it never was), promise (one open
+    action that needs a look: its id in `actions`, its words in `text`, its day in `due` (none when undated),
+    `waiting_days` (days past its date, below zero while the date is ahead, or days with nothing heard when undated),
+    and in `person` the one to chase, none when it is the person's own, with `stance`: who they are to the person, so
+    the line says Chase or Waiting on; none for the person's own), reminder (an open action whose reminder has
+    reached the person: its id in `actions`, its words in `text`, the moment it was set for in `at` on the person's
+    clock, `late` when it came due and wasn't shown in time, `asleep` when the app also knows it was not running (the
+    computer asleep or the app closed) when it came due, and in `snoozes` the choices that still have a time, each
+    `choice` with the `at` it resolves to), reminder_digest (reminders that fell in quiet hours, or, by the person's
+    choice, were missed, arriving together: `reminders` lists each with its action, words and `at`, `late` says which
+    of the two it is, and `asleep` that the app knows it was not running for every one), reply (a reply owed, one open
+    action: its id in `actions`, its words in `text`, the message's `subject`, who it is to in `person` or, for nobody
+    known, `sender` as written, and the drafted `reply` with `reply_reviewed`; ranked by when the message came, oldest
+    first),
+    no_effect (the person's answer or correction to a question was handled twice and changed nothing: the question's
+    title in `subject` and id in `question`, their own words in `text`; the line opens the question to answer again, and
+    "Leave it" dismisses the request),
+    sent_folder (a connected mailbox that reads no sent folder: its first source's id in `source`, the mailbox's name in
+    `subject`;
+    several mailboxes are one line with `count`, their sources in `sources` and names in `names`;
+    the line opens where the source's folders are chosen, and Dismiss ends it for good),
+    folder_rename (a folder made under the product's earlier name, found where the new default would be: `state` is
+    backups or workspace, `subject` the folder as it is named now and `text` as it would be named; Rename is the
+    person's own change and Keep stops the offer for good),
+    restore (a restore of a backup copy over the workspace: `state` pending while it waits for the restart that swaps it
+    in, restored for the first look after it was (`text` the folder that holds what was there before), or not_restored
+    when the swap didn't happen and the workspace is as it was (`text` says why); `at` is the moment the workspace
+    goes back to, or went back to; Restart now is POST /api/restart, Cancel POST /api/backups/restore/cancel, Put back
+    what was there before POST /api/restore/put-back and Dismiss POST /api/restore/dismiss),
+    sent_check (a message the person copied that no sent message has matched, asked about once a sent folder is
+    being read: its copy's id in `sent_copy`, who it was for in `person`, what it covered in `questions` and
+    `actions`),
+    since_yesterday (what the assistant or a rule did that the person hasn't looked over, one line for all of it:
+    `count` entries, counted by act in `outcome`; Look over opens the list), away (one row for the lines that waited for
+    the person's working hours and arrived together with them: `count` is how many, and `since` the moment the hours
+    began; it is at the top of the first group any of them is in, and goes with the day), send or nudge.
+    escalate (the one thing a person still hasn't answered after `ui.followups.escalate_after_chases` follow-ups, as a
+    suggestion to ask someone else: its id in `questions` or `actions`, its words in `text`, who hasn't answered in
+    `person`, the follow-ups it has had in `count` and the days since the last word in `waiting_days`), stale (the
+    person's own open to-dos with no date that nothing has changed for `ui.today.stale_after_days`, one line for each:
+    its id in `actions`, the days untouched in `waiting_days` and its own words in `subject`), needs_date (one line for
+    the person's own to-dos, and ones they told someone about, added in the last `steward.dates.undated_line_days` days
+    with no date: `count` of them, their ids in `actions`; it opens the to-dos screen's "Needs a date" group), terms
+    (the questions about unknown words that wait for an answer, as one line: `count` of them, their ids in `questions`).
+    nudge is the one follow-up line for a person the person is waiting on (`count` of their items, `overdue` how many
+    are past their date and `due` the oldest of those, `due_items` the to-dos that are overdue or due within
+    `ui.followups.action_due_within_days`, earliest first (each its `id`, `text`, `due` and whether it is
+    `overdue`), which the line names, `waiting_days` the longest wait, `replies` the most replies without an answer
+    any of its promises has had, which the line says), opening the one message to them. A promise
+    line says its `replies` the same way.
+    tie (a calendar entry proposed for an open to-do, because its title and the to-do's words contain one another on the
+    to-do's day: the to-do's id in `actions`, its words in `text`, the entry's id in `entry`, its title in `other` and
+    its day in `due`; Tie it is POST /api/actions/{id}/tie and Not this POST /api/actions/{id}/not-this),
+    guests (the known people a plain calendar entry's title names, proposed as on it: the entry's id in `entry`, its
+    title in `text`, the people's names in `names` and its day in `due`; Yes is POST /api/events/{id}/guests/confirm
+    and Not them POST /api/events/{id}/guests/not-them),
+    attention (the person has put off one kind of suggestion enough times that Today asks whether to quiet it into the
+    morning brief, or stop offering it: the kind in `text`, how many times in `count`, `state` quiet or stopped; Quiet
+    them is POST /api/attention/{kind}/quiet (or /stop) and Keep showing POST /api/attention/{kind}/keep, both with
+    Undo),
+    invitation (a calendar entry that came as an invitation and has not been answered, starting soon: its id in `event`,
+    its title in `text`, who invited in `subject`, `at` when it starts; the entry's page answers it), meeting_prep (a
+    calendar entry with other people on it that starts soon: its id in `event`, its title in `text`, `at` when it
+    starts, `names` the known people coming, `count` how many others are on it and `open_items` how many
+    things are open with them; it opens the entry's page and goes when the entry starts), meeting_capture (an entry
+    with other people on it that has ended and has nothing written down: `event`, `text` and `at` when it ended; it goes
+    when the person writes down what happened or says there is nothing to note), quiet_promise (an open promise that
+    has had no news for `steward.people.quiet_promise_days`: its id in `actions`, its words in `text`, `person` to
+    follow up with, `state` to when the person promised it to them or from when they promised it to the person, `due`
+    its day when it has one and `waiting_days` the days with no news).
+    pack_tier (a tier an add-on declared for its own work, `tier` its id and `subject` its label, that the person hasn't
+    mapped to an account: its work runs on the core tier named in `text` until they do, `count` kinds of work),
+    backup (no backup that works: `state` is unset for none set up, never for none yet, failed for a try that failed and
+    none before it, overdue for a last one older than `storage.backups.every_hours` twice over, whose age in hours is
+    `age_hours`).
+    `count` is how many things the line covers; `text` the decision, question or held item in one line; `subject` the
+    one thing's own words when a review or overdue line covers exactly one (the screen titles it by them) and `did` what
+    that one thing was, as the op's name and the item's own words (the screen says it in the past tense); `deciding`
+    the keys of the Decide lines of a review line's own held ops, which the line leaves out of its count; `title`
+    the input the line is about; `outcome` what the assistant did, counted by kind; `waiting` why the work stopped, as
+    the engine said it."""
+
+    key: str
+    group: str
+    kind: str
+    count: int = 1
+    text: str | None = None
+    title: Title | None = None
+    person: str | None = None
+    project: str | None = None
+    due: str | None = None
+    waiting_days: int | None = None
+    waiting: str | None = None
+    subject: str | None = None
+    request: str | None = None
+    changeset: str | None = None
+    question: str | None = None
+    op: int | None = None
+    actions: list[str] = field(default_factory=list)
+    questions: list[str] = field(default_factory=list)
+    outcome: dict[str, int] = field(default_factory=dict)
+    did: dict[str, str] | None = None
+    #: For a `batch_item` that is a draft: the drafted text, so the review shows what it asks to be approved.
+    draft: str | None = None
+    deciding: list[str] = field(default_factory=list)
+    #: For a batch to look over (`review`, `intake_review`): what needs a look, one `batch_item` line for each (its
+    #: `what` is action, question or draft; a `held` line for what waits for the person's yes), and the changesets
+    #: "All looks good" confirms. For `batches`, the batch lines folded into it, oldest first, in `parts`.
+    what: str | None = None
+    items: list[Line] = field(default_factory=list)
+    parts: list[Line] = field(default_factory=list)
+    changesets: list[str] = field(default_factory=list)
+    untrusted: bool = False
+    estimate_usd: float | None = None
+    unpriced: int = 0
+    account: str | None = None
+    until: str | None = None
+    waiting_since: str | None = None
+    #: For a line of messages to send: the day the oldest of them became ready to send, where the workspace is.
+    ready_since: str | None = None
+    state: str | None = None
+    rules: list[str] = field(default_factory=list)
+    stable_size: int | None = None
+    stable_budget: int | None = None
+    moved: int | None = None
+    days: int | None = None
+    origins: dict[str, int] = field(default_factory=dict)
+    expired: int | None = None
+    left_out: int | None = None
+    suggestion: dict[str, Any] | None = None
+    held: dict[str, Any] | None = None
+    after_move: dict[str, Any] | None = None
+    tier: str | None = None
+    model: str | None = None
+    check_failed: bool | None = None
+    file_kind: str | None = None
+    source: str | None = None
+    problem_kind: str | None = None
+    credential_kind: str | None = None
+    credential_name: str | None = None
+    places: list[str] = field(default_factory=list)
+    #: For a sent_folder line that covers several mailboxes, their sources' ids (their names are in `names`).
+    sources: list[str] = field(default_factory=list)
+    names: list[str] = field(default_factory=list)
+    usd_per_day: float | None = None
+    reason: str | None = None
+    candidates: dict[str, str] = field(default_factory=dict)
+    at: str | None = None
+    late: bool | None = None
+    #: For a late reminder, or a line of the ones that were missed: the app knows it was not running when each came due
+    #: (the computer asleep or the app closed). Without that, the line says only that it is overdue.
+    asleep: bool | None = None
+    snoozes: list[dict[str, str]] = field(default_factory=list)
+    #: For a line about a promise gone quiet: the days it can be snoozed for, each `days` and the day it returns (`on`).
+    snooze_days: list[dict[str, Any]] = field(default_factory=list)
+    reminders: list[dict[str, str]] = field(default_factory=list)
+    reply: str | None = None
+    reply_reviewed: bool | None = None
+    sender: str | None = None
+    stance: str | None = None
+    sent_copy: str | None = None
+    overdue: int = 0
+    due_items: list[dict[str, Any]] = field(default_factory=list)
+    replies: int = 0
+    age_hours: float | None = None
+    seconds: float | None = None
+    event: str | None = None
+    open_items: int | None = None
+    #: For a capacity line, the free minutes left today (`minutes`) and the effort due today (`needed_minutes`); for a
+    #: clash line, the minutes of overlap or the travel time short (`minutes`) and the other meeting's title (`other`),
+    #: with the entry to open in `entry`.
+    minutes: int | None = None
+    needed_minutes: int | None = None
+    other: str | None = None
+    entry: str | None = None
+    #: For a clash line, each meeting's calendar (the source's name; none for the app's own), when it starts and ends
+    #: on the person's clock, and the second one's entry to open.
+    source_name: str | None = None
+    other_source_name: str | None = None
+    starts: str | None = None
+    ends: str | None = None
+    other_starts: str | None = None
+    other_ends: str | None = None
+    other_entry: str | None = None
+    #: For a clash line whose meeting is a connected calendar's event the app keeps no entry for: the page of what its
+    #: calendar says (the event and the date of it), and the calendar's own address to open it there.
+    event_page: str | None = None
+    other_event_page: str | None = None
+    calendar_link: str | None = None
+    other_calendar_link: str | None = None
+    #: The side the line is on when its own fields don't say (a clash: the side its meetings are on; design 6.32).
+    side: str | None = None
+    #: Every side the line is on, for one about entries on more than one (a clash between two calendars that serve
+    #: different sides): the side filter shows it under each. Empty for a line on one side or none.
+    sides: list[str] = field(default_factory=list)
+    #: For a travel clash line, the travel time asked for between the two places (`travel_minutes`) and where each
+    #: meeting is (`place`, `other_place`).
+    travel_minutes: int | None = None
+    place: str | None = None
+    other_place: str | None = None
+    #: For a date_reminder line: the dated fact it is about (`due` is its day, `state` its kind, `at` the reminder).
+    fact: str | None = None
+    #: For a pattern line, a stale line and the like: the choices the line offers, in order, as ids the screen words.
+    choices: list[str] = field(default_factory=list)
+    since: str = ""
+
+
+def _one_line_per_cause(found: dict[tuple[str, str, str | None, str | None], list[Line]]) -> list[Line]:
+    """Stopped requests with one known cause are one line with a count and the lines behind it in `items` (`state` is
+    the cause's kind), never one line each; a request that stopped alone, or with no known cause, keeps its own line."""
+    lines: list[Line] = []
+    for (kind, group, cause_kind, waiting), members in found.items():
+        # Only a known cause groups: two requests that stopped with the same general words may have stopped for
+        # different reasons, so each keeps its own line.
+        if len(members) == 1 or not cause_kind:
+            lines.extend(members)
+            continue
+        lines.append(
+            Line(
+                key=f"{kind}:all:{cause_kind or waiting or ''}",
+                group=group,
+                kind=kind,
+                count=len(members),
+                waiting=waiting,
+                state=cause_kind if cause_kind == "no_person" else None,
+                items=members,
+                since=min(m.since or "" for m in members),
+            )
+        )
+    return lines
+
+
+def _folder_lines(ws: Any, store: Any, cfg: Any, home: Path | None = None) -> list[Line]:
+    """Lines about folders: a connected mailbox that reads no sent folder, and a folder made under the product's earlier
+    name that is offered a rename once."""
+    from engine import folder_rename, sent_folders
+
+    lines: list[Line] = []
+    private = ws.private_dir
+    gone = sent_folders.dismissed(private)
+    boxes = [box for box in sent_folders.missing(cfg, watch.connectors(store)) if box.source not in gone]
+    if len(boxes) == 1:
+        lines.append(
+            Line(
+                key=f"sent_folder:{boxes[0].source}",
+                group="setup",
+                kind="sent_folder",
+                source=boxes[0].source,
+                subject=boxes[0].label,
+            )
+        )
+    elif boxes:
+        # Mailboxes with the same missing folder are one line with a count and their names, not one line each.
+        lines.append(
+            Line(
+                key="sent_folder:all",
+                group="setup",
+                kind="sent_folder",
+                count=len(boxes),
+                source=boxes[0].source,
+                sources=[box.source for box in boxes],
+                names=[box.label for box in boxes],
+            )
+        )
+    if cfg.server.mode != "hosted":
+        here = home or Path.home()
+        for which in folder_rename.offers(cfg, private, ws.root, here):
+            if which == folder_rename.BACKUPS:
+                old, new = cfg.storage.backups.former_cloud_path, cfg.storage.backups.cloud_path
+            else:
+                old, new = [folder_rename.FORMER_FOLDER], [folder_rename.DEFAULT_FOLDER]
+            lines.append(
+                Line(
+                    key=f"folder_rename:{which}",
+                    group="decide",
+                    kind="folder_rename",
+                    state=which,
+                    subject=folder_rename.shown(list(old)),
+                    text=folder_rename.shown(list(new)),
+                )
+            )
+    return lines
+
+
+def _restore_lines(ws: Any, cfg: Any) -> list[Line]:
+    """Lines about restoring a backup copy over the workspace (design 5.0): one while a restore waits for the restart
+    that swaps it in, and one for how the last swap went (the workspace is back as it was then, or the swap didn't
+    happen and why), until the person dismisses it."""
+    from engine import restore_in_app
+
+    here = zone(cfg)
+
+    def local(stamp: str | None) -> str | None:
+        return datetime.fromisoformat(stamp).astimezone(here).isoformat() if stamp else None
+
+    lines: list[Line] = []
+    staged = restore_in_app.pending(ws)
+    if staged is not None:
+        lines.append(
+            Line(
+                key="restore:pending",
+                group="decide",
+                kind="restore",
+                state="pending",
+                at=local(staged.made_at),
+                since=staged.staged_at,
+            )
+        )
+    noted = restore_in_app.note(ws)
+    if noted is not None and noted.state == restore_in_app.RESTORED:
+        lines.append(
+            Line(
+                key="restore:restored",
+                group="review",
+                kind="restore",
+                state="restored",
+                at=local(noted.made_at),
+                text=noted.kept,
+            )
+        )
+    elif noted is not None:
+        lines.append(
+            Line(
+                key="restore:not_restored",
+                group="risk",
+                kind="restore",
+                state="not_restored",
+                at=local(noted.made_at),
+                text=noted.reason,
+            )
+        )
+    return lines
+
+
+def _model_lines(store: Any, cfg: Any) -> list[Line]:
+    """Lines about the accounts' models: a tier moved on its own that waits for Keep or Switch back, an account that
+    could move to its service's own connection, and the news the weekly look kept (a newer model, a price rise)."""
+    from engine.ai import model_watch, native_move, switch_check
+
+    lines: list[Line] = []
+    for tier, entry in sorted(switch_check.moved(store).items()):
+        tiers = cfg.ai.tiers.get(tier)
+        if tiers is None or tiers.use != entry.get("after"):
+            continue  # the person has changed the tier since: there is nothing to keep or switch back
+        lines.append(
+            Line(
+                key=f"model_moved:{tier}",
+                group="decide",
+                kind="model_moved",
+                text=str(entry["before"]).partition("/")[0],
+                account=str(entry["after"]).partition("/")[0],
+                tier=tier,
+                usd_per_day=entry.get("usd_per_day"),
+                since=str(entry.get("at") or ""),
+            )
+        )
+    if any(p.adapter == native_move.GENERIC and p.base_url for p in cfg.ai.providers.values()):
+        from engine.setup import known_endpoints
+
+        for move in native_move.candidates(cfg, known_endpoints(), store):
+            lines.append(
+                Line(
+                    key=f"account_move:{move.account}",
+                    group="decide",
+                    kind="account_move",
+                    account=move.account,
+                    subject=move.service,
+                )
+            )
+    for (account, state), offers in model_watch.shown_offers(cfg, store).items():
+        tiers = sorted(offers)
+        deltas = [
+            offers[t].get("usd_per_day") if state == model_watch.NEWER else offers[t]["price_rise"]["usd_per_day"]
+            for t in tiers
+        ]
+        reasons = [model_watch.reason_of(offers[t]) for t in tiers] if state == model_watch.NEWER else []
+        checks = [offers[t].get("check_usd") for t in tiers]
+        failed = [offers[t].get("check") or {} for t in tiers]
+        lines.append(
+            Line(
+                key=f"model_watch:{account}:{state}",
+                group="decide",
+                kind="model_watch",
+                account=account,
+                state=state,
+                names=tiers,
+                candidates={t: offers[t]["candidate"] for t in tiers} if state == model_watch.NEWER else {},
+                usd_per_day=None if any(d is None for d in deltas) else round(sum(deltas), 4),
+                reason=next((r for r in model_watch.REASON_ORDER if r in reasons), None),
+                estimate_usd=None if any(c is None for c in checks) else round(sum(checks), 4),
+                count=sum(int(c.get("count") or 0) for c in failed) or 1,
+                check_failed=any(c.get("state") == "unfinished" for c in failed) or None,
+            )
+        )
+    return lines
+
+
+def queue_split(
+    ws: Any, store: Any, cfg: Any, now: datetime, handover: tuple[str, str] | None = None, stuck: str | None = None
+) -> suggestions.Split:
+    """The queue's lines split by the attention rules (design 6.32): what shows on Today now, and the suggestions saved
+    for the brief."""
+    return suggestions.split(cfg, store.read(), _everything(ws, store, cfg, now, handover, stuck), now)
+
+
+def queue(
+    ws: Any, store: Any, cfg: Any, now: datetime, handover: tuple[str, str] | None = None, stuck: str | None = None
+) -> list[Line]:
+    """Every line that needs the person now, in rank order, with the suggestions the attention rules hold back left out.
+    `handover`: what stops the synced folder from being used, as the worker reports it (state and the other computer's
+    name), which is a line of its own. `stuck`: when background work that stopped checking in last did,
+    as the worker reports it, which is a line of its own."""
+    return queue_split(ws, store, cfg, now, handover, stuck).shown
+
+
+def _everything(
+    ws: Any, store: Any, cfg: Any, now: datetime, handover: tuple[str, str] | None = None, stuck: str | None = None
+) -> list[Line]:
+    """Every line, in rank order, before the attention rules."""
+    today = now.astimezone(zone(cfg)).date()
+    people = People(store, cfg)
+    reader = store.read()
+    sources = ByIdData(reader, "source")
+    changesets = {c.id: c.data for c in reader.list("changeset")}
+    skip = list(language_words(cfg.language, "title_skip"))
+
+    titled: dict[tuple[int, int | None], Title] = {}
+
+    def title(request: dict[str, Any], cs: dict[str, Any] | None) -> Title:
+        # A request's title is read once for all the lines and rows that name it.
+        key = (id(request), id(cs) if cs is not None else None)
+        if key not in titled:
+            titled[key] = _title(request, cs)
+        return titled[key]
+
+    def _title(request: dict[str, Any], cs: dict[str, Any] | None) -> Title:
+        source = sources.get(request.get("source") or "")
+        watched = (source or {}).get("watched") or {}
+        head = head_of(ws.sources_dir, (source or {}).get("content_hash"))
+        return title_for(
+            request,
+            source,
+            cs,
+            people=people,
+            skip=skip,
+            min_words=cfg.language.title_min_words,
+            head=head,
+            watched_kind=watched_kind(reader, watched.get("source"), watched.get("key")),
+            subject=subject_of(reader, request) if source is None and request.get("origin") != "pm" else "",
+        )
+
+    def held_line(req: Any, cs_id: str, cs: dict[str, Any], outcome: dict[str, Any]) -> Line:
+        """A held op as the question the person is asked: its line under Decide, and its row in a batch."""
+        return Line(
+            key=f"held:{cs_id}:{outcome['index']}",
+            group="decide",
+            kind="held",
+            text=outcome.get("label") or _op_text(outcome.get("op") or {}),
+            title=title(req.data, cs),
+            request=req.id,
+            changeset=cs_id,
+            op=outcome["index"],
+            waiting=held_ask.reason_of(outcome),
+            held=held_ask.describe(
+                reader,
+                people,
+                outcome.get("op") or {},
+                reporter=outcome.get("reporter"),
+                choice=any(p.get("check") == endings.CHOICE_CHECK for p in outcome.get("problems") or []),
+                cfg=cfg,
+            ),
+            untrusted=cs.get("trust") == "untrusted",
+            since=str(req.data.get("created_at") or ""),
+        )
+
+    def batch_items(req: Any, cs_id: str, cs: dict[str, Any], shown: list[dict[str, Any]]) -> list[Line]:
+        """What needs a look in one request's changeset, as the rows of a batch: a to-do, a question or a draft the
+        assistant made, and what waits for the person's yes, which is answered in the batch."""
+        found: list[Line] = []
+        named = title(req.data, cs)
+        for outcome in shown:
+            if outcome.get("status") == "held":
+                found.append(held_line(req, cs_id, cs, outcome))
+                continue
+            made = next((r["id"] for r in outcome.get("records") or [] if r.get("kind") == "action"), None)
+            todo = reader.get("action", made) if made else None
+            owners = (todo.data.get("owners") or []) if todo is not None else []
+            draft = (
+                (outcome.get("op") or {}).get("text") if (outcome.get("op") or {}).get("op") == "text.draft" else None
+            )
+            found.append(
+                Line(
+                    key=f"item:{cs_id}:{outcome['index']}",
+                    group="review",
+                    kind="batch_item",
+                    what=review_batches.item_kind(outcome),
+                    text=outcome.get("label") or _op_text(outcome.get("op") or {}),
+                    title=named,
+                    person=(owners[0].get("person") if owners else None),
+                    project=(todo.data.get("project") if todo is not None else None),
+                    draft=str(draft) if draft else None,
+                    request=req.id,
+                    changeset=cs_id,
+                    op=outcome["index"],
+                    untrusted=cs.get("trust") == "untrusted",
+                    since=str(req.data.get("created_at") or ""),
+                )
+            )
+        return found
+
+    lines: list[Line] = []
+    # A source failing for longer than its usual gap is one line of its own, which stands in for the question the
+    # watcher files about the same source.
+    unread: dict[str, Any] = {}
+    for watched_source in cfg.watch.sources:
+        found = watch.unread(store, cfg, watched_source, now)
+        if found is not None:
+            unread[watched_source.id] = found
+    requests = {r.id: r for r in reader.requests_in_play()}
+    # What a newly added source's intake found has one line for the whole source, not one for each item, until the
+    # person opens the list.
+    on = {s.id for s in cfg.watch.sources}
+    intake_unseen = {source: found for source, found in source_intake.unseen(reader).items() if source in on}
+    hidden = {r.id for found in intake_unseen.values() for r in found}
+    by_changeset: dict[str, Any] = {}
+    for req in requests.values():
+        if req.data.get("changeset"):
+            by_changeset[req.data["changeset"]] = req
+
+    # Decide: questions to the person (decisions, questions, who-is and owner questions).
+    for q in reader.list("question"):
+        d = q.data
+        if d.get("to") != people.pm or people.pm is None or d.get("status") != "open":
+            continue
+        resolves = d.get("resolves") or {}
+        about = resolves.get("kind")
+        line = Line(key=f"question:{q.id}", group="decide", kind="question", text=d["title"], question=q.id)
+        line.project = (d.get("projects") or [None])[0]
+        line.since = _created(reader, "question", q.id)
+        if about == "held-op":
+            cs_id = resolves.get("changeset")
+            line.kind, line.changeset, line.op = "who_is", cs_id, resolves.get("op")
+            line.text = resolves.get("name") or d["title"]
+            req = by_changeset.get(cs_id)
+            if req is not None:
+                line.request = req.id
+                line.title = title(req.data, changesets.get(cs_id))
+                line.untrusted = (changesets.get(cs_id) or {}).get("trust") == "untrusted"
+        elif about == "owner":
+            line.kind = "owner"
+            action = reader.get("action", resolves.get("action"))
+            if action is not None:
+                line.actions = [action.id]
+                line.text = action.data["text"]
+                line.due = str(action.data["due"]) if action.data.get("due") else None
+                line.project = action.data.get("project")
+                found = suggest_owner(reader, cfg, action.id)
+                line.suggestion = found.shown(people) if found is not None else None
+        elif about in ROUTING or (about == "watch" and resolves.get("source") in unread):
+            continue
+        elif new_terms.term_of(q) is not None:
+            continue  # the day's questions about words are one Review line, below
+        else:
+            line.kind = "decision" if d.get("kind") == "decision" else "question"
+        lines.append(line)
+    lines = move_groups.group(reader, people, zone(cfg), lines, Line)
+    # A name asked about in several inputs is one question: answering it releases every item waiting on that name.
+    # The same name asked in another input is not asked again anywhere: the input it came in with leaves the question to
+    # the one line, so no list to look over holds it a second time (`same_name`, op by changeset).
+    seen_names: dict[str, str] = {}
+    same_name: dict[str, dict[int, str]] = {}
+    once: list[Line] = []
+    for each in lines:
+        name = " ".join((each.text or "").split()).casefold()
+        if each.kind == "who_is" and name:
+            if name in seen_names:
+                if each.changeset and each.op is not None:
+                    same_name.setdefault(each.changeset, {})[each.op] = seen_names[name]
+                continue
+            seen_names[name] = each.key
+        once.append(each)
+    lines = once
+
+    # Decide: held items with no question (they wait for the person's yes), and runs waiting for a go. A held item has
+    # its line whatever became of the request that made it, a dismissed one included: Today's line is the only place
+    # to answer it.
+    for cs_id, cs in changesets.items():
+        req = by_changeset.get(cs_id)
+        if req is None or req.id in hidden:
+            continue
+        # A project ending read from an input is one line with its drops inside it, not a line for each item.
+        winding = endings.held_endings(reader, cs_id, cs.get("ops", []))
+        folded = {i for each in winding for i in (each.index, *(item.index for item in each.items))}
+        for each in winding:
+            project = reader.get("project", each.project)
+            lines.append(
+                Line(
+                    key=f"ending:{cs_id}:{each.index}",
+                    group="decide",
+                    kind="project_ending",
+                    count=len(each.items),
+                    subject=project.data["name"] if project is not None else each.project,
+                    project=each.project,
+                    title=title(req.data, cs),
+                    request=req.id,
+                    changeset=cs_id,
+                    op=each.index,
+                    actions=[item.id for item in each.items if item.kind == "action"],
+                    questions=[item.id for item in each.items if item.kind == "question"],
+                    untrusted=cs.get("trust") == "untrusted",
+                    since=str(req.data.get("created_at") or ""),
+                )
+            )
+        for outcome in cs.get("ops", []):
+            if outcome.get("status") != "held" or outcome.get("question") or outcome["index"] in folded:
+                continue
+            lines.append(held_line(req, cs_id, cs, outcome))
+    from engine import catch_up
+    from engine.dispatcher import FIRST_GO, waits_on_first_go
+
+    first_go: list[Any] = []
+    catch_up_go: list[Any] = []
+    intake_go: dict[str, list[Any]] = {}
+    same_cause: dict[tuple[str, str, str | None, str | None], list[Line]] = {}
+    for req in requests.values():
+        d = req.data
+        if d.get("dismissed") or d.get("state") not in ("needs_you", "failed"):
+            continue
+        if d.get("no_effect"):
+            # The person's answer or correction to a question was handled twice and changed nothing: never a silent
+            # stop. The line quotes their words and offers to open the question (to answer again) or to leave it.
+            from engine.intake import source_text
+
+            asked = reader.get("question", (d.get("about") or {}).get("id") or "")
+            words = " ".join(source_text(ws, store, d.get("source")).split())
+            lines.append(
+                Line(
+                    key=f"no_effect:{req.id}",
+                    group="decide",
+                    kind="no_effect",
+                    text=words if len(words) <= NO_EFFECT_WORDS else words[: NO_EFFECT_WORDS - 1].rstrip() + "…",
+                    subject=asked.data["title"] if asked is not None else None,
+                    question=asked.id if asked is not None else None,
+                    request=req.id,
+                    waiting=d.get("waiting"),
+                    since=str(d.get("created_at") or ""),
+                )
+            )
+            continue
+        if waits_on_first_go(d):
+            first_go.append(req)
+            continue
+        if catch_up.waits_on_go(d):
+            catch_up_go.append(req)
+            continue
+        if source_intake.waits_on_go(d):
+            intake_go.setdefault(d["intake"], []).append(req)
+            continue
+        if d["state"] == "failed":
+            kind, group = "failed", "risk"
+        elif d.get("approval") == "required":
+            kind, group = "go", "decide"
+        else:
+            # Work that stopped is at risk, after the accounts and the clashes; it is never a decision itself.
+            kind, group = "refused", "risk"
+        stopped = Line(
+            key=f"{kind}:{req.id}",
+            group=group,
+            kind=kind,
+            title=title(d, changesets.get(d.get("changeset") or "")),
+            request=req.id,
+            waiting=d.get("waiting"),
+            since=str(d.get("created_at") or ""),
+        )
+        if kind == "go":
+            lines.append(stopped)
+        else:
+            cause_kind = (d.get("cause") or {}).get("kind")
+            same_cause.setdefault((kind, group, cause_kind, d.get("waiting")), []).append(stopped)
+    lines.extend(_one_line_per_cause(same_cause))
+
+    from engine.extract import health
+
+    for problem in health.problems(ws):
+        # A kind of file that can't be read is never a silent stop: nothing in such files reaches the assistant.
+        lines.append(
+            Line(
+                key=f"extractor:{problem.kind}",
+                group="risk",
+                kind="extractor",
+                text=problem.reason,
+                file_kind=problem.kind,
+                since=problem.since,
+            )
+        )
+
+    # One account's sources that fail the same way are one line, naming the account, not one line for each of them.
+    grouped: dict[tuple[str, str], list[Any]] = {}
+    for watched_source in cfg.watch.sources:
+        found = unread.get(watched_source.id)
+        if found is None:
+            continue
+        grouped.setdefault((watched_source.account or watched_source.id, found.kind), []).append(watched_source)
+    for (_, _), members in grouped.items():
+        watched_source = members[0]
+        found = unread[watched_source.id]
+        # A source that can't be read is never a silent stop or a clean "nothing needs you":
+        # the line says which, and since when (the earliest of the group's).
+        since = min(unread[m.id].since for m in members)
+        lines.append(
+            Line(
+                key=f"source_unread:{watched_source.id}",
+                group="risk",
+                kind="source_unread",
+                source=watched_source.id,
+                subject=(watched_source.account if len(members) > 1 else None)
+                or watched_source.label
+                or watched_source.id,
+                problem_kind=found.kind,
+                text=found.problem,
+                waiting_since=since,
+                since=since,
+                count=len(members),
+            )
+        )
+
+    if handover is not None:
+        # The folder not being written is never a silent stop; the line opens the page that settles it.
+        lines.append(
+            Line(key="handover", group="decide", kind="handover", text=handover[1], state=handover[0], since="")
+        )
+
+    from engine import slow_screens
+
+    for screen, seconds in slow_screens.for_workspace(ws.root).slow().items():
+        # A main screen that has been slow three loads in a row: one line, until three loads are fast again.
+        lines.append(
+            Line(
+                key=f"slow_screen:{screen}",
+                group="risk",
+                kind="slow_screen",
+                subject=screen,
+                seconds=round(seconds, 1),
+                since="",
+            )
+        )
+
+    if stuck:
+        # Background work that stopped checking in is never a silent stop; the line asks for a restart, the person's.
+        lines.append(Line(key="stuck", group="decide", kind="stuck", waiting_since=stuck, since=stuck))
+
+    from engine.worker import RESTART_NEEDED, held_for_restart
+
+    held = [
+        r
+        for r in requests.values()
+        if r.data.get("state") == "queued" and not r.data.get("dismissed") and held_for_restart(r.data.get("waiting"))
+    ]
+    if held:
+        # Work held until a restart is never a silent stop: the first line of the day, with the count. It only asks;
+        # the restart is the person's to start.
+        lines.append(
+            Line(
+                key="restart",
+                group="decide",
+                kind="restart",
+                count=len(held),
+                waiting=RESTART_NEEDED,
+                since=min(str(r.data.get("created_at") or "") for r in held),
+            )
+        )
+
+    # The go is for starting work, so it is asked for only once there is an AI account to do the work: until then
+    # the one line is the one that says to choose an account (below, `no_account`), and nothing asks for a go that
+    # could not start anything.
+    ai_set_up = any(
+        tier.use and tier.use.partition("/")[0] in cfg.ai.providers
+        for name, tier in cfg.ai.tiers.items()
+        if "/" not in name
+    )
+    if first_go and ai_set_up:
+        from engine.watch import first_go_sorting
+
+        priced = [r.data["estimate_usd"] for r in first_go if r.data.get("estimate_usd") is not None]
+        # The go also makes the sorting run for mail handed in unsorted; the person approves that spend with it.
+        _runs, sorting_usd, sorting_unpriced = first_go_sorting(ws, store, cfg)
+        total = sum(priced) + (sorting_usd or 0.0)
+        lines.append(
+            Line(
+                key="first_go",
+                group="decide",
+                kind="first_go",
+                count=len(first_go),
+                estimate_usd=round(total, 4) if priced or sorting_usd is not None else None,
+                unpriced=len(first_go) - len(priced) + sorting_unpriced,
+                waiting=FIRST_GO,
+                since=min(str(r.data.get("created_at") or "") for r in first_go),
+            )
+        )
+
+    if catch_up_go:
+        _, total, unpriced = catch_up.total_waiting(reader)
+        lines.append(
+            Line(
+                key="catch_up_go",
+                group="decide",
+                kind="catch_up_go",
+                count=len(catch_up_go),
+                estimate_usd=total,
+                unpriced=unpriced,
+                waiting=catch_up.WAITING,
+                since=min(str(r.data.get("created_at") or "") for r in catch_up_go),
+            )
+        )
+
+    for source_id, held_for_go in sorted(intake_go.items()):
+        # One line for each newly added source, with the total of everything its go starts.
+        count, total, unpriced = source_intake.total_waiting(ws, store, cfg, source_id)
+        label = next((s.label or s.id for s in cfg.watch.sources if s.id == source_id), source_id)
+        lines.append(
+            Line(
+                key=f"intake_go:{source_id}",
+                group="decide",
+                kind="intake_go",
+                count=count or len(held_for_go),
+                source=source_id,
+                subject=label,
+                days=source_intake.days_taken(reader, source_id),
+                estimate_usd=total,
+                unpriced=unpriced,
+                waiting=source_intake.WAITING,
+                since=min(str(r.data.get("created_at") or "") for r in held_for_go),
+            )
+        )
+
+    # Risk: an AI account paused until its usage limit resets, with the work waiting on it.
+    from engine.ai.pauses import Pauses, pauses_path, waiting_text
+
+    sorter = _sorting_account(cfg)
+    for account, until in sorted(Pauses(pauses_path(store), lambda: now).active().items(), key=lambda x: (x[1], x[0])):
+        waiting = [
+            r
+            for r in requests.values()
+            if r.data.get("state") == "queued"
+            and not r.data.get("dismissed")
+            and (
+                (
+                    (r.data.get("cause") or {}).get("kind") == "paused"
+                    and (r.data.get("cause") or {}).get("account") == account
+                )
+                # Mail waiting for the assistant's sorting waits on the account the sorting runs on.
+                or (r.data.get("sort_pending") and account == sorter)
+            )
+        ]
+        if waiting:
+            lines.append(
+                Line(
+                    key=f"paused:{account}",
+                    group="risk",
+                    kind="paused",
+                    count=len(waiting),
+                    text=account,
+                    account=account,
+                    until=until.isoformat(),
+                    waiting=waiting_text(cfg, account, until, now),
+                    since=until.isoformat(),
+                )
+            )
+
+    # Decide: every account a kind of work can use is paused and another kind of work's account is free: ask before
+    # borrowing it, once for the pause. Nothing is borrowed without the person's yes.
+    if cfg.ai.borrow_other_tier == "ask":
+        lines.extend(_borrow_questions(ws, store, cfg, now, requests))
+
+    # Risk: work that has waited for the network longer than the configured time, as one line.
+    from engine.dispatcher import OFFLINE_WAITING, is_waiting_for_network
+
+    offline = [r for r in requests.values() if is_waiting_for_network(r.data)]
+    if offline:
+        began = min(_aware(str(r.data["cause"]["since"])) for r in offline)
+        if now - began >= timedelta(minutes=cfg.dispatch.offline_line_after_minutes):
+            lines.append(
+                Line(
+                    key="offline",
+                    group="risk",
+                    kind="offline",
+                    count=len(offline),
+                    waiting=OFFLINE_WAITING,
+                    waiting_since=began.isoformat(),
+                    since=began.isoformat(),
+                )
+            )
+
+    # Risk: an account in a fallback chain that is neither checked for that work nor accepted unchecked, or whose last
+    # check failed; its line goes once its check passes.
+    from engine.ai.checked import cannot_stand_in
+
+    for found in cannot_stand_in(ws, cfg):
+        lines.append(
+            Line(
+                key=f"account_check:{found.tier}:{found.ref}",
+                group="risk",
+                kind="account_check",
+                account=found.account,
+                tier=found.tier,
+                model=found.model,
+                check_failed=found.failed,
+            )
+        )
+
+    # Risk: a switch of account or model whose check found problems, or couldn't finish, until the person decides.
+    from engine.ai import switch_check
+
+    for tier, entry in sorted(switch_check.failed(store).items()):
+        names = list(entry.get("failed") or [])
+        lines.append(
+            Line(
+                key=f"switch_failed:{tier}",
+                group="risk",
+                kind="switch_failed",
+                count=len(names),
+                text=str(entry["before"]).partition("/")[0],
+                account=str(entry["after"]).partition("/")[0],
+                tier=tier,
+                names=names[: switch_check.NAMED],
+                check_failed=bool(entry.get("unfinished")),
+                waiting=entry.get("why"),
+                since=str(entry.get("at") or ""),
+            )
+        )
+
+    lines.extend(_model_lines(store, cfg))
+    lines.extend(_folder_lines(ws, store, cfg))
+    lines.extend(_restore_lines(ws, cfg))
+
+    # Decide: an account the person said "Not now" about reading their work mail and notes, until they allow it (the
+    # line goes the moment the account may see the internal level, however that came about).
+    for name, provider in sorted(cfg.ai.providers.items()):
+        if (
+            provider.work_data == "not_now"
+            and "internal" not in provider.allowed_data
+            and "restricted" not in provider.allowed_data
+        ):
+            lines.append(Line(key=f"work_access:{name}", group="decide", kind="work_access", account=name))
+
+    # Decide: an agent account whose sign-in changed, until the person keeps it or signs in again; and an agent whose
+    # sign-in isn't set for the level of work waiting on it.
+    from engine.ai import identity
+
+    for name, (before, found, since) in identity.pending(ws).items():
+        if name in cfg.ai.providers:
+            lines.append(
+                Line(
+                    key=f"identity:{name}",
+                    group="decide",
+                    kind="identity",
+                    account=name,
+                    text=found.account,
+                    subject=before.account,
+                    state="changed",
+                    since=since,
+                )
+            )
+    by_account: dict[str, set[str]] = {}
+    counts: dict[str, int] = {}
+    for r in requests.values():
+        cause = r.data.get("cause") or {}
+        waits = r.data.get("state") == "queued" and not r.data.get("dismissed")
+        if (
+            waits
+            and (cause.get("kind"), cause.get("why")) == ("identity", "level")
+            and cause["account"] in cfg.ai.providers
+        ):
+            by_account.setdefault(cause["account"], set()).add(str(cause.get("level")))
+            counts[cause["account"]] = counts.get(cause["account"], 0) + 1
+    for name, levels in sorted(by_account.items()):
+        lines.append(
+            Line(
+                key=f"identity:{name}:level",
+                group="decide",
+                kind="identity",
+                count=counts[name],
+                account=name,
+                text=(identity.recorded(ws, name) or identity.AgentIdentity("", "")).account or None,
+                state="level",
+                names=[lv for lv in ("open", "internal", "restricted") if lv in levels],
+            )
+        )
+
+    # Risk: a key or sign-in with a known end that is near or past, with every place the same one is used.
+    from engine.credentials import expiring
+
+    for found in expiring(ws, cfg, store, now):
+        lines.append(
+            Line(
+                key=f"credential:{found.kind}:{found.name}",
+                group="risk",
+                kind="credential",
+                credential_kind=found.kind,
+                credential_name=found.name,
+                due=found.ends.isoformat(),
+                waiting_days=found.days_left,
+                places=found.places,
+                since=found.ends.isoformat(),
+            )
+        )
+
+    # Risk: a kind of work with no AI account to do it, which waits until the person picks one. Said whenever it is so,
+    # also for a workspace that never had one (setup was skipped, or closed); not while the person is partway through
+    # setup and has not reached that screen, since setup is asking for it next.
+    from engine import setup as first_run
+
+    unserved = [
+        name
+        for name, tier in cfg.ai.tiers.items()
+        if "/" not in name and (not tier.use or tier.use.partition("/")[0] not in cfg.ai.providers)
+    ]
+    if unserved and (cfg.ai.providers or not cfg.workspace.demo) and not first_run.not_reached(ws, "ai"):
+        # An assistant that never had an account is a setup gap; one that worked and then lost its account has stopped.
+        worked = any(run.data.get("outcome") == "ok" for run in store.read().list("run"))
+        lines.append(
+            Line(
+                key="no_account",
+                group="risk" if worked else "setup",
+                kind="no_account",
+                count=len(unserved),
+                tier=unserved[0],
+                names=unserved,
+            )
+        )
+
+    # Decide: a tier an add-on declared for its own work that the person hasn't mapped to an account. Its work runs on
+    # the core tier it falls back to meanwhile; the line says so and offers the mapping. Nothing is mapped for them.
+    from engine import pack_tiers
+
+    for tier in pack_tiers.unmapped_in_use(cfg, store.plugins):
+        lines.append(
+            Line(
+                key=f"pack_tier:{tier.id}",
+                group="decide",
+                kind="pack_tier",
+                count=len(tier.used_by),
+                tier=tier.id,
+                subject=tier.label,
+                text=tier.falls_back_to,
+            )
+        )
+
+    # Risk: no backup that works. One place for it besides the header chip: a line with the one button that mends it.
+    from engine import backup
+
+    kept = backup.state(ws, cfg, now)
+    # Not for a backup the person hasn't been asked about yet: partway through setup, before its screen.
+    if kept.needs_attention and not (not kept.configured and first_run.not_reached(ws, "backup")):
+        # A backup never set up or never run is a setup gap; one that ran and stopped, or that fails, is a risk.
+        lines.append(
+            Line(
+                key="backup",
+                group="setup" if not kept.configured or not (kept.last_success or kept.last_error) else "risk",
+                kind="backup",
+                state="unset"
+                if not kept.configured
+                else "overdue"
+                if kept.last_success
+                else "failed"
+                if kept.last_error
+                else "never",
+                age_hours=kept.age_hours,
+                since=kept.last_success or "",
+            )
+        )
+
+    # A promise past its date with nothing heard since is a line of its own, with its choices (design 6.33), for the
+    # person's own and for one owed by someone the person reports to. One owed by anyone else is chased with the one
+    # follow-up line for that person, below. None of these is on the overdue line.
+    # What each is to the person decides the line (design 6.33, 6.34): one only watched has none, but is still
+    # covered, so no other line picks it up.
+    covered = promises.waiting_on(store, cfg, today, hidden)
+    on_a_line = {x.action for x in covered}
+    quiet = {x.action: x.quiet for x in covered if promises.is_follow_up(x)}
+    replied = {x.action: x.replies for x in covered}
+    for x in covered:
+        if x.stance == "watch" or promises.is_follow_up(x):
+            continue
+        lines.append(
+            Line(
+                key=f"promise:{x.action}",
+                group="send" if x.owner else "risk",
+                kind="promise",
+                text=x.text,
+                person=x.owner,
+                project=x.project,
+                due=x.due.isoformat() if x.due else None,
+                waiting_days=x.quiet,
+                actions=[x.action],
+                subject=x.text,
+                stance=x.stance,
+                replies=x.replies,
+                since=x.since.isoformat(),
+            )
+        )
+
+    # Reminders that have reached the person: one line each, and the ones that waited (quiet hours, or a summary of
+    # those missed while the computer slept) together as one.
+    here = zone(cfg)
+    snoozes = [{"choice": choice, "at": at.isoformat()} for choice, at in reminder_lines.choices(cfg, now)]
+    reminded = reminder_lines.plan(reader, cfg, now, running.gaps(ws))
+    for item in [*reminded.now, *reminded.late]:
+        lines.append(
+            Line(
+                key=f"reminder:{item.action}",
+                group="risk",
+                kind="reminder",
+                text=item.text,
+                subject=item.text,
+                project=item.project,
+                actions=[item.action],
+                at=item.due.isoformat(),
+                late=item in reminded.late,
+                asleep=item.away if item in reminded.late else None,
+                snoozes=snoozes,
+                since=item.at.isoformat(),
+            )
+        )
+    for key, group, late in (("quiet", reminded.kept, False), ("missed", reminded.missed, True)):
+        if group:
+            lines.append(
+                Line(
+                    key=f"reminder_digest:{key}",
+                    group="risk",
+                    kind="reminder_digest",
+                    count=len(group),
+                    late=late,
+                    asleep=all(x.away for x in group) if late else None,
+                    snoozes=snoozes,
+                    actions=[x.action for x in group],
+                    reminders=[
+                        {"action": x.action, "text": x.text, "at": x.due.astimezone(here).isoformat()} for x in group
+                    ],
+                    since=min(x.at for x in group).isoformat(),
+                )
+            )
+
+    # A dated fact the person asked to be reminded of (a renewal, an expiry, a warranty end, a bill): a line from its
+    # reminder until its day has passed.
+    for fact in dated_facts.coming(reader, cfg, now):
+        lines.append(
+            Line(
+                key=f"date_reminder:{fact.id}",
+                group="risk",
+                kind="date_reminder",
+                text=fact.data["text"],
+                subject=fact.data["text"],
+                project=fact.data.get("project"),
+                due=str(fact.data["on"]),
+                state=fact.data.get("on_kind"),
+                at=datetime.fromisoformat(str(fact.data["remind_at"])).astimezone(here).isoformat(),
+                fact=fact.id,
+                untrusted=from_outside(reader, fact),
+                since=str(fact.data["remind_at"]),
+            )
+        )
+
+    # Send and follow up: a reply the person owes, one line each, with the draft and its choices (design 6.35). The
+    # oldest message comes first.
+    for owed in reply_lines.plan(ws, reader):
+        lines.append(
+            Line(
+                key=f"reply:{owed.action}",
+                group="send",
+                kind="reply",
+                text=owed.text,
+                subject=owed.subject,
+                person=owed.asker,
+                sender=owed.sender,
+                project=owed.project,
+                actions=[owed.action],
+                reply=owed.reply,
+                reply_reviewed=owed.reviewed,
+                since=owed.received.isoformat(),
+            )
+        )
+
+    # Meetings: the prep before an entry with other people on it, and the question of what happened after it ends.
+    for coming in meeting_prep.prep_lines(store, cfg, now):
+        lines.append(
+            Line(
+                key=f"meeting_prep:{coming.event}" + (f":{coming.occurrence}" if coming.occurrence else ""),
+                group="review",
+                kind="meeting_prep",
+                state="no_agenda" if coming.no_agenda else None,
+                count=coming.others,
+                text=coming.title,
+                event=coming.event,
+                names=[people.name(p) for p in coming.people],
+                open_items=coming.open,
+                at=coming.start.astimezone(here).isoformat(),
+                untrusted=coming.untrusted,
+                since=coming.start.isoformat(),
+            )
+        )
+    for ended in meeting_prep.capture_lines(store, cfg, now):
+        lines.append(
+            Line(
+                key=f"meeting_capture:{ended.event}",
+                group="review",
+                kind="meeting_capture",
+                count=ended.others,
+                text=ended.title,
+                event=ended.event,
+                names=[people.name(p) for p in ended.people],
+                at=ended.end.astimezone(here).isoformat(),
+                untrusted=ended.untrusted,
+                since=ended.end.isoformat(),
+            )
+        )
+
+    # A called-off entry waits for a new date or a drop; a dropped one asks once about the to-dos held for it.
+    for held in called_off.held_entries(reader, today):
+        lines.append(
+            Line(
+                key=f"called_off:{held.id}",
+                group="decide",
+                kind="called_off",
+                count=len(called_off.held_todos(reader, held.id)),
+                text=held.data["title"],
+                event=held.id,
+                state="connected" if held.data.get("source") else "own",
+                at=str(held.data["start"]),
+                untrusted=held.data.get("trust") == "untrusted",
+                since=str(held.data["start"]),
+            )
+        )
+    for dropped in called_off.asking_about_todos(reader):
+        lines.append(
+            Line(
+                key=f"called_off_todos:{dropped.id}",
+                group="decide",
+                kind="called_off_todos",
+                count=len(called_off.held_todos(reader, dropped.id)),
+                text=dropped.data["title"],
+                event=dropped.id,
+                actions=[a.id for a in called_off.held_todos(reader, dropped.id)],
+                since=str(dropped.data["start"]),
+            )
+        )
+
+    # An invitation nobody has answered: one line to open its entry, where the answer is drafted for the person's yes.
+    for invited in invitation_lines.waiting(store, cfg, now):
+        lines.append(
+            Line(
+                key=f"invitation:{invited.event}",
+                group="decide",
+                kind="invitation",
+                count=1,
+                text=invited.title,
+                subject=invited.organizer or None,
+                event=invited.event,
+                at=invited.start.astimezone(here).isoformat(),
+                untrusted=invited.untrusted,
+                since=invited.start.isoformat(),
+            )
+        )
+
+    # A promise to or from someone with no news for a while, that has no line of its own already.
+    snoozed = suggestions.snoozed(reader, today)
+    for gone in people_memory.quiet_promises(store, cfg, today, skip=on_a_line, hidden=hidden):
+        if f"quiet_promise:{gone.action}" in snoozed:
+            continue
+        lines.append(
+            Line(
+                key=f"quiet_promise:{gone.action}",
+                group="send",
+                kind="quiet_promise",
+                text=gone.text,
+                person=gone.person,
+                project=gone.project,
+                due=gone.due.isoformat() if gone.due else None,
+                waiting_days=gone.quiet,
+                actions=[gone.action],
+                state=gone.direction,
+                snooze_days=[
+                    {"days": n, "on": (today + timedelta(days=n)).isoformat()}
+                    for n in sorted({n for n in cfg.steward.people.snooze_days if n > 0})
+                ],
+                since=gone.since.isoformat(),
+            )
+        )
+
+    # A message the person copied that no sent message matched, asked about once, only while a sent folder is read.
+    for item in sent_version.unsent(reader, cfg, now):
+        lines.append(
+            Line(
+                key=f"sent_check:{item.copy}",
+                group="send",
+                kind="sent_check",
+                person=item.person,
+                questions=item.questions,
+                actions=item.actions,
+                sent_copy=item.copy,
+                since=item.at.isoformat(),
+            )
+        )
+
+    # What the assistant or a rule did since yesterday that the person hasn't looked over: one line, in the review group
+    # with the other things to look over, which goes when the list is opened and comes back with the next change.
+    # A new to-do that a batch on Today already holds to look over is left out of it: the review lines show it, so the
+    # list isn't a second place to read the same thing.
+    done = since_yesterday.build(ws, reader, cfg, people, now)
+
+    def in_a_batch(entry: Any) -> bool:
+        waiting = by_changeset.get(entry.changeset) if entry.act == "added" and entry.changeset else None
+        return (
+            waiting is not None
+            and waiting.data.get("state") == "review"
+            and not waiting.data.get("dismissed")
+            and waiting.id not in hidden
+            and not (changesets.get(entry.changeset) or {}).get("reviewed")
+        )
+
+    unseen = [e for e in done.unseen if not in_a_batch(e)]
+    if unseen:
+        counts: dict[str, int] = {}
+        for entry in unseen:
+            counts[entry.act] = counts.get(entry.act, 0) + 1
+        lines.append(
+            Line(
+                key="since_yesterday",
+                group="review",
+                kind="since_yesterday",
+                count=len(unseen),
+                outcome={act: counts[act] for act in since_yesterday.ACTS if act in counts},
+                since=min(e.when for e in unseen),
+            )
+        )
+
+    # Risk: the person's own overdue to-dos, one line for those on no side and one for each side that has some, so a
+    # side's filter shows its own and a line never counts another side's.
+    overdue: dict[str | None, list[tuple[date, str]]] = {}
+    for action in reader.list("action"):
+        d = action.data
+        due = firm_due(d)
+        if d.get("status") != "open" or due is None or standing_hold(reader, d, people) or people.pm is None:
+            continue
+        if action.id in on_a_line:
+            continue
+        if not any(o.get("person") == people.pm for o in d.get("owners") or []):
+            continue
+        if due < today:
+            overdue.setdefault(sides.side_of_item(reader, cfg, action), []).append((due, action.id))
+    for side, found in sorted(overdue.items(), key=lambda kv: (kv[0] is not None, kv[0] or "")):
+        found.sort()
+        lines.append(
+            Line(
+                key="overdue" if side is None else f"overdue:{side}",
+                group="risk",
+                kind="overdue",
+                count=len(found),
+                actions=[a for _, a in found],
+                due=found[0][0].isoformat(),
+                waiting_days=(today - found[0][0]).days,
+                subject=_one_text(reader, found[0][1]) if len(found) == 1 else None,
+                since=found[0][0].isoformat(),
+                side=side,
+            )
+        )
+
+    # Review: the person's own to-dos nobody has touched for a while, one line each with Keep, Drop and Snooze. The
+    # attention budget's daily cap decides how many show; the rest wait for the brief.
+    from engine.open_items import stale_actions
+
+    for r in stale_actions(store, cfg, now):
+        if r.id in on_a_line:
+            continue
+        lines.append(
+            Line(
+                key=f"stale:{r.id}",
+                group="review",
+                kind="stale",
+                count=1,
+                actions=[r.id],
+                waiting_days=r.untouched_days,
+                subject=r.text,
+                choices=list(patterns.STALE_CHOICES),
+                since=r.since,
+            )
+        )
+
+    # Review: new to-dos with no date, as one line that opens the group where each is given one (design 7.5).
+    from engine.open_items import undated_new_actions
+
+    undated = [r for r in undated_new_actions(store, cfg, now) if r.id not in on_a_line]
+    if undated:
+        lines.append(
+            Line(
+                key="needs_date",
+                group="review",
+                kind="needs_date",
+                count=len(undated),
+                actions=[r.id for r in undated],
+                since=undated[0].since,
+            )
+        )
+
+    # Review: something the person keeps putting off, one line each with its choices (design 6.32, Manner).
+    for found in patterns.all_found(store, cfg):
+        lines.append(
+            Line(
+                key=f"pattern:{found.state}:{found.subject}",
+                group="review",
+                kind="pattern",
+                count=found.count,
+                text=found.text,
+                state=found.state,
+                person=found.person,
+                actions=list(found.actions),
+                choices=list(patterns.CHOICES[found.state]),
+                since="",
+            )
+        )
+
+    # Review: the assistant's work waiting for a look. A held op is asked once, on its own line under Decide, so it
+    # leaves its change's line, which says how many wait there.
+    asked: dict[str, dict[int, str]] = {}
+    for line in lines:
+        if line.kind in ("held", "who_is") and line.changeset and line.op is not None:
+            asked.setdefault(line.changeset, {})[line.op] = line.key
+    for cs_id, ops in same_name.items():
+        for index, key in ops.items():
+            asked.setdefault(cs_id, {}).setdefault(index, key)
+    # A question put to the person is answered on its own line too, so the change that asked it doesn't count it again.
+    on_a_line = {
+        line.question: line.key for line in lines if line.question and line.kind in ("question", "decision", "owner")
+    }
+    for cs_id, cs in changesets.items():
+        for outcome in cs.get("ops", []):
+            if outcome.get("status") != "applied" or (outcome.get("op") or {}).get("op") != "question.add":
+                continue
+            key = next((on_a_line[r["id"]] for r in outcome.get("records") or [] if r.get("id") in on_a_line), None)
+            if key is not None:
+                asked.setdefault(cs_id, {})[outcome["index"]] = key
+    for req in requests.values():
+        d = req.data
+        if (
+            d.get("dismissed")
+            or d.get("task") == week_plan.TASK
+            or d.get("state") != "review"
+            or not d.get("changeset")
+            or req.id in hidden
+        ):
+            continue
+        cs = changesets.get(d["changeset"]) or {}
+        if cs.get("reviewed"):
+            continue
+        waiting = asked.get(d["changeset"], {})
+        outcome, shown = _outcome_of(cs, set(waiting))
+        # What an earlier try at this request left waiting for a look stays in this line, once: a redo that was told to
+        # change one item keeps the batch the person was looking at, whatever the new answer repeated or left out.
+        from engine.dispatcher import earlier_attempts
+
+        carried_items: list[Line] = []
+        carried_changesets: list[str] = []
+        taken = {
+            (o.get("op") or {}).get("op", "") + "|" + str(o.get("label") or _op_text(o.get("op") or {})) for o in shown
+        }
+        taken_records = {r["id"] for o in shown for r in o.get("records") or []}
+        for earlier_id in earlier_attempts(store, req.id):
+            earlier = reader.get("request", earlier_id)
+            earlier_cs_id = earlier.data.get("changeset") if earlier is not None else None
+            earlier_cs = changesets.get(earlier_cs_id or "") or {}
+            if (
+                earlier is None
+                or earlier.data.get("superseded_by") is None
+                or not earlier_cs
+                or earlier_cs.get("reviewed")
+            ):
+                continue
+            _, kept = _outcome_of(earlier_cs, set(asked.get(earlier_cs_id, {})))
+            kept = [
+                o
+                for o in kept
+                if o.get("status") == "applied"
+                and not any(r["id"] in taken_records for r in o.get("records") or [])
+                and (o.get("op") or {}).get("op", "") + "|" + str(o.get("label") or _op_text(o.get("op") or {}))
+                not in taken
+            ]
+            if not kept:
+                continue
+            for o in kept:
+                taken.add((o.get("op") or {}).get("op", "") + "|" + str(o.get("label") or _op_text(o.get("op") or {})))
+                taken_records.update(r["id"] for r in o.get("records") or [])
+                word = review_batches.look_word(o)
+                outcome[word] = outcome.get(word, 0) + 1
+            carried_items += batch_items(earlier, earlier_cs_id, earlier_cs, kept)
+            carried_changesets.append(earlier_cs_id)
+        counted = len(shown) + len(carried_items)
+        if not counted and not outcome.get("refused"):
+            continue  # nothing applied, held or refused, so nothing to look over
+        # When everything was refused, the line counts what was refused, so the work never waits without a line.
+        counted = counted or outcome["refused"]
+        lines.append(
+            Line(
+                key=f"review:{req.id}",
+                group="review",
+                kind="review",
+                count=counted,
+                items=batch_items(req, d["changeset"], cs, shown) + carried_items,
+                changesets=([d["changeset"]] if any(o.get("status") == "applied" for o in shown) else [])
+                + carried_changesets,
+                title=title(d, cs),
+                subject=(shown[0].get("label") or _op_text(shown[0].get("op") or {}) or None)
+                if len(shown) == 1 and not carried_items
+                else None,
+                did=_did(reader, shown[0])
+                if len(shown) == 1 and not carried_items and shown[0].get("status") == "applied"
+                else None,
+                deciding=[waiting[i] for i in sorted(waiting)],
+                project=request_project(reader, req, cs),
+                request=req.id,
+                changeset=d["changeset"],
+                outcome=outcome,
+                untrusted=cs.get("trust") == "untrusted",
+                since=str(d.get("created_at") or ""),
+            )
+        )
+
+    # An answer to the person's own question waits to be read, one line each, until it is opened or dismissed. It
+    # changed nothing, so it has no approve button (design 6.25).
+    from engine import conversation
+
+    for req in requests.values():
+        d = req.data
+        if d.get("task") != "ask" or d.get("state") not in ("review", "done") or d.get("dismissed"):
+            continue
+        if d.get("origin") != "pm" or conversation.about(req) is not None or req.id in hidden:
+            continue
+        if not reader.find("answer", {"request": req.id}):
+            continue
+        lines.append(
+            Line(
+                key=f"answer:{req.id}",
+                group="review",
+                kind="answer",
+                count=1,
+                text=" ".join(str(d.get("note") or "").split()),
+                request=req.id,
+                since=str(d.get("created_at") or ""),
+            )
+        )
+
+    # Review: what a newly added source's intake found, as one line for the source once all of its work is finished. A
+    # request that redoes one the person sent back (it carries `previous`) joins the line when it is done and never
+    # holds it back.
+    for source_id, found in sorted(intake_unseen.items()):
+        if any(source_intake.unfinished(r.data) for r in found if not r.data.get("previous")):
+            continue
+        total: dict[str, int] = {}
+        items = 0
+        rows: list[Line] = []
+        to_confirm: list[str] = []
+        for req in sorted(found, key=lambda r: (str(r.data.get("created_at") or ""), r.id)):
+            cs = changesets.get(req.data.get("changeset") or "")
+            if not cs or req.data.get("set_aside") or req.data.get("folded_into"):
+                continue
+            # What is asked on a line of its own under Decide (a name to place) is not listed in the look-over again.
+            outcome, shown = _outcome_of(cs, set(asked.get(req.data["changeset"], {})))
+            if cs.get("reviewed"):
+                # Reviewed work has nothing more to look at but what still waits for the person's yes.
+                outcome = {"held": outcome["held"]} if outcome.get("held") else {}
+                shown = [o for o in shown if o.get("status") == "held"]
+            elif not shown and not outcome.get("refused"):
+                continue
+            if not outcome:
+                continue
+            items += 1
+            for word, n in outcome.items():
+                total[word] = total.get(word, 0) + n
+            rows += batch_items(req, req.data["changeset"], cs, shown)
+            if not cs.get("reviewed") and any(o.get("status") == "applied" for o in shown):
+                to_confirm.append(req.data["changeset"])
+        if items:
+            lines.append(
+                Line(
+                    key=f"intake_review:{source_id}",
+                    group="review",
+                    kind="intake_review",
+                    count=items,
+                    source=source_id,
+                    subject=next((s.label or s.id for s in cfg.watch.sources if s.id == source_id), source_id),
+                    outcome=total,
+                    items=rows,
+                    changesets=to_confirm,
+                    since=min(str(r.data.get("created_at") or "") for r in found),
+                )
+            )
+
+    # Review: the standing rules to look over, offered at most once a period.
+    from engine.rule_review import due, last_acted, review
+
+    found = review(reader, cfg.dispatch.knowledge, now)
+    if due(reader, cfg.dispatch.knowledge, now, found):
+        acted = last_acted(reader)
+        lines.append(
+            Line(
+                key="rule_review",
+                group="review",
+                kind="rule_review",
+                count=len(found.flagged),
+                rules=[f.id for f in found.flagged],
+                stable_size=found.stable_chars,
+                stable_budget=found.stable_budget,
+                moved=found.moved,
+                days=found.days,
+                until=(now + timedelta(days=cfg.dispatch.knowledge.rule_review_every_days))
+                .astimezone(zone(cfg))
+                .isoformat(),
+                since=acted.isoformat() if acted else "",
+            )
+        )
+
+    # Review: what the assistant learned, as one line for the proposals from inputs and from corrections, and one for
+    # the catch-up list of corrections made before it could learn from them.
+    from engine.proposals import expired_since, last_reviewed, proposals
+
+    state = catch_up.load(store)
+    listed = catch_up.proposal_ids(reader, state)
+    waiting = proposals(reader)
+    daily = [p for p in waiting if p.stored.id not in listed]
+    if daily:
+        origins: dict[str, int] = {}
+        for p in daily:
+            origins[p.came_from] = origins.get(p.came_from, 0) + 1
+        lines.append(
+            Line(
+                key="learned",
+                group="review",
+                kind="learned",
+                count=len(daily),
+                origins=origins,
+                expired=expired_since(reader, last_reviewed(reader)),
+                since=str(daily[0].stored.data.get("learned_at") or ""),
+            )
+        )
+    on_list = [p for p in waiting if p.stored.id in listed]
+    if on_list:
+        lines.append(
+            Line(
+                key="catch_up",
+                group="review",
+                kind="catch_up",
+                count=len(on_list),
+                left_out=state.left_out if state is not None else 0,
+                since=str(on_list[0].stored.data.get("learned_at") or ""),
+            )
+        )
+
+    # Review: what the assistant filed under no project, as one line while there is any.
+    from engine import filing
+    from engine.unfiled import unfiled
+
+    # Review: what the assistant filed under Personal because it couldn't tell the side, as one grouped question that
+    # opens the questions together (at most one per side a day).
+    asked = filing.summary(reader, cfg, now)
+    if asked is not None:
+        lines.append(
+            Line(
+                key="filing",
+                group="review",
+                kind="unfiled",
+                state="which_side",
+                subject=asked.subject,
+                side=asked.side,
+                count=asked.count,
+                since=asked.since,
+            )
+        )
+    loose = unfiled(reader)
+    if loose:
+        lines.append(
+            Line(
+                key="unfiled", group="review", kind="unfiled", count=len(loose), since=min(i.created_at for i in loose)
+            )
+        )
+
+    # Review: the questions about words the assistant asked, as one line that opens them together.
+    asked_words = new_terms.open_for(reader, people.pm)
+    if asked_words:
+        lines.append(
+            Line(
+                key="terms",
+                group="review",
+                kind="terms",
+                count=len(asked_words),
+                questions=[q.id for q in asked_words],
+                since=min(_created(reader, "question", q.id) for q in asked_words),
+            )
+        )
+
+    # An area of life offered for items under the personal project that share a word: one line each, a suggestion the
+    # person keeps or puts off.
+    for offer in areas.proposals(reader, cfg):
+        lines.append(
+            Line(
+                key=f"area:{offer.word}",
+                group="review",
+                kind="area",
+                text=offer.name,
+                subject=offer.word,
+                count=len(offer.items),
+                names=[text for *_, text in offer.items[:3]],
+                since=offer.word,
+            )
+        )
+
+    # Send and follow up: who has something to send, then who hasn't answered for a while.
+    for s in sections(store, cfg, today, covered):
+        if s.is_pm:
+            continue
+        if s.to_send:
+            lines.append(
+                Line(
+                    key=f"send:{s.person}",
+                    group="send",
+                    kind="send",
+                    count=s.to_send,
+                    person=s.person,
+                    project=shared_project(
+                        reader,
+                        [q["id"] for q in s.questions if q["status"] == "open"],
+                        [a["id"] for a in s.actions if a["to_send"]],
+                    ),
+                    questions=[q["id"] for q in s.questions if q["status"] == "open"],
+                    actions=[a["id"] for a in s.actions if a["to_send"]],
+                    ready_since=s.ready_since,
+                    since=s.name.lower(),
+                )
+            )
+        waiting = [q for q in s.questions if q["chase_due"]]
+        # Nothing is chased for someone the person reports to or only watches (design 6.34), so no follow-up is drafted.
+        chased = stance_of(reader, cfg.steward, s.person) not in ("report_to", "watch")
+        told = [a for a in s.actions if chased and a["chase_due"]]
+        tired = _tired_of_waiting(cfg, s, waiting, told)
+        if tired is not None:
+            kind, item = tired
+            lines.append(
+                Line(
+                    key=f"escalate:{s.person}:{item['id']}",
+                    group="send",
+                    kind="escalate",
+                    count=item["chases"],
+                    text=item["title"] if kind == "question" else item["text"],
+                    person=s.person,
+                    questions=[item["id"]] if kind == "question" else [],
+                    actions=[item["id"]] if kind == "action" else [],
+                    waiting_days=item["waiting_days"] if kind == "question" else item["told_days"],
+                    since=s.name.lower(),
+                )
+            )
+            waiting = [q for q in waiting if q is not item]
+            told = [a for a in told if a is not item]
+        if waiting or told:
+            # A promise whose date is still ahead (`quiet` below zero) hasn't waited yet: the wait is never below zero.
+            longest = max(
+                [q["waiting_days"] or 0 for q in waiting]
+                + [a["told_days"] if a["told_days"] is not None else max(0, quiet.get(a["id"], 0)) for a in told]
+            )
+            late_on = sorted(
+                date.fromisoformat(str(a["due"]))
+                for a in told
+                if a["due"] and not a["due_check"] and str(a["due"]) < today.isoformat()
+            )
+            window = cfg.ui.followups.action_due_within_days
+            dated = sorted(
+                (
+                    (date.fromisoformat(str(a["due"])), a["text"], a["id"])
+                    for a in told
+                    if a["due"] and not a["due_check"] and (date.fromisoformat(str(a["due"])) - today).days <= window
+                ),
+                key=lambda x: (x[0], x[1]),
+            )
+            lines.append(
+                Line(
+                    key=f"nudge:{s.person}",
+                    group="send",
+                    kind="nudge",
+                    count=len(waiting) + len(told),
+                    person=s.person,
+                    project=shared_project(reader, [q["id"] for q in waiting], [a["id"] for a in told]),
+                    questions=[q["id"] for q in waiting],
+                    actions=[a["id"] for a in told],
+                    waiting_days=longest,
+                    due=late_on[0].isoformat() if late_on else None,
+                    overdue=len(late_on),
+                    due_items=[
+                        {"id": item, "text": text, "due": when.isoformat(), "overdue": when < today}
+                        for when, text, item in dated
+                    ],
+                    replies=max((replied.get(a["id"], 0) for a in told), default=0),
+                    since=s.name.lower(),
+                )
+            )
+
+    lines += _day_lines(store, cfg, now)
+    lines += _tie_lines(store)
+    lines += _guest_lines(store, cfg, now)
+    lines += _attention_lines(store, cfg, now)
+
+    if cfg.steward.hold_outside_hours:
+        # What the assistant or a rule added on its own waits for the person's hours; what waited arrives under one row.
+        caused = release_hours.causes(lines, reader, requests, by_changeset, sources)
+        lines = release_hours.keep_hours(lines, caused, cfg, now, Line)
+    lines = review_batches.fold(once_each(lines), now, cfg.ui.today.fold_batches_after_days, Line)
+    return sorted(lines, key=_rank)
+
+
+def once_each(lines: list[Line]) -> list[Line]:
+    """Each key once: a line that would fall in two groups stays in the higher one only (`GROUPS` is in order, the first
+    highest); of two in the same group the one found first stays."""
+    best: dict[str, Line] = {}
+    for line in lines:
+        held = best.get(line.key)
+        if held is None or GROUPS.index(line.group) < GROUPS.index(held.group):
+            best[line.key] = line
+    return [line for line in lines if best[line.key] is line]
+
+
+def _day_lines(store: Any, cfg: Any, now: datetime) -> list[Line]:
+    """The lines about the days ahead: the to-dos that don't fit what is left of today, and the meetings that clash from
+    today onward. Each is a risk to the person's own time."""
+    lines: list[Line] = []
+    held = day_capacity.check(store, cfg, now)
+    if held is not None:
+        lines.append(
+            Line(
+                key="capacity",
+                group="risk",
+                kind="capacity",
+                count=len(held.moves),
+                actions=[m.action for m in held.moves],
+                minutes=held.free_minutes,
+                needed_minutes=held.needed_minutes,
+                due=held.next_day.isoformat(),
+                since=now.astimezone(zone(cfg)).date().isoformat(),
+            )
+        )
+    fine = suggestions.fine_clashes(store.read())
+    labels = {s.id: s.label or s.id for s in cfg.watch.sources}
+    here = zone(cfg)
+    # A run of clashes that share meetings is one line, never one for each pair; `count` is how many meetings are in it.
+    for group in day_clashes.groups(day_clashes.upcoming(store, cfg, now), fine):
+        clash = group.lead
+        link = clash.link
+        other_link = clash.other_link
+        members = [e.item for pair in group.pairs for e in (pair.first, pair.second)]
+        lines.append(
+            Line(
+                key=group.key,
+                group="risk",
+                kind="clash",
+                count=group.members,
+                text=clash.first.item.title,
+                other=clash.second.item.title,
+                state=clash.state,
+                minutes=clash.minutes,
+                due=clash.day.isoformat(),
+                at=clash.at.isoformat(),
+                entry=link[1] if link else None,
+                other_entry=other_link[1] if other_link else None,
+                event_page=None if link else f"{clash.first.item.snapshot}@{clash.first.item.start}",
+                other_event_page=None if other_link else f"{clash.second.item.snapshot}@{clash.second.item.start}",
+                calendar_link=clash.first.item.link,
+                other_calendar_link=clash.second.item.link,
+                travel_minutes=clash.travel if clash.state == "travel" else None,
+                place=clash.first.item.where if clash.state == "travel" else None,
+                other_place=clash.second.item.where if clash.state == "travel" else None,
+                source_name=_clash_source(clash.first, labels),
+                other_source_name=_clash_source(clash.second, labels),
+                starts=clash.first.start.astimezone(here).isoformat(),
+                ends=clash.first.end.astimezone(here).isoformat(),
+                other_starts=clash.second.start.astimezone(here).isoformat(),
+                other_ends=clash.second.end.astimezone(here).isoformat(),
+                since=clash.at.isoformat(),
+                # Every meeting of the group counts for its side: a run that reaches into two sides shows under each.
+                side=sides.side_of_entries(store.read(), cfg, members),
+                sides=sides.sides_of_entries(store.read(), cfg, members),
+                items=_other_meetings(group, labels, here),
+            )
+        )
+    return lines
+
+
+def _other_meetings(group: Any, labels: dict[str, str], here: Any) -> list[Line]:
+    """For a group of more than two clashing meetings, the ones beyond the first pair, each as a part of the line that
+    names it (its calendar, entry and when it is on), so the line's details can list every meeting of the group."""
+    seen = {day_clashes.entry_id(group.lead.first), day_clashes.entry_id(group.lead.second)}
+    more: list[Line] = []
+    for pair in group.pairs:
+        for entry in (pair.first, pair.second):
+            if day_clashes.entry_id(entry) in seen:
+                continue
+            seen.add(day_clashes.entry_id(entry))
+            link = day_clashes.entry_link(entry)
+            more.append(
+                Line(
+                    key=f"{group.key}#{entry.item.snapshot}",
+                    group="risk",
+                    kind="clash",
+                    text=entry.item.title,
+                    entry=link[1] if link else None,
+                    event_page=None if link else f"{entry.item.snapshot}@{entry.item.start}",
+                    calendar_link=entry.item.link,
+                    source_name=_clash_source(entry, labels),
+                    starts=entry.start.astimezone(here).isoformat(),
+                    ends=entry.end.astimezone(here).isoformat(),
+                    since=group.at.isoformat(),
+                )
+            )
+    return sorted(more, key=lambda m: m.starts or "")
+
+
+def _tie_lines(store: Any) -> list[Line]:
+    """One line for each calendar entry proposed for an open to-do, for the person to say whether it is the one."""
+    from engine import entry_ties
+
+    return [
+        Line(
+            key=f"tie:{action.id}",
+            group="decide",
+            kind="tie",
+            text=str(action.data["text"]),
+            subject=str(action.data["text"]),
+            other=str(entry.data["title"]),
+            entry=entry.id,
+            actions=[action.id],
+            due=str(entry.data["start"])[:10],
+            project=action.data.get("project"),
+            since=str(entry.data["start"])[:10],
+        )
+        for action, entry in entry_ties.proposals(store.read())
+    ]
+
+
+def _guest_lines(store: Any, cfg: Any, now: datetime) -> list[Line]:
+    """One line for each plain calendar entry that has known people proposed as on it, for the person to say whether
+    they are (`engine.entry_guests`)."""
+    from engine import entry_guests
+
+    reader = store.read()
+    today = now.astimezone(zone(cfg)).date()
+    return [
+        Line(
+            key=f"guests:{entry.id}",
+            group="decide",
+            kind="guests",
+            text=str(entry.data["title"]),
+            subject=str(entry.data["title"]),
+            names=[str(reader.get("person", p).data["full_name"]) for p in people],
+            entry=entry.id,
+            due=str(entry.data["start"])[:10],
+            project=entry.data.get("project"),
+            since=str(entry.data["start"])[:10],
+        )
+        for entry, people in entry_guests.proposals(reader, today, zone(cfg))
+    ]
+
+
+def _attention_lines(store: Any, cfg: Any, now: datetime) -> list[Line]:
+    """One line for each kind of suggestion the person's own dismissals reached a threshold for, asking whether to quiet
+    it into the brief (or stop offering it). Nothing is quieted until they say yes (`engine.attention_learning`)."""
+    reader = store.read()
+    today = now.astimezone(zone(cfg)).date()
+    found = attention_learning.proposals(reader, cfg, now, suggestions.KINDS, suggestions.snoozed(reader, today))
+    return [
+        Line(
+            key=attention_learning.line_key(p.kind),
+            group="decide",
+            kind="attention",
+            count=p.count,
+            text=p.kind,
+            state=p.state,
+            since=now.date().isoformat(),
+        )
+        for p in found
+    ]
+
+
+def _clash_source(entry: Any, labels: dict[str, str]) -> str | None:
+    """The name of the calendar an entry comes from; none for the app's own entries."""
+    item = entry.item
+    if item.own or not item.source:
+        return None
+    return labels.get(item.source, item.source)
+
+
+def _tired_of_waiting(
+    cfg: Any, s: Any, waiting: list[dict[str, Any]], told: list[dict[str, Any]]
+) -> tuple[str, Any] | None:
+    """The one thing a person has had the most follow-ups about, when it has had `ui.followups.escalate_after_chases` of
+    them and is due another, so Today suggests asking someone else. The most follow-ups first, then the longest wait,
+    then the first id. None when the setting is zero or nothing has had that many."""
+    after = cfg.ui.followups.escalate_after_chases
+    if not after:
+        return None
+    found = [
+        *(("question", q, q["chases"], q["waiting_days"] or 0) for q in waiting),
+        *(("action", a, a["chases"], a["told_days"] or 0) for a in told),
+    ]
+    found = [f for f in found if f[2] >= after]
+    if not found:
+        return None
+    kind, item, _chases, _days = min(found, key=lambda f: (-f[2], -f[3], f[1]["id"]))
+    return kind, item
+
+
+def _borrow_questions(ws: Any, store: Any, cfg: Any, now: datetime, requests: dict[str, Any]) -> list[Line]:
+    """One question per tier whose work waits on paused accounts while an account of another tier is free to take it
+    and the person has not answered for this pause: which account, how many waiting items it would take, what they
+    would cost together there and when the paused account's limit resets."""
+    import os
+
+    from engine.ai.borrow import Borrowed, borrowed_path, lendable
+    from engine.ai.checked import cannot_stand_in
+    from engine.ai.pauses import Pauses, pauses_path
+    from engine.ai.router import Router
+    from engine.dispatcher import _data_level, estimate_request
+
+    paused = Pauses(pauses_path(store), lambda: now).active()
+    waiting: dict[str, list[Any]] = {}
+    for req in requests.values():
+        cause = req.data.get("cause") or {}
+        if (
+            req.data.get("state") == "queued"
+            and not req.data.get("dismissed")
+            and cause.get("kind") == "paused"
+            and cause.get("tier")
+            and cause.get("account") in paused
+        ):
+            waiting.setdefault(cause["tier"], []).append(req)
+    if not waiting:
+        return []
+    answers = Borrowed(borrowed_path(store), lambda: now)
+    unchecked = {(s.tier, s.ref) for s in cannot_stand_in(ws, cfg)}
+    router = Router(cfg, store, env=os.environ, now=lambda: now)
+    found: list[Line] = []
+    for tier, reqs in sorted(waiting.items()):
+        if answers.get(tier) is not None or tier not in cfg.ai.tiers:
+            continue
+        offered = lendable(cfg, tier, [_data_level(store, r.data) for r in reqs], set(paused), unchecked)
+        if offered is None:
+            continue
+        ref, _ = offered
+        provider, _, model = ref.partition("/")
+        takes = [r for r in reqs if _fits(cfg, provider, _data_level(store, r.data))]
+        if not takes:
+            continue  # nothing the account could take, so nothing to ask about
+        priced: list[float] = []
+        # An estimate builds the request's packet, so it is kept with the store for as long as the request, its
+        # price and the account stay as they are.
+        kept: dict[tuple[str, int, str, str], float | None] = store.__dict__.setdefault("_borrow_estimates", {})
+        for req in takes:
+            key = (req.id, req.version, ref, repr(cfg.ai.prices.get(ref)))
+            if key not in kept:
+                if len(kept) > 2000:
+                    kept.clear()
+                try:
+                    kept[key] = estimate_request(ws, store, cfg, router, req.id, now, use=ref)
+                except Exception:
+                    kept[key] = None
+            if kept[key] is not None:
+                priced.append(kept[key])
+        first = min(reqs, key=lambda r: (r.data.get("cause") or {}).get("until") or "")
+        cause = first.data.get("cause") or {}
+        found.append(
+            Line(
+                key=f"borrow:{tier}",
+                group="decide",
+                kind="borrow",
+                count=len(takes),
+                text=cause.get("account"),
+                account=provider,
+                model=model,
+                tier=tier,
+                until=paused[cause["account"]].isoformat(),
+                estimate_usd=round(sum(priced), 4) if priced else None,
+                unpriced=len(takes) - len(priced),
+                since=paused[cause["account"]].isoformat(),
+            )
+        )
+    return found
+
+
+def _fits(cfg: Any, provider: str, level: str) -> bool:
+    """Whether an account may see material at a data level."""
+    from engine.ai.router import LEVELS
+
+    return LEVELS.index(level) <= max(LEVELS.index(lv) for lv in cfg.ai.providers[provider].allowed_data)
+
+
+_KIND_ORDER = {
+    "borrow": 1,
+    "stuck": -4,
+    "slow_screen": 1.2,
+    "handover": -3,
+    "restart": -2,
+    "first_go": -1,
+    "decision": 0,
+    "who_is": 1,
+    "owner": 2,
+    "held": 3,
+    "go": 4,
+    "catch_up_go": 4,
+    "intake_go": 4,
+    "refused": 5,
+    "no_effect": 5.5,
+    "question": 6,
+    "invitation": 7,
+    "failed": 0,
+    "paused": 1,
+    "offline": 1,
+    "overdue": 2,
+    "capacity": 2,
+    "clash": 3,
+    "tie": 3.5,
+    "guests": 3.55,
+    "attention": 3.6,
+    "promise": 2,
+    "reminder": 0,
+    "reminder_digest": 1,
+    "date_reminder": 1,
+    "reply": -1,
+    "sent_check": 2,
+    "since_yesterday": 3,
+    "away": -1.5,
+    "account_check": 1,
+    "switch_failed": 1,
+    "account_move": 2,
+    "sent_folder": 2,
+    "folder_rename": 3,
+    "restore": -1.5,
+    "model_watch": 2,
+    "model_moved": 2,
+    "identity": 0,
+    "work_access": 1,
+    "credential": 1,
+    "no_account": 0,
+    "pack_tier": 1,
+    "backup": 1,
+    "extractor": 1,
+    "review": 0,
+    "intake_review": 0,
+    "batches": 0,
+    "rule_review": 1,
+    "learned": 2,
+    "catch_up": 3,
+    "unfiled": 4,
+    "area": 4.5,
+    "answer": 0,
+    "stale": 5,
+    "needs_date": 4.8,
+    "pattern": 5.5,
+    "moved": 6,
+    "send": 0,
+    "nudge": 1,
+    "quiet_promise": 1.5,
+    "escalate": 2,
+    "meeting_prep": 0.5,
+    "meeting_capture": 0.6,
+    "called_off": 0.4,
+    "called_off_todos": 0.4,
+}
+
+
+def _outcome_of(
+    cs: dict[str, Any], leave_out: set[int] | frozenset[int] = frozenset()
+) -> tuple[dict[str, int], list[dict[str, Any]]]:
+    """What in a changeset needs a look (`engine/review_batches.py`), counted by the word the screen uses (a held or a
+    refused op counted as such), and the ops that are shown: those applied that need a look and those held. The ops
+    whose index is in `leave_out` (those asked on a line of their own) are counted nowhere. What is filed quietly (a
+    fact, a source, a note) and an answer, which changed nothing, are not here."""
+    outcome: dict[str, int] = {}
+    shown: list[dict[str, Any]] = []
+    for o in cs.get("ops", []):
+        word = review_batches.look_word(o)
+        if o.get("index") in leave_out or word is None:
+            continue
+        outcome[word] = outcome.get(word, 0) + 1
+        if word == "refused":
+            continue
+        if word == "held":
+            # A held op is also counted as the kind of thing it would add, when it is one.
+            kind = review_batches.LOOK_AT.get((o.get("op") or {}).get("op", ""))
+            if kind is not None:
+                outcome[kind[0]] = outcome.get(kind[0], 0) + 1
+        shown.append(o)
+    return outcome, shown
+
+
+#: The kinds of record an op's `id` names, by the op's name before the dot.
+_OP_RECORD = {"action": "action", "question": "question", "event": "event"}
+
+
+def _did(reader: Any, outcome: dict[str, Any]) -> dict[str, str] | None:
+    """What one applied op did, as its name and the words of the item it is about, for a review line that covers it
+    alone (the screen says it in the past tense)."""
+    op = outcome.get("op") or {}
+    name = str(op.get("op") or "")
+    kind = _OP_RECORD.get(name.partition(".")[0])
+    found = reader.get(kind, op["id"]) if kind and op.get("id") else None
+    item = _op_text(found.data if found is not None else op)
+    item = " ".join(item.split())
+    return {"op": name, "item": item} if name and item else None
+
+
+def _aware(stamp: str) -> datetime:
+    """A stored time as a moment with a zone."""
+    at = datetime.fromisoformat(stamp)
+    return at if at.tzinfo else at.replace(tzinfo=UTC)
+
+
+def _rank(line: Line) -> tuple[Any, ...]:
+    """Group first; then the kind's place in its group; then oldest (or longest waiting) first."""
+    if line.kind == "nudge":
+        return (GROUPS.index(line.group), _KIND_ORDER[line.kind], -(line.waiting_days or 0), line.since)
+    return (GROUPS.index(line.group), _KIND_ORDER.get(line.kind, 9), line.since, line.key)
+
+
+def watched_kind(reader: Any, source: str | None, key: str | None) -> str | None:
+    """What a watched item said it was (email or calendar), by its source and key, from the one snapshot kept for it
+    (found through an index, never by going over every snapshot)."""
+    if not source or not key:
+        return None
+    return kind_of_snapshots(reader.find("snapshot", {"source": source, "key": key}))
+
+
+def kind_of_snapshots(snapshots: Any) -> str | None:
+    """What a watched item said it was (email or calendar), from the snapshots kept for its source and key, oldest
+    first (the latest that says wins)."""
+    found = None
+    for snap in snapshots:
+        if snap.data.get("message"):
+            found = "email"
+        elif snap.data.get("event"):
+            found = "calendar"
+    return found
+
+
+def _op_text(op: dict[str, Any]) -> str:
+    for key in ("text", "title", "name", "full_name", "answer"):
+        if op.get(key):
+            return str(op[key])
+    return ""
+
+
+def _one_text(reader: Any, action_id: str) -> str | None:
+    action = reader.get("action", action_id)
+    return str(action.data["text"]) if action is not None and action.data.get("text") else None
+
+
+def request_project(reader: Any, req: Any, changeset: dict[str, Any]) -> str | None:
+    """The one project a request's work is about, for its line's tag: the project the person named for it, else the
+    project of what it is about, else the source's only one, else the one project every change it made names. None when
+    it is about none or several."""
+    d = req.data
+    if d.get("project"):
+        return str(d["project"])
+    about = d.get("about") or {}
+    found = reader.get(about["kind"], about["id"]) if about.get("kind") and about.get("id") else None
+    if found is not None:
+        project = found.id if found.kind == "project" else found.data.get("project")
+        if project:
+            return str(project)
+    source = reader.get("source", d["source"]) if d.get("source") else None
+    projects = (source.data.get("projects") if source is not None else None) or []
+    if len(projects) == 1:
+        return str(projects[0])
+    named = {
+        (outcome.get("op") or {}).get("project")
+        for outcome in changeset.get("ops", [])
+        if (outcome.get("op") or {}).get("project")
+    }
+    return str(next(iter(named))) if len(named) == 1 else None
+
+
+def shared_project(reader: Any, questions: list[str], actions: list[str]) -> str | None:
+    """The project a line's questions and actions all belong to, for its tag; None when any of them has none or they
+    belong to different ones, so the tag never claims more than the line holds."""
+    found: set[str | None] = set()
+    for kind, ids in (("question", questions), ("action", actions)):
+        for record_id in ids:
+            record = reader.get(kind, record_id)
+            if record is None:
+                continue
+            data = record.data
+            found.add((data.get("projects") or [None])[0] if kind == "question" else data.get("project"))
+    return next(iter(found)) if len(found) == 1 and None not in found else None
+
+
+def _created(reader: Any, kind: str, record_id: str) -> str:
+    entries = reader.ledger(kind=kind, record_id=record_id)
+    return str(entries[0]["at"]) if entries else ""
+
+
+def _sorting_account(cfg: Any) -> str | None:
+    """The account the assistant's sorting of mail runs on first: its tier's main account."""
+    from engine.mail_sorting import KIND
+    from engine.tasks import settings, task_kind
+
+    try:
+        tier = cfg.ai.tiers.get(settings(cfg, task_kind(KIND)).tier)
+    except (KeyError, AttributeError):
+        return None
+    return tier.use.split("/", 1)[0] if tier is not None and tier.use else None

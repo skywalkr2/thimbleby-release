@@ -1,0 +1,110 @@
+"""Accounts paused until a usage limit resets (design 6.16, 8.6).
+
+A pause is kept in the workspace's private folder, so it holds across a restart. An account that is paused is not called
+until its reset; work that needs it waits, and the router uses another account in the tier's chain when one is allowed.
+Nothing here calls a provider or reads a provider's words: the reset time comes from the adapter's classified error.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import threading
+from collections.abc import Callable
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from engine.legacy_names import private_dir
+from engine.state_file import write_whole
+from engine.today import zone
+
+_LOCK = threading.Lock()
+
+#: A pause with no reset to wait for (an account out of credit): it holds until a check of the account is answered or
+#: the AI accounts change. Stored as a time far ahead so every reader of pauses keeps working.
+NO_RESET = datetime(9999, 1, 1, tzinfo=UTC)
+
+
+def no_reset(until: datetime) -> bool:
+    """Whether a pause waits for the person rather than for a time."""
+    return until >= NO_RESET
+
+
+def pauses_path(store: Any) -> Path:
+    """Where the workspace keeps its pauses."""
+    return private_dir(store.path.parent) / "ai-pauses.json"
+
+
+class Pauses:
+    def __init__(self, path: Path, now: Callable[[], datetime] = lambda: datetime.now(UTC)):
+        self.path = path
+        self.now = now
+
+    def _load(self) -> dict[str, str]:
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return (
+            {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
+            if isinstance(data, dict)
+            else {}
+        )
+
+    def _save(self, data: dict[str, str]) -> None:
+        with contextlib.suppress(OSError):
+            write_whole(self.path, json.dumps(data, sort_keys=True))
+
+    def active(self) -> dict[str, datetime]:
+        """The accounts paused now and when each one's limit resets. A pause whose time has passed is dropped."""
+        now = self.now()
+        live: dict[str, datetime] = {}
+        for account, stamp in self._load().items():
+            try:
+                until = datetime.fromisoformat(stamp)
+            except ValueError:
+                continue
+            if until.tzinfo is None:
+                until = until.replace(tzinfo=UTC)
+            if until > now:
+                live[account] = until
+        return live
+
+    def until(self, account: str) -> datetime | None:
+        return self.active().get(account)
+
+    def pause(self, account: str, until: datetime) -> None:
+        """Leave an account alone until `until`. A later reset replaces an earlier one; a pause never gets shorter."""
+        with _LOCK:
+            data = {k: v.isoformat() for k, v in self.active().items()}
+            current = data.get(account)
+            if current is None or datetime.fromisoformat(current) < until:
+                data[account] = until.isoformat()
+            self._save(data)
+
+    def clear(self, account: str | None = None) -> None:
+        """Lift one account's pause, or every pause."""
+        with _LOCK:
+            data = {} if account is None else {k: v.isoformat() for k, v in self.active().items() if k != account}
+            self._save(data)
+
+
+def when_text(cfg: Any, until: datetime, now: datetime) -> str:
+    """A time in the person's time zone in plain words: the time alone today, otherwise the day and the time."""
+    here = zone(cfg)
+    local, today = until.astimezone(here), now.astimezone(here).date()
+    clock = f"{local.hour % 12 or 12}:{local.minute:02d} {'am' if local.hour < 12 else 'pm'}"
+    if local.date() == today:
+        return clock
+    return f"{local.strftime(cfg.language.messages.date_format)} at {clock}"
+
+
+def waiting_text(cfg: Any, account: str, until: datetime, now: datetime) -> str:
+    """What work waits on while an account's limit is not yet reset."""
+    if no_reset(until):
+        return (
+            f"Waiting for {account}: the service says it is out of credit or at its plan's limit. Add credit, then "
+            "check the account under AI accounts, or add another account; the waiting work goes on by itself"
+        )
+    return f"Waiting for {account}'s limit to reset at {when_text(cfg, until, now)}"

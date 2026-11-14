@@ -1,0 +1,945 @@
+// The API client. Types come from the server's OpenAPI schema (npm run gen:api), so a changed field fails the build.
+// Paths are relative: the page's <base> points at the configured base path, so the same build works under any path.
+import type { components } from "../api/schema";
+import { trackRequest } from "./ready";
+import { authHeaders, sessionKnown, sessionReady } from "./session";
+
+export type S = components["schemas"];
+
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    public detail: string,
+    /** What the server says would fix it, when it says (the `X-Cockpit-Needs` header): "read-token". */
+    public needs: string | null = null,
+    /** The setting a refused form is about (the `X-Cockpit-Field` header), so the reason is shown beside it. */
+    public field: string | null = null,
+  ) {
+    super(detail || `HTTP ${status}`);
+  }
+}
+
+/** Words a web framework or proxy answers with by itself; they say nothing a person can use, so they are never shown. */
+const STOCK_WORDS = new Set(["Not Found", "Method Not Allowed", "Bad Request", "Forbidden", "Unauthorized", "Internal Server Error"]);
+
+/** The server's own words for a refusal, only when it meant them for a person: never for a fault on its side (5xx) and
+ *  never its stock words. A 401 is always the wording sheet's sign-in message. Everything else falls to the plain message from the wording sheet. */
+function wordsFor(status: number, detail: string): string {
+  return status >= 500 || status === 401 || STOCK_WORDS.has(detail.trim()) ? "" : detail;
+}
+
+/** Seconds a request waits for an answer: the runtime config's `request_timeout_seconds` and, for the few calls that wait
+ *  on purpose, its `long_request_timeout_seconds`. The defaults hold until the runtime config has been read. */
+let waits = { seconds: 30, longSeconds: 300 };
+
+export function setRequestTimeouts(seconds: number, longSeconds: number): void {
+  waits = { seconds, longSeconds };
+}
+
+/** The calls that take a while on purpose: a test of an account, a backup or restore, adding a file, a sign-in, a check for new mail. */
+const WAITS_ON_PURPOSE = [
+  /^ai\/(test|models|account-check)/,
+  /^ai\/accounts\/[^/]+\/(test|switch-check)/,
+  /^(backup|erase|sync\/check|today\/arrived\/check|notifications\/(mail\/)?test)(\?|$)/,
+  /^(backups\/restore|restore\/)/,
+  /^(files\?|brand\/logo)/,
+  /^packs\/[^/]+\/(install|uninstall)$/,
+  /^sign-ins\/.+\/(start|sources)/,
+];
+
+async function send<T>(method: "GET" | "POST" | "PUT" | "DELETE", path: string, init: RequestInit): Promise<T> {
+  // Reads are tracked by the query cache (first reads only, see ready.ts); a write holds the page's ready mark until it answers.
+  const done = method === "GET" ? () => undefined : trackRequest();
+  try {
+    return await sendTracked<T>(method, path, init);
+  } finally {
+    done();
+  }
+}
+
+async function sendTracked<T>(method: "GET" | "POST" | "PUT" | "DELETE", path: string, init: RequestInit): Promise<T> {
+  if (!sessionKnown()) await sessionReady();
+  // A request that never answers ends as a refusal with no words of its own, so the screen says its plain message.
+  const limit = WAITS_ON_PURPOSE.some((p) => p.test(path)) ? waits.longSeconds : waits.seconds;
+  const stop = new AbortController();
+  const timer = setTimeout(() => stop.abort(), limit * 1000);
+  try {
+    return await exchange<T>(method, path, init, stop.signal);
+  } catch (err) {
+    if (stop.signal.aborted) throw new ApiError(408, "");
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * The record kinds each write's answer named (the server's `X-Changed-Kinds`, S-0424), in order, so a write that names
+ * nothing itself reads again only the screens that show what it changed. `kinds` is null when an answer named nothing
+ * (an older server). Writes that ran side by side may share kinds; that only reads a little more.
+ */
+export const answeredWrites = { seq: 0, entries: [] as { seq: number; kinds: string[] | null; position: number | null }[] };
+
+function noteAnswered(header: string | null, position: string | null = null): void {
+  answeredWrites.seq += 1;
+  const at = position === null ? Number.NaN : Number(position);
+  answeredWrites.entries.push({ seq: answeredWrites.seq, kinds: header === null ? null : header.split(",").filter(Boolean), position: Number.isFinite(at) ? at : null });
+  if (answeredWrites.entries.length > 200) answeredWrites.entries.splice(0, answeredWrites.entries.length - 200);
+}
+
+async function exchange<T>(method: "GET" | "POST" | "PUT" | "DELETE", path: string, init: RequestInit, signal: AbortSignal): Promise<T> {
+  const response = await fetch(`api/${path}`, { method, ...init, signal, headers: { ...authHeaders(), ...(init.headers as Record<string, string> | undefined) } });
+  if (!response.ok) {
+    let detail: string;
+    try {
+      const data = (await response.json()) as { detail?: unknown; error?: unknown };
+      detail = typeof data.detail === "string" ? data.detail : typeof data.error === "string" ? data.error : "";
+    } catch {
+      detail = "";
+    }
+    throw new ApiError(response.status, wordsFor(response.status, detail), response.headers.get("X-Cockpit-Needs"), response.headers.get("X-Cockpit-Field"));
+  }
+  if (method !== "GET") noteAnswered(response.headers.get("X-Changed-Kinds"), response.headers.get("X-Changed-Position"));
+  return (await response.json()) as T;
+}
+
+async function call<T>(method: "GET" | "POST" | "PUT" | "DELETE", path: string, body?: unknown): Promise<T> {
+  if (body === undefined) return send<T>(method, path, { headers: {} });
+  return send<T>(method, path, { headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+}
+
+/** Details of a file being added; they go in the address, and the file's own bytes are the request body. */
+export interface FileUpload {
+  kind: string;
+  project?: string | null;
+  meta?: Record<string, unknown>;
+  replaces?: string | null;
+  /** The id of the person the file came from, such as the page it was added from. */
+  fromPerson?: string | null;
+}
+
+const id = encodeURIComponent;
+/** A namespaced name such as "plugin/name" keeps its slash; each part is encoded. */
+const named = (name: string) => name.split("/").map(id).join("/");
+
+export const api = {
+  runtimeConfig: () => call<S["RuntimeConfig"]>("GET", "runtime-config"),
+  status: () => call<S["Status"]>("GET", "status"),
+  restart: () => call<S["RestartAsked"]>("POST", "restart"),
+  /** What deleting the workspace would remove, each with its files and size, and what stays. */
+  erasePlan: () => call<S["ErasePlanView"]>("GET", "erase"),
+  /** Deletes what the list with this token shows: the workspace, its history and its backups. The app stops after it. */
+  erase: (body: S["EraseIn"]) => call<S["EraseDone"]>("POST", "erase", body),
+  changes: () => call<S["ChangeItem"][]>("GET", "changes"),
+  todayQueue: () => call<S["QueueLineView"][]>("GET", "today/queue"),
+  source: (src: string) => call<S["SourceView"]>("GET", `sources/${id(src)}`),
+  widenSource: (src: string, body: S["SourceWiden"]) => call<S["Applied"]>("POST", `sources/${id(src)}/widen`, body),
+  followups: () => call<S["FollowupSection"][]>("GET", "followups"),
+  /** The outward acts (a message, a calendar entry, a file waiting to go out), newest first; the server keeps to the states asked for
+   * and to at most `limit`. */
+  acts: (want: { status?: readonly string[]; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    (want.status ?? []).forEach((s) => q.append("status", s));
+    if (want.limit) q.set("limit", String(want.limit));
+    const text = q.toString();
+    return call<S["ActListView"]>("GET", text ? `acts?${text}` : "acts");
+  },
+  /** The connected calendar accounts a new event can be put on after the person's yes. */
+  actCalendarOptions: () => call<S["ActCalendarOptionsView"]>("GET", "acts/calendar-options"),
+  /** Say which AI accounts may read an area; the answer is who reads it now. */
+  setAreaReaders: (project: string, accounts: string[]) => call<S["ProjectReading"]>("POST", `projects/${id(project)}/readers`, { accounts }),
+  /** One change to the mail for several selected saved messages: an act for each, drafted in one change; nothing is carried out. */
+  draftActBatch: (body: S["ActBatchIn"]) => call<S["ActBatchView"]>("POST", "acts/batch", body),
+  /** The person's one yes on several acts: each is approved and sent in turn, and each says how it went. */
+  sendActBatch: (body: S["ActBatchYesIn"]) => call<S["ActBatchResultView"]>("POST", "acts/batch/send", body),
+  /** The one account the selected messages came in on and whether it lists its folders, for Move to. */
+  actBatchOptions: (records: string[]) => call<S["ActBatchOptionsView"]>("GET", `acts/batch-options?${records.map((r) => `record=${id(r)}`).join("&")}`),
+  /** The folders and labels an account's channel lists, for Move to and Label; `reason` says why a channel that can list gave none. */
+  accountFolders: (account: string) => call<S["AccountFoldersView"]>("GET", `acts/accounts/${id(account)}/folders`),
+  /** One act, as its list line reads it. */
+  readAct: (a: string) => call<S["ActView"]>("GET", `acts/${id(a)}`),
+  /** The person drafts an act (a reply, a change to their mail, an answer to an invitation); nothing is sent. */
+  draftAct: (body: S["ActDraftIn"]) => call<S["ActView"]>("POST", "acts", body),
+  /** What can be done about a saved message, a calendar entry or a reply owed, and through which account. */
+  actOptions: (record: string) => call<S["ActOptionsView"]>("GET", `acts/options?record=${id(record)}`),
+  /** The free times to propose for a calendar entry's invitation. */
+  freeSlots: (about: string) => call<S["FreeSlotsView"]>("GET", `acts/free-slots?about=${id(about)}`),
+  /** The accounts an act can go through, with the switch for letting the assistant act after the person's yes. */
+  actSendOptions: () => call<S["ActSendOptionsView"]>("GET", "acts/send-options"),
+  actAccounts: () => call<S["ActAccountsView"]>("GET", "acts/accounts"),
+  /** Take a sent act back where its channel can; the result says whether it is undone, or why not. */
+  takeBackAct: (a: string) => call<S["ActResultView"]>("POST", `acts/${id(a)}/undo`),
+  /** The person's yes on exactly what their screen showed: its fingerprint and the recipients called out they acknowledged. */
+  approveAct: (a: string, body: S["ActApproveIn"]) => call<S["ActResultView"]>("POST", `acts/${id(a)}/approve`, body),
+  /** Send an act that has the person's yes (the publisher checks again); the result says whether it went, failed or is unsure. */
+  sendAct: (a: string, body: S["ActApproveIn"]) => call<S["ActResultView"]>("POST", `acts/${id(a)}/send`, body),
+  /** Take an act back; the result's change is what Undo takes. */
+  withdrawAct: (a: string) => call<S["ActResultView"]>("POST", `acts/${id(a)}/withdraw`),
+  /** The answer for an act the app can't confirm went out: `sent`, or `again` to send it again. */
+  settleAct: (a: string, answer: S["ActSettleIn"]["answer"]) => call<S["ActResultView"]>("POST", `acts/${id(a)}/settle`, { answer }),
+  /** Whether the person has a business and what it is called, for the Personal / business filter. */
+  business: () => call<S["BusinessState"]>("GET", "setup/business"),
+  /** Answer the work question: Just me, or Me and my work (which adds a side). */
+  chooseWork: (body: S["WorkIn"]) => call<S["BusinessState"]>("POST", "setup/work", body),
+  /** Adds a side beside Personal (a job or a business); a name a side already has is that side. */
+  addSide: (body: S["BusinessIn"]) => call<S["BusinessView"]>("POST", "setup/business", body),
+  /** Takes a side back out while setup is open and nothing is filed under it. */
+  removeSide: (project: string) => call<S["BusinessState"]>("POST", `setup/sides/${id(project)}/remove`),
+  /** Removes a side whenever the person asks: what is filed under it moves to Personal or ends with it, as one change with Undo. */
+  removeSideWithWork: (project: string, where: S["SideRemoveIn"]["where"], organization: S["SideRemoveIn"]["organization"] = "keep") =>
+    call<S["ProjectEndingDone"]>("POST", `sides/${id(project)}/remove`, { where, organization } satisfies S["SideRemoveIn"]),
+  /** Undo of removeSide: the side comes back with its projects, as `kind` at `position` among the sides. */
+  restoreSide: (project: string, body: S["SideRestoreIn"]) =>
+    call<S["BusinessState"]>("POST", `setup/sides/${id(project)}/restore`, body),
+
+  watchSources: () => call<S["WatchSourceView"][]>("GET", "watch"),
+  /** The go for a newly added source's intake: every item held for it starts. */
+  intakeGo: (source: string) => call<S["IntakeStarted"]>("POST", `watch/${id(source)}/intake/go`),
+  /** What looking further back would take in and cost, before anything is read. */
+  lookBackPreview: (source: string, days: number) =>
+    call<S["LookBackView"]>("GET", `watch/${id(source)}/look-back?days=${days}`),
+  lookBack: (source: string, days: number) => call<S["LookBackView"]>("POST", `watch/${id(source)}/look-back`, { days }),
+  watchKinds: () => call<S["WatchKindView"][]>("GET", "watch/kinds"),
+  mailServices: () => call<S["MailServiceView"][]>("GET", "watch/mail-services"),
+  watchAuthors: () => call<S["WatchAuthorOption"][]>("GET", "watch/authors"),
+  addSource: (body: S["WatchSourceIn"]) => call<S["SettingsSaved"]>("POST", "watch/sources", body),
+  changeSource: (src: string, body: S["WatchSourceChange"]) =>
+    call<S["SettingsSaved"]>("POST", `watch/sources/${id(src)}`, body),
+  removeSource: (src: string, fingerprint: string) =>
+    call<S["SettingsSaved"]>("POST", `watch/sources/${id(src)}/remove`, { fingerprint } satisfies S["FingerprintIn"]),
+  /** The folders of a mailbox source, and which one its server marks as sent mail. */
+  watchFolders: (src: string) => call<S["MailFoldersView"]>("GET", `watch/${id(src)}/folders`),
+  addSentFolder: (src: string, body: S["SentFolderIn"]) => call<S["SettingsSaved"]>("POST", `watch/${id(src)}/sent-folder`, body),
+  /** Dismisses, for good, Today's line about a mailbox that reads no sent folder. */
+  dismissSentFolder: (src: string) => call<S["Ok"]>("POST", `watch/${id(src)}/sent-folder/dismiss`),
+  dismissSentFolderUndo: (src: string) => call<S["Ok"]>("POST", `watch/${id(src)}/sent-folder/dismiss/undo`),
+  /** The person's yes to renaming a folder made under the earlier name (`backups` or `workspace`). */
+  renameFolder: (which: string, fingerprint: string) =>
+    call<S["FolderRenamed"]>("POST", `folder-offers/${id(which)}/rename`, { fingerprint } satisfies S["FolderRenameIn"]),
+  renameFolderUndo: () => call<S["Ok"]>("POST", "folder-offers/workspace/rename/undo"),
+  /** Keeps the earlier name: the offer never comes back. */
+  keepFolderName: (which: string) => call<S["Ok"]>("POST", `folder-offers/${id(which)}/keep`),
+  keepFolderNameUndo: (which: string) => call<S["Ok"]>("POST", `folder-offers/${id(which)}/keep/undo`),
+  readSource: (src: string) => call<S["WatchSourceView"]>("POST", `watch/${id(src)}/read`),
+  handInRecent: (src: string) => call<S["WatchSourceView"]>("POST", `watch/${id(src)}/recent`),
+  autoClosed: () => call<S["AutoClosedView"][]>("GET", "auto-closed"),
+  silentCloses: () => call<S["SilentClosesView"]>("GET", "silent-closes"),
+  sinceYesterday: () => call<S["SinceYesterdayView"]>("GET", "since-yesterday"),
+  sinceSeen: (until: string) => call<S["Ok"]>("POST", "since-yesterday/seen", { until } satisfies S["SinceSeen"]),
+  closeSeen: (ref: string) => call<S["Created"]>("POST", "silent-closes/seen", { ref } satisfies S["SilentCloseSeen"]),
+  closerLook: (req: string, readVersion: number) =>
+    call<S["Created"]>("POST", `requests/${id(req)}/closer-look`, { read_version: readVersion }),
+  /** What was handled for the person: one list (`tab`), grouped by `group` (the configured one when empty), narrowed by `q` and by the kind of `item`. */
+  handled: (tab: S["HandledView"]["tab"], group: S["HandledView"]["group"] | null, q: string, item: S["HandledView"]["item"] = null, side: string | null = null) => {
+    const query = new URLSearchParams({ tab, q });
+    if (group) query.set("group", group);
+    if (item) query.set("item", item);
+    if (side) query.set("side", side);
+    return call<S["HandledView"]>("GET", `handled?${query.toString()}`);
+  },
+  /** How many each list on Handled for you holds, for a line that only counts. */
+  /** What waits for the person on each screen that lists it, for the side menu and the side tabs. */
+  waiting: () => call<S["WaitingCounts"]>("GET", "waiting"),
+  /** The person opened a screen with a count of what is new in it. */
+  looked: (screen: S["LookedAt"]["screen"]) => call<S["Ok"]>("POST", "waiting/looked", { screen } satisfies S["LookedAt"]),
+  handledCounts: () => call<S["HandledCountsToday"]>("GET", "handled/counts"),
+  closerLookUndo: (req: string) => call<S["Created"]>("POST", `requests/${id(req)}/closer-look/undo`),
+  /** What can be said about a watched file (the saved copy `record` came from it): the files it can be linked to. */
+  versions: (record: string) => call<S["VersionsView"]>("GET", `versions/${id(record)}`),
+  /** Same document as another file of its folder. */
+  versionSame: (record: string, other: string) =>
+    call<S["VersionChosen"]>("POST", `versions/${id(record)}/same`, { other } satisfies S["VersionLinkIn"]),
+  /** Not the same document; with the change a rule closed as an older version, that change is handed in after all. */
+  versionApart: (record: string, closed?: { request: string; readVersion: number }) =>
+    call<S["VersionChosen"]>("POST", `versions/${id(record)}/apart`, {
+      request: closed?.request ?? null,
+      read_version: closed?.readVersion ?? null,
+    } satisfies S["VersionApartIn"]),
+  /** The copy named is the current one of its family: the answer to the question about which is current. */
+  versionAnswer: (question: string, file: string) =>
+    call<S["VersionChosen"]>("POST", `versions/answer/${id(question)}`, { file } satisfies S["VersionAnswerIn"]),
+  /** Undo a choice about versions, from what it answered with. */
+  versionUndo: (made: S["VersionChosen"]) =>
+    call<S["VersionChosen"]>("POST", "versions/undo", {
+      changes: made.changes,
+      request: made.request ?? null,
+      asked: made.asked ?? null,
+    } satisfies S["VersionUndoIn"]),
+  handledWork: (item: string, readVersion: number) =>
+    call<S["HandledDone"]>("POST", `handled/${id(item)}/work`, { read_version: readVersion }),
+  /** Treat as one of the sides: handed in and filed under that side's project. */
+  handledAs: (item: string, readVersion: number, side: string) =>
+    call<S["HandledDone"]>("POST", `handled/${id(item)}/work`, { read_version: readVersion, side } satisfies S["TreatAsIn"]),
+  /** Treat as, from the list of mail that came in: mail the assistant already handled with a result has that undone first. */
+  handledTreatAs: (item: string, readVersion: number, side: string) =>
+    call<S["HandledDone"]>("POST", `handled/${id(item)}/treat-as`, { read_version: readVersion, side } satisfies S["TreatAsIn"]),
+  handledPersonal: (item: string, readVersion: number) =>
+    call<S["HandledDone"]>("POST", `handled/${id(item)}/personal`, { read_version: readVersion }),
+  handledUndo: (item: string, readVersion: number) =>
+    call<S["HandledDone"]>("POST", `handled/${id(item)}/undo`, { read_version: readVersion }),
+  /** `restore` is the mark a Bring it in took the message out with: Undo passes it so the message goes back as it was. */
+  setAsideMail: (item: string, section: S["SetAsideIn"]["section"], restore?: S["SetAsideMark"] | null) =>
+    call<S["SetAsideDone"]>("POST", `mail/${id(item)}/set-aside`, { section, ...(restore ? { restore } : {}) } satisfies S["SetAsideIn"]),
+  isWork: (item: string, readVersion: number) =>
+    call<S["SetAsideDone"]>("POST", `set-aside/${id(item)}/work`, { read_version: readVersion }),
+  putBack: (item: string, readVersion: number) =>
+    call<S["SetAsideDone"]>("POST", `set-aside/${id(item)}/put-back`, { read_version: readVersion }),
+  sortingRule: (body: S["SortingRuleIn"]) => call<S["SettingsSaved"]>("POST", "watch/sorting", body),
+
+  ask: (question: string) => call<S["Created"]>("POST", "ask", { question }),
+  /** Local search: people, projects and open to-dos matching the words; free, no AI call. */
+  search: (q: string) => call<S["SearchResults"]>("GET", `search?q=${encodeURIComponent(q)}`),
+  asks: () => call<S["AskView"][]>("GET", "asks"),
+  /** The conversation kept on a record, and saying something in it. */
+  conversation: (kind: string, record: string) => call<S["ConversationView"]>("GET", `records/${id(kind)}/${id(record)}/conversation`),
+  say: (kind: string, record: string, message: string) => call<S["Created"]>("POST", `records/${id(kind)}/${id(record)}/conversation`, { message }),
+  quality: () => call<S["QualityView"]>("GET", "quality"),
+  /** How long a screen that looks over the assistant's work was open and in view on one visit. */
+  reviewTime: (body: S["ReviewTimeIn"]) => call<S["ReviewTimeSaved"]>("POST", "quality/review-time", body),
+  /** The last failures Send feedback may add to a message, already masked by the server. */
+  slowScreenReport: (screen: string) => call<S["SlowScreenReport"]>("GET", `slow-screens/${screen}/report`),
+  feedbackProblems: () => call<S["FeedbackProblems"]>("GET", "feedback/problems"),
+  /** Save, or correct, the person's own count for a day: what Undo takes comes back as `previous`. */
+  saveCount: (day: string, body: S["QualityCountIn"]) => call<S["QualityCountSaved"]>("PUT", `quality/counts/${id(day)}`, body),
+  undoCount: (day: string, previous: S["QualityCountBefore"] | null) =>
+    call<S["Ok"]>("POST", `quality/counts/${id(day)}/undo`, { previous } satisfies S["QualityCountUndo"]),
+  /** Draw the sample of messages to read on one's own (refused without consent, or when one was already drawn). */
+  drawSample: () => call<S["QualitySample"]>("POST", "quality/sample"),
+  /** Save, or correct, what the person found in one message of the sample: what Undo takes comes back as `previous`. */
+  readSampleMessage: (sample: string, source: string, body: S["QualitySampleReadIn"]) =>
+    call<S["QualitySampleReadSaved"]>("PUT", `quality/sample/${id(sample)}/items/${id(source)}`, body),
+  undoSampleMessage: (sample: string, source: string, previous: S["QualityCountBefore"] | null) =>
+    call<S["Ok"]>("POST", `quality/sample/${id(sample)}/items/${id(source)}/undo`, { previous } satisfies S["QualityCountUndo"]),
+  missed: (text: string) => call<S["MissedSent"]>("POST", "missed", { text } satisfies S["MissedIn"]),
+  applyProposal: (proposal: string, body: S["ProposalApply"]) =>
+    call<S["SettingsSaved"]>("POST", `setting-proposals/${id(proposal)}/apply`, body),
+  dismissProposal: (proposal: string, readVersion: number) =>
+    call<S["Created"]>("POST", `setting-proposals/${id(proposal)}/dismiss`, { read_version: readVersion }),
+  reportSent: (report: string, readVersion: number) =>
+    call<S["Created"]>("POST", `reports/${id(report)}/sent`, { read_version: readVersion }),
+  dismissReport: (report: string, readVersion: number) =>
+    call<S["Created"]>("POST", `reports/${id(report)}/dismiss`, { read_version: readVersion }),
+  readAnswer: (request: string) => call<S["Created"]>("POST", `asks/${id(request)}/read`, {}),
+  correctAnswer: (request: string, note: string) =>
+    call<S["Created"]>("POST", `asks/${id(request)}/correction`, { note }),
+  answerVerdict: (request: string, helpful: boolean) =>
+    call<S["Created"]>("POST", `asks/${id(request)}/verdict`, { helpful }),
+  undoAnswerVerdict: (signal: string) => call<S["Ok"]>("POST", `asks/verdict/${id(signal)}/undo`, {}),
+  people: () => call<S["PersonView"][]>("GET", "people"),
+
+  stageRecords: () => call<S["StageView"][]>("GET", "stages/records"),
+  stageReady: () => call<S["StageView"][]>("GET", "stages/ready"),
+  stageRequests: () => call<S["StageRequestView"][]>("GET", "stages/requests"),
+  stageHistory: (kind: string, record: string) =>
+    call<S["StageHistoryEntry"][]>("GET", `records/${id(record)}/stage-history?kind=${id(kind)}`),
+  stageMove: (body: S["StageMove"]) => call<S["StageMoved"]>("POST", "stages/move", body),
+  stageGo: (request: string, readVersion: number) =>
+    call<S["Ok"]>("POST", `requests/${id(request)}/go`, { read_version: readVersion }),
+
+  handIn: (body: S["HandIn"]) => call<S["Handed"]>("POST", "handin", body),
+  /** Hand in a voice note: the sound itself, kept and queued to be turned into text (nothing is sent until it runs). */
+  handInAudio: (file: Blob & { name: string }, project?: string) => {
+    const query = new URLSearchParams({ name: file.name });
+    if (project) query.set("project", project);
+    return send<S["Handed"]>("POST", `handin/audio?${query.toString()}`, {
+      headers: { "content-type": file.type || "application/octet-stream" },
+      body: file,
+    });
+  },
+  /** Hand in a picture for reading, or keep it in files if no account is listed for images. */
+  handInImage: (
+    file: Blob & { name: string },
+    options: { note?: string; project?: string; data_level?: "open" | "internal" | "restricted" } = {},
+  ) => {
+    const query = new URLSearchParams({ name: file.name });
+    if (options.note) query.set("note", options.note);
+    if (options.project) query.set("project", options.project);
+    if (options.data_level) query.set("data_level", options.data_level);
+    return send<S["HandedImage"]>("POST", `handin/image?${query.toString()}`, {
+      headers: { "content-type": file.type || "application/octet-stream" },
+      body: file,
+    });
+  },
+  /** Read an uploaded document as outside content, or keep an unreadable file for later. */
+  handInFile: (
+    file: Blob & { name: string },
+    options: { note?: string; project?: string; data_level?: "open" | "internal" | "restricted" } = {},
+  ) => {
+    const query = new URLSearchParams({ name: file.name });
+    if (options.note) query.set("note", options.note);
+    if (options.project) query.set("project", options.project);
+    if (options.data_level) query.set("data_level", options.data_level);
+    return send<S["HandedFile"]>("POST", `handin/file?${query.toString()}`, {
+      headers: { "content-type": file.type || "application/octet-stream" },
+      body: file,
+    });
+  },
+  /** Keep the area offered for a word, under the name the person chose: start it and file the items that share the word under it. */
+  keepArea: (word: string, name?: string) => call<S["AreaKept"]>("POST", "areas/keep", { word, name: name || null }),
+  looksGood: (cs: string) => call<S["Ok"]>("POST", `changesets/${id(cs)}/looks-good`),
+  reopen: (cs: string) => call<S["Ok"]>("POST", `changesets/${id(cs)}/reopen`),
+  /** "All looks good" for a batch on Today: every changeset of it marked reviewed, one signal for each request. */
+  confirmBatch: (changesets: string[]) => call<S["BatchConfirmed"]>("POST", "changesets/confirm", { changesets }),
+  unconfirmBatch: (done: S["BatchConfirmed"]) => call<S["BatchUnconfirmed"]>("POST", "changesets/unconfirm", done),
+  /** Move the person's own calendar entry; Undo is the changeset it returns. */
+  moveEvent: (event: string, body: S["EventMoveIn"]) => call<S["EventChanged"]>("POST", `events/${id(event)}/move`, body),
+  /** Cancel the person's own calendar entry; Undo brings it back. */
+  cancelEvent: (event: string, body: S["EventCancelIn"]) => call<S["EventChanged"]>("POST", `events/${id(event)}/cancel`, body),
+  /** Change the place, the repeat or the role of the person's own entry; Undo is the changeset it returns. */
+  editEvent: (event: string, body: S["EventEditIn"]) => call<S["EventChanged"]>("POST", `events/${id(event)}/edit`, body),
+  /** Call off the person's own entry: it is held, with the to-dos tied to it, and Undo puts both back. */
+  callOffEvent: (event: string) => call<S["EventChanged"]>("POST", `events/${id(event)}/call-off`),
+  /** Give a called-off entry a new time; its to-dos come off hold with the new day, in one change. */
+  newDateEvent: (event: string, body: S["EventNewDateIn"]) => call<S["EventChanged"]>("POST", `events/${id(event)}/new-date`, body),
+  /** Drop a called-off entry with the person's reason. */
+  dropEvent: (event: string, reason: string) => call<S["EventChanged"]>("POST", `events/${id(event)}/drop`, { reason }),
+  /** Keep the to-dos held for a dropped entry, or drop them with its reason. */
+  keepEventTodos: (event: string) => call<S["EventChanged"]>("POST", `events/${id(event)}/keep-todos`),
+  dropEventTodos: (event: string) => call<S["EventChanged"]>("POST", `events/${id(event)}/drop-todos`),
+  undo: (cs: string, ops?: number[]) => call<S["UndoReport"]>("POST", `changesets/${id(cs)}/undo`, { ops: ops ?? null }),
+  /** `ops` names the items the note is about: only they are undone and sent back. */
+  sendBack: (cs: string, note: string, undoFirst = true, ops?: number[]) =>
+    call<S["Requeued"]>("POST", `changesets/${id(cs)}/send-back`, { note, ...(undoFirst ? {} : { undo_first: false }), ...(ops ? { ops } : {}) }),
+  /** Keep a group of an answer the task kind grouped (its held ops are applied), drop it (its applied ops are undone and its
+   * held ones kept as they were), or release every held op of the answer together. */
+  keepGroup: (cs: string, group: number) => call<S["AnswerGroupDone"]>("POST", `changesets/${id(cs)}/groups/${group}/keep`),
+  dropGroup: (cs: string, group: number) => call<S["AnswerGroupDone"]>("POST", `changesets/${id(cs)}/groups/${group}/drop`),
+  releaseAll: (cs: string) => call<S["AnswerGroupDone"]>("POST", `changesets/${id(cs)}/release-all`),
+  release: (cs: string, index: number, person?: string) =>
+    call<S["Ok"]>("POST", `changesets/${id(cs)}/ops/${index}/release`, { person: person ?? null }),
+  /** "Drop it and draft the note": applies the held drop and drafts a note to each person who was told, for the person's yes. */
+  releaseWithNote: (cs: string, index: number) => call<S["DropNoteDone"]>("POST", `changesets/${id(cs)}/ops/${index}/release-with-note`),
+  newPersonForm: (q: string) => call<S["NewPersonPrefillView"]>("GET", `questions/${id(q)}/new-person`),
+  addNewPerson: (q: string, body: S["NewPersonIn"]) => call<S["NewPersonDone"]>("POST", `questions/${id(q)}/new-person`, body),
+  projectPartOf: (cs: string, index: number, project: string) =>
+    call<S["Applied"]>("POST", `changesets/${id(cs)}/ops/${index}/part-of`, { project }),
+  notAProject: (cs: string, index: number) => call<S["Applied"]>("POST", `changesets/${id(cs)}/ops/${index}/not-a-project`),
+  answer: (q: string, body: S["Answer"]) => call<S["Noted"]>("POST", `questions/${id(q)}/answer`, body),
+  /** A note goes with the change only when there is one: with none, the request is the same as it always was. */
+  actionStatus: (a: string, status: S["ActionState"]["status"], note?: string) =>
+    call<S["Noted"]>("POST", `actions/${id(a)}/status`, note ? { status, note } : { status }),
+  /** Ask the assistant to draft the work an open action stands for; the action stays the person's. */
+  handOver: (a: string, note?: string) => call<S["HandedOver"]>("POST", `actions/${id(a)}/hand-over`, note ? { note } : {}),
+  /** Add a meeting in one line, or merge it into the one already on the calendar. */
+  addMeeting: (body: S["MeetingIn"]) => call<S["MeetingAdded"]>("POST", "calendar/meetings", body),
+  /** The actions the assistant has in hand, and which of them has a draft waiting for review. */
+  handed: () => call<S["HandedActionView"][]>("GET", "actions/handed"),
+  /** Put an action on hold, waiting for words, or blocked on the person, action or question `on` names. */
+  putOnHold: (a: string, waiting_for: string, on?: string | null) =>
+    call<S["HoldChanged"]>("POST", `actions/${id(a)}/hold`, on ? { waiting_for, on } : { waiting_for }),
+  /** Hold an unsent question for a meeting, a series or a day; null sends it now. */
+  holdQuestion: (q: string, held_for: S["HeldForIn"] | null) =>
+    call<S["HeldChanged"]>("POST", `questions/${id(q)}/held-for`, { held_for }),
+  /** Hold a person's whole message (every question ready to send) for a meeting, a series or a day. */
+  holdMessage: (person: string, held_for: S["HeldForIn"]) =>
+    call<S["HeldMessageChanged"]>("POST", `followups/${id(person)}/held-for`, { held_for }),
+  restoreMessageHolds: (person: string, holds: S["QuestionHold"][]) =>
+    call<S["Ok"]>("POST", `followups/${id(person)}/held-for/restore`, { holds }),
+  takeOffHold: (a: string) => call<S["HoldChanged"]>("POST", `actions/${id(a)}/unhold`),
+  restoreHold: (a: string, hold: S["HoldState"] | null) => call<S["Ok"]>("POST", `actions/${id(a)}/hold/restore`, { hold }),
+  reply: (q: string, text: string) => call<S["Handed"]>("POST", `questions/${id(q)}/reply`, { text }),
+  retry: (req: string, use?: string) =>
+    call<S["Ok"]>("POST", `requests/${id(req)}/retry`, use ? { use } : undefined),
+  allowData: (req: string) => call<S["DataLevelAllowed"]>("POST", `requests/${id(req)}/allow-data`),
+  requestAccounts: (req: string) => call<S["AccountChoice"][]>("GET", `requests/${id(req)}/accounts`),
+  dismiss: (req: string, readVersion: number) =>
+    call<S["RequestChanged"]>("POST", `requests/${id(req)}/dismiss`, { read_version: readVersion }),
+  undismiss: (req: string, readVersion: number) =>
+    call<S["RequestChanged"]>("POST", `requests/${id(req)}/undismiss`, { read_version: readVersion }),
+  markSent: (person: string, text: string | null) =>
+    call<S["SentCounts"]>("POST", `followups/${id(person)}/mark-sent`, { text }),
+  unmarkSent: (person: string, body: S["Unmark"]) =>
+    call<S["Ok"]>("POST", `followups/${id(person)}/unmark-sent`, body),
+  nudgeSent: (person: string, body: S["NudgeSent"]) =>
+    call<S["NudgeRecorded"]>("POST", `followups/${id(person)}/followed-up`, body),
+  nudgeUnsent: (person: string, body: S["NudgeUnsent"]) =>
+    call<S["Ok"]>("POST", `followups/${id(person)}/unfollow`, body),
+  followedUp: (person: string, action: string, note?: string) =>
+    call<S["FollowedUp"]>("POST", `followups/${id(person)}/actions/${id(action)}/followed-up`, note ? { note } : undefined),
+  unfollow: (person: string, action: string, body: S["Unfollow"]) =>
+    call<S["Ok"]>("POST", `followups/${id(person)}/actions/${id(action)}/unfollow`, body),
+  theyFinished: (person: string, action: string, note?: string) =>
+    call<S["Noted"]>("POST", `followups/${id(person)}/actions/${id(action)}/finished`, note ? { note } : undefined),
+  backup: () => call<S["Status"]>("POST", "backup"),
+  backups: () => call<S["BackupsView"]>("GET", "backups"),
+  /** Makes ready the restore of one copy (an encrypted one with its key); nothing is replaced until the next start. */
+  restoreCopy: (body: S["RestoreCopyIn"]) => call<S["RestoreStaged"]>("POST", "backups/restore", body),
+  /** Cancels the restore that waits for the next start. */
+  cancelRestore: () => call<S["Ok"]>("POST", "backups/restore/cancel"),
+  /** Makes ready the return to what was there before the last restore. */
+  putBackRestore: () => call<S["RestoreStaged"]>("POST", "restore/put-back"),
+  /** Takes the line about the last restore off Today. */
+  dismissRestore: () => call<S["Ok"]>("POST", "restore/dismiss"),
+
+  /** What the assistant learned from each correction that has something to show, for the line under its card. */
+  learned: () => call<S["LearnedView"]>("GET", "knowledge/learned"),
+  proposals: () => call<S["ProposalsView"]>("GET", "knowledge/proposals"),
+  catchUp: () => call<S["CatchUpView"]>("GET", "knowledge/catch-up"),
+  /** The go for the learning runs held for the catch-up list: they all start. */
+  catchUpGo: () => call<S["CatchUpStarted"]>("POST", "knowledge/catch-up/go"),
+  keepKnowledge: (entry: string, body: S["KnowledgeKeep"]) => call<S["Applied"]>("POST", `knowledge/${id(entry)}/keep`, body),
+  discardKnowledge: (entry: string, readVersion: number, reason?: string) =>
+    call<S["Applied"]>("POST", `knowledge/${id(entry)}/discard`, { read_version: readVersion, reason: reason || null }),
+  justThisTime: (entry: string, readVersion: number) =>
+    call<S["Applied"]>("POST", `knowledge/${id(entry)}/just-this-time`, { read_version: readVersion }),
+  /** A word of the person's own with what it means, kept as an active glossary entry. */
+  addTerm: (term: string, meaning: string) => call<S["Applied"]>("POST", "knowledge/terms", { term, meaning }),
+  narrowKnowledge: (entry: string, body: S["KnowledgeNarrow"]) =>
+    call<S["Applied"]>("POST", `knowledge/${id(entry)}/narrow`, body),
+  retireKnowledge: (entry: string, readVersion: number) =>
+    call<S["Applied"]>("POST", `knowledge/${id(entry)}/retire`, { read_version: readVersion }),
+  /** "Change this" on a row the assistant made; the note is the person's own words and is required. */
+  changeThis: (kind: string, item: string, note: string) =>
+    call<S["ChangeRequested"]>("POST", `items/${id(kind)}/${id(item)}/change`, { note }),
+  rewordQuestion: (q: string, body: S["QuestionRewordIn"]) => call<S["Applied"]>("POST", `questions/${id(q)}/reword`, body),
+  rerouteQuestion: (q: string, to: string) => call<S["Applied"]>("POST", `questions/${id(q)}/reroute`, { to }),
+  /** Every open to-do and every open question, each with what its row shows. */
+  openItems: () => call<S["OpenItemsView"]>("GET", "open-items"),
+  doneItems: () => call<S["DoneItemsView"]>("GET", "open-items/done"),
+  /** Keep this to-do and close the one it nearly repeats; `read_version` and `other_version` are the versions as read. */
+  mergeActions: (keep: string, body: S["ActionMergeIn"]) => call<S["Applied"]>("POST", `actions/${id(keep)}/merge`, body),
+  /** Drop an action that is no longer needed, with Undo. */
+  dropAction: (a: string, reason: string) => call<S["DropDone"]>("POST", `actions/${id(a)}/drop`, { reason }),
+  reviewReply: (a: string, body: S["ActionReplyIn"]) => call<S["Applied"]>("POST", `actions/${id(a)}/reply`, body),
+  answeredAnotherWay: (a: string, body: S["AnsweredAnotherWayIn"]) => call<S["Applied"]>("POST", `replies/${id(a)}/answered`, body),
+  /** Keep the drafted reply as the person copied it, so the message they send can be matched to it. */
+  replyCopied: (a: string) => call<S["Copied"]>("POST", `replies/${id(a)}/copied`),
+  /** Keep the draft made for an action as the person copied it; the action stays open until the sent message is seen. */
+  workCopied: (a: string) => call<S["Copied"]>("POST", `actions/${id(a)}/work/copied`),
+  /** The answer to "Did your message go out?"; the result is what Undo takes. */
+  settleCopy: (c: string, how: S["CopyAnswer"]["how"]) => call<S["CopySettled"]>("POST", `copies/${id(c)}/settle`, { how }),
+  unsettleCopy: (c: string, body: S["CopySettled"]) => call<S["Ok"]>("POST", `copies/${id(c)}/unsettle`, body),
+  /** Add an action waiting for an owner to the open action it nearly repeats; `readVersion` is that action's version as read. */
+  foldAction: (cs: string, index: number, into: string, readVersion: number) =>
+    call<S["Applied"]>("POST", `changesets/${id(cs)}/ops/${index}/fold`, { into, read_version: readVersion }),
+  dropQuestion: (q: string, reason: string) => call<S["Applied"]>("POST", `questions/${id(q)}/drop`, { reason }),
+  questionSent: (q: string) => call<S["Applied"]>("POST", `questions/${id(q)}/sent`, {}),
+  projects: () => call<S["ProjectView"][]>("GET", "projects"),
+  notes: () => call<S["NoteView"][]>("GET", "notes"),
+  unfiled: () => call<S["UnfiledView"]>("GET", "unfiled"),
+  fileUnfiled: (body: S["UnfiledFile"]) => call<S["Applied"]>("POST", "unfiled/file", body),
+  /** The grouped questions of which side unsure items belong to: one for each side, at most once a day. */
+  filingQuestions: () => call<S["FilingQuestions"]>("GET", "filing/questions"),
+  /** Moves unsure items from Personal to a side as the person's own change, with Undo. */
+  filingMove: (body: S["FilingMove"]) => call<S["FilingMoved"]>("POST", "filing/move", body),
+  /** Keeps unsure items under Personal: they are not asked about again. */
+  filingKeep: (body: S["FilingMove"]) => call<S["FilingKept"]>("POST", "filing/keep", body),
+  projectKnows: (project: string) => call<S["ProjectKnowsView"]>("GET", `projects/${id(project)}/knows`),
+  seriesPage: (series: string) => call<S["SeriesPageView"]>("GET", `series/${id(series)}/page`),
+  recordPage: (kind: string, record: string) => call<S["RecordPageView"]>("GET", `record-pages/${id(record)}?kind=${id(kind)}`),
+  /** The answer to "Done by <owner>, or no longer needed?": done credits the owners, called off credits nobody. */
+  endingAnswer: (cs: string, index: number, ending: "done" | "called_off") => call<S["DropDone"]>("POST", `changesets/${id(cs)}/ops/${index}/ending`, { ending }),
+  /** A project ending that waits for the person: the open items it would drop, and what add-ons leave open. */
+  projectEnding: (cs: string, index: number) => call<S["ProjectEndingView"]>("GET", `changesets/${id(cs)}/ops/${index}/project-ending`),
+  /** End the project and drop the items not in `keep`, or (`end` false) keep the project and every item as they are. */
+  chooseProjectEnding: (cs: string, index: number, body: S["ProjectEndingChoice"]) => call<S["ProjectEndingDone"]>("POST", `changesets/${id(cs)}/ops/${index}/project-ending`, body),
+  declineOp: (cs: string, index: number, note?: string) =>
+    call<S["Noted"]>("POST", `changesets/${id(cs)}/ops/${index}/decline`, note ? { note } : undefined),
+  /** Take back a yes to a held question: it is undone and the question waits for the person again. */
+  unreleaseOp: (cs: string, index: number) => call<S["UndoReport"]>("POST", `changesets/${id(cs)}/ops/${index}/unrelease`),
+  undeclineOp: (cs: string, index: number) => call<S["Ok"]>("POST", `changesets/${id(cs)}/ops/${index}/undecline`),
+  addPerson: (body: S["PersonIn"]) => call<S["Created"]>("POST", "people", body),
+  editPerson: (p: string, body: S["PersonPatch"]) => call<S["Ok"]>("POST", `people/${id(p)}`, body),
+  addSetupPerson: (body: S["SetupPersonIn"]) => call<S["Created"]>("POST", "setup/people-add", body),
+  peopleSuggestions: () => call<S["PeopleSuggestionsView"]>("GET", "setup/people-suggestions"),
+  previewPaste: (body: S["PeoplePasteIn"]) => call<S["PeoplePastePreview"]>("POST", "setup/people-paste/preview", body),
+  pastePeople: (body: S["PeoplePasteIn"]) => call<S["PeoplePasteDone"]>("POST", "setup/people-paste", body),
+  organizations: () => call<S["OrganizationView"][]>("GET", "organizations"),
+  addOrganization: (body: Partial<S["OrganizationIn"]> & { name: string }) => call<S["Created"]>("POST", "organizations", body),
+  editOrganization: (o: string, body: S["OrganizationPatch"]) => call<S["Ok"]>("POST", `organizations/${id(o)}`, body),
+  removeOrganization: (o: string) => call<S["Ok"]>("POST", `organizations/${id(o)}/remove`),
+  restoreOrganization: (o: string) => call<S["Ok"]>("POST", `organizations/${id(o)}/restore`),
+  /** Forget a person for good: their name becomes a marker, their details and earlier values are wiped; there is no Undo. */
+  forgetPerson: (p: string, body: S["PersonForget"]) => call<S["PersonForgotten"]>("POST", `records/person/${id(p)}/forget`, body),
+  removePerson: (p: string) => call<S["Ok"]>("POST", `people/${id(p)}/remove`),
+  personRemoval: (p: string) => call<S["PersonRemoval"]>("GET", `people/${id(p)}/removal`),
+  restorePerson: (p: string) => call<S["Ok"]>("POST", `people/${id(p)}/restore`),
+  addProject: (body: S["ProjectIn"]) => call<S["Created"]>("POST", "projects", body),
+  editProject: (p: string, body: S["ProjectPatch"]) => call<S["Ok"]>("POST", `projects/${id(p)}`, body),
+  /** The person's own part in a project (run, design or watch), with Undo through the change it returns. */
+  setProjectRole: (p: string, role: S["ProjectRoleIn"]["role"]) =>
+    call<S["Applied"]>("POST", `projects/${id(p)}/role`, { role }),
+  removeProject: (p: string) => call<S["Ok"]>("POST", `projects/${id(p)}/remove`),
+  restoreProject: (p: string) => call<S["Ok"]>("POST", `projects/${id(p)}/restore`),
+
+  files: () => call<S["FileView"][]>("GET", "files"),
+  /** What refers to a file: newer versions of it, working copies made from it and add-on records that name it. */
+  fileUsedBy: (file: string) => call<S["FileUsedBy"]>("GET", `files/${id(file)}/used-by`),
+  /** Rename a file or change its description, resting on the version read; Undo is through the change it returns. */
+  editFile: (file: string, body: S["FileEdit"]) => call<S["FileChanged"]>("POST", `files/${id(file)}/edit`, body),
+  /** Take a file out of the list; its bytes stay, so Undo brings it back. */
+  removeFile: (file: string, body: S["FileRemove"]) => call<S["FileChanged"]>("POST", `files/${id(file)}/remove`, body),
+  /** Remove a file and delete its stored copy for good; there is no Undo. */
+  forgetFile: (file: string, body: S["FileForget"]) => call<S["FileChanged"]>("POST", `files/${id(file)}/forget`, body),
+  fileKinds: () => call<S["FileKindView"][]>("GET", "file-kinds"),
+  /** Where a file's bytes are, relative to the page like every other address. */
+  fileContent: (file: string) => `api/files/${id(file)}/content`,
+  uploadFile: (file: Blob & { name: string }, upload: FileUpload) => {
+    const query = new URLSearchParams({ name: file.name, kind: upload.kind });
+    if (upload.project) query.set("project", upload.project);
+    if (upload.replaces) query.set("replaces", upload.replaces);
+    if (upload.fromPerson) query.set("from_person", upload.fromPerson);
+    if (upload.meta && Object.keys(upload.meta).length) query.set("meta", JSON.stringify(upload.meta));
+    const type = file.type || "application/octet-stream";
+    return send<S["FileView"]>("POST", `files?${query.toString()}`, { headers: { "content-type": type }, body: file });
+  },
+
+  /** Keeps a picture as the workspace's logo and says its file name, which is then saved as the setting. */
+  uploadLogo: (file: Blob) =>
+    send<S["LogoUploaded"]>("POST", "brand/logo", { headers: { "content-type": file.type || "application/octet-stream" }, body: file }),
+
+  pluginActions: (kind?: string, record?: string) =>
+    call<S["PersonActionView"][]>(
+      "GET",
+      kind && record ? `plugin-actions?kind=${id(kind)}&id=${id(record)}` : "plugin-actions",
+    ),
+  actionPreview: (name: string, body: S["ActionRun"]) =>
+    call<S["ActionProposalView"]>("POST", `plugin-actions/${named(name)}/preview`, body),
+  actionApply: (token: string, kept?: Record<string, boolean>, keptRequests?: Record<string, boolean>) => {
+    const body: S["ActionApply"] = { token };
+    if (kept) body.kept = kept;
+    if (keptRequests) body.kept_requests = keptRequests;
+    return call<S["ActionApplied"]>("POST", "plugin-actions/apply", body);
+  },
+
+  sync: () => call<S["SyncView"]>("GET", "sync"),
+  handover: () => call<S["HandoverView"]>("GET", "sync/handover"),
+  checkSyncNow: () => call<S["HandoverView"]>("POST", "sync/check"),
+  chooseCopy: (which: S["HandoverChoice"]["which"]) => call<S["HandoverView"]>("POST", "sync/handover", { which }),
+  changeMindAboutCopy: () => call<S["HandoverView"]>("DELETE", "sync/handover"),
+  jobs: () => call<S["JobView"][]>("GET", "jobs"),
+
+  pluginToday: () => call<S["TodayLineView"][]>("GET", "plugin-today"),
+  agenda: () => call<S["AgendaItemView"][]>("GET", "today/agenda"),
+  /** A run of days from a day (today when none), each with its all-day and timed entries. */
+  schedule: (from: string | null, days?: number) => {
+    const query = [from ? `from=${id(from)}` : "", days ? `days=${days}` : ""].filter(Boolean).join("&");
+    return call<S["ScheduleView"]>("GET", query ? `schedule?${query}` : "schedule");
+  },
+  /** One lane for each project that has something between a first day (the start of this week when none) and the end of a named range (the workspace's setting when none). */
+  scheduleTimeline: (from: string | null, range: string | null) => {
+    const query = [from ? `from=${id(from)}` : "", range ? `range=${id(range)}` : ""].filter(Boolean).join("&");
+    return call<S["TimelineView"]>("GET", query ? `schedule/timeline?${query}` : "schedule/timeline");
+  },
+  /** What a connected calendar says about one event the app keeps no entry for; `start` picks the date of a repeating one. */
+  scheduleEvent: (snapshot: string, start?: string) => call<S["ConnectedEventView"]>("GET", `schedule/events/${id(snapshot)}${start ? `?start=${id(start)}` : ""}`),
+  agendaSpan: () => call<S["AgendaSpanView"]>("GET", "today/agenda-span"),
+  /** Make the to-do a plain calendar entry is offered as: the person's own, due on the entry's day. */
+  entryTodo: (entry: string) => call<S["EntryTodoMade"]>("POST", `events/${id(entry)}/todo`),
+  /** Tie a to-do to the calendar entry proposed for it, as the person's own change with Undo. */
+  tieTodo: (action: string) => call<S["TieDone"]>("POST", `actions/${id(action)}/tie`),
+  /** Say the entry proposed for a to-do isn't its one: it isn't proposed again. Undo is `undoNotNowSuggestion`. */
+  notThisEntry: (action: string) => call<S["NotNowDone"]>("POST", `actions/${id(action)}/not-this`),
+  /** Record the people proposed for a calendar entry from its title as on it, as the person's own change with Undo. */
+  confirmGuests: (entry: string) => call<S["GuestsDone"]>("POST", `events/${id(entry)}/guests/confirm`),
+  /** Say the people proposed for an entry aren't the ones on it: that set isn't proposed again. Undo is `undoNotNowSuggestion`. */
+  notTheseGuests: (entry: string) => call<S["NotNowDone"]>("POST", `events/${id(entry)}/guests/not-them`),
+  /** Keep a kind of suggestion for the morning brief (`quiet`) or stop offering it (`stop`), as the person's own yes; `show` is its undo. */
+  chooseAttention: (kind: string, how: "quiet" | "stop" | "show") => call<S["AttentionChosen"]>("POST", `attention/${id(kind)}/${how}`),
+  /** Keep showing a kind of suggestion: the question about it isn't raised again for a while. Undo is `undoNotNowSuggestion`. */
+  keepShowing: (kind: string) => call<S["NotNowDone"]>("POST", `attention/${id(kind)}/keep`),
+  thisWeek: () => call<S["ThisWeekView"]>("GET", "today/week"),
+  /** The form of the brief that is due now, or the one named: the morning brief, the evening wrap-up or the Monday briefing. */
+  brief: (form?: string) => call<S["BriefView"]>("GET", form ? `brief?form=${id(form)}` : "brief"),
+  /** Confirm the goals for this week as the person's own; the answer holds what they replaced, which is Undo. */
+  /** Dismiss the offer of this week's briefing, or take that back. */
+  briefSeen: () => call<S["Ok"]>("POST", "brief/seen"),
+  dismissWeekly: () => call<S["Ok"]>("POST", "brief/weekly/dismiss"),
+  undismissWeekly: () => call<S["Ok"]>("POST", "brief/weekly/undismiss"),
+  putGoals: (body: S["BriefGoalsIn"]) => call<S["BriefGoalsKept"]>("PUT", "brief/goals", body),
+  /** Ask the assistant to draft this week's message to whoever the person reports to. */
+  askBriefMessage: (body: S["BriefMessageAsk"]) => call<S["HandedOver"]>("POST", "brief/message", body),
+  /** The person copied the message: the draft waiting is theirs as it is. */
+  briefMessageCopied: () => call<S["Ok"]>("POST", "brief/message/copied"),
+  /** Answer, once, who the Monday message is for: a person marked as someone to report to, or nobody (false takes it back). */
+  briefMessageFor: (body: S["BriefMessageFor"]) => call<S["BriefMessageForSaved"]>("POST", "brief/message/for", body),
+  /** The prep for a calendar entry, by rules: who is coming, what is open with each of them, the last time in touch. */
+  meetingPrep: (entry: string) => call<S["MeetingPrepView"]>("GET", `meetings/${id(entry)}/prep`),
+  /** Write down what happened at an entry, as the person's own words; no words says there is nothing to note. */
+  captureMeeting: (entry: string, text: string) => call<S["MeetingCaptured"]>("POST", `meetings/${id(entry)}/capture`, { text }),
+  undoCapture: (entry: string, capturedAt: string) => call<S["MeetingCaptured"]>("POST", `meetings/${id(entry)}/capture/undo`, { captured_at: capturedAt }),
+  /** Ask the assistant to draft a prep note for an entry; it comes back as a draft on the entry's page. */
+  askPrepNote: (entry: string, note?: string) => call<S["HandedOver"]>("POST", `meetings/${id(entry)}/prep-note`, { note: note ?? null }),
+  /** What the records say about one person, each part with the words or record it rests on. */
+  personMemory: (person: string) => call<S["PersonMemoryView"]>("GET", `people/${id(person)}/memory`),
+  arrived: () => call<S["InboxView"]>("GET", "today/arrived"),
+  checkArrived: () => call<S["InboxCheckView"]>("POST", "today/arrived/check"),
+  taskKinds: (kind?: string, record?: string) =>
+    call<S["TaskKindView"][]>("GET", kind && record ? `task-kinds?kind=${id(kind)}&id=${id(record)}` : "task-kinds"),
+  startTask: (name: string, about: S["RecordReference"] | null) =>
+    call<S["TaskStarted"]>("POST", `task-kinds/${named(name)}/start`, { about, note: "" }),
+
+  /** The screens plugins add; with a project, only those its add-on shows on that project. */
+  panels: (project?: string) => call<S["PanelView"][]>("GET", `panels${project ? `?project=${id(project)}` : ""}`),
+  panelRows: (name: string, project?: string) =>
+    call<S["PanelRow"][]>("GET", `panels/${named(name)}/rows${project ? `?project=${id(project)}` : ""}`),
+  /** A document panel's blocks for the project in view, or the workspace; null when there is nothing to show yet. */
+  panelDocument: (name: string, project?: string) =>
+    call<S["DocumentView"]>("GET", `panels/${named(name)}/document${project ? `?project=${id(project)}` : ""}`),
+  /** The person's views: named lists of projects inside one side (design 6.32). */
+  views: () => call<S["WorkViewView"][]>("GET", "views"),
+  addView: (body: S["ViewAddIn"]) => call<S["ViewApplied"]>("POST", "views", body),
+  renameView: (view: string, body: S["ViewRenameIn"]) => call<S["ViewApplied"]>("POST", `views/${id(view)}/rename`, body),
+  setViewProjects: (view: string, projects: string[]) => call<S["ViewApplied"]>("POST", `views/${id(view)}/projects`, { projects }),
+  removeView: (view: string) => call<S["ViewApplied"]>("DELETE", `views/${id(view)}`),
+  valueLists: () => call<S["ValueListView"][]>("GET", "lists"),
+  listAdd: (list: string, value: string, meant?: { tone?: S["ListSuggestionView"]["tone"]; meaning?: S["ListSuggestionView"]["meaning"] }) =>
+    call<S["Applied"]>("POST", `lists/${named(list)}/add`, { value, ...(meant?.tone ? { tone: meant.tone } : {}), ...(meant?.meaning ? { meaning: meant.meaning } : {}) }),
+  /** The tone, and for a status list the meaning, offered for a value being added. */
+  listSuggestion: (list: string, value: string) =>
+    call<S["ListSuggestionView"]>("GET", `list-suggestion?list=${encodeURIComponent(list)}&value=${encodeURIComponent(value)}`),
+  listRename: (list: string, value: string, to: string) =>
+    call<S["Applied"]>("POST", `lists/${named(list)}/rename`, { value, to }),
+  listRetire: (list: string, value: string) => call<S["Applied"]>("POST", `lists/${named(list)}/retire`, { value }),
+  editRecord: (body: S["RecordEdit"]) => call<S["Applied"]>("POST", "records/edit", body),
+  /** What words typed for a repeat are read as, from the to-do's day; nothing is kept. */
+  checkRepeat: (body: S["RepeatCheckIn"]) => call<S["RepeatCheckView"]>("POST", "repeats/check", body),
+  /** Make a to-do repeat as the words say, with Undo. */
+  setRepeat: (a: string, body: S["RepeatSetIn"]) => call<S["Applied"]>("POST", `actions/${id(a)}/repeat`, body),
+  /** Stop a to-do repeating, with Undo; it stays as it is. */
+  stopRepeat: (a: string) => call<S["Applied"]>("POST", `actions/${id(a)}/repeat/stop`),
+  /** What words typed for a to-do's day are read as; nothing is kept. */
+  checkTodoDay: (body: S["TodoDayCheckIn"]) => call<S["TodoDayView"]>("POST", "todos/day", body),
+  /** Add a to-do by hand as the person's own; the changes made are undone last first. */
+  addTodo: (body: S["TodoAddIn"]) => call<S["TodoAdded"]>("POST", "todos", body),
+  /** Whether the rest of today holds the to-dos due today or late, and what is proposed to move when it doesn't. */
+  capacity: () => call<S["CapacityView"]>("GET", "capacity"),
+  /** "Not now" on a suggestion line: it stays off until something about it changes. */
+  notNowSuggestion: (key: string) => call<S["NotNowDone"]>("POST", "suggestions/not-now", { key }),
+  snoozeQuietPromise: (action: string, until: string) => call<S["SnoozeDone"]>("POST", `quiet-promises/${id(action)}/snooze`, { until }),
+  quietFollowUp: (action: string) => call<S["QuietFollowUpView"]>("GET", `quiet-promises/${id(action)}/follow-up`),
+  undoNotNowSuggestion: (signal: string) => call<S["Ok"]>("POST", `suggestions/not-now/${id(signal)}/undo`),
+  /** A choice on a suggestion line, done at once; Undo takes it and what it changed back. */
+  chooseSuggestion: (body: S["ChooseIn"]) => call<S["ChooseDone"]>("POST", "suggestions/choose", body),
+  undoChoice: (signal: string) => call<S["Ok"]>("POST", `suggestions/choose/${id(signal)}/undo`),
+  /** Why a promise exists: its words, who owes it to whom, its day, how it is known and what was heard since. */
+  remind: (action: string, body: S["ReminderIn"]) => call<S["Applied"]>("POST", `reminders/${id(action)}`, body),
+  promise: (action: string) => call<S["PromiseView"]>("GET", `promises/${id(action)}`),
+  correctPromise: (action: string, body: S["PromiseCorrection"]) => call<S["Applied"]>("POST", `promises/${id(action)}/correct`, body),
+  kindView: (kind: string) => call<S["KindView"]>("GET", `kinds/${named(kind)}`),
+  record: (kind: string, record: string) =>
+    call<S["GenericRecordView"]>("GET", `record?kind=${id(kind)}&id=${id(record)}`),
+
+  text: (kind: string, record: string, field: string) =>
+    call<S["TextFieldView"]>("GET", `texts?kind=${id(kind)}&id=${id(record)}&field=${id(field)}`),
+  editText: (body: S["TextEdit"]) => call<S["Applied"]>("POST", "texts/edit", body),
+  textReview: (version: string) => call<S["TextReview"]>("GET", `text-versions/${id(version)}/review`),
+  acceptText: (version: string, body: S["TextChoices"]) =>
+    call<S["Applied"]>("POST", `text-versions/${id(version)}/accept`, body),
+  discardText: (version: string, body: S["TextChoices"]) =>
+    call<S["Applied"]>("POST", `text-versions/${id(version)}/discard`, body),
+
+  workingCopyFormats: (kind: string, field: string) =>
+    call<S["WorkingCopyFormatView"][]>("GET", `working-copies/formats?kind=${id(kind)}&field=${id(field)}`),
+  workingCopies: (kind: string, record: string) =>
+    call<S["WorkingCopyView"][]>("GET", `working-copies?kind=${id(kind)}&id=${id(record)}`),
+  handOut: (body: S["WorkingCopyOut"]) => call<S["WorkingCopyView"]>("POST", "working-copies", body),
+  /** The file's own bytes are the request body; its name goes in the address. */
+  returnCopy: (copy: string, file: Blob & { name: string }) =>
+    send<S["TakenBack"]>("POST", `working-copies/${id(copy)}/return?name=${id(file.name)}`, {
+      headers: { "content-type": file.type || "application/octet-stream" },
+      body: file,
+    }),
+  dropCopy: (copy: string) => call<S["Ok"]>("POST", `working-copies/${id(copy)}/drop`),
+
+  packs: () => call<S["PacksView"]>("GET", "packs"),
+  refreshPacks: () => call<S["PacksView"]>("POST", "packs/refresh"),
+  /** `own` marks the catalog as the person's own and unsigned; it is sent only when set. */
+  addCatalog: (address: string, fingerprint: string, own = false) =>
+    call<S["SettingsSaved"]>("POST", "packs/catalogs", { address, fingerprint, ...(own ? { own } : {}) } satisfies S["CatalogAddress"]),
+  removeCatalog: (address: string, fingerprint: string) =>
+    call<S["SettingsSaved"]>("POST", "packs/catalogs/remove", { address, fingerprint } satisfies S["CatalogAddress"]),
+  giveReadToken: (name: string, body: S["PackTokenIn"]) => call<S["SettingsSaved"]>("POST", `packs/${id(name)}/token`, body),
+  /** The secrets each running add-on says it needs, and where each is read from; never a value. */
+  addonSecrets: () => call<S["AddonSecretsView"][]>("GET", "addon-secrets"),
+  /** Gives one secret an add-on needs, typed (kept on this computer) or as where it is kept. */
+  giveAddonSecret: (plugin: string, secret: string, body: S["AddonSecretIn"]) =>
+    call<S["SettingsSaved"]>("POST", `addons/${id(plugin)}/secrets/${id(secret)}`, body),
+  /** Where the key that locks the backups is read from; never the key. */
+  backupKey: () => call<S["BackupKeyView"]>("GET", "backup-key"),
+  /** Gives the backup key: typed, made by the app (shown once in the answer's `made`), or as where it is kept. */
+  setBackupKey: (body: S["BackupKeyIn"]) => call<S["BackupKeySaved"]>("POST", "backup-key", body),
+  /** Where reminders reach the person when the app isn't open: the choice, the standing yes, the accounts, the exact words. */
+  reminderWhere: () => call<S["ReminderWhereView"]>("GET", "reminders/where"),
+  /** The person's yes for reminders going without asking (ends the one that stands, gives this one), with Undo. */
+  giveReminderYes: (body: S["StandingYesIn"]) => call<S["Applied"]>("POST", "reminders/yes", body),
+  /** Ends the standing yes for reminders, with Undo. */
+  endReminderYes: () => call<S["Applied"]>("POST", "reminders/yes/end"),
+  /** What notices that something needs the person are set to now; never the address they go to. */
+  notifications: () => call<S["NotificationsView"]>("GET", "notifications"),
+  /** What the open screen shows a browser notice for: a key for each item in Today's Decide group, and the notice's words. */
+  notificationsWaiting: () => call<S["NotifyWaiting"]>("GET", "notifications/waiting"),
+  /** Gives the person's own address for notices, typed (kept on this computer) or as where it is kept. */
+  setNotifyWebhook: (body: S["NotifyWebhookIn"]) => call<S["SettingsSaved"]>("POST", "notifications/webhook", body),
+  /** Picks the app notices go to, by its id from the list the notices view carries. */
+  setNotifyApp: (body: S["NotifyAppIn"]) => call<S["SettingsSaved"]>("POST", "notifications/app", body),
+  /** "Send me a test": the webhook gets the test note; for the browser the answer carries the words to show. */
+  notMineToTrack: (kind: "action" | "question", id: string, body: S["NotMineIn"] = {}) =>
+    call<S["NotMineDone"]>("POST", `not-mine/${kind}/${id}`, body),
+  undoNotMine: (body: S["NotMineUndoIn"]) => call<S["NotMineUndone"]>("POST", "not-mine/undo", body),
+  noticeMail: () => call<S["NoticeMailView"]>("GET", "notifications/mail"),
+  giveNoticeMail: (body: S["NoticeMailYesIn"]) => call<S["Applied"]>("POST", "notifications/mail/yes", body),
+  endNoticeMail: () => call<S["Applied"]>("POST", "notifications/mail/end"),
+  testNoticeMail: () => call<S["NoticeMailTestResult"]>("POST", "notifications/mail/test"),
+  testNotify: (target: S["NotifyTestIn"]["target"]) => call<S["NotifyTestResult"]>("POST", "notifications/test", { target } satisfies S["NotifyTestIn"]),
+  /** Installs (or updates) an add-on from the release its catalog entry names. It isn't turned on, and it is used after a restart. */
+  installPack: (name: string) => call<S["PackInstalled"]>("POST", `packs/${id(name)}/install`),
+  /** Takes away an add-on the app installed from the screen; it has to be off first. Used after a restart. */
+  removePack: (name: string) => call<S["PackInstalled"]>("POST", `packs/${id(name)}/uninstall`),
+  /** The person's first go: starts every run waiting for it. */
+  firstGo: () => call<S["FirstGoStarted"]>("POST", "runs/first-go"),
+  /** Adds an installed add-on to the ones that run; its code runs after the restart the person chooses. With Undo. */
+  packOn: (name: string, fingerprint: string) =>
+    call<S["SettingsSaved"]>("POST", `packs/${id(name)}/on`, { fingerprint } satisfies S["FingerprintIn"]),
+  packOff: (name: string, fingerprint: string) =>
+    call<S["SettingsSaved"]>("POST", `packs/${id(name)}/off`, { fingerprint } satisfies S["FingerprintIn"]),
+
+  /** Leaves the add-ons that are installed and off as they are, so the setup guide stops asking about them. */
+  leaveAddonsOff: () => call<S["Ok"]>("POST", "setup/addons/leave-off"),
+
+  dataForms: () => call<S["DataFormView"][]>("GET", "data-forms"),
+  dataFiles: (form: string, project?: string) =>
+    call<S["DataFile"][]>("GET", `data-forms/${named(form)}/files${project ? `?project=${id(project)}` : ""}`),
+  dataFile: (form: string, path: string, project?: string) =>
+    call<S["DataFileView"]>(
+      "GET",
+      `data-forms/${named(form)}/file?path=${id(path)}${project ? `&project=${id(project)}` : ""}`,
+    ),
+  /** What the form's preview shows for one file now: a picture, text or a short document, or why it can't. */
+  dataFormPreview: (form: string, path: string, project?: string) =>
+    call<S["DataFormPreview"]>(
+      "GET",
+      `data-forms/${named(form)}/preview?path=${id(path)}${project ? `&project=${id(project)}` : ""}`,
+    ),
+  saveDataFile: (form: string, body: S["DataFileChange"]) =>
+    call<S["DataFileSaved"]>("POST", `data-forms/${named(form)}/file`, body),
+  removeDataFile: (form: string, body: S["DataFileChange"]) =>
+    call<S["DataFileSaved"]>("POST", `data-forms/${named(form)}/remove`, body),
+  /** Undo for a save or a removal: the layer's copy as it was (`before`), or none. */
+  restoreDataFile: (form: string, body: S["DataFileRestore"]) =>
+    call<S["DataFileSaved"]>("POST", `data-forms/${named(form)}/restore`, body),
+
+  signIns: () => call<S["SignInView"][]>("GET", "sign-ins"),
+  /** The service's sign-in page; with `acting`, asking for the wider access that acting needs as well. */
+  startSignIn: (name: string, acting = false, account?: string) => {
+    const query = [acting ? "acting=true" : "", account ? `account=${encodeURIComponent(account)}` : ""].filter(Boolean).join("&");
+    return call<S["SignInStarted"]>("POST", `sign-ins/${named(name)}/start${query ? `?${query}` : ""}`);
+  },
+  /** Signs out of a service: one account by its key, or every account when none is named. */
+  signOut: (name: string, account?: string) =>
+    call<S["Ok"]>("DELETE", `sign-ins/${named(name)}${account ? `?account=${id(account)}` : ""}`),
+  startSignInSources: (name: string) => call<S["SignInView"]>("POST", `sign-ins/${named(name)}/sources`),
+  saveSignInApp: (name: string, body: S["SignInApp"]) => call<S["SignInView"]>("POST", `sign-ins/${named(name)}/app`, body),
+  setAsideSignInApp: (name: string) => call<S["SignInView"]>("POST", `sign-ins/${named(name)}/app/set-aside`),
+  bringBackSignInApp: (name: string) => call<S["SignInView"]>("POST", `sign-ins/${named(name)}/app/bring-back`),
+
+  settings: () => call<S["SettingsView"]>("GET", "settings"),
+  saveSettings: (body: S["SettingsSave"]) => call<S["SettingsSaved"]>("POST", "settings", body),
+  setup: () => call<S["SetupView"]>("GET", "setup"),
+  /** Keeps where the walkthrough stands on the server: its screen, that it was closed, or that it was finished. */
+  /** Where the walkthrough's first result stands: the look back offered with its estimate, under way, or done. */
+  firstPromises: () => call<S["FirstPromisesView"]>("GET", "setup/first-promises"),
+  /** The go for the look back the walkthrough offered: everything it counted starts. */
+  firstPromisesGo: () => call<S["IntakeStarted"]>("POST", "setup/first-promises/go"),
+  keepWalkthrough: (body: S["WalkthroughIn"]) => call<S["WalkthroughView"]>("POST", "setup/walkthrough", body),
+  me: () => call<S["MeView"]>("GET", "me"),
+  /** Saves the person's name; `workspaceName`, when given, names the workspace after them while it still has its default. */
+  saveMe: (fullName: string, workspaceName?: string) =>
+    call<S["MeView"]>("POST", "me", workspaceName ? { full_name: fullName, workspace_name: workspaceName } : { full_name: fullName }),
+  applyStepSettings: (step: string, fingerprint: string) =>
+    call<S["SettingsSaved"]>("POST", `setup/${named(step)}/apply-settings`, { fingerprint }),
+  skipStep: (step: string) => call<S["Ok"]>("POST", `setup/${named(step)}/skip`),
+  reopenStep: (step: string) => call<S["Ok"]>("POST", `setup/${named(step)}/reopen`),
+  templates: () => call<S["TemplateView"][]>("GET", "templates"),
+  applyTemplate: (template: string) => call<S["TemplateApplied"]>("POST", "templates/apply", { id: template }),
+  folderCheck: (path: string) => call<S["FolderCheckView"]>("GET", `setup/folder-check?path=${id(path)}`),
+  /** The folders inside one, and with `files` (endings such as ".ics") the files that end that way. */
+  folders: (path?: string, files?: string[]) => {
+    const asked = [path ? `path=${id(path)}` : "", files && files.length > 0 ? `files=${id(files.join(","))}` : ""].filter(Boolean);
+    return call<S["FolderListView"]>("GET", `setup/folders${asked.length > 0 ? `?${asked.join("&")}` : ""}`);
+  },
+  saveBackupFolder: (body: S["BackupFolderAdd"]) => call<S["SettingsSaved"]>("POST", "setup/backup-folder", body),
+  removeBackupFolder: (body: S["BackupFolderRemove"]) => call<S["SettingsSaved"]>("DELETE", "setup/backup-folder", body),
+  makeFolder: (body: S["FolderMake"]) => call<S["FolderMade"]>("POST", "setup/folders/new", body),
+  cloudFolders: () => call<S["CloudFoldersView"]>("GET", "setup/backup-folders"),
+  backupToCloudFolder: (body: S["CloudFolderChoice"]) => call<S["SettingsSaved"]>("POST", "setup/backup-folder/cloud", body),
+  endpoints: () => call<S["EndpointView"][]>("GET", "ai/endpoints"),
+  aiModels: (body: S["AiModelsAsk"]) => call<S["AiModelsView"]>("POST", "ai/models", body),
+  checkAccount: (body: S["AiAccountCheck"]) => call<S["AiAccountChecked"]>("POST", "ai/account-check", body),
+  aiLocal: () => call<S["LocalServerView"][]>("GET", "ai/local"),
+  /** Which of the picked models has no price the app knows, so the form asks for it. */
+  aiPricesMissing: (body: S["AiPricesAsk"]) => call<S["AiPricesMissing"]>("POST", "ai/prices/missing", body),
+  addAccount: (body: S["AiAccountAdd"]) => call<S["SettingsSaved"]>("POST", "ai/accounts", body),
+  aiAccounts: () => call<S["AiAccountView"][]>("GET", "ai/accounts"),
+  aiSkills: () => call<S["AiSkillsView"]>("GET", "ai/skills"),
+  aiRouting: () => call<S["AiRoutingView"]>("GET", "ai/routing"),
+  /** The tiers the running add-ons declare for their own work, each mapped to an account and model or running on its fallback. */
+  packTiers: () => call<S["PackTiersView"]>("GET", "ai/pack-tiers"),
+  /** What one account's connection check involves, to price it with a model's price. */
+  aiCheckSize: () => call<S["AiCheckSize"]>("GET", "ai/check-size"),
+  changeAccount: (name: string, body: S["AiAccountChange"]) =>
+    call<S["SettingsSaved"]>("POST", `ai/accounts/${id(name)}`, body),
+  /** What the check that comes with a change of account or model would cost, and whether one is offered at all. */
+  switchEstimate: (name: string, body: S["AiAccountChange"]) =>
+    call<S["AiSwitchEstimate"]>("POST", `ai/accounts/${id(name)}/switch-estimate`, body),
+  /** Makes the change and checks the new choice in the background; a failure comes to Today. */
+  switchAndCheck: (name: string, body: S["AiAccountChange"]) =>
+    call<S["AiSwitched"]>("POST", `ai/accounts/${id(name)}/switch-check`, body),
+  /** Puts a tier back as it was before the switch whose check didn't pass. */
+  switchBack: (tier: string, fingerprint: string) =>
+    call<S["SettingsSaved"]>("POST", `ai/switch/${id(tier)}/back`, { fingerprint } satisfies S["FingerprintIn"]),
+  /** What an account's move to its service's own connection would sign in as, from what is known without a call. */
+  accountMoveReadback: (name: string) => call<S["AiMoveReadback"]>("GET", `ai/accounts/${id(name)}/move`),
+  /** Moves the account after the check on the new connection passed; a failed check leaves it as it was. */
+  moveAccount: (name: string, fingerprint: string) =>
+    call<S["AiMoved"]>("POST", `ai/accounts/${id(name)}/move`, { fingerprint } satisfies S["FingerprintIn"]),
+  /** Puts the move off for good: the line never comes back unasked. */
+  moveAccountNotNow: (name: string) => call<S["Ok"]>("POST", `ai/accounts/${id(name)}/move/not-now`),
+  /** Puts off a line about an account's models (newer or price) until a different one appears. */
+  modelWatchNotNow: (account: string, state: string) =>
+    call<S["Ok"]>("POST", `ai/model-watch/${id(account)}/${id(state)}/not-now`),
+  /** Keeps a switch whose check didn't pass. */
+  keepSwitch: (tier: string) => call<S["Ok"]>("POST", `ai/switch/${id(tier)}/keep`),
+  /** Keeps the sign-in an agent account now runs as, in place of the one recorded. */
+  /** The person's yes to an account reading their work mail and notes; the answer carries what changed, for Undo. */
+  allowWork: (name: string, fingerprint: string) =>
+    call<S["SettingsSaved"]>("POST", `ai/accounts/${id(name)}/allow-work`, { fingerprint } satisfies S["FingerprintIn"]),
+  keepIdentity: (name: string) => call<S["Ok"]>("POST", `ai/accounts/${id(name)}/identity/keep`),
+  /** Removes an account; `takeOver` names the backup that does its work in its place. */
+  removeAccount: (name: string, fingerprint: string, takeOver?: string) =>
+    call<S["SettingsSaved"]>("POST", `ai/accounts/${id(name)}/remove`, {
+      fingerprint,
+      ...(takeOver ? { take_over: takeOver } : {}),
+    } satisfies S["AiAccountRemove"]),
+  /** What measuring an account (or one of its models) would cost; nothing is run. */
+  measureEstimate: (name: string, model?: string) =>
+    call<S["AiMeasureEstimate"]>("POST", `ai/skills/${id(name)}/estimate`, model ? ({ model, confirmed: false } satisfies S["AiMeasureIn"]) : undefined),
+  /** Measures an account's model (or all of them) in the background; `confirmed` is the person's go above the amount they asked to be asked about. */
+  measure: (name: string, body: S["AiMeasureIn"]) => call<S["AiMeasureStarted"]>("POST", `ai/skills/${id(name)}/measure`, body),
+  testAi: () => call<S["AiTestResult"][]>("POST", "ai/test"),
+  /** Tests one account on its first model, whether or not any work uses it; with a tier and a model, with that tier's
+   * kinds of work and their exact parameters, which is what lets the account stand in for it. */
+  testAccount: (name: string, tier?: string, model?: string) => {
+    const query = new URLSearchParams();
+    if (tier) query.set("tier", tier);
+    if (model) query.set("model", model);
+    const text = query.toString();
+    return call<S["AiTestResult"][]>("POST", `ai/accounts/${id(name)}/test${text ? `?${text}` : ""}`);
+  },
+
+  /** The answer to the question of using another kind of work's account while the work's own is paused: yes runs the
+   * waiting work on it until the reset, no keeps it waiting. */
+  borrowAccount: (body: S["AiBorrowAnswer"]) => call<S["AiBorrowed"]>("POST", "ai/borrow", body),
+
+  knowledge: () => call<S["KnowledgeView"][]>("GET", "knowledge"),
+  knowledgeRules: () => call<S["RuleView"][]>("GET", "knowledge/rules"),
+  ruleReview: () => call<S["RuleReviewView"]>("GET", "knowledge/rules/review"),
+  /** "Not now" on the rules review line: the review leaves Today for its week, and no rule changes. */
+  ruleReviewNotNow: () => call<S["RuleReviewPutOff"]>("POST", "knowledge/rules/review/not-now"),
+  /** Takes a "Not now" back: the line is on Today again at once. */
+  ruleReviewNotNowUndo: (signal: string) => call<S["Ok"]>("POST", `knowledge/rules/review/not-now/${id(signal)}/undo`),
+  keepRule: (entry: string, readVersion: number) =>
+    call<S["Applied"]>("POST", `knowledge/${id(entry)}/keep-rule`, { read_version: readVersion } satisfies S["ReadVersion"]),
+};
+
+export const EVENTS_PATH = "api/events";

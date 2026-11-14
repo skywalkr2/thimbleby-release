@@ -1,0 +1,68 @@
+id: acronym-after-scan
+# The scan for new terms proposes "HLP: not known yet" while the first input is read; the learned meaning then replaces
+# that unknown proposal (a duplicate that knows more), so Keep keeps the meaning and the next input reads it right.
+title: An unknown term is read the wrong way, corrected once, and read right the next time
+skills: [use-term, use-lesson]
+first:
+  received: '2026-10-08'
+  project: PRJ-1
+  pasted: |-
+    From: Sam Rivera
+
+    The HLP is back from Harrowgate. Please approve it by the 15th.
+  wrong:
+    summary: Sam asks for the lamination plan to be approved.
+    ops:
+    - op: action.add
+      text: Approve the hardcover lamination plan
+      owners: [Avery Lane]
+      due: '2026-10-15'
+      project: PRJ-1
+      evidence:
+        quote: Please approve it by the 15th
+  correction:
+    kind: sent_back
+    note: HLP is the Harrowgate layout proof, not a lamination plan.
+  expect_proposal:
+  - op: glossary.add
+    term: HLP
+    text_has: [layout proof]
+  keep: true
+later:
+  allow: [fact]  # a fact of what the mail states, as the golden cases allow
+  forbid:
+  - op: event.add
+  received: '2026-10-20'
+  project: PRJ-1
+  pasted: |-
+    From: Sam Rivera
+
+    The HLP for the paperback is ready. Please approve it by the 24th.
+  expect:
+  - op: action.add
+    text_has: [layout proof]
+    owners: [PER-1]
+    due: '2026-10-24'
+  packet_has: [Harrowgate layout proof]
+ideal:
+  learn:
+    summary: HLP means the Harrowgate layout proof.
+    topic: the HLP term
+    ops:
+    - op: glossary.add
+      text: 'HLP: the Harrowgate layout proof'
+      term: HLP
+      meaning: the Harrowgate layout proof
+      confidence: confirmed
+      evidence:
+        quote: HLP is the Harrowgate layout proof
+  later:
+    summary: Approve the layout proof by the 24th.
+    ops:
+    - op: action.add
+      text: Approve the Harrowgate layout proof for the paperback
+      owners: [Avery Lane]
+      due: '2026-10-24'
+      project: PRJ-1
+      evidence:
+        quote: Please approve it by the 24th

@@ -1,0 +1,438 @@
+// Add-on files: the data files an add-on lets the person edit through a form (its templates, lists, profiles). Each file
+// comes from one of three places: with the add-on, the person's own copy, or a copy for one project. A save never
+// touches the one that comes with the add-on; it writes the person's copy (or the chosen project's), with Undo, and
+// removing a copy brings back the one underneath.
+import { useQuery } from "@tanstack/react-query";
+import { useEffect, useId, useRef, useState } from "react";
+import { api, ApiError, type S } from "../lib/api";
+import { useAct } from "../lib/act";
+import { firstField } from "../lib/cursor";
+import { problemText } from "../lib/problem";
+import { placeOptions } from "./PlaceOptions";
+import { useAddonName } from "../lib/addon-names";
+import { changedValues, type Draft } from "../lib/settings";
+import { useToasts } from "../lib/toasts";
+import { useWords } from "../lib/wording";
+import { Preview } from "./ActionReview";
+import { Document } from "./Panel";
+import { restoreFocus } from "./ModalPanel";
+import { SafeText } from "./SafeText";
+import { RowMenu, type MenuAction } from "./RowMenu";
+import { ItemFields } from "./SettingRow";
+import { Skeleton } from "../ui/Skeleton";
+import { Icon } from "../ui/Icon";
+import { Button } from "../ui/Button";
+import { EmptyState } from "../ui/EmptyState";
+import { Select } from "../ui/Select";
+import { FormField } from "../ui/FormField";
+import { Actions } from "../ui/Actions";
+import { RowList } from "../ui/RowList";
+import { Row } from "../ui/Row";
+import { LoadFailed } from "../ui/LoadFailed";
+import { useWrite } from "../lib/write";
+type Form = S["DataFormView"];
+type DataFile = S["DataFile"];
+
+/** A file's name as the person types it: the ".yaml" is added, so a name with it is taken as it is. */
+export function fileNameOf(typed: string): string {
+  return typed.trim().replace(/\.yaml$/i, "");
+}
+
+const VALID_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+/** `level` 2 makes the heading the heading of a section of its own, which takes the cursor when the section opens. */
+export function DataForms(props: { level?: 2 | 3 }) {
+  const { t } = useWords();
+  const forms = useQuery({ queryKey: ["data-forms"], queryFn: api.dataForms });
+  const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects });
+  const [project, setProject] = useState("");
+  const base = useId();
+  // Nothing to show until some add-on offers a form.
+  if (!forms.data || forms.data.length === 0) return null;
+  const Heading = props.level === 2 ? "h2" : "h3";
+  return (
+    <section className="panel-section" aria-labelledby={`${base}-title`}>
+      <div className="heading">
+        <Heading id={`${base}-title`} {...(props.level === 2 ? { tabIndex: -1, "data-section-heading": "" } : {})}>
+          {t("dataform.title")}
+        </Heading>
+      </div>
+      <p className="hint">{t("dataform.intro")}</p>
+      {(projects.data ?? []).length > 0 && (
+        <FormField id={`${base}-project`} label={t("dataform.project")}>
+          <Select id={`${base}-project`} value={project} onChange={(e) => setProject(e.target.value)} aria-describedby={`${base}-project-hint`}>
+            <option value="">{t("dataform.no_project")}</option>
+            {placeOptions(projects.data ?? [], t)}
+          </Select>
+          <p className="hint" id={`${base}-project-hint`}>
+            {t("dataform.project_hint")}
+          </p>
+        </FormField>
+      )}
+      {forms.data.map((form) => (
+        <FormFiles key={`${form.name}:${project}`} form={form} project={project} />
+      ))}
+    </section>
+  );
+}
+
+function FormFiles(props: { form: Form; project: string }) {
+  const { t } = useWords();
+  const addonName = useAddonName();
+  const { form, project } = props;
+  const base = useId();
+  const files = useQuery({
+    queryKey: ["data-forms", form.name, "files", project],
+    queryFn: () => api.dataFiles(form.name, project || undefined),
+  });
+  // The file being edited, and whether it is a new one; and whether the name of a new one is being asked for.
+  const [editor, setEditor] = useState<{ file: string; isNew: boolean } | null>(null);
+  const [naming, setNaming] = useState(false);
+  const newButton = `${base}-new`;
+  const titleId = `${base}-title`;
+  const names = (files.data ?? []).map((f) => f.file);
+
+  return (
+    <section className="data-forms-kind" aria-labelledby={titleId}>
+      <h4 id={titleId}>{t("dataform.form_title", { addon: addonName(form.plugin), label: form.label })}</h4>
+      {form.description && <p className="hint">{form.description}</p>}
+      {files.isPending ? (
+        <Skeleton />
+      ) : files.isError ? (
+        <LoadFailed message={t("dataform.load_failed")} onRetry={() => void files.refetch()} />
+      ) : files.data.length === 0 ? (
+        <EmptyState text={t("dataform.none")} />
+      ) : (
+        <RowList>
+          {files.data.map((file) => (
+            <FileRow
+              key={file.file}
+              form={form}
+              file={file}
+              project={project}
+              editing={editor?.file === file.file && !editor.isNew}
+              onOpen={() => setEditor({ file: file.file, isNew: false })}
+              onClose={() => setEditor(null)}
+            />
+          ))}
+        </RowList>
+      )}
+      {editor?.isNew && (
+        <FileEditor
+          form={form}
+          file={editor.file}
+          project={project}
+          isNew
+          onClose={() => {
+            setEditor(null);
+            restoreFocus(() => document.getElementById(newButton));
+          }}
+        />
+      )}
+      {naming && (
+        <NewFileName
+          taken={names}
+          onCancel={() => {
+            setNaming(false);
+            restoreFocus(() => document.getElementById(newButton));
+          }}
+          onStart={(file) => {
+            setNaming(false);
+            setEditor({ file, isNew: true });
+          }}
+        />
+      )}
+      <Actions align="end">
+        <Button
+          id={newButton}
+          aria-expanded={naming}
+          aria-label={t("dataform.new_named", { label: form.label })}
+          onClick={() => setNaming(true)}
+        >
+          {t("dataform.new")}
+        </Button>
+      </Actions>
+    </section>
+  );
+}
+
+function FileRow(props: { form: Form; file: DataFile; project: string; editing: boolean; onOpen: () => void; onClose: () => void }) {
+  const { t } = useWords();
+  const act = useAct();
+  const { form, file, project } = props;
+  const titleId = `data-file-${form.name.replace(/[^A-Za-z0-9_-]/g, "-")}-${file.file.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+  const openId = `${titleId}-open`;
+
+  const remove = (layer: "workspace" | "project") =>
+    void act(
+      () => api.removeDataFile(form.name, { file: file.file, layer, project: layer === "project" ? project : null }),
+      (done) => ({
+        message: t(layer === "project" ? "dataform.removed_project_toast" : "dataform.removed_toast", { file: file.file }),
+        undo: () =>
+          api.restoreDataFile(form.name, {
+            file: file.file,
+            layer,
+            project: layer === "project" ? project : null,
+            before: done.before,
+          }),
+      }),
+    );
+
+  const actions: MenuAction[] = [];
+  if (project && file.layers.includes("project")) {
+    actions.push({ id: "remove-project", danger: true, label: t("dataform.remove_project"), run: () => remove("project") });
+  }
+  if (file.layers.includes("workspace")) {
+    actions.push({ id: "remove", danger: true, label: t("dataform.remove"), run: () => remove("workspace") });
+  }
+
+  return (
+    <Row
+      aria-labelledby={titleId}
+      title={file.file}
+      titleId={titleId}
+      meta={file.layer ? t(`dataform.layer.${file.layer}`) : undefined}
+      primary={
+        <Button
+          variant="primary"
+          id={openId}
+          data-key="primary"
+          aria-expanded={props.editing}
+          aria-label={t("dataform.open_named", { file: file.file })}
+          onClick={props.onOpen}
+        >
+          {t("dataform.open")}
+        </Button>
+      }
+      menu={<RowMenu label={file.file} actions={actions} />}
+    >
+      {file.problem && (
+        <p className="problem-note">
+          <Icon name="alert" size={16} />
+          {t("dataform.problem", { problem: file.problem })}
+        </p>
+      )}
+      {props.editing && (
+        <FileEditor
+          form={form}
+          file={file.file}
+          project={project}
+          isNew={false}
+          onClose={() => {
+            props.onClose();
+            restoreFocus(() => document.getElementById(openId));
+          }}
+        />
+      )}
+    </Row>
+  );
+}
+
+/** Asks for the name of a new file: lowercase letters, digits, - or _, with ".yaml" added. */
+function NewFileName(props: { taken: string[]; onCancel: () => void; onStart: (file: string) => void }) {
+  const { t } = useWords();
+  const base = useId();
+  const input = useRef<HTMLInputElement>(null);
+  const [typed, setTyped] = useState("");
+  useEffect(() => input.current?.focus(), []);
+  const name = fileNameOf(typed);
+  const file = `${name}.yaml`;
+  const problem = !typed.trim() ? "" : !VALID_NAME.test(name) ? t("dataform.name_bad") : props.taken.includes(file) ? t("dataform.name_taken", { file }) : "";
+  const ready = typed.trim() !== "" && problem === "";
+  return (
+    <form
+      className="panel"
+      aria-label={t("dataform.new_form")}
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (ready) props.onStart(file);
+      }}
+    >
+      <FormField id={`${base}-name`} label={t("dataform.name")}>
+        <input
+          id={`${base}-name`}
+          ref={input}
+          type="text"
+          value={typed}
+          autoComplete="off"
+          spellCheck={false}
+          aria-invalid={problem ? true : undefined}
+          aria-describedby={`${base}-hint${problem ? ` ${base}-bad` : ""}`}
+          onChange={(e) => setTyped(e.target.value)}
+        />
+        <p className="hint" id={`${base}-hint`}>
+          {t("dataform.name_hint")}
+        </p>
+        {problem && (
+          <p className="problem-note" id={`${base}-bad`}>
+            {problem}
+          </p>
+        )}
+      </FormField>
+      <Actions align="end">
+        <Button variant="quiet" onClick={props.onCancel}>
+          {t("action.cancel")}
+        </Button>
+        <Button variant="primary" type="submit" disabled={!ready}>
+          {t("dataform.start")}
+        </Button>
+      </Actions>
+    </form>
+  );
+}
+
+/** One file as a form. Saving writes the person's copy, or the chosen project's; a new file starts from the defaults. */
+function FileEditor(props: { form: Form; file: string; project: string; isNew: boolean; onClose: () => void }) {
+  const { t } = useWords();
+  const write = useWrite();
+  const { push } = useToasts();
+  const { form, file, project, isNew } = props;
+  const base = useId();
+  const heading = useRef<HTMLHeadingElement>(null);
+  const view = useQuery({
+    queryKey: ["data-forms", form.name, "file", file, project],
+    queryFn: () => api.dataFile(form.name, file, project || undefined),
+    // A form is read fresh each time it is opened, so it shows what is on disk now.
+    staleTime: 0,
+    gcTime: 0,
+  });
+  const [edits, setEdits] = useState<Record<string, Draft>>({});
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState("");
+  // A new file has nothing to preview until it is saved.
+  const [savedOnce, setSavedOnce] = useState(false);
+  const loaded = !!view.data;
+  // The cursor starts in the form's first field once it has loaded.
+  const formEl = useRef<HTMLFormElement>(null);
+  useEffect(() => {
+    if (!loaded) return;
+    const field = formEl.current ? firstField(formEl.current) : null;
+    (field ?? heading.current)?.focus({ preventScroll: true });
+    heading.current?.scrollIntoView?.({ block: "nearest" });
+  }, [loaded]);
+
+  const items = view.data?.items ?? [];
+  const { changes, bad } = changedValues(items, edits);
+  const layer = project ? "project" : "workspace";
+  const canSave = loaded && !busy && bad.length === 0 && (isNew || !!view.data?.problem || Object.keys(changes).length > 0);
+
+  const save = async () => {
+    if (!canSave) return;
+    setBusy(true);
+    setProblem("");
+    try {
+      const saved = await write(() => api.saveDataFile(form.name, { file, layer, project: project || null, changes }), { also: ["data-forms"] });
+      push({
+        message: t(project ? "dataform.saved_project_toast" : "dataform.saved_toast", { file }),
+        undo: async () => {
+          await write(() => api.restoreDataFile(form.name, { file, layer, project: project || null, before: saved.before }), { also: ["data-forms"] });
+        },
+      });
+      if (form.has_preview) {
+        // The form stays open beside its preview, which runs again for what was just saved.
+        setEdits({});
+        setSavedOnce(true);
+        setBusy(false);
+      } else {
+        props.onClose();
+      }
+    } catch (err) {
+      setProblem(err instanceof ApiError && err.detail ? err.detail : problemText(err, t));
+      setBusy(false);
+    }
+  };
+
+  const titleId = `${base}-title`;
+  return (
+    <form
+      ref={formEl}
+      className="panel data-file-form"
+      aria-labelledby={titleId}
+      onSubmit={(e) => {
+        e.preventDefault();
+        void save();
+      }}
+    >
+      <h5 id={titleId} tabIndex={-1} ref={heading}>
+        {t(isNew ? "dataform.new_title" : "dataform.editing", { file })}
+      </h5>
+      <p className="hint">{t(project ? "dataform.saves_project" : "dataform.saves_workspace")}</p>
+      {view.isPending ? (
+        <Skeleton rows={2} />
+      ) : view.isError ? (
+        <p className="problem-note">{t("dataform.load_failed")}</p>
+      ) : (
+        <>
+          {view.data.problem && (
+            <p className="problem-note">
+              <Icon name="alert" size={16} />
+              {t("dataform.problem_form", { problem: view.data.problem })}
+            </p>
+          )}
+          <ItemFields items={items} edits={edits} onEdit={(key, draft) => setEdits((all) => ({ ...all, [key]: draft }))} disabled={busy} idPrefix={`${base}-`} />
+          {form.has_preview && <FormPreview form={form} file={file} project={project} enabled={!isNew || savedOnce} />}
+        </>
+      )}
+      {problem && (
+        <p className="problem-note" role="alert">
+          {problem}
+        </p>
+      )}
+      <Actions align="end">
+        <Button variant="quiet" onClick={props.onClose}>
+          {t("action.cancel")}
+        </Button>
+        <Button variant="primary" type="submit" disabled={!canSave} aria-label={t("dataform.save_named", { file })}>
+          {t(busy ? "sources.saving" : "settings.save")}
+        </Button>
+      </Actions>
+    </form>
+  );
+}
+
+/** What the add-on's preview shows for the file: a picture, text or a short document, run for the saved copy. It
+ * never holds up a save: when it fails or takes too long it says so here, with the add-on's own reason. */
+function FormPreview(props: { form: Form; file: string; project: string; enabled: boolean }) {
+  const { t } = useWords();
+  const { form, file, project, enabled } = props;
+  const base = useId();
+  const shown = useQuery({
+    queryKey: ["data-forms", form.name, "preview", file, project],
+    queryFn: () => api.dataFormPreview(form.name, file, project || undefined),
+    enabled,
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
+  });
+  const titleId = `${base}-preview`;
+  let body;
+  if (!enabled) body = <p className="hint">{t("dataform.preview_unsaved")}</p>;
+  else if (shown.isPending || shown.isFetching) body = <Skeleton rows={1} />;
+  else if (shown.isError) body = <p className="problem-note">{t("dataform.preview_failed", { reason: t("dataform.preview_no_reason") })}</p>;
+  else if (shown.data.state !== "ok") {
+    body = (
+      <p className="problem-note" role="status">
+        <Icon name="alert" size={16} />
+        <SafeText text={t(shown.data.state === "timeout" ? "dataform.preview_slow" : "dataform.preview_failed", { reason: shown.data.message })} />
+      </p>
+    );
+  } else if (shown.data.document) {
+    body = (
+      <figure className="preview">
+        <Document blocks={shown.data.document} onOpenRecord={() => undefined} />
+        {shown.data.preview?.caption && <figcaption aria-hidden="true">{shown.data.preview.caption}</figcaption>}
+      </figure>
+    );
+  } else if (shown.data.preview) body = <Preview item={shown.data.preview} />;
+  return (
+    <section className="data-file-preview" aria-labelledby={titleId}>
+      <div className="heading">
+        <h6 id={titleId}>{t("dataform.preview_title")}</h6>
+        <Button variant="quiet" disabled={!enabled || shown.isFetching} onClick={() => void shown.refetch()}>
+          {t("dataform.preview_refresh")}
+        </Button>
+      </div>
+      {body}
+    </section>
+  );
+}

@@ -1,0 +1,148 @@
+import "@testing-library/jest-dom/vitest";
+import { screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { S } from "../lib/api";
+import { Refuse, fakeApi, renderApp, type Routes } from "../test-utils";
+import { RuleReview } from "./RuleReview";
+
+const WORKSPACE: S["Scope"] = { scope: "workspace", task_kinds: [], records: [], filter: {}, projects: [], people: [], except: [] };
+
+const flagged = (id: string, text: string, over: Partial<S["RuleReviewRule"]> = {}): S["RuleReviewRule"] => ({
+  id,
+  version: 3,
+  name: `name-${id}`,
+  text,
+  applies_to: WORKSPACE,
+  present: 5,
+  applied: 0,
+  ...over,
+});
+
+const REVIEW: S["RuleReviewView"] = {
+  days: 30,
+  flagged: [
+    flagged("RULE-1", "Every question names its reader.", { present: 7 }),
+    flagged("RULE-2", "Close nothing without an owner.", { applies_to: { ...WORKSPACE, except: ["P-2"] }, present: 1 }),
+  ],
+  stable_chars: 5200,
+  stable_budget: 6000,
+  moved: 2,
+  due: true,
+};
+
+function open(extra: Routes = {}, review: S["RuleReviewView"] = REVIEW, onBack = vi.fn()) {
+  const calls = fakeApi({
+    "GET knowledge/rules/review": () => review,
+    "GET projects": () => [{ id: "P-1", name: "First project" }, { id: "P-2", name: "Second project" }],
+    "GET people": () => [],
+    ...extra,
+  });
+  renderApp(<RuleReview onBack={onBack} />);
+  return { calls, onBack };
+}
+
+const rows = () => within(screen.getByRole("list", { name: "Rules to look over" })).getAllByRole("listitem");
+const body = (calls: ReturnType<typeof fakeApi>, route: string) => calls.find((c) => c.route === route)?.body;
+
+test("it lists the flagged rules with how often each was given, and the size against its budget and the rules moved", async () => {
+  open();
+  expect(await screen.findByRole("heading", { level: 1, name: "Rules to look over" })).toBeInTheDocument();
+  expect(await screen.findByText(/hasn't used them in 30 days/)).toBeInTheDocument();
+  expect(screen.getByText("The rules read with every task take 5200 of 6000 characters.")).toBeInTheDocument();
+  expect(screen.getByText("2 rules are now sent only for relevant tasks.")).toBeInTheDocument();
+  const [first, second] = rows();
+  expect(first).toHaveTextContent("Every question names its reader.");
+  expect(first).toHaveTextContent("Offered with 7 tasks, never used");
+  expect(first).toHaveTextContent("All projects");
+  expect(second).toHaveTextContent("Offered with 1 task, never used");
+  expect(second).toHaveTextContent("All projects except Second project");
+});
+
+test("Keep starts the rule's review clock again with the version that was read, and Undo puts the old clock back", async () => {
+  const user = userEvent.setup();
+  const { calls } = open({
+    "POST knowledge/RULE-1/keep-rule": () => ({ changeset: "CS-1" }),
+    "POST changesets/CS-1/undo": () => ({ restored: [], skipped: [] }),
+  });
+  await screen.findByRole("list", { name: "Rules to look over" });
+  await user.click(screen.getByRole("button", { name: "Keep: Every question names its reader." }));
+  await waitFor(() => expect(body(calls, "POST knowledge/RULE-1/keep-rule")).toEqual({ read_version: 3 }));
+  expect(await screen.findByText("Kept for later review.")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST changesets/CS-1/undo")).toBe(true));
+});
+
+test("Narrow and Retire are in each row's menu and act at once with Undo", async () => {
+  const user = userEvent.setup();
+  const { calls } = open({
+    "POST knowledge/RULE-1/narrow": () => ({ changeset: "CS-2" }),
+    "POST knowledge/RULE-2/retire": () => ({ changeset: "CS-3" }),
+  });
+  await screen.findByRole("list", { name: "Rules to look over" });
+  await user.click(within(rows()[0]).getByRole("button", { name: "More actions for Every question names its reader." }));
+  expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Limit where this applies", "Stop using"]);
+  await user.click(screen.getByRole("menuitem", { name: "Limit where this applies" }));
+  const row = rows()[0];
+  expect(within(row).getByRole("radio", { name: "Only these projects" })).toHaveFocus();
+  await user.click(within(row).getByRole("checkbox", { name: "First project" }));
+  await user.click(within(row).getByRole("button", { name: "Save limits" }));
+  await waitFor(() =>
+    expect(body(calls, "POST knowledge/RULE-1/narrow")).toEqual({ read_version: 3, applies_to: { ...WORKSPACE, scope: "projects", projects: ["P-1"], except: [] } }),
+  );
+  expect(await screen.findByText("Updated where this applies.")).toBeInTheDocument();
+  await user.click(within(rows()[1]).getByRole("button", { name: "More actions for Close nothing without an owner." }));
+  await user.click(screen.getByRole("menuitem", { name: "Stop using" }));
+  await waitFor(() => expect(body(calls, "POST knowledge/RULE-2/retire")).toEqual({ read_version: 3 }));
+  expect(await screen.findByText("No longer used by Helper.")).toBeInTheDocument();
+  expect(within(screen.getByRole("region", { name: "Notifications" })).getAllByRole("button", { name: "Undo" }).length).toBeGreaterThan(0);
+});
+
+test("with nothing flagged it says so, and Back returns to Knowledge", async () => {
+  const user = userEvent.setup();
+  const { onBack } = open({}, { ...REVIEW, flagged: [], moved: 0, stable_chars: 100 });
+  expect(await screen.findByText("Nothing to look over. Helper is using everything it was given.")).toBeInTheDocument();
+  // With nothing to choose, there is no paragraph about the choices and no size line.
+  expect(screen.queryByText(/hasn't used them in/)).toBeNull();
+  expect(screen.queryByText(/The rules read with every task take/)).toBeNull();
+  expect(screen.queryByText(/moved out of the part sent every time/)).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Back to Knowledge" }));
+  expect(onBack).toHaveBeenCalled();
+});
+
+test("a failed load says so, with Try again", async () => {
+  const user = userEvent.setup();
+  let answer: unknown = new Refuse(500, "nope");
+  const { calls } = open({ "GET knowledge/rules/review": () => answer });
+  expect(await screen.findByText("The rules to look over couldn't be loaded.")).toBeInTheDocument();
+  answer = REVIEW;
+  await user.click(screen.getByRole("button", { name: "Try again" }));
+  expect(await screen.findByRole("list", { name: "Rules to look over" })).toBeInTheDocument();
+  expect(calls.filter((c) => c.route === "GET knowledge/rules/review").length).toBeGreaterThan(1);
+});
+
+test("a rule that was given to no run counted shows no count of zero runs", async () => {
+  open({}, { ...REVIEW, flagged: [flagged("RULE-9", "Never say zero.", { present: 0 })] });
+  expect(await screen.findByText("Never say zero.")).toBeInTheDocument();
+  expect(document.body).not.toHaveTextContent(/\b0 tasks?\b/);
+});
+
+test("the size of what every task is sent is shown only when it is near its limit", async () => {
+  open({}, { ...REVIEW, stable_chars: 3000, stable_budget: 6000, moved: 0 });
+  expect(await screen.findByText(/hasn't used them in 30 days/)).toBeInTheDocument();
+  expect(screen.queryByText(/The rules read with every task take/)).toBeNull();
+});
+
+test("a row carries no tag that says the same word on every row, and the intro names where the other choices are", async () => {
+  open();
+  await screen.findByRole("list", { name: "Rules to look over" });
+  const [first] = rows();
+  expect(within(first).queryByText("Rule")).toBeNull();
+  expect(screen.getByText(/open its menu to limit where it applies or stop using it/)).toBeInTheDocument();
+});
+
+test("the intro, the sizes and the rows share one reading width, so their right edges meet", () => {
+  const css = readFileSync(join(__dirname, "Knowledge.module.css"), "utf8");
+  expect(css).toMatch(/\.review \{ max-width: 56rem; \}/);
+});

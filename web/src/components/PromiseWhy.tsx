@@ -1,0 +1,347 @@
+// Why a promise exists (design 6.33): the exact words, who owes it to whom, its day and the words it came from, where it
+// came from, and whether it was said or worked out, then what was heard since. Each of owner, promised to, day and how it
+// is known is one click to correct, as a list to pick from (people from the people list, the two ways it is known, a date
+// picker); a correction is the person's own edit, with Undo, and a signal the assistant learns from. Never a score.
+import { useQuery } from "@tanstack/react-query";
+import { useId, useState, type ReactNode } from "react";
+import { Button as AriaButton, DialogTrigger } from "react-aria-components";
+import { Popover } from "../ui/Popover";
+import { api, type S } from "../lib/api";
+import { useAct } from "../lib/act";
+import { day } from "../lib/dates";
+import { plainDates } from "../lib/read";
+import { useWords } from "../lib/wording";
+import { Button } from "../ui/Button";
+import { Skeleton } from "../ui/Skeleton";
+import { OriginLink } from "./Origin";
+import styles from "./PromiseWhy.module.css";
+import { Select } from "../ui/Select";
+import { DateField } from "../ui/DateField";
+import { Actions } from "../ui/Actions";
+import { ItemList } from "../ui/ItemList";
+import { DefinitionList, Definition } from "../ui/DefinitionList";
+
+type View = S["PromiseView"];
+type Field = "owner" | "to" | "due" | "basis";
+
+/** Whether the action says anything a promise carries; a plain to-do with none of it has no "why" to show. */
+export const carriesPromise = (v: View): boolean => !!v.quote || !!v.basis || v.promised_to.length > 0 || !!v.due_words || v.news.length > 0;
+
+/** The one correction a promise takes, with the toast that says so and Undo. */
+export function useCorrectPromise(action: string) {
+  const { t } = useWords();
+  const act = useAct();
+  return (body: Omit<S["PromiseCorrection"], "read_version">, readVersion: number) =>
+    act(
+      () => api.correctPromise(action, { ...body, read_version: readVersion }),
+      (done) => ({ message: t("promise.corrected"), undo: () => api.undo(done.changeset) }),
+    );
+}
+
+/** The promise's why block. `quiet` leaves a plain to-do alone; `omitQuote` and `omitOrigin` are for a place that already
+ * shows the words, or the link to where they came from. `line` is for a list of many: one meta line ("Ana Person · due Fri,
+ * Oct 16 · promised to no one") whose parts are each a button that opens a small popover to change it. */
+export function PromiseWhy(props: { action: string; quiet?: boolean; omitQuote?: boolean; omitOrigin?: boolean; line?: boolean; skip?: Field[]; title?: string }) {
+  const { t } = useWords();
+  const found = useQuery({ queryKey: ["promise", props.action], queryFn: () => api.promise(props.action) });
+  const people = useQuery({ queryKey: ["people"], queryFn: api.people });
+  const [editing, setEditing] = useState<Field | null>(null);
+  const correct = useCorrectPromise(props.action);
+  const view = found.data;
+  if (found.isPending) return <Skeleton />;
+  if (!view || (props.quiet && !carriesPromise(view))) return null;
+  const done = async (body: Omit<S["PromiseCorrection"], "read_version">) => {
+    if ((await correct(body, view.version)) !== undefined) setEditing(null);
+  };
+  const names = people.data ?? [];
+  // A to-do the person made for themselves, with no one it is promised to, has no "promised to" to say; the words are not said again
+  // when the page's title already is them.
+  const me = names.find((p) => p.is_pm)?.id;
+  const ownTodo = view.promised_to.length === 0 && view.owners.length > 0 && view.owners.every((o) => o.id === me);
+  const wordsAreTitle = !!props.title && plainDates(view.quote ?? "").trim() === props.title.trim();
+  // Nothing is left to say about a plain to-do of the person's own whose words are its title.
+  if (props.quiet && !props.line && wordsAreTitle && ownTodo && !view.basis && !view.due_words && view.news.length === 0) return null;
+  if (props.line) {
+    return (
+      <section className={styles.line} aria-label={t("promise.why")} data-promise-why={view.action}>
+        <PromiseMeta view={view} people={names} editing={editing} setEditing={setEditing} done={done} />
+        {!props.omitOrigin && <OriginLink origin={view.origin} />}
+        <PromiseNews news={view.news} />
+      </section>
+    );
+  }
+  const row = (field: Field, label: string, value: ReactNode, editor: ReactNode) => (
+    <Definition data-promise={field}>
+      <dt>{label}</dt>
+      <dd>
+        {editing === field ? (
+          editor
+        ) : (
+          <>
+            <span>{value}</span>
+            <button type="button" className={`link-button ${styles.change}`} aria-label={t("promise.change_named", { what: label })} onClick={() => setEditing(field)}>
+              {t("promise.change")}
+            </button>
+          </>
+        )}
+      </dd>
+    </Definition>
+  );
+  return (
+    <section className="promise-why" aria-label={t("promise.why")} data-promise-why={view.action}>
+      <DefinitionList>
+        {view.quote && !props.omitQuote && !wordsAreTitle && (
+          <Definition>
+            <dt>{t("promise.words")}</dt>
+            <dd>
+              <q>{plainDates(view.quote)}</q>
+              {!props.omitOrigin && <OriginLink origin={view.origin} />}
+            </dd>
+          </Definition>
+        )}
+        {!props.skip?.includes("owner") && row(
+          "owner",
+          t("promise.owner"),
+          view.owners.map((o) => o.name).join(", "),
+          <PickPerson
+            label={t("promise.owner")}
+            value={view.owners[0]?.id ?? ""}
+            people={names}
+            onPick={(person) => void done({ owner: person })}
+            onCancel={() => setEditing(null)}
+          />,
+        )}
+        {!ownTodo && row(
+          "to",
+          t("promise.to"),
+          view.promised_to.length > 0 ? view.promised_to.map((p) => p.name).join(", ") : t("promise.no_one"),
+          <PickPerson
+            label={t("promise.to")}
+            value={view.promised_to[0]?.id ?? ""}
+            people={names}
+            none={t("promise.no_one")}
+            onPick={(person) => void done({ promised_to: person ? [person] : [] })}
+            onCancel={() => setEditing(null)}
+          />,
+        )}
+        {!props.skip?.includes("due") && row(
+          "due",
+          t("promise.due"),
+          <>
+            {view.due ? day(view.due) : t("promise.no_date")}
+            {view.due_words && <> {t("promise.due_words", { words: view.due_words })}</>}
+            {view.due_check && (
+              <>
+                {" "}
+                <strong>{t("promise.check_date")}</strong>
+              </>
+            )}
+          </>,
+          <NewDate label={t("promise.due")} value={view.due ?? ""} onSave={(due) => void done({ due })} onCancel={() => setEditing(null)} />,
+        )}
+        {view.basis &&
+          row(
+            "basis",
+            t("promise.basis"),
+            <>
+              {t(`promise.basis.${view.basis}`)}
+              {view.basis === "said" && view.said_by && <> ({t("promise.said_by", { name: view.said_by })})</>}
+            </>,
+            <PickBasis value={view.basis} onPick={(basis) => void done({ basis })} onCancel={() => setEditing(null)} />,
+          )}
+        {(!view.quote || props.omitQuote) && !props.omitOrigin && (
+          <Definition>
+            <dt />
+            <dd>
+              <OriginLink origin={view.origin} />
+            </dd>
+          </Definition>
+        )}
+      </DefinitionList>
+      <PromiseNews news={view.news} />
+    </section>
+  );
+}
+
+/** One part of the meta line: a button over a popover with its list or date picker. The popover's field has the cursor,
+ * Escape closes it, and the part that opened it gets the cursor back. */
+function MetaPart(props: { label: string; text: string; flag?: string | null; open: boolean; onOpenChange: (open: boolean) => void; children: ReactNode }) {
+  const { t } = useWords();
+  return (
+    <span className={styles.part}>
+      <DialogTrigger isOpen={props.open} onOpenChange={props.onOpenChange}>
+        <AriaButton className={styles.button} aria-label={t("promise.part_named", { value: props.flag ? `${props.text} ${props.flag}` : props.text, what: props.label })}>
+          {props.text}
+          {props.flag && <strong className={styles.flag}> {props.flag}</strong>}
+        </AriaButton>
+        <Popover label={props.label} placement="bottom start" size="sm" className={styles.content}>
+          {props.children}
+        </Popover>
+      </DialogTrigger>
+    </span>
+  );
+}
+
+/** The meta line: owner, the day, who it was promised to and how it is known, each a button over a popover. */
+function PromiseMeta(props: {
+  view: View;
+  people: S["PersonView"][];
+  editing: Field | null;
+  setEditing: (field: Field | null) => void;
+  done: (body: Omit<S["PromiseCorrection"], "read_version">) => Promise<void>;
+}) {
+  const { t } = useWords();
+  const { view, editing, setEditing, done } = props;
+  const toggle = (field: Field) => (open: boolean) => setEditing(open ? field : editing === field ? null : editing);
+  const close = () => setEditing(null);
+  const owner = view.owners.length > 0 ? view.owners.map((o) => o.name).join(", ") : t("promise.line.no_owner");
+  const parts: ReactNode[] = [
+    <MetaPart key="owner" label={t("promise.owner")} text={owner} open={editing === "owner"} onOpenChange={toggle("owner")}>
+      <PickPerson label={t("promise.owner")} value={view.owners[0]?.id ?? ""} people={props.people} onPick={(person) => void done({ owner: person })} onCancel={close} />
+    </MetaPart>,
+    <MetaPart
+      key="due"
+      label={t("promise.due")}
+      text={view.due ? t("promise.line.due", { date: day(view.due) }) : t("promise.line.no_date")}
+      flag={view.due_check ? t("promise.check_date") : null}
+      open={editing === "due"}
+      onOpenChange={toggle("due")}
+    >
+      <NewDate label={t("promise.due")} value={view.due ?? ""} onSave={(due) => void done({ due })} onCancel={close} />
+    </MetaPart>,
+    <MetaPart
+      key="to"
+      label={t("promise.to")}
+      text={view.promised_to.length > 0 ? t("promise.line.to", { names: view.promised_to.map((p) => p.name).join(", ") }) : t("promise.line.to_none")}
+      open={editing === "to"}
+      onOpenChange={toggle("to")}
+    >
+      <PickPerson
+        label={t("promise.to")}
+        value={view.promised_to[0]?.id ?? ""}
+        people={props.people}
+        none={t("promise.no_one")}
+        onPick={(person) => void done({ promised_to: person ? [person] : [] })}
+        onCancel={close}
+      />
+    </MetaPart>,
+  ];
+  if (view.basis) {
+    parts.push(
+      <MetaPart
+        key="basis"
+        label={t("promise.basis")}
+        text={view.basis === "said" && view.said_by ? t("promise.line.said_by", { name: view.said_by }) : t(`promise.line.${view.basis}`)}
+        open={editing === "basis"}
+        onOpenChange={toggle("basis")}
+      >
+        <PickBasis value={view.basis} onPick={(basis) => void done({ basis })} onCancel={close} />
+      </MetaPart>,
+    );
+  }
+  return (
+    <p className={styles.meta} data-promise-line="">
+      {parts.flatMap((p, i) => (i === 0 ? [p] : [<span key={`dot-${i}`} aria-hidden="true">{" · "}</span>, p]))}
+    </p>
+  );
+}
+
+/** What was heard that didn't end it, newest first, each with its day and words; a delivered part reads as done and is
+ * credited to its owners. */
+export function PromiseNews(props: { news: View["news"] }) {
+  const { t } = useWords();
+  if (props.news.length === 0) return null;
+  return (
+    <div className="promise-news">
+      <h4>{t("promise.news")}</h4>
+      <ItemList>
+        {props.news.map((n, i) => (
+          <li key={`${n.on}-${i}`} data-delivered={n.delivered ? "" : undefined}>
+            <div>
+              {n.delivered
+                ? t("promise.news.delivered", { date: day(n.on), text: n.text, names: (n.credited ?? []).join(", ") })
+                : t("promise.news.item", { date: day(n.on), text: n.text })}
+            </div>
+            {n.quote && <div className="hint">{t("promise.news.quote", { quote: n.quote })}</div>}
+          </li>
+        ))}
+      </ItemList>
+    </div>
+  );
+}
+
+/** A list of the people to pick from; picking applies it, Escape leaves it. The cursor starts in it. */
+function PickPerson(props: { label: string; value: string; people: S["PersonView"][]; none?: string; onPick: (person: string) => void; onCancel: () => void }) {
+  const id = useId();
+  return (
+    <Select
+      id={id}
+      autoFocus
+      aria-label={props.label}
+      value={props.value}
+      onChange={(e) => props.onPick(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") props.onCancel();
+      }}
+      onBlur={props.onCancel}
+    >
+      {props.none !== undefined && <option value="">{props.none}</option>}
+      {props.people.map((p) => (
+        <option key={p.id} value={p.id}>
+          {p.name}
+        </option>
+      ))}
+    </Select>
+  );
+}
+
+function PickBasis(props: { value: "said" | "inferred"; onPick: (basis: "said" | "inferred") => void; onCancel: () => void }) {
+  const { t } = useWords();
+  return (
+    <Select
+      autoFocus
+      aria-label={t("promise.basis")}
+      value={props.value}
+      onChange={(e) => props.onPick(e.target.value as "said" | "inferred")}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") props.onCancel();
+      }}
+      onBlur={props.onCancel}
+    >
+      <option value="said">{t("promise.basis.said")}</option>
+      <option value="inferred">{t("promise.basis.inferred")}</option>
+    </Select>
+  );
+}
+
+/** A date picker and Save; the cursor starts in the picker. */
+export function NewDate(props: { label: string; value: string; onSave: (due: string) => void; onCancel: () => void }) {
+  const { t } = useWords();
+  const id = useId();
+  const [value, setValue] = useState(props.value);
+  return (
+    <form
+      className="answer-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (value) props.onSave(value);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") props.onCancel();
+      }}
+    >
+      <label className="hint" htmlFor={id}>
+        {props.label}
+      </label>
+      <DateField id={id} autoFocus value={value} onChange={(e) => setValue(e.target.value)} />
+      <Actions align="end">
+        <Button variant="quiet" onClick={props.onCancel}>
+          {t("action.cancel")}
+        </Button>
+        <Button variant="primary" type="submit" disabled={!value || value === props.value}>
+          {t("promise.save")}
+        </Button>
+      </Actions>
+    </form>
+  );
+}

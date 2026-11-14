@@ -1,0 +1,92 @@
+import { vi } from "vitest";
+import { screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { S } from "../lib/api";
+import { besidePane, fakeApi, renderApp } from "../test-utils";
+import { WhatChanged } from "./WhatChanged";
+
+// The window is wide, so a change's detail stands beside the list (design 7.13).
+beforeEach(() => besidePane());
+afterEach(() => vi.unstubAllGlobals());
+
+function changeWith(made: S["MadeView"][]): S["ChangeItem"] {
+  return {
+    id: "REQ-1",
+    version: 2,
+    dismissed: false,
+    stage_task: false,
+    first_go: false,
+    refused: false,
+    state: "review",
+    waiting: null,
+    created_at: "2026-10-09T14:00:00Z",
+    note: null,
+    source: null,
+    source_title: "Minutes of the call",
+    changeset: {
+      id: "CS-1",
+      summary: "Wrote up the call.",
+      status: "applied",
+      reviewed: false,
+      trust: "trusted",
+      ops: [],
+      made,
+    },
+  };
+}
+
+test("each draft or file a change made is a Made link on its row, with what it is for", async () => {
+  fakeApi({
+    "GET changes": () => [
+      changeWith([
+        { kind: "draft", id: "TXT-3", label: "Call minutes", record: { kind: "minutes", id: "MIN-2" } },
+        { kind: "file", id: "FILE-4", label: "call-minutes.pdf", record: { kind: "file", id: "FILE-4" } },
+      ]),
+    ],
+  });
+  renderApp(<WhatChanged />);
+  const list = await screen.findByRole("list", { name: "Made:" });
+  const links = within(list).getAllByRole("link");
+  expect(list.closest(".body")).toBeNull();
+  expect(links.map((l) => l.textContent)).toEqual(["Call minutes, an unreviewed draft", "call-minutes.pdf, a file"]);
+  // The links sit on the row itself, outside its details. A draft opens on the record it is for,
+  // a file in the files list.
+  expect(links[0].getAttribute("href")).toMatch(/#records\/minutes\/MIN-2$/);
+  expect(links[1].getAttribute("href")).toMatch(/#records\/files$/);
+});
+
+test("a change that made nothing shows no Made line", async () => {
+  fakeApi({ "GET changes": () => [changeWith([])] });
+  renderApp(<WhatChanged />);
+  await screen.findByText("Minutes of the call");
+  expect(screen.queryByRole("list", { name: "Made:" })).toBeNull();
+});
+
+test("a note a change filed has a link to the list of notes, where the filed note can be found", async () => {
+  const user = userEvent.setup();
+  const item = changeWith([]);
+  item.changeset!.ops = [{ index: 0, op: "note", status: "applied", reason: null, group: "notes", title: "Call the printer", meta: {}, record: { kind: "note", id: "N-1" } } as S["OpView"]];
+  fakeApi({ "GET changes": () => [item] });
+  renderApp(<WhatChanged />);
+  await user.click((await screen.findAllByRole("button", { name: /Minutes of the call/ }))[0]);
+  const link = await screen.findByRole("link", { name: "See your notes" });
+  expect(link.getAttribute("href")).toMatch(/#records\/notes$/);
+});
+
+test("an op the run left out shows what it would have done and why", async () => {
+  const item = changeWith([]);
+  item.changeset!.omitted = [{ op: "action.add", reason: "The call only floated it; nobody agreed." }];
+  fakeApi({ "GET changes": () => [item] });
+  renderApp(<WhatChanged />);
+  const list = await screen.findByRole("list", { name: "Left out on purpose" });
+  expect(within(list).getAllByRole("listitem").map((l) => l.textContent)).toEqual([
+    "Would add a to-do: not done. The call only floated it; nobody agreed.",
+  ]);
+});
+
+test("a change that left nothing out shows no Left out line", async () => {
+  fakeApi({ "GET changes": () => [changeWith([])] });
+  renderApp(<WhatChanged />);
+  await screen.findByText("Minutes of the call");
+  expect(screen.queryByRole("list", { name: "Left out on purpose" })).toBeNull();
+});

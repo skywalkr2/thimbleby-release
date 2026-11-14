@@ -1,0 +1,1286 @@
+"""Fake outside services for the journey tests: one small process on 127.0.0.1 that plays every service the app talks
+to, so a browser can walk a person's whole path with nothing real on the other end.
+
+    uv run python -m tests.fake_services --port 8790 --https-port 8791 --state /path/to/state
+
+Each service is a list of routes under its own prefix, added to `SERVICES` (plain HTTP) or `SECURE_SERVICES` (HTTPS).
+
+- `/ai/v1/...` speaks the common chat format: a model list with prices, and chat completions whose answer is the
+  stand-in's answer to the packet it was sent (`engine.ai.adapters.stand_in`), so the journey checks the app, not a
+  model. Every chat request is recorded.
+- `/__e2e/...` are the helpers the browser tests read: what the AI service was asked, the people in the fictional
+  workspace to write notes about, a folder the app may read as a source (and a route that puts a file in it), what the
+  sign-in service was asked, and the token the app was started with. A test may also script one answer: the next
+  request that holds the given words gets that answer instead of the stand-in's (for what no stand-in rule produces).
+
+With `--https-port` the process also answers over HTTPS, with a certificate from a throwaway authority made at start
+(`tests.fake_tls`; the app is told to trust it with `SSL_CERT_FILE`). `SECURE_SERVICES` are those:
+
+- `/account/...` is a sign-in page that sends the person straight back with a code, a token address that checks the
+  code and the PKCE verifier, a revoke address and a "who am I" answer;
+- `/mail/v1/...` and `/calendar/v1/...` are a small mail and calendar API that answers only to a token it issued, with
+  fictional messages from example.com addresses and meetings today. The mail API also changes mail (a change, taking it
+  back, what an attempt became, the account's folders and labels) for a token that holds the wider access acting asks
+  for, and keeps each change for `/__e2e/mail-acts`;
+- `/catalog/...` is an add-on catalog feed listing the add-ons named by `--catalog` (fixture folders; the example panel
+  by default), and the wheels it points to, built from their fixture folders at start.
+
+The folder the app's own process works in is passed as `--state`; `tests.e2e_fresh_server` writes `info.json` there.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import json
+import os
+import re
+import secrets
+import threading
+import time
+import zipfile
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from urllib.parse import parse_qs, urlencode, urlsplit
+
+import uvicorn
+import yaml
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse, RedirectResponse, Response
+from starlette.routing import Route
+
+from engine.ai import learning_check
+from engine.ai.adapters import stand_in
+from tests import fake_tls
+from tests.conftest import DEMO_B, fixture_records
+
+HOST = "127.0.0.1"
+PLUGINS = Path(__file__).parent / "fixtures" / "plugins"
+
+#: Fictional model names with a price per token, as a service's own model list gives them.
+#: A model the service lists first and marks retired, as it does for one it no longer offers (the evening journey).
+RETIRED_MODEL = "fake-retired-text"
+
+MODELS = {
+    "fake-small": {"prompt": "0.0000005", "completion": "0.0000015", "context_length": 128000},
+    "fake-large": {"prompt": "0.000003", "completion": "0.000015", "context_length": 200000},
+}
+
+#: The app registration the sign-in service knows (the mail add-on ships it; a test compares the two).
+CLIENT_ID = "journey-mail-app"
+SCOPES = "mail.read calendar.read offline"
+TOKEN_SECONDS = 3600
+
+
+class State:
+    """What the fake services remember: the chat requests received, what the sign-in service has given out and been
+    asked, and where the app's own folders are."""
+
+    def __init__(self, folder: Path):
+        self.folder = folder
+        self.chats: list[dict] = []
+        self.scripted: list[dict] = []  # answers waiting for a request that holds their words: {"when", "answer"}
+        self.https_base = ""
+        self.assets = folder / "services"
+        self.catalog_text = ""
+        self.wheels: dict[str, Path] = {}  # the wheels the catalog lists, by file name
+        self.codes: dict[str, dict] = {}  # given and not yet used: the challenge and address each was asked with
+        self.access: set[str] = set()  # access tokens the service issued and has not withdrawn
+        self.refresh: set[str] = set()
+        self.scopes: dict[str, str] = {}  # what each token holds: the scopes its sign-in asked for
+        self.acts: list[dict] = []  # changes to mail the add-on's channel asked for, in order (each with its attempt)
+        self.undone: list[dict] = []  # changes it asked to take back
+        #: The moment the made-up mailbox and calendar are dated from, so reading them again gives the same text.
+        self.moment = (
+            datetime.fromisoformat(os.environ["E2E_CLOCK_AT"].replace("Z", "+00:00"))
+            if os.environ.get("E2E_CLOCK_AT")
+            else datetime.now(UTC)
+        )
+        self.evening = False  # the first-evening journey's extra mail, event and retired model
+        self.sent_mail = False  # the mailbox also has a sent folder, which the mail service lists by its name
+        self.later_mail: list[dict] = []  # messages that arrive after the first read (added by a helper route)
+        #: With `--accounts N` (more than none) each sign-in is one of N people, each with a mailbox and calendar of
+        #: their own; 0 is the single sign-in of every other journey.
+        self.accounts = 0
+        #: With `--spread-week` the calendars hold a working week spread over the accounts (see `week_events`).
+        self.spread_week = False
+        self.failing_account = 0  # the number (from 1) of the account whose reads fail; 0 for none
+        #: "expired": the sign-in is refused; "retrying": try again later; "refused": its own long refusal text.
+        self.failing_how = "expired"
+        self.failing_part = "all"  # which reads of the failing account fail: "all", "mail" or "calendar"
+        self.account_of: dict[str, int] = {}  # the account each code, access token and refresh token belongs to
+        self.seen = {
+            "authorizations": 0,
+            "exchanges": 0,
+            "renewals": 0,
+            "refused": 0,
+            "revoked": 0,
+            "mail_reads": 0,
+            "calendar_reads": 0,
+            "unauthorized": 0,
+        }
+
+    def info(self) -> dict:
+        """What the app's start-up script wrote: the token, the source folder and the backup folder."""
+        try:
+            return json.loads((self.folder / "info.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+
+# ---- the AI service --------------------------------------------------------------------------------------------------
+
+
+#: How a sorting run's request opens: a batch of message headers, marked as outside content.
+SORTING_MARK = '<untrusted source="mail headers">'
+
+
+def is_sorting(user: str) -> bool:
+    """Whether this packet asks to sort mail headers (the assistant's sorting of mail the rules can't place)."""
+    return SORTING_MARK in user
+
+
+def is_check(user: str) -> bool:
+    """Whether this packet is part of an account's connection check: the fixed reply, or the learning round-trip."""
+    return "Reply with exactly" in user or learning_check.CHECK_REQUEST in user
+
+
+def scripted_answer(state: State, user: str) -> str | None:
+    """The answer a test scripted for a request holding its words, used once; None when none applies."""
+    for entry in state.scripted:
+        if entry["when"] in user:
+            state.scripted.remove(entry)
+            return json.dumps(entry["answer"])
+    return None
+
+
+def answer_to(system: str, user: str) -> str:
+    """The text a model would send back for this packet, from the stand-in's rules."""
+    if "Reply with exactly this JSON" in user:
+        return json.dumps({"ok": True})
+    if is_check(user):
+        return json.dumps(stand_in.learn(user))
+    if is_sorting(user):
+        return json.dumps(stand_in.sort_mail(user))
+    if "<question>" in user:
+        return json.dumps(stand_in.answer(user, system))
+    if "<untrusted" in user or "<note>" in user:
+        return json.dumps(stand_in.read(user))
+    return json.dumps({"summary": "Nothing to do.", "ops": []})
+
+
+def ai_routes(state: State) -> list[Route]:
+    async def models(_request: Request) -> JSONResponse:
+        data = [
+            {
+                "id": name,
+                "context_length": info["context_length"],
+                "pricing": {"prompt": info["prompt"], "completion": info["completion"]},
+            }
+            for name, info in MODELS.items()
+        ]
+        if state.evening:
+            data.insert(
+                0,
+                {
+                    "id": RETIRED_MODEL,
+                    "context_length": 4096,
+                    "deprecated": True,
+                    "pricing": {"prompt": "0.0000001", "completion": "0.0000001"},
+                },
+            )
+        return JSONResponse({"object": "list", "data": data})
+
+    async def chat(request: Request) -> JSONResponse:
+        body = await request.json()
+        if body.get("model") == RETIRED_MODEL:
+            return JSONResponse(
+                {"error": {"message": f"The model {RETIRED_MODEL} has been deprecated."}}, status_code=404
+            )
+        messages = body.get("messages") or []
+        system = next((m["content"] for m in messages if m.get("role") == "system"), "")
+        user = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
+        first = " / ".join(stand_in.input_lines(user))
+        state.chats.append(
+            {
+                "model": body.get("model"),
+                "at": time.time(),
+                "smoke": is_check(user),
+                "sorting": is_sorting(user),
+                "input": first[:200],
+            }
+        )
+        text = (None if is_check(user) else scripted_answer(state, user)) or answer_to(system, user)
+        usage = {"prompt_tokens": max(1, len(system + user) // 4), "completion_tokens": max(1, len(text) // 4)}
+        return JSONResponse(
+            {
+                "id": f"fake-{len(state.chats)}",
+                "object": "chat.completion",
+                "model": body.get("model"),
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+                "usage": usage,
+            }
+        )
+
+    return [Route("/models", models), Route("/chat/completions", chat, methods=["POST"])]
+
+
+# ---- the sign-in service ---------------------------------------------------------------------------------------------
+
+
+def _challenge(verifier: str) -> str:
+    return base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+
+
+def _loopback(address: str) -> bool:
+    parts = urlsplit(address)
+    return parts.scheme == "http" and parts.hostname in {"127.0.0.1", "localhost"} and parts.path.endswith("/callback")
+
+
+def account_routes(state: State) -> list[Route]:
+    """The made-up service's sign-in: the page sends the person straight back, as a person already signed in to it
+    would be; the token address is where the app proves it started the sign-in (PKCE)."""
+
+    def issue(with_refresh: bool, scope: str, account: int = 0) -> dict:
+        """A token holding `scope`, which is what the service says it granted: a sign-in that asked for more (acting) is
+        given more, and the token that renews it keeps the same."""
+        access = "access-" + secrets.token_urlsafe(12)
+        state.access.add(access)
+        state.scopes[access] = scope
+        state.account_of[access] = account
+        body = {"access_token": access, "token_type": "Bearer", "expires_in": TOKEN_SECONDS, "scope": scope}
+        if with_refresh:
+            refresh = "refresh-" + secrets.token_urlsafe(12)
+            state.refresh.add(refresh)
+            state.scopes[refresh] = scope
+            state.account_of[refresh] = account
+            body["refresh_token"] = refresh
+        return body
+
+    def refused(error: str, status: int = 400) -> JSONResponse:
+        state.seen["refused"] += 1
+        return JSONResponse({"error": error}, status_code=status)
+
+    async def authorize(request: Request) -> Response:
+        q = request.query_params
+        redirect = q.get("redirect_uri", "")
+        if (
+            q.get("response_type") != "code"
+            or q.get("client_id") != CLIENT_ID
+            or q.get("code_challenge_method") != "S256"
+            or not q.get("code_challenge")
+            or not q.get("state")
+            or not _loopback(redirect)
+        ):
+            return refused("invalid_request")
+        number = 0
+        if state.accounts:
+            chosen = account_for_hint(state, q.get("login_hint", ""))
+            if chosen is None and q.get("login_hint"):
+                return refused("invalid_request")
+            if chosen is None and state.accounts > 1:
+                return chooser(state, request)
+            number = chosen or 0
+        code = "code-" + secrets.token_urlsafe(12)
+        state.codes[code] = {
+            "challenge": q["code_challenge"],
+            "redirect": redirect,
+            "scope": q.get("scope") or SCOPES,
+            "account": number,
+        }
+        state.seen["authorizations"] += 1
+        return RedirectResponse(f"{redirect}?{urlencode({'code': code, 'state': q['state']})}", status_code=302)
+
+    async def token(request: Request) -> JSONResponse:
+        form = {k: v[0] for k, v in parse_qs((await request.body()).decode()).items()}
+        if form.get("client_id") != CLIENT_ID:
+            return refused("invalid_client", 401)
+        if form.get("grant_type") == "authorization_code":
+            grant = state.codes.pop(form.get("code", ""), None)
+            if (
+                grant is None
+                or form.get("redirect_uri") != grant["redirect"]
+                or _challenge(form.get("code_verifier", "")) != grant["challenge"]
+            ):
+                return refused("invalid_grant")
+            state.seen["exchanges"] += 1
+            return JSONResponse(issue(with_refresh=True, scope=grant["scope"], account=grant.get("account", 0)))
+        if form.get("grant_type") == "refresh_token" and form.get("refresh_token") in state.refresh:
+            account = state.account_of.get(form["refresh_token"], 0)
+            if is_failing(state, account) and state.failing_how == "expired" and state.failing_part == "all":
+                return refused("invalid_grant")
+            state.seen["renewals"] += 1
+            scope = state.scopes.get(form["refresh_token"], SCOPES)
+            return JSONResponse(issue(with_refresh=False, scope=scope, account=account))
+        return refused("invalid_grant")
+
+    async def revoke(request: Request) -> Response:
+        form = {k: v[0] for k, v in parse_qs((await request.body()).decode()).items()}
+        state.refresh.discard(form.get("token", ""))
+        state.access.discard(form.get("token", ""))
+        state.seen["revoked"] += 1
+        return Response(status_code=200)
+
+    async def me(request: Request) -> JSONResponse:
+        if not signed_in(state, request):
+            return unauthorized()
+        return JSONResponse({"email": account_address(account_of(state, request))})
+
+    return [
+        Route("/authorize", authorize),
+        Route("/token", token, methods=["POST"]),
+        Route("/revoke", revoke, methods=["POST"]),
+        Route("/v1/me", me),
+    ]
+
+
+#: Words that tell the made-up accounts apart in their addresses: the first is the person's own (job) address.
+ACCOUNT_TAGS = ("", "home", "studio", "market", "garden", "workshop")
+
+
+def account_address(number: int) -> str:
+    """The address of the numbered account (from 0): the person's own address, then the same name with a tag."""
+    own = address_of(people()[0])
+    tag = ACCOUNT_TAGS[number % len(ACCOUNT_TAGS)]
+    local, domain = own.split("@")
+    return own if not tag else f"{local}.{tag}@{domain}"
+
+
+def account_for_hint(state: State, hint: str) -> int | None:
+    """The account a sign-in hint names (its address, or its number from 1), None when it names none."""
+    for number in range(max(state.accounts, 1)):
+        if hint in (account_address(number), str(number + 1)):
+            return number
+    return None
+
+
+def chooser(state: State, request: Request) -> Response:
+    """The made-up sign-in page for a service with several accounts: one link for each, which asks again with a hint."""
+    base = str(request.url)
+    links = "".join(
+        f'<li><a href="{base}&{urlencode({"login_hint": account_address(n)})}">{account_address(n)}</a></li>'
+        for n in range(state.accounts)
+    )
+    page = f"<!doctype html><title>Choose an account</title><h1>Choose an account</h1><ul>{links}</ul>"
+    return Response(page, media_type="text/html")
+
+
+def account_of(state: State, request: Request) -> int:
+    return state.account_of.get(request.headers.get("authorization", "")[7:], 0)
+
+
+def is_failing(state: State, account: int) -> bool:
+    return state.failing_account > 0 and account == state.failing_account - 1
+
+
+def signed_in(state: State, request: Request) -> bool:
+    header = request.headers.get("authorization", "")
+    return header.startswith("Bearer ") and header[7:] in state.access
+
+
+def unauthorized() -> JSONResponse:
+    return JSONResponse({"error": {"code": "InvalidAuthenticationToken"}}, status_code=401)
+
+
+# ---- the mail and calendar service -----------------------------------------------------------------------------------
+
+
+def people() -> list[str]:
+    """The names in the fictional workspace the journeys use: the first is the person at the keyboard."""
+    return [p["full_name"] for p in fixture_records(DEMO_B, "person")]
+
+
+def projects() -> list[str]:
+    """The project names in the fictional workspace, for a test that needs a name no fresh workspace holds."""
+    return [p["name"] for p in fixture_records(DEMO_B, "project")]
+
+
+def address_of(name: str) -> str:
+    return ".".join(re.sub(r"[^a-z0-9]", "", part.lower()) for part in name.split()) + "@example.com"
+
+
+def stamp(moment: datetime) -> str:
+    return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+#: The sender of the social update and of the mail that comes later: a made-up network, not a person in the workspace.
+NETWORK = ("Neighborhood Network", "updates@network.example.com")
+SHOP = ("Spring Shop", "deals@shop.example.com")
+
+
+def message(
+    key: str,
+    sender: tuple[str, str],
+    subject: str,
+    age: timedelta,
+    unread: bool,
+    *lines: str,
+    now: datetime,
+    bulk: bool = False,
+    categories: tuple[str, ...] = (),
+) -> dict:
+    """One message as the made-up mail service gives it: who from, when, and what the service says about it."""
+    return {
+        "id": key,
+        "from": {"name": sender[0], "address": sender[1]},
+        "subject": subject,
+        "received": stamp(now - age),
+        "unread": unread,
+        "body": "\n".join(lines),
+        "bulk": bulk,
+        "categories": list(categories),
+    }
+
+
+#: The evening journey's mail. A booking confirmation for an appointment the calendar also holds (its markup carries the
+#: place), a one-time code from a no-reply sender, and a bill with its amount and due day.
+HALL = "Maple Hall"
+BOOKING = ("Maple Hall Tickets", "tickets@maplehall.example.com")
+ACCOUNTS = ("Example Sign-in", "no-reply@accounts.example.com")
+WATER = ("Riverside Water", "billing@riversidewater.example.com")
+BILL_LINE = "Pay the water bill of $84.20 by 2026-11-05."
+
+
+def appointment(now: datetime) -> datetime:
+    """The appointment two days ahead, on the hour, which the calendar and the booking confirmation both hold."""
+    return (now + timedelta(days=2)).replace(minute=0, second=0, microsecond=0)
+
+
+def booking_markup(start: datetime) -> str:
+    data = {
+        "@type": "EventReservation",
+        "reservationId": "R-7731",
+        "provider": {"@type": "Organization", "name": "Maple Hall Tickets"},
+        "reservationFor": {
+            "@type": "Event",
+            "name": "Pottery evening",
+            "startDate": start.isoformat(),
+            "endDate": (start + timedelta(hours=2)).isoformat(),
+            "location": {"@type": "Place", "name": HALL},
+        },
+    }
+    return (
+        "<html><body><p>Your booking is confirmed.</p>"
+        f'<script type="application/ld+json">{json.dumps(data)}</script></body></html>'
+    )
+
+
+def evening_messages(now: datetime) -> list[dict]:
+    return [
+        message(
+            "m-7",
+            BOOKING,
+            "Your booking is confirmed",
+            timedelta(hours=3),
+            True,
+            booking_markup(appointment(now)),
+            now=now,
+        ),
+        message(
+            "m-8",
+            ACCOUNTS,
+            "Your verification code",
+            timedelta(hours=2),
+            True,
+            "Your verification code is 482913. Do not share it with anyone.",
+            now=now,
+        ),
+        message("m-9", WATER, "Your water bill is ready", timedelta(hours=1), True, BILL_LINE, now=now),
+    ]
+
+
+def messages(now: datetime, later: list[dict] | None = None, evening: bool = False) -> list[dict]:
+    """Six messages: three work messages from the last day, with the shapes the stand-in reads, a social update with
+    the service's category and a sales mail with a bulk flag, both from the last day too, and one from last week.
+    `later` are messages that arrived after the first read."""
+    me, first, second = people()[:3]
+
+    def work(key: str, sender: str, subject: str, age: timedelta, unread: bool, *lines: str) -> dict:
+        return message(key, (sender, address_of(sender)), subject, age, unread, *lines, now=now)
+
+    return [
+        work(
+            "m-1",
+            first,
+            "Venue list",
+            timedelta(hours=2),
+            True,
+            f"{me} will send the venue list by 2026-11-02.",
+            "Decided: the offsite is on a Friday.",
+        ),  # fmt: skip
+        work(
+            "m-2",
+            second,
+            "Catering quote",
+            timedelta(hours=5),
+            True,
+            "We need a catering quote by 2026-11-04.",
+            "To do: send the headcount by 2026-11-04.",
+        ),  # fmt: skip
+        work("m-3", first, "Thanks", timedelta(hours=1), False, "Thanks for the update. See you there."),
+        work("m-4", second, "Last week's agenda", timedelta(days=6), False, "We need a printed agenda."),
+        message(
+            "m-5",
+            NETWORK,
+            "Three neighbors posted today",
+            timedelta(hours=3),
+            True,
+            "See what your neighbors are up to.",
+            now=now,
+            categories=("social",),
+        ),
+        message(
+            "m-6",
+            SHOP,
+            "Spring sale: everything half price",
+            timedelta(hours=4),
+            True,
+            "Half price on everything this week only.",
+            now=now,
+            bulk=True,
+        ),
+        *(evening_messages(now) if evening else []),
+        *(later or []),
+    ]
+
+
+#: The folder the mail service keeps the person's own sent mail in, as a read names it.
+SENT_FOLDER = "sent"
+#: A second folder the mailbox has, with nothing in it, so a person can be seen choosing one more folder to read.
+ARCHIVE_FOLDER = "Archive"
+#: The folders the made-up mailbox has, by the names a source reads them by.
+MAIL_FOLDERS = ("inbox", SENT_FOLDER, ARCHIVE_FOLDER)
+#: The promise the person made in mail they sent, which no message they received repeats.
+SENT_PROMISE_FROM = "will send the revised budget by 2026-11-05"
+SENT_SUBJECT = "Revised offsite budget"
+
+
+def sent_messages(now: datetime) -> list[dict]:
+    """The person's own sent mail: one message, from them, a few days old, holding a promise found nowhere else."""
+    me = people()[0]
+    sent = message(
+        "s-1", (me, address_of(me)), SENT_SUBJECT, timedelta(days=3), False, f"{me} {SENT_PROMISE_FROM}.", now=now
+    )
+    # The message's own Message-ID header: with several accounts every mailbox holding the copy has the same one.
+    return [{**sent, "message_id": "<revised-offsite-budget@example.com>"}]
+
+
+def events(now: datetime, evening: bool = False) -> list[dict]:
+    """Three events: two within the hour, and one next week. The two near ones fall on the same day as `now` in this
+    computer's zone, so a run just before midnight still has them on today's schedule (they then come before now)."""
+    first, second = people()[1:3]
+    here = now.astimezone()
+    crosses = (here + timedelta(minutes=45)).date() != here.date()
+    first_at, second_at = (
+        (timedelta(minutes=-60), timedelta(minutes=-30)) if crosses else (timedelta(minutes=15), timedelta(minutes=45))
+    )
+
+    def event(key: str, title: str, start: datetime, where: str, organizer: str, notes: str) -> dict:
+        return {
+            "id": key,
+            "title": title,
+            "start": stamp(start),
+            "end": stamp(start + timedelta(minutes=30)),
+            "where": where,
+            "organizer": organizer,
+            "cancelled": False,
+            "notes": notes,
+        }
+
+    return [
+        event("e-1", "Venue walk-through", now + first_at, "Room 4", first, "To do: bring the floor plan."),
+        event(
+            "e-2",
+            "Budget check-in",
+            now + second_at,
+            "Room 2",
+            second,
+            "Agreed: the budget stays as planned.",
+        ),  # fmt: skip
+        event("e-3", "Offsite day", now + timedelta(days=9), "The lodge", first, "Everyone arrives by nine."),
+        *([event("e-4", HALL, appointment(now), "Maple Street", first, "Bring the tickets.")] if evening else []),
+    ]
+
+
+def recent_items(now: datetime, hours: int = 24) -> dict[str, list[str]]:
+    """The titles of the work messages that came in and the events that fall within `hours` of now, which a first read
+    hands the assistant; of the mail the app sets aside by what the service says about it (bulk, or a category); and
+    of those further away, which it only notes."""
+
+    def near(stamped: str) -> bool:
+        return abs(datetime.fromisoformat(stamped) - now) <= timedelta(hours=hours)
+
+    mail, events_ = messages(now), events(now)
+    aside = [m for m in mail if m["bulk"] or {"promotions", "social", "forums"} & set(m["categories"])]
+    return {
+        "mail": [m["subject"] for m in mail if near(m["received"]) and m not in aside],
+        "set_aside": [m["subject"] for m in aside if near(m["received"])],
+        "events": [e["title"] for e in events_ if near(e["start"])],
+        "noted": [m["subject"] for m in mail if not near(m["received"])]
+        + [e["title"] for e in events_ if not near(e["start"])],
+    }
+
+
+#: The work messages and events that hold nothing to check once read: a thank-you, a decision or agreement the assistant
+#: files as a fact, a plain announcement. A review on Today counts only what needs a look, so these are not counted.
+QUIET_MESSAGES = ("m-3",)
+QUIET_EVENTS = ("e-2", "e-3")
+
+
+def intake_items(now: datetime, days: int = 14) -> dict[str, list[str]]:
+    """What a quiet first read takes in (a sign-in's sources): the work messages of the last `days` and every event,
+    whatever its day; the mail the app sets aside by what the service says about it within those days; and the mail
+    older than that, which it only notes. `mail_to_check` and `events_to_check` are the taken-in items that hold
+    something to look over (the rest are filed quietly), which is what a source's review line on Today counts."""
+    mail = messages(now)
+    aside = [m for m in mail if m["bulk"] or {"promotions", "social", "forums"} & set(m["categories"])]
+
+    def within(stamped: str) -> bool:
+        return datetime.fromisoformat(stamped) >= now - timedelta(days=days)
+
+    return {
+        "mail": [m["subject"] for m in mail if within(m["received"]) and m not in aside],
+        "set_aside": [m["subject"] for m in aside if within(m["received"])],
+        "events": [e["title"] for e in events(now)],
+        "mail_to_check": [
+            m["subject"] for m in mail if within(m["received"]) and m not in aside and m["id"] not in QUIET_MESSAGES
+        ],
+        "events_to_check": [e["title"] for e in events(now) if e["id"] not in QUIET_EVENTS],
+        "noted": [m["subject"] for m in mail if not within(m["received"])],
+        "sent": [m["subject"] for m in sent_messages(now) if within(m["received"])],
+    }
+
+
+#: The parts of an account a failure can reach: all of it, its mail alone or its calendar alone.
+FAIL_PARTS = ("all", "mail", "calendar")
+
+
+def failure(state: State, request: Request, part: str = "mail") -> JSONResponse | None:
+    """What the failing account's reads get: the sign-in refused, or the service asking to try again later. Only the
+    part that is failing (its mail, its calendar or both) is refused."""
+    if not is_failing(state, account_of(state, request)) or state.failing_part not in ("all", part):
+        return None
+    if state.failing_how == "retrying":
+        return JSONResponse({"error": {"code": "ServiceBusy"}}, status_code=503, headers={"Retry-After": "120"})
+    state.seen["unauthorized"] += 1
+    if state.failing_how == "refused":
+        return JSONResponse({"error": {"code": "AuthenticationFailed", "message": RAW_REFUSAL}}, status_code=403)
+    return unauthorized()
+
+
+#: A mail server's own words for a refused sign-in, long and in its own shape, as one that is not the app's: the capture
+#: tool and the browser tests use it to see what a screen does with a service's text it did not write.
+RAW_REFUSAL = (
+    "A17 NO [AUTHENTICATIONFAILED] Application-specific password required: "
+    + "https"
+    + "://support.example.com/mail/answer/app-passwords. "
+    + " ".join(
+        f"fictional-step/fictional-step-{n} requires the account's second factor to be confirmed first."
+        for n in range(1, 17)
+    )
+)
+
+
+#: A shared thread, copied to two mailboxes, and a made-up supplier who writes to the job address and a business one.
+SHARED_THREAD = ("thread-joint-lease", "Joint lease renewal", "Landlord Example", "landlord@property.example.com")
+SUPPLIER = ("Harbor Supplies", "orders@harbor.example.com")
+#: An invitation that sits on two calendars, and the people who sent it.
+SHARED_INVITE = ("invite-quarterly-review", "Quarterly review")
+
+
+def account_messages(state: State, number: int) -> list[dict]:
+    """The numbered account's inbox when there are several: its own mail, with the thread copied to the first two
+    mailboxes and the supplier's mail to the first two addresses (each message lists whom it was written to)."""
+    now = state.moment
+    me = account_address(number)
+    out = [
+        message(
+            f"a{number}-own-1",
+            ("Pat Sample", "pat.sample@partner.example.com"),
+            f"Question for account {number + 1}",
+            timedelta(hours=2 + number),
+            True,
+            f"Can you confirm the plan for account {number + 1}?",
+            now=now,
+        )
+    ]
+    if number == 0:
+        out += messages(now, state.later_mail, state.evening)
+    if number < 2:
+        key, subject, name, address = SHARED_THREAD
+        copy = message(
+            f"a{number}-thread", (name, address), subject, timedelta(hours=6), True, "Please sign the renewal.", now=now
+        )
+        out.append(
+            {
+                **copy,
+                "thread": key,
+                # The message's own Message-ID header: every mailbox holding a copy has the same one.
+                "message_id": f"<{key}@property.example.com>",
+                "to": [account_address(0), account_address(1)],
+            }
+        )
+        supplier = message(
+            f"a{number}-supplier",
+            SUPPLIER,
+            f"Order {number + 1} is ready" if number == 0 else "Your business order is ready",
+            timedelta(hours=3, minutes=number),
+            True,
+            "The order can be collected.",
+            now=now,
+        )
+        out.append({**supplier, "to": [me]})
+    if number == 2:
+        # One mailbox that serves two businesses: mail for each of them arrives here.
+        for tag, label in (("one", "first"), ("two", "second")):
+            out.append(
+                {
+                    **message(
+                        f"a2-business-{tag}",
+                        ("Customer Example", f"customer.{tag}@clients.example.com"),
+                        f"Order for the {label} business",
+                        timedelta(hours=4),
+                        True,
+                        f"Please confirm the order for the {label} business.",
+                        now=now,
+                    ),
+                    "to": [me],
+                }
+            )
+    return [{"to": [me], **m} for m in out]
+
+
+def account_events(now: datetime, number: int, spread_week: bool = False) -> list[dict]:
+    """The numbered account's calendar when there are several. A meeting in the first overlaps one in the second, the
+    first two hold one invitation, the second has an all-day entry, and the third has a read-only holiday."""
+
+    def entry(key: str, title: str, begin: datetime, minutes: int, **more) -> dict:
+        return {
+            "id": f"a{number}-{key}",
+            "title": title,
+            "start": stamp(begin),
+            "end": stamp(begin + timedelta(minutes=minutes)),
+            "where": "Room 1",
+            "organizer": people()[1],
+            "cancelled": False,
+            "notes": "",
+            "read_only": False,
+            **{k: v for k, v in more.items() if k not in ("start", "end")},
+        } | {k: more[k] for k in ("start", "end") if k in more}
+
+    base = (now + timedelta(hours=2)).replace(minute=0, second=0, microsecond=0)
+    day = (now + timedelta(days=1)).date()
+    out = []
+    if spread_week:
+        return week_events(now, number, entry)
+    if number == 0:
+        out += events(now)
+        out.append(entry("call", "Supplier call", base, 60))
+    if number == 1:
+        out.append(entry("fitting", "Fitting appointment", base + timedelta(minutes=30), 60))
+        out.append(
+            entry(
+                "stock",
+                "Stock count",
+                datetime.fromisoformat(day.isoformat() + "T00:00:00+00:00"),
+                1440,
+                all_day=True,
+                start=day.isoformat(),
+                end=(day + timedelta(days=1)).isoformat(),
+            )
+        )
+    if number == 2:
+        out.append(
+            entry(
+                "holiday",
+                "Public holiday",
+                datetime.fromisoformat((day + timedelta(days=2)).isoformat() + "T00:00:00+00:00"),
+                1440,
+                all_day=True,
+                read_only=True,
+                start=(day + timedelta(days=2)).isoformat(),
+                end=(day + timedelta(days=3)).isoformat(),
+            )
+        )
+    if number < 2:
+        uid, title = SHARED_INVITE
+        out.append(entry("review", title, base + timedelta(days=1, hours=2), 45, uid=uid))
+    return out
+
+
+def week_events(now: datetime, number: int, entry) -> list[dict]:
+    """A working week spread over the accounts, for a picture that shows a normal day, one clash and a free stretch:
+    the first account holds the near pair that clashes today, a morning huddle and an early appointment; the second
+    holds an afternoon fitting and the shared invitation; the third (its own side) holds a supplier call. Every entry
+    is on the hour of its own day, counted from `now`, so no two entries beside the near pair overlap."""
+
+    def at(days: int, hour: int) -> datetime:
+        return (now + timedelta(days=days)).replace(hour=hour, minute=0, second=0, microsecond=0)
+
+    if number == 0:
+        return [
+            *events(now),
+            entry("huddle", "Team huddle", at(-1, 9), 30),
+            entry("dentist", "Dentist", at(3, 8), 30, where="Main Street"),
+            entry("review", SHARED_INVITE[1], at(2, 10), 60, uid=SHARED_INVITE[0]),
+        ]
+    if number == 1:
+        day = (now + timedelta(days=1)).date()
+        return [
+            entry("fitting", "Fitting appointment", at(1, 13), 60, where="Studio"),
+            entry("review", SHARED_INVITE[1], at(2, 10), 60, uid=SHARED_INVITE[0]),
+            entry(
+                "stock",
+                "Stock count",
+                datetime.fromisoformat(day.isoformat() + "T00:00:00+00:00"),
+                1440,
+                all_day=True,
+                start=day.isoformat(),
+                end=(day + timedelta(days=1)).isoformat(),
+            ),
+        ]
+    day = (now + timedelta(days=3)).date()
+    return [
+        entry("call", "Supplier call", at(2, 15), 60),
+        entry("market", "Market with Sam", at(0, 17), 60, where="Harbor Square"),
+        entry(
+            "holiday",
+            "Public holiday",
+            datetime.fromisoformat(day.isoformat() + "T00:00:00+00:00"),
+            1440,
+            all_day=True,
+            read_only=True,
+            start=day.isoformat(),
+            end=(day + timedelta(days=1)).isoformat(),
+        ),
+    ]
+
+
+def mail_routes(state: State) -> list[Route]:
+    async def listed(request: Request) -> JSONResponse:
+        if not signed_in(state, request):
+            state.seen["unauthorized"] += 1
+            return unauthorized()
+        state.seen["mail_reads"] += 1
+        if state.accounts:
+            failed = failure(state, request)
+            if failed is not None:
+                return failed
+            if (request.query_params.get("folder") or "inbox") == "inbox":
+                return JSONResponse({"messages": account_messages(state, account_of(state, request))})
+        folder = request.query_params.get("folder") or "inbox"
+        if folder not in MAIL_FOLDERS:
+            # A real service says there is no such folder; it never lists the inbox's mail under another name.
+            return JSONResponse({"error": "no such folder"}, status_code=404)
+        if folder == ARCHIVE_FOLDER:
+            return JSONResponse({"messages": []})
+        if folder == SENT_FOLDER:
+            # A mailbox with no sent mail has an empty sent folder, never the inbox's mail under another name.
+            return JSONResponse({"messages": sent_messages(state.moment) if state.sent_mail else []})
+        return JSONResponse({"messages": messages(state.moment, state.later_mail, state.evening)})
+
+    return [Route("/messages", listed), *change_routes(state)]
+
+
+#: The scope the made-up service wants before it changes mail, which a sign-in holds only once acting is turned on.
+MODIFY_SCOPE = "mail.modify"
+#: What the mailbox lists as places a message can go: ids that differ from the names the person sees, one folder nested.
+FOLDERS = [
+    {"id": "fld-archive-7", "name": "Projects/Archive", "kind": "folder"},
+    {"id": "fld-receipts-3", "name": "Receipts", "kind": "folder"},
+    {"id": "lbl-follow-up-2", "name": "Follow up", "kind": "label"},
+    {"id": "lbl-waiting-5", "name": "Waiting on others", "kind": "label"},
+]
+
+
+def change_routes(state: State) -> list[Route]:
+    """The made-up service's changes to mail, as the add-on's channel asks for them: the account's folders and labels,
+    one change (kept, with the attempt it came with, for a test to read), what an attempt became, and taking one back.
+    Each needs a token that holds the wider access."""
+
+    def allowed(request: Request) -> bool:
+        header = request.headers.get("authorization", "")
+        return signed_in(state, request) and MODIFY_SCOPE in state.scopes.get(header[7:], "").split()
+
+    def refused(request: Request) -> JSONResponse:
+        if not signed_in(state, request):
+            state.seen["unauthorized"] += 1
+            return unauthorized()
+        return JSONResponse({"error": {"code": "InsufficientScope"}}, status_code=403)
+
+    async def folders(request: Request) -> JSONResponse:
+        return JSONResponse({"folders": FOLDERS}) if allowed(request) else refused(request)
+
+    async def change(request: Request) -> JSONResponse:
+        if not allowed(request):
+            return refused(request)
+        body = await request.json()
+        for done in state.acts:
+            if done["attempt"] == body.get("attempt"):
+                return JSONResponse({"id": done["id"]})
+        made = {**body, "id": f"change-{len(state.acts) + 1}"}
+        state.acts.append(made)
+        return JSONResponse({"id": made["id"]})
+
+    async def status(request: Request) -> JSONResponse:
+        if not allowed(request):
+            return refused(request)
+        found = next((a for a in state.acts if a["attempt"] == request.query_params.get("attempt")), None)
+        return JSONResponse({"id": found["id"] if found else None})
+
+    async def undo(request: Request) -> JSONResponse:
+        if not allowed(request):
+            return refused(request)
+        body = await request.json()
+        state.undone.append(body)
+        return JSONResponse({"undone": body.get("id")})
+
+    return [
+        Route("/folders", folders),
+        Route("/acts", change, methods=["POST"]),
+        Route("/acts/status", status),
+        Route("/acts/undo", undo, methods=["POST"]),
+    ]
+
+
+def calendar_routes(state: State) -> list[Route]:
+    async def listed(request: Request) -> JSONResponse:
+        if not signed_in(state, request):
+            state.seen["unauthorized"] += 1
+            return unauthorized()
+        state.seen["calendar_reads"] += 1
+        if state.accounts:
+            failed = failure(state, request, "calendar")
+            if failed is not None:
+                return failed
+            return JSONResponse({"events": account_events(state.moment, account_of(state, request), state.spread_week)})
+        return JSONResponse({"events": events(state.moment, state.evening)})
+
+    return [Route("/events", listed)]
+
+
+# ---- the add-on catalog ----------------------------------------------------------------------------------------------
+
+
+def build_wheel(source: Path, out: Path) -> Path:
+    """A wheel of pure Python from a plugin folder (the package is the folder, its `plugin.yaml` inside it), with the
+    metadata an install needs: the entry point the app finds plugins by, and a record of the files."""
+    manifest = yaml.safe_load((source / "plugin.yaml").read_text(encoding="utf-8"))
+    name, version, package = manifest["name"], manifest["version"], source.name
+    info = f"{package}-{version}.dist-info"
+    files = {
+        f"{package}/{path.relative_to(source).as_posix()}": path.read_bytes()
+        for path in sorted(source.rglob("*"))
+        if path.is_file() and "__pycache__" not in path.parts
+    }
+    files[f"{info}/METADATA"] = f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n".encode()
+    files[f"{info}/WHEEL"] = b"Wheel-Version: 1.0\nGenerator: journey-tests\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
+    files[f"{info}/entry_points.txt"] = f"[thimbleby.plugins]\n{name} = {manifest['entry']}\n".encode()
+    record = [f"{n},sha256={hashlib.sha256(d).hexdigest()},{len(d)}" for n, d in files.items()]
+    files[f"{info}/RECORD"] = ("\n".join([*record, f"{info}/RECORD,,"]) + "\n").encode()
+    out.mkdir(parents=True, exist_ok=True)
+    wheel = out / f"{package}-{version}-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w", zipfile.ZIP_DEFLATED) as archive:
+        for member, data in files.items():
+            archive.writestr(zipfile.ZipInfo(member, (2026, 1, 1, 0, 0, 0)), data)
+    return wheel
+
+
+#: The add-ons a catalog can list: the fixture folder, and the name and summary the catalog gives each.
+ADD_ONS: dict[str, tuple[str, str]] = {
+    "journey_panel": ("Example panel", "One screen with a short page, to see an add-on installed from the list."),
+    "journey_mail": (
+        "Example mail",
+        "Reads a made-up mailbox and calendar, signing in through the service's own page.",
+    ),
+}
+
+
+def catalog_feed(wheels: Path | list[Path], base: str) -> str:
+    """A catalog feed in the app's format listing the add-ons the wheels hold, each with its release address and
+    checksum. What an entry says it provides and needs is copied from its fixture's manifest, as a catalog entry is."""
+    entries = []
+    for wheel in [wheels] if isinstance(wheels, Path) else wheels:
+        folder = wheel.name.split("-")[0]
+        manifest = yaml.safe_load((PLUGINS / folder / "plugin.yaml").read_text(encoding="utf-8"))
+        name, summary = ADD_ONS[folder]
+        entries.append(
+            {
+                "id": manifest["name"],
+                "name": name,
+                "summary": summary,
+                "publisher": "Example publisher",
+                "maintainers": False,
+                "updated": "2026-10-12",
+                "version": manifest["version"],
+                "plugin_api": manifest["plugin_api"],
+                "price": {"model": "free"},
+                "provides": manifest["provides"],
+                "requires": manifest["requires"],
+                "release": {
+                    "url": f"{base}/catalog/{wheel.name}",
+                    "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+                },
+            }
+        )
+    return yaml.safe_dump({"version": 1, "packs": entries}, sort_keys=False)
+
+
+def catalog_routes(state: State) -> list[Route]:
+    async def feed(_request: Request) -> Response:
+        return Response(state.catalog_text, media_type="application/yaml")
+
+    async def release(request: Request) -> Response:
+        wheel = state.wheels.get(request.path_params["name"])
+        if wheel is None:
+            return Response(status_code=404)
+        return Response(wheel.read_bytes(), media_type="application/octet-stream")
+
+    return [Route("/packs.yaml", feed), Route("/{name}", release)]
+
+
+# ---- the helpers the browser tests read ------------------------------------------------------------------------------
+
+#: A fictional file the source folder is given: a meeting note in the stand-in's own sentence shapes.
+SOURCE_FILE = "folder-note.txt"
+
+
+def helper_routes(state: State, base: str) -> list[Route]:
+    async def info(_request: Request) -> JSONResponse:
+        return JSONResponse(
+            {
+                **state.info(),
+                "ai_base_url": f"{base}/ai/v1",
+                "people": people(),
+                "projects": projects(),
+                "https_base": state.https_base,
+            }
+        )
+
+    async def requests(_request: Request) -> JSONResponse:
+        asked = [c for c in state.chats if not c["smoke"]]
+        work = [c for c in asked if not c["sorting"]]
+        inputs = [c["input"] for c in work]
+        return JSONResponse(
+            {
+                "total": len(state.chats),
+                "smoke": len(state.chats) - len(asked),
+                "sorting": len(asked) - len(work),
+                "work": len(work),
+                "inputs": inputs,
+                "models": [c["model"] for c in work],
+            }
+        )
+
+    async def set_failing(request: Request) -> JSONResponse:
+        """Make the numbered account (from 1; 0 for none) fail from now on, in the given way: a journey signs every
+        account in while all are well, then has one fail."""
+        body = await request.json()
+        number = int(body.get("account", 0))
+        how = str(body.get("how", "expired"))
+        part = str(body.get("part", "all"))
+        if (
+            not 0 <= number <= max(state.accounts, 1)
+            or how not in ("expired", "retrying", "refused")
+            or part not in FAIL_PARTS
+        ):
+            return JSONResponse({"error": "no such account, way or part to fail"}, status_code=400)
+        state.failing_account, state.failing_how, state.failing_part = number, how, part
+        return JSONResponse({"account": number, "how": how, "part": part})
+
+    async def accounts(_request: Request) -> JSONResponse:
+        count = max(state.accounts, 1)
+        return JSONResponse(
+            {
+                "accounts": [
+                    {
+                        "address": account_address(n),
+                        "failing": state.failing_how if is_failing(state, n) else None,
+                        "part": state.failing_part if is_failing(state, n) else None,
+                    }
+                    for n in range(count)
+                ]
+            }
+        )
+
+    async def sign_in(_request: Request) -> JSONResponse:
+        return JSONResponse(
+            {
+                **state.seen,
+                "tokens": len(state.access),
+                "recent_items": recent_items(datetime.now(UTC)),
+                "intake_items": intake_items(datetime.now(UTC)),
+                "moment": stamp(state.moment),
+            }
+        )
+
+    async def mail_acts(_request: Request) -> JSONResponse:
+        """What the add-on's channel asked the mail service to change and to take back, and the messages it holds."""
+        return JSONResponse(
+            {
+                "acts": state.acts,
+                "undone": state.undone,
+                "folders": FOLDERS,
+                "granted": sorted({state.scopes[t] for t in state.access if t in state.scopes}),
+                "messages": [{"id": m["id"], "subject": m["subject"]} for m in messages(state.moment)],
+            }
+        )
+
+    async def mail_later(_request: Request) -> JSONResponse:
+        """A new message from the social network's sender arrives, saying nothing about itself."""
+        now = datetime.now(UTC)
+        subject = f"Another update from the network ({len(state.later_mail) + 1})"
+        state.later_mail.append(
+            message(
+                f"m-later-{len(state.later_mail) + 1}",
+                NETWORK,
+                subject,
+                timedelta(minutes=10),
+                True,
+                "More news.",
+                now=now,
+            )
+        )
+        return JSONResponse({"subject": subject, "sender": NETWORK[1]})
+
+    async def put_source_file(request: Request) -> JSONResponse:
+        body = await request.json()
+        folder = Path(state.info()["source_folder"])
+        (folder / SOURCE_FILE).write_text(str(body["text"]), encoding="utf-8")
+        return JSONResponse({"file": SOURCE_FILE})
+
+    async def script(request: Request) -> JSONResponse:
+        """The next request holding `when` is answered with `answer`, once."""
+        body = await request.json()
+        state.scripted.append({"when": str(body["when"]), "answer": body["answer"]})
+        return JSONResponse({"waiting": len(state.scripted)})
+
+    return [
+        Route("/__e2e/info", info),
+        Route("/__e2e/script", script, methods=["POST"]),
+        Route("/__e2e/ai-requests", requests),
+        Route("/__e2e/sign-in", sign_in),
+        Route("/__e2e/accounts", accounts),
+        Route("/__e2e/failing", set_failing, methods=["POST"]),
+        Route("/__e2e/source-file", put_source_file, methods=["POST"]),
+        Route("/__e2e/mail-later", mail_later, methods=["POST"]),
+        Route("/__e2e/mail-acts", mail_acts),
+    ]
+
+
+# ---- assembling ------------------------------------------------------------------------------------------------------
+
+Services = dict[str, Callable[[State], list[Route]]]
+
+#: Every fake service over plain HTTP: its prefix and the function that makes its routes. A new service is one entry.
+SERVICES: Services = {"/ai/v1": ai_routes}
+
+#: Every fake service over HTTPS, the same way.
+SECURE_SERVICES: Services = {
+    "/account": account_routes,
+    "/mail/v1": mail_routes,
+    "/calendar/v1": calendar_routes,
+    "/catalog": catalog_routes,
+}
+
+
+def build_app(state: State, port: int, services: Services | None = None, helpers: bool = True) -> Starlette:
+    routes = [
+        Route(f"{prefix}{r.path}", r.endpoint, methods=sorted(r.methods or []))
+        for prefix, make in (SERVICES if services is None else services).items()
+        for r in make(state)
+    ]
+    if helpers:
+        routes += helper_routes(state, f"http://{HOST}:{port}")
+    return Starlette(routes=routes)
+
+
+def start_secure(state: State, port: int, add_ons: tuple[str, ...] = ("journey_panel",)) -> uvicorn.Server:
+    """Make the throwaway authority and certificate, build the wheels of the add-ons the catalog lists (fixture folders)
+    and the feed that lists them, and answer over HTTPS on `port` from a background thread. Returns once the server is
+    listening."""
+    certs = fake_tls.make(state.folder / "tls")
+    state.https_base = f"https://{HOST}:{port}"
+    wheels = [build_wheel(PLUGINS / folder, state.assets) for folder in add_ons]
+    state.wheels = {wheel.name: wheel for wheel in wheels}
+    state.catalog_text = catalog_feed(wheels, state.https_base)
+    config = uvicorn.Config(
+        build_app(state, port, SECURE_SERVICES, helpers=False),
+        host=HOST,
+        port=port,
+        log_level="warning",
+        ssl_certfile=str(certs.certificate),
+        ssl_keyfile=str(certs.key),
+    )
+    server = uvicorn.Server(config)
+    threading.Thread(target=server.run, daemon=True).start()
+    # An event's timed wait: it can't be cut short by a clock tool, as a plain sleep was.
+    pause = threading.Event()
+    for _ in range(200):
+        if server.started:
+            return server
+        pause.wait(0.05)
+    raise RuntimeError("the HTTPS fake services did not start")
+
+
+def configure(argv: list[str] | None = None) -> State:
+    return _configure(argv)[1]
+
+
+def _configure(argv: list[str] | None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--https-port", type=int, default=0)
+    parser.add_argument("--state", type=Path, required=True)
+    parser.add_argument(
+        "--catalog", default="journey_panel", help="the fixture add-ons the catalog lists, comma-separated"
+    )
+    parser.add_argument(
+        "--evening", action="store_true", help="add the evening journey's mail, event and retired model"
+    )
+    parser.add_argument(
+        "--sent-mail",
+        action="store_true",
+        help="put one message in the mailbox's sent folder (the mail add-on names that folder by default, so a walk by "
+        "hand reads it with no other switch; tests/e2e_fresh_server.py --no-sent-mail turns that off)",
+    )
+    parser.add_argument(
+        "--accounts",
+        type=int,
+        default=0,
+        help="several people sign in, each with an address, mailbox and calendar of their own (choose on the sign-in "
+        "page or with a login_hint); shared mail and meetings are seeded between them",
+    )
+    parser.add_argument(
+        "--spread-week",
+        action="store_true",
+        help="with --accounts: the calendars hold a working week spread over the accounts (one clash today, a normal "
+        "day, a free stretch, entries on every account), for pictures that show the screen as it looks in use",
+    )
+    parser.add_argument("--failing-account", type=int, default=0, help="the account (from 1) whose reads fail")
+    parser.add_argument("--failing-how", choices=("expired", "retrying", "refused"), default="expired")
+    args = parser.parse_args(argv)
+    if args.failing_account > args.accounts:
+        parser.error("--failing-account must be one of the --accounts")
+    state = State(args.state)
+    state.evening = args.evening
+    state.sent_mail = args.sent_mail
+    state.accounts = args.accounts
+    state.spread_week = args.spread_week
+    state.failing_account = args.failing_account
+    state.failing_how = args.failing_how
+    return args, state
+
+
+def main(argv: list[str] | None = None) -> None:
+    args, state = _configure(argv)
+    if args.https_port:
+        start_secure(state, args.https_port, tuple(name for name in args.catalog.split(",") if name))
+    uvicorn.run(build_app(state, args.port), host=HOST, port=args.port, log_level="warning")
+
+
+if __name__ == "__main__":
+    main()

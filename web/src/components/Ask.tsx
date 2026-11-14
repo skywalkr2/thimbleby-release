@@ -1,0 +1,463 @@
+// Asking the assistant (design 6.25): a box for a question, and under it the recent questions with what came of them.
+// An answer shows the words it rests on. A suggested setting is applied by the person with one click (and Undo, from
+// the read-back toast); a drafted report is theirs to copy and send. On a wide screen it is a pane over the right edge
+// (`pane`, never moving the page), so answers with lists have room and the work stays in view; on a narrower one it is a dialog.
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useId, useRef, useState } from "react";
+import { Heading } from "react-aria-components";
+import { api, type S } from "../lib/api";
+import { useAct } from "../lib/act";
+import { copyMessage } from "../lib/copy";
+import { whenText } from "../lib/dates";
+import { mailText, mailtoLink, tooLongForLink } from "../lib/mail";
+import { problemText } from "../lib/problem";
+import { useSettingWordsFromCache } from "../lib/setting-words";
+import { formatValue, labelOf } from "../lib/settings";
+import { freshSettings, useAfterSave } from "../lib/settings-save";
+import { useToasts } from "../lib/toasts";
+import { useWords } from "../lib/wording";
+import styles from "./AskPane.module.css";
+import { ModalPanel, DialogFooter } from "./ModalPanel";
+import { OwnKindsOffer } from "./Templates";
+import { SafeText } from "./SafeText";
+import { Skeleton } from "../ui/Skeleton";
+import { Button, ButtonLink } from "../ui/Button";
+import { FormField } from "../ui/FormField";
+import { Actions } from "../ui/Actions";
+import { RowList } from "../ui/RowList";
+import { Row } from "../ui/Row";
+import { Pill, type PillTone } from "../ui/Pill";
+import { RowBody } from "../ui/RowBody";
+import { useHandedToast, useWaitsForStart, type Waits } from "../lib/handed-toast";
+type AskItem = S["AskView"];
+const SHOWN = 10;
+
+export function Ask(props: { onClose: () => void; initial?: string; reveal?: string; feedbackTo?: string | null; pane?: boolean }) {
+  const { t } = useWords();
+  const act = useAct();
+  const base = useId();
+  const field = useRef<HTMLTextAreaElement>(null);
+  const [question, setQuestion] = useState(props.initial ?? "");
+  const [busy, setBusy] = useState(false);
+  const waitsForStart = useWaitsForStart();
+  const toast = useHandedToast();
+  const asks = useQuery({ queryKey: ["asks"], queryFn: api.asks });
+  const client = useQueryClient();
+  const { dismissAll } = useToasts();
+  // "Asked. {assistant} is on it." says nothing once the answer it was about is on the screen: it goes then.
+  const askedId = useRef<string | null>(null);
+  useEffect(() => {
+    const mine = askedId.current ? asks.data?.find((item) => item.id === askedId.current) : undefined;
+    if (mine?.answer) {
+      askedId.current = null;
+      dismissAll();
+      // The answer is being read right here, so Today holds no line for it to read (it would count one more thing for the person).
+      void api.readAnswer(mine.id).then(() => client.invalidateQueries({ queryKey: ["today"] }));
+    }
+  }, [asks.data, dismissAll, client]);
+  // Opened at an answer from Today: reading it is what clears its line.
+  useEffect(() => {
+    if (!props.reveal) return;
+    void api.readAnswer(props.reveal).then(() => client.invalidateQueries({ queryKey: ["today"] }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.reveal]);
+
+  const submit = async () => {
+    const text = question.trim();
+    if (!text || busy) return;
+    setBusy(true);
+    let waits: Waits = false;
+    const asked = await act(
+      async () => {
+        const made = await api.ask(text);
+        askedId.current = made.id;
+        waits = await waitsForStart();
+        return made;
+      },
+      () => toast(waits, t("ask.toast.asked"), t("ask.toast.asked_waiting")),
+    );
+    setBusy(false);
+    if (asked) {
+      setQuestion("");
+      field.current?.focus();
+    }
+  };
+
+  const titleId = `${base}-title`;
+  const body = (
+    <>
+      {props.pane ? (
+        <h2 id={titleId} className={styles.title}>
+          {t("ask.title")}
+        </h2>
+      ) : (
+        <Heading slot="title" id={titleId}>
+          {t("ask.title")}
+        </Heading>
+      )}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
+        }}
+      >
+        <FormField id={`${base}-question`} label={t("ask.question")}>
+          <textarea
+            id={`${base}-question`}
+            ref={field}
+            className="short"
+            autoFocus
+            value={question}
+            aria-describedby={`${base}-hint`}
+            placeholder={t("ask.placeholder")}
+            onChange={(e) => setQuestion(e.target.value)}
+            onKeyDown={(e) => {
+              // Enter asks; Shift+Enter starts a new line.
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                void submit();
+              }
+            }}
+          />
+          <span id={`${base}-hint`} className="hint">
+            {t("ask.hint")}
+          </span>
+        </FormField>
+        <DialogFooter>
+          <Button variant="quiet" onClick={props.onClose}>
+            {t("action.close")}
+          </Button>
+          <Button variant="primary" type="submit" disabled={busy || !question.trim()} reason={question.trim() ? undefined : t("ask.reason")}>
+            {t(busy ? "ask.sending" : "ask.go")}
+          </Button>
+        </DialogFooter>
+      </form>
+      <OwnKindsOffer />
+      <section aria-labelledby={`${base}-recent`} className="asks" hidden={asks.isSuccess && asks.data.length === 0}>
+        <h3 id={`${base}-recent`} className="what">
+          {t("ask.recent")}
+        </h3>
+        {asks.isPending ? (
+          <Skeleton rows={1} />
+        ) : asks.isError ? (
+          <p className="hint">
+            {t("ask.load_failed")}{" "}
+            <Button onClick={() => void asks.refetch()}>
+              {t("action.try_again")}
+            </Button>
+          </p>
+        ) : asks.data.length === 0 ? null : (
+          <RowList>
+            {asks.data.slice(0, SHOWN).map((item) => (
+              <AskRow key={item.id} revealed={item.id === props.reveal} item={item} onApplied={props.onClose} mailTo={props.feedbackTo} />
+            ))}
+          </RowList>
+        )}
+      </section>
+    </>
+  );
+  if (!props.pane) {
+    return (
+      <ModalPanel titleId={titleId} onClose={props.onClose}>
+        {body}
+      </ModalPanel>
+    );
+  }
+  return (
+    <aside
+      className={styles.pane}
+      aria-labelledby={titleId}
+      data-ask-pane=""
+      onKeyDown={(e) => {
+        // Escape closes the pane unless something inside it (a menu, a field's own use of the key) took it.
+        if (e.key === "Escape" && !e.defaultPrevented) props.onClose();
+      }}
+    >
+      {body}
+    </aside>
+  );
+}
+
+const TONE: Record<string, PillTone> = {
+  queued: "need",
+  running: "need",
+  review: "neutral",
+  done: "need",
+  needs_you: "warn",
+  failed: "danger",
+};
+
+function AskRow(props: { revealed?: boolean; item: AskItem; onApplied: () => void; mailTo?: string | null }) {
+  const { t } = useWords();
+  const { item } = props;
+  const titleId = `ask-${item.id}`;
+  const state = item.answer && (item.state === "review" || item.state === "done") ? "done" : item.state;
+  const answered = state === "done";
+  const when = whenText(item.created_at);
+  const proposals = item.proposals ?? [];
+  const reports = item.reports ?? [];
+  return (
+    <Row
+      aria-labelledby={titleId}
+      loop={false}
+      data-revealed={props.revealed || undefined}
+      ref={(el) => {
+        if (props.revealed) el?.scrollIntoView?.({ block: "nearest" });
+      }}
+      title={item.question}
+      titleId={titleId}
+      meta={
+        <>
+          <Pill tone={TONE[state] ?? "neutral"}>{t(`ask.state.${state}`)}</Pill>
+          {!answered && item.waiting ? ` ${item.waiting}` : ""}
+          {when ? ` · ${when}` : ""}
+        </>
+      }
+    >
+      {(item.answer || proposals.length > 0 || reports.length > 0) && (
+        <RowBody>
+          {item.answer && (
+            <div className="ask-answer">
+              <SafeText text={item.answer.text} />
+              {item.answer.cites.length > 0 && (
+                <div className="because">
+                  <span className="what">{t("ask.based_on")}</span>
+                  <ul className="plain-list">
+                    {item.answer.cites.map((cite, i) => (
+                      <li key={i}>
+                        <SafeText text={`“${cite.quote}”`} />
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+          {item.answer && <Verdict request={item.id} verdict={item.verdict ?? null} />}
+          {item.answer && <CorrectIt request={item.id} />}
+          {proposals.map((p) => (
+            <Proposal key={p.id} proposal={p} onApplied={props.onApplied} />
+          ))}
+          {reports.map((r) => (
+            <Report key={r.id} report={r} mailTo={props.mailTo} />
+          ))}
+        </RowBody>
+      )}
+    </Row>
+  );
+}
+
+// Helpful and Not helpful: one click each, the standing one pressed, with an Undo toast. The other replaces it.
+function Verdict(props: { request: string; verdict: "helpful" | "not_helpful" | null }) {
+  const { t } = useWords();
+  const act = useAct();
+  const say = (helpful: boolean) => {
+    if (props.verdict === (helpful ? "helpful" : "not_helpful")) return;
+    void act(
+      () => api.answerVerdict(props.request, helpful),
+      (made) => ({
+        message: t(helpful ? "ask.toast.helpful" : "ask.toast.not_helpful"),
+        undo: () => api.undoAnswerVerdict(made.id),
+      }),
+    );
+  };
+  return (
+    <Actions role="group" aria-label={t("ask.verdict_group")}>
+      <Button variant="quiet" aria-pressed={props.verdict === "helpful"} onClick={() => say(true)}>
+        {t("ask.helpful")}
+      </Button>
+      <Button variant="quiet" aria-pressed={props.verdict === "not_helpful"} onClick={() => say(false)}>
+        {t("ask.not_helpful")}
+      </Button>
+    </Actions>
+  );
+}
+
+function CorrectIt(props: { request: string }) {
+  const { t } = useWords();
+  const act = useAct();
+  const [open, setOpen] = useState(false);
+  const [note, setNote] = useState("");
+  const field = useRef<HTMLTextAreaElement>(null);
+  const send = async () => {
+    if (!note.trim()) return;
+    const done = await act(
+      () => api.correctAnswer(props.request, note.trim()),
+      () => ({ message: t("ask.toast.corrected") }),
+    );
+    if (done) {
+      setNote("");
+      setOpen(false);
+    }
+  };
+  if (!open) {
+    return (
+      <Button variant="quiet"
+        onClick={() => {
+          setOpen(true);
+          setTimeout(() => field.current?.focus(), 0);
+        }}
+      >
+        {t("ask.correct")}
+      </Button>
+    );
+  }
+  return (
+    <div className="correct-it">
+      <label>
+        <span className="what">{t("ask.correct_label")}</span>
+        <textarea ref={field} rows={2} value={note} onChange={(e) => setNote(e.target.value)} />
+      </label>
+      <Actions>
+        <Button variant="primary" disabled={!note.trim()} onClick={() => void send()}>
+          {t("ask.correct_send")}
+        </Button>
+        <Button variant="quiet" onClick={() => setOpen(false)}>
+          {t("ask.correct_cancel")}
+        </Button>
+      </Actions>
+    </div>
+  );
+}
+
+function Proposal(props: { proposal: S["SettingProposalView"]; onApplied: () => void }) {
+  const { t, has } = useWords();
+  const act = useAct();
+  const client = useQueryClient();
+  const afterSave = useAfterSave();
+  const settingWords = useSettingWordsFromCache();
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState("");
+  const { proposal: p } = props;
+  const open = p.status === "open";
+  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings, enabled: open });
+  const item = settings.data?.items.find((i) => i.key === p.key);
+  const label = item ? labelOf(item, t, has) : has(`settings.key.${p.key}`) ? t(`settings.key.${p.key}`) : t("ask.setting_unnamed");
+
+  const apply = async () => {
+    setBusy(true);
+    setProblem("");
+    try {
+      // The fingerprint of the settings as they are now, so a change made meanwhile is noticed rather than overwritten.
+      const current = await freshSettings(client);
+      const saved = await api.applyProposal(p.id, { fingerprint: current.fingerprint, read_version: p.version });
+      await afterSave(saved);
+      // The dialog closes so the read-back's Undo can be reached from the keyboard.
+      props.onApplied();
+    } catch (err) {
+      setProblem(problemText(err, t));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const notNow = () =>
+    void act(
+      () => api.dismissProposal(p.id, p.version),
+      () => ({ message: t("ask.toast.not_now") }),
+    );
+
+  return (
+    <div className="ask-item">
+      <span className="what">{t("ask.suggestion")}</span>
+      <strong>{t("ask.suggestion_line", { label, value: item ? settingWords.value(item, p.value) : formatValue(p.value, t) })}</strong>
+      {p.why && <span className="hint">{p.why}</span>}
+      {open ? (
+        <Actions>
+          <Button variant="primary"
+            disabled={busy}
+            aria-label={t("ask.apply_named", { label })}
+            onClick={() => void apply()}
+          >
+            {t("ask.apply")}
+          </Button>
+          <Button variant="quiet" disabled={busy} aria-label={t("ask.not_now_named", { label })} onClick={notNow}>
+            {t("ask.not_now")}
+          </Button>
+        </Actions>
+      ) : (
+        <span className="hint">{t(`ask.proposal.${p.status}`)}</span>
+      )}
+      {problem && (
+        <p className="problem-note" role="alert">
+          {problem}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function Report(props: { report: S["ReportView"]; mailTo?: string | null }) {
+  const { t } = useWords();
+  const act = useAct();
+  const { push } = useToasts();
+  const { report: r } = props;
+  const draft = r.status === "draft";
+
+  // Set once the person has copied the report or opened it in their mail program.
+  const [shared, setShared] = useState(false);
+  const mail = mailtoLink(props.mailTo, r.title, r.text);
+  const tooLong = tooLongForLink(props.mailTo, r.title, r.text);
+
+  // Copying only puts the report on the clipboard; the person sends it outside the app, then marks it sent.
+  const copy = async () => {
+    if ((await copyMessage(mailText(r.title, r.text))) === "blocked") {
+      push({ message: t("ask.copy_blocked"), tone: "warn" });
+      return;
+    }
+    setShared(true);
+    push({ message: t("ask.toast.copied") });
+  };
+  const markSent = () =>
+    void act(
+      () => api.reportSent(r.id, r.version),
+      () => ({ message: t("ask.toast.report_sent") }),
+    );
+  const setAside = () =>
+    void act(
+      () => api.dismissReport(r.id, r.version),
+      () => ({ message: t("ask.toast.set_aside") }),
+    );
+
+  const copyButton = (style: "primary" | "quiet", label: string) => (
+    <Button key="copy" variant={style} aria-label={t("ask.copy_named", { title: r.title })} onClick={() => void copy()}>
+      {t(label)}
+    </Button>
+  );
+  const markSentButton = (style: "primary" | "quiet") => (
+    <Button key="sent" variant={style} aria-label={t("ask.mark_sent_named", { title: r.title })} onClick={markSent}>
+      {t("ask.mark_sent")}
+    </Button>
+  );
+  // Opening the mail program counts as sharing it, as copying does: the person sends it there, then marks it sent.
+  const mailLink = (style: "primary" | "quiet") =>
+    mail && (
+      <ButtonLink key="mail" variant={style} href={mail} aria-label={t("ask.mail_named", { title: r.title })} onClick={() => setShared(true)}>
+        {t("ask.mail")}
+      </ButtonLink>
+    );
+
+  return (
+    <div className="ask-item">
+      <span className="what">{t("ask.report")}</span>
+      <strong>{r.title}</strong>
+      <SafeText text={r.text} />
+      {draft ? (
+        <>
+          <span className="hint">{t("ask.report_hint")}</span>
+          {tooLong && <span className="hint">{t("ask.report_too_long")}</span>}
+          <Actions>
+            {/* Keyed, so the control the person just used keeps its place (and the focus) when the order changes. */}
+            {shared
+              ? [markSentButton("primary"), mailLink("quiet"), copyButton("quiet", "ask.copy_again")]
+              : [mail ? mailLink("primary") : copyButton("primary", "ask.copy"), mail && copyButton("quiet", "ask.copy"), markSentButton("quiet")]}
+            <Button variant="quiet" aria-label={t("ask.set_aside_named", { title: r.title })} onClick={setAside}>
+              {t("ask.set_aside")}
+            </Button>
+          </Actions>
+        </>
+      ) : (
+        <span className="hint">{t(`ask.report_status.${r.status}`)}</span>
+      )}
+    </div>
+  );
+}

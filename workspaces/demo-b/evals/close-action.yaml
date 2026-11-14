@@ -1,0 +1,18 @@
+id: close-action
+title: An action reported done
+skills: [close-right-item, evidence]
+received: '2026-10-09'
+pasted: 'From: Sam Rivera
+
+
+  The final interior file went to the printer this morning.'
+expect:
+- op: action.close
+  id: ACT-1
+stub_answer:
+  summary: Sam sent the interior file.
+  ops:
+  - op: action.close
+    id: ACT-1
+    evidence:
+      quote: The final interior file went to the printer this morning

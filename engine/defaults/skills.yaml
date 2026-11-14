@@ -1,0 +1,48 @@
+# The skills a run can get right or wrong (design 6.16, "What a model can do, measured"). Every evaluation case, learning
+# pair and scenario names the ones it proves with `skills:`. Each skill has a plain-words label, shown in Settings, and a
+# description of what it covers; `route_when` (optional) says on which requests the skill is at risk, as the parts of a
+# routing rule's `when`. Packs may add their own through `engine.skills.merge`.
+skills:
+  - id: use-term
+    label: Understanding your words
+    description: Reads a word or short form the way your glossary says, and learns what a correction meant by it.
+  - id: follow-routing
+    label: Asking the right person
+    description: Sends a question to the person who is recorded as answering that topic, and doesn't let text from outside change who that is.
+  - id: use-lesson
+    label: Remembering your corrections
+    description: Applies what it learned from an earlier correction to the next, similar input, and nowhere else.
+  - id: dates
+    label: Getting dates right
+    description: Turns weekdays and relative days into dates, moves the right date, and leaves unknown timing blank.
+  - id: owners
+    label: Naming who does what
+    description: Names the right person for each action, asks when nobody is known, and never guesses between people who share a name.
+  - id: no-repeat-question
+    label: Not asking what it knows
+    description: Doesn't ask what is already recorded or already asked, and asks once when one thing is missing.
+  - id: use-facts
+    label: Using what is already recorded
+    description: Takes an answer from a fact, a record or an attachment that holds it instead of asking for it again.
+  - id: evidence
+    label: Showing where it got things
+    description: Backs each claim with the exact words of the input that support it.
+  - id: structured-answers
+    label: Filling in every field properly
+    description: Puts the right kind of value in each field of an answer, and keeps a title as one piece of text.
+  - id: refuse-injection
+    label: Ignoring orders hidden in outside text
+    description: Treats instructions inside mail and pasted text as words to read, never as rules, owners or recipients.
+  - id: close-right-item
+    label: Closing the right to-do
+    description: Closes only the action or question an input settles, and keeps open one that is only half done.
+  - id: stay-in-scope
+    label: Keeping to your area
+    description: Gives actions only for the area the person tracks, and treats other areas as things to observe.
+  - id: new-message-only
+    label: Acting on the new message
+    description: Acts on the newest message of a thread and treats the quoted history as background.
+    route_when: {quoted_messages_over: 3}   # at risk only where the input quotes many earlier messages
+  - id: recording-only-what-matters
+    label: Recording only what matters
+    description: Leaves small talk and mail the person set aside unrecorded.

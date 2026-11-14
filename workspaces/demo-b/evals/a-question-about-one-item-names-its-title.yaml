@@ -1,0 +1,30 @@
+id: a-question-about-one-item-names-its-title
+title: A question about one item in a list names the item's exact title, says what is recorded and quotes it; "this item" is never asked
+skills: [structured-answers]
+received: '2026-10-09'
+# A list with one unclear row. The question names that row by its title and quotes what the list says about it.
+# The pointing version ("Is this item still wanted?", no title, no quote, no link) is returned once by the
+# `vague-question` lint (tests/test_vague_question.py).
+pasted: 'From: Maya Lindqvist (Corner Lamp Books)
+
+
+  Open items: "Reprint the spring catalog" is waiting; "Update the shipping rates" is done.'
+expect:
+- op: question.add
+  text_has: [Reprint the spring catalog]
+forbid:
+- op: event.add
+stub_answer:
+  summary: One row of the list is waiting and the list doesn't say for what.
+  ops:
+  - op: question.add
+    to: Avery Lane
+    title: 'Is "Reprint the spring catalog" still wanted, or can it wait?'
+    text: 'The list says "Reprint the spring catalog" is waiting and gives no reason, so say whether it is still wanted or can wait'
+    project: PRJ-1
+    asks_about: decision
+    kind: decision
+    would_change:
+      what: field
+      record: PRJ-1
+      field: summary

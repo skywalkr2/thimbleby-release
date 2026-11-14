@@ -1,0 +1,139 @@
+import "@testing-library/jest-dom/vitest";
+import { screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { fakeSettings, settingItem } from "../lib/settings-fixtures";
+import type { S } from "../lib/api";
+import { Refuse, fakeApi, renderApp } from "../test-utils";
+import { MessageStyle } from "./MessageStyle";
+
+const GREETING = "language.messages.greeting";
+const CLOSING = "language.messages.closing";
+const items = () => [
+  settingItem(GREETING, { value: "Hi {first_name},", default: "Hi {first_name}," }),
+  settingItem(CLOSING, { value: "Thanks!", default: "Thanks!" }),
+];
+const posted = (calls: ReturnType<typeof fakeSettings>) => calls.filter((c) => c.route === "POST settings").map((c) => c.body as { changes: Record<string, unknown>; reset: string[] });
+
+test("how messages start and end is a drawer with a preview for each line, with a made-up name and no marker, and nothing drawn while it is shut", async () => {
+  fakeSettings(items());
+  renderApp(<MessageStyle open onClose={() => undefined} />);
+  expect(await screen.findByRole("dialog", { name: "How your messages start and end" })).toBeInTheDocument();
+  expect(screen.getByText("Hi Ada,")).toBeVisible();
+  expect(screen.getByText("Thanks!")).toBeVisible();
+  expect(screen.queryByDisplayValue("Hi {first_name},")).toBeNull();
+});
+
+test("the pattern is behind Edit the pattern, the preview follows what is typed, and the line is saved when the cursor leaves", async () => {
+  const calls = fakeSettings(items());
+  renderApp(<MessageStyle open onClose={() => undefined} />);
+  const user = userEvent.setup();
+  await screen.findByRole("dialog", { name: "How your messages start and end" });
+  await user.click(screen.getByRole("button", { name: /Edit the pattern.*How your messages start/ }));
+  const box = screen.getByLabelText("How your messages start, the pattern");
+  expect(box).toHaveFocus();
+  expect(box).toHaveValue("Hi {first_name},");
+  await user.clear(box);
+  await user.type(box, "Hello {{first_name},");
+  expect(posted(calls)).toHaveLength(0);
+  await user.tab();
+  await user.tab();
+  await waitFor(() => expect(posted(calls)).toHaveLength(1));
+  expect(posted(calls)[0].changes).toEqual({ [GREETING]: "Hello {first_name}," });
+  expect(await screen.findByText("Hello Ada,")).toBeVisible();
+  expect(await screen.findByText("Changed")).toBeInTheDocument();
+});
+
+test("the first name goes in with a button, at the cursor, so nobody types the marker", async () => {
+  const calls = fakeSettings(items());
+  renderApp(<MessageStyle open onClose={() => undefined} />);
+  const user = userEvent.setup();
+  await screen.findByRole("dialog", { name: "How your messages start and end" });
+  await user.click(screen.getByRole("button", { name: /Edit the pattern.*How your messages start/ }));
+  const box = screen.getByLabelText("How your messages start, the pattern");
+  await user.clear(box);
+  await user.type(box, "Dear ");
+  await user.click(screen.getByRole("button", { name: "Add first name to How your messages start" }));
+  expect(box).toHaveFocus();
+  expect(box).toHaveValue("Dear {first_name}");
+  expect(screen.getByText("Dear Ada")).toBeVisible();
+  await user.tab();
+  await user.tab();
+  await waitFor(() => expect(posted(calls)).toHaveLength(1));
+  expect(posted(calls)[0].changes).toEqual({ [GREETING]: "Dear {first_name}" });
+  expect(screen.queryByText(/Write \{first_name\}/)).toBeNull();
+});
+
+test("Reset puts a line back to the default in one save, with its read-back", async () => {
+  const calls = fakeSettings([settingItem(GREETING, { value: "Dear {first_name},", default: "Hi {first_name}," }), settingItem(CLOSING, { value: "Thanks!", default: "Thanks!" })]);
+  renderApp(<MessageStyle open onClose={() => undefined} />);
+  const user = userEvent.setup();
+  await screen.findByRole("dialog", { name: "How your messages start and end" });
+  await user.click(screen.getByRole("button", { name: "Reset: How your messages start" }));
+  await waitFor(() => expect(posted(calls)).toHaveLength(1));
+  expect(posted(calls)[0].reset).toEqual([GREETING]);
+  expect(await screen.findByText("Hi Ada,")).toBeVisible();
+});
+
+test("nothing is shown until the settings are there", async () => {
+  fakeSettings([]);
+  renderApp(<MessageStyle open onClose={() => undefined} />);
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+test("the closing changed while the greeting is still being saved is saved too, after it, not refused as out of date", async () => {
+  const later = (ms: number) => new Promise((done) => setTimeout(done, ms));
+  const state = items();
+  let n = 1;
+  fakeApi({
+    "GET settings": async () => {
+      const answer = { fingerprint: `fp-${n}`, items: JSON.parse(JSON.stringify(state)) };
+      await later(10);
+      return answer;
+    },
+    // The server answers after a while, so the second change starts while the first is being saved.
+    "POST settings": async (body) => {
+      await later(80);
+      const sent = body as S["SettingsSave"];
+      if (sent.fingerprint !== `fp-${n}`) return new Refuse(409, "The settings changed since you opened them. Look again, then save.");
+      for (const [key, after] of Object.entries(sent.changes ?? {})) state.find((i) => i.key === key)!.value = after;
+      n += 1;
+      return { changes: Object.entries(sent.changes ?? {}).map(([key, after]) => ({ key, before: "", after, was_default: false, is_default: false })), fingerprint: `fp-${n}`, needs_restart: false };
+    },
+  });
+  renderApp(<MessageStyle open onClose={() => undefined} />);
+  const user = userEvent.setup();
+  await screen.findByRole("dialog", { name: "How your messages start and end" });
+  await user.click(screen.getByRole("button", { name: /Edit the pattern.*How your messages start/ }));
+  const greeting = screen.getByLabelText("How your messages start, the pattern");
+  await user.clear(greeting);
+  await user.type(greeting, "Hello {{first_name},");
+  await user.tab();
+  await user.tab();
+  await user.click(screen.getByRole("button", { name: /Edit the pattern.*How your messages end/ }));
+  const closing = screen.getByLabelText("How your messages end, the pattern");
+  await user.clear(closing);
+  await user.type(closing, "Cheers");
+  await user.tab();
+  await user.tab();
+  await waitFor(() => expect(state.map((i) => i.value)).toEqual(["Hello {first_name},", "Cheers"]), { timeout: 3000 });
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("the style says what someone only on the own life is opened with while it is the shipped one, and that it opens everyone once it is the person's own", async () => {
+  fakeSettings(items());
+  renderApp(<MessageStyle open onClose={() => undefined} />);
+  await screen.findByRole("dialog", { name: "How your messages start and end" });
+  // Shipped: the friend's opening, from the wording sheet, is the example, so the style shown is never contradicted by a draft.
+  const note = document.querySelector("[data-own-life-opening]")!;
+  expect(note).toHaveTextContent("People who are only on your own life get an opening that fits how they relate to you, such as: Hey Ada, hope you're doing well.");
+  expect(note).toHaveTextContent("Change this line to open every message the same way.");
+});
+
+test("once the person set their own opening, the note says it opens every message", async () => {
+  fakeSettings([settingItem(GREETING, { value: "Dear {first_name},", default: "Hi {first_name}," }), settingItem(CLOSING, { value: "Thanks!", default: "Thanks!" })]);
+  renderApp(<MessageStyle open onClose={() => undefined} />);
+  await screen.findByRole("dialog", { name: "How your messages start and end" });
+  const note = document.querySelector("[data-own-life-opening]")!;
+  expect(note).toHaveTextContent("This line opens every message you copy, to people at work and to people on your own life alike.");
+  expect(note).not.toHaveTextContent("such as");
+});

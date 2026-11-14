@@ -1,0 +1,3512 @@
+"""API routes for the launch slice: hand in, What changed, review, Follow-ups, status and live updates.
+
+Responses carry data, not wording: labels for what the assistant did come from the UI's wording sheet.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+import logging
+from dataclasses import asdict
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Any, Literal
+from urllib.parse import quote
+
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import Response, StreamingResponse
+
+from api.schemas import (
+    AccountChoice,
+    ActionApplied,
+    ActionApply,
+    ActionChoice,
+    ActionGroup,
+    ActionItem,
+    ActionPreviewItem,
+    ActionProposalView,
+    ActionRequestView,
+    ActionRun,
+    ActionState,
+    AgendaItemView,
+    AgendaSpanView,
+    AiState,
+    Answer,
+    AnswerGroupDone,
+    AnswerGroupView,
+    Applied,
+    AppliedEntryView,
+    ArrivedView,
+    Ask,
+    AssistantAccountRuns,
+    AssistantChain,
+    AssistantPaused,
+    AssistantStatus,
+    AuthorSpan,
+    BackupCopyView,
+    BackupStatus,
+    BackupsView,
+    BackupTargetView,
+    BatchConfirmed,
+    BatchConfirmIn,
+    BatchUnconfirmed,
+    BatchUnconfirmIn,
+    BlockerView,
+    ChangeItem,
+    ChangesetView,
+    ChoiceOption,
+    Created,
+    DocumentBlock,
+    DocumentView,
+    DropDone,
+    EndingAnswer,
+    EntryTodoMade,
+    FieldView,
+    FileChanged,
+    FileEdit,
+    FileForget,
+    FileKindView,
+    FileRemove,
+    FileUse,
+    FileUsedBy,
+    FileView,
+    FirstGoSorting,
+    FirstGoStarted,
+    FollowedUp,
+    FollowupAction,
+    FollowupQuestion,
+    FollowupSection,
+    GenericRecordView,
+    Handed,
+    HandedFile,
+    HandedImage,
+    HandIn,
+    HandoverChoice,
+    HandoverSideView,
+    HandoverView,
+    HeldChanged,
+    HeldIn,
+    HeldMessageChanged,
+    HeldMessageIn,
+    HeldMessageRestore,
+    HoldChanged,
+    HoldIn,
+    HoldRestore,
+    InboxCheckView,
+    InboxView,
+    ItemTitle,
+    JobView,
+    KindView,
+    LeftOpenItem,
+    LeftOutView,
+    LimitedOutView,
+    ListRenameIn,
+    ListSuggestionView,
+    ListValueIn,
+    MadeView,
+    NetworkWait,
+    Noted,
+    NoteIn,
+    NoteView,
+    NudgeRecorded,
+    NudgeSent,
+    NudgeUnsent,
+    NudgeView,
+    Ok,
+    OmittedOpView,
+    Option,
+    OpView,
+    OrganizationIn,
+    OrganizationPatch,
+    OrganizationView,
+    OutsideEditView,
+    OwnerNameView,
+    OwnerPick,
+    OwnerSuggestionView,
+    PanelRow,
+    PanelView,
+    PendingRestoreView,
+    PeoplePasteDone,
+    PeoplePasteEntry,
+    PeoplePasteIn,
+    PeoplePastePreview,
+    PeopleSuggestionsView,
+    PersonActionView,
+    PersonChoice,
+    PersonForget,
+    PersonForgotten,
+    PersonIn,
+    PersonPatch,
+    PersonRemoval,
+    PersonSuggestion,
+    PersonView,
+    PluginStatusView,
+    ProjectEndingChoice,
+    ProjectEndingDone,
+    ProjectEndingItem,
+    ProjectEndingView,
+    ProjectIn,
+    ProjectPatch,
+    ProjectRoleIn,
+    ProjectView,
+    ProposedFile,
+    ProposedOp,
+    QuestionHold,
+    QueueLineView,
+    ReadVersion,
+    RecordEdit,
+    RecordPageView,
+    RecordRef,
+    RecordReference,
+    RecordView,
+    Reply,
+    RequestChanged,
+    RequestCounts,
+    Requeued,
+    RestoreCopyIn,
+    RestoreStaged,
+    RetryRequest,
+    SendBack,
+    SentCounts,
+    SentText,
+    SetupPersonIn,
+    SourceLimit,
+    SourceLimitPerson,
+    SourceView,
+    SourceWiden,
+    SpendStatus,
+    StageHistoryEntry,
+    StageMove,
+    StageMoved,
+    StageRequestView,
+    StageView,
+    Status,
+    StopCauseView,
+    SyncView,
+    TakenBack,
+    TaskKindView,
+    TaskStart,
+    TaskStarted,
+    TextChoices,
+    TextEdit,
+    TextFieldView,
+    TextRegion,
+    TextReview,
+    TextVersionView,
+    TodayLineView,
+    TodoView,
+    UndoChoice,
+    UndoReport,
+    Unfollow,
+    Unmark,
+    ValueListView,
+    WorkingCopyFormatView,
+    WorkingCopyOut,
+    WorkingCopyView,
+)
+from engine import actions as person_actions
+from engine import (
+    answer_groups,
+    catch_up,
+    endings,
+    follow_on,
+    held_ask,
+    learned,
+    new_terms,
+    open_items,
+    own_edits,
+    repeats,
+    restore_in_app,
+    review_batches,
+    source_intake,
+)
+from engine import backup as backup_module
+from engine.ai.smoke import ai_state
+from engine.applier import move_stage, pick_owner, release
+from engine.assistant_status import assistant_state
+from engine.backup import run_backup, state
+from engine.config import Config
+from engine.contacts import all_values, reach_lists, values_of
+from engine.corrections import answered_assistant
+from engine.dispatcher import (
+    dismiss,
+    grant_first_go,
+    is_waiting_for_network,
+    looks_good,
+    reopened_nothing_to_do,
+    retry,
+    send_back,
+    signal,
+    spent_on,
+    undismiss,
+    undo_changeset,
+    waits_on_first_go,
+)
+from engine.drop_notes import note_the_drops
+from engine.files import description_of
+from engine.followups import (
+    UNTOLD_STANCES,
+    actions_to_send,
+    follow_up,
+    hold_message,
+    hold_question,
+    mark_followed_up,
+    mark_sent,
+    put_on_hold,
+    restore_hold,
+    restore_holds,
+    sections,
+    take_off_hold,
+    they_finished,
+    undo_follow_up,
+    unmark_followed_up,
+    unmark_sent,
+)
+from engine.intake import IntakeError, hand_in, note_as_input, source_text
+from engine.language_words import language_words
+from engine.made import made_by
+from engine.names import People, render_owner
+from engine.next_steps import add_project as add_held_project
+from engine.next_steps import unfile_missing
+from engine.ops import StageMoveOp
+from engine.origin import origins
+from engine.owners import suggest_owner
+from engine.plugin_api import CORE_LINE_ACTIONS
+from engine.plugin_host import check_about
+from engine.promises import ENDING_NAMES
+from engine.prompts import render
+from engine.records import Scope, referrers
+from engine.scope import stance_of
+from engine.stages import approve_stage_request, card_details, record_status, stage_history
+from engine.storage import Store, StoreError, WriteContext
+from engine.storage.store import id_number
+from engine.texts import text_presence
+from engine.usage import spend
+from engine.views import views_of_agenda_item, views_of_line
+from engine.worker import Events, Worker
+from engine.workspace import Workspace
+
+log = logging.getLogger(__name__)
+_PM = WriteContext(actor="pm", trust="trusted", op="ui")
+
+
+def content_disposition(kind: str, name: str) -> str:
+    """A Content-Disposition value: an ASCII-only fallback name plus the full name in UTF-8 (RFC 6266)."""
+    ascii_name = "".join(c for c in name if c.isascii() and (c.isalnum() or c in " ._-")).strip() or "file"
+    return f"{kind}; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(name, safe='')}"
+
+
+def _field_type(annotation: Any) -> tuple[str, list[str]]:
+    """What kind of value a field's annotation holds, and a choice's options."""
+    import datetime as dt
+    import types
+    from typing import Annotated, Literal, Union, get_args, get_origin
+
+    origin = get_origin(annotation)
+    if origin is Annotated:
+        return _field_type(get_args(annotation)[0])
+    if origin is Union or isinstance(annotation, types.UnionType):
+        inner = [a for a in get_args(annotation) if a is not type(None)]
+        return _field_type(inner[0]) if len(inner) == 1 else ("other", [])
+    if origin is Literal:
+        return "choice", [str(v) for v in get_args(annotation)]
+    if origin in (list, tuple, set):
+        return "list", []
+    if annotation is bool:
+        return "yes_no", []
+    if annotation in (int, float):
+        return "number", []
+    if annotation in (dt.date, dt.datetime):
+        return "date", []
+    if annotation is str:
+        return "text", []
+    return "other", []
+
+
+def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worker: Worker) -> APIRouter:
+    r = APIRouter(prefix="/api")
+
+    @r.get("/plugins")
+    def plugin_status() -> list[PluginStatusView]:
+        return [
+            PluginStatusView(
+                name=s.name, state=s.state, version=s.version, reason=s.reason, tools=s.tools, notes=s.notes
+            )
+            for s in store.plugins.status.values()
+        ]
+
+    def changed() -> None:
+        events.changed()
+
+    def need(kind: str, record_id: str) -> None:
+        if store.read().get(kind, record_id) is None:
+            raise HTTPException(status_code=404, detail=f"{kind} {record_id} doesn't exist")
+
+    def guard(fn: Any) -> Any:
+        try:
+            return fn()
+        except (StoreError, IntakeError, ValueError, KeyError) as err:
+            raise HTTPException(status_code=409, detail=str(err)) from None
+
+    def hand_note(item: tuple[str, str], text: str | None, route: str, author: str | None = None) -> str | None:
+        """Hand the note typed with a change to the assistant once the change is saved: the person's own words, or,
+        on a button that relays someone else, content reported about `author`."""
+        request = guard(lambda: note_as_input(ws, store, cfg, item=item, text=text or "", route=route, author=author))
+        if request is not None:
+            worker.poke()
+        return request
+
+    def file_view(record: Any) -> FileView:
+        kinds = store.plugins.file_kinds()
+        kind = kinds.get(record.data["file_kind"])
+        label = (kind.label if kind else "") or record.data["file_kind"].rsplit("/", 1)[-1].replace(
+            "-", " "
+        ).capitalize()
+        return FileView(
+            id=record.id,
+            version=record.version,
+            kind_label=label,
+            **{
+                k: record.data.get(k)
+                for k in (
+                    "name",
+                    "media_type",
+                    "size",
+                    "file_kind",
+                    "project",
+                    "meta",
+                    "origin",
+                    "replaces",
+                    "from_person",
+                    "added_at",
+                )
+            },
+            data_level=record.data.get("sensitivity", "internal"),
+            description=description_of(store, record),
+        )
+
+    def _last_refused(request_id: str) -> bool:
+        runs = store.read().find("run", {"request": request_id})
+        return bool(runs) and runs[-1].data["outcome"] == "refused"
+
+    def _summary_of(changeset_id: str | None) -> str | None:
+        found = store.read().get("changeset", changeset_id) if changeset_id else None
+        return found.data.get("summary") if found is not None else None
+
+    def _applied_views(ids: list[str]) -> list[AppliedEntryView]:
+        """The entries a run said it applied that still exist, in plain words."""
+        found = []
+        for kind, stored in learned.applied_entries(store.read(), ids):
+            scope = stored.data.get("applies_to")
+            found.append(
+                AppliedEntryView(
+                    id=stored.id,
+                    kind=kind,
+                    version=stored.version,
+                    text=stored.data.get("text", ""),
+                    status=stored.data.get("status", "active"),
+                    applies_to=Scope.model_validate(scope) if scope else None,
+                )
+            )
+        return found
+
+    def _independence(cs: Any) -> str | None:
+        run = store.read().get("run", cs.data["run"]) if cs.data.get("run") else None
+        return run.data.get("independence") if run is not None else None
+
+    #: Kinds whose pages are shown but never edited through the generic form: what came in (a saved message) stays as it
+    #: was read.
+    read_only = {"source"}
+
+    def shown_kinds() -> set[str]:
+        """Kinds a screen may show any record of: those written to the synced folder, projects and organizations,
+        running plugins' own, the kinds of their panels, and the read-only ones."""
+        kinds = {
+            k
+            for k, m in store.plugins.records.items()
+            if getattr(m, "layout", None) or k in ("project", "organization")
+        }
+        kinds |= read_only & set(store.plugins.records)
+        for plugin, registrar in store.plugins.registrars.items():
+            if store.plugins.active(plugin):
+                kinds |= set(registrar.records) | {p.kind for p in registrar.panels.values()}
+        return kinds
+
+    @r.get("/kinds/{kind:path}")
+    def kind_view(kind: str) -> KindView:
+        from engine.records import list_fields, ref_fields
+        from engine.settings import CHOICE_LISTS
+        from engine.texts import long_text_fields
+
+        if kind not in shown_kinds():
+            raise HTTPException(status_code=404, detail="not found")
+        model = store.plugins.records[kind]
+        fixed = set(getattr(model, "fixed_fields", ())) & {"agenda", "captured_at"}
+        texts, refs = long_text_fields(model), dict(ref_fields(model))
+        bound = {field: name for field, name, _ in list_fields(model)}
+        offered = {r.data["name"]: r.data["values"] for r in store.read().list("value_list")}
+        fields = []
+        for name, info in model.model_fields.items():
+            if name == "ext":
+                continue
+            value_type, options = _field_type(info.annotation)
+            extra = info.json_schema_extra if isinstance(info.json_schema_extra, dict) else {}
+            if value_type == "number" and isinstance(extra.get("choices"), (list, tuple)):
+                # A number with a known set of values is a list to pick from.
+                options = [str(v) for v in extra["choices"]]
+            elif value_type == "text" and isinstance(extra.get("choices"), str) and extra["choices"] in CHOICE_LISTS:
+                # A text with a named list of values (the holiday calendars) is a list to pick from.
+                value_type, options = "choice", [str(v) for v in CHOICE_LISTS[extra["choices"]]()]
+            if name in texts:
+                value_type = "long_text"
+            elif name in refs:
+                value_type = "reference"
+            elif name in bound:
+                value_type, options = "choice", list(offered.get(bound[name], []))
+            fields.append(
+                FieldView(
+                    name=name,
+                    description=info.description or "",
+                    long_text=texts.get(name),
+                    refers_to=refs.get(name),
+                    type=value_type,
+                    options=options,
+                    value_list=bound.get(name),
+                    required=info.is_required(),
+                    editable=kind not in read_only
+                    and name not in ("id", "stage")
+                    and name not in texts
+                    and name not in fixed,
+                )
+            )
+        return KindView(kind=kind, fields=fields)
+
+    @r.get("/record")
+    def generic_record(kind: str, id: str) -> GenericRecordView:
+        from engine.texts import long_text_fields
+
+        if kind not in shown_kinds():
+            raise HTTPException(status_code=404, detail="not found")
+        need(kind, id)
+        record = store.read().get(kind, id)
+        texts = long_text_fields(store.plugins.records[kind])
+        written = store.read().ledger(kind=kind, record_id=id)
+        return GenericRecordView(
+            kind=kind,
+            changed_at=datetime.fromisoformat(written[-1]["at"]) if written else None,
+            id=record.id,
+            version=record.version,
+            fields={k: v for k, v in record.data.items() if k not in texts and k != "ext"},
+            long_text=list(texts),
+            origin=origins(store.read(), kind, [id]).get(id) if kind in ("action", "question") else None,
+        )
+
+    @r.get("/lists")
+    def value_lists() -> list[ValueListView]:
+        """Every value list, with the fields that use it."""
+        from engine.lists import is_status_list
+        from engine.records import list_fields
+
+        users: dict[str, list[str]] = {}
+        for kind, model in store.plugins.records.items():
+            for field, name, _ in list_fields(model):
+                users.setdefault(name, []).append(f"{kind}.{field}")
+        return [
+            ValueListView(
+                id=r.id,
+                name=r.data["name"],
+                label=r.data["label"],
+                values=r.data["values"],
+                retired=r.data["retired"],
+                used_by=users.get(r.data["name"], []),
+                status=is_status_list(store.read(), r.data["name"]),
+                tones=r.data.get("tones") or {},
+                meanings=r.data.get("meanings") or {},
+            )
+            for r in sorted(store.read().list("value_list"), key=lambda r: r.data["label"].casefold())
+        ]
+
+    def list_op(op: dict[str, Any], summary: str) -> Applied:
+        from engine.applier import apply_as_person
+
+        cs_id = guard(lambda: apply_as_person(store, cfg, [op], summary))
+        changed()
+        return Applied(changeset=cs_id)
+
+    @r.post("/lists/{name:path}/add")
+    def list_add(name: str, body: ListValueIn) -> Applied:
+        """Add a value to a list (or offer a retired one again), with Undo."""
+        op = {"op": "list.add", "list": name, "value": body.value}
+        op |= {k: v for k, v in (("tone", body.tone), ("meaning", body.meaning)) if v}
+        return list_op(op, "Added to a list")
+
+    @r.get("/list-suggestion")
+    def list_suggestion(list: str, value: str) -> ListSuggestionView:
+        """The tone, and for a status list the meaning, offered for a value being added; the person can change both."""
+        from engine.lists import is_status_list, suggest
+
+        offered = suggest(value)
+        status = is_status_list(store.read(), list)
+        return ListSuggestionView(tone=offered["tone"], meaning=offered["meaning"] if status else None)
+
+    @r.post("/lists/{name:path}/rename")
+    def list_rename(name: str, body: ListRenameIn) -> Applied:
+        """Rename a value on a list and on every record that holds it, with Undo."""
+        return list_op({"op": "list.rename", "list": name, "value": body.value, "to": body.to}, "Renamed on a list")
+
+    @r.post("/lists/{name:path}/retire")
+    def list_retire(name: str, body: ListValueIn) -> Applied:
+        """Stop offering a value; records that hold it keep it. Undo offers it again."""
+        return list_op({"op": "list.retire", "list": name, "value": body.value}, "Retired from a list")
+
+    @r.post("/records/edit")
+    def record_edit(body: RecordEdit) -> Applied:
+        """The person's own change to fields of a shown record, with Undo."""
+        from engine.applier import apply_as_person
+
+        if body.kind not in shown_kinds():
+            raise HTTPException(status_code=404, detail="not found")
+        if body.kind in read_only:
+            raise HTTPException(status_code=409, detail="That can't be edited here.")
+        op = {
+            "op": "record.edit",
+            "record": {"kind": body.kind, "id": body.id},
+            "fields": body.fields,
+            "read_version": body.read_version,
+        }
+        before = store.read().get(body.kind, body.id)
+        cs_id = guard(lambda: apply_as_person(store, cfg, [op], "Changed on screen"))
+        saved = store.read().get("changeset", cs_id).data["ops"][0]["status"] == "applied"
+        if saved and body.kind == "action" and "notes" in body.fields and before is not None:
+            added = _added_text(before.data.get("notes"), body.fields["notes"])
+            hand_note(("action", body.id), added, "notes_edited")
+        changed()
+        return Applied(changeset=cs_id)
+
+    @r.get("/sync")
+    def sync_status() -> SyncView:
+        from engine import outside
+        from engine.handover import conflict_copies
+        from engine.sync import folder_problem
+
+        folder = cfg.storage.sync.folder.strip()
+        result = worker.sync_result
+        problem = worker.sync_problem or (folder_problem(ws, cfg) if folder else None)
+        edits, copies = [], []
+        if folder and problem is None:
+            from pathlib import Path
+
+            edits = [
+                OutsideEditView(
+                    path=path, proposal=note.get("changeset"), version=note.get("version"), problem=note.get("problem")
+                )
+                for path, note in sorted(outside.pending(cfg).items())
+            ]
+            copies = conflict_copies(Path(folder).expanduser().resolve())
+        return SyncView(
+            folder=folder,
+            problem=problem,
+            stopped=worker.sync_lost,
+            changed_outside=list(result.changed_outside) if result else [],
+            removed_outside=list(result.removed_outside) if result else [],
+            rebuilt=list(result.rebuilt) if result else [],
+            outside_edits=edits,
+            conflict_copies=copies,
+            shared=cfg.storage.sync.shared,
+            handover=(worker.handover_state() or (None,))[0],  # type: ignore[arg-type]
+        )
+
+    def handover_view() -> HandoverView:
+        """Why the folder isn't being used and what the person can choose; the sides come from comparing the two
+        histories, which only reads."""
+        from engine import handover
+        from engine.today import zone
+
+        here = zone(cfg)
+        state = worker.handover_state()
+        folder_set = bool(cfg.storage.sync.folder.strip())
+        checked = worker.sync_checked_at.astimezone(here) if worker.sync_checked_at else None
+        if state is None:
+            return HandoverView(state="clear", folder_set=folder_set, last_checked=checked)
+        found = handover.situation(ws, cfg) if state[0] != "taken" else None
+
+        def side(entry: Any) -> HandoverSideView | None:
+            if entry is None:
+                return None
+            latest = datetime.fromisoformat(entry.latest).astimezone(here) if entry.latest else None
+            return HandoverSideView(computer=entry.computer, changes=entry.changes, latest=latest)
+
+        view = HandoverView(
+            state=state[0],  # type: ignore[arg-type]
+            computer=state[1],
+            chosen=handover.chosen(ws),
+            folder_set=folder_set,
+            last_checked=checked,
+        )
+        if found is not None and found.kind == "diverged":
+            view.here, view.folder = side(found.here), side(found.folder)
+        elif found is not None and found.kind == "elsewhere":
+            view.computer = found.computer
+            view.last_seen = datetime.fromisoformat(found.last_seen).astimezone(here) if found.last_seen else None
+            view.minutes_left = found.minutes_left
+        return view
+
+    @r.get("/sync/handover")
+    def sync_handover() -> HandoverView:
+        return handover_view()
+
+    @r.post("/sync/check")
+    def sync_check_now() -> HandoverView:
+        """Look over the synced folder now instead of at the next pass: write what changed and say what was found."""
+        if cfg.storage.sync.folder.strip() and not worker.sync_held and not worker.sync_lost:
+            worker.sync_if_changed()  # a folder that can't be written is set as the page's problem line by the pass
+            changed()
+        return handover_view()
+
+    @r.post("/sync/handover")
+    def sync_handover_choose(body: HandoverChoice) -> HandoverView:
+        """Note which copy to keep. It is carried out at the next start, before the database is opened, through the
+        same checks the command line has; nothing about the workspace changes until then."""
+        from engine import handover
+
+        if not worker.sync_held:
+            raise HTTPException(status_code=409, detail="Nothing is waiting for a choice between the two copies.")
+        try:
+            handover.choose(ws, cfg, body.which)
+        except handover.Refused as err:
+            raise HTTPException(status_code=409, detail=str(err)) from None
+        changed()
+        return handover_view()
+
+    @r.delete("/sync/handover")
+    def sync_handover_unchoose() -> HandoverView:
+        """Take the choice back before the restart carries it out."""
+        from engine import handover
+
+        handover.clear_choice(ws)
+        changed()
+        return handover_view()
+
+    @r.get("/today/agenda")
+    def today_agenda() -> list[AgendaItemView]:
+        """Events from watched calendars, then the app's own calendar entries, on today and the next configured days,
+        in the person's time zone. Last come the deliveries with no date yet, which are on no day (`days` is empty)."""
+        from engine import sides, today
+
+        view = store.read()
+        return [
+            AgendaItemView(
+                **vars(a),
+                side=sides.side_of_agenda_item(view, cfg, a),
+                views=views_of_agenda_item(view, a),
+            )
+            for a in today.agenda(store, cfg, worker.now(), undated=True)
+        ]
+
+    @r.get("/today/agenda-span")
+    def today_agenda_span() -> AgendaSpanView:
+        """The first and last day the agenda covers, so an empty agenda can say which days it looked at."""
+        from engine import today
+
+        first, last = today.agenda_span(cfg, worker.now())
+        return AgendaSpanView(first=first, last=last)
+
+    @r.post("/events/{event_id}/todo")
+    def entry_todo(event_id: str) -> EntryTodoMade:
+        """Make the to-do a plain calendar entry is offered as (its title starts with a task verb), as the person's own
+        change: owned by them, due on the entry's day and moving with it. Undo takes the changeset."""
+        from engine import entry_todo as make_todo
+
+        need("event", event_id)
+        action, changeset = guard(lambda: make_todo.make(store, cfg, event_id))
+        changed()
+        return EntryTodoMade(action=action, changeset=changeset)
+
+    @r.get("/today/todo")
+    def today_todo() -> list[TodoView]:
+        """The person's own open actions: overdue, due today, then the rest."""
+        with store.read_scope():
+            return _today_todo()
+
+    def _today_todo() -> list[TodoView]:
+        from engine import today
+
+        found = today.todo(store, cfg, worker.now())
+        origin = origins(store.read(), "action", [t.action for t in found])
+        return [
+            TodoView(
+                **{k: v for k, v in vars(t).items() if k != "blocker"},
+                blocker=BlockerView(**asdict(t.blocker)) if t.blocker is not None else None,
+                origin=origin[t.action],
+            )
+            for t in found
+        ]
+
+    @r.get("/today/arrived")
+    def today_arrived() -> InboxView:
+        """Messages from watched mailboxes received within the configured hours, newest first."""
+        from engine import today
+
+        inbox = today.arrived(store, cfg, worker.now())
+        return InboxView(
+            items=[_arrived_view(store, cfg, a) for a in inbox.items],
+            left_out=inbox.left_out,
+            set_aside=inbox.set_aside,
+        )
+
+    @r.post("/today/arrived/check")
+    def today_arrived_check() -> InboxCheckView:
+        """Read every source that is on, now, and return Came in as it stands. A source that can't be read never
+        stops the others; its problem shows on the source as after any read."""
+        from engine import today, watch
+
+        read = failed = busy = handed = 0
+        problems: list[str] = []
+        for source in [s for s in cfg.watch.sources if s.enabled]:
+            name = source.label or source.id
+            try:
+                result = watch.refresh(ws, store, cfg, source.id)
+            except Exception:  # one source's failure must not stop the rest
+                log.exception("reading a source failed")
+                failed += 1
+                problems.append(f"{name} couldn't be read just now. It is tried again by itself.")
+                continue
+            if result.outcome == "busy":
+                busy += 1
+                continue
+            if result.outcome in ("failed", "offline", "throttled"):
+                failed += 1
+                why = watch.problem_text(store, source.id)
+                if result.outcome == "failed" and why:
+                    problems.append(f"{name} can't be read: {why}")
+                elif result.outcome == "offline":
+                    problems.append(
+                        f"{name} couldn't be checked without an internet connection. It will retry automatically."
+                    )
+                else:
+                    problems.append(f"{name} couldn't be read just now. It is tried again by itself.")
+            else:
+                read += 1
+            handed += len(result.new) + len(result.changed) + len(result.removed) + len(result.taken_in)
+        events.changed()
+        if handed:
+            worker.poke()
+        inbox = today.arrived(store, cfg, worker.now())
+        return InboxCheckView(
+            items=[_arrived_view(store, cfg, a) for a in inbox.items],
+            left_out=inbox.left_out,
+            set_aside=inbox.set_aside,
+            new_items=handed,
+            sources_read=read,
+            sources_failed=failed,
+            sources_busy=busy,
+            problems=problems,
+        )
+
+    @r.get("/today/queue")
+    def today_queue() -> list[QueueLineView]:
+        """What needs the person, ranked: decide, then risk, review, and send and follow up (design 7.7)."""
+        with store.read_scope():
+            return _today_queue()
+
+    def _today_queue() -> list[QueueLineView]:
+        from engine import areas, line_maker, sides
+        from engine.today import zone
+        from engine.today_queue import queue
+
+        people = People(store, cfg)
+        view = store.read()
+        projects = sides.project_names(view, cfg)
+        parents = {p.id: projects.get(p.data.get("parent") or "") for p in view.list("project")}
+        here = zone(cfg)
+
+        def shown(line: Any) -> QueueLineView:
+            data = {k: v for k, v in vars(line).items() if k not in ("title", "since", "items", "parts", "side")}
+            if line.until:
+                # A time of the person's own clock, so the screen shows it as they would say it.
+                data["until"] = datetime.fromisoformat(line.until).astimezone(here)
+            if line.waiting_since:
+                data["waiting_since"] = datetime.fromisoformat(line.waiting_since).astimezone(here)
+            about = view.get("action", line.actions[0]) if len(line.actions) == 1 else None
+            side = sides.side_of_line(view, cfg, line)
+            data["sides"] = sides.sides_of_line(view, cfg, line) or line.sides
+            # A line on a side that names no project (the overdue line of one side) still names the side, so it is drawn
+            # in its grey line like every other line with a side.
+            side_name = sides.side_name_of(view, cfg, line.project)
+            if side_name is None and not line.project:
+                side_name = sides.side_name_of(view, cfg, side)
+            return QueueLineView(
+                **data,
+                told_names=endings.told_names(view, cfg, people, about) if about is not None else [],
+                items=[shown(item) for item in line.items],
+                parts=[shown(part) for part in line.parts],
+                title=_title_view(line.title, people),
+                person_name=people.name(line.person) if line.person else None,
+                project_name=projects.get(line.project or ""),
+                parent_name=parents.get(line.project or ""),
+                side_name=side_name,
+                notes=(about.data.get("notes") or None) if about is not None else None,
+                side=side,
+                views=views_of_line(view, line),
+                area=(area := areas.area_of_line(view, line)),
+                area_name=(view.get("project", area).data["name"] if area else None),
+                made_by=line_maker.of_line(view, line, here),
+            )
+
+        return [
+            shown(line)
+            for line in queue(
+                ws, store, cfg, worker.now(), handover=worker.handover_state(), stuck=worker.stuck_since_text()
+            )
+        ]
+
+    @r.get("/plugin-today")
+    def plugin_today() -> list[TodayLineView]:
+        """Lines running plugins add to Today."""
+        lines = []
+        for plugin, line in store.plugins.today():
+            registrar = store.plugins.registrars[plugin]
+            action_is = None
+            if line.action in CORE_LINE_ACTIONS:
+                action_is = "core"
+            elif line.action is not None:
+                action_is = "action" if line.action in registrar.actions else "task"
+            lines.append(
+                TodayLineView(
+                    plugin=plugin,
+                    id=line.id,
+                    text=line.text,
+                    about=RecordReference(kind=line.about[0], id=line.about[1]) if line.about else None,
+                    action=line.action,
+                    action_is=action_is,
+                    why=line.why,
+                    until=line.until,
+                    group=line.group,
+                )
+            )
+        return lines
+
+    @r.get("/panels")
+    def panels(project: str | None = None) -> list[PanelView]:
+        """The screens running plugins add; with a project, only those its add-on lists on that project."""
+        found = []
+        for plugin, registrar in sorted(store.plugins.registrars.items()):
+            if store.plugins.active(plugin):
+                found += [
+                    PanelView(
+                        name=p.name,
+                        title=p.title,
+                        tab=p.tab,
+                        kind=p.kind,
+                        view=p.view,
+                        columns=list(p.columns),
+                        column_labels=dict(p.computed_labels),
+                        primary_action=p.primary_action,
+                        row_actions=list(p.row_actions),
+                        new_action=p.new_action,
+                    )
+                    for p in registrar.panels.values()
+                    if project is None or store.plugins.panel_shown_for(p, project)
+                ]
+        return found
+
+    @r.get("/panels/{name:path}/document")
+    def panel_document(name: str, project: str | None = None) -> DocumentView:
+        """A document panel's blocks for the project in view, or the workspace."""
+        found = guard(lambda: store.plugins.panel_document(name, project))
+        return DocumentView(blocks=None if found is None else [DocumentBlock(**b) for b in found])
+
+    @r.get("/panels/{name:path}/rows")
+    def panel_rows(name: str, project: str | None = None) -> list[PanelRow]:
+        rows = guard(lambda: store.plugins.panel_rows(name, project))
+        return [PanelRow(**row) for row in rows]
+
+    @r.get("/jobs")
+    def jobs() -> list[JobView]:
+        """Plugins' scheduled work: whether it runs, how often, and how its last run went."""
+        found = []
+        for plugin, registrar in sorted(store.plugins.registrars.items()):
+            if not store.plugins.active(plugin):
+                continue
+            for name in sorted(registrar.jobs):
+                enabled, every = store.plugins.job_settings(name)
+                last = store.plugins.last_job_run(name)
+                found.append(
+                    JobView(
+                        name=name,
+                        plugin=plugin,
+                        enabled=enabled,
+                        every_minutes=every,
+                        last_run_at=str(last.data["started_at"]) if last else None,
+                        last_outcome=last.data["outcome"] if last else None,
+                        last_error=last.data.get("error") if last else None,
+                    )
+                )
+        return found
+
+    @r.get("/task-kinds")
+    def task_kinds(kind: str | None = None, id: str | None = None) -> list[TaskKindView]:
+        """Plugin AI work the person can start on a record of `kind` (or on the workspace with no kind); with `id`,
+        only the work offered on that record."""
+        record = store.read().get(kind, id) if kind and id else None
+        if kind and id and record is None:
+            raise HTTPException(status_code=404, detail=f"{kind} {id} doesn't exist")
+        found = [
+            k
+            for name, k in store.plugins.tasks.items()
+            if "/" in name
+            and store.plugins.active(name.split("/", 1)[0])
+            and ((kind in k.on_kinds) if kind else not k.on_kinds)
+            and (record is None or k.startable_on(record, text_presence(store, store.read(), record)))
+        ]
+        return [
+            TaskKindView(
+                name=k.name, label=k.label or k.name.rsplit("/", 1)[-1].replace("-", " ").capitalize(), on=kind
+            )
+            for k in sorted(found, key=lambda k: k.label or k.name)
+        ]
+
+    @r.post("/task-kinds/{name:path}/start")
+    def task_start(name: str, body: TaskStart) -> TaskStarted:
+        about = body.about.model_dump() if body.about else None
+
+        def start() -> str:
+            if "/" not in name:
+                raise StoreError("start a plugin's kind of work here; hand things in for the core's")
+            kind = store.plugins.task_kind(name)
+            with store.transaction() as tx:
+                check_about(tx, kind, about, store, starting=True)
+                return tx.create(
+                    "request",
+                    {
+                        "task": name,
+                        "note": body.note.strip() or None,
+                        "about": about,
+                        "origin": "pm",
+                        "state": "queued",
+                        "waiting": "With the assistant, starting now",
+                        "created_at": store.clock(),
+                    },
+                    _PM,
+                ).id
+
+        request_id = guard(start)
+        worker.poke()
+        changed()
+        return TaskStarted(request=request_id)
+
+    def _version_view(v: Any) -> TextVersionView:
+        return TextVersionView(
+            id=v.id,
+            number=v.data["number"],
+            version=v.version,
+            status=v.data["status"],
+            source=v.data["source"],
+            words=v.data["words"],
+            base=v.data.get("base"),
+            note=v.data.get("note"),
+            unmapped=v.data.get("unmapped") or [],
+            questions=v.data.get("questions") or [],
+            created_at=str(v.data["created_at"]),
+        )
+
+    @r.get("/texts")
+    def text_field(kind: str, id: str, field: str) -> TextFieldView:
+        from engine import texts
+
+        view = store.read()
+        if view.get(kind, id) is None:
+            raise HTTPException(status_code=404, detail=f"{kind} {id} doesn't exist")
+        every = texts.versions(view, kind, id, field)
+        now = texts.current(view, kind, id, field)
+        return TextFieldView(
+            text=texts.read_text(store, now.data["sha256"]) if now else "",
+            current=now.data["number"] if now else None,
+            authorship=[
+                AuthorSpan(**{k: s[k] for k in ("start", "end", "kind")}, words=s.get("words", 0))
+                for s in (now.data["authorship"] if now else [])
+            ],
+            versions=[_version_view(v) for v in every],
+        )
+
+    @r.get("/text-versions/{version_id}/review")
+    def text_review(version_id: str) -> TextReview:
+        from engine import texts
+
+        found = guard(lambda: texts.review(store, store.read(), version_id))
+        b_text, b_units, _ = found["texts"]["base"]
+        c_text, c_units, _ = found["texts"]["current"]
+        p_text, p_units, _ = found["texts"]["pending"]
+
+        def stretch(text: str, units: list, start: int, end: int) -> str:
+            return "".join(text[u.start : u.end] for u in units[start:end]).strip()
+
+        base, now = found["base"], found["current"]
+        return TextReview(
+            version=_version_view(found["pending"]),
+            current=now.data["number"] if now else None,
+            three_way=(base.id if base else None) != (now.id if now else None),
+            regions=[
+                TextRegion(
+                    id=g.id,
+                    side=g.side,
+                    base=stretch(b_text, b_units, g.b1, g.b2),
+                    current=stretch(c_text, c_units, g.c1, g.c2),
+                    pending=stretch(p_text, p_units, g.p1, g.p2),
+                )
+                for g in found["regions"]
+            ],
+            pending_text=p_text,
+        )
+
+    @r.post("/text-versions/{version_id}/accept")
+    def text_accept(version_id: str, body: TextChoices) -> Applied:
+        from engine.applier import apply_as_person
+
+        op = {"op": "text.accept", "version": version_id, "read_version": body.read_version, "choices": body.choices}
+        cs_id = guard(lambda: apply_as_person(store, cfg, [op], "Accepted text changes"))
+        changed()
+        return Applied(changeset=cs_id)
+
+    @r.post("/text-versions/{version_id}/discard")
+    def text_discard(version_id: str, body: TextChoices) -> Applied:
+        from engine.applier import apply_as_person
+
+        op = {"op": "text.discard", "version": version_id, "read_version": body.read_version}
+        cs_id = guard(lambda: apply_as_person(store, cfg, [op], "Set a text version aside"))
+        changed()
+        return Applied(changeset=cs_id)
+
+    @r.post("/texts/edit")
+    def text_edit(body: TextEdit) -> Applied:
+        from engine.applier import apply_as_person
+
+        op = {"op": "text.edit", "record": {"kind": body.kind, "id": body.id}, "field": body.field, "text": body.text}
+        cs_id = guard(lambda: apply_as_person(store, cfg, [op], "Edited text"))
+        changed()
+        return Applied(changeset=cs_id)
+
+    def _copy_view(c: Any) -> WorkingCopyView:
+        from engine import working
+
+        try:
+            label = working._format(store, c.data["format"])[1].label
+        except StoreError:
+            label = c.data["format"]
+        return WorkingCopyView(
+            id=c.id,
+            format=c.data["format"],
+            label=label,
+            field=c.data["field"],
+            base=c.data.get("base"),
+            status=c.data["status"],
+            stale=working.stale(store, c),
+            file=c.data["file"],
+            proposal=c.data.get("proposal"),
+            handed_at=str(c.data["handed_at"]),
+            returned_at=str(c.data["returned_at"]) if c.data.get("returned_at") else None,
+        )
+
+    @r.get("/working-copies/formats")
+    def working_copy_formats(kind: str, field: str) -> list[WorkingCopyFormatView]:
+        from engine import working
+
+        return [
+            WorkingCopyFormatView(name=w.name, label=w.label, extension=w.extension)
+            for w in working.formats_for(store, kind, field)
+        ]
+
+    @r.get("/working-copies")
+    def working_copies(kind: str, id: str) -> list[WorkingCopyView]:
+        found = [
+            c for c in store.read().list("working_copy") if (c.data["owner_kind"], c.data["owner_id"]) == (kind, id)
+        ]
+        return [_copy_view(c) for c in sorted(found, key=lambda c: str(c.data["handed_at"]), reverse=True)]
+
+    @r.post("/working-copies")
+    def working_copy_out(body: WorkingCopyOut) -> WorkingCopyView:
+        from engine import working
+
+        copy = guard(lambda: working.hand_out(store, cfg, body.format, body.kind, body.id, body.field))
+        changed()
+        return _copy_view(copy)
+
+    @r.post("/working-copies/{copy_id}/return")
+    async def working_copy_return(copy_id: str, request: Request, name: str | None = None) -> TakenBack:
+        """Bring a working copy back: the request body is the file's bytes."""
+        from engine import working
+
+        data = await request.body()
+        result = guard(lambda: working.take_back(store, cfg, copy_id, data, name))
+        changed()
+        return TakenBack(**result)
+
+    @r.post("/working-copies/{copy_id}/drop")
+    def working_copy_drop(copy_id: str) -> Ok:
+        from engine import working
+
+        guard(lambda: working.drop(store, copy_id))
+        changed()
+        return Ok(ok=copy_id)
+
+    @r.get("/plugin-actions")
+    def plugin_actions(kind: str | None = None, id: str | None = None) -> list[PersonActionView]:
+        found = person_actions.available(store, kind, id)
+        return [PersonActionView(name=a.name, label=a.label, on=a.on) for a in found]
+
+    @r.post("/plugin-actions/{name:path}/preview")
+    def person_action_preview(name: str, body: ActionRun) -> ActionProposalView:
+        target = body.target.model_dump() if body.target else None
+        pending = guard(
+            lambda: person_actions.preview(
+                store, cfg, name, target, body.choices, previous=body.previous, kept=body.kept
+            )
+        )
+        return ActionProposalView(
+            token=pending.token,
+            action=pending.action,
+            summary=pending.summary,
+            requests=[
+                ActionRequestView(
+                    id=r["id"],
+                    task=r["task"],
+                    label=store.plugins.task_kind(r["task"]).label or r["task"],
+                    about=RecordReference(**r["about"]) if r["about"] and "kind" in r["about"] else None,
+                    note=r["note"],
+                    kept=r["kept"],
+                    group=r["group"],
+                    item=(r["about"] or {}).get("item"),
+                )
+                for r in pending.requests
+            ],
+            ops=[ProposedOp(**o) for o in guard(lambda: person_actions.labels(store, pending))],
+            items=[
+                ActionItem(
+                    id=i["id"],
+                    label=i["label"],
+                    group=i["group"],
+                    kept=i["kept"],
+                    ops=[ProposedOp(**o) for o in guard(lambda i=i: person_actions.labels(store, pending, i["ops"]))],
+                    refused=i.get("refused"),
+                )
+                for i in pending.items
+            ],
+            groups=[ActionGroup(**g) for g in pending.groups],
+            problems=pending.problems,
+            files=[
+                ProposedFile(**{k: f[k] for k in ("name", "media_type", "size", "file_kind")}) for f in pending.files
+            ],
+            previews=[
+                ActionPreviewItem(
+                    name=p["name"],
+                    media_type=p["media_type"],
+                    caption=p["caption"],
+                    alt=p.get("alt") or p["caption"],
+                    data_base64=base64.b64encode(p["data"]).decode("ascii"),
+                )
+                for p in pending.previews
+            ],
+            choices=[
+                ActionChoice(
+                    id=c["id"],
+                    label=c["label"],
+                    value=c["value"],
+                    options=[ChoiceOption(**o) for o in c["options"]],
+                    help=c["help"],
+                    group=c["group"],
+                    text=c.get("text", False),
+                    max_length=c.get("max_length", 200),
+                )
+                for c in pending.choice_list
+            ],
+            notes=pending.notes,
+            expires_at=pending.expires_at,
+        )
+
+    @r.post("/plugin-actions/apply")
+    def person_action_apply(body: ActionApply) -> ActionApplied:
+        cs_id = guard(lambda: person_actions.apply(store, cfg, body.token, body.kept, body.kept_requests))
+        ops = store.read().get("changeset", cs_id).data["ops"]
+        changed()
+        return ActionApplied(
+            changeset=cs_id,
+            **{status: sum(o["status"] == status for o in ops) for status in ("applied", "held", "refused")},
+        )
+
+    @r.get("/file-kinds")
+    def file_kinds() -> list[FileKindView]:
+        limits = cfg.storage.files
+        return [
+            FileKindView(
+                name=k.name,
+                label=k.label or k.name.rsplit("/", 1)[-1].replace("-", " ").capitalize(),
+                accept=[t for t in k.accept if t in limits.accepted_types] if k.accept else list(limits.accepted_types),
+                max_mb=min(limits.max_file_mb, k.max_mb or limits.max_file_mb),
+                details_schema=k.details.model_json_schema(),
+            )
+            for k in store.plugins.file_kinds().values()
+        ]
+
+    @r.get("/files")
+    def files(project: str | None = None, kind: str | None = None) -> list[FileView]:
+        out = [f for f in store.read().list("file") if project is None or f.data.get("project") == project]
+        out = [f for f in out if kind is None or f.data["file_kind"] == kind]
+        return [file_view(f) for f in sorted(out, key=lambda f: f.data["added_at"], reverse=True)]
+
+    @r.post("/files")
+    async def add_file_route(
+        request: Request,
+        name: str,
+        kind: str = "attachment",
+        project: str | None = None,
+        meta: str = "{}",
+        replaces: str | None = None,
+        from_person: str | None = None,
+        data_level: Literal["open", "internal", "restricted"] | None = None,
+    ) -> FileView:
+        """Add a file: the request body is the file's bytes, its Content-Type the media type, details as JSON. Without
+        a `data_level` the file takes its kind's level (internal unless the kind says otherwise). `from_person` names
+        the person it came from, such as the page it was added from."""
+        import json
+
+        from engine.files import add_file
+
+        cap = cfg.storage.files.max_file_mb * 1024 * 1024
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > cap:
+            raise HTTPException(status_code=413, detail=f"{name} is larger than {cfg.storage.files.max_file_mb:g} MB")
+        data = await request.body()
+        try:
+            details = json.loads(meta)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="the file's details aren't valid JSON") from None
+        media_type = (request.headers.get("content-type") or "application/octet-stream").split(";")[0].strip()
+        record = guard(
+            lambda: add_file(
+                store,
+                cfg,
+                data,
+                name=name,
+                media_type=media_type,
+                file_kind=kind,
+                project=project,
+                meta=details,
+                replaces=replaces,
+                from_person=from_person,
+                data_level=data_level,
+            )
+        )
+        changed()
+        return file_view(record)
+
+    @r.get("/files/{file_id}/content")
+    def file_content(file_id: str) -> Response:
+        """A file's bytes. Images may show in the app; everything else downloads; nothing is rendered as a page."""
+        from engine.files import read_bytes
+
+        need("file", file_id)
+        record, data = guard(lambda: read_bytes(store, file_id))
+        media = record.data["media_type"]
+        inline = media in ("image/png", "image/jpeg", "image/gif", "image/webp")
+        disposition = content_disposition("inline" if inline else "attachment", record.data["name"])
+        headers = {"Content-Disposition": disposition, "X-Content-Type-Options": "nosniff"}
+        return Response(content=data, media_type=media if inline else "application/octet-stream", headers=headers)
+
+    def file_changed(ops: list[dict[str, Any]], summary: str) -> FileChanged:
+        from engine.applier import apply_as_person
+
+        cs_id = guard(lambda: apply_as_person(store, cfg, ops, summary))
+        changed()
+        return FileChanged(changeset=cs_id)
+
+    @r.post("/files/{file_id}/edit")
+    def file_edit(file_id: str, body: FileEdit) -> FileChanged:
+        """Rename a file or change its description, as the person's own change with Undo. The bytes are not touched."""
+        from engine.files import edit_fields
+
+        need("file", file_id)
+        record = store.read().get("file", file_id)
+        if record.version != body.read_version:
+            return FileChanged(refused="changed")
+        fields = guard(lambda: edit_fields(store, record, name=body.name, description=body.description))
+        op = {
+            "op": "record.edit",
+            "record": {"kind": "file", "id": file_id},
+            "fields": fields,
+            "read_version": body.read_version,
+        }
+        return file_changed([op], "Renamed a file" if set(fields) == {"name"} else "Changed a file")
+
+    @r.post("/files/{file_id}/remove")
+    def file_remove(file_id: str, body: FileRemove) -> FileChanged:
+        """Take a file out of the list, with Undo bringing it back. Its bytes stay where they are, so Undo has them;
+        nothing here ever deletes stored bytes. Refused when another record still refers to the file."""
+        need("file", file_id)
+        record = store.read().get("file", file_id)
+        if record.version != body.read_version:
+            return FileChanged(refused="changed")
+        if store.plugins._referrers(store.read())("file", file_id):
+            return FileChanged(refused="referred_to")
+        op = {"op": "record.delete", "record": {"kind": "file", "id": file_id}, "read_version": body.read_version}
+        return file_changed([op], "Removed a file")
+
+    @r.post("/files/{file_id}/forget")
+    def file_forget(file_id: str, body: FileForget) -> FileChanged:
+        """Remove a file and forget its stored copy: its name and details leave the history, its bytes are deleted from
+        the workspace and the synced folder unless another file holds them, and nothing can bring it back. Refused,
+        like Remove, when another record still refers to the file."""
+        from engine.files import forget_file
+
+        need("file", file_id)
+        record = store.read().get("file", file_id)
+        if record.version != body.read_version:
+            return FileChanged(refused="changed")
+        if store.plugins._referrers(store.read())("file", file_id):
+            return FileChanged(refused="referred_to")
+        cs_id = guard(
+            lambda: forget_file(
+                ws, store, cfg, file_id, read_version=body.read_version, summary="Removed a file and forgot its copy"
+            )
+        )
+        changed()
+        return FileChanged(changeset=cs_id)
+
+    @r.get("/files/{file_id}/used-by")
+    def file_used_by(file_id: str) -> FileUsedBy:
+        """What refers to a file: newer versions of it, working copies made from it, and add-on records that name it."""
+        from engine.records import kind_label
+        from engine.stages import record_title
+
+        need("file", file_id)
+        view = store.read()
+        found = []
+        for kind, record_id in store.plugins._referrers(view)("file", file_id):
+            record = view.get(kind, record_id)
+            if record is not None:
+                found.append(
+                    FileUse(
+                        kind=kind,
+                        id=record_id,
+                        kind_label=kind_label(store.plugins.records.get(kind), kind),
+                        label=record_title(record),
+                    )
+                )
+        return FileUsedBy(items=found)
+
+    def staged(kind: str) -> None:
+        # Only kinds that move through stages are served here; bookkeeping records have their own routes.
+        if kind not in store.plugins.stages.types:
+            raise HTTPException(status_code=404, detail="not found")
+
+    @r.get("/records/{record_id}")
+    def record_view(record_id: str, kind: str) -> RecordView:
+        staged(kind)
+        need(kind, record_id)
+        record = store.read().get(kind, record_id)
+        return RecordView(
+            kind=kind,
+            id=record.id,
+            version=record.version,
+            data=record.data,
+            stages=StageView(**record_status(store, record)),
+            stage_history=[StageHistoryEntry(**row) for row in stage_history(store, kind, record.id)],
+        )
+
+    @r.get("/record-pages/{record_id}")
+    def record_page(record_id: str, kind: str) -> RecordPageView:
+        """Any record's page: core or a plugin's, by its kind."""
+        from engine.record_page import page
+        from engine.today import zone
+
+        here = zone(cfg)
+        found = page(
+            store,
+            kind,
+            record_id,
+            pm=cfg.workspace.user.person,
+            owner_format=cfg.workspace.owner_format,
+            today=worker.now().astimezone(here).date(),
+            here=here,
+            second_move_days=cfg.steward.second_move_days,
+            cfg=cfg,
+        )
+        if found is None:
+            raise HTTPException(status_code=404, detail=f"There is no {kind} {record_id}.")
+        return RecordPageView(**found)
+
+    @r.get("/records/{record_id}/stage-history")
+    def record_stage_history(record_id: str, kind: str) -> list[StageHistoryEntry]:
+        staged(kind)
+        need(kind, record_id)
+        return [StageHistoryEntry(**row) for row in stage_history(store, kind, record_id)]
+
+    @r.get("/stages/ready")
+    def ready_stages() -> list[StageView]:
+        result = []
+        for kind in store.plugins.stages.types:
+            for record in store.read().list(kind):
+                status = record_status(store, record)
+                # Only an item already in a stage is suggested a move; starting one is the Stages view's job.
+                if status["ready"] and status["current"] is not None:
+                    result.append(StageView(**status))
+        return result
+
+    @r.get("/stages/records")
+    def stage_records() -> list[StageView]:
+        from engine import sides
+
+        result = []
+        people = People(store, cfg)
+        projects = sides.project_names(store.read(), cfg)
+        groups = sides.side_names(store.read(), cfg)
+        for kind in store.plugins.stages.types:
+            if "/" in kind and not store.plugins.active(kind.split("/")[0]):
+                continue
+            for record in store.read().list(kind):
+                if kind == "project" and record.id in groups:
+                    continue  # a side is a group, never a card on a board of projects
+                card = card_details(record, people, projects, groups)
+                result.append(StageView(**record_status(store, record), **card))
+        return sorted(result, key=lambda view: (view.record.kind, view.title.casefold(), view.record.id))
+
+    @r.post("/stages/move")
+    def stage_move(body: StageMove) -> StageMoved:
+        op = StageMoveOp(**body.model_dump())
+        cs = guard(lambda: move_stage(store, op))
+        record = store.read().get(body.record.kind, body.record.id)
+        changed()
+        from engine import sides
+
+        projects = sides.project_names(store.read(), cfg)
+        card = card_details(record, People(store, cfg), projects, sides.side_names(store.read(), cfg))
+        return StageMoved(changeset=cs, stages=StageView(**record_status(store, record), **card))
+
+    @r.get("/stages/requests")
+    def stage_requests() -> list[StageRequestView]:
+        return [
+            StageRequestView(
+                id=r.id,
+                version=r.version,
+                estimate_usd=r.data.get("estimate_usd"),
+                **{key: r.data[key] for key in ("task", "state", "approval", "waiting", "stage_start")},
+            )
+            for r in store.read().list("request")
+            if r.data.get("stage_start")
+        ]
+
+    @r.post("/requests/{request_id}/go")
+    def stage_request_go(request_id: str, body: ReadVersion) -> Ok:
+        guard(lambda: approve_stage_request(store, request_id, body.read_version))
+        worker.poke()
+        changed()
+        return Ok(ok="queued")
+
+    @r.get("/runs/first-go")
+    def first_go_sorting() -> FirstGoSorting:
+        """What the first go's sorting run would add to the estimate of the runs waiting for it, so the person approves
+        the whole spend. Nothing when no run waits for the go or no mail needs sorting."""
+        from engine import watch
+
+        if not any(waits_on_first_go(x.data) for x in store.read().list("request")):
+            return FirstGoSorting(runs=0)
+        runs, estimate, unpriced = watch.first_go_sorting(ws, store, cfg)
+        return FirstGoSorting(runs=runs, estimate_usd=estimate, unpriced=unpriced)
+
+    @r.post("/runs/first-go")
+    def first_go() -> FirstGoStarted:
+        """The person's first go: the mail handed in unsorted while it was pending is sorted first (the go covers that
+        run), then every run still waiting for it starts, and no run waits for it again."""
+        from engine import watch
+
+        aside = watch.sort_before_first_go(ws, store, cfg)
+        started = grant_first_go(store)
+        if started or aside:
+            worker.poke()
+            changed()
+        return FirstGoStarted(started=started)
+
+    @r.get("/status")
+    def status() -> Status:
+        reqs = [x.data for x in store.read().list("request")]
+        b = state(ws, cfg)
+        counts = {s: sum(x["state"] == s for x in reqs) for s in ("queued", "running", "review", "needs_you")}
+        ai, detail = ai_state(ws, cfg, store)
+        spent = spend(store, cfg)
+        waiting = [x["cause"]["since"] for x in reqs if is_waiting_for_network(x)]
+        alive = assistant_state(
+            store, cfg, loop_restarted_at=worker.loop_restarted_at, loop_stuck_since=worker.stuck_since()
+        )
+        return Status(
+            ai=AiState(state=ai, detail=detail),
+            assistant=AssistantStatus(
+                last_run_at=alive.last_run_at,
+                last_run_failed=alive.last_run_failed,
+                runs_today=[AssistantAccountRuns(**vars(x)) for x in alive.runs_today],
+                queued=alive.queued,
+                oldest_queued_since=alive.oldest_queued_since,
+                chains=[AssistantChain(**vars(x)) for x in alive.chains],
+                paused=[AssistantPaused(**vars(x)) for x in alive.paused],
+                loop_restarted_at=alive.loop_restarted_at,
+                loop_stuck_since=alive.loop_stuck_since,
+            ),
+            spend=SpendStatus(
+                today_usd=spent.today_usd,
+                month_usd=spent.month_usd,
+                per_day_usd=spent.per_day_usd,
+                per_month_usd=spent.per_month_usd,
+                warn=spent.warn,
+                warn_today=spent.warn_today,
+                warn_month=spent.warn_month,
+            ),
+            backup=BackupStatus(
+                configured=b.configured,
+                last_success=b.last_success,
+                age_hours=b.age_hours,
+                needs_attention=b.needs_attention,
+                last_error=b.last_error,
+                encrypted=b.encrypted,
+            ),
+            requests=RequestCounts(**counts),
+            network_wait=NetworkWait(count=len(waiting), since=min(waiting)) if waiting else None,
+            version=events.version,
+            restart_needed=worker.restart_needed,
+            can_restart=worker.can_restart,
+            restart_for=list(worker.restart_for),
+        )
+
+    @r.get("/notes")
+    def notes() -> list[NoteView]:
+        """Every filed note, newest first, with the project it was filed under (if any)."""
+        from engine import sides
+
+        projects = sides.project_names(store.read(), cfg)
+        filed: dict[str, str] = {}
+        for entry in store.read().ledger(kind="note"):
+            filed.setdefault(entry["record_id"], str(entry["at"]))
+        rows = [
+            NoteView(
+                id=n.id,
+                text=n.data["text"],
+                project=n.data.get("project"),
+                project_name=projects.get(n.data.get("project")),
+                side_name=sides.side_name_of(store.read(), cfg, n.data.get("project")),
+                created_at=filed.get(n.id),
+                trust=n.data.get("trust", "trusted"),
+            )
+            for n in store.read().list("note")
+        ]
+        return sorted(rows, key=lambda n: (n.created_at or "", n.id), reverse=True)
+
+    @r.post("/handin")
+    def handin(body: HandIn) -> Handed:
+        handed = guard(
+            lambda: hand_in(
+                ws,
+                store,
+                note=body.note,
+                pasted=body.pasted,
+                data_level=body.data_level,
+                project=body.project,
+                cfg=cfg,
+            )
+        )
+        changed()
+        worker.poke()
+        return Handed(request=handed.request, source=handed.source)
+
+    @r.post("/handin/audio")
+    async def handin_audio(
+        request: Request,
+        name: str,
+        project: str | None = None,
+        person: str | None = None,
+        data_level: Literal["open", "internal", "restricted"] | None = None,
+    ) -> Handed:
+        """Hand in a voice note: the request body is the sound, its Content-Type the type. It is kept as the person's
+        own upload and a request to turn it into text is queued; nothing is sent anywhere until it runs, and it waits
+        for the person's go under the usual cost rules. Refused in plain words when the file isn't sound or is too
+        large."""
+        from engine import transcribe
+
+        cap = cfg.steward.capture.max_audio_mb * 1024 * 1024
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > cap:
+            raise HTTPException(
+                status_code=413, detail=f"{name} is larger than {cfg.steward.capture.max_audio_mb:g} MB"
+            )
+        data = await request.body()
+        media_type = (request.headers.get("content-type") or "").split(";")[0].strip()
+        handed = guard(
+            lambda: transcribe.hand_in(
+                store,
+                cfg,
+                data,
+                name=name,
+                media_type=media_type,
+                project=project,
+                data_level=data_level,
+                from_person=person,
+            )
+        )
+        changed()
+        worker.poke()
+        return Handed(request=handed, source=None)
+
+    @r.post("/handin/image")
+    async def handin_image(
+        request: Request,
+        name: str,
+        note: str = "",
+        project: str | None = None,
+        person: str | None = None,
+        data_level: Literal["open", "internal", "restricted"] | None = None,
+    ) -> HandedImage:
+        """Keep a picture and queue reading it through a listed account.
+
+        Keep it with a plain reason when no account can read it.
+        """
+        from engine import read_image
+
+        cap = cfg.storage.files.max_file_mb * 1024 * 1024
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > cap:
+            raise HTTPException(status_code=413, detail=f"{name} is larger than {cfg.storage.files.max_file_mb:g} MB")
+        data = await request.body()
+        if len(data) > cap:
+            raise HTTPException(status_code=413, detail=f"{name} is larger than {cfg.storage.files.max_file_mb:g} MB")
+        media_type = (request.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+        handed = guard(
+            lambda: read_image.hand_in(
+                ws,
+                store,
+                cfg,
+                worker.router_factory(),
+                data,
+                name=name,
+                media_type=media_type,
+                note=note,
+                project=project,
+                data_level=data_level,
+                from_person=person,
+            )
+        )
+        changed()
+        if handed.request:
+            worker.poke()
+        return HandedImage(
+            status=handed.status,
+            request=handed.request,
+            file=handed.file,
+            reason=handed.reason,
+        )
+
+    @r.post("/handin/file")
+    async def handin_file(
+        request: Request,
+        name: str,
+        note: str = "",
+        project: str | None = None,
+        person: str | None = None,
+        data_level: Literal["open", "internal", "restricted"] | None = None,
+    ) -> HandedFile:
+        """Read a document as outside content, or keep it in the person's files if no reader can take it."""
+        from email import policy
+        from email.parser import BytesParser
+
+        from engine.connectors import SourceItem
+        from engine.connectors.mailbox import attachments, body_text
+        from engine.extract import GENERIC, media_type_of, read_file
+        from engine.extract.attached import with_files_read
+        from engine.extract.core import ExtractError
+        from engine.files import add_file
+        from engine.intake import hand_in
+
+        limits = cfg.storage.files
+        cap = limits.max_file_mb * 1024 * 1024
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > cap:
+            raise HTTPException(status_code=413, detail=f"{name} is larger than {limits.max_file_mb:g} MB")
+        data = await request.body()
+        if len(data) > cap:
+            raise HTTPException(status_code=413, detail=f"{name} is larger than {limits.max_file_mb:g} MB")
+        media_type = (request.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+        try:
+            if name.lower().endswith(".eml") or media_type == "message/rfc822":
+                message = BytesParser(policy=policy.default).parsebytes(data)
+                mail_text = "\n".join(
+                    part for part in (f"Subject: {message.get('Subject') or ''}".strip(), body_text(message)) if part
+                )
+                item = SourceItem(name, name, mail_text, files=attachments(message))
+                text = with_files_read(ws, store, cfg, item, f"handed-in file {name}").text
+                if not text.strip():
+                    raise ExtractError("the message has no text in it")
+            else:
+                text = read_file(
+                    data,
+                    name,
+                    media_type,
+                    max_chars=limits.read_max_chars,
+                    max_bytes=int(limits.read_max_mb * 1024 * 1024),
+                    plugin=store.plugins.read_with_plugins,
+                ).text
+        except ExtractError as err:
+            stored_type = media_type_of(name, media_type)
+            keep_generic = stored_type in GENERIC or stored_type not in limits.accepted_types
+            if keep_generic:
+                stored_type = "application/octet-stream"
+            record = guard(
+                lambda: add_file(
+                    store,
+                    cfg,
+                    data,
+                    name=name,
+                    media_type=stored_type,
+                    project=project,
+                    from_person=person,
+                    data_level=data_level,
+                    preserve_generic=keep_generic,
+                )
+            )
+            note_request = None
+            if note.strip():
+                note_request = guard(
+                    lambda: hand_in(
+                        ws,
+                        store,
+                        note=note,
+                        data_level=data_level,
+                        project=project,
+                        cfg=cfg,
+                    )
+                ).request
+            changed()
+            if note_request:
+                worker.poke()
+            return HandedFile(
+                name=record.data["name"],
+                status="kept",
+                request=note_request,
+                source=None,
+                file=record.id,
+                reason=err.reason,
+            )
+        pasted = f"Attached file: {name}\n{text}\nEnd of attached file: {name}"
+        handed = guard(
+            lambda: hand_in(
+                ws,
+                store,
+                note=note,
+                pasted=pasted,
+                data_level=data_level,
+                project=project,
+                cfg=cfg,
+            )
+        )
+        changed()
+        worker.poke()
+        return HandedFile(
+            name=name,
+            status="read",
+            request=handed.request,
+            source=handed.source,
+            file=None,
+            reason=None,
+        )
+
+    @r.get("/changes")
+    def changes() -> list[ChangeItem]:
+        with store.read_scope():
+            return _changes()
+
+    def _changes() -> list[ChangeItem]:
+        from engine import sides
+        from engine.titles import head_of, subject_of, title_for
+        from engine.today import zone
+        from engine.today_queue import kind_of_snapshots, request_project
+
+        here = zone(cfg)
+        people = People(store, cfg)
+        projects = sides.project_names(store.read(), cfg)
+        to_send = actions_to_send(store, cfg)
+
+        # What is still open, and what was made in the last `ui.changes_recent_days` days: older finished work isn't
+        # listed here (its records, and what it changed, are still kept and found where they are named). What each
+        # listed request needs from other records (its input, the snapshots of its item, its runs) is read for all of
+        # them at once, so the reads don't grow with the number of requests.
+        reader = store.read()
+        cutoff = (worker.now().astimezone(here).date() - timedelta(days=cfg.ui.changes_recent_days)).isoformat()
+        listed = {r.id: r for r in reader.requests_unfinished()}
+        listed.update({r.id: r for r in reader.since("request", "created_at", cutoff)})
+        newest_first = sorted(listed.values(), key=lambda r: (id_number(r.id) or 0, r.id), reverse=True)
+        sources = {
+            k: v.data
+            for k, v in reader.get_many(
+                "source", [r.data["source"] for r in newest_first if r.data.get("source")]
+            ).items()
+        }
+        snapshots = reader.snapshots_by_key(
+            {
+                (w["source"], w["key"])
+                for s in sources.values()
+                if (w := s.get("watched")) and w.get("source") and w.get("key")
+            }
+        )
+        runs = reader.runs_of(listed)
+
+        def mail_item(source: str | None, key: str | None) -> str | None:
+            """The snapshot of a mail item that is still there, by its source and key (the latest one made)."""
+            found = None
+            for s in snapshots.get((source or "", key or ""), []):
+                if s.data.get("message") and not s.data.get("deleted") and not s.data.get("gone"):
+                    found = s.id
+            return found
+
+        out: list[ChangeItem] = []
+        edited: dict[str, tuple[str, str]] = {}  # request id to the one record the person's own edit changed
+        for req in newest_first:
+            d = req.data
+            if d.get("set_aside"):
+                continue  # mail set aside as not work is listed in the Set aside folder
+            if catch_up.waits_on_go(d) or source_intake.waits_on_go(d):
+                continue  # learning runs held for the catch-up list's go, and a new source's intake, are one line
+            if follow_on.closed_quietly(d):
+                continue  # a follow-on that found nothing to bring in line changed nothing
+            view = None
+            cs = None
+            source = sources.get(d.get("source") or "")
+            watched = (source or {}).get("watched") or {}
+            if d.get("changeset"):
+                cs = store.read().get("changeset", d["changeset"])
+                view = ChangesetView(
+                    id=cs.id,
+                    summary=cs.data["summary"],
+                    status=cs.data["status"],
+                    reviewed=cs.data["reviewed"],
+                    trust=cs.data["trust"],
+                    ops=[
+                        _op_view(o, store, people, projects, cfg, to_send)
+                        for o in cs.data["ops"]
+                        if not _is_bookkeeping_op(o, cs.data["ops"])
+                    ],
+                    groups=[AnswerGroupView(**vars(g)) for g in answer_groups.groups_of(cs.data["ops"])],
+                    made=[
+                        MadeView(
+                            kind=m.kind, id=m.id, label=m.label, record=RecordRef(kind=m.record[0], id=m.record[1])
+                        )
+                        for m in made_by(store.read(), cs.data["ops"])
+                    ],
+                    second_opinion=_independence(cs),
+                    applied=_applied_views(cs.data.get("applied") or []),
+                    first_on_account=cs.data.get("first_on_account"),
+                    omitted=[OmittedOpView(**o) for o in cs.data.get("omitted") or []],
+                )
+                target = own_edits.edited_record(d, cs.data)
+                if target is not None:
+                    edited[req.id] = target
+            out.append(
+                ChangeItem(
+                    id=req.id,
+                    version=req.version,
+                    state=d["state"],
+                    dismissed=bool(d.get("dismissed")),
+                    waiting=d.get("waiting"),
+                    created_at=str(d["created_at"]),
+                    note=d.get("note"),
+                    source=d.get("source"),
+                    source_title=sources.get(d.get("source"), {}).get("title"),
+                    approval=d.get("approval"),
+                    stage_task=bool(d.get("stage_start")),
+                    first_go=waits_on_first_go(d),
+                    estimate_usd=d.get("estimate_usd"),
+                    range_usd=d.get("range_usd"),
+                    range_account=_account_name(cfg, d.get("range_account")),
+                    spent_usd=spent_on(runs.get(req.id, [])),
+                    refused=d["state"] == "needs_you" and _last_refused(req.id),
+                    cause=_cause_view(d),
+                    follows=d.get("follows"),
+                    follows_summary=_summary_of(d.get("follows")),
+                    redoes=learned.request_changeset(store.read(), d.get("previous")),
+                    changeset=view,
+                    review=review_batches.review_of(cs.data)
+                    if cs is not None and d["state"] in ("review", "done")
+                    else None,
+                    mail_item=mail_item(watched.get("source"), watched.get("key")) if watched else None,
+                    intake=d.get("intake"),
+                    project=request_project(store.read(), req, cs.data if cs is not None else {}),
+                    title=_title_view(
+                        title_for(
+                            d,
+                            source,
+                            cs.data if cs is not None else None,
+                            people=people,
+                            skip=list(language_words(cfg.language, "title_skip")),
+                            min_words=cfg.language.title_min_words,
+                            head=head_of(ws.sources_dir, (source or {}).get("content_hash")),
+                            watched_kind=kind_of_snapshots(
+                                snapshots.get((watched.get("source") or "", watched.get("key") or ""), [])
+                            ),
+                            subject=subject_of(store.read(), d) if source is None and d.get("origin") != "pm" else "",
+                        ),
+                        people,
+                    ),
+                )
+            )
+        return _fold_own_edits(out, edited, here)
+
+    @r.post("/changesets/{cs_id}/looks-good")
+    def approve(cs_id: str) -> Ok:
+        need("changeset", cs_id)
+        guard(lambda: looks_good(store, cs_id))
+        changed()
+        return Ok(ok=cs_id)
+
+    @r.post("/changesets/confirm")
+    def confirm_batch(body: BatchConfirmIn) -> BatchConfirmed:
+        """The person's "All looks good" for a batch on Today: each changeset is marked reviewed and one `confirmed`
+        signal is recorded for its request. Undo is POST /api/changesets/unconfirm."""
+        for cs_id in body.changesets:
+            need("changeset", cs_id)
+        found = guard(lambda: review_batches.confirm(store, body.changesets, worker.now()))
+        changed()
+        return BatchConfirmed(changesets=found.changesets, signals=found.signals)
+
+    @r.post("/changesets/unconfirm")
+    def unconfirm_batch(body: BatchUnconfirmIn) -> BatchUnconfirmed:
+        """Undo a batch's "All looks good": its changesets are to be looked over again."""
+        for cs_id in body.changesets:
+            need("changeset", cs_id)
+        count = guard(lambda: review_batches.unconfirm(store, body.changesets, body.signals))
+        changed()
+        return BatchUnconfirmed(reopened=count)
+
+    @r.post("/changesets/{cs_id}/reopen")
+    def reopen(cs_id: str) -> Ok:
+        need("changeset", cs_id)
+
+        def do() -> None:
+            with store.transaction() as tx:
+                cs = _existing(tx, "changeset", cs_id)
+                tx.update("changeset", cs_id, {"reviewed": False}, _PM, read_version=cs.version)
+                req = tx.get("request", cs.data["request"])
+                tx.update("request", req.id, {"state": "review"}, _PM, read_version=req.version)
+
+        guard(do)
+        guard(lambda: reopened_nothing_to_do(store, cs_id))
+        changed()
+        return Ok(ok=cs_id)
+
+    @r.post("/changesets/{cs_id}/undo")
+    def undo(cs_id: str, body: UndoChoice) -> UndoReport:
+        need("changeset", cs_id)
+        report = guard(lambda: undo_changeset(store, cs_id, body.ops))
+        if report.restored:
+            guard(lambda: unfile_missing(store, cs_id))
+        changed()
+        return UndoReport(restored=report.restored, skipped=report.skipped)
+
+    @r.post("/changesets/{cs_id}/send-back")
+    def sendback(cs_id: str, body: SendBack) -> Requeued:
+        need("changeset", cs_id)
+        new = guard(lambda: send_back(store, cs_id, body.note, undo_first=body.undo_first, ops=body.ops))
+        changed()
+        worker.poke()
+        return Requeued(request=new)
+
+    @r.post("/changesets/{cs_id}/groups/{group}/keep")
+    def keep_group(cs_id: str, group: int) -> AnswerGroupDone:
+        """Keep a group of an answer the task kind grouped: its held ops are applied as the person's own go."""
+        need("changeset", cs_id)
+        done = guard(lambda: answer_groups.keep(store, cfg, cs_id, group, ws=ws))
+        changed()
+        return AnswerGroupDone(**vars(done))
+
+    @r.post("/changesets/{cs_id}/groups/{group}/drop")
+    def drop_group(cs_id: str, group: int) -> AnswerGroupDone:
+        """Drop a group of an answer: its applied ops are undone and its held ops kept as they were, each recorded
+        as the correction it is."""
+        need("changeset", cs_id)
+        done = guard(lambda: answer_groups.drop(store, cs_id, group))
+        changed()
+        return AnswerGroupDone(**vars(done))
+
+    @r.post("/changesets/{cs_id}/release-all")
+    def release_all(cs_id: str) -> AnswerGroupDone:
+        """Release every held op of an answer together (Undo of the answer takes them all back at once), except ones
+        that wait on a choice only the person makes there, which are listed as left."""
+        need("changeset", cs_id)
+        done = guard(lambda: answer_groups.release_all(store, cfg, cs_id, ws=ws))
+        changed()
+        return AnswerGroupDone(**vars(done))
+
+    @r.post("/changesets/{cs_id}/ops/{index}/release")
+    def release_op(cs_id: str, index: int, body: PersonChoice) -> Ok:
+        need("changeset", cs_id)
+        held = store.read().get("changeset", cs_id).data["ops"]
+        if 0 <= index < len(held) and held[index]["op"].get("op") == "project.add" and held[index]["status"] == "held":
+            guard(lambda: add_held_project(store, cfg, cs_id, index, ws=ws))
+        else:
+            guard(lambda: release(store, cfg, cs_id, index, person=body.person, ws=ws))
+        changed()
+        return Ok(ok=cs_id)
+
+    @r.post("/changesets/{cs_id}/ops/{index}/ending")
+    def answer_ending(cs_id: str, index: int, body: EndingAnswer) -> DropDone:
+        """Answer "Done by <owner>, or no longer needed?" for an ending whose words only said it was closed: done
+        credits the owners, no longer needed credits nobody. Either applies at once, with Undo. No longer needed for
+        an action that reached people also drafts a note to each, as an outward act that waits for the person's yes;
+        Undo takes the notes and the answer back together."""
+        need("changeset", cs_id)
+        ops = store.read().get("changeset", cs_id).data["ops"]
+        record = ops[index]["op"].get("id") if 0 <= index < len(ops) else None
+        guard(lambda: endings.answer(store, cfg, cs_id, index, body.ending))
+        drafted = note_the_drops(store, cfg, cs_id, [record] if body.ending == "called_off" and record else [])
+        changed()
+        return DropDone(changeset=cs_id, drafts=drafted.changesets, acts=drafted.acts)
+
+    @r.get("/changesets/{cs_id}/ops/{index}/project-ending")
+    def project_ending(cs_id: str, index: int) -> ProjectEndingView:
+        """A project ending that waits for the person: the open items it would drop, and what add-ons leave open."""
+        from engine.records import kind_label
+
+        need("changeset", cs_id)
+        view = store.read()
+        found = next(
+            (
+                e
+                for e in endings.held_endings(view, cs_id, view.get("changeset", cs_id).data["ops"])
+                if e.index == index
+            ),
+            None,
+        )
+        if found is None:
+            raise HTTPException(status_code=404, detail="That ending isn't waiting for you.")
+        project = view.get("project", found.project)
+        return ProjectEndingView(
+            project=found.project,
+            project_name=project.data["name"] if project is not None else found.project,
+            index=found.index,
+            items=[ProjectEndingItem(index=i.index, kind=i.kind, id=i.id, text=i.text) for i in found.items],
+            told_names=list(
+                dict.fromkeys(
+                    name
+                    for i in found.items
+                    if i.kind == "action" and (record := view.get("action", i.id)) is not None
+                    for name in endings.told_names(view, cfg, People(store, cfg), record)
+                )
+            ),
+            left_open=[
+                LeftOpenItem(
+                    kind=each.kind,
+                    kind_label=kind_label(store.plugins.records.get(each.kind), each.kind),
+                    id=each.id,
+                    title=each.title,
+                )
+                for each in endings.left_behind(
+                    store, found.project, [i.id for i in found.items if i.kind == "other" and i.id]
+                )
+            ],
+        )
+
+    @r.post("/changesets/{cs_id}/ops/{index}/project-ending")
+    def choose_project_ending(cs_id: str, index: int, body: ProjectEndingChoice) -> ProjectEndingDone:
+        """End the project and drop what is open on it except the items the person keeps (one Undo of the change takes
+        the ending back; kept items were never dropped), or keep the project and every item as they are. Ending it
+        also drafts one note to each person told about a dropped to-do, listing each of them, as an outward act that
+        waits for the person's yes; Undo takes the notes and the ending back together."""
+        from engine.drop_notes import DraftedNotes
+
+        need("changeset", cs_id)
+        drafted = DraftedNotes()
+        if body.end:
+            dropped = guard(lambda: endings.finish_ending(store, cfg, cs_id, index, body.keep, ws=ws))
+            drafted = note_the_drops(store, cfg, cs_id, dropped)
+        else:
+            guard(lambda: endings.decline_ending(store, cs_id, index))
+        changed()
+        people = People(store, cfg)
+        return ProjectEndingDone(
+            changeset=cs_id,
+            drafts=drafted.changesets,
+            acts=drafted.acts,
+            names=[people.name(person) for person in drafted.people],
+        )
+
+    @r.post("/changesets/{cs_id}/ops/{index}/decline")
+    def decline_op(cs_id: str, index: int, body: NoteIn | None = None) -> Noted:
+        """Keep things as they are for a held item: it isn't applied and leaves the list, and the choice is a
+        correction the assistant learns from."""
+        from engine.applier import decline_held
+
+        need("changeset", cs_id)
+        # A note is checked before anything changes, so a refused note leaves the held item as it was.
+        action_id = None
+        if body and body.note.strip():
+            ops = store.read().get("changeset", cs_id).data["ops"]
+            op = ops[index]["op"] if 0 <= index < len(ops) else {}
+            action_id = op.get("id")
+            if not op.get("op", "").startswith("action.") or not isinstance(action_id, str):
+                raise HTTPException(status_code=422, detail="A note can only go with an action choice.")
+        guard(lambda: decline_held(store, cs_id, index))
+        request = hand_note(("action", action_id), body.note, "reopened") if action_id else None
+        changed()
+        return Noted(ok=cs_id, request=request)
+
+    @r.post("/changesets/{cs_id}/ops/{index}/undecline")
+    def undecline_op(cs_id: str, index: int) -> Ok:
+        """Take back keeping a held item as it was: it waits for the person again."""
+        from engine.applier import undecline_held
+
+        need("changeset", cs_id)
+        guard(lambda: undecline_held(store, cs_id, index))
+        changed()
+        return Ok(ok=cs_id)
+
+    @r.post("/changesets/{cs_id}/ops/{index}/unrelease")
+    def unrelease_op(cs_id: str, index: int) -> UndoReport:
+        """Take back a yes to a held item: what it did is undone and the question waits for the person again."""
+        from engine.applier import unrelease_held
+
+        need("changeset", cs_id)
+        report = guard(lambda: unrelease_held(store, cs_id, index))
+        if report.restored:
+            guard(lambda: unfile_missing(store, cs_id))
+        changed()
+        return UndoReport(restored=report.restored, skipped=report.skipped)
+
+    @r.post("/questions/{qid}/pick-owner")
+    def owner(qid: str, body: OwnerPick) -> Noted:
+        need("question", qid)
+        if not body.person:
+            raise HTTPException(status_code=422, detail="Choose a person.")
+        guard(lambda: pick_owner(store, qid, body.person))
+        action = store.read().get("question", qid).data["resolves"]["action"]
+        request = hand_note(("action", action), body.note, "owner_picked")
+        changed()
+        return Noted(ok=qid, request=request)
+
+    @r.post("/questions/{qid}/answer")
+    def answer(qid: str, body: Answer) -> Noted:
+        """Answer a question to the PM. A question asking who (who a name is, who owns an action) takes a person and
+        lets the item it holds go ahead; any other question takes a written answer."""
+        need("question", qid)
+        q = store.read().get("question", qid)
+        resolves = q.data.get("resolves") or {}
+        if resolves.get("kind") in ("owner", "held-op", "away") and not body.person:
+            raise HTTPException(status_code=422, detail="Choose a person.")
+        if body.person:
+            need("person", body.person)
+        if resolves.get("kind") == "owner":
+            guard(lambda: pick_owner(store, qid, body.person))
+        elif resolves.get("kind") == "held-op":
+            guard(lambda: release(store, cfg, resolves["changeset"], resolves["op"], person=body.person, ws=ws))
+        elif resolves.get("kind") == "away":
+            from engine import absence
+
+            guard(lambda: absence.answer(store, cfg, qid, body.person))
+        else:
+            if not (body.text or "").strip():
+                raise HTTPException(status_code=422, detail="Write an answer.")
+
+            def do() -> None:
+                with store.transaction() as tx:
+                    cur = _existing(tx, "question", qid)
+                    tx.update(
+                        "question", qid, {"status": "answered", "answer": body.text}, _PM, read_version=cur.version
+                    )
+
+            guard(do)
+        guard(lambda: new_terms.keep_answer(store, cfg, qid, body.text or ""))
+        asked = q.data.get("to")
+        for_someone_else = bool(asked) and asked != People(store, cfg).pm
+        if not for_someone_else and resolves.get("kind") not in ("owner", "held-op", "away"):
+            # What the answer teaches is learned at once.
+            guard(lambda: answered_assistant(store, cfg, qid, body.text or ""))
+        request = hand_note(
+            ("question", qid),
+            body.text,
+            "answered_for" if for_someone_else else "answered",
+            author=asked if for_someone_else else None,
+        )
+        changed()
+        return Noted(ok=qid, request=request)
+
+    @r.post("/questions/{qid}/reply")
+    def reply(qid: str, body: Reply) -> Handed:
+        """Hand in a person's reply to a question that went out, with a note saying which question it answers."""
+        need("question", qid)
+        q = store.read().get("question", qid)
+        if q.data["status"] not in ("open", "sent"):
+            raise HTTPException(status_code=409, detail="That question is already answered.")
+        values = {"name": People(store, cfg).name(q.data["to"]), "title": q.data["title"], "question": qid}
+        note = render("reply", values, ws.root)
+        handed = guard(lambda: hand_in(ws, store, note=note, pasted=body.text, cfg=cfg))
+        changed()
+        worker.poke()
+        return Handed(request=handed.request, source=handed.source)
+
+    @r.post("/actions/{action_id}/status")
+    def action_status(action_id: str, body: ActionState) -> Noted:
+        need("action", action_id)
+
+        # A to-do the assistant closed on its own, reopened by the person, is a signal it learns from.
+        pulled: list[str | None] = []
+
+        def do() -> None:
+            with store.transaction() as tx:
+                cur = _existing(tx, "action", action_id)
+                if body.status == "open" and cur.data["status"] == "done":
+                    closed = open_items.latest_close(tx.ledger(kind="action", record_id=action_id))
+                    if closed is not None and open_items.closed_by_assistant(closed):
+                        pulled.append(closed["changeset"])
+                if cur.data["status"] == "held":
+                    raise ValueError("this action needs an owner first")
+                if cur.data["status"] == "dropped":
+                    raise ValueError("this action was dropped; undo the drop to bring it back")
+                change: dict[str, Any] = {"status": body.status}
+                if body.status == "open":
+                    change |= {"done_by": [], "reported_by": None}  # reopening takes the credit back
+                elif body.status == "done":
+                    # The work is credited to its owners; the person who ticked it is the one who said it was done.
+                    owners = [o["person"] for o in cur.data.get("owners", [])]
+                    change |= {"done_by": owners, "reported_by": cfg.workspace.user.person}
+                tx.update("action", action_id, change, _PM, read_version=cur.version)
+                if cur.data.get("repeat"):
+                    # The next occurrence is made with the ending, and a reopening (Undo) takes it back.
+                    if body.status == "done":
+                        repeats.make_next(tx, cur, _PM, repeats.local_today(store, cfg))
+                    elif body.status == "open" and cur.data["status"] == "done":
+                        repeats.take_back_next(tx, cur, _PM)
+
+        guard(do)
+        if pulled:
+            signal(
+                store,
+                "pulled_back",
+                [action_id],
+                "Closed by the assistant, reopened from the Done tab",
+                changeset=pulled[0],
+            )
+        request = hand_note(("action", action_id), body.note, "mark_done" if body.status == "done" else "reopened")
+        changed()
+        return Noted(ok=action_id, request=request)
+
+    @r.post("/actions/{action_id}/hold")
+    def action_put_on_hold(action_id: str, body: HoldIn) -> HoldChanged:
+        """Put an open action on hold, waiting for something. It is never due, overdue or chased while it is."""
+        need("action", action_id)
+        from engine.today import zone
+
+        previous = guard(lambda: put_on_hold(store, action_id, body.waiting_for, on=body.on, here=zone(cfg)))
+        changed()
+        return HoldChanged(ok=action_id, previous=previous)
+
+    @r.post("/actions/{action_id}/unhold")
+    def action_taken_off_hold(action_id: str) -> HoldChanged:
+        """Take an action off hold; it is due again by its own due date."""
+        need("action", action_id)
+        previous = guard(lambda: take_off_hold(store, action_id))
+        changed()
+        return HoldChanged(ok=action_id, previous=previous)
+
+    @r.post("/actions/{action_id}/hold/restore")
+    def action_hold_restored(action_id: str, body: HoldRestore) -> Ok:
+        """Undo a put on hold or a take off hold: the hold goes back to what it was, and no signal is recorded."""
+        need("action", action_id)
+        guard(lambda: restore_hold(store, action_id, body.hold.model_dump() if body.hold else None))
+        changed()
+        return Ok(ok=action_id)
+
+    @r.post("/questions/{question_id}/held-for")
+    def question_held_for(question_id: str, body: HeldIn) -> HeldChanged:
+        """Hold an unsent question for a meeting, a series or a day (it waits in Later, out of To send, until that
+        day), or send it now (no hold). Undo puts back what `previous` says."""
+        need("question", question_id)
+        held = body.held_for.model_dump(exclude_none=True) if body.held_for else None
+        from engine.today import zone
+
+        previous = guard(lambda: hold_question(store, question_id, held, here=zone(cfg)))
+        changed()
+        return HeldChanged(ok=question_id, previous=previous)
+
+    @r.post("/followups/{person}/held-for")
+    def message_held_for(person: str, body: HeldMessageIn) -> HeldMessageChanged:
+        """Hold a person's whole message for a meeting, a series or a day: every question in it that is ready to send
+        waits in Later, in one change, and comes back numbered as before. Undo posts `previous` to the restore route."""
+        need("person", person)
+        from engine.today import zone
+
+        held = body.held_for.model_dump(exclude_none=True)
+        before = guard(lambda: hold_message(store, person, held, here=zone(cfg)))
+        changed()
+        return HeldMessageChanged(ok=person, previous=[QuestionHold(id=q, held_for=h) for q, h in before.items()])
+
+    @r.post("/followups/{person}/held-for/restore")
+    def message_hold_restored(person: str, body: HeldMessageRestore) -> Ok:
+        """Undo a held message: each question goes back to what it was held for."""
+        need("person", person)
+        guard(
+            lambda: restore_holds(
+                store,
+                {h.id: h.held_for.model_dump(exclude_none=True) if h.held_for else None for h in body.holds},
+            )
+        )
+        changed()
+        return Ok(ok=person)
+
+    @r.post("/followups/{person}/actions/{action_id}/followed-up")
+    def action_followed_up(person: str, action_id: str, body: NoteIn | None = None) -> FollowedUp:
+        """Record that the PM chased a person about an open action: it stays open and counts as told again. A note
+        typed with it goes to the assistant."""
+        need("person", person)
+        need("action", action_id)
+        from engine.today import zone
+
+        done = guard(lambda: follow_up(store, action_id, person, here=zone(cfg)))
+        request = hand_note(("action", action_id), body.note if body else "", "followed_up", person)
+        changed()
+        return FollowedUp(**done, request=request)
+
+    @r.post("/followups/{person}/actions/{action_id}/unfollow")
+    def action_unfollowed(person: str, action_id: str, body: Unfollow) -> Ok:
+        need("person", person)
+        need("action", action_id)
+        guard(lambda: undo_follow_up(store, action_id, person, body.on, body.previous_told))
+        changed()
+        return Ok(ok=action_id)
+
+    @r.post("/followups/{person}/actions/{action_id}/finished")
+    def action_they_finished(person: str, action_id: str, body: NoteIn | None = None) -> Noted:
+        """Close an action because the person it waits on finished it: credited to them, reported by the PM. A note
+        typed with it goes to the assistant."""
+        need("person", person)
+        need("action", action_id)
+        guard(lambda: they_finished(store, cfg, action_id, person))
+        request = hand_note(("action", action_id), body.note if body else "", "they_finished", person)
+        changed()
+        return Noted(ok=action_id, request=request)
+
+    @r.get("/requests/{request_id}/accounts")
+    def request_accounts(request_id: str) -> list[AccountChoice]:
+        """The accounts that may take this request's material, for sending it somewhere else after a refusal."""
+        from engine.ai.router import accounts
+        from engine.dispatcher import _data_level, content_levels
+
+        need("request", request_id)
+        req = store.read().get("request", request_id)
+        tiers = {ref: name for name, t in cfg.ai.tiers.items() for ref in [t.use, *t.fallback] if ref}
+        return [
+            AccountChoice(use=ref, label=f"{ref.partition('/')[0]} ({tiers.get(ref, '')})".replace(" ()", ""))
+            for ref in accounts(cfg, _data_level(store, req.data), content_levels(store, req.data))
+        ]
+
+    @r.post("/requests/{request_id}/retry")
+    def retry_request(request_id: str, body: RetryRequest | None = None) -> Ok:
+        need("request", request_id)
+        guard(lambda: retry(store, request_id, body.use if body else None))
+        changed()
+        worker.poke()
+        return Ok(ok=request_id)
+
+    @r.post("/requests/{request_id}/dismiss")
+    def dismiss_request(request_id: str, body: ReadVersion) -> RequestChanged:
+        need("request", request_id)
+        guard(lambda: dismiss(store, request_id, body.read_version))
+        changed()
+        return RequestChanged(ok=request_id, version=store.read().get("request", request_id).version)
+
+    @r.post("/requests/{request_id}/undismiss")
+    def undismiss_request(request_id: str, body: ReadVersion) -> RequestChanged:
+        need("request", request_id)
+        guard(lambda: undismiss(store, request_id, body.read_version))
+        changed()
+        worker.poke()
+        return RequestChanged(ok=request_id, version=store.read().get("request", request_id).version)
+
+    @r.get("/sources/{src_id}")
+    def source(src_id: str) -> SourceView:
+        need("source", src_id)
+        src = store.read().get("source", src_id)
+        d = src.data
+        return SourceView(
+            id=src.id,
+            title=d["title"],
+            kind=d["kind"],
+            trust=d["trust"],
+            received_at=str(d["received_at"]),
+            url=d.get("url"),
+            text=source_text(ws, store, src.id),
+            limit=_limit_view(d.get("audience")),
+        )
+
+    def _limit_view(found: dict[str, Any] | None) -> SourceLimit | None:
+        if not found:
+            return None
+        who = People(store, cfg)
+        return SourceLimit(
+            people=[SourceLimitPerson(id=p if p in who.records else None, name=who.name(p)) for p in found["people"]],
+            marking=found.get("marking"),
+            why=found.get("why"),
+            group=found.get("group"),
+            widened_by=who.name(found["widened_by"]) if found.get("widened_by") else None,
+        )
+
+    @r.post("/sources/{src_id}/widen")
+    def source_widen(src_id: str, body: SourceWiden) -> Applied:
+        """The person widens who may see a limited message, or removes the limit, with Undo."""
+        from engine.applier import apply_as_person
+
+        need("source", src_id)
+        op = {"op": "source.widen", "id": src_id, "people": body.people, "open": body.open}
+        cs_id = guard(lambda: apply_as_person(store, cfg, [op], "Widened who may see a message"))
+        changed()
+        return Applied(changeset=cs_id)
+
+    @r.get("/followups")
+    def followups() -> list[FollowupSection]:
+        from engine.today import zone
+
+        people = People(store, cfg)
+        found = sections(store, cfg, worker.now().astimezone(zone(cfg)).date())
+        view = store.read()
+        action_origin = origins(view, "action", [a["id"] for s in found for a in s.actions])
+        question_origin = origins(view, "question", [q["id"] for s in found for q in (*s.questions, *s.later)])
+        return [_section(s, people, action_origin, question_origin, store, cfg) for s in found]
+
+    @r.post("/followups/{person}/mark-sent")
+    def sent(person: str, body: SentText) -> SentCounts:
+        need("person", person)
+        counts = guard(lambda: mark_sent(store, cfg, person, sent_text=body.text))
+        changed()
+        return SentCounts(**counts)
+
+    @r.post("/followups/{person}/followed-up")
+    def nudge_sent(person: str, body: NudgeSent) -> NudgeRecorded:
+        """Record that the follow-up message went to a person: each question and action it listed counts as chased
+        today, and the wait for an answer starts again."""
+        need("person", person)
+        done = guard(
+            lambda: mark_followed_up(store, cfg, person, body.question_ids, body.action_ids, sent_text=body.text)
+        )
+        changed()
+        return NudgeRecorded(**done)
+
+    @r.post("/followups/{person}/unfollow")
+    def nudge_unsent(person: str, body: NudgeUnsent) -> Ok:
+        """Undo a follow-up marked as sent."""
+        need("person", person)
+        guard(
+            lambda: unmark_followed_up(
+                store,
+                person,
+                body.question_ids,
+                body.action_ids,
+                on=body.on,
+                previous_told=body.previous_told,
+                signal_at=body.signal_at,
+            )
+        )
+        changed()
+        return Ok(ok=person)
+
+    @r.post("/followups/{person}/unmark-sent")
+    def unsent(person: str, body: Unmark) -> Ok:
+        need("person", person)
+        guard(lambda: unmark_sent(store, person, body.question_ids, body.action_ids))
+        changed()
+        return Ok(ok=person)
+
+    @r.get("/people")
+    def people() -> list[PersonView]:
+        with store.read_scope():
+            return _people()
+
+    def _people() -> list[PersonView]:
+        from engine import sides
+        from engine.record_page import counts
+
+        pm = cfg.workspace.user.person
+        view = store.read()
+        orgs = {o.id: o.data["name"] for o in view.list("organization")}
+        seen = counts(view)["people"]
+        held = {p.id: sides.person_sides(view, cfg, p.data) for p in view.list("person")}
+        return [
+            PersonView(
+                id=p.id,
+                name=p.data["full_name"],
+                first_name=p.data.get("first_name"),
+                role=p.data.get("role"),
+                org=p.data.get("org"),
+                org_name=orgs.get(p.data.get("org") or ""),
+                aliases=p.data.get("aliases", []),
+                status=p.data.get("status", "active"),
+                is_pm=p.id == pm,
+                track_only=bool(p.data.get("track_only")),
+                how_to_reach=reach_lists(p.data.get("how_to_reach")),
+                relation=p.data.get("relation"),
+                side=sides.side_word_of(view, cfg, held[p.id]) or p.data.get("side"),
+                sides=held[p.id],
+                forgotten_on=str(p.data["forgotten_on"]) if p.data.get("forgotten_on") else None,
+                **seen.get(p.id, {}),
+            )
+            for p in view.list("person")
+        ]
+
+    def _same_name(kind: str, field: str, value: str, except_id: str | None = None) -> None:
+        for rec in store.read().list(kind):
+            if rec.id != except_id and rec.data[field].strip().lower() == value.strip().lower():
+                raise HTTPException(status_code=409, detail=f"{value} already exists.")
+
+    def _reach(given: dict[str, list[str]], except_id: str | None = None) -> dict[str, list[str]]:
+        """The contact details a person is given, kept as the workspace spells each kind, without blanks and without
+        a value twice. A kind the workspace doesn't offer, or an address someone else already holds, is refused in
+        plain words."""
+        from engine.applier import contact_kind
+
+        kept: dict[str, list[str]] = {}
+        for raw_kind, raw_values in given.items():
+            values = values_of(raw_values)
+            if not values:
+                continue
+            kind = contact_kind(cfg, raw_kind)
+            if kind is None:
+                offered = ", ".join(cfg.workspace.contact_kinds)
+                raise HTTPException(
+                    status_code=409, detail=f"{raw_kind} isn't a kind of contact detail here; use one of: {offered}."
+                )
+            kept[kind] = values_of([*kept.get(kind, []), *values])
+        for other in store.read().list("person"):
+            if other.id == except_id:
+                continue
+            held = {v.casefold() for v in all_values(other.data.get("how_to_reach"))}
+            clash = next((v for vs in kept.values() for v in vs if v.casefold() in held), None)
+            if clash is not None:
+                raise HTTPException(status_code=409, detail=f"{clash} is already {other.data['full_name']}'s.")
+        return kept
+
+    def create_person(body: PersonIn, address: str | None = None) -> str:
+        """Add a person on the side the body names, the way the People screen adds one. An address is kept as their
+        email, when the workspace has that kind of contact detail and no one on file has the address already."""
+        _same_name("person", "full_name", body.full_name)
+        if body.org:
+            need("organization", body.org)
+        given = _reach(body.how_to_reach) if body.how_to_reach else {}
+
+        from engine import sides
+
+        written, why = sides.person_write(
+            store.read(), cfg, {"sides": body.sides} if body.sides else {"side": body.side} if body.side else {}
+        )
+        if why:
+            raise HTTPException(status_code=409, detail=why)
+        from engine.applier import contact_kind
+
+        kind = contact_kind(cfg, "email")
+        reach = (kind, " ".join(address.split())) if address and kind and "@" in address else None
+
+        def do() -> str:
+            with store.transaction() as tx:
+                data = {**body.model_dump(exclude={"sides", "how_to_reach"}), "name_verified": True, **written}
+                if given:
+                    data["how_to_reach"] = given
+                if (
+                    reach
+                    and "how_to_reach" not in data
+                    and not any(
+                        reach[1].lower() == str(v).strip().lower()
+                        for p in tx.list("person")
+                        for v in all_values(p.data.get("how_to_reach"))
+                    )
+                ):
+                    data["how_to_reach"] = {reach[0]: [reach[1]]}
+                return tx.create("person", data, _setup("person.add")).id
+
+        return guard(do)
+
+    @r.post("/people")
+    def add_person(body: PersonIn) -> Created:
+        new = create_person(body)
+        changed()
+        return Created(id=new)
+
+    @r.post("/setup/people-add")
+    def add_setup_person(body: SetupPersonIn) -> Created:
+        """Add a person from the people step with the address their mail showed, kept as the way to reach them."""
+        new = create_person(PersonIn(**body.model_dump(exclude={"address"})), body.address)
+        changed()
+        return Created(id=new)
+
+    @r.get("/setup/people-suggestions")
+    def people_suggestions() -> PeopleSuggestionsView:
+        """The people the person's mail shows most (who their sent mail went to, else who wrote to them), not yet on
+        file, for the people step to offer each with an Add. Reads only; nothing is asked of a service."""
+        from engine import people_suggestions
+
+        found = people_suggestions.suggest(store, cfg, cfg.ui.walkthrough.suggested_people)
+        return PeopleSuggestionsView(people=[PersonSuggestion(**asdict(f)) for f in found])
+
+    @r.post("/setup/people-paste/preview")
+    def paste_people_preview(body: PeoplePasteIn) -> PeoplePastePreview:
+        """What a pasted list would add, so the person sees it before anything is added: each line that reads as a
+        person (with how they relate and their address when the line gave them), whether they are on file already, and
+        the lines that don't read as a person. Changes nothing."""
+        from engine import people_suggestions
+
+        found = people_suggestions.parse_list(body.text, people_suggestions.company_words_of(cfg))
+        held = people_suggestions.on_file(store, found.people)
+        return PeoplePastePreview(
+            people=[
+                PeoplePasteEntry(name=p.name, relation=p.relation, address=p.address, on_file=held[p.name])
+                for p in found.people
+            ],
+            left_out=found.left_out,
+        )
+
+    @r.post("/setup/people-paste")
+    def paste_people(body: PeoplePasteIn) -> PeoplePasteDone:
+        """Add a pasted list of people, one per line (a name, or Name <address>, then how they relate when it says),
+        each on the side given. What a line says about how they relate is kept as their relation on the personal side,
+        or their part on a side of work. A name already on file is left out and said so, and so is a line that doesn't
+        read as a person."""
+        from engine import people_suggestions, sides
+
+        found = people_suggestions.parse_list(body.text, people_suggestions.company_words_of(cfg))
+        written, _why = sides.person_write(
+            store.read(), cfg, {"sides": body.sides} if body.sides else {"side": body.side} if body.side else {}
+        )
+        personal = written.get("side") in (None, "personal")
+        added: list[str] = []
+        skipped: list[str] = []
+        for line in found.people:
+            name = line.name
+            how = {"relation": line.relation} if personal else {"role": line.relation}
+            try:
+                create_person(
+                    PersonIn(full_name=name, aliases=[], side=body.side, sides=body.sides, **how), line.address
+                )
+            except HTTPException as err:
+                if err.status_code != 409 or "already exists" not in str(err.detail):
+                    raise
+                skipped.append(name)
+            else:
+                added.append(name)
+        if added:
+            changed()
+        return PeoplePasteDone(added=added, skipped=skipped, left_out=found.left_out)
+
+    @r.post("/people/{pid}")
+    def edit_person(pid: str, body: PersonPatch) -> Ok:
+        """Change a person. Records refer to people by id, so a new name shows everywhere at once."""
+        need("person", pid)
+        changes = body.model_dump(exclude_unset=True)
+        if changes.get("full_name"):
+            _same_name("person", "full_name", changes["full_name"], except_id=pid)
+        if changes.get("org"):
+            need("organization", changes["org"])
+        if "how_to_reach" in changes:
+            changes["how_to_reach"] = _reach(changes["how_to_reach"] or {}, except_id=pid)
+        if {"full_name", "first_name", "aliases"} & changes.keys():
+            changes["name_verified"] = True  # the person wrote the spelling
+        guard(lambda: _edit_on_screen(store, cfg, "person", pid, changes))
+        changed()
+        return Ok(ok=pid)
+
+    @r.post("/people/{pid}/remove")
+    def remove_person(pid: str) -> Ok:
+        need("person", pid)
+        if pid == cfg.workspace.user.person:
+            raise HTTPException(status_code=409, detail="That's you; you can't be removed.")
+        guard(lambda: _remove(store, "person", pid))
+        changed()
+        return Ok(ok=pid)
+
+    @r.post("/records/person/{pid}/forget")
+    def person_forget(pid: str, body: PersonForget) -> PersonForgotten:
+        """Forget a person: their name becomes a marker, their details and earlier values are wiped from the database,
+        the ledger and the export, the export's history is rebuilt, and nothing can bring them back. Their record stays,
+        so what refers to them by id still holds. Refused when the record changed since it was read, when they were
+        forgotten already, when they are the person this workspace is for, and when the export's history is copied
+        elsewhere."""
+        from engine.people_forget import forget_person
+
+        need("person", pid)
+        record = store.read().get("person", pid)
+        if record.data.get("forgotten_on"):
+            return PersonForgotten(refused="forgotten")
+        if pid == cfg.workspace.user.person:
+            return PersonForgotten(refused="you")
+        if record.version != body.read_version:
+            return PersonForgotten(refused="changed")
+        from engine.redactions import rebuild_problem
+
+        if (why := rebuild_problem(ws)) is not None:
+            return PersonForgotten(refused="history", reason=why)
+        cs_id = guard(
+            lambda: forget_person(ws, store, cfg, pid, read_version=body.read_version, summary="Forgot a person")
+        )
+        changed()
+        return PersonForgotten(changeset=cs_id)
+
+    @r.get("/people/{pid}/removal")
+    def person_removal(pid: str) -> PersonRemoval:
+        """Whether this person was removed (their record is kept, so Restore brings them back) or isn't a record at
+        all, and when they were removed."""
+        from engine.record_page import display_name
+
+        held = store.read().get("person", pid, include_deleted=True)
+        if held is None or not held.deleted:
+            return PersonRemoval(state="none")
+        entries = store.read().ledger(kind="person", record_id=pid, op="person.remove")
+        return PersonRemoval(
+            state="removed",
+            name=display_name(held.data) or None,
+            removed_at=entries[-1]["at"] if entries else None,
+        )
+
+    @r.post("/people/{pid}/restore")
+    def restore_person(pid: str) -> Ok:
+        guard(lambda: _restore(store, "person", pid))
+        changed()
+        return Ok(ok=pid)
+
+    @r.get("/organizations")
+    def organizations() -> list[OrganizationView]:
+        """The organizations people work for, by name."""
+        from engine import sides
+
+        view = store.read()
+        own = {s.organization: s for s in sides.side_list(view, cfg) if s.organization}
+        by_side = {s.project: s.organization for s in own.values()}
+        count: dict[str, int] = {}
+        for p in view.list("person"):
+            # A person works for an organization they name; a business is also its people: those on its side.
+            counted = {p.data["org"]} if p.data.get("org") else set()
+            counted |= {by_side[side] for side in sides.person_sides(view, cfg, p.data) if side in by_side}
+            for org_id in counted:
+                count[org_id] = count.get(org_id, 0) + 1
+        found = [
+            OrganizationView(
+                id=o.id,
+                name=o.data["name"],
+                aliases=o.data.get("aliases", []),
+                notes=o.data.get("notes"),
+                people=count.get(o.id, 0),
+                side=own[o.id].project if o.id in own else None,
+                side_kind=own[o.id].kind if o.id in own else None,
+            )
+            for o in view.list("organization")
+        ]
+        return sorted(found, key=lambda o: o.name.casefold())
+
+    @r.post("/organizations")
+    def add_organization(body: OrganizationIn) -> Created:
+        _same_name("organization", "name", body.name)
+
+        def do() -> str:
+            with store.transaction() as tx:
+                return tx.create("organization", body.model_dump(), _setup("organization.add")).id
+
+        new = guard(do)
+        changed()
+        return Created(id=new)
+
+    @r.post("/organizations/{oid}")
+    def edit_organization(oid: str, body: OrganizationPatch) -> Ok:
+        """Rename or change an organization. People refer to it by id, so a new name shows everywhere at once."""
+        need("organization", oid)
+        changes = body.model_dump(exclude_unset=True)
+        if changes.get("name"):
+            _same_name("organization", "name", changes["name"], except_id=oid)
+        guard(lambda: _edit_on_screen(store, cfg, "organization", oid, changes))
+        changed()
+        return Ok(ok=oid)
+
+    @r.post("/organizations/{oid}/remove")
+    def remove_organization(oid: str) -> Ok:
+        need("organization", oid)
+        guard(lambda: _remove(store, "organization", oid))
+        changed()
+        return Ok(ok=oid)
+
+    @r.post("/organizations/{oid}/restore")
+    def restore_organization(oid: str) -> Ok:
+        guard(lambda: _restore(store, "organization", oid))
+        changed()
+        return Ok(ok=oid)
+
+    @r.get("/projects")
+    def projects() -> list[ProjectView]:
+        from engine import sides
+        from engine.lists import describe, status_rank
+        from engine.projects import language_for, spent_on
+        from engine.record_page import counts
+        from engine.scope import role_of
+
+        names = People(store, cfg)
+        view = store.read()
+        seen = counts(view)["projects"]
+        done = cfg.workspace.project.completed_status.strip().casefold()
+        meant = {p.id: describe(view, "project-status", p.data.get("status")) for p in view.list("project")}
+        groups = set(sides.side_ids(view, cfg))
+        return [
+            ProjectView(
+                side=p.id in groups,
+                parent=p.data.get("parent"),
+                language=language_for(view, cfg.workspace.language, p),
+                language_own=bool(p.data.get("language")),
+                role=role_of(view, p.id, names.pm),
+                content_levels=p.data.get("content_levels") or [],
+                budget_usd=p.data.get("budget_usd"),
+                spent_usd=round(spent_on(store, p.id), 4),
+                id=p.id,
+                name=p.data["name"],
+                aliases=p.data.get("aliases") or [],
+                group=p.data.get("group"),
+                status=p.data.get("status"),
+                phase=p.data.get("phase"),
+                priority=p.data.get("priority"),
+                target=str(p.data["target"]) if p.data.get("target") else None,
+                owner=p.data.get("owner"),
+                owner_name=names.name(p.data["owner"]) if p.data.get("owner") else None,
+                summary=p.data.get("summary"),
+                completed=meant[p.id].meaning == "done"
+                or (bool(done) and (p.data.get("status") or "").strip().casefold() == done),
+                status_tone=meant[p.id].tone,
+                status_meaning=meant[p.id].meaning,
+                status_rank=status_rank(view, "project-status", p.data.get("status")),
+                no_end=sides.has_no_end(view, cfg, p.id),
+                **seen.get(p.id, {}),
+            )
+            for p in view.list("project")
+        ]
+
+    def _project_fields(changes: dict, prj: str | None = None) -> None:
+        """Refuse a parent that would put a project inside itself, and content levels the AI settings don't have."""
+        from engine.applier import parent_problem
+
+        if changes.get("parent"):
+            why = parent_problem(store.read(), prj, changes["parent"])
+            if why:
+                raise HTTPException(status_code=409, detail=why)
+        from engine import sides
+
+        why = sides.side_field_problem(store.read(), cfg, prj, changes) or sides.no_target_problem(
+            store.read(), cfg, prj, changes
+        )
+        if why:
+            raise HTTPException(status_code=409, detail=why)
+        unknown = sorted(set(changes.get("content_levels") or []) - set(cfg.ai.content_levels))
+        if unknown:
+            detail = f"{', '.join(unknown)} isn't a content level in the AI settings"
+            raise HTTPException(status_code=409, detail=detail)
+
+    @r.post("/projects")
+    def add_project(body: ProjectIn) -> Created:
+        _same_name("project", "name", body.name)
+        if body.owner:
+            need("person", body.owner)
+        _project_fields(body.model_dump())
+
+        def do() -> str:
+            with store.transaction() as tx:
+                return tx.create("project", body.model_dump(exclude_none=True), _setup("project.add")).id
+
+        new = guard(do)
+        changed()
+        return Created(id=new)
+
+    @r.post("/projects/{prj}")
+    def edit_project(prj: str, body: ProjectPatch) -> Ok:
+        need("project", prj)
+        changes = body.model_dump(exclude_unset=True)
+        if changes.get("name"):
+            _same_name("project", "name", changes["name"], except_id=prj)
+        if changes.get("owner"):
+            need("person", changes["owner"])
+        _project_fields(changes, prj)
+        guard(lambda: _edit_on_screen(store, cfg, "project", prj, changes))
+        changed()
+        return Ok(ok=prj)
+
+    @r.post("/projects/{prj}/role")
+    def set_project_role(prj: str, body: ProjectRoleIn) -> Applied:
+        """The person's own part in a project, with Undo."""
+        from engine import sides
+        from engine.applier import apply_as_person
+
+        need("project", prj)
+        if sides.is_side(store.read(), cfg, prj):
+            raise HTTPException(status_code=409, detail=sides.SIDE_IS_SETTINGS)
+        person = cfg.workspace.user.person
+        if person is None:
+            raise HTTPException(status_code=409, detail="Say who you are before setting your part in a project.")
+        op = {"op": "project.role", "project": prj, "person": person, "role": body.role}
+        cs_id = guard(lambda: apply_as_person(store, cfg, [op], "Set a role on screen"))
+        changed()
+        return Applied(changeset=cs_id)
+
+    @r.post("/projects/{prj}/remove")
+    def remove_project(prj: str) -> Ok:
+        from engine import sides
+
+        need("project", prj)
+        if sides.is_side(store.read(), cfg, prj):
+            raise HTTPException(status_code=409, detail=sides.SIDE_IS_SETTINGS)
+        guard(lambda: _remove(store, "project", prj))
+        changed()
+        return Ok(ok=prj)
+
+    @r.post("/projects/{prj}/restore")
+    def restore_project(prj: str) -> Ok:
+        guard(lambda: _restore(store, "project", prj))
+        changed()
+        return Ok(ok=prj)
+
+    @r.post("/backup")
+    def backup_now() -> Status:
+        run_backup(ws, cfg)
+        changed()
+        return status()
+
+    def pending_restore() -> PendingRestoreView | None:
+        found = restore_in_app.pending(ws)
+        if found is None:
+            return None
+        return PendingRestoreView(made_at=found.made_at, kind=found.kind, records=found.records)
+
+    @r.get("/backups")
+    def backups() -> BackupsView:
+        """Where backups go and how they stand: the places with how each last went, the newest dated copies found in
+        them, whether backups run on their own (the setting is on and there is a place to put them), and a restore
+        waiting for the next start."""
+        found = backup_module.overview(ws, cfg)
+        b = found.state
+        return BackupsView(
+            state=BackupStatus(
+                configured=b.configured,
+                last_success=b.last_success,
+                age_hours=b.age_hours,
+                needs_attention=b.needs_attention,
+                last_error=b.last_error,
+                encrypted=b.encrypted,
+            ),
+            message=b.message,
+            targets=[BackupTargetView(**vars(t)) for t in found.targets],
+            copies=[BackupCopyView(**vars(c)) for c in found.copies],
+            schedule=found.schedule,
+            switch=found.switch,
+            pending=pending_restore(),
+            restore_blocked=restore_in_app.blocked(cfg),
+        )
+
+    def restore_staged(stage: Any) -> RestoreStaged:
+        """Stage a restore (`stage` makes it) and ask for the restart that swaps it in: nothing in the workspace
+        changes until then. A copy that can't be restored (a wrong key, a damaged copy) is refused with the reason
+        and nothing is left."""
+        if why := restore_in_app.blocked(cfg):
+            raise HTTPException(status_code=409, detail=why)
+        try:
+            found = stage()
+        except restore_in_app.KeyNeeded as err:
+            raise HTTPException(status_code=409, detail=str(err), headers={"X-Cockpit-Needs": "key"}) from None
+        except restore_in_app.RestoreError as err:
+            raise HTTPException(status_code=409, detail=str(err)) from None
+        worker.restore_staged()
+        return RestoreStaged(
+            pending=PendingRestoreView(made_at=found.made_at, kind=found.kind, records=found.records),
+            can_restart=worker.can_restart,
+        )
+
+    @r.post("/backups/restore")
+    def backup_restore(body: RestoreCopyIn) -> RestoreStaged:
+        """Make the workspace ready to go back to how it was in one of the copies the Backups page lists. Nothing is
+        replaced now: the swap is made at the next start, which the person chooses, and what the workspace holds then
+        is set aside (never deleted) so it can be put back. An encrypted copy needs its key."""
+        wanted = Path(body.path).expanduser().resolve()
+        copy = next(
+            (c for c in backup_module.overview(ws, cfg, limit=10**6).copies if Path(c.path).resolve() == wanted), None
+        )
+        if copy is None:
+            raise HTTPException(status_code=404, detail="That copy isn't in a place your backups go.")
+        return restore_staged(lambda: restore_in_app.stage(ws, wanted, body.key, made_at=copy.made_at))
+
+    @r.post("/backups/restore/cancel")
+    def backup_restore_cancel() -> Ok:
+        """Cancel the restore waiting for the next start; the workspace was never changed."""
+        restore_in_app.cancel(ws)
+        worker.restore_cancelled()
+        return Ok(ok="restore")
+
+    @r.post("/restore/put-back")
+    def restore_put_back() -> RestoreStaged:
+        """Make the workspace ready to go back to how it was before the last restore, from the files that restore set
+        aside. It is staged and swapped in the same way, at the next start."""
+        return restore_staged(lambda: restore_in_app.stage_put_back(ws))
+
+    @r.post("/restore/dismiss")
+    def restore_dismiss() -> Ok:
+        """Take the line about the last restore off Today."""
+        restore_in_app.dismiss(ws)
+        changed()
+        return Ok(ok="restore")
+
+    @r.get("/events")
+    async def stream() -> StreamingResponse:
+        async def gen() -> Any:
+            # Each change says which kinds of records were written since the last one, so the screen refreshes only
+            # what they affect; a change with none (a setting, a source's status) refreshes everything.
+            seen = events.version
+            position, _ = store.read().changed_kinds(0)
+            yield f"event: hello\ndata: {seen}\n\n"
+            while not events.closed:
+                seen_now = await asyncio.to_thread(events.wait, seen, 15.0)
+                if events.closed:
+                    break
+                if seen_now != seen:
+                    seen = seen_now
+                    position, kinds = store.read().changed_kinds(position)
+                    news = {"version": seen, "kinds": kinds, "position": position}
+                    yield f"event: changed\ndata: {json.dumps(news)}\n\n"
+                else:
+                    yield ": keep-alive\n\n"
+
+        return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-store"})
+
+    return r
+
+
+def _arrived_view(store: Store, cfg: Config, arrived: Any) -> ArrivedView:
+    """A message of Today's Came in with the sides its source serves."""
+    from engine import sides
+
+    return ArrivedView(**vars(arrived), sides=sides.watch_source_sides(store.read(), cfg, arrived.source))
+
+
+def _added_text(before: Any, after: Any) -> str:
+    """What an edit added to a text: the part after the old text when the edit kept it, else the whole new text."""
+    old = str(before or "").strip()
+    new = str(after or "").strip()
+    return new[len(old) :].strip() if old and new.startswith(old) else new
+
+
+def _setup(op: str) -> WriteContext:
+    return WriteContext(actor="pm", trust="trusted", op=op)
+
+
+def _edit_on_screen(store: Store, cfg: Config, kind: str, record_id: str, changes: dict[str, Any]) -> None:
+    """The person's edit of a core record on screen, as a `record.edit` op through the applier, so the checks and
+    every running plugin's validators on that op see it like any other edit."""
+    from engine.applier import apply_as_person
+    from engine.people_forget import forgotten_problem
+
+    if not changes:
+        return
+    current = _existing(store.read(), kind, record_id)
+    if (why := forgotten_problem(store.read(), kind, record_id)) is not None:
+        raise StoreError(why)  # refused before anything is written, so the attempted values are kept nowhere
+    op = {
+        "op": "record.edit",
+        "record": {"kind": kind, "id": record_id},
+        "fields": changes,
+        "read_version": current.version,
+    }
+    apply_as_person(store, cfg, [op], "Changed on screen")
+
+
+def _counted(using: list[tuple[str, str]], store: Store) -> str:
+    """The records that still refer to one, counted by kind in words ("3 projects and 1 note")."""
+    from collections import Counter
+
+    from engine.records import kind_label
+
+    parts = []
+    for kind, n in sorted(Counter(k for k, _ in using).items()):
+        label = kind_label(store.plugins.records.get(kind), kind)
+        if n != 1:
+            label = label[:-1] + "ies" if label.endswith("y") and label[-2:-1] not in "aeiou" else label + "s"
+        parts.append(f"{n} {label}")
+    return " and ".join(parts) if len(parts) < 3 else ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def _remove(store: Store, kind: str, record_id: str) -> None:
+    """Remove a record nothing refers to; otherwise say what still does."""
+    with store.transaction() as tx:
+        cur = _existing(tx, kind, record_id)
+        using = referrers(tx, kind, record_id)
+        if using:
+            hint = " Mark them as left instead." if kind == "person" else " Move or remove them first."
+            raise ValueError(f"It can't be removed while {_counted(using, store)} still use it.{hint}")
+        tx.delete(kind, record_id, _setup(f"{kind}.remove"), read_version=cur.version)
+
+
+def _restore(store: Store, kind: str, record_id: str) -> None:
+    with store.transaction() as tx:
+        cur = tx.get(kind, record_id, include_deleted=True)
+        if cur is None:
+            raise KeyError(f"{kind} {record_id} doesn't exist")
+        tx.undelete(kind, record_id, _setup(f"{kind}.restore"), read_version=cur.version)
+
+
+def _existing(tx: Any, kind: str, record_id: str) -> Any:
+    rec = tx.get(kind, record_id)
+    if rec is None:
+        raise StoreError(f"{kind} {record_id} doesn't exist")
+    return rec
+
+
+def _account_name(cfg: Config, account: str | None) -> str | None:
+    """An AI account by the name the person gave it (its label, else its id); None when there is none."""
+    if not account:
+        return None
+    found = cfg.ai.providers.get(account)
+    return (found.label if found is not None and found.label else account) or None
+
+
+def _cause_view(request: dict[str, Any]) -> StopCauseView | None:
+    """A stopped request's cause for the screen: for a data level, the account the tier would use first."""
+    cause = request.get("cause")
+    if not cause or request.get("state") not in ("needs_you", "failed"):
+        return None
+    # The causes the screen has one action for; the others (paused, retry, no AI account) are told by the line itself.
+    if cause.get("kind") not in ("data_level", "no_person"):
+        return None
+    accounts = cause.get("accounts") or []
+    return StopCauseView(
+        kind=cause["kind"],
+        level=cause.get("level"),
+        account=accounts[0].partition("/")[0] if accounts else None,
+    )
+
+
+def _title_view(title: Any, people: People) -> ItemTitle | None:
+    if title is None:
+        return None
+    return ItemTitle(
+        kind=title.kind,
+        person=title.person,
+        person_name=people.name(title.person) if title.person else None,
+        sender=title.sender,
+        topic=title.topic,
+        task=title.task,
+        subject=title.subject or None,
+    )
+
+
+def _ask(store: Store, people: People, qid: str | None, cfg: Config | None = None) -> Ask | None:
+    q = store.read().get("question", qid) if qid else None
+    if q is None:
+        return None
+    resolves = q.data.get("resolves") or {}
+    about = resolves.get("kind") if resolves.get("kind") in ("held-op", "owner") else "other"
+    suggestion = None
+    if about == "owner" and cfg is not None:
+        found = suggest_owner(store.read(), cfg, resolves.get("action", ""))
+        suggestion = OwnerSuggestionView(**found.shown(people)) if found is not None else None
+    return Ask(
+        id=q.id,
+        status=q.data["status"],
+        about=about,
+        name=resolves.get("name"),
+        options=[Option(id=pid, name=people.name(pid)) for pid in q.data.get("options", [])],
+        suggestion=suggestion,
+    )
+
+
+def _named(people: People, who: str | None) -> str | None:
+    """A person an op gives by name or id, as their name; what names no one known person stays as written."""
+    if not who:
+        return who
+    found = people.resolve(who)
+    return people.name(found.person) if found.status == "ok" and found.person else who
+
+
+def _shown_value(store: Store, value: Any) -> Any:
+    """A value an op sets, with an id replaced by the name of the record it is (ids are never shown)."""
+    from engine.learn import kind_of_id
+    from engine.record_page import display_name
+
+    kind = kind_of_id(store.plugins.records, value) if isinstance(value, str) else None
+    target = store.read().get(kind, value, include_deleted=True) if kind else None
+    return display_name(target.data) or value if target is not None else value
+
+
+def _side_name(store: Store, cfg: Config | None, project_id: str | None) -> str | None:
+    """The side's name when an item is filed directly on a side (design 6.32), else none."""
+    from engine import sides
+
+    return sides.side_name_of(store.read(), cfg, project_id) if cfg is not None else None
+
+
+def _fold_own_edits(items: list[ChangeItem], edited: dict[str, tuple[str, str]], here: Any) -> list[ChangeItem]:
+    """The person's own edits of one item on one day as one row (the newest edit, which keeps every one of them in
+    `edits`); every other change stays a row of its own, in its place. `items` are newest first."""
+    heads: dict[tuple[date, str, str], ChangeItem] = {}
+    rows: list[ChangeItem] = []
+    for item in items:
+        target = edited.get(item.id)
+        if target is None:
+            rows.append(item)
+            continue
+        key = (own_edits.day_of(item.created_at, here), *target)
+        head = heads.get(key)
+        if head is None:
+            heads[key] = head = item
+            rows.append(item)
+        else:
+            if not head.edits:
+                head.edits = [head.model_copy()]
+            head.edits.append(item)
+            head.edited = (head.changeset.ops[0].title if head.changeset and head.changeset.ops else None) or None
+    return rows
+
+
+def _is_bookkeeping_op(o: dict[str, Any], ops: list[dict[str, Any]]) -> bool:
+    """Whether an op of a change is no news to the person: their own organization set to the one the same change just
+    made (they work for the business they added), which a record's Activity leaves out as well."""
+    op = o["op"]
+    if (
+        o.get("status") != "applied"
+        or op.get("op") != "record.set"
+        or op.get("kind") != "person"
+        or op.get("field") != "org"
+    ):
+        return False
+    return any(
+        other.get("status") == "applied"
+        and other["op"].get("op") == "project.add"
+        and op.get("value") in (other["op"].get("organization"), other["op"].get("name"))
+        for other in ops
+    )
+
+
+def _op_view(
+    o: dict[str, Any],
+    store: Store,
+    people: People,
+    projects: dict[str, str],
+    cfg: Config | None = None,
+    to_send: set[str] | None = None,
+) -> OpView:
+    op = o["op"]
+    record = None
+    for ref in o.get("records", []):
+        rec = store.read().get(ref["kind"], ref["id"], include_deleted=True)
+        if rec is not None and ref["kind"] in ("action", "question", "fact", "event", "note", "person", "project"):
+            record = (ref["kind"], rec)
+            break
+    if record is None and op["op"] in ENDING_NAMES:
+        # An ending that waits for the person has made nothing yet, so it is about the action it would end.
+        rec = store.read().get("action", op.get("id", ""))
+        record = ("action", rec) if rec is not None else None
+    title = o.get("label") or op.get("text") or op.get("title") or op.get("answer") or op.get("full_name") or ""
+    if op["op"] == "answer":
+        title = op["text"]  # the whole answer is what the person reads, not its one-line label
+    if op["op"] == "note" and record is not None and record[0] == "note" and not o.get("label"):
+        # A note reads as it stands now (a note stored before the title rule was re-titled on its record, never in the
+        # change that made it).
+        title = record[1].data.get("text") or title
+    meta: dict[str, Any] = {}
+    if record:
+        kind, rec = record
+        d = rec.data
+        title = d.get("text") or d.get("title") or d.get("full_name") or d.get("name") or title
+        if kind == "action":
+            meta["owners"] = [people.owner(x) for x in d.get("owners", [])]
+            meta["due"] = d.get("due")
+            meta["project"] = projects.get(d.get("project"))
+            meta["side_name"] = _side_name(store, cfg, d.get("project"))
+            meta["action_status"] = d.get("status")
+            meta["to_send"] = rec.id in (to_send or ())
+        if kind == "question":
+            meta["to"] = people.name(d.get("to"))
+        if kind == "note":
+            meta["project"] = projects.get(d.get("project"))
+            meta["side_name"] = _side_name(store, cfg, d.get("project"))
+        if kind == "fact" and d.get("basis") == "said" and d.get("said_by"):
+            meta["said_by"] = people.name(d["said_by"])
+            meta["as_of"] = str(d["as_of"]) if d.get("as_of") else None
+    elif op["op"] == "fact" and op.get("basis") == "said" and op.get("said_by"):
+        meta["said_by"] = _named(people, op["said_by"])
+        meta["as_of"] = str(op["as_of"]) if op.get("as_of") else None
+    elif op["op"] == "action.add":
+        meta["owners"] = [_named(people, who) for who in op.get("owners", [])]
+        meta["due"] = op.get("due")
+        if cfg is not None:
+            meta["to_send"] = any(
+                who != people.pm and stance_of(store.read(), cfg.steward, who) not in UNTOLD_STANCES
+                for who in op.get("owners", [])
+            )
+    elif op["op"] == "question.add":
+        meta["to"] = _named(people, op.get("to"))
+    elif op["op"] == "note":
+        meta["project"] = projects.get(op.get("project"))
+        meta["side_name"] = _side_name(store, cfg, op.get("project"))
+    if op["op"] == "record.set":
+        meta["field"] = op["field"]
+        meta["value"] = _shown_value(store, op["value"])
+    if op["op"] == "project.add":
+        meta["name"] = op["name"]
+        if op.get("link") and cfg is not None:
+            from engine.projects import source_for_link
+
+            if source_for_link(cfg, op["link"]) is None:
+                meta["note"] = cfg.language.messages.link_not_read
+    if op["op"] == "project.role":
+        meta["role"] = op["role"]
+    if op["op"] == "person.stance":
+        meta["stance"] = op["stance"]
+    evidence = op.get("evidence")
+    asked = None
+    if o["status"] == "held" and not o.get("question"):
+        asked = held_ask.describe(
+            store.read(),
+            people,
+            op,
+            reporter=o.get("reporter"),
+            choice=any(p.get("check") == endings.CHOICE_CHECK for p in o.get("problems") or []),
+            cfg=cfg,
+        )
+    return OpView(
+        index=o["index"],
+        op=op["op"],
+        status=o["status"],
+        reason=held_ask.reason_of(o) if asked else o.get("reason"),
+        held=asked,
+        group=o["group"],
+        answer_group=o.get("answer_group"),
+        title=title,
+        meta=meta,
+        evidence={"quote": evidence["quote"]} if evidence else None,
+        record={"kind": record[0], "id": record[1].id} if record else None,
+        ask=_ask(store, people, o.get("question"), cfg),
+    )
+
+
+def _nudge_view(n: Any, withheld: str | None = None) -> NudgeView:
+    return NudgeView(
+        text="" if withheld else n.text,
+        withheld=withheld,
+        round=n.round,
+        question_ids=n.question_ids,
+        action_ids=n.action_ids,
+        left_out=[LeftOutView(**vars(x)) for x in n.left_out],
+    )
+
+
+def _told_names(store: Any, cfg: Any, people: People, action_id: str) -> list[str]:
+    found = store.read().get("action", action_id)
+    return endings.told_names(store.read(), cfg, people, found) if found is not None else []
+
+
+def _section(
+    s: Any, people: People, action_origin: dict[str, Any], question_origin: dict[str, Any], store: Any, cfg: Any
+) -> FollowupSection:
+    from engine import send_accounts
+    from engine.followups import message_where
+    from engine.outward import outgoing_problem
+
+    where = message_where(cfg, s.name)
+    held = None if s.is_pm else outgoing_problem(store.read(), cfg, {where: s.message})
+    person = store.read().get("person", s.person)
+    mailboxes = send_accounts.sending_accounts(store, cfg)
+    came_through = send_accounts.conversation_account(store, cfg, person.data) if person is not None else None
+    nudge_held = None if s.is_pm or s.nudge is None else outgoing_problem(store.read(), cfg, {where: s.nudge.text})
+
+    def question_views(rows: list[dict[str, Any]]) -> list[FollowupQuestion]:
+        return [_followup_question(q, people, question_origin, store.read()) for q in rows]
+
+    questions = question_views(s.questions)
+    later = question_views(s.later)
+    actions = [
+        FollowupAction(
+            id=a["id"],
+            version=a["version"],
+            owners=[
+                OwnerNameView(
+                    person=o["person"],
+                    name=render_owner(
+                        people.owner_format, people.name(o["person"]), people.team_names.get(o.get("team") or "")
+                    ),
+                    team=o.get("team"),
+                )
+                for o in a["owners"]
+            ],
+            text=a["text"],
+            due=a["due"],
+            due_check=a["due_check"],
+            project_name=a["project_name"],
+            side_name=a.get("side_name"),
+            parent_name=a.get("parent_name"),
+            notes=a.get("notes"),
+            links=a["links"],
+            told=a["told"],
+            to_send=a["to_send"],
+            told_days=a["told_days"],
+            told_names=_told_names(store, cfg, people, a["id"]),
+            ready_since=a.get("ready_since"),
+            followed_up=a["followed_up"],
+            chases=a["chases"],
+            on_hold=a["on_hold"],
+            blocker=BlockerView(**a["blocker"]) if a.get("blocker") else None,
+            chase_due=a["chase_due"],
+            due_soon=a["due_soon"],
+            origin=action_origin.get(a["id"]),
+            side=a.get("side"),
+            views=a.get("views", []),
+        )
+        for a in s.actions
+    ]
+    return FollowupSection(
+        person=s.person,
+        name=s.name,
+        is_pm=s.is_pm,
+        questions=questions,
+        later=later,
+        actions=actions,
+        message="" if held else s.message,
+        withheld=held,
+        limited_out=[LimitedOutView(**x) for x in s.limited],
+        to_send=s.to_send,
+        ready_since=s.ready_since,
+        nudge=_nudge_view(s.nudge, nudge_held) if s.nudge is not None else None,
+        send_from=mailboxes,
+        send_from_default=came_through or (mailboxes[0] if mailboxes else None),
+    )
+
+
+def _followup_question(
+    q: dict[str, Any], people: People, question_origin: dict[str, Any], view: Any
+) -> FollowupQuestion:
+    from engine.origin import from_outside
+
+    resolves = q.get("resolves") or {}
+    asked = view.get("question", q["id"])
+    return FollowupQuestion(
+        from_outside=asked is not None and from_outside(view, asked),
+        id=q["id"],
+        title=q["title"],
+        text=q["text"],
+        links=q["links"],
+        kind=q["kind"],
+        status=q["status"],
+        project_name=q["project_name"],
+        side_name=q.get("side_name"),
+        sent=q["sent"],
+        followed_up=q["followed_up"],
+        chases=q["chases"],
+        waiting_days=q["waiting_days"],
+        chase_due=q["chase_due"],
+        held_until=q.get("held_until"),
+        held_for_name=q.get("held_for_name"),
+        ready_since=q.get("ready_since") if q["status"] == "open" else None,
+        about=resolves.get("kind"),
+        options=(
+            [Option(id=key, name=key) for key in resolves.get("files", [])]
+            if resolves.get("kind") == "version"
+            else [Option(id=pid, name=people.name(pid)) for pid in q["options"]]
+        ),
+        origin=question_origin.get(q["id"]),
+        side=q.get("side"),
+        views=q.get("views", []),
+    )

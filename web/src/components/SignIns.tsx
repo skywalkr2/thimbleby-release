@@ -1,0 +1,570 @@
+// Sign-ins: the services an add-on signs in to, one row each with where the sign-in stands in words and one action.
+// Signing in leaves the app for the service's own page in this tab; the service sends the person back afterwards
+// (see lib/sign-in-return.ts). The address the service's app registration must allow is always shown, since the
+// person needs it when registering the app.
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Heading } from "react-aria-components";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { api, type S } from "../lib/api";
+import { useAct } from "../lib/act";
+import { problemText } from "../lib/problem";
+import { useSignInWindow } from "../lib/sign-in-window";
+import { useToasts } from "../lib/toasts";
+import { useWords } from "../lib/wording";
+import { LoadFailed } from "../ui/LoadFailed";
+import { ModalPanel, DialogFooter, restoreFocus } from "./ModalPanel";
+import { RowMenu, type MenuAction } from "./RowMenu";
+import { SafeLink } from "./SafeText";
+import { useFocusAfterRender } from "../lib/focus-after-render";
+import { Button } from "../ui/Button";
+import { FormField } from "../ui/FormField";
+import { FormBlock } from "../ui/FormBlock";
+import { Actions } from "../ui/Actions";
+import { RowList } from "../ui/RowList";
+import { Row } from "../ui/Row";
+import { Icon } from "../ui/Icon";
+import { useConnection } from "../lib/connection";
+import { Skeleton } from "../ui/Skeleton";
+import { ItemList, Item } from "../ui/ItemList";
+import { StateMark, needsYou, type StateTone } from "../ui/StateMark";
+import { refreshEverything, useWrite } from "../lib/write";
+type SignIn = S["SignInView"];
+type Account = S["SignInAccount"];
+
+/** The add-on a sign-in belongs to: the part of its name before the "/", or none when the name has no such part. */
+export const addonOfSignIn = (name: string): string | null => (name.includes("/") ? name.split("/", 1)[0] : null);
+
+export function SignIns(props: {
+  /** Where an account's own line is drawn: in this row (the default), or not at all because the screen draws each account as a card. */
+  accountsIn?: "row" | "cards";
+  onOpenAddons: () => void;
+  /** Opens the form that adds a source, on the kinds of this add-on (null: all kinds). */
+  onChooseSource: (plugin: string | null, kind?: string, account?: string) => void;
+}) {
+  const { t } = useWords();
+  const signIns = useQuery({ queryKey: ["sign-ins"], queryFn: api.signIns });
+  if (signIns.isPending) return <Skeleton rows={1} className="connections-accounts" />;
+  if (signIns.isError) return <LoadFailed message={t("sign_in.load_failed")} onRetry={() => void signIns.refetch()} />;
+  // Until an add-on signs in to a service there is nothing to list; the way to turn one on is offered instead.
+  if (signIns.data.length === 0) {
+    return (
+      <section className={["panel-section", props.accountsIn === "cards" ? "connections-accounts" : ""].filter(Boolean).join(" ")} aria-labelledby="sign-ins-title">
+        <div className="heading">
+          <h3 id="sign-ins-title">{t("sign_in.title")}</h3>
+        </div>
+        <p className="hint">{t("sign_in.none")}</p>
+        <Actions align="end">
+          <Button onClick={props.onOpenAddons}>
+            {t("sign_in.open_addons")}
+          </Button>
+        </Actions>
+      </section>
+    );
+  }
+  return (
+    <section className={["panel-section", props.accountsIn === "cards" ? "connections-accounts" : ""].filter(Boolean).join(" ")} aria-labelledby="sign-ins-title">
+      <div className="heading">
+        <h3 id="sign-ins-title">{t("sign_in.title")}</h3>
+      </div>
+      <p className="hint">{t("sign_in.intro")}</p>
+      <RowList>
+        {signIns.data.map((item) => (
+          <SignInRow key={item.name} item={item} accountsIn={props.accountsIn} onChooseSource={props.onChooseSource} />
+        ))}
+      </RowList>
+    </section>
+  );
+}
+
+/** One sign-in: where it stands in words, with its actions. Once signed in, the next step is the primary action
+ * (choosing what to read); signing out and signing in again are in the menu. */
+export function SignInRow(props: { item: SignIn; accountsIn?: "row" | "cards"; onChooseSource: (plugin: string | null, kind?: string, account?: string) => void }) {
+  const { t } = useWords();
+  const act = useAct();
+  const [signingOut, setSigningOut] = useState(false);
+  const [outProblem, setOutProblem] = useState("");
+  // Signing out is asked about first: it ends reading and acting, and nothing can bring it back but signing in again.
+  const [confirming, setConfirming] = useState<{ account: Account | null } | null>(null);
+  const client = useQueryClient();
+  const { push } = useToasts();
+  // The paste form: open by itself on a row with no registration yet, until the person closes it; elsewhere only when asked for.
+  const [formChoice, setFormChoice] = useState<boolean | null>(null);
+  const { item } = props;
+  // Signing in or out, choosing what to read and the rest all need the network.
+  const offline = useConnection().offline;
+  const base = `sign-in-${item.name.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+  const signedIn = item.status === "signed_in";
+
+  const { start, phase, busy: starting, problem: startProblem, refreshed } = useSignInWindow(item.name);
+  // The window that was opened says how it went: every list of what is signed in reads again, and the person is told, so a
+  // window that closes itself (a service that signs in at once) is never left without a word.
+  useEffect(() => {
+    if (phase !== "done") return;
+    void refreshEverything(client);
+    push({ message: refreshed || t("sign_in.return.done", { label: item.label }) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
+  const busy = starting || signingOut;
+  const held = busy || offline;
+  const problem = startProblem || outProblem;
+
+  const askToSignOut = (account: Account | null) => setConfirming({ account });
+  const signOut = async () => {
+    setSigningOut(true);
+    setOutProblem("");
+    await act(
+      () => api.signOut(item.name),
+      () => ({ message: t("sign_in.signed_out_toast", { label: item.label }) }),
+    );
+    setSigningOut(false);
+  };
+
+  // A service that names its accounts lists each one with its own Sign out; signing in again adds another.
+  const several = Boolean(item.several);
+  const accounts = several ? (item.accounts ?? []) : [];
+  const signOutAccount = async (a: Account) => {
+    setSigningOut(true);
+    setOutProblem("");
+    const who = a.address ?? t("sign_in.account_unnamed");
+    await act(
+      () => api.signOut(item.name, a.key),
+      () => ({ message: t("sign_in.signed_out_account_toast", { account: who, label: item.label }) }),
+    );
+    setSigningOut(false);
+  };
+
+  const again = item.status === "expired";
+  const notReading = signedIn ? (item.not_reading ?? []) : [];
+  const label = notReading.length > 0
+    ? t("sign_in.start_reading")
+    : signedIn
+    ? t("sign_in.choose_source")
+    : busy
+      ? t("sign_in.working")
+      : t(again ? "sign_in.sign_in_again" : "sign_in.sign_in");
+  const named = notReading.length > 0
+    ? t("sign_in.start_reading_named", { label: item.label })
+    : signedIn
+    ? t("sign_in.choose_source_named", { label: item.label })
+    : t(again ? "sign_in.sign_in_again_named" : "sign_in.sign_in_named", { label: item.label });
+  const notReady = !signedIn && !item.ready;
+  const formOpen = item.can_paste && (formChoice ?? item.app === "none");
+  const pasted = item.app === "pasted";
+  const allows = signedIn ? [] : (item.allows ?? []);
+  const missing = signedIn ? (item.missing ?? []) : [];
+  const status = t(`sign_in.status.${item.status}`);
+  const statusTone: StateTone = signedIn ? "ok" : item.status === "expired" ? "danger" : "neutral";
+  const showHint = notReady && !formOpen;
+  const describedBy = [
+    problem && `${base}-problem`,
+    showHint && `${base}-not-ready`,
+    notReading.length > 0 && `${base}-not-reading`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const menuId = `${base}-menu`;
+
+  const focusAfterRender = useFocusAfterRender();
+  const openForm = () => {
+    setFormChoice(true);
+    focusAfterRender(() => document.getElementById(`${base}-client-id`));
+  };
+  const closeForm = () => {
+    setFormChoice(false);
+    setOutProblem("");
+    focusAfterRender(() => document.getElementById(menuId) ?? document.getElementById(`${base}-title`));
+  };
+
+  const stopUsing = () =>
+    void act(
+      () => api.setAsideSignInApp(item.name),
+      () => ({
+        message: t("sign_in.own.stopped_toast", { label: item.label }),
+        undo: () => api.bringBackSignInApp(item.name),
+      }),
+    );
+  const bringBack = () =>
+    void act(
+      () => api.bringBackSignInApp(item.name),
+      () => ({
+        message: t("sign_in.own.brought_back_toast", { label: item.label }),
+        undo: () => api.setAsideSignInApp(item.name),
+      }),
+    );
+
+  const startReading = () =>
+    void act(
+      () => api.startSignInSources(item.name),
+      () => ({ message: t("sign_in.started_reading_toast", { list: notReading.join(", ") }) }),
+    );
+
+  // "Choose what to read" opens at the account's own sources: the only account signed in, else the one the row stands for.
+  const chooseAt = (item.accounts ?? []).length === 1 ? ((item.accounts ?? [])[0].address ?? undefined) : (item.account ?? undefined);
+  const actions: MenuAction[] = [];
+  if (signedIn && notReading.length > 0) {
+    actions.push({ id: "choose", label: t("sign_in.choose_source"), run: () => props.onChooseSource(addonOfSignIn(item.name), undefined, chooseAt), disabled: held });
+  }
+  if (signedIn && !several) {
+    actions.push({ id: "sign-out", label: t("sign_in.sign_out"), run: () => askToSignOut(null), disabled: held });
+    actions.push({ id: "sign-in-again", label: t("sign_in.sign_in_again"), run: () => void start(), disabled: held || !item.ready });
+  }
+  if (item.can_paste && !formOpen && !pasted && (item.app === "add-on" || item.app === "none")) {
+    actions.push({ id: "use-own", label: t("sign_in.own.use"), run: openForm, disabled: held });
+  }
+  if (pasted) actions.push({ id: "stop", label: t("sign_in.own.stop"), run: stopUsing, disabled: held });
+  if (item.set_aside && !pasted) actions.push({ id: "bring-back", label: t("sign_in.own.bring_back"), run: bringBack, disabled: held });
+
+  const callbackField = (
+    <FormField id={`${base}-callback`} label={t("sign_in.callback")}>
+      <input
+        id={`${base}-callback`}
+        type="text"
+        readOnly
+        value={item.callback}
+        aria-describedby={`${base}-callback-hint`}
+        onFocus={(e) => e.currentTarget.select()}
+      />
+      <p className="hint" id={`${base}-callback-hint`}>
+        {t("sign_in.callback_hint")}
+      </p>
+    </FormField>
+  );
+
+  return (
+    <Row
+      aria-labelledby={`${base}-title`}
+      className="connection-account"
+      lead={<Icon name="inbox" />}
+      state={needsYou(statusTone) ? statusTone : undefined}
+      title={item.label}
+      titleId={`${base}-title`}
+      meta={
+        <>
+          <StateMark tone={statusTone}>{status}</StateMark>
+          {accounts.length === 0 && signedIn && item.account ? (
+            <>
+              {" · "}
+              <span>{t("sign_in.status.signed_in_as", { account: item.account })}</span>
+            </>
+          ) : null}
+        </>
+      }
+      primary={
+        <Button
+          variant="primary"
+          data-key="primary"
+          disabled={held || notReady}
+          aria-label={named}
+          aria-describedby={describedBy || undefined}
+          onClick={() =>
+            notReading.length > 0
+              ? startReading()
+              : signedIn
+                ? props.onChooseSource(addonOfSignIn(item.name), undefined, chooseAt)
+                : void start()
+          }
+        >
+          {label}
+        </Button>
+      }
+      menu={<RowMenu label={item.label} actions={actions} buttonId={menuId} />}
+    >
+          {accounts.length > 0 && props.accountsIn !== "cards" && (
+            <ItemList aria-label={t("sign_in.accounts")}>
+              {accounts.map((a) => {
+                const who = a.address ?? t("sign_in.account_unnamed");
+                return (
+                  <Item key={a.key}>
+                    <span className="hint">
+                      {accounts.length === 1 && a.status !== "expired" && a.address
+                        ? t("sign_in.status.signed_in_as", { account: a.address })
+                        : who}
+                      {a.status === "expired" && <> · {t("sign_in.status.expired")}</>}
+                    </span>
+                    <Actions as="span">
+                      {a.status === "expired" && (
+                        <Button variant="quiet"
+                          disabled={held || !item.ready}
+                          aria-label={t("sign_in.sign_in_again_account", { account: who })}
+                          onClick={() => void start()}
+                        >
+                          {t("sign_in.sign_in_again")}
+                        </Button>
+                      )}
+                      <Button variant="quiet"
+                        disabled={busy}
+                        aria-label={t("sign_in.sign_out_account", { account: who })}
+                        onClick={() => askToSignOut(a)}
+                      >
+                        {t("sign_in.sign_out")}
+                      </Button>
+                    </Actions>
+                  </Item>
+                );
+              })}
+            </ItemList>
+          )}
+          {several && accounts.length > 0 && (
+            <Actions>
+              <Button icon="plus"
+                disabled={held || !item.ready}
+                aria-label={t("sign_in.add_account_named", { label: item.label })}
+                onClick={() => void start()}
+              >
+                {t("sign_in.add_account")}
+              </Button>
+            </Actions>
+          )}
+          {allows.length > 0 && (
+            <FormBlock>
+              <span className="what" id={`${base}-allows`}>
+                {t("sign_in.allows")}
+              </span>
+              <ul className="plain-list" aria-labelledby={`${base}-allows`}>
+                {allows.map((line, i) => (
+                  <li key={i}>{line}</li>
+                ))}
+              </ul>
+            </FormBlock>
+          )}
+          {notReading.length > 0 && (
+            <p className="hint" id={`${base}-not-reading`}>
+              {t("sign_in.not_reading", { list: notReading.join(", ") })}
+            </p>
+          )}
+          {missing.length > 0 && (
+            <FormBlock>
+              <p className="hint" id={`${base}-missing`}>
+                {t("sign_in.missing", { list: missing.join(", ") })}
+              </p>
+              <Actions align="end">
+                <Button
+                  disabled={held || !item.ready}
+                  aria-label={t("sign_in.sign_in_again_named", { label: item.label })}
+                  aria-describedby={`${base}-missing`}
+                  onClick={() => void start()}
+                >
+                  {t("sign_in.sign_in_again")}
+                </Button>
+              </Actions>
+            </FormBlock>
+          )}
+          {item.app === "add-on" && item.app_note && <p className="hint">{item.app_note}</p>}
+          {item.default_unusable && !pasted && (
+            <p className="hint" id={`${base}-unusable`}>
+              {t("sign_in.default_unusable")}
+            </p>
+          )}
+          {pasted && <p className="hint">{t("sign_in.own.using")}</p>}
+          {showHint && (
+            <p className="hint" id={`${base}-not-ready`}>
+              {t("sign_in.not_ready")}
+            </p>
+          )}
+          {problem && (
+            <p className="problem-note" id={`${base}-problem`} role="alert">
+              {problem}
+            </p>
+          )}
+          {formOpen ? (
+            <OwnAppForm
+              item={item}
+              base={base}
+              callbackField={callbackField}
+              onClose={closeForm}
+              onProblem={setOutProblem}
+              onSaved={closeForm}
+              disabled={busy}
+            />
+          ) : null}
+          {confirming && (
+            <SignOutConfirm
+              label={item.label}
+              account={confirming.account ? (confirming.account.address ?? t("sign_in.account_unnamed")) : null}
+              acting={confirming.account ? confirming.account.acting : false}
+              onCancel={() => {
+                setConfirming(null);
+                restoreFocus(() => document.getElementById(menuId) ?? document.getElementById(`${base}-title`));
+              }}
+              onConfirm={() => {
+                const which = confirming.account;
+                setConfirming(null);
+                void (which ? signOutAccount(which) : signOut());
+                restoreFocus(() => document.getElementById(menuId) ?? document.getElementById(`${base}-title`));
+              }}
+            />
+          )}
+    </Row>
+  );
+}
+
+/** Asks before signing out, and says what stops. Signing out can't be taken back with Undo, so it is one of the few things
+ * that ask first; Cancel and Escape leave everything as it was. */
+export function SignOutConfirm(props: { label: string; account: string | null; acting: boolean; onCancel: () => void; onConfirm: () => void }) {
+  const { t } = useWords();
+  const titleId = useId();
+  const where = props.account ?? props.label;
+  return (
+    <ModalPanel titleId={titleId} onClose={props.onCancel}>
+      <Heading slot="title" id={titleId}>
+        {t("sign_in.confirm.title", { where })}
+      </Heading>
+      <p>{t("sign_in.confirm.stops", { where })}</p>
+      {props.acting && <p>{t("sign_in.confirm.acting", { where })}</p>}
+      <p className="hint">{t("sign_in.confirm.stays")}</p>
+      <DialogFooter>
+        {/* The safe answer is the one the cursor starts on. */}
+        <Button autoFocus onClick={props.onCancel}>
+          {t("sign_in.confirm.cancel")}
+        </Button>
+        <Button variant="danger" icon="alert" onClick={props.onConfirm}>
+          {t("sign_in.sign_out")}
+        </Button>
+      </DialogFooter>
+    </ModalPanel>
+  );
+}
+
+/** The person's own app registration, pasted in place: how to make one, the address it must allow, and its details. */
+function OwnAppForm(props: {
+  item: SignIn;
+  base: string;
+  callbackField: ReactNode;
+  disabled: boolean;
+  onClose: () => void;
+  onProblem: (text: string) => void;
+  onSaved: () => void;
+}) {
+  const { t } = useWords();
+  const write = useWrite();
+  const { push } = useToasts();
+  const { item, base } = props;
+  const [clientId, setClientId] = useState("");
+  const [secret, setSecret] = useState("");
+  const [saving, setSaving] = useState(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  const id = clientId.trim();
+  const key = secret.trim();
+  const filled = id !== "" && (!item.needs_secret || key !== "");
+  const steps = item.own_app_steps ?? [];
+
+  const save = async () => {
+    if (!filled || saving || props.disabled) return;
+    setSaving(true);
+    props.onProblem("");
+    try {
+      await write(() => api.saveSignInApp(item.name, item.needs_secret ? { client_id: id, client_secret: key } : { client_id: id }), { also: ["sign-ins"] });
+      push({ message: t("sign_in.own.saved_toast", { label: item.label }) });
+      props.onSaved();
+    } catch (err) {
+      props.onProblem(problemText(err, t));
+      if (mounted.current) setSaving(false);
+    }
+  };
+
+  return (
+    <FormBlock as="form"
+      
+      aria-label={t("sign_in.own.form", { label: item.label })}
+      onSubmit={(e) => {
+        e.preventDefault();
+        void save();
+      }}
+    >
+      <p className="hint">{t("sign_in.own.lead")}</p>
+      {steps.length > 0 && (
+        <FormBlock>
+          <h4 id={`${base}-steps`}>{t("sign_in.own.steps_title")}</h4>
+          <ol className="own-steps" aria-labelledby={`${base}-steps`}>
+            {steps.map((step, i) => (
+              <li key={i}>{step.link ? <SafeLink label={step.text} url={step.link} /> : step.text}</li>
+            ))}
+          </ol>
+        </FormBlock>
+      )}
+      {props.callbackField}
+      <FormField id={`${base}-client-id`} label={t("sign_in.own.client_id")}>
+        <input
+          id={`${base}-client-id`}
+          type="text"
+          value={clientId}
+          autoComplete="off"
+          spellCheck={false}
+          aria-describedby={`${base}-client-id-hint`}
+          onChange={(e) => setClientId(e.target.value)}
+        />
+        <p className="hint" id={`${base}-client-id-hint`}>
+          {t("sign_in.own.client_id_hint")}
+        </p>
+      </FormField>
+      {item.needs_secret && (
+        <FormField id={`${base}-client-secret`} label={t("sign_in.own.client_secret")}>
+          <input
+            id={`${base}-client-secret`}
+            type="password"
+            value={secret}
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(e) => setSecret(e.target.value)}
+          />
+        </FormField>
+      )}
+      <Actions align="end">
+        <Button variant="quiet" aria-label={t("sign_in.own.cancel_named", { label: item.label })} onClick={props.onClose}>
+          {t("action.cancel")}
+        </Button>
+        <Button
+          type="submit"
+          disabled={!filled || saving || props.disabled}
+          aria-label={t("sign_in.own.save_named", { label: item.label })}
+        >
+          {saving ? t("sign_in.own.saving") : t("sign_in.own.save")}
+        </Button>
+      </Actions>
+    </FormBlock>
+  );
+}
+
+/** Signed-in accounts whose add-on reads something by default (the inbox, the calendar) that nothing reads yet, one
+ * line each with Start reading: how a source the person removed comes back without filling in a form. */
+export function NotReadingLines() {
+  const { t } = useWords();
+  const act = useAct();
+  const signIns = useQuery({ queryKey: ["sign-ins"], queryFn: api.signIns });
+  const waiting = (signIns.data ?? []).filter((s) => s.status === "signed_in" && (s.not_reading ?? []).length > 0);
+  if (waiting.length === 0) return null;
+  return (
+    <ItemList aria-label={t("sign_in.start_reading")}>
+      {waiting.map((item) => {
+        const list = (item.not_reading ?? []).join(", ");
+        const id = `not-reading-${item.name.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+        return (
+          <Item key={item.name}>
+            <p className="hint" id={id}>
+              {t("sources.signed_in_not_reading", { label: item.label, list })}
+            </p>
+            <Button variant="primary"
+              aria-label={t("sign_in.start_reading_named", { label: item.label })}
+              aria-describedby={id}
+              onClick={() =>
+                void act(
+                  () => api.startSignInSources(item.name),
+                  () => ({ message: t("sign_in.started_reading_toast", { list }) }),
+                )
+              }
+            >
+              {t("sign_in.start_reading")}
+            </Button>
+          </Item>
+        );
+      })}
+    </ItemList>
+  );
+}

@@ -1,0 +1,1875 @@
+// Today's queue (design 7.7): one ranked list of lines, each starting with a verb and showing the one thing to do for it.
+// The engine ranks and groups (6.15); this draws them, with the plugins' own lines placed in the groups they name. A line
+// is a row (pill, words, its one button, a menu), or one of the held lines (a restart, a paused account) or a learned
+// line, which have their own cards. A line that has items opens them in the inspector from 1680px, which shows the line
+// that has the cursor, and under itself below that. The list holds still while the person is working in it: new lines
+// wait behind "N new · Show", and a line settled somewhere else stays in place until the person moves on.
+import { useQuery } from "@tanstack/react-query";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { api, type S } from "../lib/api";
+import { ActScope, useAct } from "../lib/act";
+import { clockTime, day, sinceDay, time, todayOn, wallTime, weekday } from "../lib/dates";
+import { backupAge } from "../lib/backup";
+import { useCoverage } from "../lib/coverage";
+import { useFirstGoText } from "../lib/first-go";
+import { durationWords } from "../lib/duration";
+import { useRowKeys } from "../lib/keys";
+import { SUGGESTION_KINDS, useNotNow } from "../lib/not-now";
+import { useGuests, useTie } from "../lib/tie";
+import { useAttention } from "../lib/attention";
+import { useChoices } from "../lib/suggestion-choices";
+import { chooseFilters } from "../lib/open-items";
+import { onShowNewLines, onUndoEnded, onUndoStarted } from "../lib/queue-hold";
+import { useToasts } from "../lib/toasts";
+import { useHeldAnswers } from "../lib/held-answers";
+import { afterMove, heldMeta, heldTitle, moveTitle, titleWords } from "../lib/queue-words";
+import { showRow } from "../lib/reveal";
+import { EVENT_PAGE, type View } from "../lib/views";
+import { useActToday } from "../lib/acts";
+import { mixesAreas } from "../lib/area-filter";
+import { PartBoundary } from "../ui/PartBoundary";
+import { GROUPS, inGroup, mixesProjects, recallLine, rememberLine, tuckedLines, useHeavyDay, useQueue, useSideBare, useTodayCount, type QueueLine } from "../lib/today";
+import { useAccountToday } from "../lib/account-today";
+import { useWaiting } from "../lib/waiting";
+import { AccountTodayRows } from "./AccountToday";
+import { SetupGroup } from "../shell/SetupLine";
+import { useSideFilter, useSides } from "../lib/sides";
+import { useCalendarColor, useSideSlot } from "../lib/marks";
+import { clashEach } from "../lib/calendar";
+import { useWords } from "../lib/wording";
+import { HeldLine, isHeld } from "../shell/HeldLines";
+import { isRestoreLine, RestoreLine } from "./RestoreLine";
+import { useQuietChoices } from "./QuietLine";
+import { Button } from "../ui/Button";
+import { Icon, type IconName } from "../ui/Icon";
+import { MarkDot } from "../ui/MarkDot";
+import { SideMark } from "../ui/SideMark";
+import { FilledPrimary, InRowActions } from "../ui/rowContext";
+import type { PillTone } from "../ui/Pill";
+import { withStatus } from "../ui/StateMark";
+import { GroupLabel } from "../ui/GroupLabel";
+import { Panel } from "../ui/Panel";
+import { Row } from "../ui/Row";
+import { FilteredEmpty } from "../ui/FilteredEmpty";
+import { ListState } from "../ui/ListState";
+import { Parts } from "./Coverage";
+import { TodayEmpty } from "./TodayEmpty";
+import { usePromiseChoices } from "./PromiseLine";
+import { ReminderItems, dateAndTime, digestTitle, reminderTitle, useReminderChoices, useReminderNotices } from "./ReminderLine";
+import { CaptureForm } from "./CaptureForm";
+import { DropForm, NewDateForm } from "./CalledOff";
+import { ReplyDraft, replyTitle, useReplyChoices } from "./ReplyLine";
+import { sentCheckTitle, useSentCheckChoices } from "./SentCheckLine";
+import { LearnedLine, isLearned } from "./LearnedToday";
+import { PluginRows, usePluginToday } from "./PluginToday";
+import { QueueGroup } from "./QueueGroup";
+import { useKeyboardInput } from "../lib/input-mode";
+import { RowMenu, type MenuAction } from "./RowMenu";
+import type { MenuGroup } from "../ui/MenuButton";
+import { ActTodayRows } from "./ActToday";
+import { ReminderWhereRow } from "./ReminderWhereRow";
+import { ReadingOffRows, useReadingOff } from "./ReadingOffRow";
+import { staleLine, useReminderWhere } from "../lib/reminder-where";
+import { StageTodayRows, useStageToday } from "./StageToday";
+import { NoteBox } from "./NoteBox";
+import { ProjectTag } from "./ProjectTag";
+import { ViewTags } from "./ViewTags";
+import { ThisWeekInspector } from "./ThisWeek";
+import { LineDetail, opensItems } from "./TodayDetail";
+import { MadeBy } from "./MadeBy";
+import styles from "./Today.module.css";
+import { shortTitle } from "../lib/title-dates";
+
+export interface QueueHandlers {
+  onOpenAiAccounts: () => void;
+  onOpenHandover: () => void;
+  onOpenRules: () => void;
+  onOpenKnowledge?: () => void;
+  /** Opens Ask at the answer to a question, which marks it read. */
+  onOpenAnswer?: (request: string) => void;
+  onAddAccount?: () => void;
+  onOpenSources?: () => void;
+  onOpenRecord?: (kind: string, id: string) => void;
+  onOpenGuide?: (step: string) => void;
+  /** Opens the form that hands something to the assistant. */
+  onHandIn?: () => void;
+  /** Go to a screen: the Projects list where unfiled work is filed. */
+  onOpenView?: (view: View) => void;
+}
+
+/** What a line is selected as: the line, and whether its card opens on the note to send it back with. */
+export interface Selection {
+  key: string;
+  sendBack: boolean;
+}
+
+export function TodayQueue(props: {
+  selected: Selection | null;
+  onSelect: (selection: Selection | null) => void;
+  /** The inspector is beside the queue: it shows the line that has the cursor, and a selected line doesn't open under itself. */
+  beside: boolean;
+  handlers: QueueHandlers;
+  /** The configured shortcut keys, for the inspector's "j / k". */
+  shortcuts?: Record<string, string>;
+  /** The workspace the setup group's hiding is remembered for. */
+  workspace?: string;
+}) {
+  const { t, tn } = useWords();
+  const filter = useSideFilter();
+  const queue = useQueue(filter.picked);
+  const accountsToday = useAccountToday(filter.picked);
+  const heavy = useHeavyDay();
+  const waiting_ = useWaiting();
+  // On a heavy day each group shows its first lines; the groups the person opened show them all.
+  const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
+  const everything = useQueue();
+  const count = useTodayCount(filter.picked);
+  const total = useTodayCount();
+  const stage = useStageToday();
+  const outgoing = useActToday();
+  const staleReminders = staleLine(useReminderWhere().data, t) !== null;
+  const readingOff = useReadingOff().length > 0;
+  const plugins = usePluginToday(props.handlers.onOpenRecord);
+  const pane = useRef<HTMLDivElement>(null);
+  const lines = queue.data ?? [];
+  useReminderNotices(everything.data);
+
+  // The list holds still while the person is working in it: keyboard focus or the pointer in the queue or the inspector, or
+  // a line open under itself. New lines wait behind "N new · Show". A line settled somewhere else stays in place, struck
+  // through, until the person moves on; a line the person settled here leaves at once. `frozen` is the keys on screen
+  // while held, in order, and null while nothing holds the list, when it simply follows the data.
+  const pointer = useRef(false);
+  const touched = useRef(new Set<string>());
+  const known = useRef(new Map<string, QueueLine>());
+  for (const line of lines) known.current.set(line.key, line);
+  const [frozen, setFrozen] = useState<string[] | null>(null);
+  // Several clashes at risk are one row and a fold: the rest open when the person asks (folding one would save no room).
+  const [clashesOpen, setClashesOpen] = useState(false);
+  const heldNow = () => {
+    const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const here = !!pane.current?.contains(active) || !!active?.closest("[data-queue-inspector]");
+    return here || pointer.current || (props.selected !== null && !props.beside);
+  };
+  // Where the cursor is, read as the data changes and before the page does.
+  const working = useRef<{ held: boolean; row: number; keys: string[] }>({ held: false, row: -1, keys: [] });
+  const rows = pane.current ? Array.from(pane.current.querySelectorAll<HTMLElement>("[data-row]")) : [];
+  // The cursor in the inspector is on the line the inspector shows, so settling that line moves the cursor on like any other.
+  const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const shownByInspector = active?.closest("[data-queue-inspector]") ? props.selected?.key : undefined;
+  const focused = active?.closest<HTMLElement>("[data-row]") ?? (shownByInspector ? (rows.find((row) => row.dataset.lineKey === shownByInspector) ?? null) : null);
+  working.current = { held: heldNow(), row: focused ? rows.indexOf(focused) : -1, keys: rows.map((row) => row.dataset.lineKey ?? "") };
+  const focusKey = useRef<{ key: string; tries: number } | null>(null);
+
+  const live = new Map(lines.map((line) => [line.key, line]));
+  const ghostable = (key: string) => {
+    const old = known.current.get(key);
+    return !!old && !touched.current.has(key) && !isHeld(old) && !isRestoreLine(old) && !isLearned(old);
+  };
+  // The keys on screen as of the last commit, which is what a hold keeps when the data changes under it.
+  const shownKeys = useRef<string[]>([]);
+  const onScreen = useRef(false); // the lines have been drawn once; before that there is nothing to hold still
+  // While the person is working in the list it keeps what is on screen even in the render that brings the new data, so a row
+  // under the cursor is never replaced; the effect below keeps that as the state once the data has changed.
+  // An empty list has nothing to hold still: new lines then come straight in.
+  const holding = frozen ?? (working.current.held && onScreen.current && shownKeys.current.length > 0 ? shownKeys.current : null);
+  type Shown = { line: QueueLine; ghost: boolean };
+  const display: Shown[] =
+    holding === null
+      ? lines.map((line): Shown => ({ line, ghost: false }))
+      : holding.flatMap((key): Shown[] => {
+          const now = live.get(key);
+          if (now) return [{ line: now, ghost: false }];
+          return ghostable(key) ? [{ line: known.current.get(key)!, ghost: true }] : [];
+        });
+  const waiting = holding === null ? 0 : lines.filter((line) => !holding.includes(line.key)).length;
+
+  // The questions left of a move's group, once the group is down to one, stand in the group's place: answering one row of
+  // two doesn't send the other behind "1 new · Show", and the line that was open stays open.
+  // A line the engine redraws as the lines of the same change (an Undo brings back what a review line counted as refused, and
+  // the held items stand on their own lines) stands in the same way: the person is aiming at that change, so it keeps the place
+  // and the cursor, and what they press is a live button, not a struck-through line.
+  const successorOf = (key: string, taken: string[]): string | null => {
+    const old = known.current.get(key);
+    const request = old?.after_move?.request;
+    if (request) return lines.find((line) => line.after_move?.request === request && line.key !== key && !taken.includes(line.key))?.key ?? null;
+    if (!old?.request || !old.changeset) return null;
+    return lines.find((line) => line.request === old.request && line.changeset === old.changeset && line.key !== key && !taken.includes(line.key))?.key ?? null;
+  };
+
+  // Before the screen is painted, so a line that should hold is never seen to move.
+  useLayoutEffect(() => {
+    if (!queue.data) return;
+    const keys = new Set(queue.data.map((line) => line.key));
+    let after = [...keys];
+    if (!working.current.held || (frozen ?? shownKeys.current).length === 0) {
+      setFrozen(null);
+      touched.current.clear();
+    } else {
+      const base = frozen ?? shownKeys.current;
+      after = base.flatMap((key) => {
+        if (keys.has(key)) return [key];
+        const next = successorOf(key, base);
+        return next ? [next] : ghostable(key) ? [key] : [];
+      });
+      // A line the person settled here and then took back (Undo) redraws in its place: it is theirs, not a new line to wait behind "Show".
+      for (const [at, { key }] of queue.data.entries()) {
+        if (after.includes(key) || !touched.current.has(key)) continue;
+        const before = queue.data.slice(0, at).map((line) => line.key).filter((k) => after.includes(k));
+        const place = before.length === 0 ? 0 : after.indexOf(before[before.length - 1]) + 1;
+        after = [...after.slice(0, place), key, ...after.slice(place)];
+      }
+      setFrozen(after.length === base.length && frozen && after.every((key, i) => key === frozen[i]) ? frozen : after);
+      // The line that had the cursor is gone: the cursor goes to the line now in its place, not to the top of the page.
+      const active = document.activeElement;
+      if (working.current.row >= 0 && (!active || active === document.body)) {
+        const { keys: before, row } = working.current;
+        const next = [...before.slice(row + 1), ...before.slice(0, Math.max(0, row)).reverse()].find((key) => key && after.includes(key));
+        focusKey.current = { key: next ?? "", tries: 2 };
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queue.data]);
+  // Once the list is as it will stay, the cursor lands on the line chosen for it: tried on the commit of the change and the one
+  // after it (a ghost the change keeps is drawn then), never later, so it can't take the cursor from where the person put it.
+  useLayoutEffect(() => {
+    const want = focusKey.current;
+    if (want === null) return;
+    const active = document.activeElement;
+    const target =
+      active && active !== document.body
+        ? null
+        : want.key
+          ? pane.current?.querySelector<HTMLElement>(`[data-line-key="${CSS.escape(want.key)}"]`)
+          : pane.current?.querySelector<HTMLElement>("[data-row]");
+    if (target) target.focus({ preventScroll: true });
+    focusKey.current = target || (active && active !== document.body) || want.tries <= 1 ? null : { ...want, tries: want.tries - 1 };
+  });
+  useLayoutEffect(() => {
+    shownKeys.current = display.map((d) => d.line.key);
+    if (queue.data) onScreen.current = true;
+  });
+
+  // What the person acted on here while the list was held is theirs, however many lines in a row: when it leaves the list it goes at once, not as a ghost.
+  useEffect(() => {
+    const onClick = (event: MouseEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const row = target?.closest<HTMLElement>("[data-line-key]");
+      const key = row && pane.current?.contains(row) ? row.dataset.lineKey : target?.closest("[data-queue-inspector]") ? props.selected?.key : undefined;
+      if (key) touched.current.add(key);
+    };
+    document.addEventListener("click", onClick, true);
+    return () => document.removeEventListener("click", onClick, true);
+  }, [props.selected]);
+
+  // A button pressed down in the list that is gone from the page when it is let go never gets its click: the line changed under the
+  // press. The person is told nothing was done, not left to wonder why nothing happened.
+  const { push } = useToasts();
+  const pressed = useRef<Element | null>(null);
+  const tell = useRef(push);
+  tell.current = push;
+  useEffect(() => {
+    const down = (event: Event) => {
+      const target = event.target instanceof Element ? event.target.closest("button, [role='menuitem']") : null;
+      pressed.current = target && pane.current?.contains(target) ? target : null;
+    };
+    const up = () => {
+      const node = pressed.current;
+      pressed.current = null;
+      if (node && !node.isConnected) tell.current({ message: t("queue.press_lost") });
+    };
+    document.addEventListener("pointerdown", down, true);
+    document.addEventListener("pointerup", up, true);
+    return () => {
+      document.removeEventListener("pointerdown", down, true);
+      document.removeEventListener("pointerup", up, true);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Letting go: the waiting lines come in and the ghosts leave. The button, Shift+N and the end of every hold do it.
+  // Showing makes what is in the data now the list to hold from here (the cursor may still be in it); when nothing holds the
+  // list any more it just follows the data.
+  const latestKeys = useRef<string[]>([]);
+  latestKeys.current = lines.map((line) => line.key);
+  const show = () => setFrozen(latestKeys.current);
+  useEffect(() => onShowNewLines(show), []);
+  // Taking an action back closes the line the person had open below the inspector width, so a line that comes back is drawn
+  // closed. While the Undo runs the list may be read in the state before it lands, which lacks the line: a line the person
+  // opens meanwhile is not closed by that read (`undoing`), and what the lists hold is reconciled again when the Undo ends.
+  const selectedNow = useRef(props.selected);
+  selectedNow.current = props.selected;
+  const undoing = useRef(false);
+  const [undone, setUndone] = useState(0);
+  useEffect(() => {
+    const stopStart = onUndoStarted(() => {
+      undoing.current = true;
+      if (!props.beside && selectedNow.current) props.onSelect(null);
+    });
+    const stopEnd = onUndoEnded(() => {
+      undoing.current = false;
+      setUndone((n) => n + 1);
+    });
+    return () => {
+      stopStart();
+      stopEnd();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.beside]);
+  const releaseIfFree = () =>
+    window.setTimeout(() => {
+      if (!heldNow()) setFrozen(null);
+    }, 0);
+  useEffect(() => {
+    if (frozen !== null && !heldNow()) setFrozen(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.selected]);
+
+  // The keyboard starts on the queue: once the lines are there, the line the inspector last showed (else the first) has the
+  // cursor, unless the person has put it somewhere of their own.
+  const started = useRef(false);
+  useEffect(() => {
+    if (started.current || !queue.data || queue.data.length === 0) return;
+    started.current = true;
+    const active = document.activeElement;
+    const free = !active || active === document.body || active.tagName === "MAIN" || !!active.closest("h1");
+    if (!free) return;
+    const all = Array.from(pane.current?.querySelectorAll<HTMLElement>("[data-row]") ?? []);
+    const back = props.beside ? recallLine() : null;
+    const target = (back && all.find((el) => el.dataset.lineKey === back.key)) || all[0];
+    target?.focus({ preventScroll: true });
+  }, [queue.data, props.beside]);
+
+  // From 1680px the inspector shows one line from the moment Today opens: the line that has the cursor, or the one last
+  // clicked, the remembered one when there is one. The lines it can show are the queue's own rows, in the order on screen.
+  const folded = clashesOpen ? new Set<string>() : foldedClashes(display.map((d) => d.line));
+  const heavyDay = count !== null && count >= heavy.from;
+  const tucked = heavyDay ? tuckedLines(display.map((d) => d.line), heavy.rows, opened) : new Set<string>();
+  const away = new Set([...folded, ...tucked]);
+  const ordered = GROUPS.flatMap((group) => inGroup(display.map((d) => d.line), group)).filter((line) => !isHeld(line) && !isRestoreLine(line) && !isLearned(line) && !away.has(line.key));
+  const selectedAt = props.selected ? ordered.findIndex((line) => line.key === props.selected!.key) : -1;
+  useEffect(() => {
+    if (!props.beside || !queue.data) return;
+    if (selectedAt >= 0) {
+      rememberLine(ordered[selectedAt].key, selectedAt);
+      return;
+    }
+    if (ordered.length === 0) {
+      if (props.selected) props.onSelect(null);
+      return;
+    }
+    const back = recallLine();
+    const found = !props.selected && back ? ordered.findIndex((line) => line.key === back.key) : -1;
+    const at = found >= 0 ? found : Math.max(0, Math.min(ordered.length - 1, back?.index ?? 0));
+    props.onSelect({ key: ordered[at].key, sendBack: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.beside, queue.data, selectedAt, props.selected, frozen]);
+
+  // Below 1680px a selected line that is gone (dealt with, or answered elsewhere) is no longer open.
+  useEffect(() => {
+    if (props.beside || undoing.current) return;
+    if (props.selected && queue.data && !queue.data.some((line) => line.key === props.selected!.key)) {
+      const next = successorOf(props.selected.key, []);
+      props.onSelect(next ? { key: next, sendBack: false } : null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queue.data, props.selected, props.beside, undone]);
+
+  // The cursor reaching a line shows it in the inspector, and a ghost whose line the cursor has left goes.
+  const onFocus = (event: React.FocusEvent) => {
+    const key = (event.target as HTMLElement).closest<HTMLElement>("[data-line-key]")?.dataset.lineKey;
+    if (!key) return;
+    if (frozen?.some((k) => !live.has(k) && k !== key)) setFrozen((prev) => prev && prev.filter((k) => live.has(k) || k === key));
+    if (props.beside && props.selected?.key !== key && ordered.some((line) => line.key === key)) props.onSelect({ key, sendBack: false });
+  };
+
+  const lineTitle = useLineTitle();
+  const mixed = mixesProjects(lines);
+  const areasMixed = mixesAreas(lines);
+  const shown = display.map((d) => d.line);
+  const ghosts = new Set(display.filter((d) => d.ghost).map((d) => d.line.key));
+  const empty = count === 0 && !queue.isPending;
+  // A side with nothing of its own says so even while the app's own lines (they belong to no side) stay under every choice.
+  const sideBare = useSideBare();
+  const selectedLine = selectedAt >= 0 ? ordered[selectedAt] : undefined;
+  // A review that is open has the screen's one filled button ("Keep all"), so the first Decide line is drawn as the others are.
+  const firstDecision = inGroup(shown, "decide").find((line) => !isHeld(line) && !isRestoreLine(line) && !isLearned(line))?.key;
+  const reviewOpen = !!selectedLine && OPEN_REVIEW_KINDS.has(selectedLine.kind);
+  // With no decision of the usual kind (only a stop or a check of the assistant's own work, or only something at risk), the first
+  // line that can be acted on carries the screen's one filled button instead.
+  const actable = (line: QueueLine) => !ghosts.has(line.key) && (isHeld(line) || (!isRestoreLine(line) && !isLearned(line)));
+  const decideActable = inGroup(shown, "decide").find(actable)?.key;
+  // An account that is not being read is the first row of At risk and, with no decision above it, carries the one filled button.
+  const accountPrimary = !reviewOpen && !firstDecision && !decideActable && accountsToday.accounts.length > 0;
+  // A side with nothing of its own has the empty card's quiet button above these lines, so none of them takes the filled one.
+  const onlyPrimary = reviewOpen || firstDecision || accountPrimary || sideBare ? undefined : (decideActable ?? inGroup(shown, "risk").find(actable)?.key);
+  // Only the most urgent row of At risk is tinted: the account that is not read, else the first line.
+  const riskFirst = accountsToday.accounts.length > 0 ? null : (inGroup(shown, "risk")[0]?.key ?? null);
+  const lineItem = (line: QueueLine) => (
+    <LineItem
+      key={line.key}
+      line={line}
+      emphasis={false}
+      screenPrimary={line.key === onlyPrimary}
+      tinted={line.key === riskFirst}
+      demote={reviewOpen}
+      ghost={ghosts.has(line.key)}
+      selection={props.selected?.key === line.key ? props.selected : null}
+      beside={props.beside}
+      mixed={mixed}
+      everySideTag={!sideBare}
+      areasMixed={areasMixed}
+      onSelect={props.onSelect}
+      handlers={props.handlers}
+    />
+  );
+  return (
+    <>
+      <div
+        ref={pane}
+        className={styles.queue}
+        data-region=""
+        data-menu-slot=""
+        onFocus={onFocus}
+        onBlur={(event) => {
+          if (!pane.current?.contains(event.relatedTarget as Node | null)) releaseIfFree();
+        }}
+        onMouseEnter={() => {
+          pointer.current = true;
+        }}
+        onMouseLeave={() => {
+          pointer.current = false;
+          releaseIfFree();
+        }}
+      >
+        <Panel
+          title={t("today.needs.title")}
+          flush
+          hideTitle
+          count={
+            count === null || count === 0 ? null : (
+              <>
+                <span aria-hidden="true">{count}</span>
+                <span className="sr">{tn("today.needs.count", count)}</span>
+              </>
+            )
+          }
+        >
+          <div role="status" className="sr">
+            {waiting > 0 ? tn("queue.new_announce", waiting) : ""}
+          </div>
+          {waiting > 0 && (
+            <div className={styles.newbar}>
+              <Button size="sm" aria-keyshortcuts="Shift+N" onClick={show}>
+                {tn("queue.new_show", waiting)}
+              </Button>
+            </div>
+          )}
+          <ListState query={queue} failed={t("queue.load_failed")} rows={5} above={<GroupLabel>{t("queue.group.decide")}</GroupLabel>}>
+            {() => (
+            <>
+              {sideBare && <FilteredEmpty data-queue-empty="side" text={t("sides.empty.today", { side: filter.named })} others={(total ?? 0) - (count ?? 0) > 0 ? tn("sides.empty.today_others", (total ?? 0) - (count ?? 0)) : undefined} label={t("sides.empty.show_all")} onClear={() => filter.set("all")} />}
+              {/* With a side picked and nothing on it, what still needs the person is not on any side, and says so under its own label. */}
+              {sideBare && (shown.some((l) => l.group !== "setup") || accountsToday.accounts.length > 0) && <GroupLabel data-not-on-side="">{t("queue.not_on_any_side")}</GroupLabel>}
+              {GROUPS.map((group) => {
+                const these = inGroup(shown, group);
+                // What setup has not finished is its own card under this one: it is not among what needs the person.
+                if (group === "setup") return null;
+                const extra = group === "decide" && stage.count > 0;
+                const added = plugins.in(group);
+                const sending = group === "decide" || group === "risk" ? outgoing.in(group) : [];
+                const unread = group === "risk" ? accountsToday.accounts : [];
+                const tuckedHere = these.filter((line) => tucked.has(line.key)).length;
+                if (these.length === 0 && !extra && added.length === 0 && sending.length === 0 && unread.length === 0 && !(group === "decide" && (staleReminders || readingOff))) return null;
+                return (
+                  <QueueGroup key={group} id={`queue-group-${group}`} title={t(`queue.group.${group}`)} tone={group === "risk" ? "danger" : "plain"} count={these.length + (extra ? stage.count : 0) + added.length + sending.length + unread.length}>
+                    <AccountTodayRows accounts={unread} filled={accountPrimary} everySide={filter.choice !== "all" && !sideBare} onOpenConnections={() => props.handlers.onOpenSources?.()} />
+                    {these.filter((line) => !away.has(line.key)).map((line) => (
+                      <LineItem
+                        key={line.key}
+                        line={line}
+                        emphasis={group === "decide" && line.key === firstDecision}
+                        screenPrimary={line.key === onlyPrimary}
+                        tinted={line.key === riskFirst}
+                        demote={reviewOpen}
+                        ghost={ghosts.has(line.key)}
+                        selection={props.selected?.key === line.key ? props.selected : null}
+                        beside={props.beside}
+                        mixed={mixed}
+                        everySideTag={!sideBare}
+                        areasMixed={areasMixed}
+                        onSelect={props.onSelect}
+                        handlers={props.handlers}
+                      />
+                    ))}
+                    {heavyDay && (tuckedHere > 0 || opened.has(group)) && (
+                      <li className={styles.item}>
+                        <Button variant="quiet" aria-expanded={opened.has(group)} data-group-more={group} onClick={() => setOpened((prev) => { const next = new Set(prev); if (next.has(group)) next.delete(group); else next.add(group); return next; })}>
+                          {opened.has(group) ? t("queue.heavy.fewer") : tn("queue.heavy.more", tuckedHere)}
+                        </Button>
+                      </li>
+                    )}
+                    {group === "risk" && folded.size > 0 && (
+                      <li className={styles.item}>
+                        <Button variant="quiet" aria-expanded="false" data-clashes-fold="" onClick={() => setClashesOpen(true)}>
+                          {tn("queue.clash.more", folded.size)}
+                        </Button>
+                      </li>
+                    )}
+                    {extra && <StageTodayRows today={stage} />}
+                    <ActTodayRows lines={sending} onView={props.handlers.onOpenView} />
+                    {group === "decide" && <ReminderWhereRow onView={props.handlers.onOpenView} />}
+                    {group === "decide" && <ReadingOffRows onView={props.handlers.onOpenView} />}
+                    <PluginRows lines={added} plugins={plugins} />
+                  </QueueGroup>
+                );
+              })}
+              {plugins.in(null).length > 0 && (
+                <QueueGroup id="plugin-today-title" title={t("today.plugins.title")}>
+                  <PluginRows lines={plugins.in(null)} plugins={plugins} />
+                </QueueGroup>
+              )}
+              {plugins.review}
+              {heavyDay && (waiting_?.open.total ?? 0) > 0 && (
+                <p className={styles.heavyEnd} data-heavy-todos="">
+                  <span>{tn("queue.heavy.todos", waiting_?.open.total ?? 0)}</span>
+                  <Button variant="quiet" size="sm" onClick={() => props.handlers.onOpenView?.("work/open")}>
+                    {t("queue.heavy.open_todos")}
+                  </Button>
+                </p>
+              )}
+              {count === 0 && filter.choice !== "all" && (total ?? 0) > 0 && (
+                <FilteredEmpty
+                  data-queue-empty="side"
+                  text={t("sides.empty.today", { side: filter.named })}
+                  others={tn("sides.empty.today_others", total ?? 0)}
+                  label={t("sides.empty.show_all")}
+                  onClear={() => filter.set("all")}
+                />
+              )}
+              {count === 0 && (filter.choice === "all" || !((total ?? 0) > 0)) && (
+                <TodayEmpty
+                  onContinueSetup={props.handlers.onOpenGuide ? (step) => props.handlers.onOpenGuide?.(step) : undefined}
+                  onHandIn={props.handlers.onHandIn}
+                />
+              )}
+            </>
+            )}
+          </ListState>
+        </Panel>
+        {queue.data && (
+          <SetupGroup card workspace={props.workspace ?? ""} onOpenGuide={(step) => props.handlers.onOpenGuide?.(step)} gaps={inGroup(shown, "setup").length}>
+            {inGroup(shown, "setup").map(lineItem)}
+          </SetupGroup>
+        )}
+      </div>
+      {props.beside && (
+        <QueueInspector
+          line={selectedLine}
+          title={selectedLine ? lineTitle(selectedLine) : ""}
+          position={selectedAt >= 0 ? { at: selectedAt + 1, of: ordered.length } : null}
+          sendBack={props.selected?.sendBack}
+          shortcuts={props.shortcuts}
+          empty={empty}
+          onOpenGuide={props.handlers.onOpenGuide}
+        />
+      )}
+    </>
+  );
+}
+
+/** From this many clashes at risk, the first stays a row of its own and the others fold under it. */
+const CLASH_FOLD_FROM = 3;
+
+/** The keys of the clash lines that fold: all but the first once there are enough of them to be worth folding. */
+function foldedClashes(lines: QueueLine[]): Set<string> {
+  const clashes = lines.filter((line) => line.kind === "clash" && line.group === "risk");
+  return clashes.length >= CLASH_FOLD_FROM ? new Set(clashes.slice(1).map((line) => line.key)) : new Set();
+}
+
+/** The kinds of line whose opened list ends in "Keep all": while one is open it has the screen's one filled button. */
+const OPEN_REVIEW_KINDS: ReadonlySet<QueueLine["kind"]> = new Set(["review", "intake_review", "batches"]);
+
+/** The pane beside the queue (from 1680px): the line that has the cursor, headed by its subject and where it is in the list.
+ * With nothing to do it says so and what comes next; it is never blank. */
+function QueueInspector(props: {
+  line: QueueLine | undefined;
+  title: string;
+  position: { at: number; of: number } | null;
+  sendBack?: boolean;
+  shortcuts?: Record<string, string>;
+  empty: boolean;
+  onOpenGuide?: (step: string) => void;
+}) {
+  const { t } = useWords();
+  const { line } = props;
+  const keys = props.shortcuts?.next && props.shortcuts?.previous ? { next: props.shortcuts.next, previous: props.shortcuts.previous } : null;
+  const where = props.position
+    ? keys
+      ? t("queue.inspector.position_keys", { ...props.position, ...keys })
+      : t("queue.inspector.position", { ...props.position })
+    : undefined;
+  return (
+    <aside className={styles.inspector} aria-label={t("queue.inspector.title")} data-queue-inspector="" data-region="">
+      <Panel title={line ? props.title : props.empty ? t("queue.inspector.nothing") : t("queue.inspector.title")} count={where}>
+        {line ? (
+          <div className={styles.detail}>
+            {opensItems(line) ? <LineDetail line={line} sendBack={props.sendBack} onOpenGuide={props.onOpenGuide} /> : <><MadeBy line={line} /><p className="hint">{t("queue.inspector.nothing_more")}</p></>}
+          </div>
+        ) : (
+          <>
+            {props.empty && <NothingNext />}
+            <div className={styles.inspectorBody}>
+              <ThisWeekInspector />
+            </div>
+          </>
+        )}
+      </Panel>
+    </aside>
+  );
+}
+
+/** What the inspector says when nothing needs the person: when the sources are next read. */
+function NothingNext() {
+  const { t } = useWords();
+  const watch = useQuery({ queryKey: ["watch"], queryFn: api.watchSources });
+  const next = (watch.data ?? [])
+    .filter((source) => source.enabled && source.read_at)
+    .map((source) => new Date(new Date(source.read_at!).getTime() + source.every_minutes * 60_000))
+    .sort((a, b) => a.getTime() - b.getTime())[0];
+  const found = useCoverage();
+  // With a source unread or not read lately, the all-clear says only that nothing was found, and names those sources.
+  const unchecked = !!found && !found.complete;
+  return (
+    <div className={styles.inspectorEmpty}>
+      <p>{t(unchecked ? "queue.inspector.all_clear_unchecked" : "queue.inspector.all_clear")}</p>
+      {unchecked && found && (
+        <p>
+          <Parts found={found} />
+        </p>
+      )}
+      {next && <p>{t("queue.inspector.next_check", { time: time(next) })}</p>}
+    </div>
+  );
+}
+
+type LineItemProps = {
+  line: QueueLine;
+  /** The first line of Decide: the one line of the screen that may carry the filled button, and the tint and edge of a decision. */
+  emphasis: boolean;
+  /** No line of Decide is a decision: this line, the first that can be acted on, carries the screen's one filled button. */
+  screenPrimary: boolean;
+  /** The most urgent row of At risk: the only one of the group with a tint and an edge. */
+  tinted: boolean;
+  /** A review is open and has the filled button: the emphasis keeps its tint, its button is drawn as the others. */
+  demote: boolean;
+  /** The line was settled somewhere else; it stays, struck through, until the person moves on. */
+  ghost: boolean;
+  selection: Selection | null;
+  beside: boolean;
+  mixed: boolean;
+  /** A line on no side says "Every side" under a side's filter, when the list also holds lines of that side to tell it from. */
+  everySideTag: boolean;
+  /** Today's lines are in more than one place (two areas of life, or an area and none), so a line names its area. */
+  areasMixed: boolean;
+  onSelect: (selection: Selection | null) => void;
+  handlers: QueueHandlers;
+};
+
+function LineItem(props: LineItemProps) {
+  // One line's actions go one at a time: a second press while the first is out is ignored.
+  return (
+    <ActScope.Provider value={props.line.key}>
+      <LineItemBody {...props} />
+    </ActScope.Provider>
+  );
+}
+
+function LineItemBody(props: LineItemProps) {
+  const { line, handlers } = props;
+  if (isHeld(line)) {
+    return (
+      <li className={styles.item}>
+        <PartBoundary>
+        <FilledPrimary.Provider value={props.screenPrimary}>
+        <HeldLine line={line} onOpenAiAccounts={handlers.onOpenAiAccounts} onOpenHandover={handlers.onOpenHandover} onOpenRules={handlers.onOpenRules} onOpenKnowledge={handlers.onOpenKnowledge} onAddAccount={handlers.onAddAccount} onOpenSources={handlers.onOpenSources} />
+        </FilledPrimary.Provider>
+        </PartBoundary>
+      </li>
+    );
+  }
+  if (isRestoreLine(line)) {
+    return (
+      <li className={styles.item}>
+        <PartBoundary><RestoreLine line={line} /></PartBoundary>
+      </li>
+    );
+  }
+  if (isLearned(line)) {
+    return (
+      <li className={styles.item}>
+        <PartBoundary><LearnedLine line={line} /></PartBoundary>
+      </li>
+    );
+  }
+  return (
+    <li className={styles.item}>
+      <PartBoundary>
+        <QueueRow {...props} />
+      </PartBoundary>
+    </li>
+  );
+}
+
+/** The icon that tells one kind of line from another, by kind. Each is decoration beside the line's words (`aria-hidden`): the pill
+ * and the title say what it is, and the icon never carries status alone. */
+const KIND_ICONS: Record<QueueLine["kind"], IconName> = {
+  decision: "chat",
+  question: "chat",
+  answer: "chat",
+  no_effect: "chat",
+  who_is: "users",
+  owner: "users",
+  invitation: "users",
+  guests: "users",
+  held: "flag",
+  go: "refresh",
+  first_go: "refresh",
+  catch_up_go: "refresh",
+  intake_go: "refresh",
+  catch_up: "refresh",
+  restart: "refresh",
+  intake_review: "inbox",
+  batches: "layers",
+  batch_item: "layers",
+  review: "inbox",
+  unfiled: "inbox",
+  refused: "alert",
+  stuck: "alert",
+  handover: "alert",
+  failed: "alert",
+  paused: "alert",
+  borrow: "alert",
+  offline: "alert",
+  source_unread: "alert",
+  slow_screen: "alert",
+  extractor: "alert",
+  switch_failed: "alert",
+  account_check: "gear",
+  account_move: "gear",
+  model_watch: "gear",
+  model_moved: "gear",
+  identity: "gear",
+  work_access: "gear",
+  credential: "gear",
+  no_account: "gear",
+  pack_tier: "puzzle",
+  backup: "archive",
+  restore: "archive",
+  sent_folder: "folder",
+  folder_rename: "folder",
+  area: "folder",
+  moved: "folder",
+  project_ending: "folder",
+  overdue: "flag",
+  promise: "flag",
+  quiet_promise: "flag",
+  nudge: "flag",
+  escalate: "flag",
+  stale: "flag",
+  reminder: "flag",
+  reminder_digest: "flag",
+  reply: "send",
+  send: "send",
+  sent_check: "send",
+  rule_review: "book",
+  learned: "book",
+  pattern: "book",
+  terms: "book",
+  since_yesterday: "note",
+  attention: "note",
+  needs_date: "calendar",
+  date_reminder: "calendar",
+  capacity: "calendar",
+  clash: "calendar",
+  tie: "calendar",
+  away: "calendar",
+  called_off: "calendar",
+  called_off_todos: "calendar",
+  meeting_prep: "calendar",
+  meeting_capture: "calendar",
+};
+
+/** The icon in a line's leading slot: a person to place, something to look over, something to send, a clash or anything else at
+ * risk first, then the line's kind, so every line carries one beside its words. A kind the screen has no icon for shows the color
+ * of its side, or nothing. */
+function leadIcon(line: QueueLine): IconName | null {
+  if (line.kind === "who_is" || line.kind === "owner") return "users";
+  if (line.group === "risk") return "alert";
+  if (line.group === "send") return "send";
+  if (line.group === "review") return "inbox";
+  return KIND_ICONS[line.kind] ?? null;
+}
+
+type Tone = PillTone;
+
+/** What the row says and does for one kind of line. `opens` is a button that shows the line's items rather than acting. */
+interface Described {
+  pill: string;
+  tone: Tone;
+  meta: ReactNode;
+  primary: { label: string; run?: () => void } | null;
+  /** The other answer to a question the line asks, as a visible button (7.6: a held line may show two). */
+  other?: { label: string; run: () => void };
+  menu: MenuAction[];
+  /** Further titled groups of choices in the menu (a reminder's snooze choices). */
+  groups?: MenuGroup[];
+}
+
+type ItemTitle = S["ItemTitle"];
+
+function useTitleWords(): (title: ItemTitle | null | undefined) => string {
+  const { t, has } = useWords();
+  return (title) => titleWords(title, t, has);
+}
+
+/** What the line for the changes since yesterday counted, in plain words: "3 closed, 2 moved, 4 new". */
+const SINCE_ACTS = ["closed", "moved", "added", "merged", "dropped", "set_aside", "news"] as const;
+
+function sinceWords(line: QueueLine, t: (key: string, vars?: Record<string, string | number>) => string): string {
+  return SINCE_ACTS.filter((k) => ((line.outcome ?? {})[k] ?? 0) > 0)
+    .map((k) => t(`queue.since.count.${k}`, { n: (line.outcome ?? {})[k] ?? 0 }))
+    .join(", ");
+}
+
+/** What a review line counted, by the kinds of thing the assistant did. */
+const REVIEW_KINDS = ["actions_added", "actions_closed", "questions", "notes", "recorded", "people", "projects", "drafts"] as const;
+
+/** A promise that has had replies without an answer, and what to do: "Sam replied twice without a date: ask again?" */
+function repliedWords(replies: number, name: string, t: (key: string, vars?: Record<string, string | number>) => string): string {
+  const times = replies === 1 ? t("queue.replied.once") : replies === 2 ? t("queue.replied.twice") : t("queue.replied.times", { n: replies });
+  return t("queue.replied", { name, times });
+}
+
+function reviewParts(line: QueueLine) {
+  const kinds = REVIEW_KINDS.filter((k) => ((line.outcome ?? {})[k] ?? 0) > 0);
+  const done = kinds.reduce((n, k) => n + ((line.outcome ?? {})[k] ?? 0), 0);
+  const refusedOnly = done === 0 && kinds.length === 0 && ((line.outcome ?? {}).refused ?? 0) > 0 && !((line.outcome ?? {}).held ?? 0);
+  return { kinds, done, refusedOnly };
+}
+
+/** What an intake's results were, in the order a person thinks of them: "3 actions, 2 questions, 4 waiting for you". */
+const INTAKE_KINDS = [...REVIEW_KINDS, "other", "held", "refused"] as const;
+
+/** How many things the look-over lists: what the line's own words count (the to-dos, questions and notes found), so the
+ * title's number and the words under it are the same count. With none of those, what waits for the person or couldn't be
+ * recorded; failing that, the count of inputs the line was made from. */
+function intakeTotal(line: QueueLine): number {
+  const found = (line.outcome ?? {}) as Record<string, number>;
+  const made = [...REVIEW_KINDS, "other"].reduce((n, k) => n + (found[k] ?? 0), 0);
+  return made || (found.held ?? 0) + (found.refused ?? 0) || line.count;
+}
+
+/** A name written into the middle of a sentence: "Your inbox" reads "your inbox" there. */
+function midSentence(name: string): string {
+  return /^Your\s/.test(name) ? `your${name.slice(4)}` : name;
+}
+
+function useIntakeWords(): (line: QueueLine) => string {
+  const { tn } = useWords();
+  return (line) =>
+    INTAKE_KINDS.filter((k) => ((line.outcome ?? {})[k] ?? 0) > 0)
+      .map((k) => tn(`queue.intake_review.${k}`, (line.outcome ?? {})[k] ?? 0))
+      .join(", ");
+}
+
+/** The words a review line counts, "3 actions it added" when it did one kind of thing, else "3 things it did". */
+function useReviewCount(): (line: QueueLine) => string {
+  const { tn } = useWords();
+  return (line) => {
+    const { kinds, done, refusedOnly } = reviewParts(line);
+    return refusedOnly ? tn("queue.review.refused_only", line.count) : kinds.length === 1 ? tn(`queue.review.${kinds[0]}`, done) : tn("queue.review.things", line.count);
+  };
+}
+
+/** A line's title (design 7.14): what to do, in a verb. A line that holds one item is titled by the item itself, with its
+ * pill saying what it is and its button what to do; a line that groups several says how many. */
+export function useLineTitle(): (line: QueueLine) => string {
+  // With no AI account there is nothing to start: the line says what waits for one.
+  const noAccount = useQuery({ queryKey: ["status"], queryFn: api.status }).data?.ai.state === "not_set_up";
+  const { t, tn, has } = useWords();
+  const titleWords = useTitleWords();
+  const firstGoText = useFirstGoText();
+  const reviewCount = useReviewCount();
+  const { justMe } = useSides();
+  return (line) => {
+    const what = titleWords(line.title);
+    const name = line.person_name ?? "";
+    switch (line.kind) {
+      case "decision":
+        return shortTitle(line.text ?? "") || t("queue.decision");
+      case "question":
+        return shortTitle(line.text ?? "") || t("queue.question");
+      case "who_is":
+        return t("queue.who_is", { name: line.text ?? "" });
+      case "owner":
+        return t("queue.owner", { text: shortTitle(line.text ?? "", line.due) });
+      case "held":
+        return line.held ? heldTitle(line.held, t) : t("queue.held");
+      case "unfiled":
+        // Asking which side: the one other side by name, or, with several, which of them.
+        return line.state === "which_side"
+          ? line.subject
+            ? tn("queue.sides", line.count, { business: line.subject })
+            : tn("queue.sides.many", line.count)
+          : justMe
+            ? tn("queue.unfiled.just_me", line.count)
+            : tn("queue.unfiled", line.count);
+      case "moved":
+        return moveTitle(line, t, tn);
+      case "terms":
+        return tn("queue.terms", line.count);
+      case "project_ending": {
+        const project = line.subject ?? "";
+        return line.count > 0 ? tn("queue.project_ending", line.count, { project }) : t("queue.project_ending.none", { project });
+      }
+      case "go":
+        return t("queue.go", { what });
+      case "first_go":
+        return noAccount ? tn("first_go.no_account", line.count) : firstGoText({ count: line.count, estimate: line.estimate_usd ?? null, unpriced: line.unpriced });
+      case "refused":
+        if (line.count > 1) return line.state === "no_person" ? tn("queue.refused.no_person", line.count) : tn("queue.refused.group", line.count);
+        return t("queue.refused", { what });
+      case "no_effect":
+        return t("queue.no_effect", { title: line.subject ?? "" });
+      case "failed":
+        if (line.count > 1) return tn("queue.failed.group", line.count);
+        return t("queue.failed", { what });
+      case "overdue":
+        return line.count === 1 && line.subject ? shortTitle(line.subject) : tn("queue.overdue", line.count);
+      case "review": {
+        if (!(line.count === 1 && line.subject && !reviewParts(line).refusedOnly)) return reviewCount(line);
+        // What the assistant did is said as done, never as an order: "<name> dropped 'X'". Under Decide it stays a question.
+        const did = line.did;
+        return did && has(`queue.review.did.${did.op}`) ? t(`queue.review.did.${did.op}`, { item: did.item }) : line.subject;
+      }
+      case "intake_review":
+        return tn("queue.intake_review.title", intakeTotal(line), { source: midSentence(line.subject ?? line.source ?? "") });
+      case "batches":
+        return tn("queue.batches.title", line.count);
+      case "send": {
+        const q = (line.questions ?? []).length;
+        const a = (line.actions ?? []).length;
+        return q && a ? tn("queue.send.items", q + a, { name }) : q ? tn("queue.send.questions", q, { name }) : tn("queue.send.actions", a || line.count, { name });
+      }
+      case "nudge":
+        return t("queue.nudge", { name });
+      case "backup":
+        return t("queue.backup");
+      case "escalate":
+        return t("queue.escalate", { text: shortTitle(line.text ?? "").replace(/[?.!\s]+$/, "") });
+      case "answer":
+        return t("queue.answer", { text: line.text ?? "" });
+      case "stale":
+        return t("queue.stale.one_named", { text: shortTitle(line.subject ?? "") });
+      case "needs_date":
+        return tn("queue.needs_date", line.count);
+      case "pattern": {
+        const vars = { text: shortTitle(line.text ?? ""), name };
+        return tn(`queue.pattern.${line.state ?? "moved"}`, line.count, vars);
+      }
+      case "capacity": {
+        const time = durationWords(line.minutes ?? 0, tn);
+        return line.count > 0 ? tn("queue.capacity", line.count, { time }) : t("queue.capacity.none", { time });
+      }
+      case "clash":
+        // One clash is one line, in the words every screen uses: how many meetings overlap and when; a clash for want of travel time
+        // says so, with how short it is.
+        return clashEach(t, tn, Math.max(2, line.count), `${line.due ? `${weekday(line.due)} ` : ""}${line.starts ? wallTime(line.starts) : ""}`.trim(), line.state === "travel" ? Math.max(1, line.minutes ?? 0) : 0);
+      case "tie":
+        return t("queue.tie", { text: shortTitle(line.text ?? "").replace(/[.!?\s]+$/, ""), other: line.other ?? "", when: day(line.due) });
+      case "guests":
+        return t("queue.guests", { title: line.text ?? "", names: (line.names ?? []).join(", "), when: day(line.due) });
+      case "attention":
+        return tn(`queue.attention.${line.state === "stopped" ? "stopped" : "quiet"}`, line.count, { kind: t(`queue.attention.kind.${line.text ?? ""}`) });
+      case "promise": {
+        const vars = { name, text: shortTitle(line.text ?? "", line.due).replace(/[.!?\s]+$/, ""), date: line.due ? day(line.due) : "" };
+        if ((line.replies ?? 0) > 0) return repliedWords(line.replies ?? 0, name, t);
+        // Someone the person reports to is waited on, never chased (design 6.34).
+        const waiting = line.stance === "report_to";
+        if (!line.due) {
+          const n = line.waiting_days ?? 0;
+          return waiting ? tn("queue.promise.wait_undated", n, { ...vars, n }) : tn("queue.promise.chase_undated", n, { ...vars, n });
+        }
+        if (!line.person) return t("queue.promise.own", vars);
+        return waiting ? t("queue.promise.wait", vars) : t("queue.promise.chase", vars);
+      }
+      case "reminder":
+        return reminderTitle(line, t);
+      case "reminder_digest":
+        return digestTitle(line, t);
+      case "date_reminder": {
+        const key = `queue.date_reminder.${line.state ?? ""}`;
+        return t(has(key) ? key : "queue.date_reminder", { text: line.text ?? "", date: day(line.due) });
+      }
+      case "area":
+        return t("queue.area", { name: line.text ?? "" });
+      case "reply":
+        return replyTitle(line, t);
+      case "sent_check":
+        return sentCheckTitle(line, t);
+      case "since_yesterday":
+        return t("queue.since.title");
+      case "invitation":
+        return t("queue.invitation", { title: line.text ?? "" });
+      case "meeting_prep":
+        return t("queue.meeting_prep", { title: line.text ?? "" });
+      case "meeting_capture":
+        return t("queue.meeting_capture", { title: line.text ?? "" });
+      case "called_off":
+        return t("queue.called_off", { title: line.text ?? "" });
+      case "called_off_todos":
+        return t("queue.called_off_todos", { title: line.text ?? "" });
+      case "quiet_promise":
+        return t("queue.quiet_promise", { name, text: shortTitle(line.text ?? "") });
+      case "away":
+        return tn("queue.away", line.count);
+      default:
+        return line.text ?? line.kind;
+    }
+  };
+}
+
+function QueueRow(props: {
+  line: QueueLine;
+  emphasis: boolean;
+  screenPrimary: boolean;
+  tinted: boolean;
+  demote: boolean;
+  ghost: boolean;
+  selection: Selection | null;
+  beside: boolean;
+  mixed: boolean;
+  areasMixed: boolean;
+  everySideTag: boolean;
+  onSelect: (selection: Selection | null) => void;
+  handlers: QueueHandlers;
+}) {
+  const { t, tn } = useWords();
+  const act = useAct();
+  // The person's own id, so the overdue line opens the list narrowed to their own to-dos, the ones it counts.
+  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
+  const titleWords = useTitleWords();
+  const lineTitle = useLineTitle();
+  const noAccount = useQuery({ queryKey: ["status"], queryFn: api.status }).data?.ai.state === "not_set_up";
+  const reviewCount = useReviewCount();
+  const intakeWords = useIntakeWords();
+  const { justMe } = useSides();
+  const slotOf = useSideSlot();
+  const sideFilter = useSideFilter();
+  const calendarColor = useCalendarColor();
+  const changes = useQuery({ queryKey: ["changes"], queryFn: api.changes, enabled: props.line.kind === "go" || props.line.kind === "no_effect" });
+  const ref = useRef<HTMLLIElement & HTMLDivElement>(null);
+  const { line } = props;
+  const open = props.selection !== null;
+  // The row the keyboard focus is in is the cursor row: a soft fill and a bar at its left edge.
+  // The fill and bar show for the keyboard only: a row that takes the cursor by itself as Today opens shows neither until a key is pressed.
+  const [cursor, setCursor] = useState(false);
+  const keyboard = useKeyboardInput();
+  const opens = opensItems(line);
+  const inPlace = open && !props.beside;
+  const detailId = `detail-${line.key.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+  const select = (next: boolean, sendBack = false) => props.onSelect(next ? { key: line.key, sendBack } : null);
+  // Beside the queue the inspector always shows a line, so choosing one never closes it; the cursor goes to its first field.
+  const intoPane = () => {
+    let tries = 0;
+    const look = () => {
+      const inner = document.querySelector<HTMLElement>("[data-queue-inspector] textarea, [data-queue-inspector] input, [data-queue-inspector] [data-ui=select]");
+      if (inner) inner.focus();
+      else if (tries++ < 20) window.setTimeout(look, 50);
+    };
+    look();
+  };
+  const choose = () => {
+    select(true);
+    if (props.beside) intoPane();
+  };
+  const show: MenuAction = { id: "look", label: t("queue.look_closer"), run: choose };
+  const promiseRow = usePromiseChoices(line, () => ref.current?.focus());
+  const replyRow = useReplyChoices(line, () => ref.current?.focus());
+  const sentRow = useSentCheckChoices(line);
+  const heldWords = useHeldAnswers(line.changeset ?? "", line.op ?? 0, line.kind === "held" && line.changeset != null && line.op != null ? line.held : null, () => ref.current?.focus());
+  const notNow = useNotNow();
+  const tieAnswers = useTie();
+  const guestAnswers = useGuests();
+  const attention = useAttention();
+  const quietRow = useQuietChoices(line);
+  // The offered area's name is a field the person may change before starting it.
+  const [areaName, setAreaName] = useState(line.text ?? "");
+  // The suggested name is already filled in; the box for another name is behind Rename.
+  const [renaming, setRenaming] = useState(false);
+  const areaNameId = useId();
+  const keepArea = () =>
+    void act(
+      () => api.keepArea(line.subject ?? "", areaName.trim()),
+      (kept) => ({
+        message: tn("queue.area.kept", line.count, { name: areaName.trim() || (line.text ?? "") }),
+        undo: async () => {
+          await api.undo(kept.filed);
+          await api.undo(kept.started);
+        },
+      }),
+      undefined,
+      { key: line.key, kinds: ["project", "action", "note", "question", "fact", "changeset"] },
+    );
+  const choices = useChoices(line);
+  const reminderRow = useReminderChoices(line.kind === "reminder" ? (line.actions ?? [])[0] ?? "" : "", line.snoozes ?? [], () => ref.current?.focus());
+  // The question of what happened at a meeting opens its box under the row; the cursor goes back to the row when it closes.
+  const [capturing, setCapturing] = useState(false);
+  const [calledOff, setCalledOff] = useState<false | "date" | "drop">(false);
+
+  const what = titleWords(line.title);
+  const title = line.kind === "area" ? t("queue.area", { name: areaName.trim() || (line.text ?? "") }) : lineTitle(line);
+  // The line's words, on one line (it is cut with an ellipsis, and the inspector has the rest). What came from outside is
+  // said once in the inspector, never on a line.
+  const meta = (...parts: Array<string | null | undefined | false>): ReactNode => parts.filter(Boolean).join(" · ");
+  const d: Described = (() => {
+    switch (line.kind) {
+      case "decision":
+        return { pill: t("queue.pill.decision"), tone: "need", meta: meta(what, afterMove(line, t), line.due && t("op.meta.due", { date: day(line.due) })), primary: { label: t("queue.act.answer") }, menu: [] };
+      case "question":
+        return { pill: t("queue.pill.question"), tone: "need", meta: meta(what, afterMove(line, t)), primary: { label: t("queue.act.answer") }, menu: [] };
+      case "who_is":
+        return { pill: t("queue.pill.waiting"), tone: "warn", meta: meta(what), primary: { label: t("queue.act.pick") }, menu: [] };
+      case "owner":
+        return { pill: t("queue.pill.waiting"), tone: "warn", meta: meta(line.due && t("op.meta.due", { date: day(line.due) })), primary: { label: t("queue.act.pick_owner") }, menu: [] };
+      case "held": {
+        const ask = line.held;
+        if (!ask || !heldWords) {
+          return { pill: t("queue.pill.waiting"), tone: "warn", meta: meta(line.text, line.waiting, what), primary: { label: t("queue.act.decide") }, menu: [] };
+        }
+        // The item as a question with two answers that name the result, the same two in the inspector. The line keeps the
+        // words it rests on and who said them; the rest (who was told, why it waits, where it came from) is in the inspector.
+        const record = ask.record ?? "";
+        return {
+          pill: t("queue.pill.waiting"),
+          tone: "warn",
+          meta: heldMeta(ask, t),
+          primary: heldWords.primary,
+          other: heldWords.other,
+          menu: [
+            ...heldWords.menu,
+            ...(record && props.handlers.onOpenRecord ? [{ id: "change", label: t("queue.held.e.change"), run: () => props.handlers.onOpenRecord?.("action", record) }] : []),
+          ],
+        };
+      }
+      case "unfiled":
+        return {
+          pill: t("queue.pill.unfiled"),
+          tone: "neutral",
+          meta: line.state === "which_side" ? t(line.subject ? "queue.sides.meta" : "queue.sides.meta.many") : t(justMe ? "queue.unfiled.meta.just_me" : "queue.unfiled.meta"),
+          // Asking which side: the primary opens the list of sides to pick from (and "File them" stays the way to the
+          // unfiled items one by one); otherwise it goes to the unfiled items.
+          primary:
+            line.state === "which_side"
+              ? { label: t("queue.act.pick_side") }
+              : { label: t("queue.act.file_them"), run: () => props.handlers.onOpenView?.("records/projects") },
+          menu: [],
+        };
+      case "terms":
+        return { pill: t("queue.pill.terms"), tone: "neutral", meta: t("queue.terms.meta"), primary: { label: t("queue.act.answer") }, menu: [] };
+      case "project_ending": {
+        const cs = line.changeset ?? "";
+        const index = line.op ?? 0;
+        const project = line.subject ?? "";
+        return {
+          pill: t("queue.pill.project_ending"),
+          tone: "warn",
+          meta: meta(what, t("queue.project_ending.meta")),
+          primary: { label: t("queue.stale.open") },
+          menu: [
+            {
+              id: "keep-project",
+              label: t("project_ending.keep_project"),
+              run: () =>
+                void act(
+                  async () => {
+                    const view = await api.projectEnding(cs, index);
+                    await api.chooseProjectEnding(cs, index, { end: false, keep: [] });
+                    return [index, ...view.items.map((i) => i.index)];
+                  },
+                  (indexes) => ({
+                    message: t("project_ending.kept_project", { project }),
+                    undo: async () => {
+                      for (const i of indexes) await api.undeclineOp(cs, i);
+                    },
+                  }),
+                  undefined,
+                  { key: line.key, kinds: ["changeset", "request", "project", "action"] },
+                ),
+            },
+          ],
+        };
+      }
+      case "moved": {
+        const after = line.after_move;
+        const others = after?.others ?? [];
+        const open: MenuAction[] = [];
+        if (after && props.handlers.onOpenRecord) open.push({ id: "meeting", label: t("queue.moved.open", { what: after.title }), run: () => props.handlers.onOpenRecord!(after.kind, after.record) });
+        if (line.changeset) {
+          const cs = line.changeset;
+          open.push({ id: "undo-run", label: t("queue.moved.undo"), run: () => void act(() => api.undo(cs), () => ({ message: t("queue.moved.undone") }), undefined, { key: line.key }) });
+        }
+        return {
+          pill: t("queue.pill.moved"),
+          tone: "warn",
+          meta: meta(
+            after && t(after.by === "pm" ? "queue.moved.from_you" : "queue.moved.from_input"),
+            others.length > 0 && tn("queue.moved.others", others.length, { names: others.join(", ") }),
+          ),
+          primary: { label: t("queue.act.look_closer") },
+          menu: open,
+        };
+      }
+      case "go": {
+        const item = changes.data?.find((c) => c.id === line.request);
+        return {
+          pill: t("queue.pill.go"),
+          tone: "warn",
+          meta: meta(line.waiting),
+          primary: item
+            ? { label: t("changes.go"), run: () => void act(() => api.stageGo(item.id, item.version), () => ({ message: t("toast.go") }), undefined, { key: line.key, kinds: ["request"] }) }
+            : { label: t("queue.act.open") },
+          menu: [],
+        };
+      }
+      case "first_go":
+        // Without an AI account Start would start nothing: the one action is to add the account.
+        if (noAccount) {
+          return {
+            pill: t("queue.pill.go"),
+            tone: "warn",
+            meta: t("first_go.no_account_sub"),
+            primary: { label: t("queue.act.add_account"), run: () => props.handlers.onAddAccount?.() },
+            menu: [],
+          };
+        }
+        return {
+          pill: t("queue.pill.go"),
+          tone: "warn",
+          meta: t("first_go.sub"),
+          primary: { label: t("changes.go"), run: () => void act(api.firstGo, () => ({ message: t("toast.go") }), undefined, { key: line.key }) },
+          menu: [],
+        };
+      case "refused":
+        if (line.count > 1 && line.state === "no_person" && props.handlers.onOpenGuide) {
+          const guide = props.handlers.onOpenGuide;
+          return { pill: t("queue.pill.stopped"), tone: "neutral", meta: meta(line.waiting), primary: { label: t("changes.say_who"), run: () => guide("workspace") }, menu: [] };
+        }
+        return { pill: t("queue.pill.stopped"), tone: "neutral", meta: meta(line.waiting), primary: { label: line.count > 1 ? t("queue.stopped.group.open", { n: line.count }) : t("changes.send_other") }, menu: [] };
+      case "failed":
+        return { pill: t("queue.pill.stopped"), tone: "neutral", meta: meta(line.waiting), primary: { label: line.count > 1 ? t("queue.stopped.group.open", { n: line.count }) : t("queue.act.open") }, menu: [] };
+      case "no_effect": {
+        // The person's own words, then two ways on: open the question to answer again, or leave it.
+        const item = changes.data?.find((c) => c.id === line.request);
+        const leave = () =>
+          item &&
+          void act(
+            () => api.dismiss(item.id, item.version),
+            (result) => ({ message: t("toast.dismissed"), undo: () => api.undismiss(item.id, result.version) }),
+            undefined,
+            { key: line.key, kinds: ["request"] },
+          );
+        return {
+          pill: t("queue.pill.no_effect"),
+          tone: "warn",
+          meta: line.text ? t("queue.no_effect.said", { words: line.text }) : "",
+          primary: { label: t("queue.no_effect.open"), run: () => props.handlers.onOpenRecord?.("question", line.question ?? "") },
+          other: item ? { label: t("queue.no_effect.leave"), run: () => void leave() } : undefined,
+          menu: [],
+        };
+      }
+      case "overdue":
+        return {
+          pill: t("queue.pill.overdue"),
+          tone: "danger",
+          meta: !line.due
+            ? ""
+            : line.count === 1 && line.subject
+              ? tn("queue.overdue.was_due", line.waiting_days ?? 0, { date: day(line.due) })
+              : tn("queue.overdue.oldest", line.waiting_days ?? 0, { date: day(line.due) }),
+          // A to-do is acted on in To-dos and questions, so the line opens that list narrowed to the overdue ones.
+          primary: {
+            label: t("queue.overdue.open"),
+            run: () => {
+              chooseFilters({ state: "overdue", person: me.data?.person ?? "" });
+              props.handlers.onOpenView?.("work/open");
+            },
+          },
+          menu: [],
+        };
+      case "review": {
+        const held = (line.outcome ?? {}).held ?? 0;
+        // The held ops of this change are asked once, on their own lines under Decide; this line says how many and goes there.
+        const deciding = line.deciding ?? [];
+        const goToDeciding: MenuAction[] =
+          deciding.length > 0
+            ? [
+                {
+                  id: "waiting",
+                  label: t("queue.review.show_waiting"),
+                  run: () => {
+                    props.onSelect({ key: deciding[0] ?? "", sendBack: false });
+                    window.setTimeout(() => showRow(document.querySelector<HTMLElement>(`[data-line-key="${CSS.escape(deciding[0] ?? "")}"]`)), 0);
+                  },
+                },
+              ]
+            : [];
+        // A line that holds one item is titled by it, so the counted sentence moves to the words under the title.
+        const single = title !== reviewCount(line);
+        // Look over opens the batch in the details pane, where each item has "Not right" and "All looks good" is at the end:
+        // nothing leaves Today until the person says so there.
+        return {
+          pill: t("queue.pill.review"),
+          tone: "neutral",
+          meta: meta(single && reviewCount(line), what, held > 0 && tn("queue.review.waits", held), deciding.length > 0 && tn("queue.review.waits_decide", deciding.length)),
+          primary: { label: t("queue.act.look_over") },
+          menu: [...goToDeciding, { id: "send-back", label: t("changes.send_back"), run: () => select(true, true) }],
+        };
+      }
+      case "intake_review":
+        // What a new source's first read found: one line for the source, opened in the details pane like any batch.
+        return {
+          pill: t("queue.pill.review"),
+          tone: "neutral",
+          meta: meta(intakeWords(line)),
+          primary: { label: t("queue.act.look_over") },
+          menu: [],
+        };
+      case "batches":
+        // Batches left unopened, as one line, oldest first.
+        return {
+          pill: t("queue.pill.review"),
+          tone: "neutral",
+          meta: meta(line.at && t("queue.batches.oldest", { date: day(line.at.slice(0, 10)) })),
+          primary: { label: t("queue.act.look_over") },
+          menu: [],
+        };
+      case "send": {
+        const q = (line.questions ?? []).length;
+        const a = (line.actions ?? []).length;
+        return {
+          pill: t("queue.pill.send"),
+          tone: "need",
+          meta: meta(
+            q && a ? [tn("queue.send.n_questions", q), tn("queue.send.n_actions", a)].join(" · ") : t("queue.send.ready"),
+            // A batch that has waited says since when; one ready today says nothing of it.
+            sinceDay(line.ready_since, new Date()) && t("queue.send.ready_since", { day: sinceDay(line.ready_since, new Date()) }),
+          ),
+          primary: { label: t("queue.act.review_copy") },
+          menu: [],
+        };
+      }
+      case "nudge": {
+        // One line for the person: the first two to-dos that are overdue or due soon with their days, earliest first, and how
+        // many more wait; with no dated to-do, how many wait for a reply and for how long.
+        const days = line.waiting_days ?? 0;
+        const dated = line.due_items ?? [];
+        const named = dated.slice(0, 2).map((item) =>
+          t(item.overdue ? "queue.nudge.item_late" : "queue.nudge.item_due", { text: shortTitle(item.text, item.due).replace(/[?.!\s]+$/, ""), date: day(item.due) }),
+        );
+        const more = Math.max(0, line.count - named.length);
+        const words =
+          named.length > 0
+            ? [...named, more > 0 ? tn("queue.nudge.more", more) : ""].filter(Boolean).join(" · ")
+            : days === 0
+              ? tn("queue.nudge.meta_today", line.count)
+              : tn("queue.nudge.meta", line.count, { days });
+        const replied = (line.replies ?? 0) > 0 ? repliedWords(line.replies ?? 0, line.person_name ?? "", t) : "";
+        return {
+          // Nothing has waited a day yet: it went out today.
+          pill: days === 0 ? t("queue.pill.sent_today") : tn("queue.pill.waiting_days", days),
+          tone: "warn",
+          meta: meta([words, replied].filter(Boolean).join(" · ")),
+          primary: { label: t("queue.act.follow_up") },
+          menu: [],
+        };
+      }
+      case "backup": {
+        // The one place besides the header chip: Back up now runs it, and with no folder the button opens the step that picks one.
+        const state = line.state;
+        const words =
+          state === "unset" ? t("queue.backup.unset") : state === "failed" ? t("queue.backup.failed") : state === "overdue" ? t("queue.backup.overdue", { age: backupAge({ age_hours: line.age_hours ?? null }, t) ?? "" }) : t("queue.backup.never");
+        const run = () => void act(() => api.backup(), () => ({ message: t("toast.backup_ran") }), undefined, { key: line.key, touches: ["today", "status", "backups", "setup", "sync"] });
+        return {
+          // Never set up or never run is a gap in setup; once it ran and stopped, or fails, it is a risk.
+          pill: t(state === "unset" ? "queue.pill.backup.unset" : state === "never" ? "queue.pill.backup.never" : "queue.pill.backup"),
+          tone: state === "failed" || state === "overdue" ? "danger" : "warn",
+          meta: words,
+          primary: state === "unset" ? { label: t("status.backup_set_up"), run: () => props.handlers.onOpenGuide?.("backup") } : { label: t("backup.now"), run },
+          menu: [],
+        };
+      }
+      case "escalate": {
+        const days = line.waiting_days ?? 0;
+        return {
+          pill: tn("queue.pill.waiting_days", days),
+          tone: "warn",
+          meta: tn("queue.escalate.meta", line.count, { name: line.person_name ?? "" }),
+          primary: { label: t("queue.escalate.pick") },
+          menu: [],
+        };
+      }
+      case "capacity":
+        return {
+          pill: t("queue.pill.capacity"),
+          tone: "warn",
+          meta: line.needed_minutes ? t("queue.capacity.meta", { needed: durationWords(line.needed_minutes, tn) }) : undefined,
+          primary: line.count > 0 ? { label: t("queue.capacity.look") } : null,
+          menu: [],
+        };
+      case "clash": {
+        // Ways out that exist: open either meeting, or say the clash is fine. Moving or declining one needs a calendar
+        // connection that can write, which is not offered here.
+        const open = props.handlers.onOpenRecord;
+        const ways: MenuAction[] = [];
+        // An event the app keeps no entry for opens the page of what its calendar says.
+        const firstPage = line.entry ? ["event", line.entry] : line.event_page ? [EVENT_PAGE, line.event_page] : null;
+        const secondPage = line.other_entry ? ["event", line.other_entry] : line.other_event_page ? [EVENT_PAGE, line.other_event_page] : null;
+        if (firstPage && open) ways.push({ id: "open-first", label: t("queue.clash.open_named", { name: line.text ?? "" }), run: () => open(firstPage[0], firstPage[1]) });
+        if (secondPage && open) ways.push({ id: "open-second", label: t("queue.clash.open_named", { name: line.other ?? "" }), run: () => open(secondPage[0], secondPage[1]) });
+        ways.push({ id: "fine", label: t("queue.clash.fine"), run: () => notNow(line.key, t("queue.clash.fine_done")) });
+        const [first, ...rest] = ways;
+        // The time between the meetings is what the travel time asked for less what falls short.
+        const needed = line.travel_minutes ?? 0;
+        const between = Math.max(0, needed - (line.minutes ?? 0));
+        const travel =
+          line.place && line.other_place
+            ? tn("queue.clash.meta.travel", between, { need: durationWords(needed, tn), from: line.place, to: line.other_place })
+            : tn("queue.clash.meta.travel_apart", between, { need: durationWords(needed, tn) });
+        // Which calendars the two are in, so two meetings of different accounts are told apart: each by its name, marked with its color,
+        // each a part of its own in the meta line (no word between them), and one calendar named once.
+        // The side each meeting is on is told by the side's own mark; a calendar that serves no side is named by itself.
+        // An address in a calendar's name is left out of what is read (it is the tooltip).
+        const names = [...new Set([line.source_name, line.other_source_name].filter((n): n is string => !!n))];
+        const bare = (name: string) => name.replace(/[,:]?\s*[\w.+-]+@[\w.-]+/g, "").trim() || name;
+        const onSides = line.sides?.length ? line.sides : line.side ? [line.side] : [];
+        const calendars =
+          onSides.length > 0
+            ? onSides.map((side) => (
+                <span key={side} className={styles.mp} title={names.join(", ") || undefined}>
+                  <SideMark side={side} />
+                </span>
+              ))
+            : names.map((name) => (
+                <span key={name} className={styles.mp}>
+                  <span className={styles.markName}>
+                    <MarkDot kind="calendar" color={calendarColor(name)} />
+                    <span className={styles.markText} title={name}>
+                      {bare(name)}
+                    </span>
+                  </span>
+                </span>
+              ));
+        // The meetings by their names, now that the line's title says only how many overlap and when.
+        const named = (line.count > 2 ? tn("queue.clash.names_more", line.count - 2, { text: line.text ?? "", other: line.other ?? "" }) : t("queue.clash.names", { text: line.text ?? "", other: line.other ?? "" }));
+        // When the two meetings overlap: the day and the minutes they share (the day alone when the clock times are not known).
+        const startsAt = [line.starts, line.other_starts].filter((x): x is string => !!x).sort().pop();
+        const endsAt = [line.ends, line.other_ends].filter((x): x is string => !!x).sort()[0];
+        const dayWord = line.due && line.due.slice(0, 10) === todayOn(new Date()) ? t("today.agenda.today") : day(line.due);
+        const whenWords = startsAt && endsAt && line.state !== "travel" ? `${dayWord} ${t("today.agenda.range", { start: clockTime(startsAt), end: clockTime(endsAt) })}` : dayWord;
+        const how = line.state === "travel" ? travel : tn("queue.clash.meta.overlap", line.minutes ?? 0);
+        return {
+          pill: "",
+          tone: "warn",
+          // The facts (when, and how far they overlap or fall short) are one line; the calendars the two meetings are in are a second.
+          // Each part is its own item of its line, so a narrow window moves a whole part down and never leaves a separator stranded.
+          meta: (
+            <>
+              <span className={styles.metaLine}>
+                <span className={styles.mp}>
+                  <strong>{whenWords}</strong>
+                </span>
+                <span className={styles.mp}>{line.state === "travel" ? how : <strong>{how}</strong>}</span>
+              </span>
+              <span className={styles.metaLine}>
+                {calendars}
+                <span className={styles.mp}>{named}</span>
+              </span>
+            </>
+          ),
+          primary: { label: first.label, run: first.run },
+          menu: [show, ...rest],
+        };
+      }
+      case "tie": {
+        // A calendar entry on the to-do's day whose title and the to-do's words contain one another: tie it, or not this one.
+        const action = (line.actions ?? [])[0] ?? "";
+        const text = shortTitle(line.text ?? "").replace(/[.!?\s]+$/, "");
+        const other = line.other ?? "";
+        return {
+          pill: t("queue.pill.tie"),
+          tone: "neutral",
+          meta: t("queue.tie.meta"),
+          primary: { label: t("queue.tie.yes"), run: () => void tieAnswers.tie(action, text, other) },
+          other: { label: t("queue.tie.no"), run: () => void tieAnswers.notThis(action, text, other) },
+          menu: [show],
+        };
+      }
+      case "guests": {
+        // A plain entry's title names known people: they are guests only when the person says so.
+        const entry = line.entry ?? "";
+        const title = line.text ?? "";
+        const names = (line.names ?? []).join(", ");
+        return {
+          pill: t("queue.pill.guests"),
+          tone: "neutral",
+          meta: t("queue.guests.meta"),
+          primary: { label: t("queue.guests.yes"), run: () => void guestAnswers.confirm(entry, title, names) },
+          other: { label: t("queue.guests.no"), run: () => void guestAnswers.notThem(entry, title, names) },
+          menu: [show],
+        };
+      }
+      case "attention": {
+        // The person's own taps reached a threshold: ask once whether to quiet (or stop) the kind. Nothing changes until they say.
+        const kind = line.text ?? "";
+        const stopping = line.state === "stopped";
+        return {
+          pill: t("queue.pill.attention"),
+          tone: "neutral",
+          meta: t("queue.attention.meta"),
+          primary: stopping
+            ? { label: t("queue.attention.stop_yes"), run: () => void attention.stop(kind) }
+            : { label: t("queue.attention.quiet_yes"), run: () => void attention.quiet(kind) },
+          other: { label: t("queue.attention.keep"), run: () => void attention.keep(kind) },
+          menu: [show],
+        };
+      }
+      case "pattern": {
+        // The choices the line offers: the first is the main button, the second sits beside it, the rest are in the menu.
+        const [first, second, ...rest] = choices;
+        const open: MenuAction[] =
+          line.person && props.handlers.onOpenRecord ? [{ id: "open-person", label: t("queue.pattern.open_person", { name: line.person_name ?? "" }), run: () => props.handlers.onOpenRecord?.("person", line.person ?? "") }] : [];
+        return {
+          pill: t(`queue.pill.pattern.${line.state ?? "moved"}`),
+          tone: "neutral",
+          meta: undefined,
+          primary: first ? { label: first.label, run: first.run } : null,
+          other: second ? { label: second.label, run: second.run } : undefined,
+          menu: [...rest.map((c) => ({ id: c.id, label: c.label, run: c.run })), ...open],
+        };
+      }
+      case "answer":
+        return {
+          pill: t("queue.pill.answer"),
+          tone: "neutral",
+          meta: null,
+          primary: { label: t("queue.answer.open"), run: () => void (line.request && props.handlers.onOpenAnswer?.(line.request)) },
+          menu: [],
+        };
+      case "stale": {
+        // One line for each to-do: Keep, Drop and Snooze right on the line.
+        const [first, second, ...rest] = choices;
+        return {
+          pill: t("queue.pill.stale"),
+          tone: "neutral",
+          meta: tn("queue.stale.meta", line.waiting_days ?? 0),
+          primary: first ? { label: first.label, run: first.run } : { label: t("queue.stale.open"), run: () => props.handlers.onOpenRecord?.("action", line.actions?.[0] ?? "") },
+          other: second ? { label: second.label, run: second.run } : undefined,
+          menu: rest.map((c) => ({ id: c.id, label: c.label, run: c.run })),
+        };
+      }
+      case "needs_date":
+        // One line for all of them: it opens the to-dos, where "Needs a date" gives each a day.
+        return {
+          pill: t("queue.pill.needs_date"),
+          tone: "neutral",
+          meta: t("queue.needs_date.meta"),
+          primary: { label: t("queue.needs_date.open"), run: () => props.handlers.onOpenView?.("work/open") },
+          menu: [],
+        };
+      case "promise": {
+        const days = line.waiting_days ?? 0;
+        // A date still ahead and no date at all are the waiting-ons that ask for a nudge early; only a passed date is late.
+        const pill = !line.due ? t("queue.pill.undated") : days > 0 ? t("queue.pill.overdue") : t("queue.pill.due_soon");
+        const meta = !line.due ? t("queue.promise.undated") : days > 0 ? tn("queue.promise.late", days, { n: days }) : days === 0 ? t("queue.promise.today") : tn("queue.promise.ahead", -days, { n: -days });
+        return {
+          pill,
+          tone: days > 0 ? "danger" : "warn",
+          meta,
+          primary: promiseRow.primary,
+          menu: [show, ...promiseRow.menu],
+        };
+      }
+      case "reminder":
+        return {
+          pill: t("queue.pill.reminder"),
+          tone: line.late ? "danger" : "warn",
+          meta: undefined,
+          primary: { label: t("queue.reminder.done"), run: reminderRow.done },
+          menu: [reminderRow.note],
+          groups: reminderRow.groups,
+        };
+      case "reminder_digest":
+        return { pill: t("queue.pill.reminder"), tone: "neutral", meta: undefined, primary: null, menu: [] };
+      case "date_reminder":
+        return {
+          pill: t("queue.pill.date_reminder"),
+          tone: "warn",
+          // The date is in the title; the line has nothing to add.
+          meta: undefined,
+          primary: line.fact ? { label: t("queue.act.open_fact"), run: () => props.handlers.onOpenRecord?.("fact", line.fact ?? "") } : null,
+          menu: opens ? [show] : [],
+        };
+      case "area":
+        return {
+          pill: t("queue.pill.area"),
+          tone: "neutral",
+          meta: meta(tn("queue.area.meta", line.count, { list: (line.names ?? []).join("; ") })),
+          primary: { label: t("queue.area.keep"), run: keepArea },
+          menu: [{ id: "rename", label: t("queue.area.rename"), run: () => setRenaming(true) }],
+        };
+      case "reply":
+        return { pill: t("queue.pill.reply"), tone: "warn", meta: meta(), primary: replyRow.primary, menu: replyRow.menu };
+      case "sent_check":
+        return { pill: t("queue.pill.sent_check"), tone: "warn", meta: meta(), primary: sentRow.primary, menu: sentRow.menu };
+      case "since_yesterday":
+        // Look over opens the list, and opening it is what marks it seen: the line goes until something new happens.
+        return {
+          pill: t("queue.pill.since"),
+          tone: "neutral",
+          meta: sinceWords(line, t),
+          primary: { label: t("queue.since.open"), run: () => props.handlers.onOpenView?.("work/since") },
+          menu: [],
+        };
+      case "invitation":
+        return {
+          pill: t("queue.pill.invitation"),
+          tone: "need",
+          meta: meta(line.at && dateAndTime(line.at), line.subject && t("queue.invitation.from", { name: line.subject })),
+          primary: { label: t("queue.act.reply_invitation"), run: () => props.handlers.onOpenRecord?.("event", line.event ?? "") },
+          menu: [],
+        };
+      case "meeting_prep": {
+        const names = line.names ?? [];
+        const extra = line.count - names.length;
+        const who = line.count === 0 && names.length === 0 ? "" : names.length === 0 ? tn("queue.meeting_prep.with_unlisted", line.count) : extra > 0 ? tn("queue.meeting_prep.with_and", extra, { names: names.join(", ") }) : t("queue.meeting_prep.with", { names: names.join(", ") });
+        return {
+          pill: t("queue.pill.meeting_prep"),
+          tone: "neutral",
+          meta: meta(line.at && dateAndTime(line.at), who, (line.open_items ?? 0) > 0 && tn("queue.meeting_prep.open", line.open_items ?? 0), line.state === "no_agenda" && t("queue.meeting_prep.no_agenda")),
+          primary: { label: t("queue.act.prep"), run: () => props.handlers.onOpenRecord?.("event", line.event ?? "") },
+          menu: [],
+        };
+      }
+      case "called_off": {
+        const own = line.state === "own";
+        const event = line.event ?? "";
+        return {
+          pill: t("queue.pill.called_off"),
+          tone: "warn",
+          meta: meta(line.at && dateAndTime(line.at), own ? undefined : t("queue.called_off.connected"), line.count > 0 && tn("queue.called_off.todos", line.count)),
+          primary: own
+            ? { label: t("queue.act.new_date"), run: () => setCalledOff("date") }
+            : { label: t("queue.act.open_entry"), run: () => props.handlers.onOpenRecord?.("event", event) },
+          menu: [{ id: "drop-entry", label: t("queue.act.drop_entry"), run: () => setCalledOff("drop") }],
+        };
+      }
+      case "called_off_todos": {
+        const event = line.event ?? "";
+        const todos = tn("queue.called_off.todos", line.count);
+        return {
+          pill: t("queue.pill.called_off_todos"),
+          tone: "warn",
+          meta: meta(todos),
+          primary: { label: t("queue.act.keep_todos"), run: () => void act(() => api.keepEventTodos(event), (r) => ({ message: t("queue.called_off.kept", { title: line.text ?? "" }), undo: () => api.undo(r.changeset ?? "") }), undefined, { key: line.key, kinds: ["action", "changeset"] }) },
+          menu: [{ id: "drop-todos", label: t("queue.act.drop_todos"), run: () => void act(() => api.dropEventTodos(event), (r) => ({ message: t("queue.called_off.dropped", { title: line.text ?? "" }), undo: () => api.undo(r.changeset ?? "") }), undefined, { key: line.key, kinds: ["action", "changeset"] }) }],
+        };
+      }
+      case "meeting_capture":
+        return {
+          pill: t("queue.pill.meeting_capture"),
+          tone: "warn",
+          meta: meta(line.at && t("queue.meeting_capture.ended", { when: dateAndTime(line.at) })),
+          primary: { label: t("queue.act.capture"), run: () => setCapturing(true) },
+          menu: [],
+        };
+      case "quiet_promise": {
+        const n = line.waiting_days ?? 0;
+        return {
+          pill: t("queue.pill.quiet_promise"),
+          tone: "warn",
+          meta: meta(t(line.state === "from" ? "queue.quiet_promise.from" : "queue.quiet_promise.to"), tn("queue.quiet_promise.days", n), line.due && t("queue.quiet_promise.due", { date: day(line.due) })),
+          primary: { label: t("queue.act.open_person"), run: () => props.handlers.onOpenRecord?.("person", line.person ?? "") },
+          menu: quietRow.menu,
+          groups: quietRow.groups,
+        };
+      }
+      case "away":
+        // A note, not a task: the lines that waited arrive with it, each in its own place, so it has nothing to press.
+        return { pill: t("queue.pill.away"), tone: "neutral", meta: undefined, primary: null, menu: [] };
+      default:
+        // A kind the screen has no words for yet still shows, so nothing the engine ranks is hidden.
+        return { pill: "", tone: "neutral", meta: meta(line.waiting), primary: null, menu: [] };
+    }
+  })();
+
+  // A suggestion can be put off until something about it changes; what is due cannot.
+  const menu: MenuAction[] = SUGGESTION_KINDS.has(line.kind) ? [...d.menu, { id: "not-now", label: t("queue.notnow"), run: () => notNow(line.key) }] : d.menu;
+  useRowKeys(ref, { toggle: props.beside ? choose : opens ? () => select(!open) : undefined });
+  // Under one side's filter, a line that is on no side (the app's own, or about all of them) says so, so it is never read as that side's.
+  const everySide = props.everySideTag && sideFilter.choice !== "all" && line.side == null && !(line.sides ?? []).length ? <span className={styles.tag} data-every-side="">{t("queue.every_side")}</span> : null;
+  const area = props.areasMixed && line.area_name ? <span className={styles.tag} data-area={line.area}>{t("queue.area_tag", { area: line.area_name })}</span> : null;
+  // A line on one of the person's sides names it in its meta line, after a mark in the side's color; the title keeps only the
+  // project's own tag. With no sides to tell apart, the tag stays as it was.
+  const slot = slotOf(line.side);
+  // A clash line names its sides itself, with the meetings.
+  const sideMark = slot !== null && line.side_name && line.kind !== "clash" ? (
+    <span data-side={line.side ?? undefined}>
+      <SideMark side={line.side} />
+    </span>
+  ) : null;
+  const project = props.mixed && (line.project_name || (line.side_name && !sideMark)) ? <ProjectTag name={line.project_name} parent={line.parent_name} side={sideMark ? null : line.side_name} className={styles.tag} /> : null;
+  const metaNode: ReactNode = !d.meta && !sideMark ? undefined : sideMark ? (typeof d.meta === "string" || !d.meta ? <>{d.meta ? <span className={styles.mp}>{d.meta}</span> : null}<span className={styles.mp}>{sideMark}</span></> : <>{d.meta}<span className={styles.mp}>{sideMark}</span></>) : d.meta;
+  // What marks the line in its 24px slot: the kind of line as an icon, or, for a line with none, the color of its side.
+  const icon = leadIcon(line);
+  // The queue's groups are lists of their own, and their titles start on one edge across them: a line with no mark keeps its slot
+  // (an empty span) so a group of plain lines does not give up the width the next group's icons need.
+  const lead: ReactNode = icon ? <Icon name={icon} /> : slot !== null ? <MarkDot kind="side" slot={slot} /> : <span aria-hidden="true" />;
+  // The first Decide line carries the screen's one filled button; a review that is open has it instead.
+  const filled = (props.emphasis || props.screenPrimary) && !props.demote && !!d.primary;
+  // Work that stopped is a line at risk, but not a risk of its own: it carries no tint or edge, so the red goes only to what is
+  // wrong now (an account not read, a clash) and "Stopped" is said in words.
+  const state = line.group === "risk" && line.kind !== "refused" ? (props.tinted ? "danger" : undefined) : props.emphasis ? "decide" : undefined;
+  const onClick = (event: React.MouseEvent) => {
+    if ((event.target as HTMLElement).closest("button, a, input, textarea, select, [role='menuitem']")) return;
+    if (props.beside) select(true);
+    else if (opens) select(!open);
+  };
+  const primary: ReactNode = d.primary ? (
+    <InRowActions.Provider value={!filled}>
+      {d.other && (
+        <Button size="sm" aria-describedby={`${detailId}-title`} onClick={d.other.run}>
+          {d.other.label}
+        </Button>
+      )}
+      <Button
+        size="sm"
+        variant="primary"
+        data-key="primary"
+        aria-expanded={!d.primary.run && opens && !props.beside ? open : undefined}
+        aria-controls={!d.primary.run && opens && !props.beside ? detailId : undefined}
+        aria-describedby={`${detailId}-title`}
+        onClick={d.primary.run ?? choose}
+      >
+        {d.primary.label}
+      </Button>
+    </InRowActions.Provider>
+  ) : undefined;
+  // A line settled somewhere else stays where it was, said so and with nothing to press, until the person moves on.
+  if (props.ghost)
+    return (
+      <Row
+        as="div"
+        ref={ref}
+        data-queue-line={line.kind}
+        data-line-key={line.key}
+        data-ghost=""
+        aria-label={t("queue.settled_named", { title })}
+        role="group"
+        title={<s id={`${detailId}-title`}>{title}</s>}
+        meta={withStatus(d.pill ? { word: d.pill } : null, t("queue.settled"))}
+      />
+    );
+  return (
+    <Row
+      as="div"
+      ref={ref}
+      selected={open || (cursor && keyboard)}
+      onFocus={() => setCursor(true)}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setCursor(false);
+      }}
+      className={line.kind === "clash" ? styles.plain : undefined}
+      lead={lead}
+      data-state={state}
+      data-queue-line={line.kind}
+      data-line-key={line.key}
+      aria-label={title}
+      aria-describedby={line.notes ? `${detailId}-notes` : undefined}
+      role="group"
+      clamp={title}
+      title={
+        <>
+          <span id={`${detailId}-title`} title={line.notes ?? undefined}>
+            {title}
+            {area}
+            {project}
+            {everySide}
+            <ViewTags views={line.views} className={styles.tag} />
+          </span>
+          {line.notes && (
+            <span id={`${detailId}-notes`} className="sr">
+              {line.notes}
+            </span>
+          )}
+        </>
+      }
+      meta={withStatus(d.pill ? { tone: d.tone, word: d.pill } : null, metaNode)}
+      // A line's detail is one short clause that wraps at a word; it is never cut with an ellipsis.
+      primary={primary}
+      menu={menu.length > 0 || (d.groups?.length ?? 0) > 0 ? <RowMenu label={title} actions={menu} groups={d.groups} /> : undefined}
+      onClick={onClick}
+    >
+      {line.kind === "reminder_digest" && <ReminderItems line={line} />}
+      {line.kind === "reminder" && reminderRow.form}
+      {line.kind === "held" && heldWords?.noting && heldWords.other && (
+        <NoteBox sends={[{ label: heldWords.other.label, run: heldWords.declineWithNote }]} onClose={heldWords.closeNote} />
+      )}
+      {line.kind === "area" && renaming && (
+        <div className="answer-form">
+          <label className="hint" htmlFor={areaNameId}>
+            {t("queue.area.name")}
+          </label>
+          <input id={areaNameId} type="text" value={areaName} onChange={(e) => setAreaName(e.target.value)} autoFocus />
+        </div>
+      )}
+      {line.kind === "meeting_capture" && capturing && line.event && (
+        <CaptureForm
+          event={line.event}
+          title={line.text ?? ""}
+          onClose={() => {
+            setCapturing(false);
+            ref.current?.focus();
+          }}
+        />
+      )}
+      {line.kind === "called_off" && calledOff === "date" && line.event && (
+        <NewDateForm event={line.event} title={line.text ?? ""} onClose={() => { setCalledOff(false); ref.current?.focus(); }} />
+      )}
+      {line.kind === "called_off" && calledOff === "drop" && line.event && (
+        <DropForm event={line.event} title={line.text ?? ""} onClose={() => { setCalledOff(false); ref.current?.focus(); }} />
+      )}
+      {line.kind === "reply" && (
+        <>
+          <ReplyDraft line={line} />
+          {replyRow.form}
+        </>
+      )}
+      {(inPlace || promiseRow.form) && (
+        <>
+          {inPlace && (
+            <div id={detailId} className={styles.detail} data-inset="">
+              <LineDetail line={line} sendBack={props.selection?.sendBack} onOpenGuide={props.handlers.onOpenGuide} />
+              <div className={styles.detailEnd}>
+                <Button size="sm" variant="quiet" onClick={() => select(false)}>
+                  {t("action.close")}
+                </Button>
+              </div>
+            </div>
+          )}
+          {promiseRow.form}
+        </>
+      )}
+    </Row>
+  );
+}

@@ -1,0 +1,444 @@
+"""Replies owed (design 6.32, 6.35): which messages ask the person something nobody has answered, the Today line for
+each open one, and the endings the rules take on their own.
+
+A reply owed is an action with `reply_owed`, `replies_to` (the message's source) and `asker` (the person it is to). The
+rules in `engine.replies_owed` decide, from the message's own headers and new text, whether a reply is owed at all; the
+applier asks them before it makes the action. A message the person sent to the asker on the same conversation after the
+ask may answer it: the rules only note that on the sent message's request (`mark_candidates`), and the assistant,
+reading the message with the ask beside it (`packet_section`), decides whether it answers, answers part or answers
+nothing. Everything else here reads."""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from email.utils import getaddresses, parseaddr, parsedate_to_datetime
+from typing import Any
+
+from engine.automatic_mail import classify_automatic
+from engine.blocked import standing_hold
+from engine.contacts import all_values
+from engine.mail_threads import ThreadCandidate, normalize_subject, thread_key
+from engine.names import PacketPeople, People
+from engine.own_accounts import own_names
+from engine.replies_owed import Address, Message, reply_owed, waiver_phrase
+from engine.reply_split import split_message
+from engine.untrusted import neutralize
+
+#: What the rules say that means no reply is owed, because it is mechanical. Anything else (a question for someone
+#: else, a request phrased without a question, a waiting period, a message that says no reply is needed) is left to the
+#: reading step, never refused here.
+NO_REPLY = ("automatic", "sent_by_you")
+#: What the change that ends a reply owed records as the rule that made it, so a list of what was done without the
+#: person can say a rule did it.
+ANSWERED_RULE = "reply_answered"
+_HEADER = re.compile(r"^([A-Za-z][A-Za-z-]*):[ \t]*(.*)$")
+_WRAPPERS = ("New in ", "Changed in ")
+#: Where a reply owed whose message is gone sorts: first, as the one waiting longest.
+UNDATED = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+@dataclass(frozen=True)
+class Read:
+    """A message as its saved text and details give it: who sent it, to whom (`to`, `cc`), when, what it is about, and
+    its new text with the quoted history and signature taken off."""
+
+    sender: str
+    to: tuple[str, ...]
+    cc: tuple[str, ...]
+    subject: str
+    received: datetime | None
+    body: str
+    new_text: str
+
+
+def _body_of(text: str) -> str:
+    """The message itself inside what a watcher handed in: its text after the line that says it is new, or after the
+    words that say what it now reads for a changed one."""
+    marker = "\nIt now reads:\n"
+    if text.startswith("Changed in ") and marker in text:
+        return text.split(marker, 1)[1]
+    if text.startswith(_WRAPPERS):
+        head, _, rest = text.partition("\n\n")
+        return rest if head.strip() else text
+    return text
+
+
+def leading_headers(text: str) -> tuple[dict[str, str], str] | None:
+    """The mail header lines a text starts with (lowercased names, folded lines joined) and the body after them; None
+    when its first lines are not header lines."""
+    lines = _body_of(text).lstrip("\n").splitlines()
+    headers: dict[str, str] = {}
+    current: str | None = None
+    used = 0
+    for line in lines:
+        used += 1
+        if not line.strip():
+            break
+        if line[0] in " \t":
+            if current is not None:
+                headers[current] += " " + line.strip()
+            continue
+        found = _HEADER.match(line)
+        if found is None:
+            return None
+        current = found.group(1).lower()
+        headers[current] = (headers.get(current, "") + " " + found.group(2).strip()).strip()
+    return headers, "\n".join(lines[used:])
+
+
+def read_message(text: str, received: datetime | None = None) -> Read | None:
+    """The message a text is, when it starts with mail header lines (From and To at least); None for anything else.
+    `received` is when it came, used when the headers give no readable date."""
+    head = leading_headers(text)
+    if head is None:
+        return None
+    headers, body = head
+    if not headers.get("from") or not headers.get("to"):
+        return None
+    when = received
+    if headers.get("date"):
+        try:
+            when = parsedate_to_datetime(headers["date"])
+        except (TypeError, ValueError, IndexError):
+            when = received
+    if when is not None and when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    return Read(
+        sender=headers["from"],
+        to=_entries(headers["to"]),
+        cc=_entries(headers.get("cc", "")),
+        subject=" ".join(headers.get("subject", "").split()),
+        received=when,
+        body=body,
+        new_text=split_message(body).new,
+    )
+
+
+def sent_by_me(view: Any, cfg: Any, sender: str) -> bool:
+    """Whether a From entry is one of the person's own addresses."""
+    parsed = _address(sender)
+    return parsed is not None and parsed.email.casefold() in {a.email.casefold() for a in my_addresses(view, cfg)}
+
+
+def _entries(value: str) -> tuple[str, ...]:
+    return tuple(
+        f"{name} <{address}>" if name else address
+        for name, address in getaddresses([value])
+        if address and address.count("@") == 1
+    )
+
+
+def _address(entry: str) -> Address | None:
+    name, address = parseaddr(entry)
+    return Address(address, name or None) if address.count("@") == 1 else None
+
+
+def addresses_of(entries: tuple[str, ...]) -> tuple[Address, ...]:
+    return tuple(a for a in map(_address, entries) if a is not None)
+
+
+def my_addresses(view: Any, cfg: Any) -> list[Address]:
+    """The addresses the person writes from: those their own record holds, and any of the names they sign in under that
+    are addresses."""
+    found: dict[str, Address] = {}
+    person = view.get("person", cfg.workspace.user.person) if cfg.workspace.user.person else None
+    values = all_values(person.data.get("how_to_reach")) if person is not None else []
+    for value in [*values, *own_names(cfg)]:
+        parsed = _address(str(value))
+        if parsed is not None:
+            found.setdefault(parsed.email.casefold(), parsed)
+    return list(found.values())
+
+
+def _message(read: Read, bulk: bool, subject: str) -> Message | None:
+    sender = _address(read.sender)
+    if sender is None or read.received is None:
+        return None
+    automatic = bulk or classify_automatic({}, subject, "text/plain").kind != "none"
+    return Message(read.new_text, sender, addresses_of(read.to), addresses_of(read.cc), read.received, automatic)
+
+
+def refusal(view: Any, cfg: Any, text: str, received: datetime | None, bulk: bool = False) -> str | None:
+    """Why no reply is owed for the message in `text`, in plain words, when the rules say so for certain: automatic
+    mail or mail the person sent. None when a reply may be owed, and when the headers can't be read (the model's
+    reading stands)."""
+    read = read_message(text, received)
+    mine = my_addresses(view, cfg)
+    if read is None or not mine:
+        return None
+    message = _message(read, bulk, read.subject)
+    if message is None:
+        return None
+    found = reply_owed(message, mine, (), message.received, 0)
+    return (
+        f"no reply is owed to this message: {found.reason[:1].lower()}{found.reason[1:]}"
+        if found.code in NO_REPLY
+        else None
+    )
+
+
+def waiver(text: str) -> str | None:
+    """The words of the message in `text` that say no reply is needed, when it reads as a message; None otherwise. The
+    assistant is asked about them (the `reply-not-needed` lint); they refuse nothing."""
+    read = read_message(text)
+    return waiver_phrase(read.new_text) if read is not None else None
+
+
+def asker_of(people: Any, text: str) -> str | None:
+    """The one known person a message is from, by the address or name on its From line; None when it is nobody known."""
+    read = read_message(text)
+    if read is None:
+        return None
+    found = people.match_entries([read.sender])
+    return next(iter(found)) if len(found) == 1 else None
+
+
+# ---- the line on Today -----------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Owed:
+    """An open reply owed: its `action`, the `text` of the action, who it is to (`asker`, a person id, or `sender`, the
+    name as written when that is nobody known), the message's `subject` and when it came (`received`, in UTC), and the
+    drafted `reply` with whether the person has `reviewed` it."""
+
+    action: str
+    text: str
+    project: str | None
+    asker: str | None
+    sender: str | None
+    subject: str
+    received: datetime
+    reply: str | None
+    reviewed: bool
+
+
+def _read_source(ws: Any, source: Any) -> str:
+    path = ws.sources_dir / f"{source.data['content_hash']}.txt"
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def _stamp(value: Any) -> datetime:
+    at = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+    return (at if at.tzinfo else at.replace(tzinfo=UTC)).astimezone(UTC)
+
+
+def plan(ws: Any, reader: Any) -> list[Owed]:
+    """The open replies owed, oldest message first: actions marked as a reply owed that are open and not on hold."""
+    found: list[Owed] = []
+    for action in reader.list("action"):
+        d = action.data
+        if not d.get("reply_owed") or d.get("status") != "open" or standing_hold(reader, d):
+            continue
+        source = reader.get("source", d["replies_to"]) if d.get("replies_to") else None
+        read = read_message(_read_source(ws, source), None) if source is not None else None
+        subject = (read.subject if read is not None else "") or (source.data["title"] if source is not None else "")
+        received = _stamp(source.data["received_at"]) if source is not None else UNDATED
+        sender = None
+        if read is not None and not d.get("asker"):
+            name, address = parseaddr(read.sender)
+            sender = name or address or None
+        found.append(
+            Owed(
+                action.id,
+                str(d["text"]),
+                d.get("project"),
+                d.get("asker"),
+                sender,
+                normalize_subject(subject) or subject,
+                received,
+                d.get("reply"),
+                bool(d.get("reply_reviewed")),
+            )
+        )
+    return sorted(found, key=lambda x: (x.received, x.action))
+
+
+# ---- the ending the rules take: the person's own sent mail -----------------------------------------------------------
+
+
+def _bare(entries: tuple[str, ...]) -> set[str]:
+    return {a.email.casefold() for a in addresses_of(entries)}
+
+
+def _thread(ask: Read, ask_key: str, sent: Read, sent_key: str, days: int) -> bool:
+    """Whether two messages are one conversation: by their headers when they carry them, else the same subject with a
+    person in common within `days`. Both sides are the same call to `thread_key`, so one rule decides."""
+    people_ask = sorted(_bare((ask.sender, *ask.to, *ask.cc)))
+    people_sent = sorted(_bare((sent.sender, *sent.to, *sent.cc)))
+    if ask.received is None or sent.received is None or not people_ask or not people_sent:
+        return False
+    candidate = ThreadCandidate("ask", ask.subject, tuple(people_ask), ask.received, ask_key)
+    try:
+        key = thread_key(
+            sent_key,
+            None,
+            None,
+            sent.subject,
+            people_sent,
+            received=sent.received,
+            candidates=[candidate],
+            max_days=days,
+        )
+    except ValueError:
+        return False
+    return key == "ask"
+
+
+def _quote_of(sent: Read) -> str:
+    """The words of the sent message to cite: its first line of new text, or its subject line."""
+    for line in sent.new_text.splitlines():
+        if len(line.strip()) >= 3:
+            return line.strip()[:200]
+    return f"Subject: {sent.subject}"
+
+
+def sent_candidates(ws: Any, store: Any, cfg: Any, owed: Owed, ask: Any, sent_sources: list[Any]) -> list[Any]:
+    """The person's sent messages that may answer this reply owed: each is on the same conversation, to the asker, and
+    after the ask. Being one says nothing about whether it answers; that is the assistant's to read. Returns the source
+    records."""
+    if owed.asker is None:
+        return []
+    person = store.read().get("person", owed.asker)
+    asker_addresses = {a.email.casefold() for a in map(_address, all_values(person.data.get("how_to_reach"))) if a}
+    asked = read_message(_read_source(ws, ask), _stamp(ask.data["received_at"]))
+    if asked is None or not asker_addresses:
+        return []
+    ask_key = ((ask.data.get("watched") or {}).get("key")) or ask.id
+    found = []
+    for source in sent_sources:
+        sent = read_message(_read_source(ws, source), _stamp(source.data.get("sent_at") or source.data["received_at"]))
+        if sent is None or sent.received is None or sent.received <= asked.received:
+            continue
+        if not asker_addresses & _bare(sent.to):
+            continue
+        key = ((source.data.get("watched") or {}).get("key")) or source.id
+        if _thread(asked, str(ask_key), sent, str(key), cfg.steward.reply_thread_days):
+            found.append(source)
+    return found
+
+
+def close_by_sent(
+    ws: Any, store: Any, cfg: Any, action_id: str, source: Any, summary: str, now: datetime | None = None
+) -> str:
+    """End an open action as the person's own act because their sent message shows it done: `action.close`, credited
+    to the person, with the sent message's words as the evidence, applied at once as a change made by the rule
+    `ANSWERED_RULE`. Returns the changeset's id."""
+    from engine.applier import Context, Inputs, apply_changeset
+    from engine.ops import CHANGESET
+    from engine.storage import WriteContext
+
+    text = _read_source(ws, source)
+    sent = read_message(text, _stamp(source.data["received_at"]))
+    assert sent is not None
+    op = {"op": "action.close", "id": action_id, "evidence": {"quote": _quote_of(sent)}}
+    changeset = CHANGESET.validate_python({"summary": summary, "ops": [op]}, context={"op_models": store.plugins.ops})
+    with store.transaction() as tx:
+        request = tx.create(
+            "request",
+            {
+                "task": "notes",
+                "origin": "input",
+                "state": "done",
+                "source": source.id,
+                "note": summary,
+                "created_at": store.clock(),
+            },
+            WriteContext("engine", "trusted", "reply.ended"),
+        )
+    people = People(store, cfg)
+    ctx = Context(
+        store, cfg, people, ("action.close",), Inputs(request.id, source.id, text, "", "untrusted"), reporter=people.pm
+    )
+    cs_id = apply_changeset(changeset, [], ctx, run=None, now=now, extra={"by_rule": ANSWERED_RULE})
+    with store.transaction() as tx:
+        current = tx.get("request", request.id)
+        tx.update(
+            "request",
+            request.id,
+            {"changeset": cs_id},
+            WriteContext("engine", "trusted", "reply.ended"),
+            read_version=current.version,
+        )
+    return cs_id
+
+
+def mark_candidates(ws: Any, store: Any, cfg: Any) -> int:
+    """Note on each of the person's sent messages, while the assistant has not yet read it, which open replies owed it
+    may answer (`may_answer` on its request). The rules close nothing: the assistant reads the message with the asks
+    and decides. A request that already ran is left alone, so no work is run twice. Idempotent. Returns how many
+    requests were changed."""
+    from engine.storage import WriteContext
+
+    view = store.read()
+    waiting = plan(ws, view)
+    if not waiting:
+        return 0
+    mine = [
+        s
+        for s in view.list("source")
+        if (s.data.get("watched") or {}).get("by_you") and str(s.data.get("kind", "")).startswith("watched:")
+    ]
+    queued = {
+        r.data["source"]: r
+        for r in view.list("request")
+        if r.data.get("task") == "notes" and r.data.get("state") == "queued" and r.data.get("source")
+    }
+    found: dict[str, list[str]] = {}
+    for owed in waiting:
+        ask = view.get("source", view.get("action", owed.action).data.get("replies_to") or "")
+        if ask is None:
+            continue
+        for source in sent_candidates(ws, store, cfg, owed, ask, mine):
+            request = queued.get(source.id)
+            if request is not None and owed.action not in (request.data.get("may_answer") or []):
+                found.setdefault(request.id, []).append(owed.action)
+    if not found:
+        return 0
+    with store.transaction() as tx:
+        for request_id, actions in found.items():
+            current = tx.get("request", request_id)
+            if current.data.get("state") != "queued":
+                continue
+            tx.update(
+                "request",
+                request_id,
+                {"may_answer": [*(current.data.get("may_answer") or []), *actions]},
+                WriteContext("engine", "trusted", "reply.candidates"),
+                read_version=current.version,
+            )
+    return len(found)
+
+
+ASK_CHARS = 600
+
+
+def packet_section(ws: Any, store: Any, cfg: Any, request: dict[str, Any]) -> str:
+    """The block a notes run's request carries for a message the person sent: the open replies owed it may answer
+    (their action ids, who asked, when, what the action says and the ask quoted). Empty when there are none. The ask is
+    outside content, marked so. What to do with the list is the prompt's."""
+    ids = request.get("may_answer") or []
+    if not ids:
+        return ""
+    view = store.read()
+    people = PacketPeople(store, cfg)
+    entries = []
+    for owed in plan(ws, view):
+        if owed.action not in ids:
+            continue
+        action = view.get("action", owed.action)
+        ask = view.get("source", action.data.get("replies_to") or "")
+        read = read_message(_read_source(ws, ask), None) if ask is not None else None
+        quoted = (read.new_text if read is not None else "").strip()[:ASK_CHARS] or (ask.data["title"] if ask else "")
+        # An attribute can't hold a mark: a name read from outside is given by the person's id instead.
+        asker = owed.asker if owed.asker in people.outside else (people.name(owed.asker) if owed.asker else None)
+        who = asker or owed.sender or ""
+        who = " ".join(who.replace('"', "").split())
+        when = owed.received.strftime("%Y-%m-%d %H:%M UTC")
+        entries.append(
+            f'<owed action="{owed.action}" asked_by="{who}" asked_at="{when}">\n{owed.text}\n'
+            f'<untrusted source="{ask.id if ask else ""}">\n{neutralize(quoted)}\n</untrusted>\n</owed>'
+        )
+    return "<may_answer>\n" + "\n".join(entries) + "\n</may_answer>" if entries else ""

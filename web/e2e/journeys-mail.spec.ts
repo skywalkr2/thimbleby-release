@@ -1,0 +1,484 @@
+// Journey 2: a person signs in to their mail and calendar on the walkthrough's Mail and calendar screen, the walkthrough
+// offers to look back over the last two weeks with its estimate, one Start reads everything, and what was found is one line
+// for each source on Today to look over (a sign-in's sources are taken in quietly, design 6.32). A workspace made by the init command with no template, started
+// by the serve command, with the mail add-on on (as one the person had already installed and turned on would be) and fakes only at the outside services
+// (tests/fake_services.py): the AI service over plain HTTP, and the sign-in, mail and calendar services over HTTPS with
+// a throwaway authority the app trusts through its environment.
+// Names come from the fictional workspace the fake services serve, never written out here.
+import { expect } from "@playwright/test";
+import { test } from "./test";
+import { choicesOf, choose } from "./choose";
+import {
+  checkAccessibility,
+  collectProblems,
+  dismissToasts,
+  expectFoundLine,
+  fakeAddress,
+  openView,
+  pressStart,
+  revealNewLines,
+  startOnToday,
+  visit,
+  widerThanWindow,
+  type Info,
+  type MailActsSeen,
+  type Requests,
+  type SignInSeen,
+  FIRST_SCREEN,
+} from "./journey-helpers";
+
+const FAKE = fakeAddress("JOURNEY_MAIL_FAKE_PORT", 8792);
+
+let info: Info;
+const problems: string[] = [];
+
+const requests = async (): Promise<Requests> => (await fetch(`${FAKE}/__e2e/ai-requests`)).json();
+const service = async (): Promise<SignInSeen> => (await fetch(`${FAKE}/__e2e/sign-in`)).json();
+const changes = async (): Promise<MailActsSeen> => (await fetch(`${FAKE}/__e2e/mail-acts`)).json();
+
+test.describe.serial("journey: mail", () => {
+  test.beforeAll(async () => {
+    info = await (await fetch(`${FAKE}/__e2e/info`)).json();
+  });
+
+  test.afterAll(() => {
+    expect(problems.filter((p) => !p.includes("Failed to load resource"))).toEqual([]);
+  });
+
+  test("J2. Sign in to my mail and calendar: the Start is on Today, and what was found is one line for each source there", async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
+    collectProblems(page, problems);
+
+    // A new workspace with the mail add-on on: the walkthrough opens by itself.
+    await page.goto(`?token=${info.token}`);
+    await expect(page.getByRole("heading", { level: 1, name: "Getting started" })).toBeVisible(FIRST_SCREEN);
+    await visit(page);
+    await pressStart(page);
+
+    // You, then an AI account, as in the first journey.
+    const main = page.locator("main#main");
+    await expect(main.getByRole("heading", { level: 2, name: "You" })).toBeVisible();
+    await main.getByLabel("Your full name").fill(info.people[0]);
+    await main.getByRole("button", { name: "Continue" }).click();
+    await expect(page.locator('[data-screen="you"][data-state]')).toContainText("Done");
+    // Work: Just me, which is already chosen.
+    await expect(main.getByRole("heading", { level: 2, name: "What it's for" })).toBeVisible();
+    await main.getByRole("button", { name: "Continue" }).click();
+    await expect(main.getByRole("heading", { level: 2, name: "Your AI account" })).toBeVisible();
+    await main.getByRole("radio", { name: /Something else/ }).check();
+    await main.getByRole("button", { name: /^Another service/ }).click();
+    await main.getByLabel(/^Another service/).check();
+    await main.locator("#ai-key").fill("a-made-up-key");
+    await main.getByRole("textbox", { name: "Service address" }).fill(info.ai_base_url);
+    await main.getByRole("textbox", { name: "Service address" }).blur();
+    // The check runs by itself, for every kind of work, before anything is saved.
+    await expect(main.getByText("Works. Ready to use.")).toBeVisible();
+    // One explicit yes lets this account read my mail and notes (the usual hand-in is internal material).
+    await main.getByRole("radio", { name: /^Yes/ }).check();
+    await main.getByRole("button", { name: "Continue" }).click();
+    await expect(main.getByRole("heading", { level: 2, name: "Mail and calendar" })).toBeVisible({ timeout: 30_000 });
+    await visit(page);
+
+    // Mail and calendar: the add-on I had installed is listed as a service, on, with what it reads and what it needs
+    // to reach. Nothing has been read, and nothing has asked the assistant anything. No restart is waiting.
+    await expect(main.getByRole("heading", { level: 2, name: "Mail and calendar" })).toBeVisible();
+    const row = main.locator('[data-service="journey-mail"]');
+    await expect(row).toHaveAttribute("data-state", "ready");
+    await expect(row).toContainText("Reads your mail and calendar");
+    await expect(main.getByText(/Restart to finish connecting/)).toHaveCount(0);
+    await expect(main.locator("[data-reading]")).toHaveCount(0);
+    // The step says, in one line, that social updates, promotions and mailing lists are set aside by themselves.
+    await expect(
+      main.getByText("Social updates, promotions and mailing lists are set aside; you can turn this off."),
+    ).toBeVisible();
+    await visit(page);
+    const before = await requests();
+    expect(before.work).toBe(0);
+    const appAddress = page.url();
+    const [popup] = await Promise.all([
+      page.waitForEvent("popup"),
+      row.getByRole("button", { name: "Sign in to Example mail", exact: true }).click(),
+    ]);
+    // The service's page opens in its own window; the app's window stays on the walkthrough.
+    expect(page.url()).toBe(appAddress);
+    await popup.waitForEvent("close", { timeout: 30_000 }).catch(() => undefined);
+
+    // Signing in happens on the service's own page, which sends me back to the same screen. The service is asked once,
+    // and the app proves the sign-in is its own. The answer's code and state are not left in the address.
+    await expect(main.getByRole("heading", { level: 2, name: "Mail and calendar" })).toBeVisible();
+    await expect(main.locator("[data-mail-result]")).toContainText("Example mail is connected.");
+    await main.getByRole("button", { name: "Connect another" }).click();
+    await expect(main.getByText(/Signed in as .+@example\.com/)).toBeVisible();
+    // The row no longer says to sign in: it says who is signed in and what is read, and offers no Sign in.
+    await expect(row).toHaveAttribute("data-signed-in", "");
+    await expect(row).toContainText("Reading your mail and calendar.");
+    await expect(row).not.toContainText("Sign in to start reading");
+    await expect(row.getByRole("button", { name: /^Sign in/ })).toHaveCount(0);
+    let seen = await service();
+    expect(seen).toMatchObject({ authorizations: 1, exchanges: 1, refused: 0 });
+    expect(page.url()).not.toMatch(/code=|state=|sign_in=/);
+    // The screen says what is read now, and that what it reads waits for you to start the assistant.
+    const reading = main.locator("[data-reading]");
+    await expect(reading.getByText("Your inbox")).toBeVisible();
+    await expect(reading.getByText("Your calendar")).toBeVisible();
+    await expect(reading.getByText(/Nothing is read or spent until you start the assistant/)).toBeVisible();
+    await expect(page.locator('[data-screen="mail"][data-state]')).toContainText("Done");
+    await visit(page);
+    // The mailbox also holds a social update (the service's own category) and a sales mail (a bulk flag), both from the
+    // last day: neither is work, so neither is taken in. The look back takes in the last 14 days of work mail (a message
+    // from last week too) and every event, whatever its day, so each is counted once below.
+    const { mail: recentMail, events: recentEvents, noted: recentNoted, set_aside: aside } = seen.recent_items;
+    expect(recentMail.length).toBeGreaterThan(0);
+    expect(recentNoted.length).toBeGreaterThan(0);
+    expect(aside).toHaveLength(2);
+    const { mail, events, noted, mail_to_check: mailToCheck, events_to_check: eventsToCheck } = seen.intake_items;
+    const handedIn = mail.length + events.length;
+    expect(handedIn).toBeGreaterThan(recentMail.length + recentEvents.length);
+    expect(noted).toHaveLength(0);
+
+    // There is no screen of its own for the first look at the mail: after Mail and calendar comes Backups, and the assistant
+    // has been asked nothing; the Start is on Today.
+    expect((await requests()).work).toBe(0);
+
+    // Backups and People are left for later, and Done names what was skipped.
+    await main.getByRole("button", { name: "Continue" }).click();
+    await expect(main.getByRole("heading", { level: 2, name: "Backups" })).toBeVisible();
+    await main.getByRole("button", { name: "I'll do this later" }).click();
+    await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible();
+    await main.getByRole("button", { name: "I'll do this later" }).click();
+    // Something was passed by, so the last screen says where things stand and is not headed Done.
+    await expect(main.getByRole("heading", { level: 2, name: "Where things stand" })).toBeVisible();
+    const recap = main.getByRole("list", { name: "What was set up" });
+    await expect(recap.locator('[data-step="mail"]')).toContainText("Done");
+    await expect(recap.locator('[data-step="backup"]')).toContainText("Skipped");
+    await visit(page);
+    await main.getByRole("button", { name: "Go to Today" }).click();
+    await expect(page.getByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening)/ })).toBeVisible();
+
+    // The sign-in's sources were read at once; taking them in waits for the Start on Today, which shows its cost first. One
+    // request for each item taken in, each item once. The stand-in rules find the person's own to-dos in these messages,
+    // and they arrive below as lines to look over.
+    const came = page.getByRole("region", { name: "Came in" });
+    await expect(came.getByText(recentMail[0])).toBeVisible({ timeout: 10_000 });
+    await startOnToday(page);
+    await expect.poll(async () => (await requests()).work, { timeout: 60_000 }).toBe(handedIn);
+    const asked = await requests();
+    // The work mail the rules could not place was sorted in one run for the whole batch; it is not counted as work.
+    expect(asked.sorting).toBe(1);
+    for (const title of [...mail, ...events]) {
+      expect(asked.inputs.filter((input) => input.includes(title))).toHaveLength(1);
+    }
+    for (const title of aside) expect(asked.inputs.filter((input) => input.includes(title))).toHaveLength(0);
+
+    // Today lists the recent mail on Came in; what is older or further off is not.
+    for (const title of recentMail) await expect(came.getByText(title, { exact: true })).toBeVisible();
+    // Which day a meeting falls on is the Schedule's own check (schedule.spec.ts); a journey that crosses midnight must not depend on it.
+    // Came in shows only the work mail; what was set aside is counted on What changed and listed on Handled for you,
+    // never on Today.
+    for (const title of aside) await expect(came.getByText(title, { exact: true })).toHaveCount(0);
+    await expect(came.getByRole("button", { name: /set aside/ })).toHaveCount(0);
+    for (const title of recentNoted) await expect(came.getByText(title, { exact: true })).toHaveCount(0);
+    seen = await service();
+    expect(seen).toMatchObject({ mail_reads: 1, calendar_reads: 1, unauthorized: 0 });
+
+    // Connections says what is read without my having chosen it, and who is signed in.
+    await openView(page, "Connections");
+    await expect(page.getByRole("heading", { level: 2, name: "Connections" })).toBeVisible();
+    // The account is one card named by its address, saying it is connected (Connections, design 7.9).
+    const card = page.getByRole("region", { name: /@example\.com$/ });
+    await expect(card.getByRole("heading", { level: 3, name: /.+@example\.com/ })).toBeVisible();
+    await expect(card.getByText("Connected", { exact: true })).toBeVisible();
+    // Its parts are rows under it, each named by what it reads ("Your inbox", "Your calendar"; drawn as Inbox and Calendar).
+    await expect(card.getByRole("listitem", { name: "Your inbox" })).toBeVisible();
+    await expect(card.getByRole("listitem", { name: "Your calendar" })).toBeVisible();
+    await visit(page);
+
+    // What was found is one line for each source, not a line for each item: none of the items' own review lines is on
+    // Today until I open the list.
+    await openView(page, "Today");
+    const found = page.locator('[data-queue-line="intake_review"]');
+    const inbox = found.filter({ hasText: "Your inbox" });
+    const calendar = found.filter({ hasText: "Your calendar" });
+    // Only what needs a look is counted: a thank-you, an agreement or a plain announcement is filed quietly.
+    await revealNewLines(page, found, 2);
+    await expectFoundLine(inbox, "your inbox", mailToCheck.length);
+    await expectFoundLine(calendar, "your calendar", eventsToCheck.length);
+    await expect(found).toHaveCount(2);
+    await expect(page.locator('[data-queue-line="review"]')).toHaveCount(0);
+    await visit(page);
+    expect((await requests()).work).toBe(handedIn);
+
+    // Look over opens a list's items in the details, on Today: the address stays, nothing is marked seen and nothing splits
+    // into lines of its own. All looks good reviews the list and the line leaves.
+    await inbox.getByRole("button", { name: "Look over", exact: true }).click();
+    await expect(page).toHaveURL(/#today$/);
+    await expect(inbox.getByRole("button", { name: /^Not right/ }).first()).toBeVisible();
+    await expect(page.locator('[data-queue-line="review"]')).toHaveCount(0);
+    await expect(found).toHaveCount(2);
+    await inbox.getByRole("button", { name: /^Keep (it|all \d+)$/ }).click();
+    await expect(found).toHaveCount(1);
+    await page.locator('[data-queue-line="intake_review"]').filter({ hasText: "Your calendar" }).getByRole("button", { name: "Look over", exact: true }).click();
+    await page.locator('[data-queue-line="intake_review"]').filter({ hasText: "Your calendar" }).getByRole("button", { name: /^Keep (it|all \d+)$/ }).click();
+    await expect(found).toHaveCount(0);
+    // Reviewing added nothing to Today: no line of its own for any item, and no "N new" waiting.
+    await expect(page.locator('[data-queue-line="review"]')).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^Show \d+ new items?$/ })).toHaveCount(0);
+    // My own words filed my action; a to-do is listed in To-dos and questions, not on Today. Filed under Personal, a to-do
+    // that names nobody is my own, so nothing asks who owns it.
+    await openView(page, "To-dos and questions");
+    await expect(page.getByText("Send the venue list.").first()).toBeVisible();
+    await openView(page, "Today");
+    await expect(page.getByText("Who owns this?")).toHaveCount(0);
+    await visit(page);
+    await expect(page.getByText(/stopped, see why below/)).toHaveCount(0);
+    expect((await requests()).work).toBe(handedIn);
+    // What changed says what was checked.
+    await openView(page, "What changed");
+    await expect(page.getByText("Checked").first()).toBeVisible();
+
+    // Handled for you lists both messages, grouped and collapsed, each with why it was set aside.
+    const social = aside.find((t) => /neighbors/i.test(t)) ?? "";
+    const sales = aside.find((t) => /sale/i.test(t)) ?? "";
+    await openView(page, "What changed");
+    await page.getByRole("link", { name: /handled for you$/ }).click();
+    const folder = page.locator("[data-handled]");
+    await expect(folder.getByRole("heading", { level: 1, name: "Handled for you" })).toBeVisible();
+    // The groups arrive after the heading; open each once they are there.
+    await expect(folder.locator("[data-group]").first()).toBeVisible();
+    const collapsed = folder.locator("[data-group] > h2 button[aria-expanded=false]");
+    for (let closed = await collapsed.count(); closed > 0; closed = await collapsed.count()) await collapsed.first().click();
+    const socialRow = folder.locator("[data-row-list] > li", { hasText: social });
+    const salesRow = folder.locator("[data-row-list] > li", { hasText: sales });
+    await expect(socialRow).toContainText("Set aside because your mail service files it under social");
+    await expect(salesRow).toContainText("Set aside because it was sent to many people");
+    await visit(page);
+
+    // Bring it in on the sales mail hands it in at once (this person has no side to name): it gets its own request, and nothing else
+    // is asked.
+    await salesRow.getByRole("button", { name: `Bring it in: ${sales}` }).click();
+    await expect(page.getByText(`Handed in ${sales}.`)).toBeVisible();
+    await expect(folder.locator("[data-row-list] > li", { hasText: sales })).toHaveCount(0);
+    await expect.poll(async () => (await requests()).work, { timeout: 60_000 }).toBe(handedIn + 1);
+    const handed = await requests();
+    expect(handed.inputs.filter((input) => input.includes(sales))).toHaveLength(1);
+    expect(handed.inputs.filter((input) => input.includes(social))).toHaveLength(0);
+
+    // Choosing Always set aside mail like this teaches the sorting about the sender; the message stays in the folder.
+    await socialRow.getByRole("button", { name: `More actions for ${social}` }).click();
+    await page.getByRole("menuitem", { name: "Always set aside mail like this" }).click();
+    await expect(
+      page.getByText("From now on, mail from updates@network.example.com is set aside as sales mail."),
+    ).toBeVisible();
+    await expect(folder.locator("[data-row-list] > li", { hasText: social })).toHaveCount(1);
+    await visit(page);
+
+    // The next read brings a new message from that sender, saying nothing about itself: it is set aside by the new
+    // sorting, with no request for the assistant.
+    const later = await (await fetch(`${FAKE}/__e2e/mail-later`, { method: "POST" })).json();
+    await openView(page, "Today");
+    const cameIn = page.getByRole("region", { name: "Came in" });
+    await expect(cameIn.getByRole("button", { name: "Check now" })).toBeVisible();
+    await cameIn.getByRole("button", { name: "Check now" }).click();
+    await expect(cameIn.getByText(later.subject)).toHaveCount(0);
+    // The earlier message is still in the list, so it is counted until the new one is read, then both are.
+    await openView(page, "Handled for you");
+    const handled = page.locator("[data-handled]");
+    await expect(handled.getByRole("button", { name: /^Set aside 2/ })).toBeVisible({ timeout: 30_000 });
+    await expect(handled.locator("[data-group]").first()).toBeVisible();
+    const shut = handled.locator("[data-group] > h2 button[aria-expanded=false]");
+    for (let closed = await shut.count(); closed > 0; closed = await shut.count()) await shut.first().click();
+    await expect(handled.locator("[data-row-list] > li", { hasText: later.subject })).toContainText(
+      `Set aside because it is from ${later.sender}`,
+    );
+    // Counted by input: on a busy computer a call that times out goes to the next account with the same input, which is
+    // the same work, not new work.
+    const after = await requests();
+    expect(after.inputs.filter((input) => input.includes(later.subject))).toHaveLength(0);
+    expect(new Set(after.inputs).size).toBe(handedIn + 1);
+    expect(await service()).toMatchObject({ unauthorized: 0, refused: 0 });
+  });
+
+  // Acting on a signed-in account (design 6.12). It runs on what J2 left: the account signed in and its messages saved, so it
+  // needs no server of its own. The add-on's channel carries each change to the made-up mail service, which refuses any
+  // change for a token that holds only the reading access, so the test proves the sign-in again, not only the screens.
+  test("J2b. Let the assistant act on my signed-in mail: Move to and Label pick from the account's own folders and labels, the yes shows the names, and what the service was asked is the ids", async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const trouble: string[] = [];
+    collectProblems(page, trouble);
+    const before = await service();
+    expect((await changes()).granted.every((scopes) => !scopes.includes("mail.modify"))).toBe(true);
+    const seenOnService = await changes();
+    // A saved message from that account, a work message the first read took in: What changed lists it, and its detail's title
+    // opens the message's own page.
+    const message = seenOnService.messages.find((m) => before.recent_items.mail.includes(m.subject));
+    if (!message) throw new Error("the made-up service holds no recent work message");
+    const openMessage = async () => {
+      await openView(page, "What changed");
+      const title = new RegExp(`^Email from .+ · ${message.subject}$`);
+      // The line's button is its subject (the click area is the whole line; the kind and the sender are in its meta); the detail's title is the link, in full.
+      await page.getByRole("list").getByRole("button", { name: message.subject, exact: true }).click();
+      await page.getByRole("link", { name: title }).click();
+      await expect(page.getByRole("heading", { level: 1, name: message.subject })).toBeVisible();
+    };
+    const archive = seenOnService.folders.find((f) => f.kind === "folder" && f.name.includes("/"));
+    const follow = seenOnService.folders.find((f) => f.kind === "label");
+    if (!archive || !follow) throw new Error("the made-up service lists no nested folder or no label");
+    expect(archive.id).not.toBe(archive.name);
+    expect(follow.id).not.toBe(follow.name);
+
+    // Acting is the person's switch, off until they turn it on. Turning it on for the signed-in account sends them to the
+    // service's own page to allow more, which brings them back to Settings with the switch on.
+    await page.goto(`?token=${info.token}#settings`);
+    const acting = page.locator("[data-acting-accounts]");
+    const switchOn = acting.getByRole("checkbox", { name: /^Let .+ act after your yes$/ });
+    // Settings draws after the accounts it lists have been read, which takes longer on a busy computer.
+    await expect(switchOn).toBeVisible({ timeout: 30_000 });
+    await expect(switchOn).not.toBeChecked();
+    // The page is replaced by the service's, so the box shows the switch on only once the person is back.
+    await switchOn.click();
+    await expect(page.locator("[data-acting-accounts]").getByRole("checkbox", { name: /^Let .+ act after your yes$/ })).toBeChecked({
+      timeout: 30_000,
+    });
+    const after = await service();
+    expect(after.authorizations).toBe(before.authorizations + 1);
+    expect(after.exchanges).toBe(before.exchanges + 1);
+    expect((await changes()).granted.some((scopes) => scopes.includes("mail.modify"))).toBe(true);
+    expect(page.url()).not.toMatch(/code=|state=|sign_in=/);
+    await visit(page);
+
+    // A saved message from that account: its page offers Move to.
+    await openMessage();
+    await page.locator("[data-page-header]").getByRole("button", { name: /More actions for/ }).click();
+    await page.getByRole("menuitem", { name: "Move to…" }).click();
+
+    // The account's own folders are a list to pick from, with the nested one by its whole path, never a box to type in; the
+    // labels are not in it. The cursor is in the list.
+    const form = page.locator('[data-act-form="move"]');
+    const folders = form.getByRole("combobox", { name: "Move to folder" });
+    await expect(folders).toBeFocused();
+    await expect(form.getByRole("textbox")).toHaveCount(0);
+    await expect(page.locator("[data-folders-not-listed]")).toHaveCount(0);
+    const offered = (await choicesOf(folders)).map((c) => c.label);
+    expect(offered).toEqual(["Choose a folder", ...seenOnService.folders.filter((f) => f.kind === "folder").map((f) => f.name)]);
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await expect(form).toBeVisible();
+      await checkAccessibility(page);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+    }
+    expect(await widerThanWindow(page, "Move to")).toEqual([]);
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await choose(folders, { label: archive.name });
+    await form.getByRole("button", { name: "Draft the move" }).click();
+
+    // Waiting to go out names the folder as the person knows it, not its id, and nothing has been asked of the service yet.
+    await expect(page.getByRole("heading", { level: 1, name: "Follow-ups" })).toBeVisible();
+    const waiting = page.getByRole("list", { name: "Waiting to go out" }).getByRole("listitem");
+    await expect(waiting).toHaveCount(1);
+    await expect(waiting).toContainText(`Move 1 message to ${archive.name}`);
+    const pane = page.getByRole("complementary", { name: `Move 1 message to ${archive.name}` });
+    await expect(pane).toContainText(`Folder: ${archive.name}`);
+    await expect(pane).not.toContainText(archive.id);
+    expect((await changes()).acts).toEqual([]);
+    await pane.getByRole("button", { name: "Approve and send" }).click();
+    const dialog = page.getByRole("dialog", { name: "Go ahead with this now: Move 1 message to " + archive.name + "?" });
+    await dialog.getByRole("button", { name: "Send" }).click();
+    await expect(page.getByText("Sent the change to your mail.")).toBeVisible();
+
+    // The service was asked once, for the folder's id and the message's own id there. Undo, from the toast, asks it once to
+    // take that back.
+    const moved = await changes();
+    expect(moved.acts).toHaveLength(1);
+    expect(moved.acts[0]).toMatchObject({ action: "move", folder: archive.id, label: null, messages: [message.id] });
+    expect(moved.undone).toEqual([]);
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(page.getByText("Took back the change to your mail.")).toBeVisible();
+    const back = await changes();
+    expect(back.acts).toHaveLength(1);
+    expect(back.undone).toEqual([{ id: moved.acts[0].id, action: "move" }]);
+
+    // Label picks from the account's labels the same way.
+    await dismissToasts(page);
+    await openMessage();
+    await page.locator("[data-page-header]").getByRole("button", { name: /More actions for/ }).click();
+    await page.getByRole("menuitem", { name: "Label…" }).click();
+    const labelForm = page.locator('[data-act-form="label"]');
+    const labels = labelForm.getByRole("combobox", { name: "Label" });
+    await expect(labels).toBeFocused();
+    await expect(labelForm.getByRole("textbox")).toHaveCount(0);
+    expect((await choicesOf(labels)).map((c) => c.label)).toEqual([
+      "Choose a label",
+      ...seenOnService.folders.filter((f) => f.kind === "label").map((f) => f.name),
+    ]);
+    await checkAccessibility(page);
+    await choose(labels, { label: follow.name });
+    await labelForm.getByRole("button", { name: "Draft the label" }).click();
+    await expect(page.getByRole("heading", { level: 1, name: "Follow-ups" })).toBeVisible();
+    const labelPane = page.getByRole("complementary", { name: `Label 1 message ${follow.name}` });
+    await expect(labelPane).toContainText(`Label: ${follow.name}`);
+    await expect(labelPane).not.toContainText(follow.id);
+    await labelPane.getByRole("button", { name: "Approve and send" }).click();
+    await page.getByRole("dialog", { name: `Go ahead with this now: Label 1 message ${follow.name}?` }).getByRole("button", { name: "Send" }).click();
+    await expect(page.getByText("Sent the change to your mail.")).toBeVisible();
+    const labeled = await changes();
+    expect(labeled.acts).toHaveLength(2);
+    expect(labeled.acts[1]).toMatchObject({ action: "label", label: follow.id, folder: null, messages: [message.id] });
+    expect(labeled.undone).toHaveLength(1); // the label was not taken back
+    expect(await service()).toMatchObject({ unauthorized: 0, refused: 0 });
+    expect(trouble.filter((p) => !p.includes("Failed to load resource"))).toEqual([]);
+  });
+  test("J2c. Choose what else to read: a folder the account doesn't have is refused in plain words, the folder already read is refused, and one more folder is added once", async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    const trouble: string[] = [];
+    collectProblems(page, trouble);
+    await page.goto(`?token=${info.token}`);
+    const readers = async () =>
+      ((await (await page.request.get("api/watch", { headers: { Authorization: `Bearer ${info.token}` } })).json()) as Array<{ label: string }>).map((x) => x.label);
+    const before = await readers();
+    await openView(page, "Connections");
+    const choose = async () => {
+      await page.getByRole("button", { name: /^Choose what to read/ }).first().click();
+      const form = page.locator("form[data-add-connection]");
+      await expect(form).toBeVisible();
+      await form.getByRole("radio", { name: /Example mail/ }).check();
+      await form.getByRole("button", { name: "Continue" }).click();
+      return form;
+    };
+    const tryFolder = async (folder: string) => {
+      const form = await choose();
+      await form.getByRole("textbox", { name: /folder/i }).fill(folder);
+      await form.getByRole("button", { name: "Add connection" }).click();
+      return form;
+    };
+
+    // The account has no such folder: said in plain words, beside the form, and nothing is added.
+    let form = await tryFolder("Nonsense folder 123");
+    await expect(form.getByRole("alert")).toHaveText("This account has no folder called Nonsense folder 123. Choose one it has.");
+    expect(await readers()).toEqual(before);
+    await form.getByRole("button", { name: "Cancel" }).click();
+
+    // The inbox is read already, named by its usual name or typed out.
+    form = await tryFolder("inbox");
+    await expect(form.getByRole("alert")).toHaveText("Your inbox already reads this. Change that one, or choose another folder.");
+    expect(await readers()).toEqual(before);
+    await form.getByRole("button", { name: "Cancel" }).click();
+
+    // A folder the account has is added once; the same folder again is refused, naming the connection that reads it.
+    form = await tryFolder("Archive");
+    await expect(page.getByText(/^Added .+ It is read within a minute/)).toBeVisible();
+    const after = await readers();
+    expect(after).toHaveLength(before.length + 1);
+    await expect(page.locator("form[data-add-connection]")).toHaveCount(0);
+    await dismissToasts(page);
+    form = await tryFolder("Archive");
+    await expect(form.getByRole("alert")).toContainText("already reads this. Change that one, or choose another folder.");
+    expect(await readers()).toEqual(after);
+    expect(trouble.filter((p) => !p.includes("Failed to load resource"))).toEqual([]);
+  });
+});

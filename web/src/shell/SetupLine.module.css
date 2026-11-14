@@ -1,0 +1,11 @@
+/* Today's last group, "Finish setting up": how far setup is, as a thin bar, and the next step when no gap is listed. */
+.progressRow { display: flex; align-items: center; gap: var(--space-3); min-width: 0; padding: 0 var(--row-px, var(--space-4)) var(--space-2); font-size: var(--text-sm); line-height: var(--lh-sm); }
+.progress { width: 120px; height: 6px; flex: none; border-radius: var(--radius-full); background: var(--surface-sunk); overflow: hidden; }
+.bar { display: block; height: 100%; background: var(--ok); }
+.next { margin: 0; min-width: 0; flex: 1 1 auto; overflow-wrap: anywhere; color: var(--text-muted); }
+@media (max-width: 639.98px) { .progressRow { flex-wrap: wrap; row-gap: var(--space-1); } .progress { flex: 1 1 100%; width: auto; } .next { flex: 1 1 100%; } }
+:global([data-narrow]) .progressRow { flex-wrap: wrap; row-gap: var(--space-1); }
+:global([data-narrow]) .progress { flex: 1 1 100%; width: auto; }
+:global([data-narrow]) .next { flex: 1 1 100%; }
+/* "Finish setting up" is a card of its own under the list's card, a step apart from it. */
+.setupCard { margin-top: var(--space-4); }

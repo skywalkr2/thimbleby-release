@@ -1,0 +1,1380 @@
+"""The background worker: processes queued requests one at a time, makes scheduled backups, and tells listeners when
+anything changes."""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import os
+import sys
+import threading
+import time
+from collections.abc import Callable, Collection
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+from engine import language_words, problems, running
+from engine.ai.router import Router
+from engine.config import Config
+from engine.dispatcher import needs_you, process
+from engine.storage import Store, StoreError, WriteContext
+from engine.storage.lease import LeaseLost
+from engine.workspace import Workspace
+
+CODE_ROOTS = (Path(__file__).resolve().parent, Path(__file__).resolve().parents[1] / "api")
+log = logging.getLogger(__name__)
+RESTART_NEEDED = "Settings changed since the app started; restart it to use them."
+# The wording a request held for a restart carried before the words were made plain: one that still has it is held
+# for the same reason.
+_RESTART_WORDS_BEFORE = "Settings or code changed since the cockpit started; restart it to use them."
+
+
+def held_for_restart(waiting: object) -> bool:
+    """Whether a request's waiting reason says it is held until the restart."""
+    return waiting in (RESTART_NEEDED, _RESTART_WORDS_BEFORE)
+
+
+INTERRUPTED = "The app closed while this ran; it runs again now."
+INTERRUPTED_TWICE = "Stopped twice when the app closed during it"
+_REQUEUE_OP = "worker.requeue"
+_INTERRUPTED_OP = "worker.interrupted"
+#: What `Worker.restart_for` names when an add-on that is running was updated from the screen.
+ADD_ONS = "add-ons"
+#: What `Worker.restart_for` names while a restore of a backup copy waits for the restart that swaps it in.
+RESTORE = "restore"
+
+
+#: Settings the running app takes in at once, without a restart: everything that reads them reads the shared config
+#: each time it is used (AI accounts and tiers for each run; who the person is, the names and the screens' wording
+#: for each request; which projects are the personal and business sides, for each item filed; where and how often
+#: backups go, for each backup; how often the readable export is written; the watched sources, for each read; whether
+#: and how corrections are learned from, for each correction and each learning run; the scan for new terms, for each
+#: input; the word lists the program reads text by (`engine/language_words.py`), for each text read; the catalogs,
+#: tokens and refresh time of the Add-ons screen, for each time it reads them; whether a switch of account is offered
+#: a check, for each switch; how much of a file is read, for each file; the window and the smallest week of the
+#: quality figures, for each time they are asked for; how long a preview beside a data form may take, and how many
+#: searches an add-on's packet function may make, for each time they are used).
+#: Any other change waits for a restart the person chooses.
+LIVE_KEYS = (
+    "ai.",
+    "ui.",
+    "workspace.user.",
+    "workspace.name",
+    "workspace.assistant_name",
+    "workspace.project.completed_status",
+    "workspace.project.personal",
+    "workspace.project.business",
+    "workspace.project.sides",
+    "workspace.our_accounts",
+    "storage.backups.",
+    "storage.export.every_minutes",
+    "storage.sync.shared",
+    "storage.kept_secrets.",
+    "storage.files.read_max_mb",
+    "storage.files.read_max_chars",
+    "watch.",
+    "steward.",
+    "workspace.plugins.catalog.",
+    "workspace.plugins.preview_seconds",
+    "language.bare_confirmation_words",
+    "language.known_terms",
+    "language.known_terms_shipped",
+    "workspace.project.side_words",
+    *(f"language.{name}" for name in language_words.names()),
+    "dispatch.knowledge.learn",
+    "dispatch.knowledge.learn_every_minutes",
+    "dispatch.knowledge.learn_input_chars",
+    "dispatch.knowledge.follow_on",
+    "dispatch.knowledge.follow_on_max_tied",
+    "dispatch.knowledge.follow_on_match",
+    "dispatch.knowledge.check_on_switch",
+    "dispatch.knowledge.learn_later_inputs",
+    "dispatch.knowledge.new_terms_per_input",
+    "dispatch.knowledge.new_terms_per_day",
+    "dispatch.knowledge.quality_window_days",
+    "dispatch.knowledge.min_corrections_per_week",
+    "dispatch.knowledge.quality_min_promises",
+    "dispatch.knowledge.pack_searches",
+)
+
+
+def config_fingerprint(ws: Workspace) -> str:
+    """A hash of the workspace's config files, to notice edits made while the process runs."""
+    digest = hashlib.sha256()
+    for path in sorted(ws.config_dir.rglob("*.yaml")):
+        digest.update(str(path.relative_to(ws.config_dir)).encode())
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def is_live(key: str) -> bool:
+    """Whether a changed settings key is taken in without a restart."""
+    return any(key.startswith(p) if p.endswith(".") else key == p or key.startswith(p + ".") for p in LIVE_KEYS)
+
+
+def changes_who_takes_work(key: str) -> bool:
+    """Whether a changed settings key changes which account takes some work (an account itself, the main and backup
+    accounts of a tier, the tier a kind of work uses, the routing rules), so work held for an account's usage limit may
+    try again at once. A tier's second try only comes after a first try, so it changes nothing held."""
+    return (
+        key.startswith(("ai.providers.", "ai.routing"))
+        or (key.startswith("ai.tiers.") and key.endswith((".use", ".fallback")))
+        or (key.startswith("ai.tasks.") and key.endswith(".tier"))
+    )
+
+
+def code_fingerprint() -> str:
+    """The newest modification time of the running program's own source files."""
+    newest = max((p.stat().st_mtime for root in CODE_ROOTS if root.is_dir() for p in root.rglob("*.py")), default=0.0)
+    return repr(newest)
+
+
+def waits_for_its_time(request: dict[str, Any], now: datetime) -> bool:
+    """Whether a queued request is waiting for a time to come (an account's limit to reset, the next automatic try or
+    the next look for the network) and that time is still ahead, or for the person's answer about an agent's sign-in."""
+    cause = request.get("cause") or {}
+    if cause.get("kind") == "identity":
+        return True  # it waits for the person's answer about an agent's sign-in, not for a time
+    if cause.get("kind") not in ("paused", "retry", "offline") or not cause.get("until"):
+        return False
+    until = datetime.fromisoformat(str(cause["until"]))
+    return (until if until.tzinfo else until.replace(tzinfo=UTC)) > now
+
+
+def release_paused(store: Store) -> int:
+    """Lift every pause on the accounts and let the requests waiting for one try again at once: used when the AI
+    accounts changed, since a different account may be able to take the work. Returns how many requests were let go."""
+    from engine.ai.pauses import Pauses, pauses_path
+
+    Pauses(pauses_path(store)).clear()
+    ctx = WriteContext(actor="engine", trust="trusted", op="worker.release")
+    released = 0
+    with store.transaction() as tx:
+        for r in tx.requests_unfinished():
+            if r.data["state"] == "queued" and (r.data.get("cause") or {}).get("kind") in ("paused", "identity"):
+                tx.update(
+                    "request",
+                    r.id,
+                    {"cause": None, "waiting": "With the assistant, next in line"},
+                    ctx,
+                    read_version=r.version,
+                )
+                released += 1
+    return released
+
+
+def release_identity(store: Store, account: str | None = None, *, unless: Collection[str] = ()) -> int:
+    """Let the requests that wait for the person's answer about an agent's sign-in try again at once: those of one
+    account, or of every account but the ones in `unless` (whose sign-in still waits for an answer). Work that still
+    doesn't fit waits again, with its reason. Returns how many were let go."""
+    ctx = WriteContext(actor="engine", trust="trusted", op="worker.release")
+    released = 0
+    with store.transaction() as tx:
+        for r in tx.requests_unfinished():
+            cause = r.data.get("cause") or {}
+            if (
+                r.data["state"] == "queued"
+                and cause.get("kind") == "identity"
+                and account in (None, cause.get("account"))
+                and cause.get("account") not in unless
+            ):
+                tx.update(
+                    "request",
+                    r.id,
+                    {"cause": None, "waiting": "With the assistant, next in line"},
+                    ctx,
+                    read_version=r.version,
+                )
+                released += 1
+    return released
+
+
+def release_waiting(store: Store, tier: str) -> int:
+    """Let the requests of one tier that wait for an account's limit to reset try again at once, without lifting any
+    pause: used when the person says another account may take the work meanwhile. Returns how many were let go."""
+    ctx = WriteContext(actor="engine", trust="trusted", op="worker.release")
+    released = 0
+    with store.transaction() as tx:
+        for r in tx.requests_unfinished():
+            cause = r.data.get("cause") or {}
+            if r.data["state"] == "queued" and cause.get("kind") == "paused" and cause.get("tier") == tier:
+                tx.update(
+                    "request",
+                    r.id,
+                    {"cause": None, "waiting": "With the assistant, next in line"},
+                    ctx,
+                    read_version=r.version,
+                )
+                released += 1
+    return released
+
+
+def requeue_interrupted(store: Store) -> tuple[list[str], list[str]]:
+    """Put back the requests a stop left running: with the app closed nothing is running them. Each goes back in the
+    queue with a note saying why. One found running after it was already put back once waits for the person instead
+    (Try again and Dismiss apply, its approval untouched), so a request that stops the app can't loop. The number of
+    times a request was interrupted is counted from its own history, not from how many runs it started, since
+    a person's Try again also starts a run. Returns the ids queued again and the ids held for the person."""
+    queued: list[str] = []
+    held: list[str] = []
+    with store.transaction() as tx:
+        for r in tx.requests_unfinished():
+            if r.data["state"] != "running":
+                continue
+            history = tx.ledger(kind="request", record_id=r.id)
+            if any(e["op"] in (_REQUEUE_OP, _INTERRUPTED_OP) for e in history):
+                ctx = WriteContext(actor="engine", trust="trusted", op=_INTERRUPTED_OP)
+                tx.update(
+                    "request", r.id, {"state": "needs_you", "waiting": INTERRUPTED_TWICE}, ctx, read_version=r.version
+                )
+                held.append(r.id)
+            else:
+                ctx = WriteContext(actor="engine", trust="trusted", op=_REQUEUE_OP)
+                tx.update("request", r.id, {"state": "queued", "waiting": INTERRUPTED}, ctx, read_version=r.version)
+                queued.append(r.id)
+    return queued, held
+
+
+class Events:
+    """A change counter that waiters can block on; the live-update stream reads it."""
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self.version = 0
+        self.closed = False
+
+    def close(self) -> None:
+        """Release every waiter and make later waits return at once, so live streams can end."""
+        with self._cond:
+            self.closed = True
+            self._cond.notify_all()
+
+    def changed(self) -> None:
+        with self._cond:
+            self.version += 1
+            self._cond.notify_all()
+
+    def wait(self, after: int, timeout: float) -> int:
+        with self._cond:
+            self._cond.wait_for(lambda: self.version > after or self.closed, timeout=timeout)
+            return self.version
+
+
+class Worker:
+    #: How often the synced folder is checked for changes when nothing signals one.
+    SYNC_CHECK_SECONDS = 10
+    #: How often this install's lease in the synced folder is renewed when nothing else is written.
+    HEARTBEAT_SECONDS = 60
+    #: How often the moment the app was last running is written down.
+    RUNNING_NOTE_SECONDS = 20
+    #: Beyond the reminders' late-after time, how long the app may go unnoted before that stretch is a time it wasn't
+    #: running: the loops that note it come round at least every minute.
+    RUNNING_SLACK = timedelta(minutes=2)
+
+    def __init__(
+        self,
+        ws: Workspace,
+        store: Store,
+        cfg: Config,
+        events: Events,
+        router_factory: Callable[[], Router] | None = None,
+        on_restart: Callable[[], None] | None = None,
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ):
+        self.ws, self.store, self.cfg, self.events = ws, store, cfg, events
+        self.now = now
+        self.router_factory = router_factory or (lambda: Router(cfg, store, env=os.environ))
+        # Called once, between requests, when settings or code changed: the process restarts to use them (6.14).
+        self.on_restart = on_restart
+        self.restarting = False
+        self._wake = threading.Event()
+        self._read_now = threading.Event()
+        #: Accounts just signed in (sign-in, address) whose sources are read at once, taken up by the reading thread.
+        self._accounts_to_read: list[tuple[Any, str | None]] = []
+        self._accounts_lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._backups: threading.Thread | None = None
+        self._sync: threading.Thread | None = None
+        self._jobs: threading.Thread | None = None
+        self._model_watch: threading.Thread | None = None
+        self._switching: threading.Thread | None = None
+        self._measuring: threading.Thread | None = None
+        self._swept_on: date | None = None
+        self._rolled_on: date | None = None
+        self._secrets_swept_at: datetime | None = None
+        self._catch_up_queued = False
+        self._synced_at: int | None = -1
+        self._said_no_git = False
+        self._reminder_acts: Any = None
+        self._notice_acts: Any = None
+        self._beat = 0.0
+        #: The background loops: the function each runs, its thread, and when it last began a pass (monotonic).
+        self._loop_fns: dict[str, Any] = {
+            "requests": self._loop,
+            "backups": self._backup_loop,
+            "sync": self._sync_loop,
+            "jobs": self._jobs_loop,
+        }
+        self._loop_threads: dict[str, threading.Thread] = {}
+        self._beats: dict[str, float] = {}
+        self._watchdog: threading.Thread | None = None
+        #: When the watchdog last checked in (monotonic), and which start of it is the current one: the loops start it
+        #: again when it stopped or went quiet, and an older one that wakes up leaves.
+        self._watchdog_beat = time.monotonic()
+        self._watchdog_gen = 0
+        self._watchdog_lock = threading.Lock()
+        #: How many times the watchdog started a stopped loop again, and when it last did (the app's clock).
+        self.loop_restarts = 0
+        self.loop_restarted_at: datetime | None = None
+        self._running_noted: float | None = None
+        self.sync_lost = False
+        #: Started while this computer and the synced folder had diverged: nothing is written to the folder until the
+        #: person's choice is carried out at the next start.
+        self.sync_held = False
+        self.sync_result: Any = None
+        self.sync_problem: str | None = None
+        #: When a pass over the synced folder last finished without a problem (the app's clock); none before the first.
+        self.sync_checked_at: datetime | None = None
+        self._sync_lock = threading.Lock()
+        self._started_with = (config_fingerprint(ws), code_fingerprint())
+        self._config_seen = self._started_with[0]
+        #: The config files as the last `apply_live` read them; a save landing after that read is judged next time.
+        self._config_judged = self._config_seen
+        self.restart_needed: str | None = None
+        self.restart_requested = False
+        #: The settings keys whose change waits for the restart, and "code" when the program itself changed.
+        self.restart_for: list[str] = []
+        #: The restart is needed only because a restore is staged (cancelling it lifts the hold).
+        self._held_for_restore = False
+
+    def apply_live(self) -> bool:
+        """Take in changed settings now when every changed key is live (an AI account, the person's name); returns
+        whether anything was taken in. A change to any other key leaves the settings in use as they were, for the
+        restart the person chooses. A file that doesn't load changes nothing."""
+        seen = self._config_judged = config_fingerprint(self.ws)
+        if seen == self._config_seen:
+            return False
+        from engine.config import ConfigError, load_config
+
+        try:
+            fresh = load_config(self.ws.config_dir, env=dict(os.environ))
+        except ConfigError as err:
+            log.warning("Changed settings weren't taken in: %s", err)
+            # Files that don't load are judged again at the next read, so they ask for no restart: a save caught half
+            # way through its files loads at the next read, and a file still being edited loads once it is finished.
+            self._config_judged = self._config_seen
+            return False
+        before = {k: v for k, v, _ in self.cfg.flat()}
+        after = {k: v for k, v, _ in fresh.flat()}
+        # A setting given on the command line stays as it was started with; the files can't change it here.
+        given = {k for k, _, layer in self.cfg.flat() if layer == "flag"}
+        changed = {k for k in before.keys() | after.keys() if before.get(k) != after.get(k)} - given
+        waiting = sorted(k for k in changed if not is_live(k))
+        if waiting:
+            # A key that needs a restart keeps waiting, with the values it was started with; the live keys saved
+            # beside it are taken in now.
+            self.restart_for = sorted(set(self.restart_for) | set(waiting))
+            changed = {k for k in changed if is_live(k)}
+            self._take_in(fresh, changed, set(waiting), before)
+            if changed:
+                log.info("Took in changed settings: %s", ", ".join(sorted(changed)))
+                self.events.changed()
+                if any(changes_who_takes_work(k) for k in changed):
+                    release_paused(self.store)
+            return bool(changed)
+        for name in {k.split(".", 1)[0] for k in changed}:
+            self.cfg.files[name] = fresh.files[name]
+            for key in [k for k in self.cfg.sources if k.startswith(name + ".")]:
+                del self.cfg.sources[key]
+            self.cfg.sources.update({k: v for k, v in fresh.sources.items() if k.startswith(name + ".")})
+        self._config_seen = seen
+        if any(changes_who_takes_work(k) for k in changed):
+            release_paused(self.store)
+        if changed:
+            log.info("Took in changed settings: %s", ", ".join(sorted(changed)))
+            self.events.changed()
+        return bool(changed)
+
+    def _take_in(self, fresh: Any, live: set[str], waiting: set[str], before: dict[str, Any]) -> None:
+        """Take in the live keys of `fresh` while every key that waits for a restart keeps the value in use."""
+        for name in {k.split(".", 1)[0] for k in live}:
+            merged = fresh.files[name].model_dump(mode="json")
+            for key in (k for k in waiting if k.startswith(name + ".")):
+                *parents, leaf = key.split(".")[1:]
+                holder = merged
+                for part in parents:
+                    holder = holder.setdefault(part, {}) if isinstance(holder.get(part, {}), dict) else {}
+                if key in before:
+                    holder[leaf] = before[key]
+                else:
+                    holder.pop(leaf, None)
+            self.cfg.files[name] = type(self.cfg.files[name]).model_validate(merged)
+            for key in (k for k in live if k.startswith(name + ".")):
+                if key in fresh.sources:
+                    self.cfg.sources[key] = fresh.sources[key]
+                else:
+                    self.cfg.sources.pop(key, None)
+
+    def _changed_since_start(self) -> bool:
+        """Old code never runs new settings: once settings that need a restart or code changed, no new job starts in
+        this process. Live settings are taken in first and don't count."""
+        self.apply_live()
+        code = code_fingerprint()
+        if self.restart_needed is None and (self._config_seen, code) != (self._config_judged, self._started_with[1]):
+            self.restart_needed = RESTART_NEEDED
+            if code != self._started_with[1] and "code" not in self.restart_for:
+                self.restart_for.append("code")
+        return self.restart_needed is not None
+
+    def _hold_queued(self) -> None:
+        ctx = WriteContext(actor="engine", trust="trusted", op="worker.hold")
+        held = False
+        now = self.now()
+        with self.store.transaction() as tx:
+            for r in tx.requests_unfinished():
+                if waits_for_its_time(r.data, now):
+                    continue
+                if r.data["state"] == "queued" and r.data.get("waiting") != RESTART_NEEDED:
+                    tx.update("request", r.id, {"waiting": RESTART_NEEDED}, ctx, read_version=r.version)
+                    held = True
+        if held:
+            self.events.changed()
+
+    def _problem(self, where: str) -> None:
+        """Keep a line about the error being handled, for the person's feedback (`engine.problems`)."""
+        error = sys.exc_info()[1]
+        if error is not None:
+            problems.note(self.ws, self.store, self.cfg, where, error, now=self.now())
+
+    def check_readers(self) -> None:
+        """Have each reader of files read a tiny file of its own kind; one that fails is a line on Today."""
+        from engine.extract import health
+
+        try:
+            if health.self_test(self.ws):
+                self.events.changed()
+        except Exception:  # a check that can't run must not stop the app; the readers are used and fail on their own
+            log.exception("checking the file readers failed")
+            self._problem("file readers check")
+
+    def note_running(self, *, force: bool = False) -> None:
+        """Write down that the app is running now, at most every `RUNNING_NOTE_SECONDS`, so a stretch it wasn't (the
+        computer asleep, the app closed) is known later and a line can say so (`engine.running`)."""
+        beat = time.monotonic()
+        if not force and self._running_noted is not None and beat - self._running_noted < self.RUNNING_NOTE_SECONDS:
+            return
+        self._running_noted = beat
+        grace = timedelta(minutes=self.cfg.steward.reminders.late_after_minutes)
+        running.note(self.ws, self.now(), grace + self.RUNNING_SLACK)
+
+    def start(self) -> None:
+        self.note_running(force=True)
+        self.check_readers()
+        if any(requeue_interrupted(self.store)):
+            self.events.changed()
+        self.settle_acts()
+        for name in self._loop_fns:
+            self._start_loop(name)
+        self._start_watchdog()
+        self.check_switch_soon()
+        self.measure_soon()
+
+    #: How often the watchdog looks at the background loops.
+    WATCHDOG_CHECK_SECONDS = 30
+    _LOOP_ATTRS = {"requests": "_thread", "backups": "_backups", "sync": "_sync", "jobs": "_jobs"}
+
+    def _start_loop(self, name: str) -> None:
+        thread = threading.Thread(target=self._loop_fns[name], name=f"cockpit-{name}", daemon=True)
+        self._beats[name] = time.monotonic()
+        self._loop_threads[name] = thread
+        setattr(self, self._LOOP_ATTRS[name], thread)
+        thread.start()
+
+    def _beat_of(self, name: str) -> None:
+        self._beats[name] = time.monotonic()
+
+    def _guarded(self, name: str, where: str, step: Any) -> None:
+        """One pass of a loop: a beat first, the check that the watchdog is still watching, then the step. Any failure,
+        an exit included, is logged and shown as an automation issue, and the loop goes on to its next pass."""
+        self._beat_of(name)
+        try:
+            self._ensure_watchdog()
+        except (Exception, SystemExit):
+            log.exception("checking the watchdog failed")
+        try:
+            step()
+        except LeaseLost:
+            log.warning("Another copy took over this workspace; %s does nothing more here", where)
+        except (Exception, SystemExit):
+            log.exception("The background work failed in %s", where)
+            self._problem(where)
+
+    def stuck_limit_seconds(self) -> float:
+        return self.cfg.steward.background_stuck_after_minutes * 60.0
+
+    def loop_health(self, now_monotonic: float | None = None) -> dict[str, str]:
+        """For each loop that was started: ok, stopped (its thread ended while the app is not closing or restarting)
+        or stuck (it has not begun a pass or a request for longer than the configured limit)."""
+        now = time.monotonic() if now_monotonic is None else now_monotonic
+        ending = self._stop.is_set() or self.restarting
+        health = {}
+        for name, thread in self._loop_threads.items():
+            if ending:
+                health[name] = "ok"
+            elif not thread.is_alive():
+                health[name] = "stopped"
+            elif now - self._beats.get(name, now) > self.stuck_limit_seconds():
+                health[name] = "stuck"
+            else:
+                health[name] = "ok"
+        if self._watchdog is not None:
+            # The watchdog is checked the same way, by the loops (each pass) and by the status.
+            if ending:
+                health["watchdog"] = "ok"
+            elif not self._watchdog.is_alive():
+                health["watchdog"] = "stopped"
+            elif now - self._watchdog_beat > self.stuck_limit_seconds():
+                health["watchdog"] = "stuck"
+            else:
+                health["watchdog"] = "ok"
+        return health
+
+    def stuck_since(self, now_monotonic: float | None = None) -> datetime | None:
+        """When the longest-stuck loop last checked in, on the app's clock; none when no loop is stuck."""
+        now = time.monotonic() if now_monotonic is None else now_monotonic
+        ages = [
+            now - (self._watchdog_beat if n == "watchdog" else self._beats[n])
+            for n, h in self.loop_health(now).items()
+            # a watchdog that is not running counts once it has been quiet as long as a stuck loop would be
+            if h == "stuck"
+            or (n == "watchdog" and h == "stopped" and now - self._watchdog_beat > self.stuck_limit_seconds())
+        ]
+        return self.now() - timedelta(seconds=max(ages)) if ages else None
+
+    def stuck_since_text(self) -> str | None:
+        since = self.stuck_since()
+        return since.isoformat() if since else None
+
+    def watchdog_check(self, now_monotonic: float | None = None) -> None:
+        """Start again, in this process, each loop whose thread ended. A stuck loop is only reported, because a second
+        copy would race the first. The app is never restarted from here."""
+        self._watchdog_beat = time.monotonic() if now_monotonic is None else now_monotonic
+        for name, health in self.loop_health(now_monotonic).items():
+            if health != "stopped" or name not in self._loop_fns:
+                continue
+            log.error("The %s loop had stopped; starting it again", name)
+            self._start_loop(name)
+            self.loop_restarts += 1
+            self.loop_restarted_at = self.now()
+            problems.note(
+                self.ws,
+                self.store,
+                self.cfg,
+                "background work",
+                RuntimeError("the background work stopped and was started again"),
+                now=self.now(),
+            )
+            self.events.changed()
+        if any(h == "stuck" for h in self.loop_health(now_monotonic).values()):
+            self.events.changed()
+            # The loop that sends notices may be the one that is stuck, so the watchdog sends this one: the stuck
+            # line counts in the notice like any other line of Today's Decide group.
+            try:
+                self.notify_if_due()
+            except (Exception, SystemExit):
+                log.exception("telling the person about stuck background work failed")
+
+    def _start_watchdog(self) -> None:
+        """Start the watchdog, replacing one that stopped or went quiet: an older copy that wakes up later leaves."""
+        with self._watchdog_lock:
+            self._watchdog_gen += 1
+            self._watchdog_beat = time.monotonic()
+            self._watchdog = threading.Thread(
+                target=self._watchdog_loop, args=(self._watchdog_gen,), name="cockpit-watchdog", daemon=True
+            )
+            self._watchdog.start()
+
+    def _ensure_watchdog(self) -> None:
+        """Called on each pass of every loop: when the watchdog's thread ended, or it has not checked in for longer than
+        a loop may, start it again and say so, as for a loop that stopped. A stuck loop and a silent watchdog are
+        therefore never both left unwatched."""
+        if self._watchdog is None or self.loop_health().get("watchdog", "ok") == "ok":
+            return
+        log.error("The watchdog had stopped; starting it again")
+        self._start_watchdog()
+        self.loop_restarts += 1
+        self.loop_restarted_at = self.now()
+        problems.note(
+            self.ws,
+            self.store,
+            self.cfg,
+            "background work",
+            RuntimeError("the watchdog stopped and was started again"),
+            now=self.now(),
+        )
+        self.events.changed()
+
+    def _watchdog_loop(self, generation: int) -> None:
+        while not self._stop.wait(timeout=self.WATCHDOG_CHECK_SECONDS):
+            if generation != self._watchdog_gen:
+                return
+            try:
+                self.watchdog_check()
+            except (Exception, SystemExit):
+                log.exception("checking the background work failed")
+
+    def settle_acts(self) -> None:
+        """Once at start: ask the channel what happened to every act a stop left `sending`, and mark an approved act
+        stale when what its yes covered changed while the app was closed. Nothing is sent. A failure is logged and
+        never stops the worker."""
+        from engine.publisher import Publisher
+
+        try:
+            if Publisher(self.store, self.cfg, now=self.now).resume():
+                self.events.changed()
+        except Exception:
+            log.exception("Couldn't settle the acts left sending")
+            self._problem("acts waiting to go out")
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._wake.set()
+        self._read_now.set()
+        if self._thread:
+            self._thread.join(timeout=10)
+        if self._backups:
+            self._backups.join(timeout=60)
+        if self._jobs:
+            self._jobs.join(timeout=60)
+        if self._sync:
+            self.events.changed()
+            self._sync.join(timeout=60)
+            self.release_folder()
+
+    def read_sources_now(self) -> None:
+        """A source was just added or a sign-in just started some: read what is due at once, not at the next minute's
+        check, so the person sees their mail arrive while they are still looking."""
+        self._read_now.set()
+
+    def read_account_soon(self, sign_in: Any, address: str | None) -> None:
+        """An account was just signed in (first or again): every enabled source reading as it is read at once, not at
+        its next turn, so a source that had failed for want of the sign-in clears on a read that works."""
+        with self._accounts_lock:
+            self._accounts_to_read.append((sign_in, address))
+        self._read_now.set()
+
+    def read_accounts_now(self) -> int:
+        """Read the sources of the accounts queued by `read_account_soon`. A source already being read is left to that
+        read. Returns how many were read."""
+        from engine.sign_in_sources import sources_of_account
+        from engine.watch import record_crash, refresh
+
+        with self._accounts_lock:
+            queued, self._accounts_to_read = self._accounts_to_read, []
+        if not queued:
+            return 0
+        self.apply_live()
+        now = self.now()
+        read = 0
+        for sign_in, address in queued:
+            for source in sources_of_account(self.cfg, sign_in, address):
+                if self._stop.is_set():
+                    return read
+                try:
+                    result = refresh(self.ws, self.store, self.cfg, source, now, self.router_factory())
+                except (Exception, SystemExit) as err:
+                    try:
+                        record_crash(self.store, source, now, err)
+                    except Exception:
+                        log.exception("Couldn't record the failed read of %s", source)
+                    continue
+                if result.outcome != "busy":
+                    read += 1
+        if read:
+            self.events.changed()
+            self.poke()
+        return read
+
+    def poke(self) -> None:
+        self._wake.set()
+
+    def needs_restart(self) -> bool:
+        """Whether changed settings or code wait for a restart. Live settings are taken in first, so they never
+        count. Nothing restarts until the person asks (`request_restart`)."""
+        return self._changed_since_start()
+
+    def add_ons_changed(self) -> None:
+        """An add-on that is running was replaced on disk from the screen: the running app must not mix its old and new
+        files, so a restart is waiting, with the add-ons named as what it is for. Installing or removing one that isn't
+        running changes nothing the app is using, so it doesn't come here."""
+        if ADD_ONS not in self.restart_for:
+            self.restart_for.append(ADD_ONS)
+        if self.restart_needed is None:
+            self.restart_needed = RESTART_NEEDED
+        self.events.changed()
+
+    def restore_staged(self) -> None:
+        """A restore of a backup copy is ready to be swapped in at the next start. Whatever the app does from now on
+        would be set aside by it, so new work waits for the restart the person chooses, with the restore named as what
+        it is for."""
+        if RESTORE not in self.restart_for:
+            self.restart_for.append(RESTORE)
+        if self.restart_needed is None:
+            self.restart_needed = RESTART_NEEDED
+            self._held_for_restore = True
+        self.events.changed()
+
+    def restore_cancelled(self) -> None:
+        """The staged restore was cancelled: if it was all the restart was for, the app carries on, and the work it
+        held is released."""
+        if RESTORE in self.restart_for:
+            self.restart_for.remove(RESTORE)
+        if self._held_for_restore and not self.restart_for and self.restart_needed == RESTART_NEEDED:
+            self.restart_needed = None
+            self._held_for_restore = False
+            ctx = WriteContext(actor="engine", trust="trusted", op="worker.release")
+            with self.store.transaction() as tx:
+                for r in tx.requests_unfinished():
+                    if r.data["state"] == "queued" and held_for_restart(r.data.get("waiting")):
+                        tx.update("request", r.id, {"waiting": None}, ctx, read_version=r.version)
+            self.poke()
+        self.events.changed()
+
+    @property
+    def can_restart(self) -> bool:
+        """Whether this process can start itself again (it was started by `thimbleby serve`)."""
+        return self.on_restart is not None
+
+    def request_restart(self) -> None:
+        """The person asked for the restart: it starts between requests, at once if none is running."""
+        self.restart_requested = True
+        self.poke()
+
+    def queue_catch_up_learning(self) -> list[str]:
+        """Once for each start of the app, queue the learning runs for the catch-up list, held for the person's go. A
+        failure is logged and never stops the worker. Returns the requests made."""
+        if self._catch_up_queued:
+            return []
+        self._catch_up_queued = True
+        from engine.catch_up import queue_learning
+
+        try:
+            made = queue_learning(self.ws, self.store, self.cfg, self.router_factory, self.now())
+        except Exception:
+            log.exception("Couldn't queue the learning for the catch-up list")
+            self._problem("catch-up list")
+            return []
+        if made:
+            self.events.changed()
+        return made
+
+    def run_pending(self) -> int:
+        """Process every queued request now. Returns how many were processed."""
+        done = 0
+        self.queue_catch_up_learning()
+        sorted_pending = False
+        waiting_for_sort: set[str] = set()
+        while not self._stop.is_set():
+            self._beat_of("requests")
+            now = self.now()
+            queued = [
+                r
+                for r in self.store.read().requests_unfinished()
+                if r.data["state"] == "queued" and not waits_for_its_time(r.data, now)
+            ]
+            if not sorted_pending and any(r.data.get("sort_pending") for r in queued):
+                # Mail the sorting couldn't be run for is sorted, in one batch, before any other run of it.
+                sorted_pending = True
+                self.sort_pending_mail(now)
+                continue
+            # A request still waiting for its sorting is tried once, so any hold on it is shown, and never run.
+            queued = [r for r in queued if r.id not in waiting_for_sort]
+            if not queued:
+                break
+            # The person's own hand-ins, answers and corrections go before background work; each group keeps the
+            # order it was made in.
+            queued.sort(key=lambda r: r.data.get("origin") != "pm")
+            if self._changed_since_start():
+                self._hold_queued()
+                break
+            try:
+                process(self.ws, self.store, self.cfg, self.router_factory(), queued[0].id, now=now)
+                if queued[0].data.get("sort_pending"):
+                    waiting_for_sort.add(queued[0].id)
+                    continue
+            except StoreError as err:  # a write refused with a plain reason
+                log.warning("Request %s couldn't be processed: %s", queued[0].id, err)
+                needs_you(self.store, queued[0].id, f"This couldn't be processed: {str(err).rstrip('.')}.")
+            except (Exception, SystemExit):  # a failure in one request, an exit included, must not stop the worker
+                log.exception("Request %s failed", queued[0].id)
+                self._problem("processing a request")
+                needs_you(
+                    self.store,
+                    queued[0].id,
+                    "Something went wrong processing this. Try again; if it keeps happening, report it.",
+                )
+            done += 1
+            self.events.changed()
+        if not self._stop.is_set() and not self._changed_since_start():
+            from engine.stages import move_ready_records
+
+            if move_ready_records(self.store):
+                self.events.changed()
+            self.remind_acts()
+        return done
+
+    def sort_pending_mail(self, now: datetime) -> None:
+        """Run the assistant's sorting for every queued mail request still marked as waiting for it. A request it
+        sets aside is closed, one it answers loses the mark, and one it still can't be run for stays marked and
+        queued: the pause or budget that stops the sorting is already shown, so nothing new is said. A failure is
+        logged and never stops the worker."""
+        from engine import watch
+
+        try:
+            watch.sort_before_first_go(
+                self.ws, self.store, self.cfg, self.router_factory(), now, go=False, pending_only=True
+            )
+        except Exception:
+            log.exception("Sorting the mail that waited for it failed")
+            self._problem("sorting mail")
+
+    def remind_acts(self) -> None:
+        """Draft, keep true, approve under the person's standing yes and send the reminders that reach them while the
+        app isn't open (`engine.reminder_acts`). A failure is logged and never stops the worker."""
+        from engine.reminder_acts import ReminderActs
+
+        try:
+            if self._reminder_acts is None:
+                self._reminder_acts = ReminderActs(self.store, self.cfg, now=self.now)
+            if self._reminder_acts.sweep():
+                self.events.changed()
+        except Exception:
+            log.exception("Couldn't keep the reminder acts up to date")
+            self._problem("reminders that reach you while the app is closed")
+        self.notice_acts()
+
+    def notice_acts(self) -> None:
+        """Draft, approve under the person's standing yes and send the notices that reach them by mail while the app
+        isn't open (`engine.notice_acts`). A failure is logged and never stops the worker."""
+        from engine.config import ConfigError, load_config
+        from engine.notice_acts import NoticeActs
+
+        try:
+            try:
+                cfg = load_config(self.ws.config_dir, env=dict(os.environ))  # the settings as the files hold them now
+            except ConfigError:
+                cfg = self.cfg
+            if self._notice_acts is None:
+                self._notice_acts = NoticeActs(self.ws, self.store, cfg, now=self.now)
+            self._notice_acts.cfg = cfg
+            if self._notice_acts.sweep(handover=self.handover_state(), stuck=self.stuck_since_text()):
+                self.events.changed()
+        except Exception:
+            log.exception("Couldn't keep the notices by mail up to date")
+            self._problem("notices by mail")
+
+    def backup_if_due(self) -> bool:
+        """Make a scheduled backup when one is due. On its own thread, so a large copy never holds up other work."""
+        from engine.backup import due, run_backup
+
+        if not due(self.ws, self.cfg):
+            return False
+        # Asked again with the lock held: the first backup of a new folder may have been made while this one waited.
+        ran = False
+
+        def still_due() -> bool:
+            nonlocal ran
+            ran = due(self.ws, self.cfg)
+            return ran
+
+        run_backup(self.ws, self.cfg, only_if=still_due)
+        if ran:
+            self.events.changed()
+        return ran
+
+    def export_if_due(self) -> bool:
+        """Write the readable export to the workspace's git when it is due. A workspace with no git repository has
+        nothing to commit to: that is said once in the log and nothing is written. Nothing is ever pushed. Returns
+        whether anything was committed."""
+        from engine import export_schedule
+
+        if not export_schedule.has_git(self.ws):
+            if not self._said_no_git:
+                self._said_no_git = True
+                log.info("The scheduled export is off: this workspace has no git repository to keep it in.")
+            return False
+        now = self.now()
+        if not export_schedule.due(self.ws, self.cfg, now):
+            return False
+        return export_schedule.run(self.ws, self.store, self.cfg, now)
+
+    def sweep_proposals_if_due(self) -> list[str]:
+        """Once a day, expire the proposals from inputs that waited longer than the configured days for the person.
+        Proposals from the person's own corrections never expire. Returns the ids expired."""
+        from engine.proposals import expire_due
+
+        now = self.now()
+        if self._swept_on == now.date():
+            return []
+        from engine import new_terms
+
+        if new_terms.clear_old_entries(self.store, self.cfg) is not None:
+            self.events.changed()
+        expired = expire_due(self.store, now, self.cfg.dispatch.knowledge.proposals_expire_days)
+        self._swept_on = now.date()
+        if expired:
+            self.events.changed()
+        return expired
+
+    def sweep_kept_secrets_if_due(self) -> list[str]:
+        """Every few minutes, remove the passwords and keys kept on this computer that nothing refers to any more and
+        no Undo can need (`storage.kept_secrets`, read as the files hold them now). Returns the names removed."""
+        from engine import kept_secrets
+        from engine.config import ConfigError, load_config
+
+        now = self.now()
+        if self._secrets_swept_at is not None and now - self._secrets_swept_at < timedelta(minutes=5):
+            return []
+        self._secrets_swept_at = now
+        try:
+            cfg = load_config(self.ws.config_dir, env=dict(os.environ))
+        except ConfigError:
+            cfg = self.cfg
+        return kept_secrets.sweep(self.ws, self.store, cfg, now)
+
+    def notify_if_due(self) -> bool:
+        """Tell the person, outward and to them only, when something has come into Today's Decide group that they have
+        not been told about (design 7.19). Reads the settings as the files hold them now. Returns whether a notice
+        was delivered."""
+        from engine import notifications
+        from engine.config import ConfigError, load_config
+
+        try:
+            cfg = load_config(self.ws.config_dir, env=dict(os.environ))
+        except ConfigError:
+            cfg = self.cfg
+        sent = notifications.deliver_if_due(
+            self.ws,
+            self.store,
+            cfg,
+            self.now(),
+            handover=self.handover_state(),
+            env=dict(os.environ),
+            stuck=self.stuck_since_text(),
+        )
+        if sent is not None:
+            self.events.changed()
+        return bool(sent and sent.ok)
+
+    def roll_series_if_due(self) -> list[str]:
+        """Once a day, move each open item on a series from an instance that has passed to the series' next one
+        (design 6.7). Returns the ids of the items moved."""
+        from engine import series
+        from engine.today import zone
+
+        now = self.now()
+        here = zone(self.cfg)
+        today = now.astimezone(here).date()
+        if self._rolled_on == today:
+            return []
+        moved = series.roll_items(self.store, today, here, self.events.changed)
+        self._rolled_on = today
+        return moved
+
+    def ask_about_meetings(self) -> list[str]:
+        """Ask about each date of a meeting the person runs that has no agenda or needs someone who is away (design
+        6.32); every date once. Returns the ids of the questions made."""
+        from engine import meeting_asks
+
+        made = meeting_asks.ask(self.store, self.cfg, self.now())
+        if made:
+            self.events.changed()
+        return made
+
+    def first_backup_soon(self) -> threading.Thread | None:
+        """A backup folder was just chosen: when no backup has ever succeeded, make one now on its own thread, so the
+        person isn't asked to back up right after choosing where. Uses the settings as the files hold them now, and
+        the same lock as scheduled backups. Returns the thread, or None when a backup already succeeded."""
+        from engine.backup import state
+        from engine.config import ConfigError, load_config
+
+        try:
+            fresh = load_config(self.ws.config_dir, env=dict(os.environ))
+        except ConfigError as err:
+            log.warning("The first backup wasn't made: %s", err)
+            return None
+        if state(self.ws, fresh).last_success is not None:
+            return None
+
+        def run() -> None:
+            from engine.backup import run_backup
+
+            try:
+                # Only when none has succeeded by the time this one holds the lock (a scheduled one may have made it).
+                run_backup(self.ws, fresh, only_if=lambda: state(self.ws, fresh).last_success is None)
+            except Exception:  # a failed backup is recorded by run_backup; nothing here may break the request
+                log.exception("the first backup failed")
+                self._problem("first backup")
+            self.events.changed()
+
+        thread = threading.Thread(target=run, name="cockpit-first-backup", daemon=True)
+        thread.start()
+        return thread
+
+    def check_switch_soon(self) -> threading.Thread | None:
+        """Run the checks that come with a switch of account that are still waiting, on one thread of their own so a
+        long check never holds up other work. A check interrupted by a restart runs again from the start. Returns the
+        thread, or None when nothing waits; while one is running a new switch is picked up by it."""
+        from engine.ai import switch_check
+
+        if self._switching is not None and self._switching.is_alive():
+            return self._switching
+        if not switch_check.waiting(self.store):
+            return None
+
+        def run() -> None:
+            try:
+                while switch_check.waiting(self.store) and not self._stop.is_set():
+                    switch_check.run_waiting(self.ws, self.store, os.environ)
+                    self.events.changed()
+            except Exception:  # a check that can't run is kept as one that didn't finish; nothing here may stop the app
+                log.exception("the check after a switch failed")
+                self._problem("check after a switch")
+                self.events.changed()
+
+        self._switching = threading.Thread(target=run, name="cockpit-switch-check", daemon=True)
+        self._switching.start()
+        return self._switching
+
+    def watch_models_if_due(self) -> threading.Thread | None:
+        """Every `ai.models.check_every_days`, look at each account's models and prices (read as the files hold them)
+        on a thread of its own, since a check of a newer model can take long: keep what Today is to say about newer
+        models and price rises and, with `ai.models.follow_newest` on, move a tier to a newer model of its own family
+        after the check passes. Returns the thread, or None when nothing is due or one is running."""
+        from engine.ai import model_watch
+        from engine.config import ConfigError, load_config
+
+        if self._model_watch is not None and self._model_watch.is_alive():
+            return None
+        try:
+            cfg = load_config(self.ws.config_dir, env=dict(os.environ))
+        except ConfigError:
+            cfg = self.cfg
+        now = self.now()
+        if not model_watch.due(self.store, cfg, now):
+            return None
+
+        def run() -> None:
+            try:
+                model_watch.run(self.ws, self.store, cfg, os.environ, now=now)
+            except Exception:  # the look is made again the next time it is due; nothing here may stop the app
+                log.exception("looking at the accounts' models failed")
+                self._problem("look at newer models")
+            self.apply_live()  # a tier moved on its own is a live setting: the running app takes it in now
+            self.events.changed()
+            self.poke()
+
+        self._model_watch = threading.Thread(target=run, name="cockpit-model-watch", daemon=True)
+        self._model_watch.start()
+        return self._model_watch
+
+    def measure_soon(self) -> threading.Thread | None:
+        """Run the measurings the person asked for that are still waiting (an account's cases and pairs, added to the
+        capability matrix), on one thread of their own so a long one never holds up other work. One cut short by a
+        restart runs again from the start. Returns the thread, or None when nothing waits; while one is running a new
+        request is picked up by it."""
+        from engine.ai import measure
+
+        if self._measuring is not None and self._measuring.is_alive():
+            return self._measuring
+        measure.interrupted(self.ws)
+        if not measure.waiting(self.ws):
+            return None
+
+        def run() -> None:
+            try:
+                while measure.waiting(self.ws) and not self._stop.is_set():
+                    measure.run_waiting(self.ws, os.environ, store=self.store, now=self.now)
+                    self.events.changed()
+            except (
+                Exception
+            ):  # a measuring that can't run is kept as one that didn't finish; nothing here may stop the app
+                log.exception("measuring an account failed")
+                self.events.changed()
+
+        self._measuring = threading.Thread(target=run, name="cockpit-measure", daemon=True)
+        self._measuring.start()
+        return self._measuring
+
+    def sync_if_changed(self) -> bool:
+        """Write the synced folder when anything changed since it was last written, and keep this install's lease
+        fresh. Stops for good if another computer has taken the workspace over. Returns whether it wrote. One pass
+        at a time, whether the background loop or the person asked for it."""
+        with self._sync_lock:
+            return self._sync_pass()
+
+    def _sync_pass(self) -> bool:
+        from engine import handover
+        from engine.sync import folder_problem, write_folder
+
+        if not self.cfg.storage.sync.folder.strip() or self.sync_lost or self.sync_held or self._lease_lost():
+            return False
+        problem = folder_problem(self.ws, self.cfg)
+        if problem:
+            self.sync_problem = problem
+            return False
+        self.sync_problem = None  # the folder is usable again; a write that fails below sets its own line
+        other = handover.held_elsewhere(self.ws, self.cfg)
+        if other is not None:
+            return self._stop_writing_folder(other)
+        from engine import outside
+
+        if self.cfg.storage.sync.watch_outside_edits and outside.pick_up(self.store, self.ws, self.cfg):
+            self.events.changed()
+        head, count = self.store.read().sql("SELECT max(seq), count(*) FROM ledger").fetchone()
+        wrote = False
+        if head != self._synced_at:
+            # Reading the outside edits can take long (a computer that slept in the middle of it wakes after another
+            # one opened the workspace), so the folder's lease is looked at again right before it is written.
+            other = handover.held_elsewhere(self.ws, self.cfg)
+            if other is not None:
+                return self._stop_writing_folder(other)
+            try:
+                self.sync_result = write_folder(
+                    self.store, self.ws, self.cfg, may_overwrite=outside.settled(self.store, self.cfg)
+                )
+                outside.forget(self.cfg)
+                self.sync_problem = None
+            except (OSError, ValueError) as err:
+                log.warning("The synced folder couldn't be written: %s", err)
+                reason = err.strerror if isinstance(err, OSError) and err.strerror else None
+                self.sync_problem = (
+                    f"The synced folder couldn't be written ({reason})"
+                    if reason
+                    else ("The synced folder couldn't be written")
+                )
+                return False
+            self._synced_at, wrote = head, True
+        if wrote or time.monotonic() - self._beat >= self.HEARTBEAT_SECONDS:
+            other = handover.held_elsewhere(self.ws, self.cfg)
+            if other is not None:  # never take the lease back from a computer that opened the workspace meanwhile
+                return self._stop_writing_folder(other)
+            handover.take(self.ws, self.cfg, ledger=count)
+            self._beat = time.monotonic()
+        self.sync_checked_at = self.now()
+        return wrote
+
+    def _stop_writing_folder(self, other: Any) -> bool:
+        """Another computer holds the folder's lease: stop writing to it for good. Always False: nothing was written."""
+        self.sync_lost = True
+        self.sync_problem = (
+            f"The workspace was opened on {other.computer}, so this copy stopped writing to the synced folder. "
+            "Close it here; changes made here since then are kept on this computer."
+        )
+        return False
+
+    def _lease_lost(self) -> bool:
+        """Whether another copy of the app took this workspace over here (the instance lease)."""
+        lease = getattr(self.store, "lease", None)
+        return lease is not None and lease.lost
+
+    def hold_sync(self) -> None:
+        """Stop writing to the synced folder (and leave its lease alone) until the next start: this computer and the
+        folder have diverged, and writing would replace the other history."""
+        self.sync_held = True
+        self.sync_problem = (
+            "This computer and the synced folder both changed while they couldn't sync. Nothing is written to the "
+            "folder until you choose which copy to keep."
+        )
+
+    def handover_state(self) -> tuple[str, str] | None:
+        """What stops the synced folder from being used, if anything, with the other computer's name: "diverged" (the
+        person has not chosen), "chosen" (their choice waits for the restart), "elsewhere" (another computer opened
+        the workspace) or "taken" (another copy of the app took over the workspace here, so nothing more is saved).
+        Reads two small files only."""
+        from engine import handover
+
+        lease = getattr(self.store, "lease", None)
+        if lease is not None and lease.lost:
+            current = lease.current()
+            return "taken", current.host if current else ""
+
+        if self.sync_held:
+            return ("chosen" if handover.chosen(self.ws) else "diverged"), handover.other_computer(self.cfg)
+        if self.sync_lost:
+            return "elsewhere", handover.other_computer(self.cfg)
+        return None
+
+    def release_folder(self) -> None:
+        """On closing: a last write, then the lease marked released, so the other computer can open at once."""
+        from engine import handover
+
+        if not self.cfg.storage.sync.folder.strip() or self.sync_held:
+            return
+        try:
+            self.sync_if_changed()
+            if not self.sync_lost and self.sync_problem is None:
+                count = self.store.read().sql("SELECT count(*) FROM ledger").fetchone()[0]
+                handover.take(self.ws, self.cfg, ledger=count, released=True)
+        except Exception:  # closing must go on even if the folder can't be written
+            log.exception("releasing the synced folder failed")
+
+    def _sync_loop(self) -> None:
+        after = -1
+        while not self._stop.is_set():
+
+            def one_pass() -> None:
+                try:
+                    self.sync_if_changed()
+                except Exception:  # a failed write is retried on the next change; nothing here may stop the thread
+                    log.exception("writing the synced folder failed")
+                    self._problem("writing the synced folder failed")
+
+            self._guarded("sync", "writing the synced folder", one_pass)
+            after = self.events.wait(after, timeout=self.SYNC_CHECK_SECONDS)
+            self._stop.wait(timeout=1)
+
+    def run_due_jobs(self) -> int:
+        """Run every plugin job that is due. Returns how many ran."""
+        if self._changed_since_start():
+            return 0
+        now = self.now()
+        due = self.store.plugins.due_jobs(now)
+        for name in due:
+            self.store.plugins.run_job(name, now)
+        if due:
+            self.events.changed()
+            self.poke()
+        return len(due)
+
+    def run_due_watches(self) -> int:
+        """Read every watched source that is due, once each however long the computer was asleep. Returns how many
+        were read."""
+        from engine.set_aside import purge_due
+        from engine.watch import due, record_crash, refresh
+
+        if self._changed_since_start():
+            return 0
+        now = self.now()
+        if purge_due(self.ws, self.store, self.cfg, now):
+            self.events.changed()
+        sources = due(self.store, self.cfg, now)
+        handed = 0
+        for source in sources:
+            if self._stop.is_set():
+                break
+            try:
+                result = refresh(self.ws, self.store, self.cfg, source, now, self.router_factory())
+            except (Exception, SystemExit) as err:
+                # One source failing in a way nothing expected never stops the others being read: it is recorded as
+                # a failed read, which the source's Today line and the failures in a row count.
+                try:
+                    record_crash(self.store, source, now, err)
+                except Exception:  # even recording it failed: it is logged, and the others are still read
+                    log.exception("Couldn't record the failed read of %s", source)
+                continue
+            handed += len(result.new) + len(result.changed) + len(result.removed) + len(result.taken_in)
+        if sources:
+            self.events.changed()
+        if handed:
+            self.poke()
+        return len(sources)
+
+    def _jobs_loop(self) -> None:
+        while not self._stop.is_set():
+            self._guarded("jobs", "scheduled jobs", self._jobs_pass)
+            self._read_now.wait(timeout=60)
+            self._read_now.clear()
+
+    def _jobs_pass(self) -> None:
+        self.note_running()
+        try:
+            self.run_due_jobs()
+        except (Exception, SystemExit):  # a job's failure is recorded on its run; nothing here may stop the thread
+            log.exception("running scheduled jobs failed")
+            self._problem("running scheduled jobs failed")
+        try:
+            self.read_accounts_now()
+        except (Exception, SystemExit):  # a failed read is recorded on its run; nothing here may stop the thread
+            log.exception("reading a signed-in account's sources failed")
+            self._problem("reading watched sources failed")
+        try:
+            self.run_due_watches()
+        except (Exception, SystemExit):  # a failed read is recorded on its run; nothing here may stop the thread
+            log.exception("reading watched sources failed")
+            self._problem("reading watched sources failed")
+        try:
+            self.watch_models_if_due()
+        except (Exception, SystemExit):  # the look is made again the next time round; nothing here may stop the thread
+            log.exception("starting the look at newer models failed")
+            self._problem("starting the look at newer models failed")
+        try:
+            self.export_if_due()
+        except (Exception, SystemExit):  # a failed export is logged by the export; nothing here may stop the thread
+            log.exception("the scheduled export failed")
+            self._problem("the scheduled export failed")
+        try:
+            self.sweep_proposals_if_due()
+        except (Exception, SystemExit):  # the sweep runs again the next time round; nothing here may stop the thread
+            log.exception("expiring old proposals failed")
+            self._problem("expiring old proposals failed")
+        try:
+            self.sweep_kept_secrets_if_due()
+        except (Exception, SystemExit):  # the sweep runs again the next time round; nothing here may stop the thread
+            log.exception("removing old kept secrets failed")
+            self._problem("removing old kept secrets failed")
+        try:
+            self.roll_series_if_due()
+        except (Exception, SystemExit):  # the roll runs again the next time round; nothing here may stop the thread
+            log.exception("moving items to the next instance of a series failed")
+            self._problem("moving items to the next instance of a series failed")
+        try:
+            self.ask_about_meetings()
+        except (Exception, SystemExit):  # asked again the next time round; nothing here may stop the thread
+            log.exception("asking about a meeting failed")
+            self._problem("asking about a meeting failed")
+        try:
+            self.notify_if_due()
+        except (
+            Exception,
+            SystemExit,
+        ):  # the notice is tried again the next time round; nothing here may stop the thread
+            log.exception("sending a notice failed")
+            self._problem("sending a notice failed")
+
+    def _backup_loop(self) -> None:
+        while not self._stop.is_set():
+            self._guarded("backups", "scheduled backup", self._backup_pass)
+            self._stop.wait(timeout=60)
+
+    def _backup_pass(self) -> None:
+        try:
+            self.backup_if_due()
+        except (Exception, SystemExit):  # a failed backup is recorded by run_backup; nothing here may stop the thread
+            log.exception("scheduled backup failed")
+            self._problem("scheduled backup failed")
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            self._guarded("requests", "processing requests", self._request_pass)
+            if self.restart_due():
+                return
+            self._wake.wait(timeout=5)
+            self._wake.clear()
+
+    def _request_pass(self) -> None:
+        self.note_running()
+        self.run_pending()
+
+    def restart_due(self) -> bool:
+        """Restart once the person asked for it, between requests. The app never restarts on its own: a change that
+        needs one is shown, and new work waits, until the person chooses to restart."""
+        if self.on_restart is None or self.restarting or not self.restart_requested:
+            return False
+        self.restarting = True
+        log.warning("Restarting, as asked, to use changed settings or code.")
+        self.events.changed()
+        self.on_restart()
+        return True

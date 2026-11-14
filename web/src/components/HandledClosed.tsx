@@ -1,0 +1,94 @@
+// The assistant's own closes on Handled for you (design 7.20, 6.32): actions and questions it closed, dropped or
+// answered without the person making or seeing the change, each with what it was, when, why and what kind of item it is,
+// and the share of all closes nobody saw. Looks right marks one as seen. A change a rule closed is a row of the list above.
+import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { api, type S } from "../lib/api";
+import { useAct } from "../lib/act";
+import { whenText as when } from "../lib/dates";
+import { useWords } from "../lib/wording";
+import { Skeleton } from "../ui/Skeleton";
+import { Button } from "../ui/Button";
+import { RowList } from "../ui/RowList";
+import { Row } from "../ui/Row";
+import { Pill } from "../ui/Pill";
+import { LoadFailed } from "../ui/LoadFailed";
+type SilentClose = S["SilentCloseView"];
+
+export function AssistantCloses() {
+  const { t, tn } = useWords();
+  const found = useQuery({ queryKey: ["silent-closes"], queryFn: api.silentCloses });
+  const mine = found.data?.closes.filter((c) => c.kind === "assistant") ?? [];
+  // With nothing of the assistant's own to list there is no section: the tab's own empty state is the one that says so, and a
+  // heading that tells the person to choose something that is not on the screen would only contradict it.
+  // The one thing worth saying then is that everything that was closed was seen.
+  if (found.isSuccess && mine.length === 0 && !(found.data.measure.total > 0 && found.data.measure.silent === 0)) return null;
+  return (
+    <section className="panel-section" aria-labelledby="silent-closes-title">
+      <div className="heading">
+        <h2 id="silent-closes-title">{t("sources.silent.title")}</h2>
+      </div>
+      <p className="hint">{t("sources.silent.intro")}</p>
+      {found.isPending ? (
+        <Skeleton />
+      ) : found.isError ? (
+        <LoadFailed message={t("sources.silent.load_failed")} onRetry={() => void found.refetch()} />
+      ) : (
+        <>
+          {found.data.measure.total > 0 ? (
+            <p className="hint" data-testid="silent-measure">
+              {found.data.measure.silent === 0
+                ? t("sources.silent.measure_none", { days: found.data.measure.days })
+                : tn("sources.silent.measure", found.data.measure.silent, {
+                    silent: found.data.measure.silent,
+                    total: found.data.measure.total,
+                  })}
+            </p>
+          ) : null}
+          <RowList>
+            {mine.map((item) => (
+              <AssistantCloseRow key={item.ref} item={item} />
+            ))}
+          </RowList>
+        </>
+      )}
+    </section>
+  );
+}
+
+function AssistantCloseRow(props: { item: SilentClose }) {
+  const { t } = useWords();
+  const act = useAct();
+  const [busy, setBusy] = useState(false);
+  const { item } = props;
+  const titleId = `silent-${item.ref}`;
+  const seen = async () => {
+    setBusy(true);
+    await act(
+      () => api.closeSeen(item.ref),
+      () => ({ message: t("sources.silent.toast", { title: item.title }) }),
+    );
+    setBusy(false);
+  };
+  const facts = [t("sources.silent.by_assistant"), when(item.when)].filter(Boolean);
+  return (
+    <Row
+      aria-labelledby={titleId}
+      pill={<Pill>{t(`handled.item.${item.item}`)}</Pill>}
+      title={item.title}
+      titleId={titleId}
+      metaLines={[[t(`sources.silent.how.${item.how}`), ...facts].join(" · "), item.why ? t("sources.silent.why", { reason: item.why }) : null]}
+      primary={
+        <Button
+          variant="primary"
+          data-key="primary"
+          disabled={busy}
+          aria-label={t("sources.silent.seen_named", { title: item.title })}
+          onClick={() => void seen()}
+        >
+          {t("sources.silent.seen")}
+        </Button>
+      }
+    />
+  );
+}

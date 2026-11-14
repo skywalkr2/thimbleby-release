@@ -1,0 +1,67 @@
+// The one segmented control, for two to four filters (design 7.12). Tabs are for switching panes inside a record, and
+// neither is ever the main navigation.
+import type { ReactNode } from "react";
+import { ToggleButton, ToggleButtonGroup } from "react-aria-components";
+import styles from "./SegmentedControl.module.css";
+import { countText } from "../lib/counts";
+import { useInFilterSheet } from "./inFilterSheet";
+
+export interface SegmentOption<T extends string> {
+  value: T;
+  label: string;
+  /** How many wait under this choice; shown after the name, with nothing shown for none. */
+  count?: number;
+  /** What the count says in words, for the screen reader ("3 waiting"). */
+  countWords?: string;
+  /** A small mark drawn before the name (a side's dot); never the only sign, the name is beside it. */
+  mark?: ReactNode;
+}
+
+export function SegmentedControl<T extends string>(props: {
+  /** Names the group for screen readers. */
+  label: string;
+  options: SegmentOption<T>[];
+  value: T;
+  onChange: (value: T) => void;
+  className?: string;
+}) {
+  const inSheet = useInFilterSheet();
+  const control = (
+    <ToggleButtonGroup
+      aria-label={props.label}
+      selectionMode="single"
+      disallowEmptySelection
+      selectedKeys={[props.value]}
+      onSelectionChange={(keys) => {
+        const next = [...keys][0];
+        if (next !== undefined) props.onChange(String(next) as T);
+      }}
+      className={[styles.track, props.className ?? ""].filter(Boolean).join(" ")}
+    >
+      {props.options.map((o) => (
+        <ToggleButton key={o.value} id={o.value} className={styles.segment} aria-label={o.count ? `${o.label}, ${o.countWords ?? o.count}` : undefined}>
+          {o.mark}
+          <span className={styles.label} title={o.label}>
+            {o.label}
+          </span>
+          {o.count ? (
+            <span className={styles.count} aria-hidden="true">
+              {countText(o.count)}
+            </span>
+          ) : null}
+        </ToggleButton>
+      ))}
+    </ToggleButtonGroup>
+  );
+  // In the phone's Filter sheet the control carries its name in words above it.
+  return inSheet ? (
+    <div className={styles.captioned}>
+      <p className={styles.caption} aria-hidden="true">
+        {props.label}
+      </p>
+      {control}
+    </div>
+  ) : (
+    control
+  );
+}

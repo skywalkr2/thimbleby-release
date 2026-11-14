@@ -1,0 +1,3 @@
+.mark { display: inline-flex; min-width: 0; align-items: center; gap: var(--space-2); max-width: 100%; vertical-align: bottom; color: var(--text); }
+/* The name is whole while there is room, and cut with an ellipsis only where its own space is short. */
+.name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

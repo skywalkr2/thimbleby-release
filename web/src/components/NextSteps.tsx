@@ -1,0 +1,239 @@
+// The obvious next step from what came in, as one click (design 6.7, 6.9): "Add a new person" beside the list on a "Who is
+// this?" question, and the three choices on a project the assistant found that the workspace doesn't have. Each acts at
+// once and says what it did with an Undo.
+import { useQuery } from "@tanstack/react-query";
+import { useEffect, useId, useRef, useState } from "react";
+import { api, type S } from "../lib/api";
+import { useAct } from "../lib/act";
+import { projectChoices } from "../lib/project-choices";
+import { placeOptions } from "./PlaceOptions";
+import { useRowKeys } from "../lib/keys";
+import { plainDates } from "../lib/read";
+import { useWords } from "../lib/wording";
+import { RowMenu } from "./RowMenu";
+import { Skeleton } from "../ui/Skeleton";
+import { Pill } from "../ui/Pill";
+import { Button } from "../ui/Button";
+import { Select } from "../ui/Select";
+import { FormField } from "../ui/FormField";
+import { Actions } from "../ui/Actions";
+import { Item } from "../ui/ItemList";
+/** The form that answers a "Who is this?" question with a new person. It starts from the name as written and whatever the
+ * input says about them, and the cursor is in its first field. */
+export function NewPersonForm(props: { question: string; onClose: () => void }) {
+  const { t } = useWords();
+  const form = useQuery({ queryKey: ["new-person", props.question], queryFn: () => api.newPersonForm(props.question) });
+  if (form.isPending) return <Skeleton rows={1} />;
+  if (form.isError || !form.data) return <p className="hint">{t("newperson.load_failed")}</p>;
+  return <NewPersonFields question={props.question} start={form.data} onClose={props.onClose} />;
+}
+
+function NewPersonFields(props: { question: string; start: S["NewPersonPrefillView"]; onClose: () => void }) {
+  const { t } = useWords();
+  const act = useAct();
+  const ids = useId();
+  const orgs = useQuery({ queryKey: ["organizations"], queryFn: api.organizations });
+  const start = props.start;
+  const first = useRef<HTMLInputElement>(null);
+  const [fullName, setFullName] = useState(start.full_name);
+  const [firstName, setFirstName] = useState(start.first_name);
+  const [org, setOrg] = useState(start.org);
+  const [role, setRole] = useState(start.role);
+  const [kind, setKind] = useState(start.contact_kind || start.contact_kinds[0] || "");
+  const [value, setValue] = useState(start.contact_value);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => first.current?.focus(), []);
+
+  const submit = async () => {
+    if (!fullName.trim() || busy) return;
+    setBusy(true);
+    const body: S["NewPersonIn"] = {
+      full_name: fullName,
+      first_name: firstName.trim() || null,
+      org: org.trim() || null,
+      role: role.trim() || null,
+      contact_kind: value.trim() ? kind : null,
+      contact_value: value.trim() || null,
+    };
+    const done = await act(
+      () => api.addNewPerson(props.question, body),
+      (made) => ({
+        message: t("toast.person_added", { name: made.name }),
+        // The released items go back first, then the changes that added the person, newest first.
+        undo: async () => {
+          if (made.changeset && made.released.length) await api.undo(made.changeset, made.released);
+          for (const change of made.undo) await api.undo(change);
+        },
+      }),
+    );
+    setBusy(false);
+    if (done) props.onClose();
+  };
+
+  return (
+    <form
+      className="answer-form new-person"
+      aria-label={t("newperson.title")}
+      onSubmit={(e) => {
+        e.preventDefault();
+        void submit();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") props.onClose();
+      }}
+    >
+      <FormField id={`${ids}-name`} label={t("newperson.full_name")}>
+        <input id={`${ids}-name`} ref={first} type="text" autoComplete="off" value={fullName} onChange={(e) => setFullName(e.target.value)} />
+      </FormField>
+      <FormField id={`${ids}-first`} label={<>{t("newperson.first_name")} <span className="hint">{t("newperson.first_name_hint")}</span></>}>
+        <input id={`${ids}-first`} type="text" autoComplete="off" value={firstName} onChange={(e) => setFirstName(e.target.value)} />
+      </FormField>
+      <FormField id={`${ids}-org`} label={<>{t("newperson.org")} <span className="hint">{t("newperson.org_hint")}</span></>}>
+        <input id={`${ids}-org`} type="text" autoComplete="off" list={`${ids}-orgs`} value={org} onChange={(e) => setOrg(e.target.value)} />
+        <datalist id={`${ids}-orgs`}>
+          {(orgs.data ?? []).map((o) => (
+            <option key={o.id} value={o.name} />
+          ))}
+        </datalist>
+      </FormField>
+      <FormField id={`${ids}-role`} label={t("newperson.role")}>
+        <input id={`${ids}-role`} type="text" autoComplete="off" value={role} onChange={(e) => setRole(e.target.value)} />
+      </FormField>
+      <FormField id={`${ids}-kind`} label={t("newperson.kind")}>
+        <Select id={`${ids}-kind`} value={kind} onChange={(e) => setKind(e.target.value)}>
+          {start.contact_kinds.map((k) => (
+            <option key={k} value={k}>
+              {k}
+            </option>
+          ))}
+        </Select>
+      </FormField>
+      <FormField id={`${ids}-value`} label={t("newperson.value")}>
+        <input id={`${ids}-value`} type="text" autoComplete="off" value={value} onChange={(e) => setValue(e.target.value)} />
+      </FormField>
+      <Actions align="end">
+        <Button variant="quiet" onClick={props.onClose}>
+          {t("action.cancel")}
+        </Button>
+        <Button variant="primary" type="submit" disabled={!fullName.trim() || busy}>
+          {t("newperson.add")}
+        </Button>
+      </Actions>
+    </form>
+  );
+}
+
+/** How many projects whose names look like the held one are offered by name in its menu. */
+const LIKELY_OFFERED = 3;
+const MIN_WORD = 4;
+
+/** Whether two names share a word of at least a few letters, ignoring case. */
+function sharesWord(a: string, b: string): boolean {
+  const words = (text: string) => new Set(text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= MIN_WORD));
+  const mine = words(a);
+  return [...words(b)].some((w) => mine.has(w));
+}
+
+/** A project the assistant found, held for the person: Add, "It's part of" a project picked from the list, or "Not a
+ * project". Add is the row's one primary action; the other two are in its menu. */
+export function ProjectProposalRow(props: { op: S["OpView"]; changeset: string }) {
+  const { t } = useWords();
+  const act = useAct();
+  const ids = useId();
+  const { op } = props;
+  const name = op.meta.name ?? op.title;
+  const ref = useRef<HTMLLIElement>(null);
+  const [choosing, setChoosing] = useState(false);
+  const [into, setInto] = useState("");
+  const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects });
+  const choices = projectChoices(projects.data ?? [], (parent, child) => t("handin.project.path", { parent, name: child }));
+  // Projects whose names share a word with the held one are offered by name, so filing it there is one click.
+  const likely = choices.filter((c) => sharesWord(String(name), projects.data?.find((p) => p.id === c.id)?.name ?? "")).slice(0, LIKELY_OFFERED);
+  const close = () => {
+    setChoosing(false);
+    setInto("");
+    ref.current?.focus();
+  };
+
+  const add = () =>
+    act(
+      () => api.release(props.changeset, op.index),
+      () => ({ message: t("toast.project_added", { name }), undo: () => api.undo(props.changeset, [op.index]) }),
+    );
+  const fileUnder = async (project: string) => {
+    const target = choices.find((c) => c.id === project)?.label ?? "";
+    return act(
+      () => api.projectPartOf(props.changeset, op.index, project),
+      (made) => ({ message: t("toast.project_filed", { name, project: target }), undo: () => api.undo(made.changeset) }),
+    );
+  };
+  const partOf = async () => {
+    if (!into) return;
+    if (await fileUnder(into)) close();
+  };
+  const notOne = () =>
+    act(
+      () => api.notAProject(props.changeset, op.index),
+      (made) => ({ message: t("toast.not_a_project", { name }), undo: () => api.undo(made.changeset) }),
+    );
+
+  useRowKeys(ref, { primary: () => void add() });
+  return (
+    <Item row ref={ref}>
+      <div>
+        <div className="what">
+          {t("project_item.what")}
+          <Pill tone="warn" className="pill-gap">{t("op.status.held")}</Pill>
+        </div>
+        <div className="title">{t("project_item.ask", { name })}</div>
+        {op.meta.note && <div className="hint">{op.meta.note}</div>}
+        {op.evidence && (
+          <div className="because">
+            {t("op.because")} <q>{plainDates(op.evidence.quote)}</q>
+          </div>
+        )}
+      </div>
+      <Actions>
+        <Button variant="primary" onClick={() => void add()}>
+          {t("project_item.add")}
+        </Button>
+        <RowMenu
+          label={name}
+          actions={[
+            ...likely.map((c) => ({ id: `part-of-${c.id}`, label: t("project_item.part_of_named", { project: c.label }), run: () => void fileUnder(c.id) })),
+            { id: "part-of", label: t("project_item.part_of"), run: () => setChoosing(true) },
+            { id: "not-a-project", label: t("project_item.not_a_project"), run: () => void notOne() },
+          ]}
+        />
+      </Actions>
+      {choosing && (
+        <form
+          className="answer-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void partOf();
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") close();
+          }}
+        >
+          <label className="hint" htmlFor={`${ids}-into`}>
+            {t("project_item.part_of_label", { name })}
+          </label>
+          <Select id={`${ids}-into`} autoFocus value={into} onChange={(e) => setInto(e.target.value)}>
+            <option value="">{t("project_item.choose")}</option>
+            {placeOptions(projects.data ?? [], t, true)}
+          </Select>
+          <Actions align="end">
+            <Button variant="quiet" onClick={close}>
+              {t("action.cancel")}
+            </Button>
+            <Button variant="primary" type="submit" disabled={!into}>
+              {t("project_item.part_of_go")}
+            </Button>
+          </Actions>
+        </form>
+      )}
+    </Item>
+  );
+}

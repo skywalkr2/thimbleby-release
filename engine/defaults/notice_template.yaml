@@ -1,0 +1,29 @@
+# The core's notice template: the words of a notice that goes by mail to the person themselves. A workspace may put its
+# own copy at `templates/notice.yaml`, which wins; the template's version is a hash of the whole file, so any change to
+# the words is a new version and asks for the person's yes again.
+#
+# Three forms. `count` carries how many items wait and never what they are. `titles` also lists the items' titles, and is
+# used only for items the person allowed titles for (`ui.notifications.mail_titles_level`; restricted items never).
+# `test` is what "Send me a test" sends. Placeholders: {message} the notice's count line (`ui.notifications`),
+# {titles} the titles, one to a line, {app} the workspace's display name.
+forms:
+  count:
+    subject: "{message}"
+    body: |-
+      {message}.
+
+      Open {app} to see what is waiting.
+  titles:
+    subject: "{message}"
+    body: |-
+      {message}:
+
+      {titles}
+
+      Open {app} to see what is waiting.
+  test:
+    subject: "A test from {app}"
+    body: |-
+      {message}
+
+      Open {app} to see what is waiting.

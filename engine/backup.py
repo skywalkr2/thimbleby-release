@@ -1,0 +1,550 @@
+"""Full backups to somewhere off this computer (design 4.15, 5.0).
+
+A backup is a consistent copy of the database (SQLite's online backup), the config and the saved sources, in a dated
+folder in each configured target. Older backups beyond `keep` are removed. The result of the last attempt per target is
+kept in the workspace's private folder, so the app can show the age of the last backup and nag until one succeeds.
+
+When `storage.backups.encrypt` names a key, every file of every copy is encrypted (`engine/backup_crypto.py`) and the
+copy's folder says so; restoring one needs the key, and a wrong key is refused before anything is written.
+
+A backup folder can be made into a new workspace (`restore_backup`): its database is checked first, nothing is written
+into a folder that already has files, and the backup itself is never changed.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import sqlite3
+import subprocess
+import tempfile
+import threading
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from engine import backup_crypto
+from engine.config import Config, ConfigError, load_config
+from engine.legacy_names import DB_NAME, backup_database
+from engine.secrets import SecretError, resolve_secret
+from engine.state_file import write_whole
+from engine.storage import StoreError
+from engine.workspace import WORKSPACE_GITIGNORE, Workspace
+
+#: The folders a backup holds beside its database, copied into a restored workspace.
+BACKUP_FOLDERS = ("config", "sources", "files", "texts", "plugin-data")
+STATUS_FILE = "backups.json"
+#: One backup at a time per process, whether started on schedule or on request.
+_RUNNING = threading.Lock()
+
+
+@dataclass(frozen=True)
+class BackupState:
+    configured: bool
+    last_success: str | None
+    age_hours: float | None
+    needs_attention: bool
+    message: str
+    last_error: str | None = None
+    encrypted: bool = False
+
+
+def run_backup(
+    ws: Workspace, cfg: Config, now: datetime | None = None, *, only_if: Callable[[], bool] | None = None
+) -> dict[str, Any]:
+    """Make a backup. With `only_if`, it is asked once the lock is held, so two callers that both found a backup wanted
+    (the scheduled one and the first one made when a folder is chosen) make one copy between them, not two."""
+    with _RUNNING:
+        if only_if is not None and not only_if():
+            return _load(ws)
+        return _run(ws, cfg, now or datetime.now(UTC))
+
+
+def live(ws: Workspace, cfg: Config) -> Config:
+    """The settings as the files hold them now (a backup folder chosen a moment ago counts), else `cfg`."""
+    try:
+        return load_config(ws.config_dir, env=dict(os.environ))
+    except ConfigError:
+        return cfg
+
+
+class BackupFirstFailed(StoreError):
+    """The backup made before a change that is hard to take back couldn't be made, so the change wasn't made. The
+    message says why in plain words."""
+
+
+def backup_before(ws: Workspace, cfg: Config, now: datetime | None = None) -> bool:
+    """Make a backup before a change that is hard to take back (restoring from the synced folder, installing or updating
+    an add-on, releasing everything an answer holds, loading data from files, removing many records), with the same
+    function the schedule uses. Returns whether one was made: nothing is made when backups before changes are off or no
+    place to back up to is set up. Raises `BackupFirstFailed` when places are set up and none of them got a copy, so
+    the caller stops before changing anything."""
+    settings = cfg.storage.backups
+    if not settings.before_changes or not settings.targets:
+        return False
+    now = now or datetime.now(UTC)
+    status = run_backup(ws, cfg, now)
+    stamp = now.isoformat()
+    if any(status.get(t.path, {}).get("last_success") == stamp for t in settings.targets):
+        return True
+    errors = [str(e) for t in settings.targets if (e := status.get(t.path, {}).get("last_error"))]
+    why = f" {errors[0].rstrip('.')}." if errors else ""
+    raise BackupFirstFailed(
+        "Nothing was changed, because the backup made first couldn't be made." + why + " Check where backups go "
+        "in Settings, then try again."
+    )
+
+
+def backup_before_many(ws: Workspace, cfg: Config, records: int, now: datetime | None = None) -> bool:
+    """`backup_before` for a removal that touches `records` records: made only when that is at least
+    `storage.backups.bulk_change_records`."""
+    if records < cfg.storage.backups.bulk_change_records:
+        return False
+    return backup_before(ws, cfg, now)
+
+
+def due(ws: Workspace, cfg: Config, now: datetime | None = None) -> bool:
+    """Whether a scheduled backup should run now: some target's last success is older than `every_hours` (or there is
+    none), and its last try is older than `retry_minutes`. Wall-clock based, so a computer waking from sleep catches up
+    at once."""
+    settings = cfg.storage.backups
+    if not settings.automatic or not settings.targets:
+        return False
+    now = now or datetime.now(UTC)
+    status = _load(ws)
+    for target in settings.targets:
+        entry = status.get(target.path, {})
+        success, attempt = entry.get("last_success"), entry.get("last_attempt")
+        if success and _hours(now, success) < settings.every_hours:
+            continue
+        if attempt and _hours(now, attempt) * 60 < settings.retry_minutes:
+            continue
+        return True
+    return False
+
+
+def _stamped(root: str) -> str:
+    """The pattern of the dated name of a finished backup of the workspace `root`, `<root>-YYYYMMDD-HHMMSS[-n]`: a
+    workspace whose name begins with another's is never taken for it."""
+    return re.escape(root) + r"-\d{8}-\d{6}(?:-\d+)?"
+
+
+def is_copy_of(name: str, root: str) -> bool:
+    """Whether a folder's name is a finished backup of the workspace `root`."""
+    return re.fullmatch(_stamped(root), name) is not None
+
+
+def _is_unfinished_copy_of(name: str, root: str) -> bool:
+    return re.fullmatch(r"\." + _stamped(root) + r"\.part", name) is not None
+
+
+def _finished_copies(base: Path, root: str) -> list[Path]:
+    return sorted(p for p in base.iterdir() if p.is_dir() and is_copy_of(p.name, root))
+
+
+def _free_folder(base: Path, name: str) -> Path:
+    """The dated folder for a backup: two backups in the same second get -2, -3 … rather than refusing each other."""
+    path = base / name
+    n = 2
+    while path.exists():
+        path = base / f"{name}-{n}"
+        n += 1
+    return path
+
+
+def _hours(now: datetime, stamp: str) -> float:
+    return (now - datetime.fromisoformat(stamp)).total_seconds() / 3600
+
+
+def _run(ws: Workspace, cfg: Config, now: datetime) -> dict[str, Any]:
+    stamp = now.strftime("%Y%m%d-%H%M%S")
+    status = _load(ws)
+    secret: str | None = None
+    if cfg.storage.backups.encrypt:
+        # With a key set, a backup is never made without it: a key that can't be read fails every target.
+        try:
+            secret = resolve_secret(cfg.storage.backups.encrypt) or ""
+            if not secret.strip():
+                raise SecretError("the key for encrypting backups is empty")
+        except SecretError as err:
+            for target in cfg.storage.backups.targets:
+                prev = status.get(target.path, {})
+                status[target.path] = {
+                    "last_success": prev.get("last_success"),
+                    "last_attempt": now.isoformat(),
+                    "last_error": f"the key for encrypting backups can't be read: {err}",
+                    "label": target.label,
+                }
+            _save(ws, status)
+            return status
+    done: set[Path] = set()
+    for target in cfg.storage.backups.targets:
+        key = target.path
+        try:
+            base = Path(target.path).expanduser()
+            # One folder named twice (two spellings of one place) gets one copy, not one for each.
+            if base.resolve() in done:
+                continue
+            done.add(base.resolve())
+            if base.resolve().is_relative_to(ws.root.resolve()):
+                raise ValueError("the backup folder is inside the workspace, so it isn't a copy somewhere else")
+            if not base.is_dir():
+                # Never create it: a drive that isn't connected would otherwise get a folder on this computer's disk.
+                raise ValueError(f"{base} isn't there; connect the drive or check the folder")
+            _remove_unfinished(base, ws.root.name)
+            dest = _free_folder(base, f"{ws.root.name}-{stamp}")
+            # The copy is made under a name no listing, pruning or restore takes for a backup, and given its dated name
+            # only when it is whole: a copy that stops midway is never counted, offered or kept.
+            building = base / f".{dest.name}.part"
+            building.mkdir(exist_ok=False)
+            try:
+                if secret is None:
+                    _copy(ws, building)
+                else:
+                    _copy_encrypted(ws, building, secret)
+                building.rename(dest)
+            except BaseException:
+                shutil.rmtree(building, ignore_errors=True)
+                raise
+            _prune(base, ws.root.name, cfg.storage.backups.keep)
+            status[key] = {
+                "last_success": now.isoformat(),
+                "last_attempt": now.isoformat(),
+                "last_error": None,
+                "label": target.label,
+            }
+        except (OSError, ValueError, sqlite3.Error) as err:
+            prev = status.get(key, {})
+            status[key] = {
+                "last_success": prev.get("last_success"),
+                "last_attempt": now.isoformat(),
+                "last_error": str(err),
+                "label": target.label,
+            }
+    _save(ws, status)
+    return status
+
+
+def _database_copy(ws: Workspace, path: Path) -> None:
+    """A consistent copy of the database at `path`, made with SQLite's online backup."""
+    src = sqlite3.connect(ws.db_path)
+    dst = sqlite3.connect(path)
+    try:
+        with dst:
+            src.backup(dst)
+    finally:
+        src.close()
+        dst.close()
+
+
+def _copy(ws: Workspace, dest: Path) -> None:
+    _database_copy(ws, dest / DB_NAME)
+    for name in BACKUP_FOLDERS:
+        if (ws.root / name).is_dir():
+            shutil.copytree(ws.root / name, dest / name)
+
+
+def _copy_encrypted(ws: Workspace, dest: Path, secret: str) -> None:
+    """The same copy with every file sealed. The database is copied to a temporary folder first (inside the workspace's
+    private folder, which stays on this computer) and removed as soon as it is sealed."""
+    sealer, manifest = backup_crypto.create(secret)
+    backup_crypto.write_manifest(dest, manifest)
+    ws.private_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=ws.private_dir, prefix="backup-") as temporary:
+        plain = Path(temporary) / DB_NAME
+        _database_copy(ws, plain)
+        sealer.seal(plain, dest / DB_NAME, DB_NAME)
+    for name in BACKUP_FOLDERS:
+        if (ws.root / name).is_dir():
+            backup_crypto.seal_tree(sealer, ws.root / name, dest / name, name)
+
+
+def state(ws: Workspace, cfg: Config, now: datetime | None = None) -> BackupState:
+    now = now or datetime.now(UTC)
+    targets = cfg.storage.backups.targets
+    encrypted = bool(cfg.storage.backups.encrypt)
+    if not targets:
+        return BackupState(False, None, None, True, "No backup on another device is set up.", encrypted=encrypted)
+    status = _load(ws)
+    errors = [s["last_error"] for t in targets if (s := status.get(t.path)) and s.get("last_error")]
+    successes = [s["last_success"] for t in targets if (s := status.get(t.path)) and s.get("last_success")]
+    if not successes:
+        why = f" The last try failed: {errors[0]}" if errors else ""
+        return BackupState(
+            True, None, None, True, "No successful backup yet." + why, errors[0] if errors else None, encrypted
+        )
+    last = max(successes)
+    age = (now - datetime.fromisoformat(last)).total_seconds() / 3600
+    stale = age > 2 * cfg.storage.backups.every_hours
+    message = f"Backed up {_ago(age)}." + (" That's overdue." if stale else "")
+    message += " Encrypted." if encrypted else ""
+    return BackupState(True, last, round(age, 2), stale, message, errors[0] if errors else None, encrypted)
+
+
+@dataclass(frozen=True)
+class TargetState:
+    """One place backups go: its folder, what the person called it, whether the folder is there now, and how its last
+    try went."""
+
+    path: str
+    label: str
+    reachable: bool
+    last_success: str | None
+    last_error: str | None
+
+
+@dataclass(frozen=True)
+class Copy:
+    """One dated backup found in a target: the folder it is in, when it was made (from its name) and whether it is
+    encrypted."""
+
+    target: str
+    path: str
+    name: str
+    made_at: str | None
+    encrypted: bool
+
+
+@dataclass(frozen=True)
+class Overview:
+    """Everything the Backups page says, read from the settings and the folders themselves: `schedule` is whether
+    backups are made on their own now (the setting is on and there is somewhere to put them), `switch` the setting
+    itself."""
+
+    state: BackupState
+    targets: list[TargetState]
+    copies: list[Copy]
+    schedule: bool
+    switch: bool
+
+
+def _made_at(name: str, root: str) -> str | None:
+    """When a backup folder named `<workspace>-YYYYMMDD-HHMMSS[-n]` was made, as an ISO time, or None."""
+    rest = name.removeprefix(f"{root}-")
+    try:
+        return datetime.strptime(rest[:15], "%Y%m%d-%H%M%S").replace(tzinfo=UTC).isoformat()
+    except ValueError:
+        return None
+
+
+def overview(ws: Workspace, cfg: Config, now: datetime | None = None, limit: int = 10) -> Overview:
+    """The state of backups for the Backups page: the targets with how each last went, the newest dated copies found in
+    them (at most `limit`), and whether backups run on their own."""
+    settings = cfg.storage.backups
+    status = _load(ws)
+    targets, copies, seen = [], [], set()
+    for target in settings.targets:
+        base = Path(target.path).expanduser()
+        entry = status.get(target.path, {})
+        targets.append(
+            TargetState(target.path, target.label, base.is_dir(), entry.get("last_success"), entry.get("last_error"))
+        )
+        if not base.is_dir():
+            continue
+        for folder in reversed(_finished_copies(base, ws.root.name)):
+            # A copy reached through two of the places (one inside the other, or the same folder twice) is listed once.
+            real = folder.resolve()
+            if real in seen:
+                continue
+            seen.add(real)
+            copies.append(
+                Copy(
+                    target.label or target.path,
+                    str(folder),
+                    folder.name,
+                    _made_at(folder.name, ws.root.name),
+                    backup_crypto.encrypted(folder),
+                )
+            )
+    copies.sort(key=lambda c: c.made_at or "", reverse=True)
+    return Overview(
+        state(ws, cfg, now),
+        targets,
+        copies[: max(0, limit)],
+        settings.automatic and bool(settings.targets),
+        settings.automatic,
+    )
+
+
+def _ago(hours: float) -> str:
+    if hours < 1:
+        return "less than an hour ago"
+    if hours < 48:
+        return f"{int(hours)} h ago"
+    return f"{int(hours // 24)} days ago"
+
+
+def _prune(base: Path, name: str, keep: int) -> None:
+    """Remove this workspace's own finished copies beyond the newest `keep`, and nothing else in the folder."""
+    for old in _finished_copies(base, name)[:-keep]:
+        shutil.rmtree(old, ignore_errors=True)
+
+
+def _remove_unfinished(base: Path, name: str) -> None:
+    """Remove this workspace's own copies that an earlier run left unfinished."""
+    for p in base.iterdir():
+        if p.is_dir() and _is_unfinished_copy_of(p.name, name):
+            shutil.rmtree(p, ignore_errors=True)
+
+
+def _load(ws: Workspace) -> dict[str, Any]:
+    path = ws.private_dir / STATUS_FILE
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save(ws: Workspace, status: dict[str, Any]) -> None:
+    write_whole(ws.private_dir / STATUS_FILE, json.dumps(status, indent=2, sort_keys=True) + "\n")
+
+
+# ---- restoring a whole backup ----------------------------------------------------------------------------------------
+
+
+class RestoreError(Exception):
+    """A backup can't be made into a workspace; the message says why and nothing was written."""
+
+
+class KeyNeeded(RestoreError):
+    """The backup is encrypted and no key was given."""
+
+
+@dataclass(frozen=True)
+class Restored:
+    workspace: Workspace
+    records: int
+    ledger: int
+
+
+def restore_backup(source: Path, target: Path, key: str | None = None) -> Restored:
+    """Make a new workspace in `target` from one dated backup folder. The backup's database is checked first, the copy
+    is made with SQLite's online backup, and the copy must open as a workspace. Locks held by the computer that made
+    the backup are dropped, so the restored workspace opens here. An encrypted backup needs `key`, the secret it was
+    made with: a missing one raises `KeyNeeded` and a wrong one is refused, before anything is written. Raises
+    `RestoreError` and leaves the target as it was when anything fails; the source is only ever read."""
+    source = Path(source).expanduser().resolve()
+    target = Path(target).expanduser().resolve()
+    database = backup_database(source)
+    if not database.is_file():
+        raise RestoreError(f"{source} isn't a backup of a workspace: it has no database.")
+    sealer = _sealer(source, key)
+    if target == source or source in target.parents:
+        raise RestoreError("The new folder can't be inside the backup. Choose another folder.")
+    if target.exists() and (not target.is_dir() or any(target.iterdir())):
+        raise RestoreError(f"{target} isn't empty. Choose a new folder to restore into.")
+    if sealer is None:
+        _check_database(database)
+    existed = target.is_dir()
+    target.mkdir(parents=True, exist_ok=True)
+    try:
+        if sealer is None:
+            return _restore(source, target)
+        # The opened copy lives in a temporary folder beside the new workspace and is removed whatever happens.
+        with tempfile.TemporaryDirectory(dir=target.parent, prefix=".restore-") as temporary:
+            opened = Path(temporary)
+            try:
+                backup_crypto.open_tree(sealer, source, opened)
+            except backup_crypto.BackupDamaged as err:
+                raise RestoreError(f"The backup can't be restored: {err}.") from None
+            _check_database(backup_database(opened))
+            return _restore(opened, target)
+    except Exception as err:
+        _undo(target, existed)
+        if isinstance(err, RestoreError):
+            raise
+        raise RestoreError(f"The backup couldn't be restored: {err}") from err
+
+
+def _sealer(source: Path, key: str | None) -> backup_crypto.Sealer | None:
+    """The key for an encrypted backup folder; None for a backup that isn't encrypted."""
+    if not backup_crypto.encrypted(source):
+        return None
+    if key is None or not key.strip():
+        raise KeyNeeded("This backup is encrypted, so restoring it needs the key it was made with.")
+    try:
+        return backup_crypto.open_backup(source, key)
+    except backup_crypto.BackupKeyError:
+        raise RestoreError(
+            "That key doesn't open this backup. Use the key the backup was made with; nothing was restored."
+        ) from None
+    except backup_crypto.BackupDamaged as err:
+        raise RestoreError(f"The backup can't be restored: {err}.") from None
+
+
+def _read_only(path: Path) -> sqlite3.Connection:
+    """The backup's database, opened so that nothing is created or changed beside it."""
+    return sqlite3.connect(f"{path.as_uri()}?immutable=1", uri=True)
+
+
+def _check_database(path: Path) -> None:
+    """Refuse a file that isn't a workspace's database or doesn't pass SQLite's own integrity check."""
+    try:
+        conn = _read_only(path)
+        try:
+            verdict = [row[0] for row in conn.execute("PRAGMA integrity_check")]
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        finally:
+            conn.close()
+    except sqlite3.Error as err:
+        raise RestoreError(f"The backup's database can't be read, so it can't be restored ({err}).") from None
+    if verdict != ["ok"]:
+        raise RestoreError(f"The backup's database is damaged, so it can't be restored ({verdict[0]}).")
+    if not {"records", "ledger"} <= tables:
+        raise RestoreError("The backup's database isn't a workspace's, so it can't be restored.")
+
+
+def _restore(source: Path, target: Path) -> Restored:
+    from engine.storage import Store
+    from engine.storage.export import commit_export, export_data
+
+    src = _read_only(backup_database(source))
+    dst = sqlite3.connect(target / DB_NAME)
+    try:
+        with dst:
+            src.backup(dst)
+        with dst:
+            dst.execute("DELETE FROM leases")  # the old computer's hold on the workspace ends here
+    finally:
+        src.close()
+        dst.close()
+    for name in BACKUP_FOLDERS:
+        if (source / name).is_dir():
+            shutil.copytree(source / name, target / name)
+    ws = Workspace(target)
+    ws.config_dir.mkdir(exist_ok=True)
+    ws.sources_dir.mkdir(exist_ok=True)
+    write_whole(target / ".gitignore", WORKSPACE_GITIGNORE)
+    cfg = ws.config()  # the workspace's own settings must load, as they do for `thimbleby serve`
+    store = Store(ws.db_path, cfg=cfg)
+    try:
+        records = sum(len(store.read().list(kind)) for kind in store.read().kinds())
+        ledger = store.read().sql("SELECT COUNT(*) FROM ledger").fetchone()[0]
+        ws.data_dir.mkdir(exist_ok=True)
+        export_data(store, ws.data_dir)
+    finally:
+        store.close()
+    if shutil.which("git"):
+        try:
+            subprocess.run(["git", "init", "-q", str(target)], check=True, capture_output=True)
+            commit_export(target, "Restore from backup")
+        except (OSError, subprocess.CalledProcessError):
+            pass  # the workspace works without a history of its own
+    return Restored(ws, records, ledger)
+
+
+def _undo(target: Path, existed: bool) -> None:
+    """Take away what a failed restore wrote: the folder if it was made here, else what was put in the empty folder."""
+    if not existed:
+        shutil.rmtree(target, ignore_errors=True)
+        return
+    for child in target.iterdir():
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            child.unlink(missing_ok=True)

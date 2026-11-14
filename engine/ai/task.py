@@ -1,0 +1,281 @@
+"""The provider-neutral contract for one AI call."""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass, field
+from functools import lru_cache
+from typing import Any, Literal
+
+ErrorKind = Literal[
+    "rate_limited",
+    "quota",
+    "auth",
+    "unsupported",  # the service no longer lets this program be used with this kind of account
+    "model_retired",  # the service says the model asked for is no longer offered
+    "no_allowed_model",  # the account's own privacy or guardrail settings at the service leave no model to answer
+    "no_key",
+    "timeout",
+    "invalid_output",
+    "no_output",  # the program finished without error but gave no answer
+    "provider_down",
+    "offline",  # no connection could be made at all; any answer from the service, even a failure, is not this
+    "no_work",  # the run did no work: cut off by the computer sleeping, or a program that only printed a banner
+    "refused",
+    "other",
+]
+
+
+#: What the person reads when a service no longer lets a program run with their kind of account: what happened, and
+#: what to do about it. It is never a sign-in hint, because signing in again does not help.
+UNSUPPORTED_PLAIN = "The service no longer lets this program run with your kind of account"
+UNSUPPORTED_ADVICE = "Pick another account, or use a key instead"
+
+
+#: What the person reads when the service no longer offers the model an account was set to use.
+#: It names the kind of work, never the model: a model's name is not shown to the person.
+RETIRED_PLAIN = "The model this account was using for {work} is no longer offered by this service"
+
+#: A kind of work (a tier) in the person's words, for a line that must not name the model.
+WORK_WORDS = {"routine": "everyday work", "deep": "harder work"}
+
+
+def work_in_words(tier: str | None) -> str:
+    """The kind of work a tier does, in plain words; a tier this doesn't know is "that work"."""
+    return WORK_WORDS.get(tier or "", "that work")
+
+
+#: Phrases in a service's error words that say the model asked for is retired. An adapter reads them only in its
+#: `classify_error`, and an account's settings may list others (`retired_markers`).
+RETIRED_MARKERS = (
+    "has been deprecated",
+    "is deprecated",
+    "has been retired",
+    "no longer available",
+    "no longer offered",
+)
+
+
+def says_retired(message: str, markers: Any = None) -> bool:
+    """Whether a service's error words say the model is retired. Only a classifier calls this."""
+    text = " ".join(str(message).lower().split())
+    return any(m.lower() in text for m in (markers or RETIRED_MARKERS))
+
+
+#: Words a service's error uses when the account's own privacy or guardrail settings leave no model that may answer.
+#: Only a classifier reads them.
+NO_ALLOWED_MODEL_MARKERS = ("guardrail restrictions", "data policy", "no endpoints found matching")
+
+
+def says_no_allowed_model(message: str, markers: Any = None) -> bool:
+    """Whether a service's error words say its settings for the account leave no model to answer. Only a classifier
+    calls this."""
+    text = " ".join(str(message).lower().split())
+    return any(m.lower() in text for m in (markers or NO_ALLOWED_MODEL_MARKERS))
+
+
+#: Words a service's error uses when the account has no credit left. Only a classifier reads them.
+NO_CREDIT_MARKERS = (
+    "credit balance is too low",
+    "insufficient credit",
+    "insufficient funds",
+    "insufficient_quota",
+    "exceeded your current quota",
+    "out of credit",
+)
+
+
+def says_no_credit(message: str, markers: Any = None) -> bool:
+    """Whether a service's error words say the account has no credit left. Only a classifier calls this."""
+    text = " ".join(str(message).lower().split())
+    return any(m.lower() in text for m in (markers or NO_CREDIT_MARKERS))
+
+
+#: Failed runs that say nothing about an account or the model's work: no connection could be made, or the run did
+#: nothing. They are no try, never a mistake, and are left out of counts of how an account is doing.
+NO_WORK_KINDS = ("offline", "no_work")
+
+
+@dataclass(frozen=True)
+class Audio:
+    """A voice note handed to a model that turns speech into text: its bytes, its media type and its file name."""
+
+    data: bytes
+    media_type: str
+    name: str
+
+
+@dataclass(frozen=True)
+class Image:
+    """A picture handed to a model that reads images: its bytes, its media type and its file name."""
+
+    data: bytes
+    media_type: str
+    name: str
+
+
+@dataclass(frozen=True)
+class AiTask:
+    """One call: what kind of work, the packet split into its stable part and its request part, and limits."""
+
+    kind: str
+    instructions: str
+    stable: str
+    request: str
+    output_schema: dict[str, Any]
+    temperature: float = 0.0
+    max_output: int = 4000
+    output: Literal["json", "text"] = "json"  # text: the answer is prose (a draft), not a JSON object
+    expected_output: int | None = None  # this run's likely answer size in tokens, when its packet knows better
+    knowledge: dict[str, Any] | None = None  # the run's knowledge log (what it was given), written onto its record
+    effort: Literal["low", "medium", "high"] | None = None  # the tier's effort; an adapter applies it only if told how
+    # The tier's wish about the model's own thinking; an adapter applies "off" only where the model's listed
+    # capabilities accept it at the tier's effort.
+    thinking: Literal["default", "off"] = "default"
+    # What the provider's catalog says about the model this call runs on, for an adapter whose service lists
+    # capabilities; None when it isn't known.
+    model_info: ModelInfo | None = None
+    # A voice note to turn into text (the kind "transcribe"): only an account whose model is listed as taking audio
+    # is ever given it, and the answer is the words spoken.
+    audio: Audio | None = None
+    # A picture to read as text (the kind "read-image"): only an account listed as reading images is ever given it.
+    image: Image | None = None
+    # The smallest context window, in tokens, a model must have for this kind of work, whatever the packet's size.
+    min_context: int = 0
+
+    @property
+    def size(self) -> int:
+        return len(self.instructions) + len(self.stable) + len(self.request)
+
+
+@dataclass(frozen=True)
+class AiResult:
+    text: str
+    model_served: str
+    seconds: float
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    upstream: str | None = None
+    extra: dict[str, Any] = field(default_factory=dict)
+    truncated: bool = False  # the provider stopped at the output limit, so the text is incomplete
+    cached_input_tokens: int | None = None  # input tokens the provider served from its prompt cache
+    # The provider said it refused the work under its own policy (a stop reason or refusal field, never the text).
+    refused: bool = False
+    refusal: str | None = None  # the provider's own reason, if it gave one
+    cost_usd: float | None = None  # what the provider itself reports the call cost, when it does
+
+
+@dataclass
+class ModelInfo:
+    """What a provider's catalog says about one model; any field may be unknown."""
+
+    context_tokens: int | None = None
+    max_output_tokens: int | None = None
+    input_per_million: float | None = None
+    output_per_million: float | None = None
+    cached_input_per_million: float | None = None
+    # Capabilities, filled only by an adapter whose service lists them per model. None means the service didn't say.
+    efforts: list[str] | None = None  # the effort levels the model takes; an empty list means it takes no effort
+    adaptive_thinking: bool | None = None  # whether the model can think on its own, where the service says so
+    thinking_off_efforts: list[str] | None = None  # the efforts at which its thinking can be turned off; [] never
+    released: str | None = None  # when the service says the model was made (ISO date and time), where its listing does
+    # Whether the model turns speech into text, where the service or the account says so; None means nobody said, and
+    # a model is never assumed to from its name or its vendor.
+    transcribes: bool | None = None
+    audio_per_minute: float | None = None  # what it costs a minute of speech in USD, where that is known
+    reads_images: bool | None = None  # whether the model listing says it accepts images
+    # Whether the service lists the model as retired (or on its way out), and whether it answers in text as a chat
+    # model does; None means the listing didn't say, and a model is never judged from its name.
+    retired: bool | None = None
+    chat: bool | None = None
+
+
+def usable_for_chat(info: ModelInfo | None) -> bool:
+    """Whether a model may be picked to do the app's work: not listed as retired and not listed as something other than
+    a text-answering model. A model whose listing says nothing about it is usable; its name is never read."""
+    return info is None or (info.retired is not True and info.chat is not False)
+
+
+class AiError(Exception):
+    """A provider call failed. `kind` comes only from the call itself (status, transport), never from model text."""
+
+    def __init__(self, kind: ErrorKind, detail: str = "", *, retry_after: float | None = None, hint: str | None = None):
+        self.kind = kind
+        self.detail = detail[:2000]
+        self.retry_after = retry_after
+        self.hint = hint  # what the person can do about it, from the account's settings (a sign-in command)
+        super().__init__(f"{kind}: {self.detail}" if self.detail else kind)
+
+
+class CountNotOffered(Exception):
+    """The adapter has the token-count capability on its interface but its service's count request isn't available
+    (not built, or the service doesn't offer it for this model). It is no failure of the account: the app keeps its own
+    count for it."""
+
+
+@dataclass(frozen=True)
+class AgentIdentity:
+    """The account a command-line agent runs as, as the program itself says: `account` is what it printed and
+    `how_read` says in plain words which command and which part of its output it came from."""
+
+    account: str
+    how_read: str
+
+
+@dataclass(frozen=True)
+class IdentityUnknown:
+    """The program's sign-in couldn't be read: `reason` says why in plain words. It is never a guess."""
+
+    reason: str
+
+
+REASON_LIMIT = 200
+
+
+#: Words of the catalog's names that are not a service's own name.
+_NOT_A_NAME = frozenset({"another", "local", "other", "agent"})
+
+
+@lru_cache(maxsize=1)
+def _vendor_words() -> re.Pattern[str] | None:
+    """The names of the services the product's catalog lists (the first word of each name, and each id), as one pattern.
+    The names are read from the catalog, so no service is named here."""
+    from engine.setup import known_endpoints
+
+    words = set()
+    for entry in known_endpoints():
+        for word in (str(entry["id"]), str(entry["name"]).split(" ")[0]):
+            if len(word) >= 3 and word.lower() not in _NOT_A_NAME:
+                words.add(re.escape(word))
+    return (
+        re.compile(r"(?<![A-Za-z0-9])(?:" + "|".join(sorted(words)) + r")(?![A-Za-z0-9])", re.IGNORECASE)
+        if words
+        else None
+    )
+
+
+def provider_reason(detail: str, limit: int = REASON_LIMIT) -> str:
+    """The provider's own words for a failure: the `error.message` (or `message`) of a JSON body inside the detail,
+    otherwise its first `limit` characters. Empty when there is no detail, and empty when the words name a service: the
+    person is never shown a vendor's name, and the plain words of the failure's kind already say what to do."""
+    said = _reason_text(detail, limit)
+    names = _vendor_words() if said else None
+    return "" if names is not None and names.search(said) else said
+
+
+def _reason_text(detail: str, limit: int) -> str:
+    text = " ".join(detail.split())
+    start, end = text.find("{"), text.rfind("}")
+    if 0 <= start < end:
+        try:
+            body = json.loads(text[start : end + 1])
+        except ValueError:
+            body = None
+        if isinstance(body, dict):
+            error = body.get("error")
+            message = error.get("message") if isinstance(error, dict) else error if isinstance(error, str) else None
+            message = message if isinstance(message, str) and message.strip() else body.get("message")
+            if isinstance(message, str) and message.strip():
+                return " ".join(message.split())[:limit].rstrip(" .")
+    return text[:limit].rstrip(" .")

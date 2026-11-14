@@ -1,0 +1,94 @@
+// A question the assistant asks the PM before an item can go ahead: who a name is, or who owns an action.
+import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { api, type S } from "../lib/api";
+import { useAct } from "../lib/act";
+import { useWords } from "../lib/wording";
+import { NoteBox, useNoted } from "./NoteBox";
+import { NewPersonForm } from "./NextSteps";
+import { PersonPicker } from "./PersonPicker";
+import { RowMenu } from "./RowMenu";
+import { Drawer } from "../ui/Drawer";
+import { Button } from "../ui/Button";
+import { Actions } from "../ui/Actions";
+/** Where an unowned action came from, so it can be added to another action instead of being given an owner. */
+export interface FoldAt {
+  changeset: string;
+  index: number;
+}
+
+export function AskChooser(props: {
+  ask: S["Ask"] | { id: string; about: string; name?: string | null; options: S["Option"][]; suggestion?: S["OwnerSuggestionView"] | null };
+  fold?: FoldAt;
+}) {
+  const { t } = useWords();
+  const act = useAct();
+  const people = useQuery({ queryKey: ["people"], queryFn: api.people });
+  const [person, setPerson] = useState("");
+  const ask = props.ask;
+  const label = ask.about === "owner" ? t("ask.owner") : ask.about === "away" ? t("ask.away") : t("ask.who_is", { name: ask.name ?? "" });
+  const chosen = people.data?.find((p) => p.id === person)?.name ?? "";
+  const noted = useNoted();
+  const [noting, setNoting] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const word = ask.about === "owner" ? t("ask.add_owner") : t("ask.use_person");
+  // A name that is the person's own (their mailbox, their signature) is answered in one click, first among the choices.
+  const me = ask.about === "held-op" ? people.data?.find((p) => p.is_pm) : undefined;
+  const near = ask.about === "owner" && props.fold ? ask.suggestion : null;
+  const foldInto = near?.fold_into && near.fold_version != null ? { id: near.fold_into, version: near.fold_version, text: near.fold_into_text ?? "" } : null;
+  const fold = () => {
+    if (!foldInto || !props.fold) return;
+    void act(
+      () => api.foldAction(props.fold!.changeset, props.fold!.index, foldInto.id, foldInto.version),
+      (done) => ({ message: t("toast.folded", { action: foldInto.text }), undo: () => api.undo(done.changeset) }),
+    );
+  };
+  // The note goes with the choice, on the same route; with no note the body is only the person.
+  const choose = (note?: string, who = person, name = chosen) =>
+    act(
+      () => api.answer(ask.id, note ? { person: who, text: note } : { person: who }),
+      (done) => ({ message: noted(t(ask.about === "owner" ? "toast.owner_set" : ask.about === "away" ? "toast.away_set" : "toast.person_set", { name }), done.request) }),
+    );
+  return (
+    <div className="ask-chooser">
+      <PersonPicker
+        label={label}
+        value={person}
+        onChange={setPerson}
+        suggested={ask.options}
+        people={people.data ?? []}
+        // A name nobody could place is answered by adding who it is, from the input's own details; any other question just
+        // picks the person who was added.
+        onAdd={ask.about === "held-op" ? () => setAdding(true) : undefined}
+      />
+      {foldInto && <span className="hint">{t("ask.fold_hint")}</span>}
+      <Actions align="end">
+        {me && (
+          <Button variant="primary" data-key="primary" onClick={() => void choose(undefined, me.id, me.name)}>
+            {t("ask.this_is_me")}
+          </Button>
+        )}
+        <Button variant={me ? "secondary" : "primary"} data-key={me ? undefined : "primary"} disabled={!person} onClick={() => void choose()}>
+          {word}
+        </Button>
+        {foldInto && (
+          <Button onClick={fold}>
+            {t("ask.fold", { action: foldInto.text })}
+          </Button>
+        )}
+        <RowMenu
+          label={label}
+          actions={[
+            { id: "note", label: t("note.add"), run: () => setNoting(true), disabled: !person, reason: t("ask.note_needs_person") },
+          ]}
+        />
+      </Actions>
+      {adding && (
+        <Drawer open title={t("newperson.title")} onClose={() => setAdding(false)}>
+          <NewPersonForm question={ask.id} onClose={() => setAdding(false)} />
+        </Drawer>
+      )}
+      {noting && person && <NoteBox sends={[{ label: word, run: choose }]} onClose={() => setNoting(false)} />}
+    </div>
+  );
+}

@@ -1,0 +1,652 @@
+// Journey tests: a real person's path through the screens, from a workspace made by the init command with no template,
+// started by the serve command, with fakes only at the outside services (tests/fake_services.py). The point is the joins
+// between steps that a test of one step misses. Each journey is a numbered test saying what the person does.
+// Names come from the fictional workspace the fake services serve, never written out here.
+// The first journey goes through the walkthrough and finishes it, as a person's first visit does; the later ones run on
+// that same workspace afterwards, so they start from Today with the walkthrough finished, as a person's later days do.
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { expect, type Locator } from "@playwright/test";
+import { test } from "./test";
+import { screenReady } from "./open-screen";
+import { choose } from "./choose";
+import { collectProblems, expectQueueShows, connectedAgain, dismissToasts, fakeAddress, openView, pressStart, visit, type Info, type Requests, FIRST_SCREEN } from "./journey-helpers";
+
+const FAKE = fakeAddress("JOURNEY_FAKE_PORT", 8790);
+
+let info: Info;
+const problems: string[] = [];
+
+const requests = async (): Promise<Requests> => (await fetch(`${FAKE}/__e2e/ai-requests`)).json();
+
+test.describe.serial("journeys", () => {
+  test.beforeAll(async () => {
+    info = await (await fetch(`${FAKE}/__e2e/info`)).json();
+  });
+
+  test.afterAll(() => {
+    expect(problems.filter((p) => !p.includes("Failed to load resource"))).toEqual([]);
+  });
+
+  test("J1. A new workspace: I name myself, add an AI account, hand in a note, press Go and see the result on Today", async ({
+    page,
+  }) => {
+    // One journey through setup, a note, a run and Today, with the accessibility checks on every screen it visits: a busy
+    // computer needs more than the default minute.
+    test.setTimeout(240_000);
+    collectProblems(page, problems);
+
+    // I open the link the start command printed. The walkthrough opens by itself, full screen, and says nothing is
+    // spent until I press Go at the end. Nothing else is on the page: no header, no sidebar.
+    await page.goto(`?token=${info.token}`);
+    await expect(page.getByRole("heading", { level: 1, name: "Getting started" })).toBeVisible(FIRST_SCREEN);
+    await expect(page.getByText("About 10–20 minutes. You can stop and come back.")).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Views" })).toHaveCount(0);
+    // It opens on Welcome: what the app does, what I'll need, and Start. It is no step, so there is no list of steps yet.
+    await expect(page.getByRole("heading", { level: 2, name: "Welcome", exact: true })).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Setup steps" })).toHaveCount(0);
+    await visit(page);
+    await pressStart(page);
+
+    // You: my name and the time zone, one list that starts with this computer's. Saving makes my own person record. The
+    // workspace's name and the assistant's are not asked here; the work question is the next screen.
+    const main = page.locator("main#main");
+    await expect(main.getByRole("heading", { level: 2, name: "You" })).toBeVisible();
+    await main.getByLabel("Your full name").fill(info.people[0]);
+    await expect(main.getByLabel("Your time zone")).toBeVisible();
+    await expect(main.getByLabel("Workspace name")).toHaveCount(0);
+    // The assistant is introduced by name, with Rename; the name isn't a box until I ask to change it.
+    await expect(main.getByText("Your assistant is called Reginald.")).toBeVisible();
+    await expect(main.getByLabel("Your assistant's name")).toHaveCount(0);
+    // The step says where it is on the path above its title ("Step 1 of 6"); the rail lists the steps beside it.
+    await expect(main.getByText("Step 1 of 6", { exact: true })).toBeVisible();
+    await main.getByRole("button", { name: "Continue" }).click();
+    await expect(page.locator('[data-screen="you"][data-state]')).toContainText("Done");
+    // Continue on the first screen saves it and goes on to the next one (the same primary button on every screen).
+    await visit(page);
+
+    // What it's for: your own life is always included, and a job and an own business are ticked beside it; the job brings
+    // the notice about work mail, and leaving both unticked is just me, which carries on.
+    await expect(main.getByRole("heading", { level: 2, name: "What it's for" })).toBeVisible();
+    await main.getByRole("checkbox", { name: "A job" }).check();
+    await expect(main.getByRole("note")).toContainText("may need your employer's permission");
+    await main.getByRole("checkbox", { name: "A job" }).uncheck();
+    await main.getByRole("button", { name: "Continue" }).click();
+
+    // Your AI account: a service of my own that speaks the common chat format, at the address the fake service
+    // answers on. The screen also says what it may spend.
+    await expect(main.getByRole("heading", { level: 2, name: "Your AI account" })).toBeVisible();
+    await expect(main.getByText(/It asks you before anything over/)).toBeVisible();
+    await main.getByRole("radio", { name: /Something else/ }).check();
+    await main.getByRole("button", { name: /^Another service/ }).click();
+    await main.getByLabel(/^Another service/).check();
+    await main.locator("#ai-key").fill("a-made-up-key");
+    await main.getByRole("textbox", { name: "Service address" }).fill(info.ai_base_url);
+    await main.getByRole("textbox", { name: "Service address" }).blur();
+    // The check runs by itself, for every kind of work, before anything is saved.
+    await expect(main.getByText("Works. Ready to use.")).toBeVisible();
+    // One explicit yes lets this account read my mail and notes (the usual hand-in is internal material).
+    await main.getByRole("radio", { name: /^Yes/ }).check();
+    await main.getByRole("button", { name: "Continue" }).click();
+    // Continue saved the account, tested it and went on to the next screen.
+    await expect(main.getByRole("heading", { level: 2, name: "Mail and calendar" })).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('[data-screen="ai"][data-state]')).toContainText("Done");
+    // Changing an account needs no restart, and nothing on the page is waiting for one.
+    await expect(main.getByText(/Restart/)).toHaveCount(0);
+    await visit(page);
+    const afterTest = await requests();
+    expect(afterTest.work).toBe(0);
+    expect(afterTest.smoke).toBeGreaterThan(0);
+
+    // Mail and calendar: no add-on is listed here, so the core's own forms are offered. I skip it.
+    await expect(main.getByRole("heading", { level: 2, name: "Mail and calendar" })).toBeVisible();
+    await expect(main.getByRole("button", { name: "Connect one" })).toBeVisible();
+    await visit(page);
+    await main.getByRole("button", { name: "I'll do this later" }).click();
+
+    // Backups: a folder outside the workspace, which is checked before it is saved.
+    await expect(main.getByRole("heading", { level: 2, name: "Backups" })).toBeVisible();
+    await main.getByLabel("Folder", { exact: true }).fill(info.backup_folder);
+    await main.getByRole("button", { name: "Continue" }).click();
+    await expect(page.locator('[data-screen="backup"][data-state]')).toContainText("Done", { timeout: 30_000 });
+    await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible();
+    await visit(page);
+
+    // People: skipping is fine.
+    await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible();
+    await visit(page);
+    await main.getByRole("button", { name: "I'll do this later" }).click();
+
+    // Done: what was set up and what was skipped, then Today.
+    // Something was passed by, so the last screen says where things stand and is not headed Done.
+    await expect(main.getByRole("heading", { level: 2, name: "Where things stand" })).toBeVisible();
+    const recap = main.getByRole("list", { name: "What was set up" });
+    await expect(recap.locator('[data-step="ai"]')).toContainText("Done");
+    await expect(recap.locator('[data-step="mail"]')).toContainText("Skipped");
+    // Done lists all six, and a step is Done only when its own thing happened.
+    await expect(recap.locator("li")).toHaveCount(6);
+    await expect(recap.locator('[data-step="work"]')).toContainText("Done");
+    // Moving on from People with nobody added passes it, and says so.
+    await expect(recap.locator('[data-step="people"]')).toContainText("No one added");
+    await visit(page);
+    await main.getByRole("button", { name: "Go to Today" }).click();
+    await expect(page.getByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening)/ })).toBeVisible();
+    // It is finished for good: a reload doesn't open it again, however often, and the address that names Today stays on Today.
+    await page.reload();
+    await expect(page.getByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening)/ })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Getting started" })).toHaveCount(0);
+    await page.reload();
+    await page.goto("#today");
+    await page.reload();
+    await expect(page.getByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening)/ })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Getting started" })).toHaveCount(0);
+    // What I passed by waits on Today as one setup line that counts only what is done (the name, the work answer, the AI
+    // account and the backup), never as a forced return.
+    await expect(page.getByRole("region", { name: /^Finish setting up/ })).toContainText("4 of 6 done");
+    await visit(page);
+
+    // I hand in a short note of my own.
+    await page.getByRole("button", { name: "Hand something in" }).first().click();
+    await page.getByLabel("Paste or type it here").fill(
+      "I will send the venue list by 2026-11-02.\nDecided: the offsite is on a Friday.\nWe need a catering quote by 2026-11-04.",
+    );
+    await visit(page);
+    await page.getByRole("button", { name: "Hand in", exact: true }).click();
+
+    // Today shows one line asking for my go, with a count and what it would cost. Nothing has been sent to the service.
+    await page.getByRole("link", { name: /^Today/ }).first().click();
+    // The line comes once the server has taken the hand-in in, which on a busy machine can take more than a moment.
+    const go = page.locator('[data-queue-line="first_go"]');
+    await expectQueueShows(page, ["first_go"], { atLeast: 1 });
+    await expect(go).toHaveCount(1);
+    await expect(go).toContainText(/Start the assistant: 1 item, (about \$\d+\.\d\d|less than a cent)/);
+    await expect(go).toContainText("Nothing is spent until you press Start.");
+    await visit(page);
+    expect(await requests()).toEqual(afterTest);
+
+    // Go starts it, and the result is on Today: the assistant's work to look over (my action is listed in To-dos and
+    // questions, its one home, below).
+    await go.getByRole("button", { name: "Start", exact: true }).click();
+    await expect(page.locator('[data-queue-line="first_go"]')).toHaveCount(0, { timeout: 20_000 });
+    // The assistant's work waits behind "N new · Show" while the cursor is in the queue, so the list doesn't move under it.
+    const review = page.locator('[data-queue-line="review"]');
+    const showNew = page.getByRole("button", { name: /^Show \d+ new items?$/ });
+    // The waiting lines may come in by themselves between seeing "Show" and pressing it, so it is pressed only while it is
+    // there, until the review line shows.
+    await expect(async () => {
+      if (await showNew.isVisible()) await showNew.click({ timeout: 2_000 }).catch(() => undefined);
+      await expect(review).toHaveCount(1, { timeout: 2_000 });
+    }).toPass({ timeout: 20_000 });
+    await expect(review.getByRole("button", { name: "Look over", exact: true })).toBeVisible();
+    expect((await requests()).work).toBe(1);
+    await visit(page);
+
+    // Look over opens what needs a look in the details, on Today: the address stays, nothing is marked seen, and each thing
+    // the assistant did is one line with Not right. My own words filed the action, and nothing asks who owns it.
+    await review.getByRole("button", { name: "Look over", exact: true }).click();
+    await expect(page).toHaveURL(/#today$/);
+    await expect(review.getByText(/Send the venue list/).first()).toBeVisible();
+    await expect(review.getByRole("button", { name: /^Not right/ }).first()).toBeVisible();
+    await expect(review.getByRole("button", { name: /^Keep (it|all \d+)$/ })).toBeVisible();
+    await expect(page.getByText("Who owns this?")).toHaveCount(0);
+    await visit(page);
+    await expect(page.getByText(/stopped, see why below/)).toHaveCount(0);
+    // My action from my own words is in To-dos and questions; the due day is on its line, not repeated in the title.
+    await openView(page, "To-dos and questions");
+    await expect(page.getByText("Send the venue list.").first()).toBeVisible();
+  });
+
+  test("J3. A folder I add on screen is read, a new file in it is handed in, and the assistant's result is on Today", async ({
+    page,
+  }) => {
+    collectProblems(page, problems);
+    await page.goto(`?token=${info.token}`);
+    await expect(page.getByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening)/ })).toBeVisible();
+
+    // Connections: add a folder, pointing at the folder the test put the file in.
+    await openView(page, "Connections");
+    await expect(page.getByRole("heading", { level: 2, name: "Connections" })).toBeVisible();
+    await page.getByRole("button", { name: /Add mail, calendar or folder/ }).first().click();
+    await page.getByRole("radio", { name: /^A folder on this computer/ }).check();
+    await page.getByRole("button", { name: "Continue" }).click();
+    await page.getByLabel("Folder", { exact: true }).fill(info.source_folder);
+    // With no name typed, the connection is named after what it reads: the folder's own name.
+    const name = info.source_folder.split(/[\\/]/).filter(Boolean).pop() ?? "";
+    await visit(page);
+    await page.getByRole("button", { name: "Add connection", exact: true }).click();
+    await screenReady(page);
+    await expect(page.getByRole("listitem", { name })).toBeVisible();
+    await visit(page);
+
+    // The connection's own menu has Read now: Today's Came in card is drawn only when mail arrived, so an empty folder has no
+    // Check now there. The first read only notes what is there, so nothing is handed in yet.
+    const folder = page.getByRole("listitem", { name });
+    const readNow = async () => {
+      await folder.getByRole("button", { name: /^More actions for / }).click();
+      await page.getByRole("menuitem", { name: "Read now" }).click();
+    };
+    const before = await requests();
+    await readNow();
+    await expect(page.getByText(new RegExp(`^${name}: `)).last()).toBeVisible();
+    await visit(page);
+    expect(await requests()).toEqual(before);
+
+    // A new file lands in the folder. Check now reads it, hands it in, and the assistant's result appears.
+    const put = await fetch(`${FAKE}/__e2e/source-file`, {
+      method: "POST",
+      body: JSON.stringify({ text: "I will book the venue by 2026-11-05.\nWe need a printed agenda by 2026-11-06.\n" }),
+    });
+    expect(put.ok).toBe(true);
+    await dismissToasts(page);
+    await readNow();
+    // The assistant reads it once; the action it filed is then in To-dos and questions, its one home.
+    await expect.poll(async () => (await requests()).work, { timeout: 20_000 }).toBe(before.work + 1);
+    // Its change is applied a moment after the run, so the list is opened once the server holds the to-do.
+    await expect
+      .poll(async () => JSON.stringify(await (await page.request.get("api/open-items")).json()), { timeout: 20_000 })
+      .toContain("Book the venue by 2026-11-05.");
+    await openView(page, "To-dos and questions");
+    await expect(page.getByText(/^Book the venue\b/).first()).toBeVisible({ timeout: 20_000 });
+    // The item that arrived is on What changed, named for the file.
+    await page.getByRole("navigation", { name: "Views" }).getByRole("link", { name: /^What changed/ }).click();
+    await expect(page.getByRole("heading", { level: 1, name: "What changed" })).toBeVisible();
+    await expect(page.getByText(/folder-note\.txt/).first()).toBeVisible();
+    await visit(page);
+  });
+
+  test("J7. The obvious next steps from what came in: each button makes its record, and Undo takes it back", async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
+    collectProblems(page, problems);
+    await page.goto(`?token=${info.token}`);
+    await expect(page.getByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening)/ })).toBeVisible();
+    const toasts = page.getByRole("region", { name: "Notifications" });
+    // Undo is done when the app says so ("Undone."), not when the button is pressed: the next press waits for it.
+    const undo = async () => {
+      await toasts.getByRole("button", { name: "Undo" }).last().click();
+      await expect(toasts).toContainText("Undone.", { timeout: 20_000 });
+    };
+    // Undo and a correction start work of the assistant's own (a lesson from it); Today redraws its lines while that runs,
+    // so a line is acted on only once nothing is queued or running.
+    const settled = () =>
+      expect
+        .poll(async () => (await json<Array<{ state: string }>>("api/changes")).every((c) => !["queued", "running"].includes(c.state)), { timeout: 60_000, message: "the assistant's own work settled" })
+        .toBe(true);
+    const json = async <T>(path: string): Promise<T> => {
+      const response = await page.request.get(path);
+      expect(response.status(), path).toBe(200);
+      return (await response.json()) as T;
+    };
+    // What the fake AI service answers with when no stand-in rule makes the thing being tried: the next request that
+    // holds these words.
+    const script = async (when: string, ops: object[]) => {
+      const sent = await fetch(`${FAKE}/__e2e/script`, {
+        method: "POST",
+        body: JSON.stringify({ when, answer: { summary: "Read by the journey's script.", ops } }),
+      });
+      expect(sent.ok).toBe(true);
+    };
+    // I hand in someone else's words; the result is a line on Today, and its card is read on What changed.
+    const handIn = async (text: string) => {
+      // Leaving Today first, so a line answered there (it stays until the person moves on) is gone when Today opens again.
+      await page.getByRole("link", { name: /^What changed/ }).first().click();
+      await expect(page.getByRole("heading", { level: 1, name: "What changed" })).toBeVisible();
+      await expect(page.locator("main [data-skeleton]")).toHaveCount(0);
+      // The changes already listed, so the one just handed in is found by what is new, whatever else (a lesson from a
+      // correction) is listed above it.
+      const known = await page.locator("main [data-row-list] > li[data-row]").evaluateAll((els) => els.map((el) => el.getAttribute("data-choice") ?? ""));
+      await page.getByRole("link", { name: /^Today/ }).first().click();
+      // A hand-in shows as a review line, or, when all of it waits for the person, as its decisions alone.
+      const lines = page.locator('[data-queue-line="review"], [data-queue-line="who_is"], [data-queue-line="held"]');
+      // A new line, not a higher count: a line whose work was all undone leaves Today at the same time.
+      const before = await lines.allInnerTexts();
+      await page.getByRole("button", { name: "Hand something in" }).first().click();
+      await page.getByLabel("Paste or type it here").fill(text);
+      await page.getByRole("button", { name: "Hand in", exact: true }).click();
+      await expect
+        .poll(async () => (await lines.allInnerTexts()).some((line) => !before.includes(line)), { timeout: 30_000 })
+        .toBe(true);
+      await page.getByRole("link", { name: /^What changed/ }).first().click();
+      // The change just handed in is the one that was not listed before.
+      // Choosing the line shows the whole change in the detail pane beside the list, which is what the steps read.
+      const fresh = known.filter(Boolean).map((id) => `:not([data-choice="${id}"])`).join("");
+      const line = page.getByRole("main").locator(`[data-row-list] > li[data-row]${fresh}`).filter({ hasText: /not yet checked|filed/i }).first();
+      await expect(line).toBeVisible({ timeout: 30_000 });
+      const expander = line.locator("[data-expander]").first();
+      if ((await expander.getAttribute("aria-expanded")) !== "true") await expander.click();
+      const detail = page.locator("aside[data-detail-pane] [data-detail-item]");
+      await expect(detail).toBeVisible();
+      return detail;
+    };
+    // What changed is the history: a held item is information there, with one link that opens its line on Today, which is where
+    // it is answered. This follows the link (from the change's detail, or from the one item of it that has `hasText`) and
+    // returns what Today shows, where the item's answers are.
+    const onToday = async (scope: Locator, hasText?: string) => {
+      const item = hasText ? scope.locator("li[data-item]", { hasText }) : scope;
+      await expect(item.getByRole("button", { name: /^(Add|Keep it|Drop it|Do it anyway|Use this person)/ })).toHaveCount(0);
+      await item.getByRole("link", { name: "Answer on Today" }).first().click();
+      await expect(page.getByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening)/ })).toBeVisible();
+      const main = page.getByRole("main");
+      if (hasText) {
+        // The line is open when it was selected by the link; when Today drew it again unselected it is one line with Decide.
+        const opened = main.locator("li[data-item]", { hasText });
+        const closed = main.getByRole("group").filter({ hasText }).getByRole("button", { name: "Decide", exact: true });
+        await expect(opened.or(closed).first()).toBeVisible();
+        if (!(await opened.first().isVisible())) await closed.first().click();
+      }
+      return main;
+    };
+    // A line that comes back after Undo is not selected on Today, so its link on What changed is followed again. The change
+    // that holds it is the first of the newest changes whose details have the link (an answer made since is newer, and each Undo adds a
+    // lesson from the correction above it, so more than a few are looked at).
+    const backToToday = async (hasText?: string) => {
+      await openView(page, "What changed");
+      const detail = page.locator("aside[data-detail-pane] [data-detail-item]");
+      await expect(detail).toBeVisible();
+      const holder = (hasText ? detail.locator("li[data-item]", { hasText }) : detail).getByRole("link", { name: "Answer on Today" });
+      const rows = page.getByRole("main").locator("[data-row-list] > li[data-row]");
+      for (let i = 0; i < Math.min(await rows.count(), 15); i++) {
+        await rows.nth(i).locator("[data-expander]").first().click();
+        if (await holder.first().isVisible({ timeout: 3000 }).catch(() => false)) break;
+        // The link is drawn once the queue has loaded; try again before moving to the next change.
+        await page.waitForTimeout(1500);
+        if (await holder.first().isVisible().catch(() => false)) break;
+      }
+      return onToday(detail, hasText);
+    };
+    type Person = { id: string; name: string };
+    const people = async () => (await json<Person[]>("api/people")).map((p) => p.name);
+    const actionsOf = async () =>
+      (await json<{ person: string; actions: { id: string; text: string; project_name: string | null }[] }[]>("api/followups")).flatMap(
+        (s) => s.actions.map((a) => ({ ...a, person: s.person })),
+      );
+    const me = info.people[0];
+    const [, first, newcomer] = info.people;
+    const [base] = info.projects;
+    const [festival, party, tour, retreat] = ["festival", "party", "tour", "retreat"].map((w) => `${base} ${w}`);
+
+    // 1. Add a new person. A name nobody has on file is one question; the form starts from the name as written, with
+    // the cursor in its first field. Adding sends the waiting action to them. Undo takes the person and the action
+    // back (the question stays answered), so it is tried on one newcomer and the other is kept.
+    let row = page.locator("[data-row-list] > li");
+    const addNewcomer = async (name: string, keep: boolean) => {
+      const sentence = `${name} will confirm the catering menu by 2026-11-20.`;
+      row = await handIn(sentence);
+      row = await onToday(row);
+      await expect(row.getByRole("combobox", { name: `Who is “${name}”?` })).toBeVisible();
+      // The last choice in the list opens the form in a drawer over the screen; nobody leaves it to add someone.
+      await choose(row.getByRole("combobox", { name: `Who is “${name}”?` }), { label: "Add a person…" });
+      const form = page.getByRole("dialog", { name: "New person" }).getByRole("form", { name: "New person" });
+      await expect(form.getByLabel("Full name", { exact: true })).toBeFocused();
+      await expect(form.getByLabel("Full name", { exact: true })).toHaveValue(name);
+      await visit(page);
+      await form.getByRole("button", { name: "Add and use" }).click();
+      await expect(toasts).toContainText(`Added ${name}. Related work has resumed.`, { timeout: 20_000 });
+      expect(await people()).toContain(name);
+      const waiting = async () => (await actionsOf()).filter((a) => a.text.startsWith("Confirm the catering menu"));
+      const owned = async () => (await json<Person[]>("api/people")).find((p) => p.name === name)?.id;
+      expect((await waiting()).map((a) => a.person)).toContain(await owned());
+      if (keep) return;
+      const before = (await waiting()).length;
+      await undo();
+      await expect.poll(async () => (await people()).includes(name)).toBe(false);
+      expect((await waiting()).length).toBe(before - 1);
+    };
+    await addNewcomer(first, false);
+    await addNewcomer(newcomer, true);
+    const added = (await json<Person[]>("api/people")).find((p) => p.name === newcomer)!;
+
+    // 2. A contact detail found in what came in always waits; confirming it sets it on the person, and Undo takes it away.
+    const reach = "555 0142";
+    const direct = `Note from ${newcomer}: my direct line is ${reach}.`;
+    await script("my direct line is", [
+      { op: "person.contact", person: added.id, kind: "phone", value: reach, evidence: { quote: `my direct line is ${reach}` } },
+    ]);
+    row = await handIn(direct);
+    row = await onToday(row);
+    const reached = async () => JSON.stringify((await json<{ details: object }>(`api/record-pages/${added.id}?kind=person`)).details);
+    expect(await reached()).not.toContain(reach);
+    await row.getByRole("button", { name: "Do it anyway" }).click();
+    await expect(toasts).toContainText("Done.");
+    expect(await reached()).toContain(reach);
+    await undo();
+    await expect.poll(reached).not.toContain(reach);
+
+    // 3. A project it hasn't heard of. Add makes the project and files what the same input made with no project under it;
+    // Undo takes both back.
+    const plans = `The ${festival} and the ${retreat} need plans. Remember to review each plan.`;
+    await script("need plans", [
+      { op: "note", text: "The plans are due soon." },
+      { op: "action.add", text: "Review each plan", owners: [me], evidence: { quote: "Remember to review each plan" } },
+      { op: "project.add", name: retreat, evidence: { quote: `the ${retreat} need plans` } },
+      { op: "project.add", name: festival, evidence: { quote: `The ${festival}` } },
+    ]);
+    await handIn(plans);
+    const projectNamed = async (name: string) => (await json<{ id: string; name: string }[]>("api/projects")).find((p) => p.name === name);
+    const filed = async () => ({
+      note: (await json<{ text: string; project_name: string | null }[]>("api/notes")).find((n) => n.text === "The plans are due soon.")?.project_name || null,
+      action: (await actionsOf()).find((a) => a.text.startsWith("Review each plan"))?.project_name || null,
+    });
+    expect(await filed()).toEqual({ note: null, action: null });
+    const proposal = (name: string) => page.getByRole("main").locator("li[data-item]", { hasText: `Add a project “${name}”?` });
+    // Each proposal is its own line on Today, reached from its own link in the change's details on What changed.
+    const toProposal = async (name: string) => {
+      await backToToday(name);
+      return proposal(name);
+    };
+    await (await toProposal(retreat)).getByRole("button", { name: "Add", exact: true }).click();
+    await expect(toasts).toContainText(`Added the project ${retreat}.`, { timeout: 20_000 });
+    expect(await filed()).toEqual({ note: retreat, action: retreat });
+    await undo();
+    await expect.poll(async () => await projectNamed(retreat)).toBeUndefined();
+    expect(await filed()).toEqual({ note: null, action: null });
+    // The Undo starts work of the assistant's own (a lesson from it), which Today redraws for; the next line is acted on after.
+    await settled();
+    await (await toProposal(festival)).getByRole("button", { name: "Add", exact: true }).click();
+    await expect(toasts).toContainText(`Added the project ${festival}.`, { timeout: 20_000 });
+    expect(await filed()).toEqual({ note: festival, action: festival });
+    await visit(page);
+
+    // 4. It's part of: the work of that input goes under the project I pick, the words are kept as a name for it, and Undo
+    // brings the proposal back.
+    const meeting = `Plans for the ${party} are due by Friday.`;
+    await script("are due by Friday", [
+      { op: "note", text: "The party plans are due Friday." },
+      { op: "project.add", name: party, evidence: { quote: `Plans for the ${party}` } },
+    ]);
+    row = await handIn(meeting);
+    row = await onToday(row, party);
+    const partyNote = async () =>
+      (await json<{ text: string; project_name: string | null }[]>("api/notes")).find((n) => n.text === "The party plans are due Friday.")?.project_name || null;
+    for (const keep of [false, true]) {
+      await row.locator("li[data-item]", { hasText: `Add a project “${party}”?` }).getByRole("button", { name: `More actions for ${party}` }).click();
+      await page.getByRole("menuitem", { name: "It's part of…" }).click();
+      await choose(row.getByLabel(`“${party}” is part of`), { label: festival });
+      await row.getByRole("button", { name: "File it there" }).click();
+      await expect(toasts).toContainText(`Filed under ${festival}. “${party}” is kept as a name for it.`, { timeout: 20_000 });
+      expect(await partyNote()).toBe(festival);
+      expect(await projectNamed(party)).toBeUndefined();
+      if (keep) break;
+      await undo();
+      await expect.poll(partyNote).toBeNull();
+      row = await backToToday(party);
+      await expect(row.locator("li[data-item]", { hasText: `Add a project “${party}”?` })).toBeVisible();
+    }
+
+    // 5. Not a project: nothing is filed anywhere and no project is made; the words are kept as not one; Undo brings it back.
+    const trip = `Everyone is looking forward to the ${tour}.`;
+    await script("is looking forward", [
+      { op: "note", text: "Looking forward to it." },
+      { op: "project.add", name: tour, evidence: { quote: `looking forward to the ${tour}` } },
+    ]);
+    row = await handIn(trip);
+    await settled();
+    row = await onToday(row, tour);
+    let tourProposal = row.locator("li[data-item]", { hasText: `Add a project “${tour}”?` });
+    for (const keep of [false, true]) {
+      await tourProposal.getByRole("button", { name: `More actions for ${tour}` }).click();
+      await page.getByRole("menuitem", { name: "Not a project" }).click();
+      await expect(toasts).toContainText(`“${tour}” is kept as not a project.`, { timeout: 20_000 });
+      expect(await projectNamed(tour)).toBeUndefined();
+      if (keep) break;
+      await undo();
+      await settled();
+      tourProposal = await toProposal(tour);
+      await expect(tourProposal).toBeVisible();
+    }
+
+    // 6. Drop, on an action that is no longer needed: it asks why, leaves the list at once, and Undo puts it back.
+    const agenda = "I will print the agenda.";
+    // A to-do with no date is listed under Needs a date with a date picker and no menu, so the answer gives it its day.
+    await script("I will print the agenda", [{ op: "action.add", text: "Print the agenda.", owners: ["me"], due: "2026-11-09", evidence: { quote: agenda } }]);
+    row = await handIn(agenda);
+    // The to-do is in To-dos and questions, its one home.
+    await openView(page, "To-dos and questions");
+    const todo = page.getByRole("list", { name: "Open to-dos" }).getByRole("listitem").filter({ hasText: "Print the agenda." });
+    await expect(todo).toHaveCount(1, { timeout: 20_000 });
+    await todo.getByRole("button", { name: "More actions for Print the agenda." }).click();
+    await page.getByRole("menuitem", { name: "Drop" }).click();
+    await page.getByLabel("Why isn't it needed?").fill("The printer sends it.");
+    await page.getByRole("button", { name: "Drop it" }).click();
+    await expect(toasts).toContainText("Dropped.");
+    expect((await actionsOf()).filter((a) => a.text === "Print the agenda.")).toHaveLength(0);
+    await undo();
+    await expect.poll(async () => (await actionsOf()).filter((a) => a.text === "Print the agenda.").length).toBe(1);
+
+    // 7. Add to the nearest action: a new action with no owner that nearly repeats one I have is added to that one, and Undo
+    // gives it back as a question about who owns it.
+    const again = "Somebody should print the agenda.";
+    await script("Somebody should print", [{ op: "action.add", text: "Print the agenda.", owners: [], evidence: { quote: again } }]);
+    row = await handIn(again);
+    row = await onToday(row);
+    await expect(row.getByText("Who owns this?")).toBeVisible();
+    await row.getByRole("button", { name: "Add to “Print the agenda.”" }).click();
+    await expect(toasts).toContainText("Added to Print the agenda.");
+    expect((await actionsOf()).filter((a) => a.text === "Print the agenda.")).toHaveLength(1);
+    await undo();
+    // The question is a line on Today again (not opened, as the one answered a moment ago was).
+    await row.getByRole("button", { name: "Pick an owner" }).first().click();
+    await expect(row.getByText("Who owns this?")).toBeVisible();
+    await visit(page);
+  });
+
+  test("J4. An add-on from the list: I install it, restart, turn it on, restart, open its screen, then turn it off and remove it", async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
+    collectProblems(page, problems);
+    await page.goto(`?token=${info.token}`);
+    await expect(page.getByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening)/ })).toBeVisible();
+
+    // The app runs in a throwaway environment of its own, so an install from the screen can't reach the project's.
+    expect(info.install_target).toBeTruthy();
+    expect(info.install_target).not.toBe(info.project_site);
+
+    // Add-ons lists what the catalog offers: what it adds and reaches, and an Install button.
+    await openView(page, "Add-ons");
+    await expect(page.getByRole("heading", { name: "Add-ons", exact: true })).toBeVisible();
+    const row = page.locator("[data-row-list] > li", { hasText: "Example panel" });
+    await expect(row).toHaveCount(1);
+    await expect(row).toContainText("1 screen");
+    await expect(row).toContainText("Free");
+    await visit(page);
+    expect(existsSync(join(String(info.install_target), "journey_panel"))).toBe(false);
+
+    // Install puts it in place and says a restart is needed; it does not turn it on.
+    await row.getByRole("button", { name: "Install Example panel" }).click();
+    await expect(row.getByText(/is installed\. Restart, then turn it on/)).toBeVisible();
+    expect(existsSync(join(String(info.install_target), "journey_panel"))).toBe(true);
+    // Nothing reaches the computer's own add-ons place.
+    expect(existsSync(join(String(info.real_install_target), "journey_panel"))).toBe(false);
+    await visit(page);
+
+    // Restart now: the app comes back on the same address, and the notice says so.
+    await row.getByRole("button", { name: "Restart now" }).click();
+    await expect(page.getByRole("region", { name: "Notifications" }).getByText("Restarted with the new settings.")).toBeVisible({ timeout: 90_000 });
+    await connectedAgain(page);
+    await visit(page);
+
+    // After the restart the add-on is listed under Installed, off; turning it on waits for another restart. (Available leaves out
+    // what is installed.)
+    await page.getByRole("tab", { name: "Installed" }).click();
+    const onList = page.locator("[data-row-list] > li", { hasText: "Example panel" });
+    await expect(onList.getByText("Off", { exact: true }).first()).toBeVisible();
+    await onList.getByRole("button", { name: "Turn on Example panel" }).click();
+    // The row still carries the install note, so that text proves nothing about Turn on. Wait for the row to say what was saved:
+    // a restart asked for before then can reach the app ahead of the request.
+    await expect(onList).toContainText("On after a restart");
+    await expect(page.getByRole("link", { name: /Example overview/ })).toHaveCount(0);
+    await onList.getByRole("button", { name: "Restart now" }).first().click();
+    await expect(page.getByRole("region", { name: "Notifications" }).getByText(/^Restarted with the new settings\./)).toBeVisible({ timeout: 90_000 });
+    await connectedAgain(page);
+
+    // Its screen is in the sidebar (once the app has told the page about it) and opens. The page learns of it when it
+    // reloads its data after reconnecting, which a busy machine can take longer than the default wait to do.
+    await expect(page.getByRole("navigation", { name: "Views" }).getByRole("link", { name: "Example overview" })).toBeVisible({
+      timeout: 30_000,
+    });
+    await openView(page, "Example overview");
+    await expect(page.getByRole("heading", { level: 1, name: "Example overview" })).toBeVisible();
+    await expect(page.getByText("This page comes from the example add-on.")).toBeVisible();
+    await visit(page);
+
+    // It is on, and its menu offers Remove all the same (S-0362: Remove was hidden until the add-on was off). Remove turns it off
+    // and removes it in one step, and asks first, saying so, because Undo can't bring it back; Cancel leaves it on.
+    await openView(page, "Add-ons");
+    await page.getByRole("tab", { name: "Installed" }).click();
+    const installed = page.locator("[data-row-list] > li", { hasText: "Example panel" });
+    await expect(installed.getByRole("button", { name: "Turn off Example panel" })).toBeVisible();
+    await installed.getByRole("button", { name: "More actions for Example panel" }).click();
+    await page.getByRole("menuitem", { name: "Remove" }).click();
+    const ask = page.getByRole("dialog", { name: "Remove Example panel?" });
+    await expect(ask).toContainText("turns it off");
+    await expect(ask).toContainText("can't be undone");
+    await ask.getByRole("button", { name: "Cancel" }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(installed.getByRole("button", { name: "Turn off Example panel" })).toBeVisible();
+    await installed.getByRole("button", { name: "More actions for Example panel" }).click();
+    // It still runs until the restart, so new work waits for that restart, which the header offers.
+    const removed = page.waitForResponse((r) => r.url().endsWith("/uninstall") && r.request().method() === "POST");
+    await page.getByRole("menuitem", { name: "Remove" }).click();
+    // Removing asks first; the backup is made and the removal goes ahead when the person says so.
+    await page.getByRole("dialog").getByRole("button", { name: "Remove it" }).click();
+    // The restart below must come after the removal has been answered, not race it.
+    expect((await removed).ok()).toBe(true);
+    await expect(installed.getByRole("alert")).toHaveCount(0);
+    await page.getByRole("button", { name: /^App status: / }).click();
+    await page.getByRole("dialog", { name: "Status" }).getByRole("button", { name: "Restart now" }).click();
+    await expect(page.getByText("Restarted with the new settings.").first()).toBeVisible({ timeout: 90_000 });
+    // Close the status popover with Escape before using the sidebar.
+    await page.getByRole("dialog", { name: "Status" }).press("Escape");
+    await expect(page.getByRole("dialog", { name: "Status" })).toHaveCount(0);
+    await connectedAgain(page);
+    await expect(page.getByRole("navigation", { name: "Views" }).getByRole("link", { name: "Example overview" })).toHaveCount(0);
+    await openView(page, "Add-ons");
+    await page.getByRole("tab", { name: "Installed" }).click();
+
+    // Removed: the row is gone from Installed, the files are gone from the place the app installs into, and the
+    // catalog offers it again.
+    await expect(page.locator("[data-row-list] > li", { hasText: "Example panel" })).toHaveCount(0);
+    expect(existsSync(join(String(info.install_target), "journey_panel"))).toBe(false);
+    await page.reload();
+    await page.getByRole("tab", { name: "Installed" }).click();
+    await expect(page.locator("[data-row-list] > li", { hasText: "Example panel" })).toHaveCount(0);
+    await page.getByRole("tab", { name: "Available" }).click();
+    await expect(
+      page.locator("[data-row-list] > li", { hasText: "Example panel" }).getByRole("button", { name: "Install Example panel" }),
+    ).toBeVisible();
+    await visit(page);
+
+    // The project's own environment never held the add-on: nothing in it was installed from the screen.
+    const site = String(info.project_site);
+    const marked = readdirSync(site).filter(
+      (name) =>
+        name.endsWith(".dist-info") &&
+        existsSync(join(site, name, "INSTALLER")) &&
+        readFileSync(join(site, name, "INSTALLER"), "utf8").trim() === "thimbleby",
+    );
+    expect(marked).toEqual([]);
+    expect(existsSync(join(site, "journey_panel"))).toBe(false);
+  });
+});

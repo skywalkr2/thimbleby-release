@@ -1,0 +1,150 @@
+"""Calendar entries from booking confirmations (design 6.32, "What arrives").
+
+An input that carries a booking as structured data (a flight, a stay, a table, a rental car, a train or an event; see
+`engine.bookings`) becomes an entry in the app's own calendar: a local record, never a message to any calendar service.
+The rules make the entries; the assistant's own reading of the same input adds no second one. Each entry carries the
+exact words of the confirmation that show it (the confirmation code, else the provider's or the place's name), because
+claims carry evidence; a booking none of those words can be found for is reported and made no entry. A start with no
+time zone stays in the person's own, and an offset the markup states is kept. Nothing is guessed: a booking with no
+start makes no entry.
+
+Everything here is plain rules over the input's text; no AI runs."""
+
+from __future__ import annotations
+
+import contextlib
+from dataclasses import dataclass
+from datetime import date, datetime
+from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from engine.bookings import Booking, read_bookings
+from engine.html_text import carries_structured_data
+from engine.records import canonical_time
+from engine.same_entry import same_entry
+from engine.sides import word
+
+
+@dataclass(frozen=True)
+class Made:
+    """What a read of an input's bookings gives: the `event.add` ops to apply, and what could not be made, each with
+    its reason, for the person to read."""
+
+    ops: tuple[dict[str, Any], ...]
+    skipped: tuple[str, ...]
+
+
+def looks_structured(text: str) -> bool:
+    """Whether a text might carry booking markup at all, so plain mail is never parsed."""
+    return carries_structured_data(text)
+
+
+def _moment(value: date | datetime | None, zone_name: str | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None and zone_name:
+            with contextlib.suppress(ZoneInfoNotFoundError, ValueError):
+                value = value.replace(tzinfo=ZoneInfo(zone_name))
+        return canonical_time(value.isoformat())
+    return value.isoformat()
+
+
+def _title(cfg: Any, booking: Booking) -> str:
+    kind = word(cfg, f"booking.kind.{booking.kind}")
+    place = booking.place.name if booking.place and booking.place.name else None
+    destination = booking.destination.name if booking.destination and booking.destination.name else None
+    if place and destination:
+        detail = word(cfg, "booking.route").format(place=place, destination=destination)
+    else:
+        detail = place or destination or booking.provider
+    return word(cfg, "booking.title").format(kind=kind, detail=detail) if detail else kind
+
+
+def _evidence(booking: Booking, text: str) -> str | None:
+    """The first of the confirmation code, the provider's name and the place's name that is in the text exactly."""
+    place = booking.place.name if booking.place else None
+    for candidate in (booking.confirmation_code, booking.provider, place):
+        if candidate and len(candidate) >= 3 and candidate in text:
+            return candidate
+    return None
+
+
+def entries(cfg: Any, text: str) -> Made:
+    """The calendar entries an input's bookings make, and what was left out."""
+    if not cfg.steward.dates.bookings_to_calendar or not looks_structured(text):
+        return Made((), ())
+    read = read_bookings(text)
+    ops: list[dict[str, Any]] = []
+    skipped = [f"{issue.field}: {issue.note}" for issue in read.issues]
+    for booking in read.bookings:
+        title = _title(cfg, booking)
+        start = _moment(booking.start, booking.time_zone)
+        if start is None:
+            skipped.append(f"{title}: no start was stated, so no entry was made")
+            continue
+        quote = _evidence(booking, text)
+        if quote is None:
+            skipped.append(f"{title}: nothing in the confirmation to quote, so no entry was made")
+            continue
+        end = _moment(booking.end, booking.time_zone)
+        op: dict[str, Any] = {"op": "event.add", "title": title, "start": start, "evidence": {"quote": quote}}
+        if end is not None and end != start:
+            op["end"] = end
+        ops.append(op)
+    return Made(tuple(ops), tuple(skipped))
+
+
+def _held(view: Any) -> list[tuple[str, str]]:
+    """The title and start of every entry already held: the app's own and each date of a calendar source's events."""
+    from engine.today import _dates
+
+    held = [(e.data["title"], e.data["start"]) for e in view.list("event") if e.data.get("title")]
+    for snap in view.list("snapshot"):
+        event = snap.data.get("event")
+        if event and not snap.data.get("gone"):
+            held.extend((d["title"], d["start"]) for d in _dates(event, snap.data["title"], snap.data["key"]))
+    return held
+
+
+def add_to(changeset: Any, cfg: Any, view: Any, text: str) -> Any:
+    """The changeset with the entries the input's bookings make added, and without an `event.add` of the assistant's
+    own for the same booking: one that starts at the same moment and shares a word of four or more letters with the
+    booking's title. An entry of the assistant's at that moment about something else is kept. An entry that is already
+    in the calendar (the app's own or a connected one) at the same moment with the same or a containing title is not
+    made again. Returns the changeset unchanged when the input carries no booking."""
+    made = entries(cfg, text)
+    if made.skipped:
+        said = [" ".join(reason.split())[:200] for reason in made.skipped]
+        missing = list(dict.fromkeys([*changeset.missing, *said]))[:20]
+        changeset = changeset.model_copy(update={"missing": missing})
+    if not made.ops:
+        return changeset
+    from engine.ops import EventAddOp
+
+    zone = ZoneInfo(cfg.workspace.user.timezone)
+    have = _held(view)
+    fresh = [
+        EventAddOp.model_validate(o)
+        for o in made.ops
+        if not any(same_entry(o["title"], o["start"], title, start, zone) for title, start in have)
+    ]
+    if not fresh:
+        return changeset
+    kept = [
+        op
+        for op in changeset.ops
+        if not (getattr(op, "op", None) == "event.add" and any(_same_booking(op, new) for new in fresh))
+    ]
+    return changeset.model_copy(update={"ops": [*kept, *fresh]})
+
+
+def _words(title: str | None) -> set[str]:
+    from engine.same_entry import normalized
+
+    return {w for w in normalized(title).split() if len(w) >= 4}
+
+
+def _same_booking(op: Any, new: Any) -> bool:
+    """Whether the assistant's entry is the booking's own: the same start, and a word of its title in common."""
+    return op.start == new.start and bool(_words(op.title) & _words(new.title))

@@ -1,0 +1,34 @@
+id: topic-match-alone-is-watched-quietly
+title: An input a routing entry matches only by its topic, with nothing for the person to do, is a quiet note and no question
+skills: [follow-routing, no-repeat-question]
+received: '2026-10-09'
+project: PRJ-1
+given:
+- kind: routing_entry
+  id: ROUTE-90
+  fields:
+    text: Questions about the cover typeface go to Theo Brandt.
+    topic: cover typeface
+    person: PER-3
+    origin: person
+    status: active
+    kept_by: PER-1
+    kept_at: '2026-10-01T09:00:00+00:00'
+    learned_at: '2026-10-01T09:00:00+00:00'
+pasted: |-
+  From: Jun Park
+
+  A note for the file: the printer's sample sheet for the cover typeface arrived and was filed in the shared folder.
+# The topic matches the routing entry, but there is no person, date or ask of the person in it: one quiet note under the
+# project, and no question to anyone (design 6.22, `question-changes-nothing`).
+expect:
+- op: note
+  text_has: [sample sheet]
+forbid:
+- op: question.add
+stub_answer:
+  summary: The printer's sample sheet for the cover typeface was filed; nothing to ask.
+  ops:
+  - op: note
+    text: The printer's sample sheet for the cover typeface arrived and was filed in the shared folder.
+    project: PRJ-1

@@ -1,0 +1,14 @@
+version: 1
+mode: local
+host: 127.0.0.1
+port: 8766
+base_path: /   # the address it is served at; set a path such as /admin to serve it under one
+open_browser: false   # open the app in this computer's browser when it starts
+addons_dir: null   # where add-ons installed from the Add-ons screen are kept (null: the app's data place)
+secrets_dir: null   # hosted only: the folder a secret's file must be in (null: the secrets folder in the private folder)
+new_workspace_addons: []   # add-ons a new workspace starts with turned on (an installer fills this in)
+slow_screen_ms: 3000   # a main screen slower than this (milliseconds) three loads in a row becomes a line on Today
+cookie_max_age_days: 30   # how many days the browser stays signed in after the app's link is opened
+log_level: warning   # how much the log file in the workspace's private folder holds (error, warning, info, debug)
+log_max_mb: 5   # the size at which the log file is closed and a new one started
+log_files: 3   # how many log files are kept

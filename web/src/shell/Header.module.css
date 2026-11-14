@@ -1,0 +1,64 @@
+/* One row, 56px (48px on a phone), at every width. The status chip, and from 1440px the assistant's alive line, sit between
+   Ask and the buttons; below 1440px the assistant's state is in the chip's popover. The workspace's name keeps its room: the
+   Ask field gives up width first. The Ask field becomes an icon below 1024px, and on a phone one row remains with the logo,
+   the status chip and the user menu. Below 1440px the chip shows only its word; width is given up by the Ask field first,
+   then, below 1024px, by the workspace's name. The chip's word and every button keep their size. */
+/* The header never grows wider than the window (overflow-x: clip), and the search results drop below it (overflow-y: visible). */
+.header {
+  grid-column: 1 / -1; position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; flex-wrap: nowrap; gap: var(--space-3);
+  height: var(--header-h); padding: 0 var(--space-4); overflow-x: clip; overflow-y: visible;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.brand {
+  display: flex; align-items: center; gap: var(--space-2); flex: none; min-width: 28px; max-width: 240px;
+  color: var(--text); text-decoration: none; font-size: var(--text-lg); line-height: var(--lh-lg);
+  border-radius: var(--radius-md);
+}
+.brand:hover { color: var(--accent-text); }
+.logo { width: 28px; height: 28px; flex: none; border-radius: var(--radius-md); object-fit: contain; }
+/* The product's mark has a day and a night version; the theme in force (the system's, or the person's own choice) shows one. */
+.markDay { display: var(--mark-day-display); }
+.markNight { display: var(--mark-night-display); }
+.name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-display); font-weight: var(--weight-medium); letter-spacing: -0.01em; }
+.chip { flex: none; }
+.ask { flex: 1 10000 auto; min-width: 96px; max-width: 640px; }
+.spacer { flex: 1 1 0; min-width: 0; }
+.status { display: flex; align-items: center; gap: var(--space-1); flex: 0 1 auto; min-width: 0; }
+.end { display: flex; align-items: center; gap: var(--space-2); flex: none; }
+.avatar {
+  display: grid; place-items: center; width: 32px; height: 32px; flex: none; border: 0; border-radius: var(--radius-full); cursor: pointer;
+  background: var(--accent-soft); color: var(--accent-text); font-size: var(--text-sm); line-height: var(--lh-sm); font-weight: var(--weight-semibold);
+}
+@media (pointer: coarse) { .avatar { width: var(--tap-min); height: var(--tap-min); } }
+
+/* Where the row has no room left, the "Missed something?" button keeps its icon and its name for screen readers, and the
+   words are not drawn, so no control is cut off by the window's edge. */
+@media (max-width: 1199px) {
+  .missedText { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
+
+@media (max-width: 1023px) {
+  .ask { min-width: 40px; flex: 1 1 40px; }
+  .spacer { flex: 1 1 0; }
+  /* The gaps narrow as on a phone, so the longest status word and a wide font still leave every control inside the window. */
+  .header { gap: var(--space-2); }
+  /* With no Ask field to give up width, the name does. */
+  .brand { flex: 0 1 auto; }
+  /* The status chip keeps its whole word; the name above gives up room before it does. */
+  .status { flex: none; }
+}
+/* On the narrowest phones a wider font can leave no room for the whole status word, so it is cut with an ellipsis (its
+   full words stay its name and its popover) and the menu button stays inside the window. */
+@media (max-width: 359px) {
+  .status { flex: 0 1 auto; min-width: 0; }
+}
+:global([data-narrow]) .header { gap: var(--space-2); padding: 0 var(--space-3); }
+:global([data-narrow]) .brand { font-size: var(--text-md); line-height: var(--lh-md); flex: 0 1 auto; }
+/* On a phone the logo, the Demo mark, the status chip, the search icon and the menu share one row: the chip gives up its width (its
+   word is cut with an ellipsis; the full words are its name and its popover) before any button leaves the window. */
+:global([data-narrow]) .status { flex: 0 1 auto; min-width: 0; }
+
+
+/* The phone's search field opens in a strip under the header, over the page; its results open downward from it. */
+.searchStrip { position: fixed; top: var(--header-h); left: 0; right: 0; z-index: 21; padding: var(--space-2) var(--space-3); background: var(--surface); border-bottom: 1px solid var(--border); }

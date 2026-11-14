@@ -1,0 +1,115 @@
+/* The wizard (VC12): a header, a rail of steps and one centred column; the footer is fixed to the window's bottom. */
+.root { min-height: 100dvh; background: var(--canvas); color: var(--text); display: grid; grid-template-rows: auto auto minmax(0, 1fr); align-content: start; }
+.head { padding: var(--space-3) var(--page-pad); background: var(--surface); border-bottom: 1px solid var(--border); }
+/* The header's own row is as wide as the rail, the gap and the column, so its title and its way out stand on their edges. */
+.headInner {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3) var(--space-6);
+  width: min(100%, calc(var(--settings-nav-w) + var(--space-12) + 680px)); margin: 0 auto;
+}
+/* Where the window has room beside the header's row, the brand stands at the window's left edge, so the title stays on the rail's edge;
+   narrower, it comes first in the row. */
+@media (min-width: 1360px) {
+  .head { position: relative; }
+  .head :global([data-setup-header-brand]) { position: absolute; left: var(--page-pad); top: 50%; transform: translateY(-50%); }
+}
+.banner:not(:empty) { padding: var(--space-3) var(--page-pad) 0; width: 100%; max-width: 1100px; margin: 0 auto; }
+.title { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-4); min-width: 0; flex: 1 1 auto; }
+.title h1 { margin: 0; font-family: var(--font-display); font-size: var(--text-lg); line-height: var(--lh-lg); font-weight: var(--weight-medium); }
+.intro { margin: 0; color: var(--text-muted); font-size: var(--text-sm); line-height: var(--lh-sm); }
+.layout {
+  display: grid; grid-template-columns: var(--settings-nav-w) minmax(0, 680px); gap: var(--space-12); justify-content: center;
+  padding: var(--space-8) var(--page-pad) calc(var(--space-12) * 3); width: 100%; max-width: 1100px; margin: 0 auto; align-items: start;
+}
+.layout[data-no-rail] { grid-template-columns: minmax(0, 680px); }
+/* The layout is the page's last row, taller than its content: its own rows keep their height and the content starts at the top (a
+   stretched empty rail row above the step was the blank band on a phone). */
+.layout { align-content: start; }
+
+/* The rail: a circle for each step. */
+.rail { display: grid; gap: var(--space-2); align-content: start; position: sticky; top: var(--space-4); min-width: 0; }
+.place { display: none; align-items: center; justify-content: space-between; gap: var(--space-3); min-width: 0; }
+.place p { margin: 0; font-weight: var(--weight-semibold); min-width: 0; overflow-wrap: anywhere; }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-1); }
+.stepButton {
+  display: flex; align-items: center; gap: var(--space-3); width: 100%; min-height: var(--btn-h); padding: var(--space-2) var(--space-3); text-align: left;
+  background: transparent; color: var(--text-muted); border: 0; border-radius: var(--radius-md); font: inherit; font-size: var(--text-sm); line-height: var(--lh-sm); cursor: pointer;
+}
+.stepButton:hover { background: var(--surface-hover); color: var(--text); }
+.stepButton[aria-current="step"] { background: var(--accent-soft); color: var(--accent-text); font-weight: var(--weight-semibold); }
+.circle { flex: none; width: 22px; height: 22px; color: var(--text-muted); border-radius: var(--radius-full); border: 1.5px solid var(--border-strong); display: grid; place-items: center; }
+.circle[data-state="done"] { border-color: var(--text-muted); color: var(--text-muted); }
+/* The number in the display face, in italics, as the step rail of the mockups draws it. */
+.numeral { font-family: var(--font-display); font-style: italic; font-weight: var(--weight-medium); font-size: var(--text-sm); line-height: 1; }
+.stepButton[aria-current="step"] .circle { color: var(--accent-text); }
+.star { color: var(--text-muted); font-size: var(--text-sm); line-height: 1; }
+.circle[data-state="skipped"] { border-style: dashed; color: var(--text-muted); }
+.stepButton[aria-current="step"] .circle { border-color: var(--accent); }
+.label { display: grid; min-width: 0; flex: 1 1 auto; overflow-wrap: anywhere; }
+.exception { color: var(--text-muted); font-size: var(--text-xs); line-height: var(--lh-xs); font-weight: var(--weight-regular); }
+
+/* The open step: one column, its explanation under its title. */
+.step { min-width: 0; display: grid; gap: var(--space-4); align-content: start; }
+.eyebrow { margin: 0; }
+.stepTitle { margin: calc(var(--space-2) * -1) 0 0; font-family: var(--font-display); font-size: var(--text-xl); line-height: var(--lh-xl); font-weight: var(--weight-medium); letter-spacing: -0.01em; }
+.stepTitle:focus, .stepTitle:focus-visible { outline: none; box-shadow: none; }
+.explanation { margin: 0; color: var(--text-muted); font-size: var(--text-md); line-height: var(--lh-md); max-width: var(--measure); }
+.body { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-4); min-width: 0; align-content: start; }
+
+/* Fields hold what they hold: a name or a short value, a number, an address or a key; never the whole width of the column. */
+.body [data-field] :is(input, [data-ui="select"]):not([type="checkbox"], [type="radio"]) { max-width: var(--field-name); }
+.body [data-field] :is(input[type="url"], input[type="password"], input[type="email"], input[type="search"]) { max-width: var(--field-max); }
+
+/* The footer is fixed to the bottom of the window, over a surface that runs its full width. */
+.footer { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; background: var(--surface); border-top: 1px solid var(--border); }
+.footerInner { display: grid; grid-template-columns: var(--settings-nav-w) minmax(0, 680px); gap: var(--space-12); justify-content: center; max-width: 1100px; margin: 0 auto; padding: var(--space-3) var(--page-pad); }
+/* The buttons are in the second track, the step's own column; with no rail the column is the only track. */
+.footerButtons { grid-column: 2; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-3); min-width: 0; }
+/* What a waiting primary button is waiting for goes on a line of its own above the buttons, never at the far end of the row. */
+.footerButtons > :global([data-reason-wrap]) { display: contents; }
+.footerButtons > :global([data-reason-wrap]) > p { order: -1; flex: 1 0 100%; max-width: none; }
+.layout[data-no-rail] .footerInner { grid-template-columns: minmax(0, 680px); }
+.layout[data-no-rail] .footerButtons { grid-column: 1; }
+.footerInFlow { position: static; }
+.footer.footerInFlow > .footerInner { display: block; padding-left: var(--space-4); padding-right: var(--space-4); }
+.footer.footerInFlow .footerButtons { grid-column: auto; }
+.grow { flex: 1 1 auto; }
+/* While a toast shows the footer keeps its place and the toast goes to the top (a dialog's rule), so none is over a button. */
+:global(html[data-toasts]) .root { padding-bottom: 0; }
+
+:global([data-narrow]) .layout { grid-template-columns: minmax(0, 1fr); padding: var(--space-4) var(--space-4) calc(var(--space-12) * 3); gap: var(--space-4); }
+:global([data-narrow]) .head { flex-wrap: nowrap; gap: var(--space-2); padding: var(--space-2) var(--space-4); }
+/* On a phone the header is one bar: the title and, at the right, the Steps button and the way to finish later. The intro and the
+   "step n of m" line wait out of sight, since the step's own eyebrow says where the person is. */
+:global([data-narrow]) .title { flex-wrap: nowrap; overflow: hidden; }
+:global([data-narrow]) .title h1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:global([data-narrow]) .intro { display: none; }
+.headActions { display: flex; flex: none; align-items: center; gap: var(--space-2); }
+:global([data-narrow]) .rail { position: static; }
+:global([data-narrow]) .place { display: none; }
+:global([data-narrow]) .steps { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+/* On a phone the list is behind the Steps button, so the first field of a step is near the top of the window. */
+:global([data-narrow]) .steps[data-open="false"] { display: none; }
+:global([data-narrow]) .stepButton { width: auto; border: 1px solid var(--border); }
+/* On a phone the footer is a bar across the bottom with the buttons the width they need. */
+:global([data-narrow]) .footerInner { grid-template-columns: minmax(0, 1fr); padding: var(--space-2) var(--space-4); }
+:global([data-narrow]) .footerButtons { grid-column: 1; flex-wrap: wrap; row-gap: var(--space-1); }
+/* A waiting primary button's reason goes on a line of its own above the row, so the buttons stay in one row: Back and the primary
+   on the column's edges. */
+/* Two rows at most: the reason a primary waits on one line, then Back, the later choice and the primary (a touch target tall, taking what room is left) in one row; a label too long for the row wraps the primary to a row of its own. */
+:global([data-narrow]) .footerButtons > :global([data-variant="primary"]), :global([data-narrow]) .footerButtons > :global([data-reason-wrap]) > :global([data-variant="primary"]) { order: 3; flex: 1 1 8rem; min-height: var(--tap-min); justify-content: center; }
+:global([data-narrow]) .footerButtons > :global([data-reason-wrap]) { display: contents; }
+:global([data-narrow]) .footerButtons > :global([data-reason-wrap]) > p { order: -1; flex: 1 0 100%; max-width: none; }
+@media (max-width: 1023.98px) {
+  .layout { grid-template-columns: minmax(0, 680px); }
+  .footerInner { grid-template-columns: minmax(0, 680px); }
+  .footerButtons { grid-column: 1; }
+}
+
+/* A first or last screen (Welcome, the finished state): the mark and a large heading in the display face, centred on the column; the body under them reads left to right again. */
+.step[data-brand] { justify-items: center; text-align: center; gap: var(--space-5); padding-top: var(--space-6); }
+.step[data-brand] .stepTitle { margin: 0; font-size: calc(var(--text-title) + var(--space-1) * 0.5); line-height: var(--lh-title); }
+.step[data-brand] .body { width: 100%; text-align: left; }
+.step[data-brand] .explanation { max-width: 44ch; }
+
+/* The way out in the header is a quiet link: underlined when it is pointed at, and with the shared focus ring when it has the cursor. */
+.headActions :global([data-variant="quiet"]):hover { text-decoration: underline; text-underline-offset: 0.2em; }

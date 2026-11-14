@@ -1,0 +1,353 @@
+"""Files people add and programs write (design 5.3): bytes stored once by hash, described by a `file` record.
+
+The bytes are never changed in place; a new version is a new file that names the one it replaces. File kinds say what a
+file is for and what details it needs; the core has `attachment`, and plugins (and later templates) declare their own.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import hashlib
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, ValidationError
+
+from engine.config import Config
+from engine.plain_errors import reason_of
+from engine.storage import Store, Stored, StoreError, WriteContext
+
+
+class AnyDetails(BaseModel):
+    """The core attachment kind asks for nothing in particular; a short description is welcome."""
+
+    model_config = ConfigDict(extra="forbid")
+    description: str = ""
+
+
+@dataclass(frozen=True)
+class FileKind:
+    name: str
+    details: type[BaseModel] = AnyDetails
+    accept: tuple[str, ...] = ()  # media types; empty means the workspace's accepted types
+    max_mb: float | None = None  # narrower than the workspace's limit, never wider
+    label: str = ""  # what to call it on screen
+    data_level: str | None = None  # the level a file added under this kind gets without a choice; None is internal
+
+
+CORE_KINDS: dict[str, FileKind] = {"attachment": FileKind("attachment", label="Attachment")}
+
+_PM = WriteContext(actor="pm", trust="trusted", op="file.add")
+#: The fields of a forgotten file's record that held its content: blanked on the record, and their earlier values
+#: given up by the ledger (the registry of redacting ops, `engine/redactions.py`, reads this).
+FORGET_FIELDS = ["name", "media_type", "size", "sha256", "meta"]
+#: The field of a change's record that holds the values its ops set, which the same redaction reaches.
+CHANGESET_FIELDS = ["ops"]
+_CONTENT_OP_FIELDS: dict[str, Any] = {"fields": {}, "name": "", "media_type": "", "size": 0, "sha256": "", "meta": {}}
+_FORGOTTEN: dict[str, Any] = {"name": "", "media_type": "", "size": 0, "sha256": "", "meta": {}}
+
+
+def level_for(kind: FileKind | None, chosen: str | None) -> str:
+    """The data level a new file gets: the explicit choice when there is one, else its kind's, else internal."""
+    return chosen or (kind.data_level if kind is not None else None) or "internal"
+
+
+def files_dir(store: Store) -> Path:
+    return store.path.parent / "files"
+
+
+def blob_path(store: Store, sha256: str) -> Path:
+    return blob_path_in(store.path.parent, sha256)
+
+
+def blob_path_in(root: Path, sha256: str) -> Path:
+    """Where a workspace at `root` keeps the bytes with this hash."""
+    return root / "files" / sha256[:2] / sha256
+
+
+def effective_type(name: str, media_type: str, data: bytes) -> str:
+    """The type a file is taken as. A type the sender gave is kept; with none, or a generic one (browsers send none for
+    an ending the computer has no program for), the file's ending gives it, from the readers' table and then the
+    standard one. A text type is taken only when the bytes are text."""
+    import mimetypes
+
+    from engine.extract import EXTENSIONS, GENERIC
+
+    sent = (media_type or "").split(";")[0].strip().lower()
+    if sent not in GENERIC:
+        return media_type
+    guessed = EXTENSIONS.get(Path(name).suffix.lower()) or mimetypes.guess_type(name)[0]
+    if not guessed:
+        return sent or "application/octet-stream"
+    if guessed.startswith("text/"):
+        try:
+            data.decode("utf-8")
+        except UnicodeDecodeError:
+            return "application/octet-stream"
+    return guessed
+
+
+def check_file(
+    store: Store,
+    cfg: Config,
+    view: Any,
+    *,
+    name: str,
+    media_type: str,
+    size: int,
+    file_kind: str = "attachment",
+    meta: dict[str, Any] | None = None,
+    project: str | None = None,
+    replaces: str | None = None,
+    from_person: str | None = None,
+    allow_generic: bool = False,
+) -> tuple[str, dict[str, Any]]:
+    """Check a file against the limits and its kind. Returns its cleaned name and validated details; refusals say why
+    in words."""
+    limits = cfg.storage.files
+    kind = store.plugins.file_kinds().get(file_kind)
+    if kind is None:
+        raise StoreError(f"there is no file kind called {file_kind}")
+    name = Path(name).name.strip()
+    if not name:
+        raise StoreError("the file needs a name")
+    # A kind narrows the workspace's accepted types; it never widens them.
+    accepted = [t for t in kind.accept if t in limits.accepted_types] if kind.accept else limits.accepted_types
+    if media_type not in accepted and not (allow_generic and media_type == "application/octet-stream"):
+        raise StoreError(f"files of type {media_type} can't be added here")
+    cap = min(limits.max_file_mb, kind.max_mb or limits.max_file_mb)
+    if size > cap * 1024 * 1024:
+        raise StoreError(f"{name} is larger than {cap:g} MB")
+    used = sum(f.data["size"] for f in view.list("file"))
+    if used + size > limits.max_total_mb * 1024 * 1024:
+        raise StoreError(f"adding {name} would go over the {limits.max_total_mb:g} MB limit for all files")
+    try:
+        details = kind.details.model_validate(meta or {}).model_dump(mode="json")
+    except ValidationError as err:
+        first = err.errors()[0]
+        raise StoreError(f"{'.'.join(map(str, first['loc'])) or 'details'}: {reason_of(first)}") from None
+    if project is not None and view.get("project", project) is None:
+        raise StoreError(f"there is no project {project}")
+    if replaces is not None and view.get("file", replaces) is None:
+        raise StoreError(f"there is no file {replaces} to replace")
+    if from_person is not None and view.get("person", from_person) is None:
+        raise StoreError(f"there is no person {from_person}")
+    return name, details
+
+
+def describes(store: Store, file_kind: str) -> bool:
+    """Whether files of this kind keep a description among their details."""
+    kind = store.plugins.file_kinds().get(file_kind)
+    return kind is not None and "description" in kind.details.model_fields
+
+
+def description_of(store: Store, record: Stored) -> str | None:
+    """The description of a file, empty when none was given, or None when its kind keeps none."""
+    if not describes(store, record.data["file_kind"]):
+        return None
+    return str((record.data.get("meta") or {}).get("description") or "")
+
+
+def edit_fields(
+    store: Store, record: Stored, *, name: str | None = None, description: str | None = None
+) -> dict[str, Any]:
+    """The fields a person's rename or description change sets, checked the way adding a file checks them. Raises
+    StoreError in words when the new name is empty, the kind keeps no description, or the details wouldn't be valid."""
+    fields: dict[str, Any] = {}
+    if name is not None:
+        clean = Path(name).name.strip()
+        if not clean:
+            raise StoreError("the file needs a name")
+        if clean != record.data["name"]:
+            fields["name"] = clean
+    if description is not None:
+        kind = store.plugins.file_kinds().get(record.data["file_kind"])
+        if kind is None or not describes(store, record.data["file_kind"]):
+            raise StoreError("this kind of file has no description")
+        meta = {**(record.data.get("meta") or {}), "description": description.strip()}
+        try:
+            checked = kind.details.model_validate(meta).model_dump(mode="json")
+        except ValidationError as err:
+            first = err.errors()[0]
+            raise StoreError(f"{'.'.join(map(str, first['loc'])) or 'details'}: {reason_of(first)}") from None
+        if checked != (record.data.get("meta") or {}):
+            fields["meta"] = checked
+    if not fields:
+        raise StoreError("nothing to change")
+    return fields
+
+
+def store_blob(store: Store, data: bytes) -> str:
+    """Keep the bytes under their hash (once, however often they are added). Returns the hash."""
+    digest = hashlib.sha256(data).hexdigest()
+    path = blob_path(store, digest)
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".part")
+        tmp.write_bytes(data)
+        tmp.replace(path)
+    return digest
+
+
+def blob_matches(store: Store, sha256: str, size: int) -> bool:
+    path = blob_path(store, sha256)
+    if not path.is_file() or path.stat().st_size != size:
+        return False
+    return hashlib.sha256(path.read_bytes()).hexdigest() == sha256
+
+
+def add_file(
+    store: Store,
+    cfg: Config,
+    data: bytes,
+    *,
+    name: str,
+    media_type: str,
+    file_kind: str = "attachment",
+    project: str | None = None,
+    meta: dict[str, Any] | None = None,
+    origin: str = "upload",
+    replaces: str | None = None,
+    from_person: str | None = None,
+    data_level: str | None = None,
+    preserve_generic: bool = False,
+    context: WriteContext = _PM,
+    now: datetime | None = None,
+) -> Stored:
+    """Check a file against the limits and its kind, store its bytes once, and record it. `data_level` is the person's
+    explicit choice; without one the file takes its kind's level. `preserve_generic` keeps an opaque upload as a
+    download instead of inferring a media type from its name."""
+    media_type = media_type if preserve_generic else effective_type(name, media_type, data)
+    check_file(
+        store,
+        cfg,
+        store.read(),
+        name=name,
+        media_type=media_type,
+        size=len(data),
+        file_kind=file_kind,
+        allow_generic=preserve_generic,
+        meta=meta,
+    )
+    digest = store_blob(store, data)
+    level = level_for(store.plugins.file_kinds().get(file_kind), data_level)
+    with store.transaction() as tx:
+        name, details = check_file(
+            store,
+            cfg,
+            tx,
+            name=name,
+            media_type=media_type,
+            size=len(data),
+            file_kind=file_kind,
+            allow_generic=preserve_generic,
+            meta=meta,
+            project=project,
+            replaces=replaces,
+            from_person=from_person,
+        )
+        return tx.create(
+            "file",
+            {
+                "name": name,
+                "media_type": media_type,
+                "size": len(data),
+                "sha256": digest,
+                "file_kind": file_kind,
+                "project": project,
+                "meta": details,
+                "origin": origin,
+                "trust": "trusted" if origin == "upload" else "untrusted",
+                "replaces": replaces,
+                "from_person": from_person,
+                "added_at": (now or datetime.now(UTC)).isoformat(),
+                "sensitivity": level,
+            },
+            context,
+        )
+
+
+def read_bytes(store: Store, file_id: str) -> tuple[Stored, bytes]:
+    """A file's record and its bytes, checked against the hash it was stored under."""
+    record = store.read().get("file", file_id)
+    if record is None:
+        raise StoreError(f"there is no file {file_id}")
+    data = blob_path(store, record.data["sha256"]).read_bytes()
+    if hashlib.sha256(data).hexdigest() != record.data["sha256"]:
+        raise StoreError(f"the stored bytes of {record.data['name']} don't match their hash")
+    return record, data
+
+
+def forget_record(store: Store, tx: Any, file_id: str, ctx: WriteContext, *, read_version: int) -> None:
+    """Remove a file and forget it, inside the applier's transaction: its descriptive fields are blanked, the record is
+    removed and the ledger gives up the earlier values of those fields. Refused while another record refers to it. The
+    bytes go afterwards, once the change has committed (`drop_blobs`)."""
+    if store.plugins._referrers(tx)("file", file_id):
+        raise StoreError(f"file {file_id} is still referred to by another record")
+    changed = tx.update("file", file_id, _FORGOTTEN, ctx, read_version=read_version)
+    tx.delete("file", file_id, ctx, read_version=changed.version)
+    tx.redact_ledger("file", file_id, FORGET_FIELDS)
+    # An earlier change to the file (a rename, a description) holds the values it set in its own record of the ops.
+    for cs in tx.list("changeset"):
+        scrubbed, touched = _scrub_ops(cs.data["ops"], file_id)
+        if touched:
+            tx.update("changeset", cs.id, {"ops": scrubbed}, ctx, read_version=cs.version)
+            tx.redact_ledger("changeset", cs.id, CHANGESET_FIELDS)
+
+
+def drop_blobs(store: Store, hashes: set[str]) -> list[str]:
+    """Delete the stored bytes of these hashes unless some file record, live or removed, still holds them (a removed
+    file's bytes stay so Undo has them). Returns the hashes deleted."""
+    hashes = {h for h in hashes if h}
+    if not hashes:
+        return []
+    held = {f.data["sha256"] for f in store.read().list("file", include_deleted=True)}
+    gone = []
+    for digest in sorted(hashes - held):
+        path = blob_path(store, digest)
+        if path.is_file():
+            path.unlink()
+            gone.append(digest)
+            with contextlib.suppress(OSError):
+                path.parent.rmdir()
+    return gone
+
+
+def forget_file(ws: Any, store: Store, cfg: Config, file_id: str, *, read_version: int, summary: str) -> str:
+    """The person's removal of a file with forgetting: one change, then the stored bytes are deleted unless another
+    file holds them, the readable export is written again and its history rebuilt. Returns the changeset id."""
+    from engine.applier import apply_as_person
+    from engine.redactions import rebuild_export, rebuild_problem
+
+    record = store.read().get("file", file_id)
+    if record is None:
+        raise StoreError(f"there is no file {file_id}")
+    if (why := rebuild_problem(ws)) is not None:
+        raise StoreError(why)
+    digest = record.data["sha256"]
+    cs_id = apply_as_person(
+        store,
+        cfg,
+        [{"op": "file.forget", "file": file_id, "read_version": read_version}],
+        summary,
+    )
+    drop_blobs(store, {digest})
+    rebuild_export(ws, store)
+    return cs_id
+
+
+def _scrub_ops(outcomes: list[dict[str, Any]], file_id: str) -> tuple[list[dict[str, Any]], bool]:
+    """A change's op outcomes with the content of the ops that name this file blanked. Returns them and whether any
+    op named the file."""
+    touched = False
+    scrubbed = []
+    for outcome in outcomes:
+        op = outcome.get("op") or {}
+        if file_id in ((op.get("record") or {}).get("id"), op.get("id")):
+            blanked = {k: _CONTENT_OP_FIELDS.get(k, v) for k, v in op.items()}
+            touched = touched or blanked != op or bool(outcome.get("label"))
+            outcome = {**outcome, "op": blanked, "label": None}
+        scrubbed.append(outcome)
+    return scrubbed, touched

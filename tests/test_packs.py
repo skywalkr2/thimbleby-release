@@ -1,0 +1,260 @@
+"""Finding packs (design 3.11): catalog feeds read on request and kept for offline use, what a pack adds, reaches and
+keeps written from its manifest, its AI jobs priced on the workspace's own accounts, and the Add-ons routes."""
+
+from pathlib import Path
+
+import httpx
+import pytest
+import yaml
+from fastapi.testclient import TestClient
+
+import engine.net
+from engine import packs
+from engine.config import load_config
+from tests.conftest import DEMO_B
+from tests.test_sign_in import signing as signing  # noqa: F401 - the fixture
+
+FIXTURES = Path(__file__).parent / "fixtures" / "network"
+N = yaml.safe_load((FIXTURES / "network.yaml").read_text())
+FEED_TEXT = (FIXTURES / "packs.yaml").read_text()
+FEED = f"https://{N['catalog_host']}/packs.yaml"
+#: A feed the person marked as their own, so it needs no signature; a signature file is never found.
+OWN = packs.Trust((), own=True)
+
+
+def feed_only(text, calls=None):
+    def handler(request):
+        if calls is not None:
+            calls.append(str(request.url))
+        return httpx.Response(404) if str(request.url).endswith(".sig") else httpx.Response(200, text=text)
+
+    return httpx.MockTransport(handler)
+
+
+def test_a_feed_keeps_good_entries_and_notes_the_rest():
+    feed = packs.parse(FEED, FEED_TEXT)
+    assert [e.id for e in feed.entries] == ["harbor"]
+    assert any("entry 2" in n for n in feed.notes) and any("listed twice" in n for n in feed.notes)
+    assert any("entry 4" in n for n in feed.notes)  # an http homepage is refused
+    assert packs.parse(FEED, "just words").error and packs.parse(FEED, "version: 2\npacks: []").error
+
+
+def test_the_summary_comes_from_the_manifest_not_the_description():
+    entry = packs.parse(FEED, FEED_TEXT).entries[0]
+    what = packs.summary(entry.provides, entry.requires)
+    assert what["adds"]["item_types"] == ["shipment", "berth"] and what["adds"]["screens"] == 1
+    assert what["adds"]["ai_work"] == 2 and what["adds"]["today"] == 1
+    # No label can be read for an add-on that isn't running, so the entry is empty rather than the id in words.
+    assert what["reaches"] == {
+        "sign_ins": [""],
+        "hosts": ["port.example.com"],
+        "programs": ["manifest-checker"],
+        "keys": 1,
+    }
+    assert what["keeps"] == "restricted"
+    assert packs.compatible(entry, "0.3.33") is True and packs.compatible(entry, "0.4.0") is False
+
+
+def test_a_sign_in_is_named_by_the_label_its_add_on_declares_never_by_its_id():
+    provides = {"sign_ins": ["print/account", "print/other"]}
+    named = packs.summary(provides, {}, {"print/account": "your Print account"})["reaches"]["sign_ins"]
+    assert named == ["your Print account", ""]
+    assert "account" not in " ".join(packs.summary(provides, {})["reaches"]["sign_ins"])
+
+
+def test_feeds_are_kept_and_read_again_only_when_old_or_asked(tmp_path, monkeypatch):
+    calls = []
+
+    def serve(request):
+        if str(request.url).endswith(".sig"):
+            return httpx.Response(404)
+        calls.append(str(request.url))
+        return httpx.Response(200, text=FEED_TEXT) if len(calls) < 3 else httpx.Response(503)
+
+    monkeypatch.setattr(engine.net, "TRANSPORT", httpx.MockTransport(serve))
+    first = packs.read_feeds([FEED], tmp_path, 24, now=1000.0, trust=lambda _u: OWN)
+    assert first[0].entries and len(calls) == 1
+    packs.read_feeds([FEED], tmp_path, 24, now=2000.0, trust=lambda _u: OWN)
+    assert len(calls) == 1  # fresh enough: the kept copy
+    packs.read_feeds([FEED], tmp_path, 24, now=2000.0 + 25 * 3600, trust=lambda _u: OWN)
+    assert len(calls) == 2
+    offline = packs.read_feeds([FEED], tmp_path, 24, refresh=True, now=3000.0 + 50 * 3600, trust=lambda _u: OWN)
+    assert offline[0].entries and "kept earlier" in offline[0].notes[0]
+    # What went wrong is said in words, never as a failure code or the address.
+    assert "the site isn't answering" in offline[0].notes[0] and "outage" not in offline[0].notes[0]
+
+
+def test_a_catalog_that_cannot_be_read_says_why_in_words_with_no_code_and_no_address(tmp_path, monkeypatch):
+    monkeypatch.setattr(engine.net, "TRANSPORT", httpx.MockTransport(lambda request: httpx.Response(404)))
+    (feed,) = packs.read_feeds([FEED], tmp_path, 24, now=1000.0, trust=lambda _u: OWN)
+    assert feed.error == "Nothing is at that address"
+    assert "404" not in feed.error and "not_found" not in feed.error and FEED not in feed.error
+
+
+def test_ai_jobs_are_priced_on_the_workspaces_accounts(tmp_path):
+    from engine.ai.router import Router
+    from engine.storage import Store
+    from engine.workspace import init_workspace
+
+    ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
+    cfg = load_config(ws.config_dir, env={})
+    store = Store(ws.db_path, cfg=cfg)
+    try:
+        job = packs.parse(FEED, FEED_TEXT).entries[0].ai_jobs[0]
+        router = Router(cfg, store, env={})
+        unpriced = packs.job_cost(cfg, router, job)
+        assert unpriced["usd"] is None and unpriced["tokens"] == 10_000 and unpriced["account"]
+        use = cfg.ai.tiers["routine"].use
+        priced_cfg = load_config(
+            ws.config_dir,
+            env={},
+            flags={f"ai.prices.{use}": {"input_per_million": 1.0, "output_per_million": 4.0}},
+        )
+        priced = packs.job_cost(priced_cfg, Router(priced_cfg, store, env={}), job)
+        assert priced["usd"] == pytest.approx((6000 * 1.0 + 4000 * 4.0) / 1e6)
+    finally:
+        store.close()
+
+
+def test_the_add_ons_routes_list_available_and_installed(tmp_path, monkeypatch):
+    from api.app import create_app
+    from engine.workspace import init_workspace
+
+    monkeypatch.setattr(engine.net, "TRANSPORT", feed_only(FEED_TEXT))
+    ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
+    settings = yaml.safe_load((ws.config_dir / "workspace.yaml").read_text())
+    settings["plugins"]["catalog"]["feeds"] = [FEED]
+    settings["plugins"]["catalog"]["own_feeds"] = [FEED]
+    (ws.config_dir / "workspace.yaml").write_text(yaml.safe_dump(settings))
+    cfg = load_config(ws.config_dir, env={})
+    c = TestClient(create_app(ws, cfg, "t", start_worker=False))
+    c.headers["Authorization"] = "Bearer t"
+    api = cfg.server.base_path.rstrip("/") + "/api"
+    body = c.get(f"{api}/packs").json()
+    pack = body["available"][0]
+    assert pack["id"] == "harbor" and pack["compatible"] is True and pack["installed_version"] is None
+    assert pack["homepage_domain"] == N["catalog_host"] and pack["feed"] == N["catalog_host"]
+    assert pack["what"]["keeps"] == "restricted" and [j["label"] for j in pack["costs"]][0] == "Summarizing a shipment"
+    assert body["feeds"][0]["notes"]
+    installed = {p["name"]: p for p in body["installed"]}
+    assert installed["example"]["enabled"] is ("example" in cfg.workspace.plugins.enabled)  # off in core-only runs
+    assert installed["example"]["what"]["adds"]["item_types"] == ["reminder"]
+    assert c.post(f"{api}/packs/refresh").status_code == 200
+    settings["plugins"]["catalog"]["enabled"] = False
+    (ws.config_dir / "workspace.yaml").write_text(yaml.safe_dump(settings))
+    off = TestClient(create_app(ws, load_config(ws.config_dir, env={}), "t", start_worker=False))
+    off.headers["Authorization"] = "Bearer t"
+    assert off.get(f"{api}/packs").json()["available"] == []
+
+
+def test_the_app_s_own_catalog_is_marked_and_the_ones_the_person_added_are_not(tmp_path, monkeypatch):
+    from api.app import create_app
+    from engine.workspace import init_workspace
+
+    shipped = "https" + "://catalog.example.com/packs.yaml"
+    monkeypatch.setattr(engine.net, "TRANSPORT", httpx.MockTransport(lambda r: httpx.Response(200, text=FEED_TEXT)))
+    monkeypatch.setattr("api.pack_routes.product", lambda: {"pack_catalog": shipped})
+    ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
+    settings = yaml.safe_load((ws.config_dir / "workspace.yaml").read_text())
+    settings["plugins"]["catalog"]["feeds"] = [FEED]
+    settings["plugins"]["catalog"]["shipped_feed"] = True
+    (ws.config_dir / "workspace.yaml").write_text(yaml.safe_dump(settings))
+    cfg = load_config(ws.config_dir, env={})
+    c = TestClient(create_app(ws, cfg, "t", start_worker=False))
+    c.headers["Authorization"] = "Bearer t"
+    feeds = c.get(cfg.server.base_path.rstrip("/") + "/api/packs").json()["feeds"]
+    by_address = {f["address"]: f for f in feeds}
+    assert by_address[shipped]["own"] is True and by_address[shipped]["removable"] is False
+    assert by_address[FEED]["own"] is False and by_address[FEED]["removable"] is True
+
+
+def test_a_saved_former_shipped_catalog_is_read_at_the_current_address(tmp_path, monkeypatch):
+    from api.app import create_app
+    from engine.workspace import init_workspace
+
+    former = f"https://{N['catalog_host']}/former/packs.yaml"
+    current = f"https://{N['catalog_host']}/current/packs.yaml"
+    requests = []
+
+    def serve(request):
+        if str(request.url).endswith(".sig"):
+            return httpx.Response(404)
+        requests.append(str(request.url))
+        return httpx.Response(200, text=FEED_TEXT)
+
+    monkeypatch.setattr(engine.net, "TRANSPORT", httpx.MockTransport(serve))
+    monkeypatch.setattr(
+        "api.pack_routes.product",
+        lambda: {"pack_catalog": current, "pack_catalog_former": [former]},
+    )
+    ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
+    settings = yaml.safe_load((ws.config_dir / "workspace.yaml").read_text())
+    settings["plugins"]["catalog"]["feeds"] = [former, FEED]
+    settings["plugins"]["catalog"]["shipped_feed"] = True
+    (ws.config_dir / "workspace.yaml").write_text(yaml.safe_dump(settings))
+    cfg = load_config(ws.config_dir, env={})
+    c = TestClient(create_app(ws, cfg, "t", start_worker=False))
+    c.headers["Authorization"] = "Bearer t"
+
+    c.headers["Authorization"] = "Bearer t"
+    response = c.get(cfg.server.base_path.rstrip("/") + "/api/packs")
+    assert response.status_code == 200, response.text
+    feeds = response.json()["feeds"]
+    by_address = {feed["address"]: feed for feed in feeds}
+
+    assert set(requests) == {current, FEED}
+    assert set(by_address) == {current, FEED}
+    assert by_address[current]["own"] is True and by_address[current]["removable"] is False
+    assert by_address[FEED]["own"] is False and by_address[FEED]["removable"] is True
+    saved = yaml.safe_load((ws.config_dir / "workspace.yaml").read_text())
+    assert saved["plugins"]["catalog"]["feeds"] == [former, FEED]
+
+
+def test_a_saved_former_shipped_catalog_is_still_read_when_the_shipped_feed_is_off(tmp_path, monkeypatch):
+    from api.app import create_app
+    from engine.workspace import init_workspace
+
+    former = f"https://{N['catalog_host']}/former/packs.yaml"
+    current = f"https://{N['catalog_host']}/current/packs.yaml"
+    requests = []
+
+    def serve(request):
+        if str(request.url).endswith(".sig"):
+            return httpx.Response(404)
+        requests.append(str(request.url))
+        return httpx.Response(200, text=FEED_TEXT)
+
+    monkeypatch.setattr(engine.net, "TRANSPORT", httpx.MockTransport(serve))
+    monkeypatch.setattr(
+        "api.pack_routes.product",
+        lambda: {"pack_catalog": current, "pack_catalog_former": [former]},
+    )
+    ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
+    settings = yaml.safe_load((ws.config_dir / "workspace.yaml").read_text())
+    settings["plugins"]["catalog"]["feeds"] = [former, FEED]
+    settings["plugins"]["catalog"]["shipped_feed"] = False
+    (ws.config_dir / "workspace.yaml").write_text(yaml.safe_dump(settings))
+    cfg = load_config(ws.config_dir, env={})
+    c = TestClient(create_app(ws, cfg, "t", start_worker=False))
+    c.headers["Authorization"] = "Bearer t"
+
+    response = c.get(cfg.server.base_path.rstrip("/") + "/api/packs")
+    assert response.status_code == 200, response.text
+    # The person added the catalog themselves: it is still read, at its current address, and stays theirs to remove.
+    assert set(requests) == {current, FEED}
+    assert {feed["address"] for feed in response.json()["feeds"]} == {current, FEED}
+
+
+def test_an_add_on_that_signs_in_says_whether_it_is_signed_in(signing):
+    from tests.test_sign_in_sources import _app, _with_sources, sign_in
+
+    ws, cfg, store, _ = signing
+    store.close()
+    _with_sources(ws)
+    c, api = _app(ws, cfg)
+    mine = lambda: next(p for p in c.get(f"{api}/packs").json()["installed"] if p["name"] == "p18")  # noqa: E731
+    assert mine()["enabled"] and mine()["signed_in"] is False
+    sign_in(c, api)
+    assert mine()["signed_in"] is True
+    # The row says what it signs in to by the label the add-on gave the sign-in, not by the sign-in's id.
+    assert mine()["what"]["reaches"]["sign_ins"] == ["The service"]

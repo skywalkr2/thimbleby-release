@@ -1,0 +1,339 @@
+import "@testing-library/jest-dom/vitest";
+import { act, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { vi } from "vitest";
+import type { S } from "../lib/api";
+import { fakeApi, renderApp, snapshotOf } from "../test-utils";
+import { Notifications } from "./Notifications";
+import { useNeedsYouNotices } from "./NeedsYouNotices";
+import { Settings } from "./Settings";
+
+// Notices that something needs the person (design 7.19): the ways of getting one, each with "Send me a test", mail to
+// themselves listed as coming later, and the browser notice for what comes into the Decide group while the app is open.
+
+/** What a test types where an address goes. Written so no scan takes it for a real one. */
+const ADDRESS = ["https:/", "notes.example.com", "hook", "typed-value-1"].join("/");
+const SAVED = { changes: [], fingerprint: "fp-2", needs_restart: false } satisfies S["SettingsSaved"];
+
+const view = (over: Partial<S["NotificationsView"]> = {}): S["NotificationsView"] => ({
+  enabled: true,
+  browser: true,
+  webhook: { where: "none", name: null },
+  app: "generic-chat",
+  apps: [
+    { id: "slack-like", name: "A named chat app", where: "Look in its integration settings." },
+    { id: "generic-chat", name: "Another chat app (a text message)", where: "Look for incoming webhooks." },
+    { id: "plain", name: "Something else (plain text)", where: "Use an address that takes plain text." },
+  ],
+  quiet_now: false,
+  mail_ready: false,
+  problem: null,
+  ...over,
+});
+
+function stubNotification(permission: NotificationPermission) {
+  const shown: Array<{ title: string }> = [];
+  class Fake {
+    static permission = permission;
+    static requestPermission = vi.fn(async () => permission);
+    constructor(title: string) {
+      shown.push({ title });
+    }
+  }
+  vi.stubGlobal("Notification", Fake);
+  return shown;
+}
+
+function routes(extra: Record<string, (body: unknown) => unknown> = {}) {
+  return {
+    "GET setup": () => ({ steps: [], finished: true, local: true, walkthrough: {} }),
+    "GET notifications": () => view(),
+    "GET settings": () => ({ fingerprint: "fp-1", items: [] }),
+    ...extra,
+  };
+}
+const mailCard = (over: Partial<S["NoticeMailView"]> = {}): S["NoticeMailView"] => ({
+  accounts: [{ id: "mailbox:work-mail", label: "Work mail" }],
+  addresses: ["own.person@example.com", "second.own@example.com"],
+  standing: null,
+  template_version: "v1",
+  titles_level: "none",
+  count: { subject: "2 decisions waiting for you", body: "2 decisions waiting for you.\n\nOpen the app to see what is waiting." },
+  titles: null,
+  test: { subject: "A test from the app", body: "This is a test." },
+  ...over,
+});
+const post = (calls: ReturnType<typeof fakeApi>, route: string) => calls.find((c) => c.route === route)?.body;
+const card = async (name: string) => (await screen.findByRole("heading", { level: 4, name })).closest("li") as HTMLElement;
+
+describe("the ways of getting a notice", () => {
+  test("are two cards; mail to yourself isn't listed until something can send it", async () => {
+    stubNotification("granted");
+    fakeApi(routes());
+    renderApp(<Notifications />);
+    expect(await card("This computer")).toBeInTheDocument();
+    expect(await card("A chat app or a push topic")).toBeInTheDocument();
+    expect(screen.queryByText("Mail to yourself")).toBeNull();
+    expect(screen.queryByText(/Comes with mail sending/)).toBeNull();
+  });
+
+  test("the app the address belongs to is picked by name from a list, with one line on where to find the address", async () => {
+    const user = userEvent.setup();
+    stubNotification("granted");
+    let app = "generic-chat";
+    const calls = fakeApi(
+      routes({
+        "GET notifications": () => view({ app }),
+        "POST notifications/app": () => {
+          app = "plain";
+          return SAVED;
+        },
+      }),
+    );
+    renderApp(<Notifications />);
+    const hook = await card("A chat app or a push topic");
+    const pick = await within(hook).findByRole("combobox", { name: "Which app is the address for?" });
+    expect(within(await snapshotOf(pick)).getAllByRole("option").map((o) => o.textContent)).toEqual(["A named chat app", "Another chat app (a text message)", "Something else (plain text)"]);
+    expect(pick).toHaveValue("generic-chat");
+    expect(within(hook).getByText("Where to find the address: Look for incoming webhooks.")).toBeInTheDocument();
+    await user.selectOptions(pick, "plain");
+    await waitFor(() => expect(post(calls, "POST notifications/app")).toEqual({ app: "plain", fingerprint: "fp-1" }));
+    expect(await screen.findByText("Notices now go to the app you picked.")).toBeInTheDocument();
+    expect(await within(hook).findByText("Where to find the address: Use an address that takes plain text.")).toBeInTheDocument();
+  });
+
+  test("say when notices are off, and still let each way be set up and tried first", async () => {
+    stubNotification("granted");
+    fakeApi(routes({ "GET notifications": () => view({ enabled: false }) }));
+    renderApp(<Notifications />);
+    expect(await screen.findByText(/Notices are off\. Turn them on above/)).toBeInTheDocument();
+    expect(within(await card("This computer")).getByRole("button", { name: "Send me a test" })).toBeEnabled();
+  });
+
+  test("the browser's test shows the server's words as a notice, and asks for permission first when there is none", async () => {
+    const user = userEvent.setup();
+    const shown = stubNotification("granted");
+    fakeApi(routes({ "POST notifications/test": () => ({ ok: true, message: "A test note", problem: null }) }));
+    renderApp(<Notifications />);
+    await user.click(within(await card("This computer")).getByRole("button", { name: "Send me a test" }));
+    await waitFor(() => expect(shown).toEqual([{ title: "A test note" }]));
+    expect(await screen.findByText("A test notice was shown on this computer.")).toBeInTheDocument();
+  });
+
+  test("no test button for the browser until the browser allows notices", async () => {
+    stubNotification("default");
+    fakeApi(routes());
+    renderApp(<Notifications />);
+    const browser = await card("This computer");
+    expect(within(browser).queryByRole("button", { name: "Send me a test" })).toBeNull();
+    expect(within(browser).getByRole("button", { name: "Allow notifications" })).toBeInTheDocument();
+  });
+
+  test("the address is typed into a password box, kept as a reference, and tried with Send me a test", async () => {
+    const user = userEvent.setup();
+    stubNotification("granted");
+    let kept = false;
+    const calls = fakeApi(
+      routes({
+        "GET notifications": () => view({ webhook: { where: kept ? "kept" : "none", name: null } }),
+        "POST notifications/webhook": () => {
+          kept = true;
+          return SAVED;
+        },
+        "POST notifications/test": () => ({ ok: true, message: "A test note", problem: null }),
+      }),
+    );
+    renderApp(<Notifications />);
+    const hook = await card("A chat app or a push topic");
+    // No test until there is somewhere to send it.
+    expect(within(hook).queryByRole("button", { name: "Send me a test" })).toBeNull();
+    const box = within(hook).getByLabelText("Address for notices");
+    expect(box).toHaveAttribute("type", "password");
+    await user.type(box, ADDRESS);
+    await user.click(within(hook).getByRole("button", { name: "Save the address for notices" }));
+    await waitFor(() => expect(post(calls, "POST notifications/webhook")).toEqual({ value: ADDRESS, fingerprint: "fp-1" }));
+    expect(screen.queryByDisplayValue(ADDRESS)).toBeNull();
+    await user.click(await within(hook).findByRole("button", { name: "Send me a test" }));
+    expect(await screen.findByText("A test note was sent to your address.")).toBeInTheDocument();
+    expect(post(calls, "POST notifications/test")).toEqual({ target: "webhook" });
+  });
+
+  test("a test that did not arrive says why in the card, and so does a note that failed earlier", async () => {
+    const user = userEvent.setup();
+    stubNotification("granted");
+    fakeApi(
+      routes({
+        "GET notifications": () => view({ webhook: { where: "env", name: "NOTE_ADDRESS" }, problem: "The address didn't answer." }),
+        "POST notifications/test": () => ({ ok: false, message: "A test note", problem: "The address wasn't reached." }),
+      }),
+    );
+    renderApp(<Notifications />);
+    const hook = await card("A chat app or a push topic");
+    expect(await within(hook).findByRole("alert")).toHaveTextContent("The address didn't answer.");
+    await user.click(within(hook).getByRole("button", { name: "Send me a test" }));
+    expect(await within(hook).findByText("The address wasn't reached.")).toBeInTheDocument();
+  });
+});
+
+describe("Settings", () => {
+  test("the Notices page has the browser's way of getting notices under its settings, and the address is not a row of its own", async () => {
+    stubNotification("granted");
+    const item = (key: string, over: Partial<S["SettingItem"]> = {}): S["SettingItem"] => ({
+      key,
+      file: "ui",
+      group: "ui.notifications",
+      description: `What ${key} does`,
+      type: "text",
+      options: [],
+      value: "",
+      default: "",
+      source: "default",
+      locked: false,
+      basic: true,
+      editable: true,
+      ...over,
+    });
+    fakeApi(
+      routes({
+        "GET settings": () => ({
+          fingerprint: "fp-1",
+          items: [
+            item("ui.notifications.enabled", { type: "yes_no", value: false, default: false, description: "Tell me when something needs me.", page: "today" }),
+            item("ui.notifications.webhook", { secret: true, description: "The address.", basic: false, page: "advanced", topic: "notices" }),
+          ],
+        }),
+      }),
+    );
+    renderApp(<Settings section="today" onOpenGuide={() => undefined} onChooseSource={() => undefined} />);
+    expect(await screen.findByRole("region", { name: "Ways to get a notice" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("The address.")).toBeNull();
+  });
+});
+
+describe("a browser notice for what needs the person", () => {
+  const waiting = (keys: string[], over: Partial<S["NotifyWaiting"]> = {}): S["NotifyWaiting"] => ({
+    browser: true,
+    keys,
+    message: `${keys.length} decisions waiting for you`,
+    ...over,
+  });
+  function Host() {
+    useNeedsYouNotices();
+    return null;
+  }
+
+  /** Mounts the hook once, and feeds it the server's answers one after the other, as the live stream's refreshes do. */
+  async function mount(first: S["NotifyWaiting"]) {
+    let answer = first;
+    fakeApi({ "GET notifications/waiting": () => answer });
+    const { client } = renderApp(<Host />);
+    await waitFor(() => expect(client.getQueryData(["notifications-waiting"])).toBeDefined());
+    await act(async () => undefined);
+    return async (next: S["NotifyWaiting"]) => {
+      answer = next;
+      await act(async () => {
+        await client.invalidateQueries({ queryKey: ["notifications-waiting"] });
+      });
+      // The screen takes the new answer on the next turn of the query client's own queue.
+      await waitFor(() => expect(client.getQueryData(["notifications-waiting"])).toEqual(next));
+      await act(async () => new Promise((done) => setTimeout(done, 0)));
+    };
+  }
+
+  test("what was waiting when the app opened is not announced, a new item is, with a count and no title", async () => {
+    const shown = stubNotification("granted");
+    const feed = await mount(waiting(["question:Q1"]));
+    expect(shown).toEqual([]);
+    await feed(waiting(["question:Q1", "question:Q2"]));
+    expect(shown).toEqual([{ title: "2 decisions waiting for you" }]);
+    // The same two again: nothing more.
+    await feed(waiting(["question:Q1", "question:Q2"]));
+    expect(shown).toHaveLength(1);
+  });
+
+  test("nothing in quiet hours, and what came up then is announced once they end", async () => {
+    const shown = stubNotification("granted");
+    const feed = await mount(waiting([]));
+    await feed(waiting(["question:Q1"], { browser: false }));
+    expect(shown).toEqual([]);
+    await feed(waiting(["question:Q1"]));
+    expect(shown).toEqual([{ title: "1 decisions waiting for you" }]);
+  });
+
+  test("nothing without the browser's permission", async () => {
+    const shown = stubNotification("default");
+    const feed = await mount(waiting([]));
+    await feed(waiting(["question:Q1"]));
+    expect(shown).toEqual([]);
+  });
+});
+
+describe("mail to yourself", () => {
+  const mailRoutes = (extra: Record<string, (body: unknown) => unknown> = {}) =>
+    routes({ "GET notifications": () => view({ mail_ready: true }), "GET notifications/mail": () => mailCard(), ...extra });
+
+  test("is a card with the account and the address picked from lists and the exact note, once mail can be sent", async () => {
+    stubNotification("granted");
+    fakeApi(mailRoutes());
+    renderApp(<Notifications />);
+    const mail = await card("Mail to yourself");
+    expect(within(mail).getByLabelText("Send it from")).toHaveValue("mailbox:work-mail");
+    expect(within(mail).getByLabelText("Send it to")).toHaveValue("own.person@example.com");
+    expect(within(mail).getByText("2 decisions waiting for you")).toBeInTheDocument();
+    expect(mail).toHaveTextContent("It says how many are waiting, never what about.");
+  });
+
+  test("isn't listed with no account that can send mail or no address of your own", async () => {
+    stubNotification("granted");
+    fakeApi(routes({ "GET notifications/mail": () => mailCard({ accounts: [] }) }));
+    renderApp(<Notifications />);
+    await card("This computer");
+    await waitFor(() => expect(screen.queryByText("Mail to yourself")).toBeNull());
+  });
+
+  test("the yes names the account, the address and the note the person saw", async () => {
+    const user = userEvent.setup();
+    stubNotification("granted");
+    const calls = fakeApi(mailRoutes({ "POST notifications/mail/yes": () => ({ changeset: "CS-1" }) }));
+    renderApp(<Notifications />);
+    const mail = await card("Mail to yourself");
+    await user.selectOptions(within(mail).getByLabelText("Send it to"), "second.own@example.com");
+    await user.click(within(mail).getByRole("button", { name: "Send notices by mail without asking each time" }));
+    await waitFor(() =>
+      expect(post(calls, "POST notifications/mail/yes")).toEqual({
+        account: "mailbox:work-mail",
+        address: "second.own@example.com",
+        template_version: "v1",
+      }),
+    );
+  });
+
+  test("once it stands it says where notices go, can be tried and can be stopped; a refusal is said beside it", async () => {
+    const user = userEvent.setup();
+    stubNotification("granted");
+    const standing = { id: "XSY-1", account: "mailbox:work-mail", account_label: "Work mail", address: "own.person@example.com", given_at: "2030-03-04T12:00:00Z", template_version: "v1", stale: [] };
+    const calls = fakeApi(
+      mailRoutes({
+        "GET notifications/mail": () => mailCard({ standing }),
+        "POST notifications/mail/test": () => ({ ok: false, problem: "The test could not be sent. It is in Waiting to go out, where you can try it again." }),
+        "POST notifications/mail/end": () => ({ changeset: "CS-2" }),
+      }),
+    );
+    renderApp(<Notifications />);
+    const mail = await card("Mail to yourself");
+    expect(mail).toHaveTextContent("Notices go to own.person@example.com without asking each time.");
+    await user.click(within(mail).getByRole("button", { name: "Send me a test" }));
+    expect(await within(mail).findByRole("alert")).toHaveTextContent("Waiting to go out");
+    await user.click(within(mail).getByRole("button", { name: "Stop sending notices by mail" }));
+    await waitFor(() => expect(calls.some((c) => c.route === "POST notifications/mail/end")).toBe(true));
+  });
+
+  test("a choice gone out of date says so, in words and not by colour alone", async () => {
+    stubNotification("granted");
+    const standing = { id: "XSY-1", account: "mailbox:work-mail", account_label: "Work mail", address: "own.person@example.com", given_at: "2030-03-04T12:00:00Z", template_version: "v1", stale: ["address"] };
+    fakeApi(mailRoutes({ "GET notifications/mail": () => mailCard({ standing }) }));
+    renderApp(<Notifications />);
+    const mail = await card("Mail to yourself");
+    expect(mail).toHaveTextContent("This choice is out of date");
+  });
+});

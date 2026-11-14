@@ -1,0 +1,101 @@
+# Words the engine writes into the person's own records itself, by wording-sheet key. The screens' wording sheet carries
+# the same keys; the workspace's `ui.wording` overrides either.
+
+# The name of the project that holds the person's own life, made when a workspace is set up.
+project.personal_name: Personal
+
+# The title of a calendar entry made from a booking confirmation: the kind of booking, then where (a route for a trip).
+booking.title: "{kind}: {detail}"
+booking.route: "{place} to {destination}"
+booking.kind.flight: Flight
+booking.kind.lodging: Stay
+booking.kind.event: Event
+booking.kind.restaurant: Table
+booking.kind.rental_car: Rental car
+booking.kind.train: Train
+
+# What the change that moves unsure items says, and the standing rule proposed after the same sender's items are moved a
+# second time: {side} is the side's name, {sender} the address the mail came from.
+filing.move_summary: "Moved to {side} on screen"
+filing.rule_text: "Mail from {sender} goes to {side}."
+filing.rule_source: "You moved this sender's items to the same place twice."
+
+# The title of a note made from a mail: its subject, then who sent it; with no subject, the first words of the body.
+note.title_from: "{subject} · from {sender}"
+note.title_from_unknown: "{subject}"
+
+# How a message opens to someone who is only on the person's own life, by how they relate to the person: for each kind,
+# the words in the person's description of them that mean it (separated by commas) and the opening line, {first_name}
+# being the name a greeting to them uses. Anyone else on the own life gets `greeting.personal`; a colleague's message
+# opens as the greeting setting says.
+greeting.personal: "Hi {first_name}, hope you're doing well."
+greeting.relation_words.partner: partner, wife, husband, spouse
+greeting.relation.partner: "Hi {first_name},"
+greeting.relation_words.parent: parent, mother, father, mom, dad, mum
+greeting.relation.parent: "Hi {first_name},"
+greeting.relation_words.child: child, son, daughter
+greeting.relation.child: "Hi {first_name},"
+greeting.relation_words.sister: sister, sis
+greeting.relation.sister: "Hi {first_name}, hope you're well."
+greeting.relation_words.brother: brother, bro
+greeting.relation.brother: "Hi {first_name}, hope you're well."
+greeting.relation_words.friend: friend
+greeting.relation.friend: "Hey {first_name}, hope you're doing well."
+greeting.relation_words.neighbor: neighbor, neighbour
+greeting.relation.neighbor: "Hi {first_name}, hope you're well."
+greeting.relation_words.landlord: landlord, landlady
+greeting.relation.landlord: "Hello {first_name},"
+greeting.relation_words.school: school, teacher
+greeting.relation.school: "Hello {first_name},"
+greeting.relation_words.tradesperson: tradesperson, plumber, electrician, builder
+greeting.relation.tradesperson: "Hello {first_name},"
+greeting.relation_words.doctor: doctor, dentist, nurse
+greeting.relation.doctor: "Hello {first_name},"
+
+# Where a word the assistant asks the meaning of came up, in the question's text: {line} is the line it was found on.
+terms.came_up_in.notes: "It came up in your notes: {line}"
+terms.came_up_in.mail: "It came up in mail from {sender}: {line}"
+terms.came_up_in.mail_unknown: "It came up in a mail: {line}"
+terms.came_up_in.calendar: "It came up in your calendar: {line}"
+terms.came_up_in.file: "It came up in a file you handed in: {line}"
+terms.came_up_in.source: "It came up in {source}: {line}"
+
+# What a source of a service with several accounts is called: the name the add-on gave it, then the account it reads.
+source.label_with_account: "{label}, {account}"
+
+# What a to-do waits for while the calendar entry it is tied to is called off: {title} is the entry's title.
+entry.called_off.waiting: "until {title} has a new date"
+
+# The report to the maintainers drafted from a slow screen's Today line: the screens' names, then the title and text
+# ({screen} a name below, {seconds} and {limit} in seconds, {held} how many records of each kind the workspace holds).
+slow_screen.name.today: Today
+slow_screen.name.todos: To-dos
+slow_screen.name.people: People
+slow_screen.name.changes: What changed
+slow_screen.report_title: "{screen} is slow to open"
+slow_screen.report_text: "The {screen} screen took {seconds} seconds to open, three times in a row; the limit set for a screen is {limit} seconds. The workspace holds {held}."
+
+# "Not mine to track" on an item of a watched source (the person's own words for the drops; the line that says what it did).
+not_mine.reason: "Not mine to track"
+not_mine.summary: "Set aside what a source holds that is not mine to track"
+not_mine.read_back: "Dropped this and {count} more from {source}. It is now only read to understand."
+
+# The questions the engine asks by itself: a meeting that needs an agenda or has people away, and an entry for days away
+# that could be for several people.
+meeting_ask.title: "What should {title} on {day} take up?"
+meeting_ask.no_agenda: "Nothing is on its agenda yet."
+meeting_ask.away: "{why}."
+meeting_ask.matters: "The agenda of {title} on {day}"
+absence_ask.title: "Whose days away are these in {source}?"
+absence_ask.text: "An entry for {days} could be for any of: {names}."
+
+# What a held change says when the person changed the record while the assistant was working on it: {assistant} is the
+# assistant's name.
+run.changed_meanwhile: "You changed this while {assistant} was working on it."
+run.changed_meanwhile.unnamed: "You changed this while your assistant was working on it."
+
+# The tray or menu-bar item of the installed app: its hover title and its three lines.
+desktop.title: Thimbleby
+desktop.open: Open Thimbleby
+desktop.restart: Restart
+desktop.quit: Quit

@@ -1,0 +1,211 @@
+"""The wording check: text the screen shows never names a settings file, a secret reference, a settings key, a manifest
+field or a command, and never shows raw data (braces, brackets that open on a quote, quoted keys) in a title or a line
+(design 7.0, 7.1). Terminal output may; the screen may not.
+
+`problems(text)` finds what a person would have to know the product's insides to read. It reads the words with links
+taken out (`engine/check_text.py`): a link with a query string or a dotted domain is not a settings key. A field a
+person's or an input's own words fill is typed as plain text, not as `ScreenText`, because a screen field holds a string
+and cannot know which part of it was quoted. `ScreenText` types the response
+fields whose text the server writes; while the developer switch `COCKPIT_CHECK_WORDING=1` is set (tests and
+development, never a setting), sending such a field that `problems` flags fails, and so does an error message the app
+returns that it flags. With the switch off nothing changes.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from functools import lru_cache
+from typing import Annotated, Any
+
+from pydantic import WrapValidator
+from pydantic_core import PydanticCustomError
+
+from engine.check_text import without_links
+from engine.secrets import SecretHint
+
+#: The environment variable that turns the check on.
+SWITCH = "COCKPIT_CHECK_WORDING"
+
+_FILE_NAME = re.compile(r"\S*\.ya?ml\b")
+#: Phrases that name where settings are kept, which a person never needs to know ("your settings" says it).
+_BANNED_PHRASES = re.compile(r"\bsettings? files?\b", re.IGNORECASE)
+_SECRET_REF = re.compile(r"\b(?:env|keychain):|\bfile:/|\bfile:~")
+_MANIFEST_FIELD = re.compile(r"\b(?:requires|provides|interfaces)\.[a-z_]+|\b(?:plugin_api|depends_on|config_schema)\b")
+_DOTTED = re.compile(r"(?<![\w.-])[A-Za-z_][\w-]*(?:\.[A-Za-z_][\w-]*)+(?![\w-])")
+_OTHER_COMMANDS = re.compile(
+    r"\buv (?:run|sync|lock|pip|tool)\b"
+    r"|\bnpm [a-z]+"
+    r"|\bgit (?:pull|push|commit|clone|checkout|status|add|merge|rebase|fetch|log|diff|reset|stash|init|config|remote|"
+    r"tag|branch)\b"
+)
+
+
+#: Raw data on screen: a brace or bracket opening on a quote, a brace or a bracket (`{"a": 1}`, `[{`), a flow mapping
+#: with a space after its colon (`{name: Launch}`), or a double-quoted key (`"title":`). A placeholder such as
+#: `{full_name}` or `{order:02}` is none of these, nor is a line that quotes someone ("Is it final?") or a heading that
+#: ends in a colon.
+_RAW_DATA = re.compile(r"[{\[]\s*[\"'{\[]|\{\s*[A-Za-z_][\w-]*\s*:\s+\S|\"[\w][\w .-]{0,40}\"\s*:")
+
+
+#: What a person with no IT background must not meet while setting the app up (the setup path): an IANA time zone id, a
+#: language tag, a secret reference, and the words of mail servers, networks, tokens and the command line. What has to
+#: stay technical is marked `advanced` and sits behind Advanced, where this check doesn't look.
+_SETUP_TERMS = (
+    (
+        "a time zone id",
+        re.compile(r"\b(?:Africa|America|Antarctica|Arctic|Asia|Atlantic|Australia|Europe|Indian|Pacific)/[A-Za-z_]+"),
+    ),
+    ("a language tag", re.compile(r"\b[a-z]{2,3}-[A-Z]{2}\b")),
+    ("a secret reference", _SECRET_REF),
+    ("IMAP", re.compile(r"\bIMAP\b", re.IGNORECASE)),
+    ("a port", re.compile(r"\bports?\b", re.IGNORECASE)),
+    ("TLS", re.compile(r"\bTLS\b")),
+    ("a token", re.compile(r"\btokens?\b", re.IGNORECASE)),
+    ("the command line", re.compile(r"\bCLI\b|\bcommands?\b", re.IGNORECASE)),
+)
+
+
+#: A raw mail header: a header's name and colon followed by an address in angle brackets or a bare address, or the
+#: name of a header only mail carries (`Received:`, `Message-ID:`).
+_MAIL_HEADER = re.compile(
+    r"\b(?:From|To|Cc|Bcc|Reply-To|Return-Path|Delivered-To):[ \t]*(?:[^<\n]{0,60}<[^>\s]+@[^>\s]+>|\S+@\S+)"
+    r"|\b(?:Message-ID|Received|In-Reply-To|References|X-[A-Za-z-]+):[ \t]*\S"
+)
+
+
+@lru_cache(maxsize=1)
+def _record_id() -> re.Pattern[str]:
+    """The pattern of the app's own record ids (`PRJ-12`), from the prefixes the record types declare."""
+    from engine.records import REGISTRY
+
+    prefixes = sorted({cls.prefix for cls in REGISTRY.values()}, key=len, reverse=True)
+    return re.compile(r"\b(?:" + "|".join(re.escape(p) for p in prefixes) + r")-\d+\b")
+
+
+def leaks(text: str) -> list[str]:
+    """What in text meant for the screen is data and not words (check U13): raw data (braces, quoted keys), a record id
+    of the app's own, or a raw mail header. A title, a message or a label shows none of them, whoever wrote the text. A
+    separate check from `problems`: it reads titles and messages the app builds from an input or a record, which the
+    settings-language check never sees."""
+    found = [f"shows raw data: {text[m.start() : m.start() + 24]!r}" for m in _RAW_DATA.finditer(text)]
+    found += [f"shows an internal id: {m.group()!r}" for m in _record_id().finditer(text)]
+    found += [f"shows a raw mail header: {m.group()[:24]!r}" for m in _MAIL_HEADER.finditer(text)]
+    return found
+
+
+def enabled() -> bool:
+    """Whether the developer switch is on."""
+    return os.environ.get(SWITCH) == "1"
+
+
+@lru_cache(maxsize=1)
+def _key_index() -> tuple[frozenset[str], frozenset[str]]:
+    """The settings keys as the schema declares them, and which of them hold a mapping or a list of records.
+
+    Each key is listed with the file's name in front and without it, with its parent groups. A path may go on under a
+    key that holds a mapping, with names the person chose."""
+    from engine.config import Config
+    from engine.config.schema import FILES
+    from engine.settings import describe
+
+    cfg = Config(files={name: model() for name, model in FILES.items()})
+    keys: set[str] = set()
+    mappings: set[str] = set()
+    for setting in describe(cfg):
+        for form in (setting.key, setting.key.partition(".")[2]):
+            parts = [p for p in form.split(".") if p]
+            keys.update(".".join(parts[:size]) for size in range(1, len(parts) + 1))
+            if setting.type == "other" and parts:
+                mappings.add(form)
+    return frozenset(keys), frozenset(mappings)
+
+
+def settings_keys() -> frozenset[str]:
+    """Every key the settings forms list, in every form a message could use (see `_key_index`)."""
+    return _key_index()[0]
+
+
+@lru_cache(maxsize=1)
+def command_names() -> frozenset[str]:
+    """The command line's subcommand names, read from its parser."""
+    import argparse
+
+    from engine.cli import _parser
+
+    names: set[str] = set()
+    for action in _parser()._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            names.update(action.choices)
+    return frozenset(names)
+
+
+def _is_key_path(token: str) -> bool:
+    keys, mappings = _key_index()
+    if token in keys:
+        return True
+    parts = token.split(".")
+    return any(".".join(parts[:size]) in mappings for size in range(1, len(parts)))
+
+
+def problems(text: str) -> list[str]:
+    """What in text meant for the screen names the product's insides; empty when nothing does."""
+    found: list[str] = []
+    text = without_links(text)
+    for match in _FILE_NAME.finditer(text):
+        found.append(f"names a settings file: {match.group()!r}")
+    for match in _BANNED_PHRASES.finditer(text):
+        found.append(f"names a settings file: {match.group()!r}")
+    for match in _SECRET_REF.finditer(text):
+        found.append(f"names a secret reference: {match.group()!r}")
+    for match in _MANIFEST_FIELD.finditer(text):
+        found.append(f"names a manifest field: {match.group()!r}")
+    for match in _DOTTED.finditer(text):
+        if _is_key_path(match.group()):
+            found.append(f"names a settings key: {match.group()!r}")
+    for match in _RAW_DATA.finditer(text):
+        found.append(f"shows raw data: {text[match.start() : match.start() + 24]!r}")
+    commands = command_names()
+    for match in re.finditer(r"\bcockpit ([a-z][a-z-]*)", text):
+        if match.group(1) in commands:
+            found.append(f"names a command: {match.group()!r}")
+    for match in _OTHER_COMMANDS.finditer(text):
+        found.append(f"names a command: {match.group()!r}")
+    return found
+
+
+def setup_problems(text: str) -> list[str]:
+    """What in a label or description on the setup path a person with no IT background couldn't read; empty when
+    nothing is. Stricter than `problems`, and applied only to what the setup path shows."""
+    found = []
+    for name, pattern in _SETUP_TERMS:
+        for match in pattern.finditer(without_links(text)):
+            found.append(f"names {name}: {match.group()!r}")
+    return found
+
+
+def _check(value: Any, handler: Any) -> str:
+    text = handler(value)
+    # A secret-reference field's input hint is the one text allowed to show the reference form.
+    if enabled() and not isinstance(value, SecretHint):
+        found = problems(text)
+        if found:
+            raise PydanticCustomError(
+                "screen_text", "text for the screen {problems}: {text}", {"problems": "; ".join(found), "text": text}
+            )
+    return text
+
+
+#: Text a person reads that the server writes. While the check is on, a value that `problems` flags is refused.
+ScreenText = Annotated[str, WrapValidator(_check)]
+
+
+def refusal(text: str) -> str | None:
+    """The reason an error message the app returns can't be shown, or None when it can (or the check is off)."""
+    if not enabled():
+        return None
+    found = problems(text)
+    return f"error text for the screen {'; '.join(found)}: {text}" if found else None
+
+
+__all__ = ["SWITCH", "ScreenText", "command_names", "enabled", "leaks", "problems", "refusal", "settings_keys"]

@@ -1,0 +1,129 @@
+// Coming back from a service's sign-in page: the app is opened at its root with `sign_in` (and the sign-in's name) in
+// the query string. One toast says how it went, then those parameters leave the address so a reload doesn't repeat it.
+import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
+import { api } from "./api";
+import { announceSignIn, refusedWords } from "./sign-in-window";
+import { useToasts } from "./toasts";
+import { useWords } from "./wording";
+
+const OUTCOMES = new Set(["done", "failed", "refused", "expired", "different"]);
+// The service's own words are untrusted text: shown as text only, and cut so a long one can't fill the screen.
+const MAX_ERROR = 80;
+const MAX_DETAIL = 200;
+const cut = (text: string, max: number) => Array.from(text.trim()).slice(0, max).join("");
+
+/** Removes the sign-in parameters from the address, keeping the path (the base path), any other parameters and the hash. */
+export function clearSignInParams(): void {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("sign_in");
+  url.searchParams.delete("name");
+  url.searchParams.delete("error");
+  url.searchParams.delete("detail");
+  url.searchParams.delete("address");
+  url.searchParams.delete("expected");
+  url.searchParams.delete("again");
+  const query = url.searchParams.toString();
+  window.history.replaceState(window.history.state, "", `${url.pathname}${query ? `?${query}` : ""}${url.hash}`);
+}
+
+/** Where a sign-in was started (the screen's address part after "#"), kept for this tab while the service's page is open. */
+const RETURN_KEY = "cockpit.sign-in-from";
+
+export function rememberReturn(): void {
+  try {
+    window.sessionStorage.setItem(RETURN_KEY, window.location.hash);
+  } catch {
+    // Without it the person comes back to Today, and the toast still says how it went.
+  }
+}
+
+/** The screen a sign-in was started from, once: it is forgotten as it is read. */
+function startedFrom(): string {
+  try {
+    const hash = window.sessionStorage.getItem(RETURN_KEY) ?? "";
+    window.sessionStorage.removeItem(RETURN_KEY);
+    return hash;
+  } catch {
+    return "";
+  }
+}
+
+/** Set when this window was opened by the service's page, not by the app's own window, and could not close itself: the
+ * app's own window already knows how it went, so this one says so and offers to go on here. */
+export interface HandedBack {
+  /** How it went, in words. */
+  message: string;
+  /** Goes on in this window. */
+  dismiss: () => void;
+}
+
+/** How long a window gets to close itself before it is taken to be one the app can't close. */
+const CLOSE_GRACE_MS = 400;
+
+export function useSignInReturn(): HandedBack | null {
+  const { t } = useWords();
+  const { push } = useToasts();
+  const client = useQueryClient();
+  const [stayed, setStayed] = useState<boolean>(false);
+  const [said, setSaid] = useState("");
+  // Whether the screen is still shown: the grace timer below outlives the screen when it goes first, and then does nothing.
+  // Kept apart from the announcing effect, which runs once, so a remount sets it again.
+  const shown = useRef(true);
+  useEffect(() => {
+    shown.current = true;
+    return () => {
+      shown.current = false;
+    };
+  }, []);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const outcome = params.get("sign_in");
+    if (outcome === null) return;
+    const name = params.get("name");
+    const error = cut(params.get("error") ?? "", MAX_ERROR);
+    const detail = cut(params.get("detail") ?? "", MAX_DETAIL);
+    const address = cut(params.get("address") ?? "", MAX_DETAIL);
+    const expected = cut(params.get("expected") ?? "", MAX_DETAIL);
+    const again = cut(params.get("again") ?? "", MAX_DETAIL);
+    // The address is cleaned first, so a second run of this effect (or a reload) finds nothing to announce. Then the
+    // screen the sign-in was started from opens again.
+    clearSignInParams();
+    const from = startedFrom();
+    if (from && !window.location.hash) window.location.hash = from;
+    if (!OUTCOMES.has(outcome)) return;
+    // A window the app opened for the sign-in tells the screen that waits for it, then closes itself.
+    announceSignIn({ outcome, name, error, detail, address, expected, again });
+    // Only a window the app opened can close itself; any other stays and says so below.
+    if (window.opener) {
+      try {
+        window.close();
+      } catch {
+        // The notice below still says how it went.
+      }
+    }
+    window.setTimeout(() => {
+      if (shown.current && !window.closed) setStayed(true);
+    }, CLOSE_GRACE_MS);
+    void (async () => {
+      let message = t(`sign_in.return.${outcome}`);
+      if (outcome === "refused") message = refusedWords(error, detail, t);
+      if (outcome === "different") message = t("sign_in.return.different", { address, expected });
+      if (outcome === "done") {
+        message = again ? t("sign_in.return.refreshed", { address: again }) : t("sign_in.return.done_generic");
+        try {
+          const all = await client.fetchQuery({ queryKey: ["sign-ins"], queryFn: api.signIns, staleTime: 0 });
+          const found = all.find((s) => s.name === name);
+          if (found) message = again ? t("sign_in.return.refreshed", { address: again }) : t("sign_in.return.done", { label: found.label });
+        } catch {
+          // The generic wording stands when the list can't be read.
+        }
+      }
+      push({ message });
+      setSaid(message);
+    })();
+    // Once, when the page opens after the sign-in page sent the person back; later changes of these never start it again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return stayed ? { message: said, dismiss: () => setStayed(false) } : null;
+}

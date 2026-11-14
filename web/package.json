@@ -1,0 +1,54 @@
+{
+  "name": "thimbleby-web",
+  "private": true,
+  "license": "FSL-1.1-ALv2",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "gen:api": "openapi-typescript src/api/openapi.json -o src/api/schema.d.ts",
+    "typecheck": "npm run gen:api && tsc --noEmit",
+    "lint": "npm run gen:api && eslint src --max-warnings 0",
+    "lint:css": "stylelint \"src/**/*.css\"",
+    "build": "npm run lint:css && npm run gen:api && tsc --noEmit && vite build",
+    "test": "vitest run",
+    "e2e": "playwright test",
+    "visual:capture": "node --experimental-strip-types --no-warnings visual/capture.ts"
+  },
+  "dependencies": {
+    "@fontsource-variable/fraunces": "5.2.9",
+    "@fontsource-variable/inter": "5.2.8",
+    "@internationalized/date": "3.12.4",
+    "@tanstack/react-query": "5.90.2",
+    "react": "19.1.1",
+    "react-aria-components": "1.13.0",
+    "react-dom": "19.1.1"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.10.2",
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.56.1",
+    "@testing-library/jest-dom": "6.8.0",
+    "@testing-library/react": "16.3.0",
+    "@testing-library/user-event": "14.6.1",
+    "@types/node": "22.18.8",
+    "@types/react": "19.1.13",
+    "@types/react-dom": "19.1.9",
+    "@vitejs/plugin-react": "5.0.4",
+    "eslint": "10.14.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "globals": "17.14.0",
+    "jsdom": "27.0.0",
+    "openapi-typescript": "7.9.1",
+    "playwright-core": "1.56.1",
+    "postcss-value-parser": "4.2.0",
+    "stylelint": "17.16.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.2",
+    "vite": "7.3.7",
+    "vitest": "5.0.3"
+  }
+}

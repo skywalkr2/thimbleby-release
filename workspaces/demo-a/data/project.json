@@ -1,0 +1,68 @@
+[
+  {
+    "aliases": [
+      "RTE"
+    ],
+    "group": "Freight Platform",
+    "id": "PRJ-1",
+    "links": [
+      {
+        "label": "Rollout status page",
+        "url": "https://wiki.example.com/pages/1201"
+      }
+    ],
+    "name": "Route Optimizer Rollout",
+    "owner": "PER-3",
+    "status": "On track",
+    "target": "2026-12-15"
+  },
+  {
+    "group": "Customer Billing",
+    "id": "PRJ-2",
+    "name": "Invoice Engine Migration",
+    "owner": "PER-4",
+    "status": "At risk",
+    "target": "2027-02-01"
+  },
+  {
+    "group": "Freight Platform",
+    "id": "PRJ-3",
+    "name": "Carrier Portal Refresh",
+    "owner": "PER-6",
+    "roles": [
+      {
+        "person": "PER-1",
+        "role": "watch"
+      }
+    ],
+    "status": "Not started"
+  },
+  {
+    "id": "PRJ-21",
+    "name": "Home and family"
+  },
+  {
+    "id": "PRJ-22",
+    "name": "Freight desk"
+  },
+  {
+    "id": "PRJ-23",
+    "name": "Dispatch handover",
+    "parent": "PRJ-22"
+  },
+  {
+    "id": "PRJ-24",
+    "name": "Carrier onboarding",
+    "parent": "PRJ-22"
+  },
+  {
+    "id": "PRJ-25",
+    "name": "Night shift rota",
+    "parent": "PRJ-22"
+  },
+  {
+    "id": "PRJ-2001",
+    "name": "The long-running cross-regional coordination program for every season of the year, with all of its many parts and its very long title",
+    "owner": "PER-2001"
+  }
+]

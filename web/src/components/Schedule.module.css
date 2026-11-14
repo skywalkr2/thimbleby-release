@@ -1,0 +1,401 @@
+/* The calendar page: a bar of controls, then the day, week or month, with an entry's details beside it. Nothing here is wider
+   than its column: titles wrap, a day's columns share the room, and a month cell shrinks to a count and dots. */
+/* Two steps on the page's head: the same small one inside the title block (title, summary, account line) and inside the controls (the moves,
+   the views and the key), and one larger one between the two blocks. */
+.header { gap: var(--space-2); }
+.header :global([data-sub-held]) { min-height: 0; }
+.bar { display: grid; gap: var(--space-2); margin-top: var(--space-3); min-width: 0; }
+/* The line under the title: the clash count in plain words with a small "Show first" beside it, then the counts. Each part stays whole;
+   the counts are one piece joined by dots, so a dot is never first on a line. */
+.summary { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: var(--space-4); row-gap: 0; min-width: 0; }
+.summaryPart { display: inline-flex; flex-wrap: wrap; align-items: baseline; column-gap: var(--space-2); min-width: 0; }
+.summaryPart [data-clash-count] { color: var(--text); font-weight: var(--weight-medium); }
+.summaryPart :global(.link-button) { font-size: var(--text-meta); line-height: var(--lh-meta); font-weight: var(--weight-regular); min-height: 0; }
+@media (max-width: 639.98px) { .summaryPart { flex: 1 1 100%; } }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4); min-width: 0; }
+.nav { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.back svg { transform: rotate(180deg); }
+.range { margin: 0; flex: 1 1 12rem; min-width: 0; font-size: var(--text-lg); line-height: var(--lh-lg); font-weight: var(--weight-semibold); overflow-wrap: anywhere; }
+.views { max-width: 100%; }
+/* The Timeline's range is its own group, set off from the views by a rule, so two switches never read as one row of tabs. */
+.rangeSwitch { display: inline-flex; align-items: center; padding-left: var(--space-4); border-left: 1px solid var(--border-strong); }
+/* On a phone the view switch is one row of segments that share the width, never a second line with one view on it. */
+@media (max-width: 639.98px) {
+  /* The moves and the range are one row that never wraps: the range is short and gives way with an ellipsis. */
+  .navRow { flex-wrap: nowrap; }
+  .navRow .nav { flex: none; flex-wrap: nowrap; }
+  .range { flex: 1 1 0; min-width: 0; font-size: var(--text-md); line-height: var(--lh-md); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row { column-gap: var(--space-2); }
+  .rangeSwitch { display: flex; width: 100%; padding-left: 0; border-left: 0; }
+  /* The views and Filter are one row: the views share what the button leaves. */
+  .viewsRow { flex-wrap: nowrap; }
+  .viewsRow .views { flex: 1 1 0; width: auto; min-width: 0; gap: 0; }
+  .viewsRow .views > button { padding-inline: var(--space-1); }
+  .views { display: flex; width: 100%; justify-content: space-between; gap: var(--space-2); }
+  .views > button { flex: 1 1 auto; min-width: 0; padding-inline: var(--space-1); justify-content: center; }
+}
+.frame { min-width: 0; touch-action: pan-y; }
+/* The meeting count stays whole, so it moves to the next line as one piece rather than splitting from its number. */
+.meetings { white-space: nowrap; }
+.none { margin: var(--space-3) 0 0; color: var(--text-muted); font-size: var(--text-sm); }
+.caption { margin: 0; font-size: var(--text-xs); line-height: var(--lh-xs); font-weight: var(--weight-semibold); color: var(--text-subtle); }
+
+/* An entry: a button with its title, its start and its calendar's color; the calendar's name is in its name for a screen
+   reader. A calendar's color is on the entry's 3px edge and, softly, in its fill, so a block is told from its neighbor at a glance
+   in day and night; the app's own entries and due dates have a dashed edge as well, so the kinds differ by shape. */
+.chip {
+  --cal: var(--border-strong);
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--space-1); width: 100%; min-width: 0; max-width: 100%; height: 100%;
+  min-height: 1.75rem; padding: var(--space-1) var(--space-2); text-align: left; font: inherit; font-size: var(--text-meta); line-height: var(--lh-meta);
+  color: var(--text); background: color-mix(in srgb, var(--cal) 14%, var(--surface)); border: 0; border-left: 3px solid var(--cal); border-radius: var(--radius-sm); cursor: pointer; overflow: hidden;
+}
+.chip:hover { background: color-mix(in srgb, var(--cal) 22%, var(--surface)); }
+.chip:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.own { border-left-style: dashed; }
+/* An entry from a calendar that needs signing in again has a dotted edge as well as its words. */
+.chip[data-stale] { border-left-style: dashed; outline: 1px dashed var(--border-strong); outline-offset: -1px; }
+.staleNote { display: block; flex-basis: 100%; font-size: var(--text-xs); line-height: var(--lh-xs); font-weight: var(--weight-semibold); color: var(--text-muted); }
+.selected { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+.name { min-width: 0; overflow-wrap: anywhere; font-weight: var(--weight-semibold); }
+.struck { text-decoration: line-through; }
+.when { flex: none; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+/* The grid's block: the title in the control weight, the time and the calendar on a line under it. A block too short for two lines
+   runs them on after the title. */
+.block { display: grid; align-content: start; align-items: start; gap: 0; border-radius: var(--radius-md); overflow: hidden; }
+.block[data-color] { background: color-mix(in srgb, var(--cal) 24%, var(--surface)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cal) 70%, var(--surface)); }  /* a tile's own edge: it is told from the page at 3:1 by night as well as by day */
+.block[data-color]:hover { background: color-mix(in srgb, var(--cal) 32%, var(--surface)); }
+.block .name { font-weight: var(--weight-medium); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; }
+.line { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-meta); line-height: var(--lh-meta); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.lineTime { white-space: nowrap; }  /* the time is never cut or broken across two lines; the place after it is what gives way */
+.block:not([data-short]) .line { white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; }
+.block[data-short] { display: flex; flex-wrap: wrap; align-content: safe center; align-items: center; gap: 0 var(--space-2); padding-block: 0; overflow: hidden; }
+.block[data-short] .name { flex: 0 0 auto; max-width: 100%; }  /* the title keeps its room; the time after it gives way first */
+.block[data-short] .line { flex: 0 0 auto; max-width: 100%; }  /* the time follows the title when it fits, else it is not drawn half (it is in the tooltip) */
+.block > [data-pill] { justify-self: start; }
+/* A calendar's color: a small round mark beside its name (and the tick of its toggle). The name is always there, so the mark is never
+   the only sign. The color names are the order the app hands them out in; each stands for a slot of the theme's marks (--cal-1 to
+   --cal-8), whose hues are the theme's. */
+.mark { display: inline-block; flex: none; width: 0.65em; height: 0.65em; margin-right: var(--space-1); border-radius: var(--radius-full); background: var(--cal, var(--text-subtle)); vertical-align: baseline; }
+:is(.chip, .mark, .tick, .clashRow)[data-color="blue"] { --cal: var(--cal-1); }
+:is(.chip, .mark, .tick, .clashRow)[data-color="teal"] { --cal: var(--cal-2); }
+:is(.chip, .mark, .tick, .clashRow)[data-color="green"] { --cal: var(--cal-3); }
+:is(.chip, .mark, .tick, .clashRow)[data-color="orange"] { --cal: var(--cal-4); }
+:is(.chip, .mark, .tick, .clashRow)[data-color="red"] { --cal: var(--cal-5); }
+:is(.chip, .mark, .tick, .clashRow)[data-color="pink"] { --cal: var(--cal-6); }
+:is(.chip, .mark, .tick, .clashRow)[data-color="purple"] { --cal: var(--cal-7); }
+:is(.chip, .mark, .tick, .clashRow)[data-color="gray"] { --cal: var(--cal-8); }
+/* With several sides an entry's edge (and soft fill) is its side's color, the same slot as the side's dot beside its name. */
+.chip[data-side-slot="1"] { --cal: var(--side-1); } .chip[data-side-slot="2"] { --cal: var(--side-2); } .chip[data-side-slot="3"] { --cal: var(--side-3); }
+.chip[data-side-slot="4"] { --cal: var(--side-4); } .chip[data-side-slot="5"] { --cal: var(--side-5); } .chip[data-side-slot="6"] { --cal: var(--side-6); }
+.chip[data-side-slot="7"] { --cal: var(--side-7); } .chip[data-side-slot="8"] { --cal: var(--side-8); }
+.block[data-side-slot] { background: color-mix(in srgb, var(--cal) 24%, var(--surface)); }
+.block[data-side-slot]:hover { background: color-mix(in srgb, var(--cal) 32%, var(--surface)); }
+.block[data-side-slot][data-selected] { background: var(--accent-soft); }
+.mark[data-hidden] { background: transparent; box-shadow: inset 0 0 0 2px var(--text-subtle); }
+
+/* A clash: the card is as tall as its rows, never taller, so no part of it is empty tint; it starts where the first meeting starts.
+   The meetings that overlap that overlap are one card naming them all, with the word and an icon, so it is never told by color alone. */
+.slot[data-clash] { z-index: 2; }
+.clash { container-type: inline-size; box-sizing: border-box; height: 100%; margin: 0; padding: var(--space-2); border: 1px solid var(--danger); border-radius: var(--radius-md); background: var(--danger-soft); overflow: hidden; min-width: 0; }  /* exactly the meetings' span: a card never covers the next entry; rows that don't fit whole are counted in its "+N more" */
+.clashHead { display: flex; align-items: flex-start; gap: var(--space-1); min-width: 0; margin: 0; font-size: var(--text-meta); line-height: var(--lh-meta); font-weight: var(--weight-medium); color: var(--danger); }
+.clashHead svg { flex: none; }
+.clashHeadPart { display: flex; align-items: flex-start; gap: var(--space-1); min-width: 0; }
+.clashHeadPart[hidden] { display: none; }
+.clashText { min-width: 0; overflow-wrap: anywhere; }
+.clashRows { list-style: none; margin: var(--space-1) 0 0; padding: 0; display: grid; gap: var(--space-1); min-width: 0; }
+.clashRows > li { min-width: 0; }
+.clashRow { --cal: var(--text-subtle); min-height: var(--entry-min); display: flex; flex-wrap: nowrap; align-items: flex-start; height: auto; gap: var(--space-1); width: 100%; min-width: 0; padding: 0; border: 0; background: transparent; color: var(--text); font: inherit; font-size: var(--text-meta); line-height: var(--lh-meta); text-align: left; cursor: pointer; }
+.clashRow:hover { background: color-mix(in srgb, var(--cal) 18%, transparent); }
+.clashRow:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.clashRow .name { font-weight: var(--weight-regular); min-width: 0; overflow-wrap: anywhere; white-space: normal; }  /* a card lists every title in full, never cut */
+.clashRow .mark { margin-right: 0; align-self: center; }  /* level with the row, whole inside it */
+/* A row of a clash card is a light row of its own on the card's tint, with its side's color on its edge, so its times and names read in day and night. */
+.clashRow.block, .clashRow.block[data-side-slot] { background: var(--surface); color: var(--text); border-left: 3px solid var(--cal); border-radius: var(--radius-sm); padding: 0 var(--space-2); }
+/* In a narrow card the side is its dot, so a row is one line when it can be; its name is on hover and in the row's accessible name. */
+@container (max-width: 15rem) { .clashRow :global([data-side-mark]) > :global(span:last-child) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; } }
+.clashRow.block:hover, .clashRow.block[data-side-slot]:hover { background: var(--surface-hover); }
+.clashRow[data-side-slot="1"] { --cal: var(--side-1); } .clashRow[data-side-slot="2"] { --cal: var(--side-2); } .clashRow[data-side-slot="3"] { --cal: var(--side-3); } .clashRow[data-side-slot="4"] { --cal: var(--side-4); }
+.clashRow[data-side-slot="5"] { --cal: var(--side-5); } .clashRow[data-side-slot="6"] { --cal: var(--side-6); } .clashRow[data-side-slot="7"] { --cal: var(--side-7); } .clashRow[data-side-slot="8"] { --cal: var(--side-8); }
+
+/* The calendar toggles: the word, then one pill for each calendar with a tick box in its color; hidden is said in words as well as by
+   the empty box. On a phone the pills scroll inside their own row, never cut and never moving the page. */
+.toggles { position: relative; display: flex; align-items: center; gap: var(--space-2) var(--space-3); flex: 1 1 0; order: 2; min-width: 12rem; }
+.togglesLabel { flex: none; font-size: var(--text-meta); line-height: var(--lh-meta); color: var(--text-muted); }
+/* The calendars are one line that scrolls inside its own row, so the controls above stay in two rows at any width; an edge fades
+   where more is out of sight. */
+.legend { list-style: none; margin: calc(-1 * var(--space-1)) 0; padding: var(--space-1) 0; display: flex; flex-wrap: nowrap; gap: var(--space-2); flex: 1 1 auto; min-width: 0; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; scroll-snap-type: x proximity; }
+.legend::-webkit-scrollbar { display: none; }
+/* Too wide for its line, the row is not shown: it stays laid out, out of sight, so it can be measured (it lies to the left of the button, where nothing scrolls), and one button opens the list. */
+.toggles[data-collapsed] .legend { position: absolute; right: 100%; top: 0; width: max-content; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; }
+.legendRows { list-style: none; margin: 0; padding: var(--space-1) 0; display: grid; gap: var(--space-2); justify-items: start; }
+.legendRows > li { min-width: 0; max-width: 100%; }
+.legendSheet { display: grid; gap: var(--space-1); }
+.sheetCaption { margin: 0; padding: 0 var(--space-2); color: var(--text-muted); font-size: var(--text-meta); line-height: var(--lh-meta); font-weight: var(--weight-semibold); }
+.legend > li { flex: none; min-width: 0; max-width: 80%; scroll-snap-align: start; }
+.legendButton {
+  display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%; min-height: var(--btn-h-sm); padding: 0 var(--space-3); font: inherit; font-size: var(--text-meta);
+  line-height: var(--lh-meta); font-weight: var(--weight-medium); color: var(--text); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-btn); cursor: pointer;
+}
+.legendButton[aria-pressed="false"] { color: var(--text-muted); background: var(--surface-sunk); }
+.legendButton:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.tick { --cal: var(--text-subtle); display: inline-grid; place-items: center; flex: none; width: 16px; height: 16px; border-radius: var(--radius-sm); background: var(--cal); color: var(--surface); }
+.tick[data-hidden] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--border-strong); }
+.legendName { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.legendHidden { flex: none; font-size: var(--text-xs); line-height: var(--lh-xs); font-weight: var(--weight-semibold); }
+@media (max-width: 639.98px) {
+  .toggles { flex: 1 1 100%; flex-direction: column; align-items: stretch; gap: var(--space-1); }
+}
+:global([data-narrow]) .toggles { flex: 1 1 100%; flex-direction: column; align-items: stretch; gap: var(--space-1); }
+
+/* The time grid: an hour column and a column for each day, in three rows: the day headings, the all-day strip and the hours. */
+.grid {
+  --hour: max(4.5rem, calc((100vh - 22rem) / var(--rows, 12))); --hours-w: 4rem; --entry-min: 1.75rem;
+  display: grid; grid-template-columns: var(--hours-w) repeat(var(--cols, 1), minmax(0, 1fr)); min-width: 0;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
+}
+/* The grid never scrolls inside itself (nothing is cut): its hours shrink to a readable minimum to fit the window, and when they still do not fit the page scrolls, the headings staying under the top bar. */
+.scroller { min-width: 0; overflow: clip; border-radius: var(--radius-lg); }
+.corner { position: sticky; top: var(--header-h, 0px); z-index: 3; background: var(--surface); border-bottom: 1px solid var(--border); }
+.colHead { position: sticky; top: var(--header-h, 0px); z-index: 3; background: var(--surface); margin: 0; padding: var(--space-2); font-size: var(--text-sm); line-height: var(--lh-sm); font-weight: var(--weight-semibold); border-left: 1px solid var(--border); border-bottom: 1px solid var(--border); overflow-wrap: anywhere; min-width: 0; }
+/* Up to six days (a work week, with today on a day off) the heading is one line: a little tighter below the wide layout, never cut by a wrap. */
+.grid[data-few] .colHead { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 1279.98px) { .grid[data-few] .colHead { padding-inline: var(--space-1); font-size: var(--text-meta); line-height: var(--lh-meta); } }
+.colHead[data-today] { background: var(--today-tint); }
+.stripLabel { position: sticky; top: calc(var(--header-h, 0px) + var(--head-h, 2.5rem)); z-index: 2; background: var(--surface); padding: var(--space-2) var(--space-1); font-size: var(--text-meta); line-height: var(--lh-meta); color: var(--text-muted); border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.strip { position: sticky; top: calc(var(--header-h, 0px) + var(--head-h, 2.5rem)); z-index: 2; background: var(--surface); max-height: 7rem; overflow: hidden; list-style: none; margin: 0; padding: var(--space-1); display: grid; align-content: start; gap: var(--space-1); min-width: 0; min-height: 2rem; border-left: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.strip > li { min-width: 0; }
+.strip .chip { height: auto; flex-wrap: nowrap; align-items: center; }
+.strip .chip[data-stale] { flex-wrap: wrap; }
+.strip .chip .name { flex: 0 1 auto; }
+.strip[data-today] { background: var(--today-tint); }
+.hours { position: relative; height: calc(var(--rows, 12) * var(--hour)); }
+.hoursSwitch { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); min-width: 0; min-height: var(--hit-min); }
+.hoursLead { flex: 1 1 0; min-width: 0; }
+/* A quiet link: the switch is a convenience, never as loud as the page's own links. */
+.hoursHeld { min-height: var(--hit-min); }
+/* "Show all hours" is a bordered button at the right of the line above the grid, where the key to the sides is at the left. */
+.hoursButton { flex: none; min-height: var(--hit-min); padding: 0 var(--space-3); font: inherit; font-size: var(--text-meta); line-height: var(--lh-meta); font-weight: var(--weight-medium); color: var(--text); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-full); cursor: pointer; }
+.hoursButton:hover { background: var(--surface-hover); }
+.hoursButton:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.times { flex: none; white-space: nowrap; font-size: var(--text-meta); line-height: var(--lh-meta); font-weight: var(--weight-regular); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.hour { position: absolute; right: var(--space-3); transform: translateY(-50%); font-size: var(--text-meta); line-height: var(--lh-meta); color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.lane {
+  list-style: none; margin: 0; padding: 0; position: relative; min-width: 0; height: calc(var(--rows, 12) * var(--hour)); border-left: 1px solid var(--border);
+  background-image: repeating-linear-gradient(to bottom, transparent 0, transparent calc(var(--hour) - 1px), var(--border) calc(var(--hour) - 1px), var(--border) var(--hour));
+}
+.lane[data-today] { background-color: var(--today-tint); }
+.slot { position: absolute; min-width: 0; min-height: 2rem; padding: 0 var(--hairline) var(--hairline) 0; box-sizing: border-box; border: 0; }  /* a 1px gap under and beside it: back-to-back meetings stay apart, with their times true */
+.hour[data-first] { transform: none; margin-top: var(--space-1); }
+.now { position: absolute; left: 0; right: 0; height: 0; border-top: 2px solid var(--danger); z-index: 2; pointer-events: none; }
+.now::before { content: ""; position: absolute; left: -0.3rem; top: -0.3rem; width: 0.6rem; height: 0.6rem; border-radius: var(--radius-full); background: var(--danger); }
+
+/* The Month view. */
+.month { container-type: inline-size; min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
+.weekdays { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); border-bottom: 1px solid var(--border); }
+.weekdays > span { padding: var(--space-1) calc(2 * var(--space-1)); text-align: left; font-size: var(--text-xs); line-height: var(--lh-xs); color: var(--text-subtle); font-weight: var(--weight-semibold); overflow: hidden; }
+/* A weekday is centered over the day number's own box, so the name and the numbers below it share one edge and one center. */
+.weekdayName { display: block; width: 1.75rem; text-align: center; overflow: hidden; text-overflow: clip; white-space: nowrap; }
+.cells { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); grid-auto-rows: minmax(6.5rem, auto); }  /* a week is as tall as its fullest day, an empty week no taller than a day needs */
+.cell { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; min-height: 6.5rem; padding: var(--space-1); border-left: 1px solid var(--border); border-top: 1px solid var(--border); }
+.cell:nth-child(7n + 1) { border-left: 0; }
+.cell[data-outside] { color: var(--text-muted); }
+.cell[data-outside] .dayNumber { font-weight: var(--weight-regular); }
+.dayButton { display: flex; align-items: center; justify-content: space-between; gap: var(--space-1); width: 100%; min-height: 2rem; padding: var(--space-1); font: inherit; font-size: var(--text-sm); color: inherit; background: transparent; border: 0; border-radius: var(--radius-sm); cursor: pointer; text-align: left; }
+.dayButton:hover { background: var(--surface-hover); }
+.dayButton:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.dayNumber { font-weight: var(--weight-semibold); }
+.dayNumber { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 1.75rem; height: 1.75rem; border-radius: var(--radius-full); }
+/* Today is ink on the day's number, not the brand color, so the brand stays for actions and the clash keeps the one warning color. */
+.cell[data-today] .dayNumber { background: var(--accent); color: var(--text-on-accent); }
+.count { display: none; min-width: 1.5rem; height: 1.5rem; box-sizing: border-box; align-items: center; justify-content: center; padding: 0 var(--space-1); text-align: center; font-size: var(--text-xs); line-height: var(--lh-xs); border-radius: var(--radius-full); box-shadow: inset 0 0 0 1px var(--border-strong); }
+.titles { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-1); min-width: 0; }
+.titles > li { min-width: 0; }
+/* The title comes first and keeps the width; the time follows it. */
+.titles .when { order: 2; flex: none; color: var(--text-muted); }
+.clashMark { display: inline-flex; align-items: center; gap: var(--space-1); color: var(--danger); margin-left: auto; font-size: var(--text-xs); line-height: var(--lh-xs); font-weight: var(--weight-semibold); min-width: 0; }
+/* The count in words never breaks inside a word; in a narrow cell it is the icon and the number, and the words are for a screen reader. */
+.clashMarkText { min-width: 0; white-space: nowrap; }
+.clashMarkNum { display: none; }
+.titles .chip { position: relative; height: auto; flex-wrap: wrap; }
+/* A title that does not fit takes another line, and a second; past two lines it ends in an ellipsis, and the chip's `title` says it whole. */
+.titles .name { flex: 0 1 auto; min-width: 0; max-width: calc(100% - 1.25rem); overflow-wrap: anywhere; white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.more { min-height: var(--hit-min); padding: 0 var(--space-3); font: inherit; font-size: var(--text-meta); line-height: var(--lh-meta); font-weight: var(--weight-semibold); color: var(--text); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-full); cursor: pointer; }
+.more:hover { background: var(--surface-hover); }
+.more:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.dots { display: none; flex-wrap: wrap; gap: var(--space-1); padding: 0 var(--space-1); }
+.dot { width: 0.625rem; height: 0.625rem; border-radius: var(--radius-full); background: var(--cal, var(--text-muted)); }
+.dot[data-color="blue"] { --cal: var(--cal-1); } .dot[data-color="teal"] { --cal: var(--cal-2); } .dot[data-color="green"] { --cal: var(--cal-3); } .dot[data-color="orange"] { --cal: var(--cal-4); }
+.dot[data-color="red"] { --cal: var(--cal-5); } .dot[data-color="pink"] { --cal: var(--cal-6); } .dot[data-color="purple"] { --cal: var(--cal-7); } .dot[data-color="gray"] { --cal: var(--cal-8); }
+.dot[data-own] { background: transparent; box-shadow: inset 0 0 0 1px var(--text-muted); }
+/* In a narrow space a day keeps its number, its count and a row of dots; the day opens in Day view. */
+@container (max-width: 56rem) {
+  /* Cells too narrow for a time and a title: the title keeps the room; the time stays for a screen reader. */
+  .titles .when { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
+@container (max-width: 36rem) {
+  /* The day's button fills the cell, so it is a finger wide as well as tall. */
+  .cell { min-height: 4.5rem; padding: 0; }
+  .weekdays > span { padding-inline: var(--space-1); }
+  .dayButton { min-height: 2.75rem; }
+  .titles { display: none; }
+  .clashMarkText { display: none; }
+  .clashMarkNum { display: inline; }
+  .count, .dots { display: flex; }
+  .dayButton { flex-direction: column; align-items: flex-start; }
+}
+
+/* One bar for an all-day entry over several days: it runs through the cell's padding and border into the next day, and its title is
+   read once, at the start of each week's row. */
+.titles .chip[data-join-from] { left: calc(-1 * var(--space-1) - 0.0625rem); border-top-left-radius: 0; border-bottom-left-radius: 0; border-left-width: 0; }
+.titles .chip[data-join-to] { margin-right: calc(-1 * var(--space-1)); border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.titles .chip[data-join-from] .name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.titles .chip[data-join-from], .titles .chip[data-join-to] { max-width: none; }
+.titles .chip[data-join-from] .mark { display: none; }
+.titles .chip[data-join-from] { width: calc(100% + var(--space-1) + 0.0625rem); }
+.titles .chip[data-join-to] { width: calc(100% + var(--space-1)); }
+.titles .chip[data-join-from][data-join-to] { width: calc(100% + 2 * var(--space-1) + 0.0625rem); }
+
+/* Undated deliveries, under the calendar. */
+.waiting { display: grid; gap: var(--space-2); margin-top: var(--space-3); min-width: 0; }
+.waitList { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-1); min-width: 0; }
+.waitList .chip { height: auto; }
+
+/* An entry's details. */
+.pane { display: grid; gap: var(--space-3); min-width: 0; }
+.paneNote { margin: 0; font-size: var(--text-sm); line-height: var(--lh-sm); color: var(--text); }
+.paneActs { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4); }
+/* On a phone the one main action of the details takes the width and a finger's height. */
+:global([data-narrow]) .paneActs > a { flex: 1 1 100%; justify-content: center; min-height: var(--tap-min); }
+.paneActs > a { min-width: 0; }
+
+/* The week as a list by day, for a phone. */
+.list { min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
+.listDay { min-width: 0; }
+.listDay[data-today] { background: var(--today-tint); }
+.listRows { list-style: none; margin: 0; padding: 0; min-width: 0; }
+.listRow { min-width: 0; border-top: 1px solid var(--border); }
+.listRow:first-child { border-top: 0; }
+.listButton { display: grid; grid-template-columns: var(--row-lead-w) minmax(0, 1fr); column-gap: var(--space-3); align-items: start; width: 100%; padding: var(--space-3) var(--space-4); text-align: left; font: inherit; color: var(--text); background: transparent; border: 0; cursor: pointer; min-width: 0; }
+.listButton:hover { background: var(--surface-hover); }
+.listButton:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.listButton[data-selected] { background: var(--accent-soft); }
+.listButton[data-stale] { border-left: 3px dashed var(--border-strong); padding-left: calc(var(--space-4) - var(--space-1)); }
+.listMeta .staleNote { flex-basis: auto; }
+.listLead { display: grid; place-items: center; min-height: var(--lh-md); }
+.listMain { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; }
+.listTitle { font-size: var(--text-md); line-height: var(--lh-md); font-weight: var(--row-title-weight); overflow-wrap: anywhere; }
+.listMeta { display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--space-2); font-size: var(--text-meta); line-height: var(--lh-meta); color: var(--text-muted); overflow-wrap: anywhere; }
+.listNone { margin: 0; padding: var(--space-3) var(--space-4); background: var(--surface-sunk); color: var(--text-muted); font-size: var(--text-meta); line-height: var(--lh-meta); border-top: 1px solid var(--border); }
+.listClash { background: linear-gradient(90deg, var(--danger-soft) 0, transparent 70%), var(--surface); box-shadow: inset 3px 0 0 var(--danger); }
+.listClashHead { display: flex; align-items: center; gap: var(--space-2); margin: 0; padding: var(--space-3) var(--space-4) 0; font-size: var(--text-meta); line-height: var(--lh-meta); font-weight: var(--weight-medium); }
+.listClashHead svg { color: var(--danger); flex: none; }
+.listClash .listButton { padding-block: var(--space-1); }
+.listClash .listRows { padding-bottom: var(--space-2); }
+.listClash .listRow { border-top: 0; }
+
+/* A calendar that needs the person to sign in: one line over the calendar, with the one button. */
+.staleList { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2); min-width: 0; }
+
+.staleList > li { box-sizing: border-box; min-height: 3rem; }  /* as tall as the line with its button, so a line that comes before its button does not move the page */
+.calendarName { display: inline-flex; align-items: center; min-width: 0; }
+
+/* The grid's loading shape: a heading row, then hour rows, a column for each day, in the soft tone the other loading shapes use. */
+.gridSkeleton { --skeleton: color-mix(in srgb, var(--text) 13%, var(--surface)); display: grid; grid-template-columns: 4rem repeat(var(--cols, 1), minmax(0, 1fr)); grid-auto-rows: 4.5rem; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); overflow: hidden; }
+.gridSkeleton > .skeletonHead { grid-row: 1; height: 1rem; align-self: center; margin: var(--space-2); border-radius: var(--radius-sm); background: var(--skeleton); animation: skeleton-pulse 1.4s ease-in-out infinite; }
+.skeletonHour { grid-column: 1; align-self: start; width: 2rem; height: 0.75rem; margin: var(--space-2); border-radius: var(--radius-sm); background: var(--skeleton); }
+.skeletonCell { border-left: 1px solid var(--border); border-top: 1px solid var(--border); }
+@keyframes skeleton-pulse { 50% { opacity: 0.55; } }
+@media (prefers-reduced-motion: reduce) { .gridSkeleton > .skeletonHead { animation: none; } }
+/* On a phone the chosen day's entries under the month. */
+.dayList { display: grid; gap: var(--space-2); margin-top: var(--space-3); min-width: 0; }
+.dayList .caption { margin: 0; }
+
+/* The card that says a range is empty keeps the toolbar's rhythm above it. */
+.emptyCard { margin-top: var(--space-2); }
+/* The empty day's card is centred in the content width, capped by the shared card. */
+.emptyCard.emptyCard { width: 100%; box-sizing: border-box; }
+
+/* A to-do among a day's entries: its mark, then the entry's own button, in one row. */
+.dueRow { display: flex; align-items: center; gap: var(--space-1); min-width: 0; }
+.dueRow > :last-child { flex: 1 1 auto; min-width: 0; }
+
+/* A cut grid says so: a pill stuck to the frame's top or bottom edge, out of the flow, that scrolls to the meetings it counts. */
+/* The cue that says meetings are out of sight sits beside the frame, above or below it, never over a card. */
+.cueAbove, .cueBelow { display: flex; justify-content: center; padding: var(--space-1) 0; }
+.cue { pointer-events: auto; min-height: var(--hit-min); padding: 0 var(--space-3); border: 1px solid var(--border-strong); border-radius: var(--radius-full); background: var(--surface); color: var(--text); box-shadow: var(--elev-2); font-family: var(--font-ui); font-size: var(--text-sm); line-height: var(--lh-sm); font-weight: var(--weight-semibold); cursor: pointer; }
+.cue:hover { background: var(--surface-hover); }
+.cue:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+
+/* A clash where the column has room: each meeting at its own start and end, side by side, with a danger outline, and one "Clash" marker
+   (an icon and a word) on the first. Narrower, the one card above holds them all. */
+.slot[data-clash][data-side] { min-height: 2rem; }
+.clashSide { list-style: none; margin: 0; padding: 0; position: relative; height: 100%; }
+.clashMember { position: absolute; min-width: 0; box-sizing: border-box; padding: 0; border: 1.5px solid var(--danger); border-radius: var(--radius-md); background: var(--surface); }
+.clashMember[data-plain] { border-color: var(--border-strong); }  /* shares the time with a clash but is no part of it */
+.clashMember > button { width: 100%; height: 100%; }
+.clashMember .block .name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; white-space: normal; overflow-wrap: anywhere; text-overflow: ellipsis; }  /* a lane's title takes up to two lines, then an ellipsis; the whole title shows on hover and focus */
+/* A lane shorter than an hour has room for a title line and the time: the place goes first, then the title keeps to one line (the whole of it is on hover and focus). The start time never shortens. */
+.clashMember .block[data-short] .linePlace { display: none; }
+.clashMember .block[data-short] .name { -webkit-line-clamp: 1; line-clamp: 1; }
+.clashMember .block:not([data-short]) { grid-template-rows: max-content minmax(0, 1fr); }
+.clashMember .block[data-tagged]:not([data-short]) { grid-template-rows: max-content max-content minmax(0, 1fr); }  /* the title keeps its lines; the line under it gives way, never the title */
+.clashMember .block:not([data-short]) .line { display: block; align-self: stretch; white-space: normal; overflow-wrap: anywhere; }  /* as tall as the row it is in, so what is too long for it is cut by it and does not run past the box */
+/* In a lane the place goes under the time, whole words on two lines at most, with no separator that could start a line; the whole is on hover and focus. */
+.clashMember .block:not([data-short]) .lineTime, .clashMember .block:not([data-short]) .linePlace { display: block; }
+.clashMember .block:not([data-short]) .linePlace { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.clashMember .block .sep { display: none; }
+.clashMember .block[data-place-one] .linePlace { -webkit-line-clamp: 1; line-clamp: 1; }
+.clashMember .block[data-place-hidden] .linePlace { display: none; }
+.clashTag { display: flex; align-items: center; gap: var(--space-1); color: var(--danger); font-size: var(--text-xs); line-height: var(--lh-xs); font-weight: var(--weight-semibold); }  /* the first lane's first line: the icon and the word */
+/* The lane with the tag has no vertical padding, so the tag, a two-line title and the time all fit a lane an hour tall. */
+.clashMember .block[data-tagged] { padding-block: 0; }
+.clashMember .block[data-short] .clashTag { flex: 0 0 100%; }
+.clashTag svg { flex: none; }
+
+/* Entries that overlap without clashing and are too many for the day's width: one card, in the neutral edge. */
+.overlapCard { border-color: var(--border-strong); background: var(--surface-sunk); }
+.overlapCard .clashHead { color: var(--text-muted); }
+.clashRow { flex-wrap: wrap; }
+.clashRow .when { flex: none; }
+/* A title that has no room beside its time goes under it, whole, rather than breaking a word in a narrow column. */
+.clashRow .name { flex: 1 1 6rem; }
+.groupMore { min-height: 1.5rem; margin: 0; padding: 0 var(--space-2); font: inherit; font-size: var(--text-meta); line-height: var(--lh-meta); font-weight: var(--weight-semibold); color: var(--text); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-full); cursor: pointer; }
+.groupMore:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+
+/* The key to the sides' colors: one line above the calendar that never wraps; what does not fit is "+N more", which opens the side menu. */
+.sideKey { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: nowrap; align-items: center; gap: var(--space-2) var(--space-4); min-width: 0; overflow: hidden; }
+.sideKey > li[hidden] { display: none; }
+.sideKeyChip { display: inline-flex; flex: none; align-items: center; gap: var(--space-2); font-size: var(--text-meta); line-height: var(--lh-meta); color: var(--text-muted); white-space: nowrap; }
+.sideKeyMore { flex: none; }
+.sideKeyButton { min-height: var(--hit-min); padding: 0 var(--space-2); font: inherit; font-size: var(--text-meta); line-height: var(--lh-meta); font-weight: var(--weight-semibold); color: var(--text); background: transparent; border: 0; border-radius: var(--radius-sm); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.sideKeyButton:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+
+/* An empty range keeps its grid behind the card: the grid is drawn quiet and cannot be reached, the card is centred over it. */
+.emptyOver { position: relative; min-width: 0; }
+.emptyBehind { opacity: 0.45; pointer-events: none; max-height: clamp(24rem, calc(100vh - 19rem), 60rem); overflow: hidden; }
+.emptyFront { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); margin: 0; width: min(100%, 32rem); background: var(--surface); border: 1px solid var(--border); }
+.emptyCard.emptyFront { width: min(100%, 32rem); }
+
+/* The stale-calendar line is one line with its button: the words give way with an ellipsis (the whole line is on hover and in the button's name). */
+.staleList > li { flex-wrap: nowrap; }
+.staleList > li > p { flex: 1 1 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* The adds stand at the right end of the first row of controls, after the moves and the range. */
+.addActions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--space-2); margin-left: auto; }
+.staleList > li > p { max-width: none; }
+.staleList > li > :last-child { margin-left: auto; }
+
+/* A clash card too short for its meetings in full draws each on one line: its title (the time and place are in the row's hover text, its
+   name and the pane), under the short heading. */
+.clash[data-compact] .clashRow { min-height: 0; }
+/* The time is out of sight and still in the row's name: no width, no text size, so nothing of it is drawn or cut. */
+.clash[data-compact] .clashRow .when { flex: none; width: 0; overflow: hidden; font-size: 0; line-height: 0; margin: 0; padding: 0; }
+/* A title is never cut (the card lists every title whole): it is one line when it fits and wraps when it does not. */
+.clash[data-compact] .clashRow .name { overflow-wrap: anywhere; }
+.clash[data-compact] .clashRow { position: relative; align-items: center; }
+.clash[data-compact] .clashRows { gap: 0; }
+/* Every width a little tighter in the one-line form: the side's dot (its name stays in the row's name and hover text) and the row's padding give
+   the title the room, so a title is one line wherever it can be. */
+.clash[data-compact] { padding: var(--space-1); }
+.clash[data-compact] .clashRow.block { padding: 0 var(--space-1); }
+.clash[data-compact] .clashRow :global([data-side-mark]) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

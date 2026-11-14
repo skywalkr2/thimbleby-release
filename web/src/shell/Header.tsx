@@ -1,0 +1,196 @@
+// The header (design 7.1): one row, 56px, at every width. Left to right: the brand (a link to Today), a Demo chip, the search
+// field (its last row asks the assistant), the status chip (with the assistant's alive line beside it from 1440px up), Missed one with its words,
+// Hand something in, Help and the person's initials, which open the user menu: their name and Settings, their own pages, how the assistant is
+// doing, then theme and density.
+// The brand shows the workspace's own logo when it has one, else the product's mark (day or night by the theme), then the product's name
+// from the wording sheet in the display face; the workspace's own name is in the user menu's heading and in the browser tab's title.
+// Below 1440px the assistant's state is in the status chip's popover instead of beside it; below 1024px the search field shrinks; on a phone one row remains, with the logo, the status chip and the user menu. The workspace's name keeps its room
+// before the Ask field gives any up.
+import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { Button as AriaButton } from "react-aria-components";
+import { api, type S } from "../lib/api";
+import type { LiveState } from "../lib/live";
+import { setDensity, setTheme, useAppearance, type Density, type Theme } from "../lib/theme";
+import { viewHref } from "../lib/views";
+import { useMediaQuery } from "../lib/media";
+import { useWords } from "../lib/wording";
+import { SearchBox } from "../components/SearchBox";
+import { useAnythingToMiss, useMissedOne } from "../components/MissedOne";
+import markDay from "../assets/brand/mark-day.svg?inline";
+import markNight from "../assets/brand/mark-night.svg?inline";
+import { afterClose } from "../ui/afterClose";
+import { AuthImage } from "../ui/AuthImage";
+import { Button } from "../ui/Button";
+import { IconButton } from "../ui/IconButton";
+import { MenuButton, type MenuGroup } from "../ui/MenuButton";
+import { Pill } from "../ui/Pill";
+import { AssistantLine, useAlive } from "./AssistantLine";
+import { usePagesGroup } from "./HeaderLinks";
+import { StatusMenu } from "./StatusMenu";
+import { initials } from "./status";
+import styles from "./Header.module.css";
+
+/** This device's appearance in the person's menu: theme and spacing, each a compact segmented control that acts at once. */
+export function useAppearanceGroups(): MenuGroup[] {
+  const { t } = useWords();
+  const { theme, density } = useAppearance();
+  return [
+    {
+      id: "theme",
+      title: t("user.theme"),
+      entries: [],
+      segments: {
+        value: theme,
+        options: (["light", "dark", "system"] as Theme[]).map((id) => ({ value: id, label: t(`user.theme.${id}`) })),
+        onChange: (id) => setTheme(id as Theme),
+      },
+    },
+    {
+      id: "density",
+      title: t("user.density"),
+      entries: [],
+      segments: {
+        value: density,
+        options: (["comfortable", "compact"] as Density[]).map((id) => ({ value: id, label: t(`user.density.${id}`) })),
+        onChange: (id) => setDensity(id as Density),
+      },
+    },
+  ];
+}
+
+/** The groups of the Help menu: the shortcuts, the setup guide, feedback, and the version as a line that does nothing. */
+export function useHelpGroups(handlers: { onHelp: () => void; onOpenGuide: () => void; onFeedback: () => void }, version: string): MenuGroup[] {
+  const { t } = useWords();
+  const missed = useMissedOne();
+  const anythingMissed = useAnythingToMiss();
+  // A touch screen has no keyboard to use the shortcuts with, so the list of them is not offered there.
+  const touch = useMediaQuery("(pointer: coarse)");
+  return [
+    {
+      id: "help",
+      entries: [
+        ...(touch ? [] : [{ id: "shortcuts", label: t("help.open"), icon: "keyboard" as const, run: handlers.onHelp }]),
+        { id: "guide", label: t("header.help_guide"), icon: "book", run: () => afterClose(handlers.onOpenGuide) },
+        ...(anythingMissed ? [{ id: "missed", label: t("missed.menu"), icon: "flag" as const, run: missed }] : []),
+        { id: "feedback", label: t("feedback.open"), icon: "chat", run: handlers.onFeedback },
+      ],
+    },
+    { id: "version", entries: [{ id: "version", label: t("app.version", { version }), disabled: true }] },
+  ];
+}
+
+/** The person's menu: under their name, Settings; then their quick links when they have any, how the assistant is doing, and
+ * this device's appearance. */
+export function useUserMenuGroups(person: string, handlers: { onOpenSettings: () => void; onOpenQuality: () => void }, workspace?: string): MenuGroup[] {
+  const { t } = useWords();
+  const pages = usePagesGroup();
+  const appearance = useAppearanceGroups();
+  // The heading names the person and the workspace they are in; a person with no name of their own is shown the workspace's.
+  const heading = workspace && workspace !== person ? t("user.heading", { person, workspace }) : person;
+  // No row of this menu has an icon, so every label starts on one edge (the theme's sun and moon are said by their words).
+  const me: MenuGroup = { id: "me", title: heading, entries: [{ id: "settings", label: t("nav.settings"), run: handlers.onOpenSettings }] };
+  const doing: MenuGroup = { id: "doing", label: t("quality.open"), entries: [{ id: "quality", label: t("quality.open"), run: handlers.onOpenQuality }] };
+  return [me, ...(pages ? [pages] : []), doing, ...appearance];
+}
+
+export function usePersonName(workspace: string): string {
+  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
+  return me.data?.full_name?.trim() || workspace;
+}
+
+export function Header(props: {
+  rc: Pick<S["RuntimeConfig"], "workspace_name" | "assistant_name" | "demo" | "logo" | "api_base" | "version">;
+  live: { state: LiveState; lastUpdate: Date | null; refresh: () => void };
+  narrow: boolean;
+  shortcuts: Record<string, string>;
+  onHandIn: () => void;
+  onOpenRecord: (kind: string, id: string) => void;
+  /** Opens Ask, with the words typed in the search field when there are any. */
+  onAsk: (question: string) => void;
+  onHelp: () => void;
+  onFeedback: () => void;
+  onOpenGuide: (step?: string) => void;
+  /** Opens the figures for how the assistant is doing. */
+  onOpenQuality: () => void;
+  /** Opens Settings. */
+  onOpenSettings: () => void;
+}) {
+  const { t } = useWords();
+  const { rc } = props;
+  const person = usePersonName(rc.workspace_name);
+  const userMenu = useUserMenuGroups(person, { onOpenSettings: props.onOpenSettings, onOpenQuality: props.onOpenQuality }, rc.workspace_name);
+  const helpGroups = useHelpGroups({ onHelp: props.onHelp, onOpenGuide: () => props.onOpenGuide(), onFeedback: props.onFeedback }, rc.version);
+  // Below 1440px the assistant's state is in the status chip's popover, as on a phone.
+  const tight = useMediaQuery("(max-width: 1439px)");
+  const inChip = props.narrow || tight;
+  // One status on screen: when the assistant is not fine the status chip says it (its own states, a restart to finish, the network), so
+  // the assistant's own line shows only while it is fine, and never as a second chip beside one that says what to do.
+  const alive = useAlive();
+  const lineShown = !inChip && !(alive && alive.tone !== "ok");
+  // On a phone the search field is behind an icon in the header; it opens in a strip under it.
+  const [searching, setSearching] = useState(false);
+  return (
+    <>
+    <header className={styles.header}>
+      <a className={styles.brand} href={viewHref("today")} aria-label={t("nav.brand_named", { name: rc.workspace_name })} title={rc.workspace_name}>
+        {rc.logo ? (
+          <AuthImage className={styles.logo} src={`${rc.api_base}/brand/logo`} alt="" />
+        ) : (
+          <>
+            {/* The product's mark, in its day and night versions: one is drawn, by the theme in force (tokens.css). The name beside it says what it is. */}
+            <img className={`${styles.logo} ${styles.markDay}`} src={markDay} alt="" data-brand-mark="day" />
+            <img className={`${styles.logo} ${styles.markNight}`} src={markNight} alt="" data-brand-mark="night" />
+          </>
+        )}
+        {!props.narrow && <span className={styles.name}>{t("app.name")}</span>}
+      </a>
+      {rc.demo && (
+        <span className={styles.chip}>
+          <Pill tone="warn">{t("demo.label")}</Pill>
+        </span>
+      )}
+      {!props.narrow && <SearchBox className={styles.ask} keyHint={props.shortcuts.ask} onOpenRecord={props.onOpenRecord} onAsk={props.onAsk} />}
+      <span className={styles.spacer} />
+      <div className={styles.status}>
+        <StatusMenu live={props.live} demo={rc.demo} onOpenGuide={props.onOpenGuide} narrow={inChip} />
+        {lineShown && <AssistantLine onOpenGuide={props.onOpenGuide} />}
+      </div>
+      {props.narrow && (
+        <IconButton icon="search" label={t("search.open")} aria-expanded={searching} data-ask-button="" onPress={() => setSearching((on) => !on)} />
+      )}
+      {!props.narrow && (
+        <div className={styles.end}>
+          <Button variant="secondary" icon="plus" onClick={props.onHandIn}>
+            {t("handin.open")}
+          </Button>
+          <MenuButton groups={helpGroups} trigger={<IconButton icon="help" label={t("header.help")} data-feedback-button="" />} />
+        </div>
+      )}
+      <MenuButton
+        groups={userMenu}
+        trigger={
+          <AriaButton className={styles.avatar} aria-label={t("user.open", { name: person })}>
+            {initials(person)}
+          </AriaButton>
+        }
+      />
+    </header>
+    {props.narrow && searching && (
+      <div className={styles.searchStrip}>
+        <SearchBox
+          autoFocus
+          onOpenRecord={(kind, id) => {
+            setSearching(false);
+            props.onOpenRecord(kind, id);
+          }}
+          onAsk={(question) => {
+            setSearching(false);
+            props.onAsk(question);
+          }}
+        />
+      </div>
+    )}
+    </>
+  );
+}

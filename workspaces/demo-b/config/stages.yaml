@@ -1,0 +1,37 @@
+version: 1
+moves: person
+types:
+  project:
+    moves: person
+    stages:
+    - id: planned
+      label: Planned
+      description: Agreed, with a target date, but work hasn't started.
+      entry: []
+      starts: []
+    - id: active
+      label: In progress
+      description: Work is under way; actions and questions are being tracked.
+      entry: []
+      starts: []
+    - id: complete
+      label: Complete
+      description: Delivered; nothing more is expected.
+      entry: []
+      starts: []
+  example/reminder:
+    moves: person
+    stages:
+    - id: recorded
+      label: Captured
+      description: Written down, not yet checked.
+      entry: []
+      starts: []
+    - id: ready
+      label: Ready for review
+      description: Has its text and can be looked at.
+      entry:
+      - example/has-text
+      starts: []
+      applies_if: []   # check ids that must pass for this stage to apply to a reminder; empty: every reminder
+wording: {}

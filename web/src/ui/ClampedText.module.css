@@ -1,0 +1,19 @@
+/* A title that keeps to a few lines and ends in an ellipsis, with its whole text in a tip on hover and on focus. The tip is only
+   drawn for text that is really cut. */
+.wrap { position: relative; display: block; min-width: 0; max-width: 100%; }
+.wrapInline { display: inline-block; vertical-align: bottom; }
+.clamp {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: var(--clamp-lines, 2); line-clamp: var(--clamp-lines, 2);
+  overflow: hidden; overflow-wrap: anywhere; min-width: 0;
+}
+.clamp:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: var(--radius-sm); }
+.tip {
+  position: absolute; z-index: 30; inset-inline-start: 0; top: 100%; margin-top: var(--space-1); display: none;
+  width: max-content; max-width: min(36rem, calc(100vw - 2 * var(--space-4)));
+  background: var(--text); color: var(--canvas); border-radius: var(--radius-md); box-shadow: var(--elev-2);
+  padding: var(--space-2) var(--space-3); font-size: var(--text-sm); line-height: var(--lh-sm); font-weight: var(--weight-regular);
+  white-space: pre-line; overflow-wrap: anywhere; text-align: start; pointer-events: none;
+}
+.wrap[data-clamped]:hover > .tip, .wrap[data-clamped]:focus-within > .tip { display: block; }
+/* A row is the keyboard's stop (the cursor is on the row, not inside the title): its cut title shows its tip while the row has it. */
+:global([data-row]):focus .wrap[data-clamped] > .tip { display: block; }

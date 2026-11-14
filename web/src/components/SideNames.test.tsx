@@ -1,0 +1,93 @@
+import "@testing-library/jest-dom/vitest";
+import { screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { vi } from "vitest";
+import { setSideChoice } from "../lib/sides";
+import { project } from "../lib/records-fixtures";
+import { Sidebar } from "../shell/Sidebar";
+import { fakeApi, renderApp } from "../test-utils";
+import { SideFilter } from "./SideFilter";
+
+// Long names of sides (design 6.32, 7.1): the side filter is a list to pick from on a phone and cut chips with the full name on
+// hover elsewhere, and the menu cuts a long name, gives the full one on hover, and marks each side so a narrow menu tells five
+// sides apart. Names are made up here.
+const PERSONAL = "PRJ-personal";
+const SIDES = [
+  { project: "PRJ-a", kind: "job", name: "Harborview Community Support Partnership Incorporated" },
+  { project: "PRJ-b", kind: "business", name: "Harbor Light Candle Works and Garden Supply Cooperative" },
+  { project: "PRJ-c", kind: "business", name: "Northfield Mobile Bicycle Repair and Neighborhood Delivery Service" },
+  { project: "PRJ-d", kind: "business", name: "Lantern Row Studio" },
+];
+
+const routes = () => ({
+  "GET setup/business": () => ({ business: true, name: SIDES[0].name, personal: PERSONAL, sides: SIDES, chosen: null }),
+  "GET projects": () => [project(PERSONAL, "Personal"), ...SIDES.map((s) => project(s.project, s.name))],
+  "GET views": () => [],
+  "GET waiting": () => ({ changed: { total: 0, sides: [] }, followups: { total: 0, sides: [] }, open: { total: 0, sides: [] }, handled: { total: 0, sides: [] } }),
+  "GET panels": () => [],
+  "GET today/queue": () => [],
+  "GET plugin-today": () => [],
+  "GET changes": () => [],
+  "GET followups": () => [],
+  "GET stages/requests": () => [],
+  "GET stages/records": () => [],
+  "GET stages/ready": () => [],
+});
+
+beforeEach(() => vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener: () => undefined, removeEventListener: () => undefined })));
+afterEach(() => {
+  vi.unstubAllGlobals();
+  document.documentElement.removeAttribute("data-narrow");
+  window.localStorage.clear();
+  setSideChoice("all");
+});
+
+test("on a phone the side filter is one button that opens a sheet of choices, with every side by its full name", async () => {
+  // The strip became a button and a sheet on a phone (VP08, section 319); the sheet is where each long name is whole.
+  document.documentElement.setAttribute("data-narrow", "");
+  fakeApi(routes());
+  renderApp(<SideFilter />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /^Side: / }));
+  const sheet = await screen.findByRole("dialog");
+  const choices = within(sheet).getAllByRole("button").filter((b) => b.hasAttribute("data-side-option"));
+  expect(choices.map((b) => b.textContent)).toEqual(["All", "Personal", ...SIDES.map((s) => s.name)]);
+  await user.click(choices[4]);
+  expect(await screen.findByRole("button", { name: `Side: ${SIDES[2].name}` })).toBeInTheDocument();
+  expect(screen.queryByRole("radio")).toBeNull();
+});
+
+test("wide, long names are in one button's sheet, whole and wrapping, never cut chips in a row", async () => {
+  const user = userEvent.setup();
+  fakeApi(routes());
+  renderApp(<SideFilter />);
+  expect(screen.queryByRole("radio", { name: SIDES[0].name })).toBeNull();
+  await user.click(await screen.findByRole("button", { name: "Side: All" }));
+  expect(await screen.findByRole("button", { name: SIDES[0].name })).toBeInTheDocument();
+  expect(screen.queryByRole("combobox")).toBeNull();
+});
+
+test("the menu gives each side a dot of its own colour, never the same one twice, and the full name as a tooltip on focus", async () => {
+  fakeApi(routes());
+  renderApp(<Sidebar current="today" expanded onToggle={() => undefined} />);
+  const links = await screen.findAllByRole("link", { name: /Harborview|Harbor Light|Northfield|Lantern|Personal/ });
+  const marks = links.map((a) => a.querySelector('[data-mark="side"]')?.getAttribute("data-color") ?? "");
+  expect(marks).toHaveLength(5);
+  // Two sides that begin alike are still told apart: each its own colour, and its full name as the link's name, never colour alone.
+  expect(new Set(marks).size).toBe(5);
+  for (const s of SIDES) expect(screen.getByRole("link", { name: new RegExp(s.name) })).toBeInTheDocument();
+  expect(links.every((a) => a.querySelector("svg") === null)).toBe(true);
+  const harbor = links.find((a) => a.textContent?.includes("Harborview"))!;
+  const user = userEvent.setup();
+  while (document.activeElement !== harbor) await user.tab();
+  expect(await screen.findByRole("tooltip")).toHaveTextContent(SIDES[0].name);
+});
+
+test("on the icon rail the dots tell the sides apart too, each named", async () => {
+  fakeApi(routes());
+  renderApp(<Sidebar current="today" expanded={false} onToggle={() => undefined} />);
+  const links = await screen.findAllByRole("link", { name: /Harborview|Harbor Light|Northfield|Lantern|Personal/ });
+  expect(new Set(links.map((a) => a.querySelector('[data-mark="side"]')?.getAttribute("data-color"))).size).toBe(5);
+  // On the rail the name is the link's accessible name, so the colour is never the only sign.
+  for (const s of SIDES) expect(screen.getByRole("link", { name: new RegExp(s.name) })).toBeInTheDocument();
+});

@@ -1,0 +1,101 @@
+# Fictional AI setup: the stand-in account only. The commented accounts show the shapes real ones take.
+version: 1
+providers:
+  stub:
+    adapter: stub
+    label: Stand-in account
+    models: {default: scripted}
+    flat_rate: true
+    accepted_unchecked: false
+    refused_models: []
+    work_data: ''
+    allowed_data: [open, internal, restricted]
+    image_models: [default]
+  # Examples of other accounts, left out so a new workspace lists only what it can use. Add one
+  # from the setup guide's AI step, or uncomment one here and set its key.
+  # company-gateway:
+  #   label: Company gateway   # the name shown in lists; empty: the service name and "account"
+  #   adapter: openai-compatible
+  #   base_url: https://ai-gateway.example.com/v1
+  #   auth: env:GATEWAY_AI_KEY
+  #   models: {large: gateway-large-model}
+  #   credential_expires: 2027-01-31   # the day its key stops working, if the service says
+  #   allowed_data: [open, internal, restricted]
+  #   content_levels: [health]
+  # local:
+  #   adapter: openai-compatible
+  #   base_url: http://localhost:11434/v1
+  #   models: {small: local-small-model}
+  #   effort_param: reasoning_effort         # the request setting this service takes a tier's effort in; empty: effort is never sent
+  #   send_temperature: false                # off for a service whose models refuse a temperature they don't set
+  #   max_tokens_param: max_completion_tokens   # the request setting for the most tokens an answer may have (default max_tokens)
+  #   model_list_pages: 10                   # the most pages of the service's model list read when it says more follow
+  #   thinking_room: 8000                    # tokens added to a kind of work's most output for a model the service says thinks on its own; 0 adds none
+  #   auth_reasons: [KEY_REFUSED]            # reason codes in an error's details that mean the key was refused; empty: the status alone says
+  #   key_refused_status_on_models: [400]    # statuses on the model-list request that mean the key was refused; empty: the status alone says
+  #   allowed_data: [open, internal, restricted]
+  # coding-agent:
+  #   adapter: cli-agent
+  #   models: {default: agent-default-model}
+  #   allowed_data: [open, internal]
+  #   identity_level: [open, internal]       # the levels the sign-in it runs as may see; work above them waits for you
+  #   timeout_seconds: 300
+  #   agent:
+  #     command: [example-agent, --print, --no-tools, --model, "{model}"]
+  #     packet_via: stdin
+  #     output_via: stdout
+  #     output_json: true
+  #     output_fields: {text: result, input_tokens: usage.input_tokens, output_tokens: usage.output_tokens, cost_usd: cost}
+  #     pass_env: [EXAMPLE_AGENT_CONFIG]
+  #     errors:
+  #       auth: ["not signed in", "sign in again"]
+  #       unsupported: ["no longer supported for this account"]   # signing in again won't help: pick another account or use a key
+  #       rate_limited: ["too many requests"]
+  #       quota: ["usage limit"]
+  #       reset: ["resets in ([0-9]+) seconds"]   # the first group: seconds, or an ISO date and time
+  #       exit_codes: {3: auth}
+  #     sign_in_hint: Run example-agent login in a terminal
+  #     identity_command: [example-agent, whoami, --json]   # prints which account it is signed in as; empty: can't tell
+  #     identity_field: account.email           # where the account is in that JSON; empty: read by identity_line (1) and identity_pattern
+  #     identity_recheck_seconds: 600           # a run looks again at the sign-in after this long, so a change is found
+  #     version_command: [example-agent, --version]   # prints the agent's version for evaluation reports; empty: the program with --version
+  #     effort_option: [--effort, "{effort}"]    # added to the command when the tier has an effort; empty: effort is never passed on
+  #     home: fresh                          # each run starts with an empty home folder, so no memory carries over
+  #     home_files: [.config/example-agent/credentials.json]   # all it needs to stay signed in
+tiers:
+  routine: {use: stub/default, fallback: [], escalate_to: deep}
+  deep: {use: stub/default}
+  # A tier can say how hard the model should think, passed on only to an account that takes it:
+  # deep: {use: stub/default, effort: high}
+  # A tier can ask the model not to think (thinking: off), applied only where the service says that model can:
+  # routine: {use: stub/default, thinking: off}
+tasks:
+  notes: {tier: routine, temperature: 0, max_output: 4000, expected_output: 800}
+  read-image: {expected_image_tokens: 1600}
+roles:
+  check: {tier: deep}
+budgets:
+  per_run_usd: 0.5
+  first_go: true
+  confirm_above_usd: 0.10
+  confirm_unpriced: false
+  per_day_usd: 5
+  per_month_usd: 60
+  warn_at: 0.8
+  per_task:
+    notes: {per_day_usd: 1.5}
+prices: {}   # price per model, for models a catalog doesn't price, e.g.:
+  # company-gateway/large: {input_per_million: 2.5, output_per_million: 10}
+evaluation: {runs: 3, min_score: 0.9, extra_allowance: 1.0}
+skills: {min_score: 0.8, stale_days: 60}   # what a model must score for a skill to count as able, and how long a measurement is trusted
+rate_limits: {tries: 3, max_wait_seconds: 30, pause_seconds: 600}
+estimates: {calibration_runs: 20}   # an account's estimates are corrected from the average of this many latest runs
+models: {follow_newest: true, check_every_days: 7, use_days: 7}   # a tier moves to a newer model of its own family after a check; how often to look; how many days of use the cost change is worked out from
+catalog_refresh_hours: 24
+borrow_other_tier: ask      # ask: Today asks before another kind of work's account fills in for a paused one; never: the work waits
+credential_warn_days: 1     # Today says this many days before a key or sign-in with a known end date stops working
+content_levels:
+  health: Health or medical details about people in project material.
+routing:
+  - when: {task: notes, quoted_messages_over: 3}
+    tier: deep

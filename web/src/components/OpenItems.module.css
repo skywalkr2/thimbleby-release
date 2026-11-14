@@ -1,0 +1,70 @@
+/* To-dos and questions (design 7.5): the filters wrap and stack, so nothing is wider than the window at any width. */
+.bar { display: flex; flex-wrap: wrap; align-items: end; gap: var(--space-3); margin: var(--space-3) 0; }
+.bar [data-field] { margin-bottom: 0; min-width: 0; flex: 1 1 16ch; max-width: 100%; }
+.bar [data-ui="select"] { max-width: 100%; }
+.part { overflow-wrap: anywhere; }
+.toSend { font-weight: var(--weight-semibold); color: var(--text); }
+/* The "Needs a date" group above the to-dos: a heading band, then one row for each to-do with a date picker. */
+.needs { margin-bottom: var(--space-4); }
+.needsHead { padding-left: var(--row-px); }
+.needsFoot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4); padding: var(--space-2) var(--row-px) 0; }
+/* Set stays an outlined button in view while it waits for a day: it is marked unavailable for a screen reader, never taken out of the page, and its outline stays the strong one. */
+.setBtn[aria-disabled="true"] { border-color: var(--border-strong); color: var(--text-muted); cursor: default; }
+.pick { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-top: var(--space-2); min-width: 0; }
+
+/* The list is one surface; its groups are labels inside it, and the add row is its first line. */
+.groupItem { list-style: none; margin: 0; padding: 0; }
+.groupItem > :first-child { padding-top: var(--space-4); }
+.inlineAdd { display: flex; align-items: center; gap: var(--space-3); min-width: 0; padding: var(--space-2) var(--row-px); border-bottom: 1px solid var(--border); background: var(--surface); list-style: none; margin: 0; min-height: var(--row-h); }
+.inlinePlus { flex: none; width: var(--row-lead-w); display: grid; place-items: center; color: var(--accent); }
+.inlineAdd input { flex: 1 1 12rem; min-width: 0; border: 1px solid var(--btn-border); border-radius: var(--radius-md); background: var(--surface); padding: var(--space-2) var(--space-3); font: inherit; box-shadow: none; }
+.inlineAdd input:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: var(--radius-sm); border-color: var(--border-strong); }
+.inlineAdd { flex-wrap: wrap; }
+.inlineAdd .over { flex: none; font-size: var(--text-meta); }
+/* The date found in the title, said beside the row before Enter, with a way to drop it. */
+.found { flex: none; display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%; color: var(--text-muted); font-size: var(--text-meta); line-height: var(--lh-meta); }
+.found svg { flex: none; }
+/* A failed add keeps the words in the row and says so on a line of its own. */
+.inlineFailed { flex: 1 1 100%; margin: 0 calc(-1 * var(--row-px)) calc(-1 * var(--space-2)); }
+.over { color: var(--danger); font-weight: var(--weight-semibold); }
+.dueLate { display: inline-flex; flex-wrap: nowrap; align-items: center; gap: var(--space-1); color: var(--danger); font-weight: var(--weight-semibold); vertical-align: bottom; }
+.dueToday { color: var(--warn); font-weight: var(--weight-semibold); }
+.placeMark { display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%; vertical-align: bottom; }
+/* "N to-dos need a date": one muted line at the foot of the list, with a quiet button that opens the group under it. */
+.needsLine { list-style: none; margin: 0; padding: 0; background: var(--surface-sunk); border-top: 1px solid var(--border); min-width: 0; }
+.needsLineRow { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); padding: var(--space-3) var(--row-px); color: var(--text-muted); font-size: var(--text-meta); line-height: var(--lh-meta); }
+/* The date rows sit in the strip at the list's own row inset, with no card of their own: one level, one padding step. */
+.needsLine .needs { margin: 0; padding: 0; }
+.needsLine [data-row-list] { border: 0; border-radius: 0; box-shadow: none; background: transparent; }
+.needsLine .needsFoot { padding: var(--space-2) var(--row-px) var(--space-3); }
+/* "Show N more" at the foot of a group that has more rows than it shows. */
+.showMore { list-style: none; margin: 0; padding: var(--space-1) var(--row-px) var(--space-2); }
+
+/* A to-do just ticked keeps its place with its title struck through. */
+.doneTitle { text-decoration: line-through; color: var(--text-muted); }
+
+/* The list is one column no wider than a title and its menu can be traced across; the filters and tabs above it keep the page's width. */
+.column { min-width: 0; }
+.inlineAdd input::placeholder { text-overflow: ellipsis; }
+/* The line that says where older ones are, set in from the list's edge like its rows. */
+.older { margin: var(--space-3) 0 0; padding: 0 var(--row-px); }
+/* What the assistant read, shown only when a Done row is opened: the quoted words, whose they are, and the way to the message. */
+.why { padding: var(--space-2) 0 var(--space-1); display: grid; gap: var(--space-1); min-width: 0; }
+.quote { margin: 0; overflow-wrap: anywhere; }
+
+/* One content width for the header, tabs, filters and list, so no rule runs past the card. */
+.page { max-width: var(--todo-column, 47.5rem); min-width: 0; }
+
+/* "Needs a date" at the foot: one slim labelled row per to-do, its date field and Set on the same line, no frame of its own. */
+.needsRows { list-style: none; margin: 0; padding: 0; }
+.needsRow { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2) var(--space-4); padding: var(--space-2) var(--row-px); }
+.needsRow + .needsRow { border-top: 1px solid var(--border); }
+.needsWho { display: grid; min-width: 0; flex: 1 1 12rem; overflow-wrap: anywhere; }
+.needsMeta { color: var(--text-muted); font-size: var(--text-meta); line-height: var(--lh-meta); }
+.needsRow .pick { margin-top: 0; flex: none; }
+.needsWho a { color: var(--text); text-decoration: none; font-weight: var(--weight-medium); }
+.needsWho a:hover { text-decoration: underline; }
+
+/* By night the overdue row is an edge and a low tint, as light in effect as by day: the danger tone is a deep red there, so it is mixed with the page. */
+@media (prefers-color-scheme: dark) { :global(:root:not([data-theme="light"])) .overdueRow { --state-tint: color-mix(in srgb, var(--danger-soft) 40%, var(--surface)); } }
+:global(:root[data-theme="dark"]) .overdueRow { --state-tint: color-mix(in srgb, var(--danger-soft) 40%, var(--surface)); }

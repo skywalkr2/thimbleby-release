@@ -1,0 +1,1376 @@
+"""Settings from the screens and the first-run setup: keys described for forms, saves that keep comments and never
+race, steps that know when they are done, a backup folder, an AI account with its key kept on this computer, plugin
+steps, and a restart to use what was saved."""
+
+import os
+import stat
+from pathlib import Path
+
+import pytest
+import yaml
+from fastapi.testclient import TestClient
+
+from engine.config import load_config
+from engine.config.yaml_edit import remove_key, set_key
+from engine.setup import known_endpoints
+from tests.conftest import DEMO_B
+from tests.test_today_panels_jobs import FIXTURE
+from tests.test_today_panels_jobs import workspace as plugin_workspace
+
+#: The adapter of the first kind of account the catalog offers (a server on this computer).
+COMMON = known_endpoints()[0]["adapter"]
+
+
+def make(tmp_path, env=None):
+    from engine.storage import Store
+    from engine.workspace import init_workspace
+
+    ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
+    cfg = load_config(ws.config_dir, env=env or {})
+    return ws, cfg, Store(ws.db_path, cfg=cfg)
+
+
+def client(ws, cfg, store):
+    from api.app import create_app
+
+    store.close()
+    c = TestClient(create_app(ws, cfg, "t", start_worker=False))
+    c.headers["Authorization"] = "Bearer t"
+    return c, cfg.server.base_path.rstrip("/") + "/api"
+
+
+# ---- editing the files -----------------------------------------------------------------------------------------------
+
+
+def test_a_key_is_changed_in_place_keeping_comments():
+    text = "# about this file\nversion: 1\nname: Demo   # what it is called\nuser:\n  full_name: Ada\n\n# the end\n"
+    changed = set_key(text, ["name"], "Harbor work")
+    assert "# about this file" in changed and "# what it is called" in changed and "# the end" in changed
+    assert yaml.safe_load(changed)["name"] == "Harbor work"
+    added = set_key(text, ["user", "timezone"], "Europe/Lisbon")
+    assert yaml.safe_load(added)["user"] == {"full_name": "Ada", "timezone": "Europe/Lisbon"}
+    removed = remove_key(text, ["user", "full_name"])
+    assert yaml.safe_load(removed)["user"] == {} and "# the end" in removed
+
+
+def test_a_key_inside_a_one_line_mapping_still_gets_the_right_value():
+    text = "version: 1\nmodels: {small: a, large: b}\n"
+    assert yaml.safe_load(set_key(text, ["models", "small"], "c"))["models"] == {"small": "c", "large": "b"}
+
+
+# ---- settings --------------------------------------------------------------------------------------------------------
+
+
+def test_settings_are_described_for_the_forms(tmp_path, monkeypatch):
+    monkeypatch.setenv("COCKPIT__UI__DENSITY", "compact")
+    ws, cfg, store = make(tmp_path, env={"COCKPIT__UI__DENSITY": "compact"})
+    c, api = client(ws, cfg, store)
+    view = c.get(f"{api}/settings").json()
+    items = {i["key"]: i for i in view["items"]}
+    assert items["workspace.name"]["type"] == "text" and items["workspace.name"]["basic"]
+    assert items["workspace.name"]["page"] == "you" and items["workspace.name"]["topic"] is None
+    # A rarely changed setting whose topic has a page sits on that page, in its More settings fold (`advanced`).
+    assert items["ui.brand.color"]["page"] == "appearance" and items["ui.brand.color"]["topic"] == "appearance"
+    assert items["ui.brand.color"]["advanced"] is True
+    assert "server.port" not in items  # an address or port is kept only in files
+    assert "storage.export.remote" not in items  # not offered until it is built
+    assert "storage.export.every_minutes" not in items  # the backup's job in files words: files only
+    assert "stages.moves" not in items  # a template's choice, not a setting
+    assert items["ai.providers"]["type"] == "other" and not items["ai.providers"]["editable"]
+    assert items["ui.density"]["locked"] and items["ui.density"]["source"] == "env"
+    assert "workspace.version" not in items and view["fingerprint"]
+
+
+def test_a_feature_switch_comes_first_and_its_settings_name_it(tmp_path):
+    from engine import settings
+
+    _, cfg, store = make(tmp_path)
+    store.close()
+    found = settings.describe(cfg)
+    order = {s.key: n for n, s in enumerate(found)}
+    by_key = {s.key: s for s in found}
+    switched = [s for s in found if s.enabled_by]
+    assert switched
+    for s in switched:
+        switch = by_key.get(s.enabled_by)
+        assert switch is not None, f"{s.key} names an unknown switch {s.enabled_by}"
+        assert switch.type in ("yes_no", "text"), f"{s.enabled_by} can't be on or off"
+        assert order[switch.key] < order[s.key], f"{s.enabled_by} must come before {s.key}"
+        assert switch.basic or not s.basic, f"{s.key} is shown first but its switch {s.enabled_by} isn't"
+    assert "storage.backups.every_hours" not in by_key  # daily, automatically: the app's own schedule
+    backups = [s.key for s in found if s.group == "storage.backups"]
+    assert backups[0] == "storage.backups.automatic"
+    assert by_key["storage.sync.folder"].picker == "folder"
+    assert all(s.picker in (None, "folder", "file") for s in found)
+    assert all(s.type == "text" for s in found if s.picker)
+
+
+def test_a_synced_folder_that_cannot_be_used_is_refused_when_it_is_chosen_and_one_that_can_is_saved(tmp_path):
+    from engine import settings
+
+    ws, cfg, store = make(tmp_path)
+    here = tmp_path / "shared"
+    here.mkdir()
+
+    def choose(value, fingerprint):
+        return settings.save(
+            ws, cfg, store, changes={"storage.sync.folder": value}, reset=[], read_fingerprint=fingerprint
+        )
+
+    for value, why in (
+        ("not-a-path", "full path"),
+        (str(tmp_path / "nowhere"), "isn't there"),
+        (str(ws.root / "data"), "inside the workspace"),
+        (str(ws.root), "inside the synced folder|inside the workspace"),
+    ):
+        with pytest.raises(settings.SettingsError, match=why):
+            choose(value, settings.fingerprint(ws.config_dir))
+    saved = choose(str(here), settings.fingerprint(ws.config_dir))
+    assert [c["key"] for c in saved.changes] == ["storage.sync.folder"]
+
+
+def test_the_appearance_page_holds_light_or_dark_and_density_and_the_brand_is_in_its_more_settings(tmp_path):
+    from engine import settings
+
+    _, cfg, store = make(tmp_path)
+    store.close()
+    found = settings.describe(cfg)
+    # The brand is on the page too, in its closed "More settings" fold, never listed again under Advanced.
+    # How times are written (12 or 24 hours, and the time list's step) sits beside them (section 319).
+    shown = {"ui.theme", "ui.density", "ui.time_format", "ui.time_step"}
+    assert {s.key for s in found if s.page == "appearance" and not s.advanced} == shown
+    more = {"ui.brand.color", "ui.brand.logo", "ui.schedule.day_starts", "ui.schedule.day_ends"}
+    assert {s.key for s in found if s.page == "appearance" and s.advanced} == more
+    assert {s.key for s in found if s.topic == "appearance"} == more
+
+
+def test_saves_in_a_row_each_use_the_fingerprint_the_one_before_answered_with(tmp_path):
+    """The Settings screen saves each change as it is made: the next save carries the answer of the last one, a
+    save made on an older fingerprint is refused whole, and what was refused changes nothing."""
+    ws, cfg, store = make(tmp_path)
+    c, api = client(ws, cfg, store)
+    fingerprint = c.get(f"{api}/settings").json()["fingerprint"]
+    first = c.post(f"{api}/settings", json={"changes": {"workspace.name": "First"}, "fingerprint": fingerprint})
+    assert first.status_code == 200, first.text
+    second = c.post(
+        f"{api}/settings", json={"changes": {"ui.density": "compact"}, "fingerprint": first.json()["fingerprint"]}
+    )
+    assert second.status_code == 200, second.text
+    stale = c.post(f"{api}/settings", json={"changes": {"workspace.name": "Stale"}, "fingerprint": fingerprint})
+    assert stale.status_code == 409
+    now = load_config(ws.config_dir, env={})
+    assert now.workspace.name == "First" and now.ui.density == "compact"
+    # Reset is a save like any other: the key goes back to its default, and the answer says it is the default now.
+    reset = c.post(f"{api}/settings", json={"reset": ["workspace.name"], "fingerprint": second.json()["fingerprint"]})
+    assert reset.status_code == 200 and reset.json()["changes"][0]["is_default"] is True
+
+
+def test_a_save_writes_the_file_records_the_change_and_never_races(tmp_path):
+    ws, cfg, store = make(tmp_path)
+    c, api = client(ws, cfg, store)
+    fingerprint = c.get(f"{api}/settings").json()["fingerprint"]
+    done = c.post(f"{api}/settings", json={"changes": {"workspace.name": "Harbor work"}, "fingerprint": fingerprint})
+    assert done.status_code == 200, done.text
+    body = done.json()
+    assert body["changes"][0]["key"] == "workspace.name" and body["changes"][0]["after"] == "Harbor work"
+    assert load_config(ws.config_dir, env={}).workspace.name == "Harbor work"
+    again = c.post(f"{api}/settings", json={"changes": {"workspace.name": "Other"}, "fingerprint": fingerprint})
+    assert again.status_code == 409
+    from engine.storage import Store
+
+    reread = Store(ws.db_path)
+    try:
+        assert reread.read().list("setting_change")[-1].data["key"] == "workspace.name"
+    finally:
+        reread.close()
+
+
+def test_a_bad_value_or_a_locked_key_writes_nothing(tmp_path, monkeypatch):
+    monkeypatch.setenv("COCKPIT__UI__DENSITY", "compact")
+    ws, cfg, store = make(tmp_path, env={"COCKPIT__UI__DENSITY": "compact"})
+    c, api = client(ws, cfg, store)
+    before = (ws.config_dir / "storage.yaml").read_text()
+    fingerprint = c.get(f"{api}/settings").json()["fingerprint"]
+    bad = c.post(f"{api}/settings", json={"changes": {"storage.backups.keep": 0}, "fingerprint": fingerprint})
+    # One setting in the save: the reason alone, said beside the field that was typed in (its screen names it).
+    assert bad.status_code == 400 and bad.json()["detail"] == "Use a number that is 1 or more."
+    assert bad.headers["X-Cockpit-Field"] == "storage.backups.keep"
+    assert (ws.config_dir / "storage.yaml").read_text() == before
+    locked = c.post(f"{api}/settings", json={"changes": {"ui.density": "comfortable"}, "fingerprint": fingerprint})
+    assert locked.status_code == 400 and "set by an environment variable" in locked.json()["detail"]
+    server = c.post(f"{api}/settings", json={"changes": {"server.port": 9000}, "fingerprint": fingerprint})
+    assert server.status_code == 400
+
+
+def test_a_key_goes_back_to_its_default(tmp_path):
+    ws, cfg, store = make(tmp_path)
+    c, api = client(ws, cfg, store)
+    fingerprint = c.get(f"{api}/settings").json()["fingerprint"]
+    done = c.post(f"{api}/settings", json={"reset": ["storage.backups.keep"], "fingerprint": fingerprint}).json()
+    assert done["changes"][0]["is_default"]
+    data = yaml.safe_load((ws.config_dir / "storage.yaml").read_text())
+    assert "keep" not in data["backups"]
+
+
+# ---- setup steps -----------------------------------------------------------------------------------------------------
+
+
+def test_steps_say_what_is_done_and_can_be_skipped(tmp_path):
+    ws, cfg, store = make(tmp_path)
+    c, api = client(ws, cfg, store)
+    steps = {s["id"]: s for s in c.get(f"{api}/setup").json()["steps"]}
+    assert list(steps)[:9] == [
+        "workspace",
+        "work",
+        "ai",
+        "mail",
+        "backup",
+        "people",
+        "template",
+        "first_note",
+        "addons",
+    ]
+    assert not steps["first_note"]["done"]
+    assert c.post(f"{api}/setup/first_note/skip").status_code == 200
+    view = c.get(f"{api}/setup").json()
+    assert {s["id"]: s for s in view["steps"]}["first_note"]["skipped"] and view["local"]
+    c.post(f"{api}/setup/first_note/reopen")
+    assert not {s["id"]: s for s in c.get(f"{api}/setup").json()["steps"]}["first_note"]["skipped"]
+
+
+def test_a_backup_folder_is_checked_then_added(tmp_path):
+    ws, cfg, store = make(tmp_path)
+    c, api = client(ws, cfg, store)
+    inside = c.get(f"{api}/setup/folder-check", params={"path": str(ws.root / "data")}).json()
+    assert not inside["ok"] and "somewhere else" in inside["problem"]
+    missing = c.get(f"{api}/setup/folder-check", params={"path": str(tmp_path / "nowhere")}).json()
+    assert not missing["ok"]
+    folder = tmp_path / "drive"
+    folder.mkdir()
+    assert c.get(f"{api}/setup/folder-check", params={"path": str(folder)}).json()["ok"]
+    listing = c.get(f"{api}/setup/folders", params={"path": str(tmp_path)}).json()
+    assert "drive" in listing["folders"] and listing["parent"]
+    fingerprint = c.get(f"{api}/settings").json()["fingerprint"]
+    added = c.post(
+        f"{api}/setup/backup-folder", json={"path": str(folder), "label": "drive", "fingerprint": fingerprint}
+    )
+    assert added.status_code == 200, added.text
+    targets = load_config(ws.config_dir, env={}).storage.backups.targets
+    assert targets[-1].path == str(folder.resolve()) and targets[-1].label == "drive"
+
+
+def test_an_ai_account_keeps_a_pasted_key_on_this_computer(tmp_path):
+    ws, cfg, store = make(tmp_path)
+    c, api = client(ws, cfg, store)
+    assert [e["id"] for e in c.get(f"{api}/ai/endpoints").json()] == [e["id"] for e in known_endpoints()]
+    fingerprint = c.get(f"{api}/settings").json()["fingerprint"]
+    account = {
+        "name": "my-account",
+        "adapter": COMMON,
+        "base_url": "http://localhost:11434/v1",
+        "key": "not-a-real-key",
+        "models": {"small": "small-model"},
+        "allowed_data": ["open", "internal"],
+        "use_for": ["routine"],
+        "fingerprint": fingerprint,
+    }
+    done = c.post(f"{api}/ai/accounts", json=account)
+    assert done.status_code == 200, done.text
+    ai = (ws.config_dir / "ai.yaml").read_text()
+    assert "not-a-real-key" not in ai
+    loaded = load_config(ws.config_dir, env={})
+    provider = loaded.ai.providers["my-account"]
+    assert provider.auth.startswith("file:") and loaded.ai.tiers["routine"].use == "my-account/small"
+    key_file = ws.private_dir / "keys" / "my-account"
+    assert key_file.read_text().strip() == "not-a-real-key"
+    assert stat.S_IMODE(key_file.stat().st_mode) == 0o600
+    fingerprint = c.get(f"{api}/settings").json()["fingerprint"]
+    twice = c.post(f"{api}/ai/accounts", json={**account, "fingerprint": fingerprint, "key": "another-key"})
+    assert twice.status_code == 409
+    # The refused second add left the kept key as it was and nothing else behind.
+    assert key_file.read_text().strip() == "not-a-real-key"
+    assert sorted(p.name for p in key_file.parent.iterdir()) == ["my-account"]
+    # Undo posts the values from before: the account goes and the tier gets its old account back.
+    undo = {"changes": {}, "reset": [], "fingerprint": fingerprint}
+    for change in done.json()["changes"]:
+        if change["was_default"]:
+            undo["reset"].append(change["key"])
+        else:
+            undo["changes"][change["key"]] = change["before"]
+    undone = c.post(f"{api}/settings", json=undo)
+    assert undone.status_code == 200, undone.text
+    assert "my-account" not in load_config(ws.config_dir, env={}).ai.providers
+
+
+def test_a_template_is_listed_and_applied(tmp_path):
+    ws, cfg, store = make(tmp_path)
+    c, api = client(ws, cfg, store)
+    assert "client-work" in [t["id"] for t in c.get(f"{api}/templates").json()]
+    assert c.post(f"{api}/templates/apply", json={"id": "client-work"}).json()["plugins"] == ["kit"]
+    assert {s["id"]: s for s in c.get(f"{api}/setup").json()["steps"]}["template"]["done"]
+
+
+@pytest.mark.skipif(os.environ.get("COCKPIT_TEST_CORE_ONLY") == "1", reason="the kit plugin is off in this run")
+def test_a_template_already_set_up_counts_as_done(tmp_path):
+    ws, cfg, store = make(tmp_path)
+    from engine import setup, templates
+
+    kit = ws.config_dir / "plugins" / "kit.yaml"
+    have = {t["id"] for t in yaml.safe_load(kit.read_text())["types"]}
+    expected = {
+        t["id"]
+        for t in templates.shipped()
+        if {k["id"] for k in yaml.safe_load(t["path"].read_text())["plugins"]["kit"]["types"]} <= have
+    }
+    assert expected, "the demo workspace sets up a shipped template's item types"
+    step = {s.id: s for s in setup.steps(ws, cfg, store)}["template"]
+    assert step.done
+    c, api = client(ws, cfg, store)
+    assert {t["id"] for t in c.get(f"{api}/templates").json() if t["set_up"]} == expected
+    assert all(t["adds"] for t in c.get(f"{api}/templates").json())
+
+
+def test_a_template_not_yet_set_up_is_not_done(tmp_path):
+    ws, cfg, store = make(tmp_path)
+    from engine import setup
+
+    kit = ws.config_dir / "plugins" / "kit.yaml"
+    settings = yaml.safe_load(kit.read_text())
+    settings["types"] = []
+    kit.write_text(yaml.safe_dump(settings))
+    try:
+        assert not {s.id: s for s in setup.steps(ws, cfg, store)}["template"].done
+    finally:
+        store.close()
+
+
+# ---- plugin steps and restarting -------------------------------------------------------------------------------------
+
+
+def test_a_plugin_adds_a_setup_step(tmp_path):
+    code = FIXTURE.replace(
+        "    registrar.job(",
+        '    registrar.setup_step("p18/first-goal", label="Add your first goal", '
+        'done=lambda view, settings: bool(view.list("p18/goal")))\n    registrar.job(',
+    )
+    ws, cfg, store = plugin_workspace(tmp_path, code)
+    store.close()
+    path = ws.root / "plugins" / "p18" / "plugin.yaml"
+    manifest = yaml.safe_load(path.read_text())
+    manifest["provides"]["setup_steps"] = ["p18/first-goal"]
+    path.write_text(yaml.safe_dump(manifest))
+    from engine import setup
+    from engine.applier import apply_as_person
+    from engine.storage import Store
+
+    store = Store(ws.db_path, cfg=cfg)
+    try:
+        assert store.plugins.active("p18"), store.plugins.status["p18"].reason
+        step = next(s for s in setup.steps(ws, cfg, store) if s.plugin == "p18")
+        assert step.id == "p18/first-goal" and step.label == "Add your first goal" and not step.done
+        apply_as_person(store, cfg, [{"op": "p18/add-goal", "title": "Map"}], "A goal")
+        assert next(s for s in setup.steps(ws, cfg, store) if s.plugin == "p18").done
+    finally:
+        store.close()
+
+
+def test_the_app_restarts_only_when_the_person_asks(tmp_path):
+    from engine.worker import Events, Worker
+
+    ws, cfg, store = make(tmp_path)
+    asked = []
+    worker = Worker(ws, store, cfg, Events(), on_restart=lambda: asked.append(True))
+    try:
+        assert not worker.restart_due() and not worker.needs_restart()
+        text = (ws.config_dir / "storage.yaml").read_text()
+        (ws.config_dir / "storage.yaml").write_text(set_key(text, ["export", "commit"], not cfg.storage.export.commit))
+        assert worker.needs_restart() and not worker.restart_due() and asked == []  # shown, never on its own
+        assert worker.restart_for == ["storage.export.commit"]  # and says what waits for it
+        worker.request_restart()
+        assert worker.restart_due() and asked == [True]
+        assert not worker.restart_due() and asked == [True]
+    finally:
+        store.close()
+
+
+def test_settings_read_while_they_do_not_load_ask_for_no_restart(tmp_path):
+    """A read that lands while the settings don't load (a save half way through its files, or a file the person is
+    still editing) changes nothing: no restart is asked for, and the next read takes in the live change."""
+    from engine.worker import Events, Worker
+
+    ws, cfg, store = make(tmp_path)
+    worker = Worker(ws, store, cfg, Events(), on_restart=lambda: None)
+    try:
+        path = ws.config_dir / "workspace.yaml"
+        good = path.read_text()
+        path.write_text("name: [this does not load\n")
+        assert worker.needs_restart() is False and worker.restart_needed is None
+        path.write_text(set_key(good, ["name"], "Changed"))
+        assert worker.needs_restart() is False and cfg.workspace.name == "Changed"
+    finally:
+        store.close()
+
+
+def test_live_settings_are_taken_in_at_once_and_a_mixed_change_waits(tmp_path):
+    from engine.worker import Events, Worker
+
+    ws, cfg, store = make(tmp_path)
+    worker = Worker(ws, store, cfg, Events(), on_restart=lambda: None)
+    try:
+        text = (ws.config_dir / "workspace.yaml").read_text()
+        (ws.config_dir / "workspace.yaml").write_text(set_key(text, ["name"], "Changed"))
+        assert worker.needs_restart() is False and cfg.workspace.name == "Changed"  # in use already
+        ai = (ws.config_dir / "ai.yaml").read_text()
+        (ws.config_dir / "ai.yaml").write_text(set_key(ai, ["budgets", "per_run_usd"], 0.5))
+        assert worker.needs_restart() is False and cfg.ai.budgets.per_run_usd == 0.5
+        text = (ws.config_dir / "workspace.yaml").read_text()
+        storage = (ws.config_dir / "storage.yaml").read_text()
+        commit = cfg.storage.export.commit
+        (ws.config_dir / "workspace.yaml").write_text(set_key(text, ["name"], "Again"))
+        (ws.config_dir / "storage.yaml").write_text(set_key(storage, ["export", "commit"], not commit))
+        # A live key never waits behind another: the name is in use at once, and the key that needs a restart keeps
+        # its value and still asks for the restart.
+        assert worker.needs_restart() is True
+        assert cfg.workspace.name == "Again"
+        assert cfg.storage.export.commit == commit
+    finally:
+        store.close()
+
+
+def test_a_setting_given_on_the_command_line_does_not_make_a_live_change_wait_for_a_restart(tmp_path):
+    from engine.worker import Events, Worker
+
+    ws, _, store = make(tmp_path)
+    cfg = ws.config(env={}, flags={"server.port": 8123})
+    worker = Worker(ws, store, cfg, Events(), on_restart=lambda: None)
+    try:
+        ai = (ws.config_dir / "ai.yaml").read_text()
+        (ws.config_dir / "ai.yaml").write_text(set_key(ai, ["budgets", "per_run_usd"], 0.5))
+        assert worker.needs_restart() is False and worker.restart_for == []
+        assert cfg.ai.budgets.per_run_usd == 0.5  # taken in, as without the option
+        assert cfg.server.port == 8123  # and the option still in force
+    finally:
+        store.close()
+
+
+def test_a_backup_folder_is_taken_in_without_a_restart(tmp_path):
+    from engine.worker import Events, Worker
+
+    ws, cfg, store = make(tmp_path)
+    worker = Worker(ws, store, cfg, Events(), on_restart=lambda: None)
+    try:
+        folder = tmp_path / "drive"
+        folder.mkdir()
+        storage = (ws.config_dir / "storage.yaml").read_text()
+        targets = [{"path": str(folder)}]
+        (ws.config_dir / "storage.yaml").write_text(set_key(storage, ["backups", "targets"], targets))
+        assert worker.needs_restart() is False
+        assert [t.path for t in cfg.storage.backups.targets] == [str(folder)]
+    finally:
+        store.close()
+
+
+def test_restart_is_asked_for_and_refused_when_the_app_cant_start_itself(tmp_path):
+    from api.app import create_app
+
+    ws, cfg, store = make(tmp_path)
+    store.close()
+    plain = TestClient(create_app(ws, cfg, "t", start_worker=False))
+    plain.headers["Authorization"] = "Bearer t"
+    api = cfg.server.base_path.rstrip("/") + "/api"
+    refused = plain.post(f"{api}/restart")
+    assert refused.status_code == 409 and "start it again" in refused.text
+    assert plain.get(f"{api}/status").json()["can_restart"] is False
+    plain.close()
+    asked = []
+    able = TestClient(create_app(ws, cfg, "t", start_worker=False, on_restart=lambda: asked.append(True)))
+    able.headers["Authorization"] = "Bearer t"
+    assert able.post(f"{api}/restart").json() == {"restarting": True}
+    assert able.app.state.worker.restart_due() and asked == [True]
+
+
+@pytest.mark.parametrize("mode", ["hosted"])
+def test_a_hosted_app_never_takes_a_pasted_key_or_lists_folders(tmp_path, mode):
+    ws, cfg, store = make(tmp_path)
+    app_host = yaml.safe_load((Path(__file__).parent / "fixtures" / "network" / "network.yaml").read_text())["app_host"]
+    update = {"mode": mode, "public_url": "https" + f"://{app_host}"}  # the address a hosted app answers to
+    cfg = cfg.__class__(files={**cfg.files, "server": cfg.server.model_copy(update=update)}, sources={})
+    c, api = client(ws, cfg, store)
+    assert c.get(f"{api}/setup/folders").status_code == 403
+    fingerprint = c.get(f"{api}/settings").json()["fingerprint"]
+    account = {
+        "name": "x",
+        "adapter": COMMON,
+        "key": "k",
+        "models": {"a": "b"},
+        "fingerprint": fingerprint,
+    }
+    assert c.post(f"{api}/ai/accounts", json=account).status_code == 400
+
+
+def test_a_restart_that_fails_says_how_to_start_again(monkeypatch, capsys):
+    import engine.cli
+
+    def refused(*args):
+        raise OSError("not allowed here")
+
+    monkeypatch.setattr(engine.cli.os, "execv", refused)
+    monkeypatch.setattr(engine.cli.os, "name", "posix")
+    monkeypatch.setattr(engine.cli.sys, "orig_argv", ["python", "cockpit", "serve", "-w", "ws"])
+    assert engine.cli.restart_self() == 1
+    err = capsys.readouterr().err
+    assert "couldn't restart by itself" in err and "cockpit serve -w ws" in err
+
+
+def test_a_restart_never_starts_the_demo_over_or_opens_another_tab(monkeypatch):
+    import engine.cli
+
+    ran = []
+    monkeypatch.setattr(engine.cli.os, "execv", lambda exe, args: ran.append(args))
+    monkeypatch.setattr(engine.cli.os, "name", "posix")
+    monkeypatch.setattr(engine.cli.sys, "orig_argv", ["python", "cockpit", "demo", "~/d", "--fresh", "--open"])
+    monkeypatch.delenv(engine.cli.RESTARTED, raising=False)
+    engine.cli.restart_self()
+    assert ran and "--fresh" not in ran[0] and ran[0][-3:] == ["demo", "~/d", "--open"]
+    assert engine.cli.os.environ.get(engine.cli.RESTARTED) == "1"  # read once by the new start, then dropped
+
+
+def test_the_person_the_app_is_for_is_named_on_their_record(tmp_path):
+    from engine.storage import Store, WriteContext
+    from engine.workspace import init_workspace
+
+    ws = init_workspace(tmp_path / "fresh", git=False)
+    cfg = ws.config(env={})
+    c, api = client(ws, cfg, Store(ws.db_path, cfg=cfg))
+    assert c.get(f"{api}/me").json() == {"person": None, "full_name": ""}
+    made = c.post(f"{api}/me", json={"full_name": "  Sam   Tester "}).json()
+    assert made["full_name"] == "Sam Tester" and made["person"]
+    assert ws.config(env={}).workspace.user.person == made["person"]  # linked in the settings by id only
+    renamed = c.post(f"{api}/me", json={"full_name": "Sam T. Tester"}).json()
+    assert renamed["person"] == made["person"]
+    store = Store(ws.db_path)
+    try:
+        assert store.read().get("person", made["person"]).data["full_name"] == "Sam T. Tester"
+        with store.transaction() as tx:
+            tx.create("person", {"full_name": "Robin Other"}, WriteContext(actor="pm", trust="trusted", op="t"))
+    finally:
+        store.close()
+    assert c.post(f"{api}/me", json={"full_name": "robin other"}).status_code == 409
+
+
+# ---- choosing a service and its models -------------------------------------------------------------------------------
+
+
+def a_service(models=("model-b", "model-a"), status=200, seen=None):
+    """The common adapter, answered by a fake service instead of the network."""
+    import httpx
+
+    from engine.ai import adapters
+
+    def answer(request):
+        if seen is not None:
+            seen.append(request)
+        if status != 200:
+            return httpx.Response(status, json={"error": {"code": "invalid_api_key"}})
+        data = [{"id": m, "context_length": 32000, "pricing": {"prompt": "0.000001"}} for m in models]
+        return httpx.Response(200, json={"data": data})
+
+    base = adapters.ADAPTERS[COMMON]
+
+    class Faked(base):
+        def __init__(self, settings, secret=None):
+            super().__init__(settings, secret, transport=httpx.MockTransport(answer))
+
+    return Faked
+
+
+def test_a_service_is_picked_by_name_and_its_models_listed_with_an_unsaved_key(tmp_path, monkeypatch):
+    from engine.ai import adapters
+
+    seen = []
+    monkeypatch.setitem(adapters.ADAPTERS, COMMON, a_service(seen=seen))
+    ws, cfg, store = make(tmp_path)
+    c, api = client(ws, cfg, store)
+    kinds = c.get(f"{api}/ai/endpoints").json()
+    service = next(k for k in kinds if k["needs_key"] and k["base_url"] and k["key_url"])
+    assert all(k["local"] is False for k in kinds if k["needs_key"])
+    listed = c.post(f"{api}/ai/models", json={"endpoint": service["id"], "key": "not-a-real-key"}).json()
+    assert [m["id"] for m in listed["models"]] == ["model-a", "model-b"] and listed["problem"] is None
+    assert listed["models"][0]["input_per_million"] == 1 and listed["models"][0]["context_tokens"] == 32000
+    assert seen[0].headers["authorization"] == "Bearer not-a-real-key"
+    assert not (ws.private_dir / "keys").exists()  # nothing kept until the account is added
+    unkeyed = c.post(f"{api}/ai/models", json={"endpoint": service["id"]}).json()
+    assert unkeyed["models"] == [] and "needs a key" in unkeyed["problem"]
+    assert c.post(f"{api}/ai/models", json={"endpoint": "no-such-kind"}).status_code == 400
+
+
+def test_a_key_the_service_refuses_is_said_in_plain_words(tmp_path, monkeypatch):
+    from engine.ai import adapters
+
+    monkeypatch.setitem(adapters.ADAPTERS, COMMON, a_service(status=401))
+    ws, cfg, store = make(tmp_path)
+    c, api = client(ws, cfg, store)
+    service = next(k for k in c.get(f"{api}/ai/endpoints").json() if k["needs_key"] and k["base_url"])
+    listed = c.post(f"{api}/ai/models", json={"endpoint": service["id"], "key": "wrong"}).json()
+    assert listed["models"] == [] and "didn't accept the key" in listed["problem"]
+
+
+def test_a_model_server_on_this_computer_is_found_without_a_key(tmp_path, monkeypatch):
+    from engine.ai import adapters
+
+    monkeypatch.setitem(adapters.ADAPTERS, COMMON, a_service(models=("local-model",)))
+    ws, cfg, store = make(tmp_path)
+    c, api = client(ws, cfg, store)
+    found = c.get(f"{api}/ai/local").json()
+    local = [k for k in known_endpoints() if k["local"] and k["adapter"] == COMMON]
+    assert [f["endpoint"] for f in found] == [k["id"] for k in local] and found[0]["models"] == ["local-model"]
+    assert all("restricted" in k["allowed_data"] for k in local)
+
+
+def test_an_account_of_a_known_kind_starts_with_its_settings(tmp_path):
+    ws, cfg, store = make(tmp_path)
+    c, api = client(ws, cfg, store)
+    kind = next((k for k in known_endpoints() if k["settings"]), None)
+    assert kind is not None
+    fingerprint = c.get(f"{api}/settings").json()["fingerprint"]
+    done = c.post(
+        f"{api}/ai/accounts",
+        json={
+            "name": "picked",
+            "adapter": kind["adapter"],
+            "endpoint": kind["id"],
+            "base_url": kind["base_url"],
+            "key": "not-a-real-key",
+            "models": {"everyday": "some-model", "harder": "bigger-model"},
+            "use": {"routine": "everyday", "deep": "harder"},
+            "fingerprint": fingerprint,
+        },
+    )
+    assert done.status_code == 200, done.text
+    loaded = load_config(ws.config_dir, env={})
+    assert loaded.ai.tiers["routine"].use == "picked/everyday" and loaded.ai.tiers["deep"].use == "picked/harder"
+    provider = loaded.ai.providers["picked"]
+    for key, value in kind["settings"].items():
+        assert getattr(provider, key) == value
+
+
+@pytest.mark.skipif(os.environ.get("COCKPIT_TEST_CORE_ONLY") == "1", reason="the example plugin is off in this run")
+def test_an_add_ons_settings_are_a_form_group_saved_to_its_own_file(tmp_path):
+    ws, cfg, store = make(tmp_path)
+    c, api = client(ws, cfg, store)
+    view = c.get(f"{api}/settings").json()
+    mine = {i["key"]: i for i in view["items"] if i["plugin"] == "example"}
+    assert mine and all(i["file"] == "plugins/example" and i["group"] == "plugins/example" for i in mine.values())
+    label = mine["plugins/example.draft_label"]
+    assert label["type"] == "text" and label["editable"] and label["source"] == "file"
+    assert "plugins/example.version" not in mine
+    path = ws.config_dir / "plugins" / "example.yaml"
+    comments = [line for line in path.read_text().splitlines() if line.startswith("#")]
+    done = c.post(
+        f"{api}/settings",
+        json={"changes": {"plugins/example.draft_label": "Noted"}, "fingerprint": view["fingerprint"]},
+    )
+    assert done.status_code == 200, done.text
+    change = done.json()["changes"][0]
+    assert change["key"] == "plugins/example.draft_label" and change["after"] == "Noted" and change["before"]
+    assert yaml.safe_load(path.read_text())["draft_label"] == "Noted"
+    assert all(line in path.read_text() for line in comments)  # the file's comments stay
+    fingerprint = done.json()["fingerprint"]
+    wrong = c.post(
+        f"{api}/settings", json={"changes": {"plugins/example.ask_on_add": "maybe"}, "fingerprint": fingerprint}
+    )
+    assert wrong.status_code >= 400 and wrong.json()["detail"] == "Choose yes or no."
+    unknown = c.post(f"{api}/settings", json={"changes": {"plugins/nobody.thing": 1}, "fingerprint": fingerprint})
+    assert unknown.status_code >= 400
+
+
+def test_the_ai_test_says_in_plain_words_whether_each_kind_of_work_answered(tmp_path):
+    ws, cfg, store = make(tmp_path)
+    c, api = client(ws, cfg, store)
+    lines = c.post(f"{api}/ai/test").json()
+    assert lines and len({(x["tier"], x["account"]) for x in lines}) == len(lines)  # one line each
+    for x in lines:
+        assert "/" not in x["account"] and "temperature" not in x["account"] and "max output" not in x["detail"]
+        assert x["ok"] is False or x["detail"] == "answered"
+
+
+def test_an_account_is_listed_changed_and_removed_with_undo(tmp_path):
+    ws, cfg, store = make(tmp_path)
+    c, api = client(ws, cfg, store)
+    fingerprint = c.get(f"{api}/settings").json()["fingerprint"]
+    kind = next(k for k in known_endpoints() if k["needs_key"] and k["base_url"])
+    added = c.post(
+        f"{api}/ai/accounts",
+        json={
+            "name": "mine",
+            "adapter": kind["adapter"],
+            "endpoint": kind["id"],
+            "base_url": kind["base_url"],
+            "key": "first-key",
+            "models": {"everyday": "a-model"},
+            "use": {"routine": "everyday"},
+            "fingerprint": fingerprint,
+        },
+    ).json()
+    listed = {a["name"]: a for a in c.get(f"{api}/ai/accounts").json()}
+    assert listed["mine"]["kind"] == kind["id"] and listed["mine"]["used_for"] == ["routine"]
+    assert listed["mine"]["has_key"] and "first-key" not in str(listed)
+    changed = c.post(
+        f"{api}/ai/accounts/mine",
+        json={"key": "second-key", "models": {"everyday": "b-model"}, "fingerprint": added["fingerprint"]},
+    )
+    assert changed.status_code == 200, changed.text
+    # The new key is kept under a name of its own, so Undo's earlier reference still finds the first key.
+    assert (ws.private_dir / "keys" / "mine-2").read_text().strip() == "second-key"
+    assert (ws.private_dir / "keys" / "mine").read_text().strip() == "first-key"
+    assert load_config(ws.config_dir, env={}).ai.providers["mine"].models == {"everyday": "b-model"}
+    removed = c.post(f"{api}/ai/accounts/mine/remove", json={"fingerprint": changed.json()["fingerprint"]})
+    assert removed.status_code == 200, removed.text
+    after = load_config(ws.config_dir, env={})
+    assert "mine" not in after.ai.providers and not (after.ai.tiers["routine"].use or "").startswith("mine/")
+    assert removed.json()["needs_restart"] is False  # AI accounts apply live
+    # Undo puts it back, as a settings undo does: the values from before.
+    undo = {"changes": {}, "reset": [], "fingerprint": removed.json()["fingerprint"]}
+    for change in removed.json()["changes"]:
+        undo["changes"][change["key"]] = change["before"]
+    assert c.post(f"{api}/settings", json=undo).status_code == 200
+    assert "mine" in load_config(ws.config_dir, env={}).ai.providers
+    assert c.post(f"{api}/ai/accounts/nobody/remove", json={"fingerprint": "x"}).status_code == 404
+
+
+def test_an_account_becomes_a_backup_only_once_checked_and_says_which_work_it_backs_up(tmp_path):
+    """A second account stands in when the main one can't answer: "Use as backup" adds its model to each tier's
+    backups. Like any account in a chain, it must have passed its check or be accepted unchecked."""
+    ws, cfg, store = make(tmp_path)
+    c, api = client(ws, cfg, store)
+    kind = next(k for k in known_endpoints() if k["needs_key"] and k["base_url"])
+    fingerprint = c.get(f"{api}/settings").json()["fingerprint"]
+    for name in ("main", "spare"):
+        body = {
+            "name": name,
+            "adapter": kind["adapter"],
+            "endpoint": kind["id"],
+            "base_url": kind["base_url"],
+            "key": f"{name}-key",
+            "models": {"everyday": "a-model"},
+            "fingerprint": fingerprint,
+        }
+        if name == "main":
+            body["use"] = {"routine": "everyday", "deep": "everyday"}
+        fingerprint = c.post(f"{api}/ai/accounts", json=body).json()["fingerprint"]
+    assert {t: v.use for t, v in load_config(ws.config_dir, env={}).ai.tiers.items()} == {
+        "routine": "main/everyday",
+        "deep": "main/everyday",
+    }
+    backup = {"routine": "everyday", "deep": "everyday"}
+    refused = c.post(f"{api}/ai/accounts/spare", json={"backup": backup, "fingerprint": fingerprint})
+    assert refused.status_code == 400 and "spare" in refused.text and "already" not in refused.text
+    # The screens offer "Use it anyway" only where it hasn't been chosen: the account says whether it was.
+    assert not any(a["accepted_unchecked"] for a in c.get(f"{api}/ai/accounts").json())
+    accepted = c.post(
+        f"{api}/settings", json={"changes": {"ai.providers.spare.accepted_unchecked": True}, "fingerprint": fingerprint}
+    ).json()
+    done = c.post(f"{api}/ai/accounts/spare", json={"backup": backup, "fingerprint": accepted["fingerprint"]})
+    assert done.status_code == 200, done.text
+    after = load_config(ws.config_dir, env={})
+    assert all(after.ai.tiers[t].fallback[-1] == "spare/everyday" for t in ("routine", "deep"))
+    listed = {a["name"]: a for a in c.get(f"{api}/ai/accounts").json()}
+    assert sorted(listed["spare"]["backup_for"]) == ["deep", "routine"] and listed["spare"]["used_for"] == []
+    assert listed["spare"]["accepted_unchecked"] is True
+    again = c.post(f"{api}/ai/accounts/spare", json={"backup": backup, "fingerprint": done.json()["fingerprint"]})
+    assert again.status_code == 400, "an account already a backup there isn't added twice"
+
+
+def _two_accounts(c, api, kind, fingerprint, label="Main"):
+    for name in ("main", "spare"):
+        body = {
+            "name": name,
+            "label": label if name == "main" else "",
+            "adapter": kind["adapter"],
+            "endpoint": kind["id"],
+            "base_url": kind["base_url"],
+            "key": f"{name}-key",
+            "models": {"everyday": "a-model"},
+            "fingerprint": fingerprint,
+        }
+        if name == "main":
+            body["use"] = {"routine": "everyday", "deep": "everyday"}
+        fingerprint = c.post(f"{api}/ai/accounts", json=body).json()["fingerprint"]
+    return fingerprint
+
+
+def test_an_account_has_the_name_its_person_gave_and_its_state_for_the_row(tmp_path):
+    """The label is the person's own name for the account, changed without a new check; the state says when it last
+    answered, what it cost today, which work it was checked for and until when it is paused."""
+    ws, cfg, store = make(tmp_path)
+    c, api = client(ws, cfg, store)
+    kind = next(k for k in known_endpoints() if k["needs_key"] and k["base_url"])
+    fingerprint = _two_accounts(c, api, kind, c.get(f"{api}/settings").json()["fingerprint"])
+    listed = {a["name"]: a for a in c.get(f"{api}/ai/accounts").json()}
+    assert listed["main"]["label"] == "Main" and listed["spare"]["label"] == ""
+    assert listed["main"]["checked_for"] == [] and listed["main"]["paused_until"] is None
+    assert listed["main"]["answered_at"] is None and listed["main"]["spent_today_usd"] == 0
+    renamed = c.post(f"{api}/ai/accounts/spare", json={"label": "Second", "fingerprint": fingerprint})
+    assert renamed.status_code == 200, renamed.text
+    assert load_config(ws.config_dir, env={}).ai.providers["spare"].label == "Second"
+    cleared = c.post(f"{api}/ai/accounts/spare", json={"label": " ", "fingerprint": renamed.json()["fingerprint"]})
+    assert cleared.status_code == 200 and load_config(ws.config_dir, env={}).ai.providers["spare"].label == ""
+
+
+def test_a_new_name_never_makes_a_checked_account_unchecked(tmp_path):
+    from engine.ai.checked import account_fingerprint
+
+    ws, cfg, store = make(tmp_path)
+    c, api = client(ws, cfg, store)
+    kind = next(k for k in known_endpoints() if k["needs_key"] and k["base_url"])
+    fingerprint = _two_accounts(c, api, kind, c.get(f"{api}/settings").json()["fingerprint"])
+    before = account_fingerprint(load_config(ws.config_dir, env={}), "main/everyday")
+    c.post(f"{api}/ai/accounts/main", json={"label": "Another name", "fingerprint": fingerprint})
+    assert account_fingerprint(load_config(ws.config_dir, env={}), "main/everyday") == before
+
+
+def test_removing_the_main_account_hands_its_work_to_the_backup_named_or_to_nobody(tmp_path):
+    ws, cfg, store = make(tmp_path)
+    c, api = client(ws, cfg, store)
+    kind = next(k for k in known_endpoints() if k["needs_key"] and k["base_url"])
+    fingerprint = _two_accounts(c, api, kind, c.get(f"{api}/settings").json()["fingerprint"])
+    fingerprint = c.post(
+        f"{api}/settings", json={"changes": {"ai.providers.spare.accepted_unchecked": True}, "fingerprint": fingerprint}
+    ).json()["fingerprint"]
+    backup = {"routine": "everyday", "deep": "everyday"}
+    fingerprint = c.post(f"{api}/ai/accounts/spare", json={"backup": backup, "fingerprint": fingerprint}).json()[
+        "fingerprint"
+    ]
+    # With no heir named the work has no account, and Today says so.
+    nobody = c.post(f"{api}/ai/accounts/main/remove", json={"fingerprint": fingerprint})
+    assert nobody.status_code == 200, nobody.text
+    after = load_config(ws.config_dir, env={})
+    assert after.ai.tiers["routine"].use == "" and after.ai.tiers["routine"].fallback == ["spare/everyday"]
+    undo = {
+        "changes": {c_["key"]: c_["before"] for c_ in nobody.json()["changes"]},
+        "reset": [],
+        "fingerprint": nobody.json()["fingerprint"],
+    }
+    assert c.post(f"{api}/settings", json=undo).status_code == 200
+    # With the backup named, it takes over and is no longer its own backup.
+    fingerprint = c.get(f"{api}/settings").json()["fingerprint"]
+    heir = c.post(f"{api}/ai/accounts/main/remove", json={"fingerprint": fingerprint, "take_over": "spare"})
+    assert heir.status_code == 200, heir.text
+    after = load_config(ws.config_dir, env={})
+    assert {t: v.use for t, v in after.ai.tiers.items()} == {"routine": "spare/everyday", "deep": "spare/everyday"}
+    assert after.ai.tiers["routine"].fallback == [] and "main" not in after.ai.providers
+    gone = c.post(f"{api}/ai/accounts/spare/remove", json={"fingerprint": heir.json()["fingerprint"], "take_over": "x"})
+    assert gone.status_code == 404
+
+
+def test_a_backup_moves_to_its_harder_model_keeps_its_place_and_can_stop(tmp_path):
+    ws, cfg, store = make(tmp_path)
+    c, api = client(ws, cfg, store)
+    kind = next(k for k in known_endpoints() if k["needs_key"] and k["base_url"])
+    fingerprint = _two_accounts(c, api, kind, c.get(f"{api}/settings").json()["fingerprint"])
+    fingerprint = c.post(
+        f"{api}/settings", json={"changes": {"ai.providers.spare.accepted_unchecked": True}, "fingerprint": fingerprint}
+    ).json()["fingerprint"]
+    both = {"routine": "everyday", "deep": "everyday"}
+    fingerprint = c.post(f"{api}/ai/accounts/spare", json={"backup": both, "fingerprint": fingerprint}).json()[
+        "fingerprint"
+    ]
+    fingerprint = c.post(
+        f"{api}/ai/accounts/spare",
+        json={"models": {"everyday": "a-model", "harder": "b-model"}, "fingerprint": fingerprint},
+    ).json()["fingerprint"]
+    moved = c.post(f"{api}/ai/accounts/spare", json={"backup": {"deep": "harder"}, "fingerprint": fingerprint})
+    assert moved.status_code == 200, moved.text
+    tiers = load_config(ws.config_dir, env={}).ai.tiers
+    assert tiers["deep"].fallback == ["spare/harder"] and tiers["routine"].fallback == ["spare/everyday"]
+    stopped = c.post(f"{api}/ai/accounts/spare", json={"stop_backup": True, "fingerprint": moved.json()["fingerprint"]})
+    assert stopped.status_code == 200, stopped.text
+    tiers = load_config(ws.config_dir, env={}).ai.tiers
+    assert tiers["deep"].fallback == [] and tiers["routine"].fallback == []
+    listed = {a["name"]: a for a in c.get(f"{api}/ai/accounts").json()}
+    assert listed["spare"]["backup_for"] == []
+
+
+def test_a_check_is_priced_from_its_size_and_the_models_price_and_never_guessed(tmp_path):
+    ws, cfg, store = make(tmp_path)
+    c, api = client(ws, cfg, store)
+    kind = next(k for k in known_endpoints() if k["needs_key"] and k["base_url"])
+    _two_accounts(c, api, kind, c.get(f"{api}/settings").json()["fingerprint"])
+    size = c.get(f"{api}/ai/check-size").json()
+    assert size["calls"] > 0 and size["input_tokens"] > 0 and size["output_tokens"] > 0
+    assert {a["name"]: a["check_usd"] for a in c.get(f"{api}/ai/accounts").json()}["main"] is None
+    price = {"input_per_million": 2.0, "output_per_million": 10.0}
+    path = ws.config_dir / "ai.yaml"
+    path.write_text(set_key(path.read_text(encoding="utf-8"), ["prices", "main/everyday"], price), encoding="utf-8")
+    usd = {a["name"]: a["check_usd"] for a in c.get(f"{api}/ai/accounts").json()}["main"]
+    assert usd == pytest.approx((size["input_tokens"] * 2.0 + size["output_tokens"] * 10.0) / 1e6)
+
+
+def test_a_program_names_what_each_example_model_is_for_so_the_screen_never_shows_the_model(tmp_path):
+    """Every example model of a built-in program says what it is for (recommended, stronger or faster), the
+    recommended one comes first, and a role the catalog gives to a name it doesn't list is dropped."""
+    ws, cfg, store = make(tmp_path)
+    c, api = client(ws, cfg, store)
+    with_examples = [k for k in c.get(f"{api}/ai/endpoints").json() if k["model_examples"]]
+    assert with_examples
+    for kind in with_examples:
+        roles = kind["model_roles"]
+        assert sorted(roles) == sorted(kind["model_examples"]), kind["id"]
+        assert set(roles.values()) <= {"recommended", "stronger", "faster"}
+        assert list(roles.values()).count("recommended") == 1
+        assert roles[kind["model_examples"][0]] == "recommended"
+    assert all(k["model_roles"] == {} for k in c.get(f"{api}/ai/endpoints").json() if not k["model_examples"])
+
+
+def test_a_catalog_role_for_an_unlisted_example_or_an_unknown_role_is_dropped(tmp_path, monkeypatch):
+    from engine import setup
+
+    catalog = tmp_path / "ai-endpoints.yaml"
+    catalog.write_text(
+        yaml.safe_dump(
+            {
+                "endpoints": [
+                    {
+                        "id": "prog",
+                        "name": "A program",
+                        "adapter": "cli-agent",
+                        "program": "prog",
+                        "model_examples": ["one", "two"],
+                        "model_roles": {"one": "recommended", "two": "cheapest", "three": "faster"},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(setup, "CATALOG", catalog)
+    assert setup.known_endpoints()[0]["model_roles"] == {"one": "recommended"}
+
+
+def test_built_in_agents_start_with_their_tools_off_and_say_if_installed(tmp_path):
+    ws, cfg, store = make(tmp_path)
+    c, api = client(ws, cfg, store)
+    kinds = c.get(f"{api}/ai/endpoints").json()
+    generic = next(k for k in kinds if k["id"] == "agent")
+    agents = [k for k in kinds if k["program"]]
+    assert len(agents) >= 4
+    assert all(k["adapter"] == generic["adapter"] and k["installed"] in (True, False) for k in agents)
+    for kind in agents:
+        command = kind["settings"]["agent"]["command"]
+        assert command[0] == kind["program"]
+        assert kind["settings"]["agent"]["packet_via"] in ("stdin", "argument")
+        assert "{prompt}" in command or kind["settings"]["agent"]["packet_via"] != "argument"
+    fingerprint = c.get(f"{api}/settings").json()["fingerprint"]
+    first = agents[0]
+    made = c.post(
+        f"{api}/ai/accounts",
+        json={
+            "name": "agent-one",
+            "adapter": first["adapter"],
+            "endpoint": first["id"],
+            "models": {"everyday": (first["model_examples"] or ["default"])[0]},
+            "fingerprint": fingerprint,
+        },
+    )
+    assert made.status_code == 200, made.text
+    provider = load_config(ws.config_dir, env={}).ai.providers["agent-one"]
+    assert provider.agent is not None and provider.agent.command == first["settings"]["agent"]["command"]
+    assert provider.kind == first["id"]
+    picks_own = next(k for k in agents if k["model_optional"])
+    made = c.post(
+        f"{api}/ai/accounts",
+        json={
+            "name": "agent-two",
+            "adapter": picks_own["adapter"],
+            "endpoint": picks_own["id"],
+            "models": {},
+            "use_for": ["routine"],
+            "fingerprint": made.json()["fingerprint"],
+        },
+    )
+    assert made.status_code == 200, made.text
+    saved = load_config(ws.config_dir, env={})
+    assert list(saved.ai.providers["agent-two"].models) == ["default"]
+    assert saved.ai.tiers["routine"].use.startswith("agent-two/")
+
+
+def test_an_account_says_whether_its_key_is_there_and_can_be_tested_before_it_does_work(tmp_path):
+    ws, cfg, store = make(tmp_path)
+    c, api = client(ws, cfg, store)
+    stand_in = next(name for name, p in cfg.ai.providers.items() if p.adapter == "stub")
+    fingerprint = c.get(f"{api}/settings").json()["fingerprint"]
+    kinds = c.get(f"{api}/ai/endpoints").json()
+    service = next(k for k in kinds if k["needs_key"] and k["base_url"])
+    made = c.post(
+        f"{api}/ai/accounts",
+        json={
+            "name": "unset-key",
+            "adapter": service["adapter"],
+            "endpoint": service["id"],
+            "key_ref": "env:COCKPIT_TEST_KEY_NOT_SET",
+            "models": {"everyday": "model-x"},
+            "fingerprint": fingerprint,
+        },
+    )
+    assert made.status_code == 200, made.text
+    accounts = {a["name"]: a for a in c.get(f"{api}/ai/accounts").json()}
+    assert accounts["unset-key"]["key_state"] == "missing"
+    assert "COCKPIT_TEST_KEY_NOT_SET" in accounts["unset-key"]["key_where"]
+    assert accounts[stand_in]["key_state"] == "none"
+    tested = c.post(f"{api}/ai/accounts/{stand_in}/test").json()
+    assert [{k: v for k, v in line.items() if v is not None} for line in tested] == [
+        {"tier": "account", "account": stand_in, "main": True, "ok": True, "detail": "answered"}
+    ]
+    missing = c.post(f"{api}/ai/accounts/unset-key/test").json()
+    assert not missing[0]["ok"] and "COCKPIT_TEST_KEY_NOT_SET" in missing[0]["detail"]
+    assert c.post(f"{api}/ai/accounts/nobody/test").status_code == 404
+
+
+@pytest.mark.skipif(os.environ.get("COCKPIT_TEST_CORE_ONLY") == "1", reason="the bundled add-ons are off in this run")
+def test_the_add_ons_step_is_never_done_for_add_ons_nobody_decided_about(tmp_path):
+    from engine import setup
+
+    ws, cfg, store = make(tmp_path)
+    try:
+        # Nothing installed, nothing decided: there is nothing to turn on, so the step isn't offered and isn't done.
+        step = {s.id: s for s in setup.steps(ws, cfg, store)}["addons"]
+        assert not step.done and not step.applies
+        folder = ws.root / "plugins" / "spare"
+        folder.mkdir(parents=True)
+        (folder / "plugin.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "spare",
+                    "version": "0.1.0",
+                    "plugin_api": ">=0.3,<0.4",
+                    "description": "An add-on left off",
+                    "entry": "spare:register",
+                    "config_schema": "spare:Config",
+                }
+            )
+        )
+        assert setup.addons_off(ws, cfg) == ["spare"]
+        step = {s.id: s for s in setup.steps(ws, cfg, store)}["addons"]
+        assert not step.done and step.applies
+    finally:
+        store.close()
+
+
+def test_an_installed_add_on_is_turned_on_and_off_with_undo(tmp_path):
+    ws, cfg, store = make(tmp_path)
+    folder = ws.root / "plugins" / "spare"
+    folder.mkdir(parents=True)
+    (folder / "plugin.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "name": "spare",
+                "version": "0.1.0",
+                "plugin_api": ">=0.3,<0.4",
+                "description": "An add-on left off",
+                "entry": "spare:register",
+                "config_schema": "spare:Config",
+            }
+        )
+    )
+    c, api = client(ws, cfg, store)
+    fingerprint = c.get(f"{api}/settings").json()["fingerprint"]
+    assert c.post(f"{api}/packs/nothing-here/on", json={"fingerprint": fingerprint}).status_code == 404
+    turned = c.post(f"{api}/packs/spare/on", json={"fingerprint": fingerprint})
+    assert turned.status_code == 200, turned.text
+    assert turned.json()["needs_restart"] is True
+    assert "spare" in load_config(ws.config_dir, env={}).workspace.plugins.enabled
+    again = c.post(f"{api}/packs/spare/on", json={"fingerprint": turned.json()["fingerprint"]})
+    assert again.status_code == 409
+    off = c.post(f"{api}/packs/spare/off", json={"fingerprint": turned.json()["fingerprint"]})
+    assert off.status_code == 200 and "spare" not in load_config(ws.config_dir, env={}).workspace.plugins.enabled
+
+
+def test_turning_an_add_on_on_never_restarts_and_the_restart_is_the_persons_own_call(tmp_path):
+    from api.app import create_app
+
+    ws, cfg, store = make(tmp_path)
+    folder = ws.root / "plugins" / "spare"
+    folder.mkdir(parents=True)
+    (folder / "plugin.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "name": "spare",
+                "version": "0.1.0",
+                "plugin_api": ">=0.3,<0.4",
+                "description": "An add-on left off",
+                "entry": "spare:register",
+                "config_schema": "spare:Config",
+            }
+        )
+    )
+    store.close()
+    asked = []
+    able = TestClient(create_app(ws, cfg, "t", start_worker=False, on_restart=lambda: asked.append(True)))
+    able.headers["Authorization"] = "Bearer t"
+    api = cfg.server.base_path.rstrip("/") + "/api"
+    assert able.get(f"{api}/status").json()["can_restart"] is True
+    fingerprint = able.get(f"{api}/settings").json()["fingerprint"]
+    turned = able.post(f"{api}/packs/spare/on", json={"fingerprint": fingerprint})
+    assert turned.status_code == 200 and turned.json()["needs_restart"] is True
+    assert asked == [] and not able.app.state.worker.restart_due()  # turning on only says a restart is needed
+    assert able.post(f"{api}/restart").json() == {"restarting": True}  # the click that follows is what restarts
+    assert able.app.state.worker.restart_due() and asked == [True]
+    able.close()
+    stuck = TestClient(create_app(ws, cfg, "t", start_worker=False))
+    stuck.headers["Authorization"] = "Bearer t"
+    assert stuck.post(f"{api}/restart").status_code == 409  # the page then keeps its visible restart line
+    stuck.close()
+
+
+def test_a_source_is_added_changed_and_removed_from_the_screens_without_a_restart(tmp_path):
+    from engine.worker import Events, Worker
+
+    ws, cfg, store = make(tmp_path)
+    worker = Worker(ws, store, cfg, Events(), on_restart=lambda: None)
+    c, api = client(ws, cfg, store)
+    kinds = {k["name"]: k for k in c.get(f"{api}/watch/kinds").json()}
+    folder_kind = next(k for k in kinds.values() if k["plugin"] is None and any(i["key"] == "path" for i in k["items"]))
+    folder = tmp_path / "inbox"
+    folder.mkdir()
+    fingerprint = c.get(f"{api}/settings").json()["fingerprint"]
+    bad = c.post(
+        f"{api}/watch/sources",
+        json={"connector": folder_kind["name"], "label": "Shared notes", "settings": {}, "fingerprint": fingerprint},
+    )
+    assert bad.status_code == 400 and bad.headers["X-Cockpit-Field"] == "path"
+    added = c.post(
+        f"{api}/watch/sources",
+        json={
+            "connector": folder_kind["name"],
+            "label": "Shared notes",
+            "settings": {"path": str(folder)},
+            "fingerprint": fingerprint,
+        },
+    )
+    assert added.status_code == 200, added.text
+    assert added.json()["needs_restart"] is False
+    assert worker.needs_restart() is False  # watched sources are taken in at once
+    listed = {s["id"]: s for s in c.get(f"{api}/watch").json()}
+    assert "shared-notes" in listed and listed["shared-notes"]["label"] == "Shared notes"
+    again = c.post(
+        f"{api}/watch/sources",
+        json={
+            "connector": folder_kind["name"],
+            "label": "Shared notes",
+            "settings": {"path": str(folder), "patterns": ["*.md"]},
+            "fingerprint": added.json()["fingerprint"],
+        },
+    )
+    assert again.status_code == 200 and "shared-notes-2" in {s["id"] for s in c.get(f"{api}/watch").json()}
+    changed = c.post(
+        f"{api}/watch/sources/shared-notes",
+        json={"every_minutes": 15, "enabled": False, "fingerprint": again.json()["fingerprint"]},
+    )
+    assert changed.status_code == 200
+    source = next(s for s in load_config(ws.config_dir, env={}).watch.sources if s.id == "shared-notes")
+    assert source.every_minutes == 15 and source.enabled is False
+    removed = c.post(f"{api}/watch/sources/shared-notes/remove", json={"fingerprint": changed.json()["fingerprint"]})
+    assert removed.status_code == 200
+    assert "shared-notes" not in {s.id for s in load_config(ws.config_dir, env={}).watch.sources}
+    assert c.post(f"{api}/watch/sources/nothing/remove", json={"fingerprint": "x"}).status_code == 404
+
+
+def test_a_source_names_its_author_from_the_list_of_the_person_colleagues_and_teams(tmp_path):
+    from tests.conftest import DEMO_B, fixture_records
+
+    ws, cfg, store = make(tmp_path)
+    c, api = client(ws, cfg, store)
+    me = cfg.workspace.user.person
+    colleague = next(p for p in fixture_records(DEMO_B, "person") if p["id"] != me)
+    team = fixture_records(DEMO_B, "team")[0]
+    options = c.get(f"{api}/watch/authors").json()
+    assert options[0]["id"] == me and options[0]["kind"] == "you"
+    assert {o["id"]: o["kind"] for o in options}[colleague["id"]] == "person"
+    assert {o["id"]: o["kind"] for o in options}[team["id"]] == "team"
+    kind = next(
+        k
+        for k in c.get(f"{api}/watch/kinds").json()
+        if k["plugin"] is None and any(i["key"] == "path" for i in k["items"])
+    )
+    folder = tmp_path / "inbox"
+    folder.mkdir()
+    body = {"connector": kind["name"], "label": "Notes", "settings": {"path": str(folder)}}
+    fingerprint = c.get(f"{api}/settings").json()["fingerprint"]
+    refused = c.post(f"{api}/watch/sources", json={**body, "author": "PER-9999", "fingerprint": fingerprint})
+    assert refused.status_code == 400
+    added = c.post(f"{api}/watch/sources", json={**body, "author": me, "fingerprint": fingerprint})
+    assert added.status_code == 200, added.text
+    listed = {s["id"]: s for s in c.get(f"{api}/watch").json()}
+    assert listed["notes"]["author"] == me and listed["notes"]["author_name"]
+    assert next(s for s in load_config(ws.config_dir, env={}).watch.sources if s.id == "notes").author == me
+    moved = c.post(
+        f"{api}/watch/sources/notes", json={"author": team["id"], "fingerprint": added.json()["fingerprint"]}
+    )
+    assert moved.status_code == 200
+    assert {s["id"]: s for s in c.get(f"{api}/watch").json()}["notes"]["author_name"] == team["name"]
+    untouched = c.post(
+        f"{api}/watch/sources/notes", json={"every_minutes": 30, "fingerprint": moved.json()["fingerprint"]}
+    )
+    assert {s["id"]: s for s in c.get(f"{api}/watch").json()}["notes"]["author"] == team["id"]
+    cleared = c.post(
+        f"{api}/watch/sources/notes", json={"author": None, "fingerprint": untouched.json()["fingerprint"]}
+    )
+    assert cleared.status_code == 200
+    assert {s["id"]: s for s in c.get(f"{api}/watch").json()}["notes"]["author"] is None
+
+
+def test_an_add_on_turned_on_shows_as_on_and_one_left_off_stops_the_step_asking(tmp_path):
+    from engine import setup
+
+    ws, cfg, store = make(tmp_path)
+    folder = ws.root / "plugins" / "spare"
+    folder.mkdir(parents=True)
+    (folder / "plugin.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "name": "spare",
+                "version": "0.1.0",
+                "plugin_api": ">=0.3,<0.4",
+                "description": "An add-on left off",
+                "entry": "spare:register",
+                "config_schema": "spare:Config",
+            }
+        )
+    )
+    c, api = client(ws, cfg, store)
+    fingerprint = c.get(f"{api}/settings").json()["fingerprint"]
+    steps = {s["id"]: s for s in c.get(f"{api}/setup").json()["steps"]}
+    assert not steps["addons"]["done"] and steps["addons"]["applies"]
+    assert c.post(f"{api}/packs/spare/off", json={"fingerprint": fingerprint}).status_code == 200  # leave it off
+    assert "spare" in setup._state(ws)["addons_decided"]
+    assert c.post(f"{api}/setup/addons/leave-off").status_code == 200  # and any other add-on left off
+    assert {s["id"]: s for s in c.get(f"{api}/setup").json()["steps"]}["addons"]["done"]
+    turned = c.post(f"{api}/packs/spare/on", json={"fingerprint": fingerprint})
+    assert turned.status_code == 200
+    spare = next(p for p in c.get(f"{api}/packs").json()["installed"] if p["name"] == "spare")
+    assert spare["enabled"] is True  # as saved, before the restart
+    assert "spare" not in setup.addons_off(ws, load_config(ws.config_dir, env={}))
+
+
+def test_a_list_written_at_its_keys_own_indent_is_edited_in_place():
+    import yaml
+
+    from engine.config.yaml_edit import set_key
+
+    text = "# kept\nretries: 3\nsources:\n- id: a\n  label: A\nlast: true\n"
+    edited = set_key(text, ["sources"], [{"id": "a", "label": "A"}, {"id": "b", "label": "B"}])
+    assert yaml.safe_load(edited) == {
+        "retries": 3,
+        "sources": [{"id": "a", "label": "A"}, {"id": "b", "label": "B"}],
+        "last": True,
+    }
+    assert edited.startswith("# kept")
+
+
+def test_a_real_account_takes_over_the_tiers_still_on_the_stand_in(tmp_path):
+    ws, cfg, store = make(tmp_path)
+    c, api = client(ws, cfg, store)
+    assert {t.use.split("/")[0] for t in cfg.ai.tiers.values()} == {"stub"}
+    account = {
+        "name": "mine",
+        "adapter": COMMON,
+        "base_url": "http://localhost:11434/v1",
+        "key": "not-a-real-key",
+        "models": {"small": "small-model"},
+        "allowed_data": ["open", "internal"],
+        "fingerprint": c.get(f"{api}/settings").json()["fingerprint"],
+    }
+    assert c.post(f"{api}/ai/accounts", json=account).status_code == 200
+    tiers = load_config(ws.config_dir, env={}).ai.tiers
+    assert {name: t.use for name, t in tiers.items()} == {name: "mine/small" for name in tiers}
+    # A second account leaves the tiers on the first.
+    second = {**account, "name": "other", "fingerprint": c.get(f"{api}/settings").json()["fingerprint"]}
+    assert c.post(f"{api}/ai/accounts", json=second).status_code == 200
+    assert {t.use for t in load_config(ws.config_dir, env={}).ai.tiers.values()} == {"mine/small"}
+
+
+def test_the_time_zone_setting_is_a_list_of_known_time_zones():
+    from engine.config import Config
+    from engine.config.schema import FILES
+    from engine.settings import describe
+
+    cfg = Config(files={name: model() for name, model in FILES.items()})
+    zone = next(s for s in describe(cfg) if s.key == "workspace.user.timezone")
+    assert zone.type == "choice"
+    assert "UTC" in zone.options and len(zone.options) > 100
+
+
+def _described(**changes):
+    from engine.config import Config
+    from engine.config.schema import FILES
+    from engine.settings import describe
+
+    cfg = Config(files={name: model() for name, model in FILES.items()})
+    for dotted, value in changes.items():
+        *path, last = dotted.split(".")
+        target = cfg.workspace
+        for part in path[1:]:
+            target = getattr(target, part)
+        object.__setattr__(target, last, value)
+    return {s.key: s for s in describe(cfg)}
+
+
+def test_the_language_setting_is_a_list_of_language_tags_that_names_its_list():
+    language = _described()["workspace.language"]
+    assert language.type == "choice" and language.choices == "languages"
+    assert language.value in language.options and len(language.options) >= 5
+    assert {"en-US", "en-GB", "en-CA"} <= set(language.options)
+    # Only languages the app can read notes in are offered: today the varieties of English.
+    assert all(tag.startswith("en") for tag in language.options)
+    # A text setting with no named list says so.
+    assert _described()["workspace.name"].choices is None
+    assert _described()["workspace.user.timezone"].choices == "time_zones"
+
+
+def test_a_choice_list_includes_the_current_value_when_it_is_not_one_of_the_list():
+    odd = _described(**{"workspace.language": "tlh", "workspace.user.timezone": "Mars/Olympus"})
+    assert odd["workspace.language"].options[-1] == "tlh"
+    assert odd["workspace.user.timezone"].options[-1] == "Mars/Olympus"
+    # A value that is on the list isn't added twice.
+    assert _described()["workspace.language"].options.count("en-US") == 1
+
+
+def test_a_setting_whose_value_is_a_secret_reference_is_marked_secret():
+    items = _described()
+    assert items["workspace.name"].secret is False
+    assert items["workspace.plugins.secrets"].secret
+    assert any(s.secret for s in items.values() if s.key == "ui.notifications.webhook")
+
+
+def test_setup_state_survives_changes_made_at_the_same_time(tmp_path):
+    """The walkthrough's screen, the skipped steps and the decided add-ons share one small file. Changes arriving
+    together (the screen sends two when it opens) each keep what the others wrote and never read it half written."""
+    import threading
+
+    from engine import setup as setup_module
+
+    ws, _cfg, store = make(tmp_path)
+    store.close()
+    names = [f"addon-{n}" for n in range(8)]
+    start = threading.Barrier(len(names) + 1)
+    problems: list[BaseException] = []
+
+    def decide(name: str) -> None:
+        try:
+            start.wait()
+            for _ in range(6):
+                setup_module.decide_addons(ws, [name])
+                setup_module.keep_walkthrough(ws, step="ai", closed=False)
+        except BaseException as err:  # reported by the test thread
+            problems.append(err)
+
+    threads = [threading.Thread(target=decide, args=(name,)) for name in names]
+    for t in threads:
+        t.start()
+    start.wait()
+    for t in threads:
+        t.join()
+    assert not problems
+    kept = setup_module._state(ws)
+    assert kept["addons_decided"] == sorted(names)
+    assert kept["walkthrough"] == {"step": "ai", "started": True, "closed": False}

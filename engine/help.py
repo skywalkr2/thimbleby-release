@@ -1,0 +1,155 @@
+"""The material an ask is answered from (design 6.25): sections of the user guide chosen for the question, the
+workspace's settings without anything secret, and what this install can do. Every line here may be quoted as the
+words an answer rests on.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+GUIDE = Path(__file__).parent / "guide" / "guide.md"
+#: Setting keys never put in a packet: where keys come from is nobody's business but the person's.
+PRIVATE_KEYS = re.compile(r"(^|\.)(auth|key_env|pass_env|token|secret)s?($|\.)")
+#: Settings only the person changes: never offered to an ask, so a setting proposal can't name them (design 6.12).
+PERSON_ONLY_KEYS = frozenset(
+    {"watch.acting", "steward.reminders.where", "steward.reminders.where_account", "steward.reminders.allowed_data"}
+)
+_WORD = re.compile(r"[a-z0-9]+")
+#: Words too common to say what a question is about.
+_COMMON = frozenset(
+    line.strip()
+    for line in (Path(__file__).parent / "guide" / "common-words.txt").read_text(encoding="utf-8").splitlines()
+    if line.strip() and not line.startswith("#")
+)
+
+
+@dataclass(frozen=True)
+class Section:
+    title: str
+    text: str
+
+
+def guide_sections(path: Path = GUIDE) -> list[Section]:
+    """The user guide, one section per `##` heading."""
+    found: list[Section] = []
+    title, lines = "", []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("## "):
+            if title:
+                found.append(Section(title, "\n".join(lines).strip()))
+            title, lines = line[3:].strip(), []
+        elif title:
+            lines.append(line)
+    if title:
+        found.append(Section(title, "\n".join(lines).strip()))
+    return found
+
+
+def _stem(word: str) -> str:
+    """A word without a common ending, so "closing", "closed" and "closes" match "close"."""
+    for ending in ("ing", "ed", "es", "s", "e"):
+        if word.endswith(ending) and len(word) - len(ending) >= 3:
+            return word[: -len(ending)]
+    return word
+
+
+def _words(text: str) -> set[str]:
+    return {_stem(w) for w in _WORD.findall(text.lower()) if w not in _COMMON and len(w) > 2}
+
+
+def chosen_sections(question: str, limit: int = 4, sections: list[Section] | None = None) -> list[Section]:
+    """The sections that share the most words with the question (the title counting double), best first; the
+    overview when nothing matches."""
+    sections = guide_sections() if sections is None else sections
+    asked = _words(question)
+    scored = []
+    for position, section in enumerate(sections):
+        score = 2 * len(asked & _words(section.title)) + len(asked & _words(section.text))
+        if score:
+            scored.append((-score, position, section))
+    picked = [s for _, _, s in sorted(scored)[:limit]]
+    return picked or sections[:1]
+
+
+@dataclass(frozen=True)
+class GuideForAsk:
+    """What an ask reads of the guide. `whole`: the whole guide and every add-on's help fit in
+    `ask.guide_max_tokens`, so they are all here and in the stable part of the packet. Otherwise `sections` are the
+    best-matching few, and `partial` says so for the answer."""
+
+    sections: list[Section]
+    whole: bool
+    tokens: int
+
+    @property
+    def partial(self) -> bool:
+        return not self.whole
+
+
+def guide_for(question: str, every: list[Section], max_tokens: int, limit: int = 4) -> GuideForAsk:
+    """The whole guide with the add-ons' help while it is no more than `max_tokens` (four characters to the token);
+    above that, the `limit` sections that share the most words with the question."""
+    from engine.ai.calibration import estimate_tokens
+
+    tokens = estimate_tokens(sum(len(s.title) + len(s.text) + 4 for s in every))
+    if tokens <= max_tokens:
+        return GuideForAsk(list(every), True, tokens)
+    return GuideForAsk(chosen_sections(question, limit, every), False, tokens)
+
+
+def askable_settings(cfg: Any) -> list[Any]:
+    """The settings an ask may name: the ones the screens show, without anything secret."""
+    from engine import settings as config_screens
+
+    return [
+        i
+        for i in config_screens.describe(cfg)
+        if not PRIVATE_KEYS.search(i.key) and i.key not in PERSON_ONLY_KEYS and i.type != "other"
+    ]
+
+
+def settings_lines(cfg: Any) -> list[str]:
+    """One line per setting the screens show: what it is called and does, its current value and default, whether the
+    screens can change it, and its setting code (which only a setting proposal uses). Never the key, and nothing
+    that says where a setting comes from."""
+    from engine import settings as config_screens
+
+    shown = askable_settings(cfg)
+    codes = config_screens.handles([i.key for i in shown])
+    lines = []
+    for item in shown:
+        change = "changeable" if item.editable else "locked" if item.locked else "not changed from this screen"
+        now = json.dumps(item.value, ensure_ascii=False)
+        lines.append(
+            f"{config_screens.screen_name(item)}: {item.description.rstrip('. ')}. Now {now} "
+            f"(default {json.dumps(item.default)}, {change}). Setting code: {codes[item.key]}"
+        )
+    return lines
+
+
+def capability_lines(store: Any) -> list[str]:
+    """What this install can do: the kinds of work, actions, screens and setup steps each running add-on offers."""
+    from engine.records import kind_label
+
+    lines = []
+    for name, status in sorted(store.plugins.status.items()):
+        if status.state != "enabled":
+            lines.append(f"Add-on {name} is turned off: {status.reason or 'no reason given'}")
+            continue
+        registrar = store.plugins.registrars.get(name)
+        if registrar is None:
+            continue
+        parts = [
+            ("kinds of AI work", [store.plugins.task_kind(t).label or t for t in sorted(registrar.tasks)]),
+            ("actions", [a.label for a in registrar.actions.values()]),
+            ("screens", [p.title for p in registrar.panels.values()]),
+            ("setup steps", [s.label for s in registrar.setup_steps.values()]),
+            ("item types", [kind_label(model, kind) for kind, model in sorted(registrar.records.items())]),
+        ]
+        offered = "; ".join(f"{label}: {', '.join(items)}" for label, items in parts if items)
+        lines.append(f"Add-on {name} is on" + (f". It offers {offered}." if offered else "."))
+    return lines or ["No add-ons are installed."]

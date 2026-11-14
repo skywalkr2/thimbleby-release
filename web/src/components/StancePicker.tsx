@@ -1,0 +1,94 @@
+// Who a person is to the user (design 6.34), picked from a list on the person's page. A choice saves at once as the user's
+// own edit of the person, with Undo; "Use my default" clears it so the setting for everyone decides.
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useId, useState } from "react";
+import { ApiError, api } from "../lib/api";
+import { problemText } from "../lib/problem";
+import { useToasts } from "../lib/toasts";
+import { useWords } from "../lib/wording";
+import { Button } from "../ui/Button";
+import { Select } from "../ui/Select";
+import { FormField } from "../ui/FormField";
+import { refreshKinds, useWrite } from "../lib/write";
+export const STANCES = ["manage", "alongside", "report_to", "watch"] as const;
+type Stance = (typeof STANCES)[number];
+
+const isStance = (value: unknown): value is Stance => STANCES.includes(value as Stance);
+
+export function StancePicker(props: {
+  person: string;
+  /** The version of the person record the page shows, so a save never overwrites a newer one. */
+  version: number;
+  /** The stance the person was given, or none. */
+  stance: unknown;
+  /** Marked as only tracked, which counts as watching when no stance was given. */
+  trackOnly: boolean;
+}) {
+  const { t } = useWords();
+  const client = useQueryClient();
+  const write = useWrite();
+  const { push } = useToasts();
+  const id = useId();
+  const [error, setError] = useState<string | null>(null);
+  // The choice that couldn't be saved, so Try again saves the same one.
+  const [last, setLast] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
+  const shipped = settings.data?.items.find((item) => item.key === "steward.default_stance")?.value;
+  const fallback: Stance = props.trackOnly ? "watch" : isStance(shipped) ? shipped : "alongside";
+  const chosen = isStance(props.stance) ? props.stance : "";
+
+  const save = async (value: string) => {
+    setSaving(true);
+    setError(null);
+    try {
+      const done = await write(() =>
+        api.editRecord({
+          kind: "person",
+          id: props.person,
+          fields: { stance: value === "" ? null : value },
+          read_version: props.version,
+        }),
+      );
+      push({
+        message: t("stance.saved"),
+        undo: async () => {
+          const report = await write(() => api.undo(done.changeset));
+          if (!report.restored.length) throw new Error("not undone");
+        },
+      });
+    } catch (err) {
+      setError(problemText(err, t));
+      setLast(value);
+      if (err instanceof ApiError && err.status === 409) void refreshKinds(client, ["person"]);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <FormField id={id} label={t("stance.title")}>
+      <Select id={id} value={chosen} disabled={saving} aria-describedby={`${id}-hint`} onChange={(e) => void save(e.target.value)}>
+        <option value="">{t("stance.default", { stance: t(`stance.${fallback}`) })}</option>
+        {STANCES.map((s) => (
+          <option key={s} value={s}>
+            {t(`stance.${s}`)}
+          </option>
+        ))}
+      </Select>
+      <span id={`${id}-hint`} className="hint">
+        {t("stance.hint")}
+      </span>
+      {error && (
+        <div className="problem-note" role="alert">
+          <p>{error}</p>
+          {last !== null && (
+            <Button onClick={() => void save(last)}>
+              {t("action.try_again")}
+            </Button>
+          )}
+        </div>
+      )}
+    </FormField>
+  );
+}

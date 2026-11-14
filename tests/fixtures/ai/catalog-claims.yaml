@@ -1,0 +1,93 @@
+# What each catalog entry must produce, from the services' and programs' own documentation, as of the audit. Names and
+# ids live here, in data, so the test code names no service. A change to an entry's claim is a change here with its
+# source. Messages and bodies are quoted as the programs and services gave them.
+no_temperature: [openai, google]          # their current models are documented to refuse or mishandle a temperature
+no_json_mode: [lm-studio]                  # no JSON-object mode among its documented request fields
+max_tokens_param:                          # the older name is deprecated and refused by reasoning models
+  openai: max_completion_tokens
+base_url: {deepseek: "https://api.deepseek.com"}
+skip_trust: {entry: gemini-cli, flag: "--skip-trust"}
+# Accounts whose service documents a reasoning effort setting, and the other entries, which must not send one. A
+# service reached through its own adapter takes its effort in that interface (see native_adapter).
+effort_param: [openai, google, openrouter, deepseek, xai, local]
+effort_option:
+  claude-code: ["--effort", "{effort}"]
+  copilot: ["--effort", "{effort}"]
+  codex: ["-c", "model_reasoning_effort={effort}"]
+effort_unset: [groq, mistral, lm-studio, gemini-cli, other, agent]
+packet_on_stdin: copilot
+# The options each program's documentation gives for denying its tools, each option as the words that follow the
+# program's name (a value stays beside its option). An entry whose program documents no option that stops its reading
+# files or fetching pages says so in its note, and the note claims no more than the command does.
+lockdown:
+  claude-code:
+    - ["--tools", ""]
+    - ["--disallowedTools", "mcp__*"]
+  copilot:
+    - ["--no-ask-user"]
+    - ["--no-custom-instructions"]
+    - ["--disable-builtin-mcps"]
+    - ["--deny-tool=shell"]
+    - ["--deny-tool=write"]
+    - ["--deny-tool=read"]
+    - ["--deny-tool=url"]
+    - ["--deny-tool=memory"]
+  codex:
+    - ["--sandbox", "read-only"]
+    - ["--ignore-user-config"]
+    - ["--ignore-rules"]
+no_tool_denial_documented: {entry: gemini-cli, claim: "can't use"}
+# Messages the program prints, with what each means.
+program_messages:
+  - {entry: claude-code, kind: quota, message: "You've hit your session limit"}
+  - {entry: claude-code, kind: quota, message: "You've hit your weekly limit"}
+  - {entry: claude-code, kind: quota, message: "You've hit your Opus limit"}
+  - {entry: claude-code, kind: quota, message: "You've hit your monthly spend limit"}
+  - {entry: claude-code, kind: quota, message: "Credit balance is too low"}
+  - {entry: claude-code, kind: quota, message: "You've hit your limit"}
+  - {entry: claude-code, kind: auth, message: "OAuth token revoked"}
+  - {entry: claude-code, kind: auth, message: "Failed to authenticate: OAuth token revoked"}
+  - {entry: claude-code, kind: auth, message: "OAuth token has expired"}
+  - {entry: claude-code, kind: auth, message: "Authentication required · Sign in again to continue"}
+  - {entry: claude-code, kind: auth, message: "Login expired · Please run /login"}
+  - {entry: claude-code, kind: auth, message: "Invalid API key · Fix external API key"}
+  - {entry: claude-code, kind: auth, message: "Not logged in · Please run /login"}
+  - {entry: claude-code, kind: rate_limited, message: "Server is temporarily limiting requests"}
+  - {entry: claude-code, kind: rate_limited, message: "Request rejected (429)"}
+  # The program's own output, signed out (a run of version 0.163.0)
+  - {entry: codex, kind: auth, message: "Not logged in"}
+  - {entry: codex, kind: auth, message: "ERROR: unexpected status 401 Unauthorized: Missing bearer or basic authentication in header"}
+  - {entry: claude-code, kind: rate_limited, message: "Repeated 529 Overloaded"}
+  # The programs' own output, run by a person (copilot out of quota; gemini 0.46.0 on a personal free account)
+  - {entry: copilot, kind: quota, message: "You have exceeded your monthly quota"}
+  - {entry: gemini-cli, kind: unsupported, message: "Error authenticating: IneligibleTierError: This client is no longer supported for Gemini Code Assist for individuals. To continue using Gemini, please migrate to"}
+  - {entry: gemini-cli, kind: unsupported, message: "reasonCode: 'UNSUPPORTED_CLIENT', tierId: 'free-tier'"}
+  - {entry: gemini-cli, kind: unsupported, message: "An unexpected critical error occurred: IneligibleTierError: This client is no longer supported"}
+# A refused key answered with a 400: the bodies recorded from the two services.
+refused_key:
+  - entry: google
+    body: {"error": {"code": 400, "message": "Please pass a valid API key", "status": "INVALID_ARGUMENT"}}
+    reason_body: {"error": {"code": 400, "message": "x", "status": "INVALID_ARGUMENT", "details": [{"@type": "type.example.com/ErrorInfo", "reason": "API_KEY_INVALID"}]}}
+    other_reason_body: {"error": {"code": 400, "message": "x", "status": "INVALID_ARGUMENT", "details": [{"reason": "SOMETHING_ELSE"}]}}
+  - entry: xai
+    body: {"code": "invalid-argument", "error": "Incorrect API key provided. You can obtain an API key from https://console.x.ai."}
+# An entry that sets neither setting: a 400 on its model list stays unclassified.
+no_key_refused_setting: [openai]
+# The entry reached through its service's own messages interface: the adapter, the address without a version path, and
+# the request headers and body fields its documentation names.
+native_adapter:
+  entry: anthropic
+  adapter: anthropic-messages
+  base_url: "https://api.anthropic.com"
+  key_header: x-api-key
+  version_header: anthropic-version
+  version: "2023-06-01"
+  path: /v1/messages
+  models_path: /v1/models
+# The service that answers a refused key with a 400 on its model list, and a failure of the list for another reason.
+list_first:
+  entry: google
+  list_failure_status: 503
+
+# The program that takes its system instructions from a file (its command reference lists --system-prompt-file).
+system_option: {entry: claude-code, option: ["--system-prompt-file", "{system}"]}

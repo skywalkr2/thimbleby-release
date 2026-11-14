@@ -1,0 +1,317 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import "@testing-library/jest-dom/vitest";
+import { screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { S } from "../lib/api";
+import { project } from "../lib/records-fixtures";
+import { fakeApi, renderApp } from "../test-utils";
+import { Sidebar } from "./Sidebar";
+
+const panel = (name: string, tab: string, title: string): S["PanelView"] => ({
+  name,
+  title,
+  tab,
+  kind: "demo/goal",
+  view: "table",
+  columns: ["title"],
+  primary_action: null,
+  row_actions: [],
+});
+
+const change = (id: string, state: string) => ({ id, state, changeset: null }) as unknown as S["ChangeItem"];
+
+const line = (key: string): S["QueueLineView"] => ({ key, group: "review", kind: "review", count: 1, untrusted: false, unpriced: 0, actions: [], questions: [], outcome: {} });
+const plugin = { plugin: "demo", id: "L-1", text: "Look at this", about: null, action: null, action_is: null, why: "", until: null };
+
+const none = (): S["WaitingCount"] => ({ total: 0, sides: [] });
+const waitingFixture = (): S["WaitingCounts"] => ({ changed: { total: 2, sides: [] }, followups: { total: 3, sides: [] }, open: { total: 4, sides: [] }, handled: { total: 1, sides: [] } });
+
+function show(opts: { current?: Parameters<typeof Sidebar>[0]["current"]; expanded?: boolean; panels?: S["PanelView"][]; onToggle?: () => void; waiting?: S["WaitingCounts"] } = {}) {
+  fakeApi({
+    "GET waiting": () => opts.waiting ?? { changed: none(), followups: none(), open: none(), handled: none() },
+    "GET panels": () => opts.panels ?? [],
+    "GET changes": () => [change("a", "review"), change("b", "needs_you"), change("c", "done")],
+    "GET followups": () => [{ person: "p", name: "Sam", is_pm: false, message: "", questions: [], actions: [], to_send: 3 }],
+    "GET today/queue": () => [line("a"), line("b"), line("c")],
+    "GET plugin-today": () => [plugin],
+    "GET stages/requests": () => [],
+    "GET stages/records": () => [],
+    "GET stages/ready": () => [],
+  });
+  renderApp(<Sidebar current={opts.current ?? "today"} expanded={opts.expanded ?? true} onToggle={opts.onToggle ?? (() => undefined)} />);
+}
+
+const nav = () => screen.getByRole("navigation", { name: "Views" });
+
+test("the views are links, in the fixed groups, with plugin panels only under Work or Records", async () => {
+  show({
+    panels: [panel("demo/goals", "work", "Goals"), panel("demo/contacts", "people", "Contacts"), panel("demo/admin", "settings", "Admin things"), panel("demo/board", "today", "Board")],
+  });
+  // Wait for the panels to arrive by their text, which is cheap to poll; then read every link once, because looking each
+  // one up by role and name walks the whole tree again and is what made this test slow under load.
+  await screen.findByText("Goals");
+  const links = within(nav())
+    .getAllByRole("link")
+    .map((a) => ({ label: a.querySelector('[class*="label"]')?.textContent, href: a.getAttribute("href") }));
+  expect(links.map((l) => l.label)).toEqual([
+    "Today",
+    "Schedule",
+    "What changed",
+    "Handled for you",
+    "Follow-ups",
+    "To-dos",
+    "Stages",
+    "Goals",
+    "Projects",
+    "People",
+    "Files",
+    "Notes",
+    "Knowledge",
+    "Contacts",
+    "Settings",
+  ]);
+  const href = (label: string) => links.find((l) => l.label === label)?.href;
+  for (const link of links) expect(link.href).toContain("#");
+  expect(href("Stages")).toMatch(/#work\/stages$/);
+  expect(href("Goals")).toMatch(/#work\/panel\/demo%2Fgoals$/);
+  expect(href("Contacts")).toMatch(/#records\/panel\/demo%2Fcontacts$/);
+});
+
+test("the side menu has no Connections, Add-ons or Waiting to go out entry: they are Settings' sections and Follow-ups' To send tab", async () => {
+  show();
+  await screen.findByText("Follow-ups");
+  for (const name of ["Connections", "Add-ons", "Waiting to go out"]) expect(within(nav()).queryByRole("link", { name })).toBeNull();
+  expect(within(nav()).getByRole("link", { name: "Settings" })).toBeInTheDocument();
+});
+
+test("the current view is marked, and it is the only one", async () => {
+  show({ current: "work/followups" });
+  const current = await screen.findAllByRole("link", { current: "page" });
+  expect(current).toHaveLength(1);
+  expect(current[0]).toHaveTextContent("Follow-ups");
+});
+
+test("a plugin panel is the current view when its address is", async () => {
+  show({ current: "work/panel/demo%2Fgoals", panels: [panel("demo/goals", "work", "Goals")] });
+  expect(await screen.findByRole("link", { name: "Goals", current: "page" })).toBeInTheDocument();
+});
+
+test("counts show where they help and an empty count shows nothing", async () => {
+  show({ waiting: { changed: none(), followups: { total: 3, sides: [] }, open: none(), handled: none() } });
+  const changed = await screen.findByRole("link", { name: /^What changed/ });
+  await waitFor(() => expect(screen.getByRole("link", { name: /^Follow-ups/ })).toHaveTextContent("3"));
+  // Nothing waiting on What changed (the answer holds none): no badge.
+  expect(changed).toHaveTextContent(/^What changed$/);
+  // Today counts its own lines (the queue's and the add-ons'), the same number its heading gives; the views with no count
+  // have none.
+  await within(screen.getByRole("link", { name: /^Today/ })).findByText("4");
+  expect(screen.getByRole("link", { name: "Stages" })).toHaveTextContent(/^Stages$/);
+});
+
+test("every entry with something waiting for the person shows its count, and says in words what it counts", async () => {
+  show({ waiting: waitingFixture() });
+  // The words are for a screen reader: the figure is drawn, and the name of the link carries what it counts.
+  expect(await screen.findByRole("link", { name: "What changed, 2 changes not yet checked" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Handled for you, 1 new since you last looked" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Follow-ups, 3 follow-ups to send" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "To-dos, 4 need you" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: /^Today, 4 things need you/ })).toBeInTheDocument();
+  // The figure itself is drawn but not read a second time.
+  const followups = screen.getByRole("link", { name: /^Follow-ups/ });
+  expect(followups.querySelector('[class*="count"]')).toHaveAttribute("aria-hidden", "true");
+  expect(followups.querySelector('[class*="count"]')).toHaveTextContent("3");
+  // A view with nothing waiting has no badge at all.
+  expect(screen.getByRole("link", { name: "People" })).toHaveTextContent(/^People$/);
+});
+
+test("a count of one is singular in words, and a view with nothing waiting has no count", async () => {
+  show({ waiting: { changed: { total: 1, sides: [] }, followups: { total: 1, sides: [] }, open: none(), handled: none() } });
+  expect(await screen.findByRole("link", { name: "What changed, 1 change not yet checked" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Follow-ups, 1 follow-up to send" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "To-dos" })).toBeInTheDocument();
+});
+
+test("with the sidebar collapsed to a rail, each icon still has its name, and the toggle pins it open", async () => {
+  const user = userEvent.setup();
+  const onToggle = vi.fn();
+  show({ expanded: false, onToggle });
+  const stages = await screen.findByRole("link", { name: "Stages" });
+  while (document.activeElement !== stages) await user.tab();
+  expect(await screen.findByRole("tooltip")).toHaveTextContent("Stages");
+  await user.click(screen.getByRole("button", { name: "Keep the side menu open" }));
+  expect(onToggle).toHaveBeenCalledTimes(1);
+});
+
+test("the toggle collapses a sidebar that shows labels", async () => {
+  show({ expanded: true });
+  expect(await screen.findByRole("button", { name: "Hide the side menu" })).toBeInTheDocument();
+});
+
+// ---- sides (design 6.32, 7.8) ---------------------------------------------------------------------------------------
+
+const PERSONAL = "PRJ-personal";
+const FIRST = { project: "PRJ-first", kind: "business", name: "Orchard Press" };
+const SECOND = { project: "PRJ-second", kind: "job", name: "Lantern Works" };
+
+/** The sidebar once the person's sides have been read, with the other views as in any workspace. */
+function showWithSides(sides: Array<typeof FIRST>, expanded = true) {
+  fakeApi({
+    "GET panels": () => [],
+    "GET changes": () => [],
+    "GET followups": () => [],
+    "GET today/queue": () => [],
+    "GET plugin-today": () => [],
+    "GET stages/requests": () => [],
+    "GET stages/records": () => [],
+    "GET stages/ready": () => [],
+    "GET setup/business": () => ({ business: sides.length > 0, name: sides[0]?.name ?? null, personal: PERSONAL, sides, chosen: null }),
+    // The person's projects: Personal's own, and each side's top project.
+    "GET projects": () => [project(PERSONAL, "Personal"), ...sides.map((s) => project(s.project, s.name))],
+  });
+  renderApp(<Sidebar current="today" expanded={expanded} onToggle={() => undefined} />);
+}
+
+const labels = () =>
+  within(nav())
+    .getAllByRole("link")
+    .map((a) => a.querySelector('[class*="label"]')?.textContent);
+
+test("with no side besides Personal the first group has no Work heading, and Stages and Projects are not listed", async () => {
+  showWithSides([]);
+  await screen.findByRole("link", { name: "Personal" });
+  expect(labels()).toEqual([
+    "Today",
+    "Schedule",
+    "What changed",
+    "Handled for you",
+    "Follow-ups",
+    "To-dos",
+    "Personal",
+    "People",
+    "Files",
+    "Notes",
+    "Knowledge",
+    "Settings",
+  ]);
+  expect(within(nav()).queryByText("Work")).toBeNull();
+  // The group is still one group for a screen reader, named without the word.
+  expect(within(nav()).getByRole("group", { name: "Keeping track" })).toBeInTheDocument();
+  // Personal is a page of its own: the Personal project's page.
+  expect(screen.getByRole("link", { name: "Personal" })).toHaveAttribute("href", expect.stringMatching(new RegExp(`#records/project/${PERSONAL}$`)));
+});
+
+test("with sides the menu has Personal and each side by its own name, each a link to that top project's page, and the work views return", async () => {
+  showWithSides([FIRST, SECOND]);
+  await screen.findByRole("link", { name: FIRST.name });
+  expect(labels()).toEqual([
+    "Today",
+    "Schedule",
+    "What changed",
+    "Handled for you",
+    "Follow-ups",
+    "To-dos",
+    "Stages",
+    "Personal",
+    FIRST.name,
+    SECOND.name,
+    "People",
+    "Files",
+    "Notes",
+    "Knowledge",
+    "Settings",
+  ]);
+  expect(within(nav()).getByText("Work")).toBeInTheDocument();
+  // Personal and the sides are a group of their own, "Your sides"; the records are another.
+  const sides = within(nav()).getByRole("group", { name: "Your sides" });
+  expect(within(sides).getAllByRole("link").map((a) => a.textContent)).toEqual(["Personal", FIRST.name, SECOND.name].map((n) => expect.stringContaining(n)));
+  expect(within(within(nav()).getByRole("group", { name: "Saved items" })).queryByRole("link", { name: "Personal" })).toBeNull();
+  expect(within(nav()).queryByRole("link", { name: "Projects" })).toBeNull();
+  expect(screen.getByRole("link", { name: FIRST.name })).toHaveAttribute("href", expect.stringMatching(new RegExp(`#records/project/${FIRST.project}$`)));
+  expect(screen.getByRole("link", { name: SECOND.name })).toHaveAttribute("href", expect.stringMatching(new RegExp(`#records/project/${SECOND.project}$`)));
+});
+
+test("the current top project's page is the marked one", async () => {
+  fakeApi({
+    "GET panels": () => [],
+    "GET changes": () => [],
+    "GET followups": () => [],
+    "GET today/queue": () => [],
+    "GET plugin-today": () => [],
+    "GET setup/business": () => ({ business: true, name: FIRST.name, personal: PERSONAL, sides: [FIRST], chosen: "work" }),
+    "GET projects": () => [project(PERSONAL, "Personal"), project(FIRST.project, FIRST.name)],
+  });
+  renderApp(<Sidebar current={`records/project/${FIRST.project}`} expanded onToggle={() => undefined} />);
+  expect(await screen.findByRole("link", { name: FIRST.name, current: "page" })).toBeInTheDocument();
+});
+
+test("a workspace with projects of its own and no side keeps the Projects and Stages entries", async () => {
+  fakeApi({
+    "GET panels": () => [],
+    "GET changes": () => [],
+    "GET followups": () => [],
+    "GET today/queue": () => [],
+    "GET plugin-today": () => [],
+    "GET setup/business": () => ({ business: false, name: null, personal: PERSONAL, sides: [], chosen: null }),
+    "GET projects": () => [project(PERSONAL, "Personal"), project("PRJ-own", "A project of its own")],
+  });
+  renderApp(<Sidebar current="today" expanded onToggle={() => undefined} />);
+  await screen.findByText("Work");
+  expect(labels()).toEqual(expect.arrayContaining(["Stages", "Projects"]));
+  expect(labels()).not.toContain("Personal");
+});
+
+test("the Schedule is the open view when it is shown, and Today is not", async () => {
+  show({ current: "schedule" });
+  const schedule = await screen.findByRole("link", { name: "Schedule" });
+  expect(schedule).toHaveAttribute("aria-current", "page");
+  expect(screen.getByRole("link", { name: /^Today/ })).not.toHaveAttribute("aria-current");
+  expect(schedule).toHaveAttribute("href", expect.stringMatching(/#schedule$/));
+});
+
+test("Notes and Knowledge have icons of their own, so two destinations never look the same in the list", async () => {
+  show();
+  const view = await screen.findByRole("link", { name: "Notes" });
+  const icon = (name: string) => within(nav()).getByRole("link", { name }).querySelector("[data-icon]")?.getAttribute("data-icon");
+  expect(view).toBeInTheDocument();
+  expect(icon("Notes")).toBe("note");
+  expect(icon("Knowledge")).toBe("book");
+});
+
+test("a long name in the side menu shows whole on focus, as a tooltip", async () => {
+  const user = userEvent.setup();
+  show();
+  const link = await screen.findByRole("link", { name: "Notes" });
+  while (document.activeElement !== link) await user.tab();
+  expect(await screen.findByRole("tooltip")).toHaveTextContent("Notes");
+});
+
+test("a long side name shows whole on focus, as a tooltip (hover uses the same tooltip)", async () => {
+  const user = userEvent.setup();
+  const long = { project: "PRJ-long", kind: "business", name: "Harborview Community Printing and Binding Cooperative" };
+  showWithSides([long]);
+  const link = await screen.findByRole("link", { name: long.name });
+  while (document.activeElement !== link) await user.tab();
+  expect(await screen.findByRole("tooltip")).toHaveTextContent(long.name);
+});
+
+test("each side is a colored dot in the menu, never two-letter initials, and the dot's name is still its link's name", async () => {
+  showWithSides([FIRST, SECOND]);
+  const link = await screen.findByRole("link", { name: FIRST.name });
+  await waitFor(() => expect(link.querySelector("[data-mark='side']")).not.toBeNull());
+  expect(link.querySelector('[class*="glyph"]')).toBeNull();
+  expect(link.textContent).toBe(FIRST.name);
+});
+
+test("on the icon rail each side's dot carries the side's initial, so the sides are told apart without hovering; with labels it is the plain dot", async () => {
+  showWithSides([FIRST, SECOND], false);
+  const link = await screen.findByRole("link", { name: FIRST.name });
+  expect(link.querySelector("[data-initial] [data-color]")).toHaveTextContent(FIRST.name[0]);
+  expect(screen.getByRole("link", { name: SECOND.name }).querySelector("[data-initial] [data-color]")).toHaveTextContent(SECOND.name[0]);
+});
+
+test("a side's name wraps beside the dot to two lines at most, the whole name on hover", () => {
+  const css = readFileSync(join(__dirname, "Sidebar.module.css"), "utf8");
+  expect(css).toMatch(/data-side-entry\] \.label \{[^}]*white-space: normal/);
+  expect(css).toMatch(/data-side-entry\] \.label \{[^}]*-webkit-line-clamp: 2/);
+});

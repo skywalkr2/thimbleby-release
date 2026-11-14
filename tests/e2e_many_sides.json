@@ -1,0 +1,20 @@
+{
+  "sides": [
+    {
+      "name": "Harborview Community Support Partnership Incorporated",
+      "kind": "job"
+    },
+    {
+      "name": "Willowbrook Handmade Ceramics and Garden Supply Cooperative",
+      "kind": "business"
+    },
+    {
+      "name": "Northfield Mobile Bicycle Repair and Neighborhood Delivery Service",
+      "kind": "business"
+    },
+    {
+      "name": "Lantern Row Studio",
+      "kind": "business"
+    }
+  ]
+}
