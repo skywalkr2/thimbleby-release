@@ -28,12 +28,12 @@ export function servedHere(hostname: string = typeof location === "undefined" ? 
 // A family is the first part of a query's key ("today"), or its first two parts ("today/queue") when only that one of the family
 // shows the kind. What an assistant's request or change touches is the queue's lines, the list of changes, what waits, the status,
 // the plugin's lines and the stage requests; Today's agenda and mail that arrived, and the stage records, don't show it.
-const CHANGES = ["changes", "waiting", "auto-closed", "request-accounts", "asks", "plugin-today", "stages/requests", "status", "jobs", "today/queue", "text-review", "learned"];
+const CHANGES = ["changes", "waiting", "handled", "brief", "notifications-waiting", "request-accounts", "asks", "plugin-today", "stages/requests", "status", "jobs", "today/queue", "text-review", "learned"];
 // A source's own record also shows as mail that arrived, and its pages and records.
-const SOURCES = ["changes", "waiting", "source", "auto-closed", "request-accounts", "asks", "plugin-today", "stages", "status", "jobs", "today", "text-review", "learned"];
+const SOURCES = ["changes", "waiting", "source", "handled", "request-accounts", "asks", "plugin-today", "stages", "status", "jobs", "today", "text-review", "learned"];
 /** What was learned: the card lines, the review lists and Today's lines for them. */
 const LEARNING = ["learned", "proposals", "catch-up", "changes", "today", "record"];
-const FOLLOWUPS = ["followups", "open-items", "record-page", "waiting", "today", "status", "plugin-today", "changes"];
+const FOLLOWUPS = ["followups", "open-items", "brief", "notifications-waiting", "record-page", "waiting", "today", "status", "plugin-today", "changes"];
 const FILES = ["files", "text", "working-copies", "text-review", "file-kinds", "changes", "record", "plugin-today"];
 const PLUGIN = ["plugin-today", "panels", "panel-rows", "panel-document", "record", "kind", "stages", "plugin-actions", "text", "working-copies", "today", "changes"];
 
@@ -69,7 +69,7 @@ const AFFECTS: Record<string, string[]> = {
   watch_run: ["watch", "watch-kinds", "waiting", "today", "status", "sign-ins", "jobs"],
   tool_run: ["jobs", "status", "files", "working-copies"],
   snapshot: ["status", "sync", "setup", "waiting"],
-  setting_change: ["settings", "status", "setup", "panels", "today", "lists", "ai-accounts", "ai-endpoints", "watch", "packs", "runtime-config"],
+  setting_change: ["settings", "status", "setup", "panels", "today", "lists", "ai-accounts", "ai-endpoints", "watch", "packs", "runtime-config", "reminder-where", "notifications-waiting", "brief"],
   value_list: ["lists", "settings", "people", "projects"],
   // The audit trail has no screen yet, so writing an entry refreshes nothing.
   audit_entry: [],
@@ -83,6 +83,20 @@ const AFFECTS: Record<string, string[]> = {
 export function inFamilies(key: readonly unknown[], wanted: ReadonlySet<string>): boolean {
   const first = String(key[0]);
   return wanted.has(first) || (key.length > 1 && wanted.has(`${first}/${String(key[1])}`));
+}
+
+/** Every family some kind of record names. */
+const MAPPED: ReadonlySet<string> = new Set(Object.values(AFFECTS).flat().concat(PLUGIN));
+
+/** Whether no kind of record names this query's family, so a write can't say whether it changed what the query shows. */
+export function unmapped(key: readonly unknown[]): boolean {
+  return !inFamilies(key, MAPPED);
+}
+
+/** Whether a query reads again after a change to these families: one of them, or a query no kind of record names, which
+ * reads again after every change rather than staying stale. */
+export function readsAgain(key: readonly unknown[], wanted: ReadonlySet<string>): boolean {
+  return inFamilies(key, wanted) || unmapped(key);
 }
 
 /** The query keys' first parts to refresh for the kinds of record written, or null to refresh everything: an empty list
@@ -206,7 +220,7 @@ function applyEvent(client: QueryClient, data: string): void {
   if (covered) return;
   void client.invalidateQueries({
     predicate: (query) => {
-      if (wanted && !inFamilies(query.queryKey, wanted)) return false;
+      if (wanted && !readsAgain(query.queryKey, wanted)) return false;
       if (echo && query.state.fetchStatus === "fetching") return false;
       return true;
     },

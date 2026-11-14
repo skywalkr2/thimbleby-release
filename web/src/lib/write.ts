@@ -4,7 +4,7 @@
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
 import { answeredWrites } from "./api";
-import { familiesFor, inFamilies, noteOwnRefresh, writeAnswered, writeSent } from "./live";
+import { familiesFor, noteOwnRefresh, readsAgain, writeAnswered, writeSent } from "./live";
 
 export interface WriteOptions<T> {
   /** What is being changed (a record id, or a screen's scope). Writes with the same key go out in order, one at a time. */
@@ -65,7 +65,7 @@ export function refreshFamilies(client: QueryClient, families: readonly string[]
     return client.invalidateQueries();
   }
   const wanted = new Set(families);
-  return client.invalidateQueries({ predicate: (query) => inFamilies(query.queryKey, wanted) });
+  return client.invalidateQueries({ predicate: (query) => readsAgain(query.queryKey, wanted) });
 }
 
 /** The kinds the server said the writes answered since `since` changed, or null when one of them named nothing. */

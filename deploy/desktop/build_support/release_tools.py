@@ -17,12 +17,13 @@ from packaging.version import InvalidVersion, Version
 def release_notes(changelog: str, version: str) -> str:
     """The text of a version's section of the change log: the lines under its `## <version> (<date>)` heading, up to the
     next `## ` heading. The versions are compared as versions, so `0.1.0a1` finds `## 0.1.0a1 (...)`. A version with no
-    section, or an empty one, raises `ValueError` saying so, so a release is never made with empty notes."""
+    section, or an empty one, raises `ValueError` saying so, so a release is never made with empty notes. A section
+    still headed `(unreleased)` is refused too: its date is set to the tag's day before the tag is made."""
     wanted = Version(version)
     found = False
     lines: list[str] = []
     for line in changelog.splitlines():
-        heading = re.match(r"##\s+(\S+)(?:\s+\(.*\))?\s*$", line)
+        heading = re.match(r"##\s+(\S+)(?:\s+\((.*)\))?\s*$", line)
         if heading:
             if found:
                 break
@@ -30,6 +31,10 @@ def release_notes(changelog: str, version: str) -> str:
                 found = Version(heading.group(1)) == wanted
             except InvalidVersion:
                 found = False
+            if found and (heading.group(2) or "").strip().lower() == "unreleased":
+                raise ValueError(
+                    f"CHANGELOG.md's section for {wanted} is still headed (unreleased); set it to the tag's day first"
+                )
             continue
         if found:
             lines.append(line)

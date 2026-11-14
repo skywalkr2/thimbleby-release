@@ -256,6 +256,13 @@ Older.
 """
 
 
+def test_a_section_still_headed_unreleased_is_refused_until_its_date_is_the_tags_day():
+    text = "# Changelog\n\n## 0.3.0 (unreleased)\n\n- Coming.\n"
+    with pytest.raises(ValueError, match="unreleased"):
+        release_tools.release_notes(text, "0.3.0")
+    assert release_tools.release_notes(text.replace("unreleased", "2030-01-02"), "0.3.0") == "- Coming.\n"
+
+
 def test_the_release_notes_are_the_tags_section_of_the_change_log():
     assert release_tools.release_notes(CHANGELOG, "0.1.0a1") == "- First thing.\n- Second thing.\n"
     assert release_tools.release_notes(CHANGELOG, "0.2.0") == "Newer.\n"
@@ -275,10 +282,16 @@ def test_a_tag_with_no_section_fails_the_notes_step_before_the_release_is_made(m
     with pytest.raises(SystemExit, match="no section for version 99.0.0"):
         release_tools.main()
     assert not out.exists()
+    # The current version's own section: refused while it is still headed (unreleased), its notes once it is dated.
     own = importlib.metadata.version("thimbleby")
     monkeypatch.setenv("RELEASE_TAG", f"v{own}")
-    release_tools.main()
-    assert out.read_text().strip()
+    if f"## {own} (unreleased)" in (REPO / "CHANGELOG.md").read_text():
+        with pytest.raises(SystemExit, match="unreleased"):
+            release_tools.main()
+        assert not out.exists()
+    else:
+        release_tools.main()
+        assert out.read_text().strip()
 
 
 def test_installer_per_user_and_installs_the_whole_folder():

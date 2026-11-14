@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { CONNECT_LIMIT_MS, PROBE_RETRY_MS, REOPEN_MS, RETRY_BEFORE_OFFLINE_MS, familiesFor, inFamilies, invalidateFor, kindsOf, servedHere, useLive } from "./live";
+import { CONNECT_LIMIT_MS, PROBE_RETRY_MS, REOPEN_MS, RETRY_BEFORE_OFFLINE_MS, familiesFor, inFamilies, invalidateFor, kindsOf, servedHere, unmapped, useLive } from "./live";
 
 test("each kind of record names the queries it affects", () => {
   expect(familiesFor(["request", "changeset"])).toEqual(expect.arrayContaining(["changes", "today/queue", "stages/requests", "plugin-today"]));
@@ -49,6 +49,27 @@ test("an event invalidates only the queries its kinds affect", () => {
   const { client, stale } = seeded();
   invalidateFor(client, '{"version": 2, "kinds": ["person"]}');
   expect(stale()).toEqual({ changes: false, followups: true, people: true, projects: false, settings: false });
+});
+
+test("a screen no kind of record names reads again after any change, so it is never left stale", () => {
+  const client = new QueryClient();
+  for (const key of [["people"], ["projects"], ["held"], ["promise", "p1"]]) client.setQueryData(key, []);
+  invalidateFor(client, '{"version": 2, "kinds": ["person"]}');
+  expect(client.getQueryState(["people"])!.isInvalidated).toBe(true);
+  expect(client.getQueryState(["projects"])!.isInvalidated).toBe(false); // named by other kinds, and not by this one
+  expect(client.getQueryState(["held"])!.isInvalidated).toBe(true);
+  expect(client.getQueryState(["promise", "p1"])!.isInvalidated).toBe(true);
+  expect([unmapped(["held"]), unmapped(["people"]), unmapped(["today", "queue"])]).toEqual([true, false, false]);
+});
+
+test("Handled for you reads again when mail is handed in or set aside", () => {
+  const client = new QueryClient();
+  client.setQueryData(["handled", "set-aside", null, "", null, null], []);
+  client.setQueryData(["handled", "counts"], {});
+  invalidateFor(client, '{"version": 2, "kinds": ["request"]}');
+  expect(client.getQueryState(["handled", "set-aside", null, "", null, null])!.isInvalidated).toBe(true);
+  expect(client.getQueryState(["handled", "counts"])!.isInvalidated).toBe(true);
+  expect(familiesFor(["source"])).toContain("handled");
 });
 
 test("an empty or unknown kind list, and an older server's bare number, invalidate everything", () => {

@@ -1,7 +1,7 @@
 [project]
 name = "thimbleby"
 version = "0.1.0"
-description = "A generic, extensible AI-assisted cockpit for running projects."
+description = "A daily assistant for anyone juggling work: it reads what you choose, keeps track of promises and drafts the next step for you to approve."
 readme = "README.md"
 license = "FSL-1.1-ALv2"
 license-files = ["LICENSE", "NOTICE"]

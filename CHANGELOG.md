@@ -1,8 +1,9 @@
 # Changelog
 
-Each version has one section, headed `## <version> (<date>)`. A release's notes are its section.
+Each version has one section, headed `## <version> (<date>)`. A release's notes are its section. Until the version is
+tagged its heading says `(unreleased)`; the date is set to the tag's day in the commit that is tagged.
 
-## 0.1.0 (2026-11-14)
+## 0.1.0 (unreleased)
 
 The first alpha. It is for people who want to try it and say what is wrong: expect rough edges, and keep your own copies of
 anything you cannot lose. The installers are not signed yet, so macOS and Windows will show a warning the first time you
@@ -37,7 +38,7 @@ What you can do now:
 - **Use it by keyboard, in a narrow window, with a screen reader.** No screen scrolls sideways, and status is never shown
   by color alone.
 
-Known limits: the installers aren't signed, there are no automatic updates yet (run the install step again with the newer
-file), and there's no hosted version.
+Known limits: the Mac installers need macOS 15 or later; the installers aren't signed; there are no automatic updates yet
+(run the install step again with the newer file); and there's no hosted version.
 
 Found something wrong? Open an issue here with the bug form.

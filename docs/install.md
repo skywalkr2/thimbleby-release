@@ -1,6 +1,6 @@
-# Installing PM Cockpit
+# Installing Thimbleby
 
-PM Cockpit runs on your own computer (Windows, macOS or Linux) and opens in your browser. It needs no Node and no
+Thimbleby runs on your own computer (Windows, macOS or Linux) and opens in your browser. It needs no Node and no
 copy of the source code: one package file holds the app and its screens.
 
 ## The installers
@@ -15,8 +15,8 @@ confirm the first open:
 
 | Download | For |
 | --- | --- |
-| `Thimbleby-<version>-macos-arm64.dmg` | a Mac with an Apple chip |
-| `Thimbleby-<version>-macos-x86_64.dmg` | a Mac with an Intel chip |
+| `Thimbleby-<version>-macos-arm64.dmg` | a Mac with an Apple chip, macOS 15 or later |
+| `Thimbleby-<version>-macos-x86_64.dmg` | a Mac with an Intel chip, macOS 15 or later |
 | `Thimbleby-<version>-windows-x64-setup.exe` | Windows, installed for you alone, with no administrator password |
 
 Each comes with `SHA256SUMS.txt`. Open the app: it starts in the background (a tray or menu-bar item with Open, Restart and
