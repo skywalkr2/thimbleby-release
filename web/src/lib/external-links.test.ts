@@ -56,3 +56,17 @@ test("in the app's own window the page tells the window it has drawn, after it p
   expect(told).toEqual(["drawn"]);
   delete w.pywebview;
 });
+
+test("the page finds a bridge that announced itself before the page listened, and tells it only once", async () => {
+  const { reportDrawn } = await import("./external-links");
+  const told: string[] = [];
+  const w = window as unknown as { pywebview?: { api?: Record<string, unknown> } };
+  delete w.pywebview;
+  reportDrawn(20, 10);
+  await new Promise((r) => setTimeout(r, 40));
+  w.pywebview = { api: { page_drawn: () => told.push("drawn") } }; // arrives with no event
+  await new Promise((r) => setTimeout(r, 60));
+  window.dispatchEvent(new Event("pywebviewready"));
+  expect(told).toEqual(["drawn"]);
+  delete w.pywebview;
+});

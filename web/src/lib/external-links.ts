@@ -48,16 +48,27 @@ export function installExternalLinks(): () => void {
 }
 
 /** In the app's own window, tell the window the page has drawn, once it has painted: the window's check that the app
- * shows (rather than a blank page) reads this. The bridge may arrive after the page, so it also waits for it. */
-export function reportDrawn(): void {
+ * shows (rather than a blank page) reads this. The bridge may arrive after the page, and announces itself only once,
+ * possibly before this listens, so it is also looked for a few times a second for a while. In a browser tab there is
+ * no bridge and this stops by itself. */
+export function reportDrawn(lookFor = 75, every = 200): void {
+  let told = false;
   const tell = () => {
     const done = bridge()?.page_drawn;
-    if (done) void done();
-    return Boolean(done);
+    if (!told && done) {
+      told = true;
+      void done();
+    }
+    return told;
   };
   requestAnimationFrame(() =>
     requestAnimationFrame(() => {
-      if (!tell()) window.addEventListener("pywebviewready", () => tell(), { once: true });
+      if (tell()) return;
+      window.addEventListener("pywebviewready", () => tell(), { once: true });
+      let left = lookFor;
+      const timer = setInterval(() => {
+        if (tell() || --left <= 0) clearInterval(timer);
+      }, every);
     }),
   );
 }
