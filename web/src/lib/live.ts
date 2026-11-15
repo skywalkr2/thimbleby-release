@@ -208,8 +208,12 @@ function applyEvent(client: QueryClient, data: string): void {
   const families = familiesFor(kinds);
   const wanted = families ? new Set(families) : null;
   const own = ownRefreshes.get(client);
-  const echo = own !== undefined && kinds.length > 0 && Date.now() - own.at < OWN_WRITE_WINDOW_MS && kinds.every((k) => own.kinds.has(k));
   const position = positionOf(data);
+  // News of a change past the place the person's own write was answered at is someone else's (the worker's, after Go),
+  // never that write's echo, even when it is of the same kinds.
+  const later = own !== undefined && own.position !== null && position !== null && position > own.position;
+  const echo =
+    own !== undefined && !later && kinds.length > 0 && Date.now() - own.at < OWN_WRITE_WINDOW_MS && kinds.every((k) => own.kinds.has(k));
   const covered =
     own !== undefined &&
     Date.now() - own.at < OWN_WRITE_WINDOW_MS &&

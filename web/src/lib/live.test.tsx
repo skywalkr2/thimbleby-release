@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
 import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { CONNECT_LIMIT_MS, PROBE_RETRY_MS, REOPEN_MS, RETRY_BEFORE_OFFLINE_MS, familiesFor, inFamilies, invalidateFor, kindsOf, servedHere, unmapped, useLive } from "./live";
@@ -264,4 +264,35 @@ test("a family names a whole screen's queries by the first part of their key, or
   expect(inFamilies(["stages", "records"], changeFamilies)).toBe(false);
   expect(inFamilies(["changes"], changeFamilies)).toBe(true);
   expect(inFamilies(["today", "agenda"], new Set(["today"]))).toBe(true);
+});
+
+test("news of a later change of the same kind, arriving while a screen re-reads after the person's own write, reads it again", async () => {
+  // After Go, the app's worker writes the first lines moments after the person's own write; their news came while Today
+  // was still reading for that write, was taken for its echo, and Today kept the read that had none of the lines.
+  const { noteOwnRefresh } = await import("./live");
+  const client = new QueryClient();
+  let calls = 0;
+  // Today watches its queue and already shows lines, as the screen does: a watched query with data reads again when
+  // it is invalidated, even while a read is out.
+  client.setQueryData(["today", "queue"], 0);
+  const watching = new QueryObserver(client, {
+    queryKey: ["today", "queue"],
+    queryFn: () => new Promise<number>((resolve) => setTimeout(() => resolve(++calls), 30)),
+  });
+  const stop = watching.subscribe(() => undefined);
+  await new Promise((r) => setTimeout(r, 5)); // its read is out now
+  noteOwnRefresh(client, ["request"], Date.now(), 5);
+  invalidateFor(client, '{"version": 2, "kinds": ["request"], "position": 9}');
+  await new Promise((r) => setTimeout(r, 120));
+  stop();
+  expect(calls).toBeGreaterThan(1);
+});
+
+test("the echo of the person's own write, at or before its answered place, still reads nothing again", async () => {
+  const { noteOwnRefresh } = await import("./live");
+  const client = new QueryClient();
+  client.setQueryData(["today", "queue"], 1);
+  noteOwnRefresh(client, ["request"], Date.now(), 5, null); // the write read everything again
+  invalidateFor(client, '{"version": 2, "kinds": ["request"], "position": 5}');
+  expect(client.getQueryState(["today", "queue"])!.isInvalidated).toBe(false);
 });
