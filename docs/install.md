@@ -1,7 +1,8 @@
 # Installing Thimbleby
 
-Thimbleby runs on your own computer (Windows, macOS or Linux) and opens in your browser. It needs no Node and no
-copy of the source code: one package file holds the app and its screens.
+Thimbleby runs on your own computer (Windows, macOS or Linux). The installed app opens in its own window; the command-line
+version opens in your browser. Neither needs Node or a copy of the source code: one package file holds the app and its
+screens.
 
 ## The installers
 

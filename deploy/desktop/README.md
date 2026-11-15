@@ -50,9 +50,10 @@ Both follow the product's installer design and its mockups; the pictures are dra
 ## What the app does when opened
 
 `build_support/launcher.py` is the frozen entry. With nothing typed it calls `engine.desktop.main`: it makes the workspace
-(first time, no template) in the app-data folder (`<data>/thimbleby/workspace`; `THIMBLEBY_WORKSPACE` names another), then runs
-the tray loop on it (`engine/launcher.py`): the server on loopback, the browser on the sign-in link, one instance per
-workspace, and Open, Restart and Quit in the item's menu. With arguments it is the `thimbleby` command. A start that fails
+(first time, no template) in the app-data folder (`<data>/thimbleby/workspace`; `THIMBLEBY_WORKSPACE` names another), then starts
+the app on it (`engine/launcher.py`, `engine/appwindow.py`): the server on loopback, the starting window, then the app in
+its own window once the server answers, one instance per workspace (a second open shows the running window), and the
+menu-bar or tray item's menu (see "The window, the menu-bar item and the check in a desktop session"). With arguments it is the `thimbleby` command. A start that fails
 writes why to `desktop.log` in the logs folder. Resources are read from the frozen folder; data, logs and add-ons are in the
 user folders, never inside the app.
 
@@ -126,13 +127,13 @@ proof's `deploy/desktop/proof/stub/` also stands in for `webview`.
 
 ## Not done here
 
-- **The real tray and the installers on macOS and Windows** run only in the workflow; the first run is the first proof of
-  them (batch TB3 adds the browser test of a fresh install from the built app).
-- **Icons and the app's mark** (S-0154): the menu-bar and tray pictures come from the brand SVG; the app's own icon and the
-  installer's pictures are still the tool's default (batch I1b).
-- **Signing and notarizing** (TB4).
-- **The identifiers to confirm before an installer ships** (they are permanent): bundle id `app.thimbleby.desktop`
-  (`thimbleby_macos.spec`) and Windows AppId `{8B79A062-067C-46D5-94D7-A27CBAA00C33}` (`windows.iss`).
+- **The fresh-install test from the built app** (S-0459) and the target's captures by day and at night with a cold score
+  (S-0460).
+- **The Windows uninstaller's "Remove the app" button and its folder link** (S-0456), and the Mac's "Removing" card (S-0457).
+- **The Intel Mac build** runs only at a tag (`targets.json`, `tag_only`).
+- **Signing and notarizing** (S-0461): unsigned through 1.0.
+- **The identifiers are permanent:** bundle id `app.thimbleby.desktop` (`thimbleby_macos.spec`) and Windows AppId
+  `{8B79A062-067C-46D5-94D7-A27CBAA00C33}` (`windows.iss`).
 - **The numeric installer version** uses the three release numbers; prerelease and post-release suffixes stay in the file names
   only. Decide a monotonic build number before relying on automatic upgrades between such builds.
-- **Updating** and the update, failed-update and earlier-workspace messages of the starting window.
+- **Updating** (S-0152) and the update, failed-update and earlier-workspace (S-0458) messages of the starting window.
