@@ -461,10 +461,16 @@ def test_the_app_asking_for_a_restart_runs_it_as_the_menu_would(environment, tmp
     assert not asked.is_set() and ("state", "restart") in shell.calls
 
 
-def test_the_published_details_are_read_past_padding_before_them(tmp_path):
-    """Whatever stands between the locked first byte and the published details, the details are read."""
+def test_the_owner_publishes_beside_the_lock_and_another_open_reads_it_while_the_lock_is_held(tmp_path):
+    """The details are not kept in the locked file: a Mac runner's second open read only the lock byte there, and a
+    Windows reader can't read the locked byte at all."""
     from engine.launcher import InstanceLock
 
-    lock = InstanceLock(tmp_path)
-    lock.path.write_bytes(b"\0\0\0" + b'{"port": 8765, "readiness_path": "/api/health", "control_port": 50123}')
-    assert lock.connection() == (8765, "/api/health") and lock.control_port() == 50123
+    owner = InstanceLock(tmp_path)
+    assert owner.acquire()
+    owner.publish(8765, "/api/health", 50123)
+    other = InstanceLock(tmp_path)
+    assert not other.acquire()  # still held
+    assert other.connection() == (8765, "/api/health") and other.control_port() == 50123
+    owner.release()
+    assert other.connection() is None and other.control_port() is None

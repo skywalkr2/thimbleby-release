@@ -25,11 +25,14 @@ class InstanceLock:
     """Hold an OS lock on a persistent file; process exit releases ownership.
 
     The file is deliberately never unlinked, avoiding lock-inode races. Instances
-    sharing a data folder reuse the owner's published port and readiness path.
+    sharing a data folder reuse the owner's published port and readiness path, which
+    the owner writes whole to a separate file beside the lock: the lock file is for
+    locking only, since how a locked file can be written and read differs by system.
     """
 
     def __init__(self, data_folder: str | Path):
         self.path = Path(data_folder) / "launcher.lock"
+        self.details = Path(data_folder) / "launcher.json"
         self.file = None
 
     def acquire(self) -> bool:
@@ -58,35 +61,37 @@ class InstanceLock:
             if sys.platform == "win32" and error.errno in {13, 11, 36}:
                 return False
             raise
-        handle.seek(1)
-        handle.truncate()
-        handle.flush()
+        self.details.unlink(missing_ok=True)  # a previous owner's, left by a crash
         self.file = handle
         return True
 
     def publish(self, port: int, readiness_path: str, control_port: int | None = None) -> None:
         if self.file is None:
             raise RuntimeError("Only the lock owner can publish connection details")
-        self.file.seek(1)
-        self.file.truncate()
         details = {"port": port, "readiness_path": readiness_path}
         if control_port is not None:
             details["control_port"] = control_port
-        self.file.write(json.dumps(details).encode("utf-8"))
-        self.file.flush()
+        draft = self.details.with_name(self.details.name + ".new")
+        draft.write_text(json.dumps(details), encoding="utf-8")
+        os.replace(draft, self.details)  # whole or not at all, for a reader in another process
+
+    def _published(self) -> dict:
+        data = json.loads(self.details.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("not an object")
+        return data
 
     def control_port(self) -> int | None:
         """The port the running instance listens on for "show your window", when it published one."""
         try:
-            port = json.loads(self.path.read_bytes()[1:].lstrip(b"\0 \r\n")).get("control_port")
+            port = self._published().get("control_port")
             return port if type(port) is int and 1 <= port <= 65535 else None
         except (OSError, ValueError, AttributeError):
             return None
 
     def connection(self) -> tuple[int, str] | None:
         try:
-            # The first byte is the one the lock covers; read past it, and past any padding, to the published details.
-            data = json.loads(self.path.read_bytes()[1:].lstrip(b"\0 \r\n"))
+            data = self._published()
             port, path = data["port"], data["readiness_path"]
             if (
                 type(port) is int
@@ -104,6 +109,7 @@ class InstanceLock:
         handle, self.file = self.file, None
         if handle is None:
             return
+        self.details.unlink(missing_ok=True)
         try:
             handle.seek(0)
             if sys.platform == "win32":
@@ -326,11 +332,7 @@ def show_running(data_folder: str | Path, token: str, *, timeout: float = 15) ->
     if not wait_ready("http://127.0.0.1/", timeout=timeout, request_timeout=2, probe=existing_ready):
         where = seen[0] if seen else None
         if where is None:
-            try:
-                held = repr(lock.path.read_bytes()[:160])
-            except OSError as err:
-                held = f"unreadable ({err.__class__.__name__})"
-            said = f"published no address in {lock.path} (it holds {held})"
+            said = f"published no address in {lock.details}"
         else:
             said = f"did not answer at port {where[0]} ({where[1]})"
         raise RuntimeError(f"The existing instance is not ready: it {said}")
