@@ -161,6 +161,24 @@ def test_a_second_open_shows_no_starting_window_and_asks_the_running_app_to_show
     assert asked == [resolve(root).install_token()] and shell.calls == []
 
 
+def test_a_second_open_makes_no_window_at_all_so_it_exits_once_the_first_shows_its_own(tmp_path, monkeypatch):
+    """A window, even a hidden one, keeps its copy of the app running: a second open that made one never ended."""
+    import engine.launcher as launcher
+
+    home = tmp_path / "home"
+    root, _ = desktop.places(env_for(tmp_path), home)
+    desktop.start(root, Shell(), launch=lambda *a, **k: None, environ=env_for(tmp_path))  # makes the workspace
+    asked = []
+    monkeypatch.setattr(launcher, "is_running", lambda folder: True)
+    monkeypatch.setattr(launcher, "show_running", lambda folder, token: asked.append(token))
+
+    def no_window(*a, **k):
+        raise AssertionError("a second open made a window")
+
+    assert desktop.main(env_for(tmp_path), home, argv=[], make_shell=no_window) == 0
+    assert asked == [resolve(root).install_token()]
+
+
 def test_the_entry_opens_quietly_at_login_and_runs_the_start_in_the_shell(tmp_path):
     made = {}
 

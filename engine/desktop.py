@@ -141,6 +141,20 @@ def run(
                 return 1
 
 
+def already_running(root: Path) -> bool:
+    """A second open of the app: when another copy runs on this workspace, ask it to bring its window forward, before
+    this copy makes any window of its own (a window, even hidden, would keep this copy running)."""
+    from engine import launcher
+    from engine.legacy_names import private_dir
+    from engine.workspace import resolve
+
+    folder = private_dir(root)
+    if not launcher.is_running(folder):
+        return False
+    launcher.show_running(folder, resolve(root).install_token())
+    return True
+
+
 def main(
     environ: Mapping[str, str] | None = None,
     home: Path | None = None,
@@ -154,6 +168,8 @@ def main(
     from engine.sides import words_sheet
 
     root, logs = places(environ, home)
+    if already_running(root):
+        return 0
     system = platform.system()
     words = {k: str(v) for k, v in words_sheet().items() if k.startswith("desktop.")}
     quiet = login_item.AT_LOGIN_FLAG in (sys.argv[1:] if argv is None else argv)
