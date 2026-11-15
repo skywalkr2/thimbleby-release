@@ -459,3 +459,12 @@ def test_the_app_asking_for_a_restart_runs_it_as_the_menu_would(environment, tmp
     launch(tmp_path, shell, restart_waiting=lambda: True, restart_requested=asked)
     assert environment[0].calls == ["start", "stop", "start", "stop"]
     assert not asked.is_set() and ("state", "restart") in shell.calls
+
+
+def test_the_published_details_are_read_past_padding_before_them(tmp_path):
+    """Whatever stands between the locked first byte and the published details, the details are read."""
+    from engine.launcher import InstanceLock
+
+    lock = InstanceLock(tmp_path)
+    lock.path.write_bytes(b"\0\0\0" + b'{"port": 8765, "readiness_path": "/api/health", "control_port": 50123}')
+    assert lock.connection() == (8765, "/api/health") and lock.control_port() == 50123

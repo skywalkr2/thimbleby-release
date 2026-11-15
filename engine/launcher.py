@@ -78,18 +78,15 @@ class InstanceLock:
     def control_port(self) -> int | None:
         """The port the running instance listens on for "show your window", when it published one."""
         try:
-            with self.path.open("rb") as handle:
-                handle.seek(1)
-                port = json.load(handle).get("control_port")
+            port = json.loads(self.path.read_bytes()[1:].lstrip(b"\0 \r\n")).get("control_port")
             return port if type(port) is int and 1 <= port <= 65535 else None
         except (OSError, ValueError, AttributeError):
             return None
 
     def connection(self) -> tuple[int, str] | None:
         try:
-            with self.path.open("rb") as handle:
-                handle.seek(1)
-                data = json.load(handle)
+            # The first byte is the one the lock covers; read past it, and past any padding, to the published details.
+            data = json.loads(self.path.read_bytes()[1:].lstrip(b"\0 \r\n"))
             port, path = data["port"], data["readiness_path"]
             if (
                 type(port) is int
@@ -328,7 +325,14 @@ def show_running(data_folder: str | Path, token: str, *, timeout: float = 15) ->
     # Each check may take two seconds: a busy computer answers its own app slowly; half a second was too short.
     if not wait_ready("http://127.0.0.1/", timeout=timeout, request_timeout=2, probe=existing_ready):
         where = seen[0] if seen else None
-        said = "published no address" if where is None else f"did not answer at port {where[0]} ({where[1]})"
+        if where is None:
+            try:
+                held = repr(lock.path.read_bytes()[:160])
+            except OSError as err:
+                held = f"unreadable ({err.__class__.__name__})"
+            said = f"published no address in {lock.path} (it holds {held})"
+        else:
+            said = f"did not answer at port {where[0]} ({where[1]})"
         raise RuntimeError(f"The existing instance is not ready: it {said}")
     control = lock.control_port()
     if control is None or not ask_to_show(control, token):
