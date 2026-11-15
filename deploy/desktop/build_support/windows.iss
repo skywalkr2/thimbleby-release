@@ -42,6 +42,8 @@ RestartApplications=no
 ; Three pages say something: Welcome, a couple of choices (which ends in Install), and Installed. There is no licence
 ; page, no folder page, no Start-menu group page and no ready page.
 WizardStyle=modern
+; The modern style hides the Welcome page unless asked; the target's Welcome page carries the three facts.
+DisableWelcomePage=no
 WizardImageFile={#ImageDir}\side.bmp,{#ImageDir}\side@2x.bmp
 WizardSmallImageFile={#ImageDir}\small.bmp,{#ImageDir}\small@2x.bmp
 DisableDirPage=yes

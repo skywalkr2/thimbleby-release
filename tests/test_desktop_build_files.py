@@ -439,7 +439,9 @@ def test_the_setup_has_three_pages_in_the_targets_words_and_no_licence_folder_or
     # Only the pages that say something: no licence, folder, Start-menu group or ready page.
     for line in ("DisableDirPage=yes", "DisableProgramGroupPage=yes", "DisableReadyPage=yes", "WizardStyle=modern"):
         assert line in text
-    assert "LicenseFile" not in text and "DisableWelcomePage" not in text and "DisableFinishedPage" not in text
+    assert "LicenseFile" not in text and "DisableFinishedPage" not in text
+    # The modern style hides the Welcome page unless it is asked for (the runner's pictures showed it missing).
+    assert "DisableWelcomePage=no" in text
     assert "WizardImageFile={#ImageDir}\\side.bmp,{#ImageDir}\\side@2x.bmp" in text
     assert "CloseApplications=yes" in text and "PrivilegesRequired=lowest" in text
     # Welcome: three facts.
