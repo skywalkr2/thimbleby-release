@@ -15,7 +15,7 @@ import { Button } from "./ui/Button";
 import { ScreenBoundary } from "./ui/PartBoundary";
 import { initAppearance } from "./lib/theme";
 import { installInputMode } from "./lib/input-mode";
-import { installExternalLinks } from "./lib/external-links";
+import { installExternalLinks, reportDrawn } from "./lib/external-links";
 import { setClockZone, setTimePrefs } from "./lib/dates";
 import { useSides } from "./lib/sides";
 import { setTitleWords } from "./lib/title-dates";
@@ -87,6 +87,7 @@ function start(rc: S["RuntimeConfig"]) {
       </QueryClientProvider>
     </StrictMode>,
   );
+  reportDrawn();
 }
 
 api.runtimeConfig().then(start, (err: unknown) => {

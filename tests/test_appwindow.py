@@ -328,3 +328,14 @@ def test_a_window_call_never_runs_on_the_loop_thread_that_made_it():
     assert done.wait(10)
     assert set(seen) == {"load_url", "script"}
     assert all(thread is not threading.current_thread() for thread in seen.values())
+
+
+def test_the_page_saying_it_has_drawn_counts_as_drawn_even_when_a_script_cannot_be_read(monkeypatch):
+    """On the Mac a script run in the window from outside came back with nothing although the page showed Welcome."""
+    shell, window, _ = make()
+    monkeypatch.setattr(window, "page_state", lambda: {"address": "http://127.0.0.1:1/#setup", "drawn": False})
+    assert shell.window_state()["drawn"] is False
+    shell.api.page_drawn()
+    assert shell.window_state()["drawn"] is True
+    shell.show_app("http://127.0.0.1:1/")  # a new page has to say so again
+    assert shell.window_state()["drawn"] is False

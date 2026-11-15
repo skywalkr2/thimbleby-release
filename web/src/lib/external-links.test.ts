@@ -42,3 +42,17 @@ describe("links to other addresses in the app's own window", () => {
     expect(event.defaultPrevented).toBe(false);
   });
 });
+
+test("in the app's own window the page tells the window it has drawn, after it paints, even when the bridge comes later", async () => {
+  const { reportDrawn } = await import("./external-links");
+  const told: string[] = [];
+  const w = window as unknown as { pywebview?: { api?: Record<string, unknown> } };
+  delete w.pywebview;
+  reportDrawn();
+  await new Promise((r) => setTimeout(r, 50)); // two paints pass with no bridge yet
+  expect(told).toEqual([]);
+  w.pywebview = { api: { page_drawn: () => told.push("drawn") } };
+  window.dispatchEvent(new Event("pywebviewready"));
+  expect(told).toEqual(["drawn"]);
+  delete w.pywebview;
+});

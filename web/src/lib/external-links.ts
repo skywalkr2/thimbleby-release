@@ -2,7 +2,7 @@
 // The window (a system web view) offers `window.pywebview.api.open_external` to the page; in a browser tab there is no
 // such function and links behave as usual.
 
-type Bridge = { open_external?: (url: string) => unknown };
+type Bridge = { open_external?: (url: string) => unknown; page_drawn?: () => unknown };
 
 function bridge(): Bridge | undefined {
   return (window as unknown as { pywebview?: { api?: Bridge } }).pywebview?.api;
@@ -45,4 +45,19 @@ export function installExternalLinks(): () => void {
     document.removeEventListener("click", onClick, true);
     window.open = original;
   };
+}
+
+/** In the app's own window, tell the window the page has drawn, once it has painted: the window's check that the app
+ * shows (rather than a blank page) reads this. The bridge may arrive after the page, so it also waits for it. */
+export function reportDrawn(): void {
+  const tell = () => {
+    const done = bridge()?.page_drawn;
+    if (done) void done();
+    return Boolean(done);
+  };
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() => {
+      if (!tell()) window.addEventListener("pywebviewready", () => tell(), { once: true });
+    }),
+  );
 }

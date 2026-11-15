@@ -162,6 +162,11 @@ class PageApi:
     def copy_details(self) -> None:
         self._shell.copy(self._shell.details)
 
+    def page_drawn(self) -> None:
+        """The app's page says it has drawn: the surest sign there is, since a system web view may not answer a script
+        run in it from outside."""
+        self._shell.page_drawn = True
+
     def open_external(self, url: str) -> bool:
         """Open a link to another address in the person's own browser, never in this window."""
         if not isinstance(url, str) or not outside_address(url):
@@ -200,6 +205,7 @@ class AppShell:
         self._quitting = False
         self._shown = False
         self._app_loaded = False
+        self.page_drawn = False  # set by the app's page itself, through the window's bridge
         self.api = PageApi(self)
 
     # --- the loop -------------------------------------------------------------------------------------------------
@@ -299,6 +305,7 @@ class AppShell:
     def show_app(self, url: str) -> None:
         """Turn the window into the app (and show it, unless the app started quietly at login)."""
         self._app_loaded = True
+        self.page_drawn = False
         self.main.call(self.window.load_url, url)
         if not self.quiet:
             self.main.call(self._show)
@@ -310,6 +317,7 @@ class AppShell:
             page = self.window.page_state()
         except Exception:
             page = {"address": "", "drawn": False}
+        page = {**page, "drawn": bool(page.get("drawn")) or self.page_drawn}
         return {"state": self.state, "shown": self._shown, **page}
 
     def bring_forward(self, fragment: str = "") -> None:
