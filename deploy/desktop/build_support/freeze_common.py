@@ -9,7 +9,7 @@ from pathlib import Path
 
 from build_model import bundled_data, release_versions
 from packaging.version import Version
-from PyInstaller.utils.hooks import collect_submodules, copy_metadata
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
 
 def freeze_inputs(root: Path, expected_system: str) -> dict:
@@ -41,6 +41,13 @@ def freeze_inputs(root: Path, expected_system: str) -> dict:
     if not (root / "web" / "dist" / "index.html").is_file():
         raise SystemExit("Build the front end first: web/dist/index.html is missing")
     datas.extend(copy_metadata(distribution.metadata["Name"], recursive=True))
+    # The window library writes its bridge into each page from its own script files; without them in the app the page
+    # can't reach the app (outside links, the drawn signal) and no script runs in the window.
+    if importlib.util.find_spec("webview") is not None:
+        bridge = collect_data_files("webview", includes=["js/**/*"])
+        if not bridge:
+            raise SystemExit("The window library's script files were not found to bundle")
+        datas.extend(bridge)
     hiddenimports = collect_submodules("engine")
     for package in ("api", "plugins.kit", "uvicorn", "pystray", "webview"):
         if importlib.util.find_spec(package) is not None:

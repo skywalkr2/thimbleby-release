@@ -90,6 +90,13 @@ class WebviewWindow:
     def create(self, title: str, html: str, api: Any, on_closing: Callable[[], bool]) -> None:
         import webview
 
+        with contextlib.suppress(Exception):  # where the bridge's scripts come from, for the build machines' check
+            from webview.util import get_js_dir
+
+            from engine.launcher import note
+
+            scripts = Path(get_js_dir())
+            note(f"window scripts at {scripts} (there: {scripts.is_dir() and any(scripts.glob('*.js'))})")
         fit = fit_window(primary_screen() or WINDOW_SIZE, WINDOW_SIZE, WINDOW_MINIMUM, WINDOW_SCREEN_SHARE)
         self.window = webview.create_window(
             title,

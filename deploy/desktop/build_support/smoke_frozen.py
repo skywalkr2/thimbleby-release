@@ -68,6 +68,8 @@ def main(executable: str, port: int = 8791) -> None:
                 f"{'running' if app.poll() is None else f'ended with {app.poll()}'}).\n{said}"
             )
         print(f"ok: workspace {workspace}, served on {base}")
+        notes = [line for line in log.read_text(errors="replace").splitlines() if line.startswith("launcher[")]
+        print("\n".join(notes) or "(the app wrote no launcher notes)")
     except BaseException:
         # Whatever failed, show what the app itself said, so a red run names its cause.
         print(f"--- the app's output ({log}) ---")

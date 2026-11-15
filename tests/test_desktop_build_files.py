@@ -157,6 +157,10 @@ def test_the_freeze_looks_for_the_thimbleby_command_and_collects_what_is_loaded_
     for package in ("api", "plugins.kit", "uvicorn", "pystray", "webview"):
         assert f'"{package}"' in text
     assert "plugins.example" not in text
+    # The window library's script files, which put the bridge into each page: without them, nothing in the page can
+    # reach the app on the Mac, and the build refuses to go on.
+    assert 'collect_data_files("webview", includes=["js/**/*"])' in text
+    assert "script files were not found" in text
 
 
 def test_the_build_files_carry_the_new_names_only():
