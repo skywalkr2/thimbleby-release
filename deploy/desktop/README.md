@@ -29,6 +29,24 @@ tester. Hashes detect changed bytes; they do not say who made the file.
 (`pyproject.toml`); with a tag it must equal the tag without the `v` (`v0.1.0`, `v0.1.0rc1`, `v0.1.0.post1`; numbers up to
 65535). The downloads are on the run's page, under Artifacts.
 
+## What the installers look like
+
+Both follow the product's installer design and its mockups; the pictures are drawn at build time from the brand's own mark
+(`engine/installer_art.py`), never kept as files.
+
+- **Mac disk image** (`release_tools.py dmg`, `build_support/dmg_settings.py`): a 620 x 340 window that opens by itself, cream, with
+  a brass arrow from the app to the Applications alias and two lines under them; the volume is "Thimbleby VERSION". The layout is
+  written by `dmgbuild` (in the Mac locks): it writes the Finder's own window settings straight into the image, so no Finder
+  scripting and no logged-in desktop is needed to build it. The background is made at 1x and 2x.
+- **Windows setup** (`build_support/windows.iss`): Inno Setup in modern style with the brand side image (164 x 314, and 328 x 628)
+  from `release_tools.py wizard-art`. Three pages: Welcome (three facts), A couple of choices (desktop shortcut ticked, start at
+  sign-in not ticked, the folder as text, the button reads Install) and Installed ("Open Thimbleby now" ticked). No licence, folder,
+  Start-menu-group or ready page. "Start at sign-in" writes the same run key and value as the app's own switch
+  (`engine/login_item.py`). The uninstaller says what stays and how to delete it too, and never deletes the work.
+- **Pictures:** each desktop job adds pictures to the run's downloads beside the window pictures: the Mac's `dmg-window.png`
+  (`build_support/dmg_picture.py`) and the Windows setup's pages and the uninstaller's (`build_support/setup_pictures.ps1`, which sends
+  Enter between pages). These steps do not fail the build; a page the runner could not reach is missing from the folder.
+
 ## What the app does when opened
 
 `build_support/launcher.py` is the frozen entry. With nothing typed it calls `engine.desktop.main`: it makes the workspace

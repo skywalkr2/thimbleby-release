@@ -239,6 +239,8 @@ def test_each_lock_is_complete_and_hashed(target):
     assert "pyinstaller==6.22.3" in text and "thimbleby" not in names
     assert (target.startswith("windows")) == ("pywin32-ctypes" in names)
     assert (target.startswith("macos")) == ("macholib" in names)
+    # The disk image's window is laid out by this library, which only the Mac builds use.
+    assert (target.startswith("macos")) == ("dmgbuild" in names)
 
 
 def test_a_build_by_hand_takes_its_version_from_the_package_and_a_tag_from_the_tag(monkeypatch, tmp_path):
@@ -370,3 +372,135 @@ def test_the_session_check_fails_on_a_page_that_has_not_drawn():
     assert session_check.wait_drawn(lambda: next(answers), 30, lambda: next(clock), lambda s: None) == live
     clock = iter(range(1000))
     assert session_check.wait_drawn(lambda: blank, 30, lambda: next(clock), lambda s: None) == blank
+
+
+def test_the_disk_image_and_setup_pictures_are_drawn_at_the_stated_sizes(tmp_path):
+    import dmg_settings
+    from PIL import Image
+
+    from engine import installer_art
+
+    one, two = installer_art.write_dmg_background(tmp_path, dmg_settings.LINES)
+    assert one.name == "dmg-background.png" and two.name == "dmg-background@2x.png"
+    assert Image.open(one).size == (620, 340) and Image.open(two).size == (1240, 680)
+    # The system joins the two by their resolution, so they must carry 72 and 144.
+    assert round(Image.open(one).info["dpi"][0]) == 72 and round(Image.open(two).info["dpi"][0]) == 144
+    assert Image.open(one).getpixel((2, 2)) == installer_art.CREAM
+    # The arrow is brass, between the two icon places.
+    arrow = Image.open(one).getpixel((300, installer_art.DMG_APP_CENTER[1] + 2))
+    assert all(abs(a - b) <= 6 for a, b in zip(arrow, installer_art.BRASS, strict=True)), arrow
+
+    made = installer_art.write_wizard_images(tmp_path / "wiz", "Name", "Version 1.2.3")
+    sizes = {role: Image.open(path).size for role, path in made.items()}
+    assert sizes == {"side": (164, 314), "side_large": (328, 628), "small": (55, 55), "small_large": (110, 106)}
+    assert all(path.suffix == ".bmp" for path in made.values())
+    assert Image.open(made["side"]).getpixel((2, 2)) == installer_art.BRAND
+
+
+def test_the_disk_image_names_its_volume_window_and_two_lines():
+    import dmg_settings
+
+    from engine import installer_art
+
+    assert dmg_settings.volume_name("0.1.0") == "Thimbleby 0.1.0"
+    assert dmg_settings.LINES == (
+        "Drag Thimbleby into Applications",
+        "Then open it from Applications or Launchpad",
+    )
+    chosen = dmg_settings.settings("Thimbleby.app", Path("x/dmg-background.png"))
+    assert chosen["window_rect"][1] == (620, 340) == installer_art.DMG_WINDOW
+    assert chosen["icon_size"] == 112 and chosen["default_view"] == "icon-view"
+    assert chosen["symlinks"] == {"Applications": "/Applications"}
+    assert set(chosen["icon_locations"]) == {"Thimbleby.app", "Applications"}
+    # Both icons sit on the window's middle line, one each side of the arrow.
+    (left_x, left_y), (right_x, right_y) = (chosen["icon_locations"][k] for k in ("Thimbleby.app", "Applications"))
+    assert left_y == right_y and left_x < 310 < right_x
+    assert not chosen.get("show_toolbar") and not chosen.get("show_sidebar")
+    # The layout comes from the library, with no Finder scripting, and the build and its pictures are the steps' own.
+    script = (BUILD / "release_tools.py").read_text()
+    assert "dmgbuild.build_dmg" in script and "osascript" not in script and "hdiutil" not in script
+
+
+def test_a_mounted_images_folder_is_read_from_the_systems_answer():
+    import plistlib
+
+    import dmg_picture
+
+    answer = plistlib.dumps(
+        {"system-entities": [{"dev-entry": "/dev/disk4"}, {"mount-point": "/Volumes/Thimbleby 0.1.0"}]}
+    )
+    assert dmg_picture.mount_point(answer) == "/Volumes/Thimbleby 0.1.0"
+    with pytest.raises(SystemExit):
+        dmg_picture.mount_point(plistlib.dumps({"system-entities": []}))
+
+
+def test_the_setup_has_three_pages_in_the_targets_words_and_no_licence_folder_or_ready_page():
+    text = (BUILD / "windows.iss").read_text()
+    # Only the pages that say something: no licence, folder, Start-menu group or ready page.
+    for line in ("DisableDirPage=yes", "DisableProgramGroupPage=yes", "DisableReadyPage=yes", "WizardStyle=modern"):
+        assert line in text
+    assert "LicenseFile" not in text and "DisableWelcomePage" not in text and "DisableFinishedPage" not in text
+    assert "WizardImageFile={#ImageDir}\\side.bmp,{#ImageDir}\\side@2x.bmp" in text
+    assert "CloseApplications=yes" in text and "PrivilegesRequired=lowest" in text
+    # Welcome: three facts.
+    for words in (
+        "For you only. No administrator password.",
+        "About a minute, and {#SizeMB} MB of space.",
+        "Your work is kept in its own folder. Removing the app never deletes it.",
+    ):
+        assert words in text
+    # A couple of choices: the desktop shortcut ticked, starting at sign-in not, the folder as text, and Install.
+    assert 'Name: "desktopicon"; Description: "{cm:TaskDesktop}"; Flags: checkedonce' in text
+    assert 'Name: "signin"; Description: "{cm:TaskSignIn}"; Flags: unchecked' in text
+    assert "english.TaskDesktop=Put Thimbleby on the desktop" in text
+    assert "english.TaskSignIn=Start Thimbleby when I sign in to Windows" in text
+    assert "WizardSelectTasks=A couple of choices" in text and "ButtonInstall=Install" in text
+    assert "WizardDirValue" in text and "msgButtonInstall" in text
+    # Installed: "Open Thimbleby now", ticked (no `unchecked` flag), then Finish.
+    assert "english.RunNow=Open Thimbleby now" in text
+    run = next(line for line in text.splitlines() if line.startswith("Filename:") and "postinstall" in line)
+    assert "unchecked" not in run and "{cm:RunNow}" in run
+    assert "FinishedHeadingLabel=Thimbleby is installed" in text and "InstallingLabel=Installing Thimbleby" in text
+    # Removing: says what stays and how to delete it too; never deletes the work.
+    assert "Your work stays in AppData\\Local\\Thimbleby: your workspace, backups and saved keys." in text
+    assert "Settings > Advanced > Delete this workspace" in text
+    assert "[UninstallDelete]" not in text
+    # Every line is in [Messages] or [CustomMessages], and the file is plain text the compiler reads without a mark.
+    assert "[Messages]" in text and "[CustomMessages]" in text
+    text.encode("ascii")
+
+
+def test_the_setups_sign_in_choice_writes_what_the_apps_own_switch_writes():
+    from engine import login_item
+
+    text = (BUILD / "windows.iss").read_text()
+    entry = next(line for line in text.splitlines() if line.startswith("Root: HKCU") and "signin" in line)
+    assert f'Subkey: "{login_item.WINDOWS_KEY}"' in entry and f'ValueName: "{login_item.WINDOWS_VALUE}"' in entry
+    # The value is the program and the flag, each in quotes, as the app writes it.
+    written = " ".join(f'"{a}"' for a in login_item.command("{app}\\Thimbleby.exe"))
+    assert 'ValueData: "' + written.replace('"', '""') + '"' in entry
+    assert "uninsdeletevalue" in entry and "RegDeleteValue" in text
+
+
+def test_each_runner_takes_a_picture_of_the_disk_image_and_of_every_setup_page():
+    flow = workflow()["jobs"]["desktop"]["steps"]
+    by_name = {step.get("name"): step for step in flow}
+    mac = by_name["Mount the disk image and take a picture of its window"]
+    assert "dmg_picture.py" in mac["run"] and mac["if"] == "runner.os == 'macOS'"
+    assert (BUILD / "dmg_picture.py").read_text().count("dmg-window.png") == 1
+    drawn = by_name["Draw the setup's side and header pictures"]["run"]
+    assert "release_tools.py wizard-art" in drawn
+    compile_step = by_name["Compile the per-user installer"]["run"]
+    assert "/DImageDir=" in compile_step and "/DSizeMB=" in compile_step
+    pictures = next(step for name, step in by_name.items() if name.startswith("Run the setup"))
+    assert "setup_pictures.ps1" in pictures["run"]
+    script = (BUILD / "setup_pictures.ps1").read_text()
+    for page in ("setup-1-welcome", "setup-2-choices", "setup-3-progress", "setup-4-installed", "remove-1-first"):
+        assert f"'{page}.png'" in script
+    assert "WScript.Shell" in script and "{ENTER}" in script
+    # The pictures are downloads of the run, beside the window pictures, after every step that adds one.
+    names = [step.get("name") for step in flow]
+    keep = next(i for i, n in enumerate(names) if n and n.startswith("Keep the pictures"))
+    assert keep > names.index(pictures["name"]) > names.index("Compile the per-user installer")
+    assert keep > names.index("Mount the disk image and take a picture of its window")
+    assert flow[keep]["if"] == "always()"

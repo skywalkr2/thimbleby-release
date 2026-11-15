@@ -6,8 +6,7 @@ import importlib.metadata
 import os
 import platform
 import re
-import shutil
-import subprocess
+import sys
 from pathlib import Path
 
 from build_model import release_versions
@@ -48,7 +47,7 @@ def release_notes(changelog: str, version: str) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("step", choices=("prepare", "notes", "dmg", "hashes"))
+    parser.add_argument("step", choices=("prepare", "notes", "dmg", "wizard-art", "hashes"))
     parser.add_argument("--out", help="notes: the file to write the release notes to")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[3]  # the repository root
@@ -76,28 +75,26 @@ def main() -> None:
         app = root / "dist" / "Thimbleby.app"
         if not app.is_dir():
             raise SystemExit("The application bundle is missing")
-        stage = root / "build" / "dmg-stage"
-        if stage.exists():
-            shutil.rmtree(stage)
-        stage.mkdir(parents=True)
-        subprocess.run(["ditto", str(app), str(stage / app.name)], check=True)
-        (stage / "Applications").symlink_to("/Applications")
+        sys.path.insert(0, str(root))  # the checkout's own brand files, as the freeze does
+        import dmg_settings
+        import dmgbuild
+
+        from engine import installer_art
+
+        background, _ = installer_art.write_dmg_background(root / "build" / "dmg-art", dmg_settings.LINES)
         destination = root / "dist" / f"Thimbleby-{version}-macos-{architecture}.dmg"
-        subprocess.run(
-            [
-                "hdiutil",
-                "create",
-                "-volname",
-                "Thimbleby",
-                "-srcfolder",
-                str(stage),
-                "-ov",
-                "-format",
-                "UDZO",
-                str(destination),
-            ],
-            check=True,
+        destination.unlink(missing_ok=True)
+        dmgbuild.build_dmg(
+            str(destination),
+            dmg_settings.volume_name(version),
+            settings={**dmg_settings.settings(app.name, background), "files": [str(app)]},
         )
+    elif args.step == "wizard-art":
+        sys.path.insert(0, str(root))
+        from engine import installer_art
+
+        version, _ = release_versions("v" + os.environ["APP_VERSION"])
+        installer_art.write_wizard_images(root / "build" / "installer", "Thimbleby", f"Version {version}")
     else:
         artifacts = sorted(
             path for path in (root / "dist").iterdir() if path.suffix in {".dmg", ".exe"} and path.is_file()
