@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{title}}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root { --ground:#f6f3ec; --text:#241d1c; --muted:#6c6258; --accent:#742b32; --rule:#e2dccf; --ok:#2f7a4f; --bar:#e8e1d3; }
+@media (prefers-color-scheme: dark) { :root { --ground:#14110f; --text:#f3ead8; --muted:#b9ad98; --accent:#c0a267; --rule:#2e2924; --ok:#7fc79b; --bar:#2a2520; } }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--ground); color:var(--text); font:15px/1.45 -apple-system,"Segoe UI",system-ui,sans-serif; min-height:100vh; display:flex; align-items:center; justify-content:center; }
+main { width:min(420px,92vw); padding:24px 0; }
+.head { display:flex; gap:14px; align-items:center; margin-bottom:18px; }
+.mark { width:48px; height:48px; flex:none; }
+.mark svg { width:100%; height:100%; display:block; }
+.night { display:none; }
+@media (prefers-color-scheme: dark) { .day { display:none; } .night { display:block; } }
+h1 { font:600 22px/1.2 Georgia,"Times New Roman",serif; margin:0; }
+h1:focus { outline:none; }
+.sub { margin:2px 0 0; color:var(--muted); }
+.bar { height:6px; border-radius:3px; background:var(--bar); overflow:hidden; margin:0 0 16px; }
+.bar i { display:block; height:100%; width:0; background:var(--accent); transition:width .25s ease; }
+ul { list-style:none; margin:0; padding:0; }
+li { display:flex; gap:10px; align-items:center; padding:4px 0; color:var(--muted); }
+li.done { color:var(--text); }
+li .m { width:18px; height:18px; border-radius:50%; border:1.5px solid var(--rule); flex:none; text-align:center; font-size:12px; line-height:15px; }
+li.done .m { background:var(--ok); border-color:var(--ok); color:#fff; }
+.foot { border-top:1px solid var(--rule); margin-top:18px; padding-top:12px; color:var(--muted); font-size:13px; display:flex; gap:10px; align-items:center; }
+.spacer { flex:1; }
+button { font:inherit; border-radius:8px; padding:7px 14px; border:1px solid var(--rule); background:transparent; color:var(--text); cursor:pointer; }
+button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+@media (prefers-color-scheme: dark) { button.primary { color:#14110f; } }
+button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.msg { margin:0 0 4px; }
+[hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <div class="head">
+    <div class="mark" aria-hidden="true"><div class="day">{{mark_day}}</div><div class="night">{{mark_night}}</div></div>
+    <div><h1 id="heading" tabindex="-1">{{heading}}</h1><p class="sub" id="sub">{{subtitle}}</p></div>
+  </div>
+  <section id="progress">
+    <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="{{step_count}}" aria-valuenow="0" id="bar"><i id="fill"></i></div>
+    <ul id="steps">{{steps}}</ul>
+    <div class="foot"><span id="version">{{version}}</span></div>
+  </section>
+  <section id="problem" hidden>
+    <p class="msg" id="text"></p>
+    <div class="foot">
+      <button type="button" id="copy">{{copy_details}}</button><span class="spacer"></span>
+      <button type="button" class="primary" id="again">{{try_again}}</button>
+    </div>
+  </section>
+</main>
+<script>
+var total = {{step_count}};
+function api() { return window.pywebview && window.pywebview.api; }
+document.getElementById("heading").focus();
+function tick(done) {
+  var items = document.querySelectorAll("#steps li");
+  for (var i = 0; i < items.length; i++) {
+    var on = i < done;
+    items[i].className = on ? "done" : "";
+    items[i].querySelector(".m").textContent = on ? "✓" : "";
+  }
+  document.getElementById("fill").style.width = Math.round(100 * done / total) + "%";
+  document.getElementById("bar").setAttribute("aria-valuenow", String(done));
+}
+function problem(title, text, details) {
+  document.getElementById("heading").textContent = title;
+  document.getElementById("sub").hidden = true;
+  document.getElementById("text").textContent = text;
+  document.getElementById("progress").hidden = true;
+  document.getElementById("problem").hidden = false;
+  document.getElementById("heading").focus();
+}
+document.getElementById("again").onclick = function () { if (api()) api().retry(); };
+document.getElementById("copy").onclick = function () { if (api()) api().copy_details(); };
+</script>
+</body>
+</html>

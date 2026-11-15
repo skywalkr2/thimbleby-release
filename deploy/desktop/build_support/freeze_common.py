@@ -33,7 +33,7 @@ def freeze_inputs(root: Path, expected_system: str) -> dict:
         raise SystemExit("Build the front end first: web/dist/index.html is missing")
     datas.extend(copy_metadata(distribution.metadata["Name"], recursive=True))
     hiddenimports = collect_submodules("engine")
-    for package in ("api", "plugins.kit", "uvicorn", "pystray"):
+    for package in ("api", "plugins.kit", "uvicorn", "pystray", "webview"):
         if importlib.util.find_spec(package) is not None:
             hiddenimports.extend(collect_submodules(package))
     architecture = platform.machine().lower()

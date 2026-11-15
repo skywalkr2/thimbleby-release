@@ -99,3 +99,31 @@ desktop.title: Thimbleby
 desktop.open: Open Thimbleby
 desktop.restart: Restart
 desktop.quit: Quit
+desktop.help: Help
+desktop.login.mac: Open at login
+desktop.login.windows: Start when I sign in
+# The menu's top line, in the words of the app's header chip.
+desktop.state.starting: Starting
+desktop.state.live: All good
+desktop.state.restart: Restart to finish
+desktop.state.restarting: Restarting
+desktop.state.failed: Restart failed
+
+# The starting window of the installed app: its heading, its steps and the messages it turns into.
+desktop.starting.title: Starting Thimbleby
+desktop.starting.subtitle: Your window opens by itself in a moment.
+desktop.starting.version: "Version {version}"
+desktop.step.workspace: Your workspace is ready
+desktop.step.app: The app is running
+desktop.step.screens: Opening the screens
+desktop.problem.disk_full.title: Your disk is full
+desktop.problem.disk_full.text: Thimbleby needs about 50 MB free to start.
+desktop.problem.elsewhere.title: Thimbleby is open on another computer
+desktop.problem.elsewhere.text: Your workspace is in a synced folder, and the copy there is using it. Close it there, then try again.
+desktop.problem.held.title: Thimbleby couldn't start
+desktop.problem.held.text: Something else on this computer stops Thimbleby from starting. Restarting the computer usually fixes it.
+desktop.problem.other.title: Thimbleby couldn't start
+desktop.problem.other.text: Try again. If it keeps happening, copy the details and send them to the people who look after Thimbleby.
+desktop.try_again: Try again
+desktop.copy_details: Copy details
+desktop.copied: Copied

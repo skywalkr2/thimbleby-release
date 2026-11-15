@@ -1,20 +1,24 @@
-"""Run a local ASGI app behind a native tray icon with a per-folder process lock."""
+"""Run a local ASGI app in the app's own window, behind a menu-bar or tray item, with a per-folder process lock.
+
+The window and the item belong to `engine/appwindow.py`; this module owns the server, the lock and the loop that
+reacts to the person's choices. Nothing here touches a window or the item except through the shell it is given."""
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import socket
 import sys
 import threading
 import time
-import webbrowser
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 
 class InstanceLock:
@@ -60,13 +64,26 @@ class InstanceLock:
         self.file = handle
         return True
 
-    def publish(self, port: int, readiness_path: str) -> None:
+    def publish(self, port: int, readiness_path: str, control_port: int | None = None) -> None:
         if self.file is None:
             raise RuntimeError("Only the lock owner can publish connection details")
         self.file.seek(1)
         self.file.truncate()
-        self.file.write(json.dumps({"port": port, "readiness_path": readiness_path}).encode("utf-8"))
+        details = {"port": port, "readiness_path": readiness_path}
+        if control_port is not None:
+            details["control_port"] = control_port
+        self.file.write(json.dumps(details).encode("utf-8"))
         self.file.flush()
+
+    def control_port(self) -> int | None:
+        """The port the running instance listens on for "show your window", when it published one."""
+        try:
+            with self.path.open("rb") as handle:
+                handle.seek(1)
+                port = json.load(handle).get("control_port")
+            return port if type(port) is int and 1 <= port <= 65535 else None
+        except (OSError, ValueError, AttributeError):
+            return None
 
     def connection(self) -> tuple[int, str] | None:
         try:
@@ -226,152 +243,192 @@ class LocalServer:
         self.thread = self.server = self.socket = None
 
 
+class ControlServer:
+    """A loopback listener on its own port where a second open of the app asks this one to show its window.
+
+    The request must carry the install token as a bearer header; "/show" brings the window forward and "/quit" ends the
+    app by the same path as the menu's Quit (the runners' check uses it). The answer is 204; nothing else is served."""
+
+    def __init__(
+        self, token: Callable[[], str], on_show: Callable[[], None], on_quit: Callable[[], None] = lambda: None
+    ):
+        self.token = token
+        self.on_show = on_show
+        self.on_quit = on_quit
+        self.server: ThreadingHTTPServer | None = None
+        self.thread: threading.Thread | None = None
+
+    def start(self) -> int:
+        control = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                offered = self.headers.get("Authorization", "")
+                expected = "Bearer " + control.token()
+                known = self.path in ("/show", "/quit")
+                if not known or not hmac.compare_digest(offered.encode(), expected.encode()):
+                    self.send_response(401)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                (control.on_show if self.path == "/show" else control.on_quit)()
+                self.send_response(204)
+                self.end_headers()
+
+            def log_message(self, *args: Any) -> None:
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, name="show-window-listener", daemon=True)
+        self.thread.start()
+        return self.server.server_address[1]
+
+    def stop(self) -> None:
+        if self.server is not None:
+            self.server.shutdown()
+            self.server.server_close()
+            self.server = None
+
+
+def ask_to_show(port: int, token: str, timeout: float = 3, what: str = "show") -> bool:
+    """Ask the running instance, over loopback with the install token, to show its window (or to quit)."""
+    opener = build_opener(ProxyHandler({}))
+    request = Request(
+        f"http://127.0.0.1:{port}/{what}", data=b"", method="POST", headers={"Authorization": "Bearer " + token}
+    )
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            return response.status == 204
+    except (OSError, URLError):
+        return False
+
+
+def is_running(data_folder: str | Path) -> bool:
+    """Whether another instance holds the folder's lock (the lock is only looked at, never kept)."""
+    path = Path(data_folder) / "launcher.lock"
+    if not path.exists():
+        return False
+    probe = InstanceLock(data_folder)
+    if probe.acquire():
+        probe.release()
+        return False
+    return True
+
+
+def show_running(data_folder: str | Path, token: str, *, timeout: float = 15) -> None:
+    """A second open: wait for the running instance to answer, then ask it to bring its window forward."""
+    lock = InstanceLock(data_folder)
+
+    def existing_ready(candidate_url: str, wait: float) -> bool:
+        connection = lock.connection()
+        return connection is not None and readiness_probe(f"http://127.0.0.1:{connection[0]}{connection[1]}", wait)
+
+    if not wait_ready("http://127.0.0.1/", timeout=timeout, probe=existing_ready):
+        raise RuntimeError("The existing instance is not ready; check its status before trying again")
+    control = lock.control_port()
+    if control is None or not ask_to_show(control, token):
+        raise RuntimeError("The existing instance did not show its window")
+
+
 def launch(
     app_factory: Callable[[], Any],
     port: int,
     data_folder: str | Path,
     *,
-    title: str,
-    labels: Mapping[str, str],
+    shell: Any,
     open_path: str | Callable[[], str],
     readiness_path: str = "/healthz",
     restart_waiting: Callable[[], bool] = lambda: False,
     restarted: Callable[[], None] = lambda: None,
-    icon_image: Any = None,
     startup_timeout: float = 15,
     restart_requested: threading.Event | None = None,
     quit_requested: threading.Event | None = None,
+    token: Callable[[], str] = lambda: "",
 ) -> None:
-    """Run the tray loop on the main thread; a second launch only opens the app.
+    """Run the app until the person quits: the server, the window's address and the loop that reacts to the menu.
 
-    title names the icon; labels holds the menu wording for "open", "restart" and "quit", supplied from the wording
-    sheet. open_path is the path (with the base path and any query) the browser opens, on this instance's port or on
-    the running instance's port for a second launch; a function is asked each time the browser is opened, so a query
-    that changes when the app starts again (a new sign-in link) is always the current one. restart_requested, when
-    given, is set by the app itself when the person chose Restart in it: the restart then runs as the menu's would.
-    quit_requested, when given, is set by the app when it has nothing left to run (the person deleted the workspace):
-    the loop then ends as Quit would.
+    shell is the app's window and menu-bar item (`engine/appwindow.py`); every call to it is safe from this thread.
+    open_path is the path (with the base path and any query) the window opens, on this instance's port; a function is
+    asked each time, so a query that changes when the app starts again (a new sign-in link) is always the current one.
+    A second launch asks the running instance to show its window and returns. restart_requested, when given, is set
+    by the app itself when the person chose Restart in it: the restart then runs as the menu's would. quit_requested,
+    when given, is set by the app when it has nothing left to run (the person deleted the workspace): the loop then
+    ends as Quit would.
 
-    Restart recreates the ASGI app in this process; it does not replace Python
-    modules, install updates, or restart the interpreter. The waiting callback
-    must be thread-safe. restarted acknowledges a successful server restart.
+    Restart recreates the ASGI app in this process; it does not replace Python modules, install updates, or restart the
+    interpreter. The waiting callback must be thread-safe. restarted acknowledges a successful server restart.
     """
-    if threading.current_thread() is not threading.main_thread():
-        raise RuntimeError("The tray launcher must run on the main thread")
     if not 1 <= port <= 65535:
         raise ValueError("port must be between 1 and 65535")
     if not readiness_path.startswith("/") or any(char in readiness_path for char in "?#\r\n"):
         raise ValueError("readiness_path must be a local absolute path without query or fragment")
 
-    def path_now() -> str:
+    def url_now() -> str:
         path = open_path() if callable(open_path) else open_path
         if not path.startswith("/") or any(char in path for char in "\r\n"):
             raise ValueError("open_path must be a local absolute path")
-        return path
+        return f"http://127.0.0.1:{port}{path}"
 
     if not callable(open_path):
-        path_now()
-    missing = {"open", "restart", "quit"} - set(labels)
-    if missing:
-        raise ValueError(f"labels is missing {sorted(missing)}")
+        url_now()
     health = f"http://127.0.0.1:{port}{readiness_path}"
     lock = InstanceLock(data_folder)
     if not lock.acquire():
-
-        def existing_ready(candidate_url: str, timeout: float) -> bool:
-            connection = lock.connection()
-            if connection is None:
-                return False
-            owner_port, owner_path = connection
-            return readiness_probe(f"http://127.0.0.1:{owner_port}{owner_path}", timeout)
-
-        if not wait_ready(health, timeout=startup_timeout, probe=existing_ready):
-            raise RuntimeError("The existing instance is not ready; check its status before trying again")
-        connection = lock.connection()
-        if connection is None:
-            raise RuntimeError("The existing instance closed before opening its browser")
-        webbrowser.open(f"http://127.0.0.1:{connection[0]}{path_now()}")
+        show_running(data_folder, token(), timeout=startup_timeout)
         return
     controller = LocalServer(app_factory, port)
+    control = ControlServer(token, shell.bring_forward, shell.quit_from_menu)
     try:
-        import pystray
-
-        if icon_image is None:
-            from PIL import Image, ImageDraw
-
-            icon_image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-            draw = ImageDraw.Draw(icon_image)
-            draw.rounded_rectangle((8, 8, 56, 56), radius=12, fill="#742b32")
-            draw.rectangle((20, 20, 44, 26), fill="#fff1d6")
-            draw.rectangle((29, 26, 35, 46), fill="#fff1d6")
         controller.start()
-        lock.publish(port, readiness_path)
+        lock.publish(port, readiness_path, control.start())
         if not wait_ready(health, timeout=startup_timeout, alive=controller.alive):
             raise RuntimeError("The local server failed readiness") from controller.error
+        shell.step(2)
         busy = threading.Lock()
-        failures = []
-        closed = threading.Event()
+        shell.on("open", shell.bring_forward)
+        shell.on("help", lambda: shell.bring_forward("#setup"))
 
-        def open_app(icon, item) -> None:
-            webbrowser.open(f"http://127.0.0.1:{port}{path_now()}")
-
-        def restart(icon, item) -> None:
+        def restart() -> None:
             if not busy.acquire(blocking=False):
                 return
             try:
                 if not restart_waiting():
                     return
+                shell.set_state("restarting")
                 controller.stop()
                 controller.start()
                 if not wait_ready(health, timeout=startup_timeout, alive=controller.alive):
                     raise RuntimeError("Restarted server failed readiness") from controller.error
                 restarted()
+                shell.show_app(url_now())
+                shell.set_state("live")
             except Exception as error:
                 failures.append(error)
-                closed.set()
-                icon.stop()
+                shell.set_state("failed")
+                shell.quit()
             finally:
                 busy.release()
-                icon.update_menu()
 
-        def quit_app(icon, item) -> None:
-            closed.set()
-            icon.stop()
-
-        icon = pystray.Icon(
-            title,
-            icon_image,
-            title,
-            menu=pystray.Menu(
-                pystray.MenuItem(labels["open"], open_app, default=True),
-                pystray.MenuItem(
-                    labels["restart"], restart, enabled=lambda item: restart_enabled(restart_waiting, busy.locked())
-                ),
-                pystray.MenuItem(labels["quit"], quit_app),
-            ),
-        )
-        webbrowser.open(f"http://127.0.0.1:{port}{path_now()}")
-
-        def refresh_menu(icon) -> None:
-            icon.visible = True
-            while not closed.is_set():
-                if quit_requested is not None and quit_requested.is_set():
-                    quit_app(icon, None)
-                    break
-                if restart_requested is not None and restart_requested.is_set():
-                    restart_requested.clear()
-                    restart(icon, None)
-                if closed.wait(0.5):
-                    break
-                icon.update_menu()
-
-        try:
-            icon.run(setup=refresh_menu)
-        finally:
-            closed.set()
+        failures: list[Exception] = []
+        shell.on("restart", restart)
+        shell.restart_enabled = lambda: restart_enabled(restart_waiting, busy.locked())
+        shell.show_app(url_now())
+        shell.set_state("live")
+        shell.step(3)
+        while not shell.quit_event.is_set():
+            if quit_requested is not None and quit_requested.is_set():
+                shell.quit()
+                break
+            if restart_requested is not None and restart_requested.is_set():
+                restart_requested.clear()
+                shell.set_state("restart")
+                if restart_waiting():
+                    restart()
+            shell.quit_event.wait(0.5)
         if failures:
             raise RuntimeError("The server could not restart") from failures[0]
     finally:
+        control.stop()
         # Keep ownership until shutdown finishes; a hung server must not overlap a new one.
         try:
             controller.stop()

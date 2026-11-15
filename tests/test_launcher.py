@@ -11,8 +11,6 @@ import pytest
 import engine.launcher as launcher
 from engine.launcher import InstanceLock, LocalServer, readiness_probe, restart_enabled, wait_ready
 
-MENU = {"title": "App", "labels": {"open": "Open", "restart": "Restart", "quit": "Quit"}, "open_path": "/"}
-
 
 class Clock:
     def __init__(self):
@@ -177,43 +175,64 @@ class Server:
         return True
 
 
-class Item:
-    def __init__(self, text, action, **kwargs):
-        self.text, self.action, self.options = text, action, kwargs
+class FakeShell:
+    """What launch drives: it records the calls, and ends the loop when told to after the app is shown."""
 
+    def __init__(self, during=None):
+        self.calls = []
+        self.actions = {}
+        self.quit_event = threading.Event()
+        self.restart_enabled = lambda: False
+        self.during = during
 
-class Icon:
-    def __init__(self, name, image, title, menu):
-        self.menu = menu
-        self.stopped = False
+    def on(self, key, action):
+        self.actions[key] = action
 
-    def run(self, setup=None):
-        assert threading.current_thread() is threading.main_thread()
-        self.menu[-1].action(self, self.menu[-1])
+    def step(self, done):
+        self.calls.append(("step", done))
+        if done == 3:
+            if self.during:
+                self.during(self)
+            self.quit()
 
-    def stop(self):
-        self.stopped = True
+    def show_app(self, url):
+        self.calls.append(("show_app", url))
 
-    def update_menu(self):
-        pass
+    def set_state(self, state):
+        self.calls.append(("state", state))
+
+    def bring_forward(self, fragment=""):
+        self.calls.append(("forward", fragment))
+
+    def quit(self):
+        self.quit_event.set()
+
+    quit_from_menu = quit
 
 
 @pytest.fixture
 def environment(monkeypatch):
-    servers, opened = [], []
+    servers = []
     monkeypatch.setattr(Server, "instances", servers)
     monkeypatch.setattr(launcher, "LocalServer", Server)
     monkeypatch.setattr(launcher, "wait_ready", lambda *args, **kwargs: True)
-    monkeypatch.setattr(launcher.webbrowser, "open", opened.append)
-    monkeypatch.setitem(sys.modules, "pystray", SimpleNamespace(Icon=Icon, Menu=lambda *items: items, MenuItem=Item))
-    return servers, opened
+    return servers
 
 
-def test_launch_and_quit_cleanup(environment, tmp_path):
-    servers, opened = environment
-    launcher.launch(lambda: object(), 8123, tmp_path, icon_image=object(), **MENU)
-    assert servers[0].calls == ["start", "stop"]
-    assert opened == ["http://127.0.0.1:8123/"]
+def launch(tmp_path, shell, **more):
+    launcher.launch(lambda: object(), 8123, tmp_path, shell=shell, open_path="/", **more)
+
+
+def test_the_window_opens_on_the_app_only_after_it_answers(environment, tmp_path, monkeypatch):
+    order = []
+    shell = FakeShell()
+    monkeypatch.setattr(launcher, "wait_ready", lambda *args, **kwargs: order.append("ready") or True)
+    real = shell.show_app
+    shell.show_app = lambda url: (order.append("window"), real(url))
+    launch(tmp_path, shell)
+    assert order == ["ready", "window"]
+    assert environment[0].calls == ["start", "stop"]
+    assert ("show_app", "http://127.0.0.1:8123/") in shell.calls and ("state", "live") in shell.calls
     lock = InstanceLock(tmp_path)
     try:
         assert lock.acquire()
@@ -221,96 +240,99 @@ def test_launch_and_quit_cleanup(environment, tmp_path):
         lock.release()
 
 
-def test_second_launch_only_opens_browser(environment, tmp_path):
-    servers, opened = environment
+def test_a_second_open_asks_the_first_to_show_its_window_and_starts_nothing(environment, tmp_path):
+    shown, quit_by = [], []
+    control = launcher.ControlServer(lambda: "install-token", lambda: shown.append(True), lambda: quit_by.append(True))
     lock = InstanceLock(tmp_path)
     try:
         assert lock.acquire()
-        lock.publish(8123, "/healthz")
-        launcher.launch(lambda: object(), 9000, tmp_path, **MENU)
-        assert not servers
-        assert opened == ["http://127.0.0.1:8123/"]
+        lock.publish(8123, "/healthz", control.start())
+        launch(tmp_path, FakeShell(), token=lambda: "install-token")
+        assert shown == [True] and not environment
+        with pytest.raises(RuntimeError, match="did not show"):
+            launch(tmp_path, FakeShell(), token=lambda: "wrong")
+        assert shown == [True] and quit_by == []
+        assert launcher.ask_to_show(lock.control_port(), "install-token", what="quit") and quit_by == [True]
+        assert not launcher.ask_to_show(lock.control_port(), "wrong", what="quit") and quit_by == [True]
     finally:
+        control.stop()
         lock.release()
 
 
-def test_second_launch_not_ready(environment, tmp_path, monkeypatch):
+def test_a_second_open_of_an_instance_that_is_not_ready_fails(environment, tmp_path, monkeypatch):
     monkeypatch.setattr(launcher, "wait_ready", lambda *args, **kwargs: False)
     lock = InstanceLock(tmp_path)
     try:
         assert lock.acquire()
         with pytest.raises(RuntimeError, match="existing instance"):
-            launcher.launch(lambda: object(), 8123, tmp_path, **MENU)
+            launch(tmp_path, FakeShell())
     finally:
         lock.release()
 
 
-def test_restart_rechecks_predicate_and_starts_only_after_stop(environment, tmp_path, monkeypatch):
-    acknowledgments = []
-
-    class RestartIcon(Icon):
-        def run(self, setup=None):
-            restart = self.menu[1]
-            assert restart.options["enabled"](restart)
-            restart.action(self, restart)
-            self.menu[0].action(self, self.menu[0])
-            self.menu[-1].action(self, self.menu[-1])
-
-    monkeypatch.setitem(
-        sys.modules, "pystray", SimpleNamespace(Icon=RestartIcon, Menu=lambda *items: items, MenuItem=Item)
-    )
-    launcher.launch(
-        lambda: object(),
-        8123,
-        tmp_path,
-        restart_waiting=lambda: True,
-        restarted=lambda: acknowledgments.append(True),
-        icon_image=object(),
-        **MENU,
-    )
-    assert environment[0][0].calls == ["start", "stop", "start", "stop"]
-    assert acknowledgments == [True]
-    assert len(environment[1]) == 2
+def test_is_running_only_looks(tmp_path):
+    assert not launcher.is_running(tmp_path)
+    lock = InstanceLock(tmp_path)
+    try:
+        assert lock.acquire()
+        assert launcher.is_running(tmp_path)
+    finally:
+        lock.release()
+    assert not launcher.is_running(tmp_path) and InstanceLock(tmp_path).acquire()
 
 
-def test_restart_disabled_callback_cannot_force_restart(environment, tmp_path, monkeypatch):
-    class DisabledIcon(Icon):
-        def run(self, setup=None):
-            assert not self.menu[1].options["enabled"](self.menu[1])
-            self.menu[1].action(self, self.menu[1])
+def test_restart_runs_only_when_the_app_asked_and_shows_the_new_sign_in(environment, tmp_path):
+    acknowledged = []
 
-    monkeypatch.setitem(
-        sys.modules, "pystray", SimpleNamespace(Icon=DisabledIcon, Menu=lambda *items: items, MenuItem=Item)
-    )
-    launcher.launch(lambda: object(), 8123, tmp_path, icon_image=object(), **MENU)
-    assert environment[0][0].calls == ["start", "stop"]
+    def restart(shell):
+        assert shell.restart_enabled()
+        shell.actions["restart"]()
+
+    shell = FakeShell(restart)
+    launch(tmp_path, shell, restart_waiting=lambda: True, restarted=lambda: acknowledged.append(True))
+    assert environment[0].calls == ["start", "stop", "start", "stop"]
+    assert acknowledged == [True]
+    assert [c for c in shell.calls if c[0] == "show_app"] == [("show_app", "http://127.0.0.1:8123/")] * 2
+    assert ("state", "restarting") in shell.calls
+
+
+def test_restart_when_nothing_is_waiting_does_nothing(environment, tmp_path):
+    def restart(shell):
+        assert not shell.restart_enabled()
+        shell.actions["restart"]()
+
+    launch(tmp_path, FakeShell(restart))
+    assert environment[0].calls == ["start", "stop"]
+
+
+def test_a_restart_that_fails_ends_the_run_with_a_reason(environment, tmp_path, monkeypatch):
+    answers = iter([True, False])
+    monkeypatch.setattr(launcher, "wait_ready", lambda *args, **kwargs: next(answers))
+    shell = FakeShell(lambda s: s.actions["restart"]())
+    with pytest.raises(RuntimeError, match="could not restart"):
+        launch(tmp_path, shell, restart_waiting=lambda: True)
+    assert ("state", "failed") in shell.calls
+
+
+def test_the_app_deleting_its_workspace_ends_the_loop_as_quit_would(environment, tmp_path):
+    done = threading.Event()
+    done.set()
+    shell = FakeShell()
+    shell.step = lambda n: shell.calls.append(("step", n))
+    launch(tmp_path, shell, quit_requested=done)
+    assert shell.quit_event.is_set() and environment[0].calls == ["start", "stop"]
 
 
 def test_startup_failure_releases_lock(environment, tmp_path, monkeypatch):
     monkeypatch.setattr(launcher, "wait_ready", lambda *args, **kwargs: False)
     with pytest.raises(RuntimeError, match="failed readiness"):
-        launcher.launch(lambda: object(), 8123, tmp_path, icon_image=object(), **MENU)
-    assert environment[0][0].calls == ["start", "stop"]
+        launch(tmp_path, FakeShell())
+    assert environment[0].calls == ["start", "stop"]
     lock = InstanceLock(tmp_path)
     try:
         assert lock.acquire()
     finally:
         lock.release()
-
-
-def test_launch_requires_main_thread(environment, tmp_path):
-    errors = []
-
-    def work():
-        try:
-            launcher.launch(lambda: object(), 8123, tmp_path, **MENU)
-        except RuntimeError as error:
-            errors.append(str(error))
-
-    thread = threading.Thread(target=work)
-    thread.start()
-    thread.join()
-    assert errors == ["The tray launcher must run on the main thread"]
 
 
 @pytest.mark.parametrize("port", [0, -1, 65536])
@@ -406,102 +428,34 @@ def test_local_server_start_uses_one_factory_worker(monkeypatch):
     controller.stop()
 
 
-def test_open_path_carries_base_path_and_token(environment, tmp_path):
-    servers, opened = environment
-    options = dict(MENU, open_path="/cockpit/?token=abc")
-    launcher.launch(lambda: object(), 8123, tmp_path, icon_image=object(), **options)
-    assert opened == ["http://127.0.0.1:8123/cockpit/?token=abc"]
-
-
-def test_second_launch_opens_the_same_path_on_the_owners_port(environment, tmp_path):
-    servers, opened = environment
-    lock = InstanceLock(tmp_path)
-    try:
-        assert lock.acquire()
-        lock.publish(8123, "/healthz")
-        launcher.launch(lambda: object(), 9000, tmp_path, **dict(MENU, open_path="/cockpit/?token=abc"))
-        assert opened == ["http://127.0.0.1:8123/cockpit/?token=abc"]
-    finally:
-        lock.release()
-
-
-@pytest.mark.parametrize("change", [{"open_path": "cockpit/"}, {"labels": {"open": "Open"}}])
-def test_launch_refuses_bad_menu_options(tmp_path, change):
-    with pytest.raises(ValueError):
-        launcher.launch(lambda: object(), 8123, tmp_path, **dict(MENU, **change))
-
-
-def test_the_app_asking_for_a_restart_runs_it_as_the_menu_would(environment, tmp_path, monkeypatch):
-    asked = threading.Event()
-    asked.set()
-    icons = []
-
-    class SetupIcon(Icon):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.done = threading.Event()
-            icons.append(self)
-
-        def run(self, setup=None):
-            worker = threading.Thread(target=setup, args=(self,))
-            worker.start()
-            assert self.done.wait(10)
-            worker.join()
-
-        def stop(self):
-            self.done.set()
-
-    monkeypatch.setitem(sys.modules, "pystray", SimpleNamespace(Icon=SetupIcon, Menu=lambda *i: i, MenuItem=Item))
-    # The app's own Restart ends the run once the server is up again, standing in for the person's Quit.
+def test_the_window_opens_on_the_base_path_and_the_current_sign_in(environment, tmp_path):
+    answers = iter(["/a/?token=one", "/a/?token=two"])
+    shell = FakeShell(lambda s: s.actions["restart"]())
     launcher.launch(
         lambda: object(),
         8123,
         tmp_path,
+        shell=shell,
+        open_path=lambda: next(answers),
         restart_waiting=lambda: True,
-        restarted=lambda: icons[0].menu[-1].action(icons[0], None) or None,
-        restart_requested=asked,
-        icon_image=object(),
-        **MENU,
     )
-    assert environment[0][0].calls == ["start", "stop", "start", "stop"]
-    assert not asked.is_set()
+    assert [c[1] for c in shell.calls if c[0] == "show_app"] == [
+        "http://127.0.0.1:8123/a/?token=one",
+        "http://127.0.0.1:8123/a/?token=two",
+    ]
 
 
-def test_a_function_for_the_open_path_is_asked_each_time_the_browser_opens(environment, tmp_path):
-    servers, opened = environment
-    answers = iter(["/a/?token=one", "/a/?token=two"])
-    launcher.launch(
-        lambda: object(), 8123, tmp_path, icon_image=object(), **dict(MENU, open_path=lambda: next(answers))
-    )
-    assert opened == ["http://127.0.0.1:8123/a/?token=one"]
-    lock = InstanceLock(tmp_path)
-    try:
-        assert lock.acquire()
-        lock.publish(8123, "/healthz")
-        launcher.launch(lambda: object(), 9000, tmp_path, **dict(MENU, open_path=lambda: next(answers)))
-    finally:
-        lock.release()
-    assert opened[-1] == "http://127.0.0.1:8123/a/?token=two"
+def test_launch_refuses_a_path_that_is_not_local(tmp_path):
+    with pytest.raises(ValueError):
+        launcher.launch(lambda: object(), 8123, tmp_path, shell=FakeShell(), open_path="cockpit/")
 
 
-def test_the_app_asking_to_quit_ends_the_loop_as_quit_would(environment, tmp_path, monkeypatch):
-    finished = threading.Event()
-    finished.set()
-
-    class SetupIcon(Icon):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.done = threading.Event()
-
-        def run(self, setup=None):
-            worker = threading.Thread(target=setup, args=(self,))
-            worker.start()
-            assert self.done.wait(10)
-            worker.join()
-
-        def stop(self):
-            self.done.set()
-
-    monkeypatch.setitem(sys.modules, "pystray", SimpleNamespace(Icon=SetupIcon, Menu=lambda *i: i, MenuItem=Item))
-    launcher.launch(lambda: object(), 8123, tmp_path, quit_requested=finished, icon_image=object(), **MENU)
-    assert environment[0][0].calls == ["start", "stop"]
+def test_the_app_asking_for_a_restart_runs_it_as_the_menu_would(environment, tmp_path):
+    asked = threading.Event()
+    asked.set()
+    shell = FakeShell()
+    shell.quit_event.wait = lambda timeout=None: shell.quit() or True  # the loop's first pause ends it
+    shell.step = lambda n: shell.calls.append(("step", n))
+    launch(tmp_path, shell, restart_waiting=lambda: True, restart_requested=asked)
+    assert environment[0].calls == ["start", "stop", "start", "stop"]
+    assert not asked.is_set() and ("state", "restart") in shell.calls

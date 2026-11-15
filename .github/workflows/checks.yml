@@ -27,7 +27,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: uv sync
+      - run: uv sync --extra desktop
       - name: Lint
         run: uv run ruff check .
       - name: Format
@@ -48,7 +48,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.13"
-      - run: uv sync
+      - run: uv sync --extra desktop
       - name: Tests, 40 days on
         env:
           TEST_CLOCK_DAYS_AHEAD: "40"

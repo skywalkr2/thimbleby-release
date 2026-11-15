@@ -164,6 +164,24 @@ jobs:
         shell: bash
         run: python deploy/desktop/build_support/smoke_frozen.py "${{ matrix.frozen }}"
 
+      - name: Open the frozen app in the desktop session, keep it a minute, and take pictures
+        # The app as a person opens it: `open` on the Mac (under Apple's main-thread checker, set to stop the app on any
+        # report) and Start-Process on Windows. It must answer, stay running for a minute, and exit when quit through the
+        # menu's own path. The pictures are kept as a download of the run.
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then APP="$PWD/dist/Thimbleby.app"; else APP="$(cygpath -w "$PWD/dist/Thimbleby/Thimbleby.exe")"; fi
+          python deploy/desktop/build_support/session_check.py "$APP" "$RUNNER_TEMP/session-pictures"
+
+      - name: Keep the pictures of the app's window and menu
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Thimbleby-window-pictures-${{ matrix.target }}
+          path: ${{ runner.temp }}/session-pictures
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Create the disk image
         if: runner.os == 'macOS'
         run: python deploy/desktop/build_support/release_tools.py dmg

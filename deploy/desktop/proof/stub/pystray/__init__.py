@@ -5,11 +5,13 @@ import threading
 
 
 class MenuItem:
-    def __init__(self, text, action, enabled=True, default=False):
-        self.text, self.action, self.enabled, self.default = text, action, enabled, default
+    def __init__(self, text, action, enabled=True, default=False, checked=None):
+        self.text, self.action, self.enabled, self.default, self.checked = text, action, enabled, default, checked
 
 
 class Menu:
+    SEPARATOR = object()
+
     def __init__(self, *items):
         self.items = items
 
@@ -22,6 +24,9 @@ class Icon:
         if setup:
             threading.Thread(target=setup, args=(self,), daemon=True).start()
         self._done.wait()
+
+    def run_detached(self, setup=None):
+        self.visible = True
 
     def stop(self):
         self._done.set()

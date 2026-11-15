@@ -77,7 +77,7 @@ made-up ships). A missing folder, or missing screens, fails the build.
 ## Proving the frozen start on Linux
 
 The same freeze code runs on Linux with `build_support/thimbleby_linux.spec` (not shipped), on a computer with no display. The
-tray needs a display, so the proof freezes with a stand-in `pystray` module (`deploy/desktop/proof/stub/`) put first on `PYTHONPATH` (the names the launcher
+window and tray need a display, so the proof freezes with stand-in `webview` and `pystray` modules (`deploy/desktop/proof/stub/`) put first on `PYTHONPATH` (the names the launcher
 uses; the icon waits until stopped). Everything else is the app's own:
 
 ```sh
@@ -89,15 +89,32 @@ APP_VERSION=0.1.0 PYTHONPATH=deploy/desktop/proof/stub /tmp/try/venv/bin/python 
 /tmp/try/venv/bin/python deploy/desktop/build_support/smoke_frozen.py /tmp/try/dist/Thimbleby/Thimbleby
 ```
 
+## The window, the menu-bar item and the check in a desktop session
+
+The app opens in its own window (pywebview: WebKit on the Mac, WebView2 on Windows; `engine/appwindow.py`, the real classes in
+`engine/appwindow_backends.py`). Mac: one loop, the window's, on the main thread, and the menu-bar item is a native status item
+made on that thread through PyObjC (pystray's Mac backend builds its menu once, draws no template picture and touches AppKit
+from any caller's thread). Windows: pystray's tray in its own thread. Every window or item call goes through `MainThread`.
+The icon pictures are drawn when the app starts from the brand's SVG (`web/src/assets/brand/`, bundled) by
+`engine/brandmark.py`; nothing about the shape is in code. Not in the menu yet: "Check for a new version" (S-0152) and
+"Hand something in...".
+
+After the smoke start, the workflow runs `build_support/session_check.py` on each runner: it opens the app as a person does
+(`open` on the Mac under Apple's main-thread checker with `MTC_CRASH_ON_REPORT=1`; `Start-Process` on Windows), waits for it to
+answer, takes `window.png` (and, on the Mac when the session lets the script click the item, `menu-open.png`), checks the app
+is still running after a minute and that no crash report was written, then quits it through the menu's code path (the
+loopback quit) and checks that it exits. The pictures are the run's `Thimbleby-window-pictures-<target>` downloads. The Linux
+proof's `deploy/desktop/proof/stub/` also stands in for `webview`.
+
 ## Not done here
 
 - **The real tray and the installers on macOS and Windows** run only in the workflow; the first run is the first proof of
   them (batch TB3 adds the browser test of a fresh install from the built app).
-- **Icons and the app's mark** (S-0154): none yet, so the app and installer use the tool's default icon, and the tray item a
-  drawn placeholder.
+- **Icons and the app's mark** (S-0154): the menu-bar and tray pictures come from the brand SVG; the app's own icon and the
+  installer's pictures are still the tool's default (batch I1b).
 - **Signing and notarizing** (TB4).
 - **The identifiers to confirm before an installer ships** (they are permanent): bundle id `app.thimbleby.desktop`
   (`thimbleby_macos.spec`) and Windows AppId `{8B79A062-067C-46D5-94D7-A27CBAA00C33}` (`windows.iss`).
 - **The numeric installer version** uses the three release numbers; prerelease and post-release suffixes stay in the file names
   only. Decide a monotonic build number before relying on automatic upgrades between such builds.
-- **Updating, the starting window and the can't-start messages** of the installers.
+- **Updating** and the update, failed-update and earlier-workspace messages of the starting window.

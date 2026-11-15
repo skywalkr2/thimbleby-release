@@ -19,8 +19,8 @@ confirm the first open:
 | `Thimbleby-<version>-macos-x86_64.dmg` | a Mac with an Intel chip, macOS 15 or later |
 | `Thimbleby-<version>-windows-x64-setup.exe` | Windows, installed for you alone, with no administrator password |
 
-Each comes with `SHA256SUMS.txt`. Open the app: it starts in the background (a tray or menu-bar item with Open, Restart and
-Quit), makes your workspace in the system's app-data folder the first time, and opens it in your browser. No Python, uv or
+Each comes with `SHA256SUMS.txt`. Open the app: it opens in its own window (no browser), with a menu-bar or tray item to open,
+restart and quit it. Closing the window leaves it running; the first time it makes your workspace in the system's app-data folder. No Python, uv or
 terminal is needed. To remove it, delete the app (Mac) or use Windows' app list; your workspace stays in the app-data folder
 (`~/Library/Application Support/thimbleby` or `%LOCALAPPDATA%\thimbleby`) until you delete it inside the app. How they are
 built is in `deploy/desktop/README.md`. The steps below are for the command-line install.

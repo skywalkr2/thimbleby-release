@@ -76,7 +76,11 @@ def test_opened_with_nothing_typed_the_frozen_entry_starts_the_app_and_with_argu
     for name, module in (("engine", engine), ("engine.cli", cli), ("engine.desktop", desktop)):
         monkeypatch.setitem(sys.modules, name, module)
     monkeypatch.setattr("multiprocessing.freeze_support", lambda: calls.append("freeze_support"))
-    for argv, code, ran in ((["Thimbleby"], 0, "desktop"), (["Thimbleby", "serve", "-w", "x"], 37, "command")):
+    for argv, code, ran in (
+        (["Thimbleby"], 0, "desktop"),
+        (["Thimbleby", "--at-login"], 0, "desktop"),
+        (["Thimbleby", "serve", "-w", "x"], 37, "command"),
+    ):
         calls.clear()
         monkeypatch.setattr(sys, "argv", argv)
         with pytest.raises(SystemExit) as result:
@@ -147,7 +151,7 @@ def test_specs_preserve_resources_and_disable_console(monkeypatch, filename, sys
 def test_the_freeze_looks_for_the_thimbleby_command_and_collects_what_is_loaded_by_name():
     text = (BUILD / "freeze_common.py").read_text()
     assert 'name="thimbleby"' in text and 'name="cockpit"' not in text
-    for package in ("api", "plugins.kit", "uvicorn", "pystray"):
+    for package in ("api", "plugins.kit", "uvicorn", "pystray", "webview"):
         assert f'"{package}"' in text
     assert "plugins.example" not in text
 
@@ -219,7 +223,12 @@ def test_each_lock_is_complete_and_hashed(target):
         assert "--hash=sha256:" in block, block.splitlines()[0]
     names = {b.split("==")[0].lower() for b in pinned}
     # The app's own libraries, the tray, the build backend the source install needs, and the freezer, at its pin.
-    assert {"fastapi", "uvicorn", "pystray", "pillow", "hatchling", "pyinstaller"} <= names
+    assert {"fastapi", "uvicorn", "pillow", "hatchling", "pyinstaller"} <= names
+    # The window is the system's web view on the Mac and Windows; the Mac's menu-bar item is made with PyObjC and the
+    # Windows tray is pystray (a Linux lock only tries the frozen start, with a stand-in window).
+    assert ("pywebview" in names) == (target != "linux-x64")
+    assert ("pystray" in names) == (not target.startswith("macos"))
+    assert ("pyobjc-framework-cocoa" in names) == target.startswith("macos")
     assert "pyinstaller==6.22.3" in text and "thimbleby" not in names
     assert (target.startswith("windows")) == ("pywin32-ctypes" in names)
     assert (target.startswith("macos")) == ("macholib" in names)
@@ -308,3 +317,16 @@ def test_compiler_download_has_an_exact_version_and_hash():
     assert tool["version"] == "6.4.3"
     assert tool["url"].endswith("/innosetup-6.4.3.exe")
     assert re.fullmatch(r"[a-f0-9]{64}", tool["sha256"])
+
+
+def test_each_runner_opens_the_frozen_app_in_its_desktop_session_and_keeps_the_pictures():
+    """A start that only proves the server runs let a crash in the menu-bar item through: the check opens the app as a
+    person does, and the Mac run is under Apple's main-thread checker set to stop on any report."""
+    # The release repository's copy has the same jobs (tests/private/test_export.py), so this file is enough.
+    for path in (REPO / ".github" / "workflows" / "release.yml",):
+        steps = yaml.safe_load(path.read_text())["jobs"]["desktop"]["steps"]
+        assert any("session_check.py" in step.get("run", "") for step in steps), path
+        assert any("window-pictures" in str(step.get("with", {}).get("name", "")) for step in steps), path
+    script = (BUILD / "session_check.py").read_text()
+    assert "MTC_CRASH_ON_REPORT" in script and "libMainThreadChecker.dylib" in script and "Start-Process" in script
+    assert '"open"' in script and "screencapture" in script and "System.Drawing" in script

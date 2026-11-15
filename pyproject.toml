@@ -21,10 +21,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# What the installed desktop app adds: the tray or menu-bar item (`engine/launcher.py`). The command-line install
-# doesn't need them.
+# What the installed desktop app adds: its own window (the system's web view) and the menu-bar or tray item
+# (`engine/appwindow_backends.py`). The Mac's item is made with PyObjC, which the window already needs; the tray is
+# pystray (Windows). The command-line install doesn't need them.
 desktop = [
-    "pystray>=0.19",
+    "pywebview>=6; sys_platform != 'linux'",
+    "pyobjc-framework-Cocoa>=10; sys_platform == 'darwin'",
+    "pystray>=0.19; sys_platform != 'darwin'",
     "pillow>=10",
 ]
 

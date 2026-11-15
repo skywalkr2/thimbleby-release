@@ -15,6 +15,7 @@ import { Button } from "./ui/Button";
 import { ScreenBoundary } from "./ui/PartBoundary";
 import { initAppearance } from "./lib/theme";
 import { installInputMode } from "./lib/input-mode";
+import { installExternalLinks } from "./lib/external-links";
 import { setClockZone, setTimePrefs } from "./lib/dates";
 import { useSides } from "./lib/sides";
 import { setTitleWords } from "./lib/title-dates";
@@ -65,6 +66,7 @@ function start(rc: S["RuntimeConfig"]) {
   setRequestTimeouts(rc.request_timeout_seconds, rc.long_request_timeout_seconds);
   initAppearance(rc);
   installInputMode();
+  installExternalLinks();
   // The phone layout applies from the first paint, not after the first render.
   if (typeof window.matchMedia === "function") {
     document.documentElement.toggleAttribute("data-narrow", window.matchMedia(`(max-width: ${rc.narrow_below_px - 1}px)`).matches);

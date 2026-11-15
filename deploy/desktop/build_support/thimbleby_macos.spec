@@ -47,5 +47,7 @@ app = BUNDLE(
         "CFBundleGetInfoString": "Thimbleby " + inputs["version"],
         "LSMinimumSystemVersion": "15.0",
         "NSHighResolutionCapable": True,
+        # The window shows the app served on this computer's own address.
+        "NSAppTransportSecurity": {"NSAllowsLocalNetworking": True},
     },
 )
