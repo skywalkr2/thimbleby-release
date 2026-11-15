@@ -62,8 +62,20 @@ def main(executable: str, port: int = 8791) -> None:
             raise SystemExit(f"The screens were not served to the sign-in link (status {status})")
         second = subprocess.run([executable], env=env, timeout=120, capture_output=True, check=False)
         if second.returncode != 0 or app.poll() is not None:
-            raise SystemExit(f"A second start did not just bring the first forward (exit {second.returncode})")
+            said = (second.stdout + second.stderr).decode(errors="replace")[-3000:]
+            raise SystemExit(
+                f"A second start did not just bring the first forward (exit {second.returncode}, first app "
+                f"{'running' if app.poll() is None else f'ended with {app.poll()}'}).\n{said}"
+            )
         print(f"ok: workspace {workspace}, served on {base}")
+    except BaseException:
+        # Whatever failed, show what the app itself said, so a red run names its cause.
+        print(f"--- the app's output ({log}) ---")
+        print(log.read_text(errors="replace")[-4000:] if log.exists() else "(none)")
+        problem = logs / "desktop.log"
+        print(f"--- {problem} ---")
+        print(problem.read_text(errors="replace")[-4000:] if problem.exists() else "(none)")
+        raise
     finally:
         if app.poll() is None:
             app.terminate()
