@@ -21,6 +21,11 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 
+def note(words: str) -> None:
+    """One line on the app's own error stream, which nobody sees but the build machines' start check prints."""
+    print(f"launcher[{os.getpid()}]: {words}", file=sys.stderr, flush=True)
+
+
 class InstanceLock:
     """Hold an OS lock on a persistent file; process exit releases ownership.
 
@@ -385,13 +390,16 @@ def launch(
     health = f"http://127.0.0.1:{port}{readiness_path}"
     lock = InstanceLock(data_folder)
     if not lock.acquire():
+        note(f"the lock at {lock.path} is held; asking the running copy to show its window")
         show_running(data_folder, token(), timeout=startup_timeout)
         return
+    note(f"took the lock at {lock.path}")
     controller = LocalServer(app_factory, port)
     control = ControlServer(token, shell.bring_forward, shell.quit_from_menu)
     try:
         controller.start()
         lock.publish(port, readiness_path, control.start())
+        note(f"published to {lock.details} (there: {lock.details.exists()})")
         if not wait_ready(health, timeout=startup_timeout, alive=controller.alive):
             raise RuntimeError("The local server failed readiness") from controller.error
         shell.step(2)

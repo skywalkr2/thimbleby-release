@@ -150,7 +150,9 @@ def already_running(root: Path) -> bool:
 
     folder = private_dir(root)
     if not launcher.is_running(folder):
+        launcher.note(f"no copy holds {folder}; starting")
         return False
+    launcher.note(f"another copy holds {folder}")
     launcher.show_running(folder, resolve(root).install_token())
     return True
 
