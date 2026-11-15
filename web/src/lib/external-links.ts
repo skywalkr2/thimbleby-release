@@ -3,9 +3,31 @@
 // such function and links behave as usual.
 
 type Bridge = { open_external?: (url: string) => unknown; page_drawn?: () => unknown };
+type Handler = { postMessage: (body: string) => void };
 
 function bridge(): Bridge | undefined {
   return (window as unknown as { pywebview?: { api?: Bridge } }).pywebview?.api;
+}
+
+/** The Mac window's own message channel. The window library builds its functions on the page with `new Function`, which
+ * the app's script policy refuses, so on the Mac they never appear; a message on this channel reaches the same functions
+ * with no script built at all. Absent in a browser. */
+function channel(): Handler | undefined {
+  return (window as unknown as { webkit?: { messageHandlers?: { jsBridge?: Handler } } }).webkit?.messageHandlers?.jsBridge;
+}
+
+/** Ask the window to run one of the app's page functions: through the library's function when it is there, else through
+ * the Mac's channel. True when the window was asked; false in a browser tab. */
+function ask(name: keyof Bridge, ...args: string[]): boolean {
+  const own = bridge()?.[name] as ((...a: string[]) => unknown) | undefined;
+  if (own) {
+    void own(...args);
+    return true;
+  }
+  const mac = channel();
+  if (!mac) return false;
+  mac.postMessage(JSON.stringify({ funcName: name, params: args, id: Math.random().toString().slice(2) }));
+  return true;
 }
 
 function outside(href: string): string | null {
@@ -21,23 +43,18 @@ function outside(href: string): string | null {
 /** Hand outside links (clicks, and `window.open`) to the window's host. Returns what undoes it. */
 export function installExternalLinks(): () => void {
   const onClick = (event: MouseEvent) => {
-    const open = bridge()?.open_external;
-    if (!open || event.defaultPrevented) return;
+    if (event.defaultPrevented || (!bridge()?.open_external && !channel())) return;
     const link = (event.target as Element | null)?.closest?.("a[href]");
     const href = link?.getAttribute("href");
     const address = href ? outside(href) : null;
     if (!address) return;
     event.preventDefault();
-    void open(address);
+    ask("open_external", address);
   };
   const original = window.open;
   window.open = (url?: string | URL, ...rest: unknown[]) => {
-    const open = bridge()?.open_external;
     const address = url ? outside(String(url)) : null;
-    if (open && address) {
-      void open(address);
-      return null;
-    }
+    if (address && ask("open_external", address)) return null;
     return original.call(window, url, ...(rest as [string?, string?]));
   };
   document.addEventListener("click", onClick, true);
@@ -54,11 +71,7 @@ export function installExternalLinks(): () => void {
 export function reportDrawn(lookFor = 75, every = 200): void {
   let told = false;
   const tell = () => {
-    const done = bridge()?.page_drawn;
-    if (!told && done) {
-      told = true;
-      void done();
-    }
+    if (!told) told = ask("page_drawn");
     return told;
   };
   requestAnimationFrame(() =>

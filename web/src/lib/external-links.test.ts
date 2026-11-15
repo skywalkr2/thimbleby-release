@@ -70,3 +70,20 @@ test("the page finds a bridge that announced itself before the page listened, an
   expect(told).toEqual(["drawn"]);
   delete w.pywebview;
 });
+
+test("in the Mac window, where the library's functions never appear, the page speaks on the window's own channel", async () => {
+  const { installExternalLinks, reportDrawn } = await import("./external-links");
+  const OUT = "http://192.0.2.1/page"; // a documentation address, as in the first test
+  const posted: unknown[] = [];
+  const w = window as unknown as { pywebview?: unknown; webkit?: unknown };
+  delete w.pywebview;
+  w.webkit = { messageHandlers: { jsBridge: { postMessage: (body: string) => posted.push(JSON.parse(body)) } } };
+  const undo = installExternalLinks();
+  reportDrawn(5, 10);
+  await new Promise((r) => setTimeout(r, 50));
+  window.open(OUT);
+  undo();
+  delete w.webkit;
+  expect(posted.map((p) => (p as { funcName: string; params: string[] }).funcName)).toEqual(["page_drawn", "open_external"]);
+  expect((posted[1] as { params: string[] }).params).toEqual([OUT]);
+});
