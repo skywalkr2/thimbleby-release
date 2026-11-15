@@ -15,7 +15,8 @@ from __future__ import annotations
 import contextlib
 import io
 import platform
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -166,6 +167,29 @@ class MacStatusItem:
             self.item = None
 
 
+def _run_line(act: Callable[[str], None], key: str, icon: Any, item: Any) -> None:
+    act(key)
+
+
+def _is_checked(value: bool, item: Any) -> bool:
+    return value
+
+
+def tray_items(pystray: Any, lines: list[MenuLine], act: Callable[[str], None]) -> Iterator[Any]:
+    """The tray menu's items. pystray counts every argument of an action, defaults included, and refuses more than it
+    passes (two for an action, one for a check), so the line's own values are bound with `partial`, which it accepts."""
+    for line in lines:
+        if line.separator_before:
+            yield pystray.Menu.SEPARATOR
+        yield pystray.MenuItem(
+            line.text,
+            partial(_run_line, act, line.key),
+            enabled=line.enabled,
+            checked=None if line.checked is None else partial(_is_checked, line.checked),
+            default=line.default,
+        )
+
+
 class PystrayTray:
     """The Windows tray item (and the tray where a desktop has one), drawn in full colour."""
 
@@ -176,17 +200,7 @@ class PystrayTray:
         import pystray
 
         def items() -> Any:
-            for line in lines():
-                if line.separator_before:
-                    yield pystray.Menu.SEPARATOR
-                checked = None if line.checked is None else (lambda item, value=line.checked: value)
-                yield pystray.MenuItem(
-                    line.text,
-                    lambda icon, item, key=line.key: act(key),
-                    enabled=line.enabled,
-                    checked=checked,
-                    default=line.default,
-                )
+            yield from tray_items(pystray, lines(), act)
 
         picture = brandmark.render(brandmark.mark_svg(), TRAY_ICON_PIXELS, template=False)
         self.icon = pystray.Icon(title, picture, title, menu=pystray.Menu(items))

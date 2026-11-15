@@ -318,13 +318,18 @@ def is_running(data_folder: str | Path) -> bool:
 def show_running(data_folder: str | Path, token: str, *, timeout: float = 15) -> None:
     """A second open: wait for the running instance to answer, then ask it to bring its window forward."""
     lock = InstanceLock(data_folder)
+    seen: list[tuple[int, str] | None] = []
 
     def existing_ready(candidate_url: str, wait: float) -> bool:
         connection = lock.connection()
+        seen[:] = [connection]
         return connection is not None and readiness_probe(f"http://127.0.0.1:{connection[0]}{connection[1]}", wait)
 
-    if not wait_ready("http://127.0.0.1/", timeout=timeout, probe=existing_ready):
-        raise RuntimeError("The existing instance is not ready; check its status before trying again")
+    # Each check may take two seconds: a busy computer answers its own app slowly; half a second was too short.
+    if not wait_ready("http://127.0.0.1/", timeout=timeout, request_timeout=2, probe=existing_ready):
+        where = seen[0] if seen else None
+        said = "published no address" if where is None else f"did not answer at port {where[0]} ({where[1]})"
+        raise RuntimeError(f"The existing instance is not ready: it {said}")
     control = lock.control_port()
     if control is None or not ask_to_show(control, token):
         raise RuntimeError("The existing instance did not show its window")

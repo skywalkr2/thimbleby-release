@@ -4,6 +4,7 @@ test's thread, and every call the shell makes to the window or the item records 
 import contextlib
 import queue
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -244,3 +245,35 @@ def test_copy_text_uses_the_systems_clipboard_program(monkeypatch):
     appwindow.copy_text("hi", "darwin")
     appwindow.copy_text("hi", "win32")
     assert seen[0] == (["pbcopy"], b"hi") and seen[1][0] == ["clip"]
+
+
+def test_the_tray_menu_builds_with_the_tray_library_and_each_line_runs_its_own_action():
+    """pystray counts an action's arguments, defaults included; lambdas with bound defaults stopped the Windows tray."""
+    import importlib.util
+
+    found = importlib.util.find_spec("pystray")
+    if found is None or not found.submodule_search_locations:
+        pytest.skip("pystray is in the desktop extra")
+    # The library's menu classes alone: importing the package picks a desktop backend, which a test machine has none of.
+    spec = importlib.util.spec_from_file_location(
+        "pystray_menu_classes", Path(found.submodule_search_locations[0]) / "_base.py"
+    )
+    pystray = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pystray)
+    from engine.appwindow import MenuLine
+    from engine.appwindow_backends import tray_items
+
+    class Lib:  # the two names tray_items uses, from the real library
+        Menu = pystray.Menu
+        MenuItem = pystray.MenuItem
+
+    ran = []
+    lines = [
+        MenuLine(key="open", text="Open Thimbleby", default=True),
+        MenuLine(key="login", text="Start when I sign in", checked=True, separator_before=True),
+    ]
+    items = [i for i in tray_items(Lib, lines, ran.append) if i is not pystray.Menu.SEPARATOR]
+    assert [i.text for i in items] == ["Open Thimbleby", "Start when I sign in"]
+    for item in items:
+        item(None)  # pystray calls an item with the icon
+    assert ran == ["open", "login"] and items[1].checked is True
