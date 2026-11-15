@@ -474,3 +474,21 @@ def test_the_owner_publishes_beside_the_lock_and_another_open_reads_it_while_the
     assert other.connection() == (8765, "/api/health") and other.control_port() == 50123
     owner.release()
     assert other.connection() is None and other.control_port() is None
+
+
+def test_the_listener_for_a_second_open_starts_without_looking_up_the_computers_name(monkeypatch):
+    """The standard HTTP server looks up the computer's full name as it starts, which a Mac can take half a minute or
+    more to answer; the running app then published its address too late for a second open."""
+    import socket
+
+    from engine.launcher import ControlServer
+
+    def slow_lookup(*args):
+        raise AssertionError("the listener looked up the computer's name")
+
+    monkeypatch.setattr(socket, "getfqdn", slow_lookup)
+    control = ControlServer(lambda: "token", lambda: None)
+    try:
+        assert control.start() > 0
+    finally:
+        control.stop()

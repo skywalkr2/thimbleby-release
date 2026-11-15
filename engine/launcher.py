@@ -9,6 +9,7 @@ import hmac
 import json
 import os
 import socket
+import socketserver
 import sys
 import threading
 import time
@@ -251,6 +252,16 @@ class LocalServer:
         self.thread = self.server = self.socket = None
 
 
+class _LoopbackServer(ThreadingHTTPServer):
+    """The standard threading HTTP server, bound without looking up the computer's full name, which the standard one
+    does as it starts and a Mac can take half a minute or more to answer."""
+
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name, self.server_port = str(host), int(port)
+
+
 class ControlServer:
     """A loopback listener on its own port where a second open of the app asks this one to show its window.
 
@@ -286,7 +297,7 @@ class ControlServer:
             def log_message(self, *args: Any) -> None:
                 pass
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server = _LoopbackServer(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, name="show-window-listener", daemon=True)
         self.thread.start()
         return self.server.server_address[1]
