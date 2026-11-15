@@ -33,11 +33,13 @@ exe = EXE(
     target_arch=inputs["architecture"],
     codesign_identity=None,
     entitlements_file=None,
+    icon=inputs["icon"],
 )
 collection = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="Thimbleby")
 app = BUNDLE(
     collection,
     name="Thimbleby.app",
+    icon=inputs["icon"],
     bundle_identifier="app.thimbleby.desktop",
     info_plist={
         "CFBundleName": "Thimbleby",

@@ -25,6 +25,15 @@ def freeze_inputs(root: Path, expected_system: str) -> dict:
     distribution = entries[0].dist
     if distribution is None or Version(distribution.version) != Version(display):
         raise SystemExit("The installed package version must match the release tag")
+    sys.path.insert(0, str(root))
+    from engine import brandmark
+
+    icons = root / "build" / "icons"
+    icon = (
+        brandmark.write_icns(icons / "Thimbleby.icns")
+        if expected_system == "darwin"
+        else (brandmark.write_ico(icons / "Thimbleby.ico") if expected_system == "win32" else None)
+    )
     datas = list(bundled_data(root))
     for source, _ in datas:
         if not Path(source).is_dir() or not any(Path(source).rglob("*")):
@@ -45,4 +54,5 @@ def freeze_inputs(root: Path, expected_system: str) -> dict:
         "version": display,
         "numeric_version": numeric,
         "architecture": architecture,
+        "icon": str(icon) if icon else None,
     }

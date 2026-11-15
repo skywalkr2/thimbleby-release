@@ -209,6 +209,9 @@ class FakeShell:
 
     quit_from_menu = quit
 
+    def window_state(self):
+        return {"state": "live", "address": "http://127.0.0.1:1/", "drawn": True}
+
 
 @pytest.fixture
 def environment(monkeypatch):
@@ -490,5 +493,18 @@ def test_the_listener_for_a_second_open_starts_without_looking_up_the_computers_
     control = ControlServer(lambda: "token", lambda: None)
     try:
         assert control.start() > 0
+    finally:
+        control.stop()
+
+
+def test_the_state_answer_needs_the_install_token_and_reports_the_window():
+    """The runners' check reads it to fail on a blank window, so it is the window's own answer, and token-guarded."""
+    state = {"address": "http://127.0.0.1:1/", "drawn": True}
+    control = launcher.ControlServer(lambda: "install-token", lambda: None, on_state=lambda: state)
+    port = control.start()
+    try:
+        assert launcher.ask_state(port, "install-token") == state
+        assert launcher.ask_state(port, "wrong") is None
+        assert not launcher.ask_to_show(port, "install-token", what="state")  # a POST to it is refused
     finally:
         control.stop()

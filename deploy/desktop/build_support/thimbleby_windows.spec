@@ -31,5 +31,6 @@ exe = EXE(
     upx=False,
     console=False,
     contents_directory="_internal",
+    icon=inputs["icon"],
 )
 collection = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="Thimbleby")

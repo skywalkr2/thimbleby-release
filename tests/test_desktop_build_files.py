@@ -102,6 +102,7 @@ def test_specs_preserve_resources_and_disable_console(monkeypatch, filename, sys
             "architecture": "arm64",
             "version": "0.1.0",
             "numeric_version": "0.1.0",
+            "icon": "the-icon-file",
         }
 
     common.freeze_inputs = inputs
@@ -139,10 +140,12 @@ def test_specs_preserve_resources_and_disable_console(monkeypatch, filename, sys
     assert observed["exe"]["exclude_binaries"] is True
     assert observed["exe"]["upx"] is False
     assert observed["exe"]["name"] == "Thimbleby"
+    assert observed["exe"]["icon"] == "the-icon-file"
     if system == "darwin":
         assert observed["exe"]["target_arch"] == "arm64"
         assert observed["exe"]["codesign_identity"] is None
         assert observed["bundle"]["name"] == "Thimbleby.app"
+        assert observed["bundle"]["icon"] == "the-icon-file"
         assert observed["bundle"]["bundle_identifier"] == "app.thimbleby.desktop"
     else:
         assert observed["exe"]["contents_directory"] == "_internal"
@@ -330,3 +333,36 @@ def test_each_runner_opens_the_frozen_app_in_its_desktop_session_and_keeps_the_p
     script = (BUILD / "session_check.py").read_text()
     assert "MTC_CRASH_ON_REPORT" in script and "libMainThreadChecker.dylib" in script and "Start-Process" in script
     assert '"open"' in script and "screencapture" in script and "System.Drawing" in script
+
+
+def test_the_app_and_its_installer_carry_the_mark_as_their_icon(tmp_path):
+    """Without an icon file PyInstaller's own picture is the Dock, taskbar and title bar icon."""
+    from PIL import Image
+
+    from engine import brandmark
+
+    ico = brandmark.write_ico(tmp_path / "x.ico")
+    assert Image.open(ico).info["sizes"] >= {(16, 16), (32, 32), (256, 256)}
+    icns = brandmark.write_icns(tmp_path / "x.icns")
+    assert icns.read_bytes()[:4] == b"icns"
+    assert 'brandmark.write_icns(icons / "Thimbleby.icns")' in (BUILD / "freeze_common.py").read_text()
+    assert 'brandmark.write_ico(icons / "Thimbleby.ico")' in (BUILD / "freeze_common.py").read_text()
+    assert "SetupIconFile={#IconFile}" in (BUILD / "windows.iss").read_text()
+    # The release repository's copy has the same jobs (tests/private/test_export.py), so this file is enough.
+    for path in (REPO / ".github" / "workflows" / "release.yml",):
+        assert "/DIconFile=" in path.read_text() and "Thimbleby.ico" in path.read_text(), path
+
+
+def test_the_session_check_fails_on_a_page_that_has_not_drawn():
+    import session_check
+
+    blank = {"address": "http://127.0.0.1:1/", "drawn": False}
+    starting = {"address": "", "drawn": True}
+    live = {"address": "http://127.0.0.1:1/", "drawn": True}
+    assert not session_check.page_drawn(None) and not session_check.page_drawn(blank)
+    assert not session_check.page_drawn(starting) and session_check.page_drawn(live)
+    clock = iter(range(1000))
+    answers = iter([blank, blank, live])
+    assert session_check.wait_drawn(lambda: next(answers), 30, lambda: next(clock), lambda s: None) == live
+    clock = iter(range(1000))
+    assert session_check.wait_drawn(lambda: blank, 30, lambda: next(clock), lambda s: None) == blank

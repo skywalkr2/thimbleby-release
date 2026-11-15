@@ -174,3 +174,23 @@ def render(svg: str, size: int, *, template: bool) -> Any:
         source, layer_mask = paint(mask(shapes), parts[name].get("fill", "#000000"), shapes)
         canvas.paste(source, (0, 0), layer_mask)
     return canvas.resize((size, size), Image.LANCZOS)
+
+
+#: The sizes (in pixels) the Windows icon file carries, and the one the Mac's icon file is drawn from.
+ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
+ICNS_PIXELS = 1024
+
+
+def write_ico(target: Path, svg: str | None = None) -> Path:
+    """The Windows icon file: the full-colour mark at every size the system asks for."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    picture = render(svg or mark_svg(), max(ICO_SIZES), template=False)
+    picture.save(target, format="ICO", sizes=[(n, n) for n in ICO_SIZES])
+    return target
+
+
+def write_icns(target: Path, svg: str | None = None) -> Path:
+    """The Mac icon file, drawn from one large picture of the full-colour mark."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    render(svg or mark_svg(), ICNS_PIXELS, template=False).save(target, format="ICNS")
+    return target

@@ -1,7 +1,9 @@
 """Open the frozen app the way a person does, in the runner's desktop session, and check that it stays up.
 
 It opens the app (`open` on the Mac, `Start-Process` on Windows), waits for the app to answer, checks that it is still
-running a minute later, takes a picture of the screen with the window showing (and, on the Mac, with the menu-bar
+running a minute later, asks the app (over the control listener's `GET /state`, with the install token) for the
+window's address and whether the page has drawn, fails if it has not drawn within 30 seconds, takes a picture once it
+has, takes a picture of the screen with the window showing (and, on the Mac, with the menu-bar
 item's menu open, when the session lets the script click it), then quits it through the menu's own path (the loopback
 "quit" the app offers with its install token) and checks that it exits. On the Mac the app runs under Apple's
 main-thread checker, set to stop the app on any report; a crash report written during the run fails the check.
@@ -18,13 +20,16 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from engine.desktop import places
-from engine.launcher import InstanceLock, ask_to_show, wait_ready
+from engine.launcher import InstanceLock, ask_state, ask_to_show, wait_ready
 from engine.legacy_names import private_dir
 
 STAY_UP_SECONDS = 60
+DRAW_SECONDS = 30
+APP_ADDRESS = "http://127.0.0.1:"
 PROCESS_NAME = "Thimbleby"
 
 
@@ -49,6 +54,26 @@ def running_pids(system: str) -> list[int]:
         if command.strip().endswith(f"/MacOS/{PROCESS_NAME}"):
             pids.append(int(pid))
     return pids
+
+
+def page_drawn(state: dict | None) -> bool:
+    """Whether the app's window shows the app itself (an address on this computer) with something drawn on it."""
+    return bool(state) and str(state.get("address", "")).startswith(APP_ADDRESS) and state.get("drawn") is True
+
+
+def wait_drawn(
+    ask: Callable[[], dict | None],
+    seconds: float = DRAW_SECONDS,
+    clock: Callable[[], float] = time.monotonic,
+    wait: Callable[[float], None] = pause,
+) -> dict | None:
+    """Ask for the window's state until the page has drawn or the time is up; returns the last answer either way."""
+    deadline = clock() + seconds
+    state = ask()
+    while not page_drawn(state) and clock() < deadline:
+        wait(1)
+        state = ask()
+    return state
 
 
 def capture(system: str, target: Path) -> None:
@@ -115,7 +140,21 @@ def main(app: str, pictures_folder: str, port: int = 8792) -> None:
             problem = (logs / "desktop.log").read_text() if (logs / "desktop.log").exists() else "no log"
             raise SystemExit(f"The app did not answer in its desktop session.\n{problem}")
         print("answering")
-        pause(5)
+        token_file = private_dir(workspace) / "token"
+        lock = InstanceLock(private_dir(workspace))
+        for _ in range(30):
+            if lock.control_port() is not None and token_file.is_file():
+                break
+            pause(1)
+        control_port = lock.control_port()
+        if control_port is None or not token_file.is_file():
+            raise SystemExit("The app published no control address.")
+        token = token_file.read_text(encoding="utf-8").strip()
+        state = wait_drawn(lambda: ask_state(control_port, token))
+        print(f"window state: {state}")
+        capture(system, pictures / "drawn.png")
+        if not page_drawn(state):
+            raise SystemExit(f"The window had not drawn the app within {DRAW_SECONDS} seconds: {state}")
         capture(system, pictures / "window.png")
         if system == "Darwin" and not open_menu_on_mac(pictures):
             print("note: the session did not let the script open the menu; no menu picture")
@@ -130,9 +169,8 @@ def main(app: str, pictures_folder: str, port: int = 8792) -> None:
         if system == "Darwin" and (reports := crash_reports(started)):
             raise SystemExit(f"The app left a crash report: {[str(r) for r in reports]}")
         print(f"still running after {STAY_UP_SECONDS} seconds")
-        lock = InstanceLock(private_dir(workspace))
+        print(f"window state: {ask_state(control_port, token)}")
         connection_port = lock.control_port()
-        token = (private_dir(workspace) / "token").read_text(encoding="utf-8").strip()
         if connection_port is None or not ask_to_show(connection_port, token, what="quit"):
             raise SystemExit("The app did not take the quit by the menu's path.")
         for _ in range(60):

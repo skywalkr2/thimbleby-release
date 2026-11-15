@@ -15,27 +15,52 @@ from __future__ import annotations
 import contextlib
 import io
 import platform
+import queue
+import sys
+import threading
 from collections.abc import Callable, Iterator
 from functools import partial
 from pathlib import Path
 from typing import Any
 
 from engine import brandmark
-from engine.appwindow import AppShell, MenuLine
+from engine.appwindow import AppShell, MenuLine, fit_window
 
+#: The size the window prefers, its smallest size, and the share of a screen it may take (see `fit_window`).
 WINDOW_SIZE = (1280, 860)
 WINDOW_MINIMUM = (760, 560)
+WINDOW_SCREEN_SHARE = 0.9
+#: Whether the page in the window shows any text (the start page, the app or a message: a blank white page does not).
+DRAWN_SCRIPT = "document.readyState === 'complete' && !!document.body && document.body.innerText.trim().length > 0"
 #: The picture of the mark, in pixels: twice the menu bar's size on the Mac, the tray's size on Windows.
 MAC_ICON_PIXELS = 44
 TRAY_ICON_PIXELS = 64
 
 
+def primary_screen() -> tuple[int, int] | None:
+    """The size, in points, of the screen the window opens on; None when the system does not say."""
+    try:
+        import webview
+
+        screen = webview.screens[0]
+        return (int(screen.width), int(screen.height)) if screen.width > 0 and screen.height > 0 else None
+    except Exception:
+        return None
+
+
 class WebviewWindow:
-    """The window, drawn by the system's web view."""
+    """The window, drawn by the system's web view.
+
+    The web view's own calls (load a page, run a script, show) wait for the page or the window and, on the Mac, for a
+    reply that only the window loop's thread can deliver, so a call made on that thread never returns and the page
+    stays blank. Every such call is made from one worker thread, in order, never from the loop's thread."""
 
     def __init__(self, storage: Path | None = None):
         self.storage = storage
         self.window: Any = None
+        self.calls: queue.Queue[Callable[[], None]] = queue.Queue()
+        self.worker: threading.Thread | None = None
+        self.worker_lock = threading.Lock()
 
     def post(self, call: Callable[[], None]) -> None:
         if platform.system() == "Darwin":
@@ -45,17 +70,37 @@ class WebviewWindow:
         else:
             call()  # the Windows web view and tray take calls from any thread
 
+    def _later(self, call: Callable[[], None]) -> None:
+        """Run a call on the worker thread, after the calls made before it."""
+        with self.worker_lock:
+            if self.worker is None:
+
+                def drain() -> None:
+                    while True:
+                        item = self.calls.get()
+                        try:
+                            item()
+                        except Exception as error:
+                            print(f"window call failed: {error!r}", file=sys.stderr, flush=True)
+
+                self.worker = threading.Thread(target=drain, name="window-calls", daemon=True)
+                self.worker.start()
+        self.calls.put(call)
+
     def create(self, title: str, html: str, api: Any, on_closing: Callable[[], bool]) -> None:
         import webview
 
+        fit = fit_window(primary_screen() or WINDOW_SIZE, WINDOW_SIZE, WINDOW_MINIMUM, WINDOW_SCREEN_SHARE)
         self.window = webview.create_window(
             title,
             html=html,
             js_api=api,
             hidden=True,
-            width=WINDOW_SIZE[0],
-            height=WINDOW_SIZE[1],
-            min_size=WINDOW_MINIMUM,
+            width=fit.width,
+            height=fit.height,
+            x=fit.x,
+            y=fit.y,
+            min_size=(fit.min_width, fit.min_height),
             text_select=True,
         )
         self.window.events.closing += on_closing
@@ -64,27 +109,42 @@ class WebviewWindow:
         import webview
 
         folder = None
+        icon = None
         if self.storage is not None:
             self.storage.mkdir(parents=True, exist_ok=True)
             folder = str(self.storage)
-        webview.start(worker, private_mode=False, storage_path=folder)
+            if platform.system() == "Windows":
+                icon = str(brandmark.write_ico(self.storage / "Thimbleby.ico"))
+        webview.start(worker, private_mode=False, storage_path=folder, icon=icon)
 
     def show(self) -> None:
-        self.window.show()
+        self._later(self.window.show)
 
     def hide(self) -> None:
-        self.window.hide()
+        self._later(self.window.hide)
 
     def load_url(self, url: str) -> None:
-        self.window.load_url(url)
+        self._later(lambda: self.window.load_url(url))
 
     def load_html(self, html: str) -> None:
-        self.window.load_html(html)
+        self._later(lambda: self.window.load_html(html))
 
     def script(self, code: str) -> None:
         # A page that is still loading or was replaced answers with an error; a missed tick is not worth stopping for.
+        def run() -> None:
+            with contextlib.suppress(Exception):
+                self.window.evaluate_js(code)
+
+        self._later(run)
+
+    def page_state(self) -> dict[str, Any]:
+        """Called from the control listener's thread, which is not the window loop's, so the waits are safe."""
+        address, drawn = "", False
         with contextlib.suppress(Exception):
-            self.window.evaluate_js(code)
+            address = self.window.get_current_url() or ""
+        with contextlib.suppress(Exception):
+            drawn = bool(self.window.evaluate_js(DRAWN_SCRIPT))
+        return {"address": address, "drawn": drawn}
 
     def destroy(self) -> None:
         self.window.destroy()

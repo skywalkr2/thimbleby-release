@@ -7,6 +7,9 @@
 #ifndef SourceDir
   #error Supply SourceDir
 #endif
+#ifndef IconFile
+  #error Supply IconFile
+#endif
 #ifndef OutputDir
   #error Supply OutputDir
 #endif
@@ -29,6 +32,7 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayIcon={app}\Thimbleby.exe
+SetupIconFile={#IconFile}
 CloseApplications=yes
 RestartApplications=no
 

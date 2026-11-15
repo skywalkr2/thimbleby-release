@@ -55,6 +55,9 @@ class FakeWindow:
     def script(self, code):
         self._note("script", code)
 
+    def page_state(self):
+        return {"address": "http://127.0.0.1:1/", "drawn": True}
+
     def destroy(self):
         self._note("destroy")
         self.done.set()
@@ -277,3 +280,51 @@ def test_the_tray_menu_builds_with_the_tray_library_and_each_line_runs_its_own_a
     for item in items:
         item(None)  # pystray calls an item with the icon
     assert ran == ["open", "login"] and items[1].checked is True
+
+
+@pytest.mark.parametrize(
+    "screen,size",
+    [((1024, 768), (921, 691)), ((1440, 900), (1280, 810)), ((2560, 1440), (1280, 860))],
+)
+def test_the_window_fits_the_screen_it_opens_on(screen, size):
+    """On a 1024 by 768 screen the window was wider than the screen and its right side was out of reach."""
+    fit = appwindow.fit_window(screen)
+    assert (fit.width, fit.height) == size
+    assert fit.width <= screen[0] * 0.9 and fit.height <= screen[1] * 0.9
+    assert fit.min_width <= fit.width and fit.min_height <= fit.height
+    assert fit.x == (screen[0] - fit.width) // 2 and fit.y == (screen[1] - fit.height) // 2
+
+
+def test_the_window_state_names_the_menu_state_and_the_page():
+    shell, _, _ = make()
+    assert shell.window_state() == {
+        "state": "starting",
+        "shown": False,
+        "address": "http://127.0.0.1:1/",
+        "drawn": True,
+    }
+
+
+def test_a_window_call_never_runs_on_the_loop_thread_that_made_it():
+    """The Mac's web view waits for a reply only the loop's thread can give, so a script or page load made on that
+    thread never returned and the window stayed blank. The real window makes each such call on its own worker."""
+    from engine.appwindow_backends import WebviewWindow
+
+    seen = {}
+    done = threading.Event()
+
+    class Page:
+        def load_url(self, url):
+            seen["load_url"] = threading.current_thread()
+
+        def evaluate_js(self, code):
+            seen["script"] = threading.current_thread()
+            done.set()
+
+    window = WebviewWindow()
+    window.window = Page()
+    window.load_url("http://127.0.0.1:1/")
+    window.script("1")
+    assert done.wait(10)
+    assert set(seen) == {"load_url", "script"}
+    assert all(thread is not threading.current_thread() for thread in seen.values())

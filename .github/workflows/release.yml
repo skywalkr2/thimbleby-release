@@ -210,6 +210,7 @@ jobs:
         run: |
           & $env:INNO_COMPILER "/DAppVersion=$env:APP_VERSION" "/DWindowsVersion=$env:WINDOWS_VERSION" `
             "/DSourceDir=$env:GITHUB_WORKSPACE\dist\Thimbleby" "/DOutputDir=$env:GITHUB_WORKSPACE\dist" `
+            "/DIconFile=$env:GITHUB_WORKSPACE\build\icons\Thimbleby.ico" `
             deploy/desktop/build_support/windows.iss
           if ($LASTEXITCODE -ne 0) { throw "Installer compilation failed" }
 

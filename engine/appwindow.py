@@ -47,6 +47,9 @@ class WindowBackend(Protocol):
     def script(self, code: str) -> None: ...
     def destroy(self) -> None: ...
 
+    def page_state(self) -> dict[str, Any]:
+        """The page now in the window: {"address": its address or "", "drawn": whether it shows any text}."""
+
 
 class TrayBackend(Protocol):
     """The menu-bar or tray item."""
@@ -67,6 +70,38 @@ class MenuLine:
     checked: bool | None = None
     default: bool = False
     separator_before: bool = False
+
+
+@dataclass(frozen=True)
+class WindowFit:
+    """Where and how large the window opens on a screen: size, smallest size and top-left corner, in points."""
+
+    width: int
+    height: int
+    min_width: int
+    min_height: int
+    x: int
+    y: int
+
+
+def fit_window(
+    screen: tuple[int, int],
+    preferred: tuple[int, int] = (1280, 860),
+    minimum: tuple[int, int] = (760, 560),
+    share: float = 0.9,
+) -> WindowFit:
+    """The window's size for a screen: the preferred size, but never more than a share of the screen's width and
+    height, centred, and with a smallest size that is never larger than the window itself."""
+    width = max(1, min(preferred[0], int(screen[0] * share)))
+    height = max(1, min(preferred[1], int(screen[1] * share)))
+    return WindowFit(
+        width,
+        height,
+        min(minimum[0], width),
+        min(minimum[1], height),
+        max(0, (screen[0] - width) // 2),
+        max(0, (screen[1] - height) // 2),
+    )
 
 
 class MainThread:
@@ -267,6 +302,15 @@ class AppShell:
         self.main.call(self.window.load_url, url)
         if not self.quiet:
             self.main.call(self._show)
+
+    def window_state(self) -> dict[str, Any]:
+        """What the control listener's state answer reports: the menu's state, whether the window is showing, the
+        page's address and whether the page has drawn. Asked from the listener's thread, never the window's."""
+        try:
+            page = self.window.page_state()
+        except Exception:
+            page = {"address": "", "drawn": False}
+        return {"state": self.state, "shown": self._shown, **page}
 
     def bring_forward(self, fragment: str = "") -> None:
         """Show the window and put it in front; a fragment (such as "#setup") moves the app to that place."""

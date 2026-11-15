@@ -77,9 +77,9 @@ class InstanceLock:
         details = {"port": port, "readiness_path": readiness_path}
         if control_port is not None:
             details["control_port"] = control_port
-        draft = self.details.with_name(self.details.name + ".new")
-        draft.write_text(json.dumps(details), encoding="utf-8")
-        os.replace(draft, self.details)  # whole or not at all, for a reader in another process
+        from engine.state_file import write_whole
+
+        write_whole(self.details, json.dumps(details))  # whole or not at all, for a reader in another process
 
     def _published(self) -> dict:
         data = json.loads(self.details.read_text(encoding="utf-8"))
@@ -266,14 +266,20 @@ class ControlServer:
     """A loopback listener on its own port where a second open of the app asks this one to show its window.
 
     The request must carry the install token as a bearer header; "/show" brings the window forward and "/quit" ends the
-    app by the same path as the menu's Quit (the runners' check uses it). The answer is 204; nothing else is served."""
+    app by the same path as the menu's Quit (the runners' check uses it). Both are POSTs answered with 204. "GET /state"
+    answers with the window's state as JSON (its address and whether the page has drawn); nothing else is served."""
 
     def __init__(
-        self, token: Callable[[], str], on_show: Callable[[], None], on_quit: Callable[[], None] = lambda: None
+        self,
+        token: Callable[[], str],
+        on_show: Callable[[], None],
+        on_quit: Callable[[], None] = lambda: None,
+        on_state: Callable[[], dict[str, Any]] = lambda: {},
     ):
         self.token = token
         self.on_show = on_show
         self.on_quit = on_quit
+        self.on_state = on_state
         self.server: ThreadingHTTPServer | None = None
         self.thread: threading.Thread | None = None
 
@@ -281,6 +287,21 @@ class ControlServer:
         control = self
 
         class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                offered = self.headers.get("Authorization", "")
+                expected = "Bearer " + control.token()
+                if self.path != "/state" or not hmac.compare_digest(offered.encode(), expected.encode()):
+                    self.send_response(401)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                body = json.dumps(control.on_state()).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
             def do_POST(self) -> None:
                 offered = self.headers.get("Authorization", "")
                 expected = "Bearer " + control.token()
@@ -320,6 +341,18 @@ def ask_to_show(port: int, token: str, timeout: float = 3, what: str = "show") -
             return response.status == 204
     except (OSError, URLError):
         return False
+
+
+def ask_state(port: int, token: str, timeout: float = 20) -> dict[str, Any] | None:
+    """Ask the running instance, over loopback with the install token, for its window's state."""
+    opener = build_opener(ProxyHandler({}))
+    request = Request(f"http://127.0.0.1:{port}/state", headers={"Authorization": "Bearer " + token})
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            data = json.loads(response.read())
+            return data if response.status == 200 and isinstance(data, dict) else None
+    except (OSError, URLError, ValueError):
+        return None
 
 
 def is_running(data_folder: str | Path) -> bool:
@@ -406,7 +439,7 @@ def launch(
         return
     note(f"took the lock at {lock.path}")
     controller = LocalServer(app_factory, port)
-    control = ControlServer(token, shell.bring_forward, shell.quit_from_menu)
+    control = ControlServer(token, shell.bring_forward, shell.quit_from_menu, shell.window_state)
     try:
         controller.start()
         lock.publish(port, readiness_path, control.start())
