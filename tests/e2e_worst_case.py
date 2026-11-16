@@ -8,7 +8,10 @@ tidy one. Made up throughout; nothing here is read from a real service.
   titles in four scripts (Latin with accents, Cyrillic, Chinese and Japanese, Arabic and Hebrew);
 - a week of the person's own calendar entries: clashes of 2, 3 and 4 meetings, seven all-day entries on one day and an
   empty day;
-- reviews waiting on Today (endings read from an input, held for the person) under more than one side.
+- reviews waiting on Today (endings read from an input, held for the person) under more than one side;
+- for the screens beside Today (`seed_tier3`): files of several kinds (a long name, an odd kind, on a side and on none),
+  knowledge that is proposed, kept and discarded (words, a routine, routing and style, long wording, many rows), teams
+  of several people (one person on two), organizations, and items in every stage with a stage check that fails.
 """
 
 from __future__ import annotations
@@ -300,6 +303,170 @@ def seed_worst_case(ws, store, cfg, side_ids: list[str]) -> dict:
         reviews.append({"side": home, "action": action, "changeset": changeset_id, "status": status})
     made["reviews"] = reviews
     made["sides"] = homes
+    made["tier3"] = seed_tier3(store, cfg, homes, people)
+    return made
+
+
+LONG_NAME = "Quarterly cooperative membership renewal statement and supporting schedule for every household"
+
+
+def seed_tier3(store, cfg, homes: list[str], people: list[str]) -> dict:
+    """Files, knowledge, teams, organizations and stage items for the screens beside Today, as a tester finds them
+    broken: long names, many rows, several sides, every state. `homes` are the person's own side and the added sides."""
+    from engine.files import add_file
+
+    me = cfg.workspace.user.person
+    ctx = WriteContext(actor="pm", trust="trusted", op="e2e.worst-case")
+    now = datetime.now(UTC)
+    made: dict = {}
+
+    # Files of several kinds, with long names, on a side and on none, one with an odd kind and one empty.
+    png = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000002000001"
+        "e221bc330000000049454e44ae426082"
+    )
+    files = [
+        (f"{LONG_NAME}.pdf", "application/pdf", b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n", homes[1]),
+        ("receipt photo.png", "image/png", png, homes[2]),
+        ("notes.txt", "text/plain", "Plain notes, with Zürich and 東京.\n".encode(), None),
+        ("archive.weirdext", "application/octet-stream", b"\x00\x01\x02 not a known kind", homes[0]),
+        ("no-extension-at-all", "application/octet-stream", b"opaque bytes", None),
+        ("voice memo.wav", "audio/wav", b"RIFF$\x00\x00\x00WAVEfmt ", homes[3]),
+    ]
+    for n in range(8):
+        files.append(
+            (f"Statement {n + 1}.txt", "text/plain", f"Statement number {n + 1}\n".encode(), homes[n % len(homes)])
+        )
+    made["files"] = []
+    for name, media, data, home in files:
+        made["files"].append(
+            add_file(store, cfg, data, name=name, media_type=media, project=home, preserve_generic=True, context=ctx).id
+        )
+
+    # Knowledge: kept, proposed (some from the weekly look, with counts as evidence) and discarded.
+    kept = {"origin": "person", "learned_at": now.isoformat(), "kept_by": me, "kept_at": now.isoformat()}
+    proposed = {"origin": "assistant", "learned_at": now.isoformat(), "status": "proposed"}
+    long_text = (
+        "When a supplier writes about a late delivery, ask for the new date in the same reply and put it on the "
+        "calendar, because waiting for a second message has cost a week more than once on every side"
+    )
+    with store.transaction() as tx:
+        made["knowledge"] = {"active": [], "proposed": [], "discarded": []}
+        for n in range(3):
+            made["knowledge"]["active"].append(
+                tx.create("lesson", {"text": f"{long_text} (kept {n + 1})", "status": "active", **kept}, ctx).id
+            )
+        made["knowledge"]["active"].append(
+            tx.create(
+                "glossary_entry",
+                {
+                    "text": "PTA means the parent teacher association",
+                    "term": "PTA",
+                    "meaning": "the parent teacher association",
+                    "status": "active",
+                    "confidence": "confirmed",
+                    **kept,
+                },
+                ctx,
+            ).id
+        )
+        made["knowledge"]["active"].append(
+            tx.create(
+                "style_note",
+                {
+                    "text": "Ingrid wants short answers",
+                    "audience": people[2],
+                    "observation": "short answers, no greetings",
+                    "status": "active",
+                    **kept,
+                },
+                ctx,
+            ).id
+        )
+        for n in range(14):
+            made["knowledge"]["proposed"].append(
+                tx.create(
+                    "lesson",
+                    {
+                        "text": f"Proposed lesson {n + 1}: " + long_text,
+                        "guard": "Check the reply names a date before it goes out",
+                        "evidence": {"quote": "The truck will be late again"},
+                        **proposed,
+                    },
+                    ctx,
+                ).id
+            )
+        made["knowledge"]["proposed"].append(
+            tx.create(
+                "glossary_entry",
+                {
+                    "text": "Tuesdays 7 to 8 AM: gym",
+                    "term": "Gym",
+                    "meaning": "Tuesdays 7 to 8 AM, the person's own slot",
+                    "routine": {"days": ["tuesday"], "start": "07:00", "end": "08:00"},
+                    "evidence": {"quote": "Gym (seen 4 weeks running)"},
+                    **proposed,
+                },
+                ctx,
+            ).id
+        )
+        made["knowledge"]["proposed"].append(
+            tx.create(
+                "glossary_entry",
+                {
+                    "text": "Marisol Vandenberg writes to you weekly; likely your accountant",
+                    "term": "Marisol Vandenberg",
+                    "meaning": "writes to you weekly; likely your accountant",
+                    "evidence": {"quote": "11 messages in 4 weeks"},
+                    **proposed,
+                },
+                ctx,
+            ).id
+        )
+        made["knowledge"]["proposed"].append(
+            tx.create(
+                "routing_entry",
+                {
+                    "text": "Tobias Okonkwo-Reyes answers questions about invoices",
+                    "topic": "invoices",
+                    "person": people[1],
+                    "evidence": {"quote": "Tobias replied to 6 invoice questions"},
+                    **proposed,
+                },
+                ctx,
+            ).id
+        )
+        for n in range(3):
+            made["knowledge"]["discarded"].append(
+                tx.create(
+                    "lesson",
+                    {
+                        "text": f"Discarded lesson {n + 1}: " + long_text,
+                        "status": "discarded",
+                        "discard_reason": "Not how I work" if n == 0 else None,
+                        "origin": "assistant",
+                        "learned_at": now.isoformat(),
+                    },
+                    ctx,
+                ).id
+            )
+
+        # Teams: several people, one person on two teams, a team with a long name and one nobody is in.
+        made["teams"] = [
+            tx.create("team", {"name": "Kitchen and front of house", "members": people[:3]}, ctx).id,
+            tx.create("team", {"name": "Delivery drivers", "members": [people[2], people[3]]}, ctx).id,
+            tx.create("team", {"name": LONG_NAME[:90], "members": people}, ctx).id,
+            tx.create("team", {"name": "Empty team", "members": []}, ctx).id,
+        ]
+        made["organizations"] = [
+            tx.create("organization", {"name": "Brightwater Supply Cooperative of the Northern Valley"}, ctx).id
+        ]
+        # Items in every stage, some whose entry check fails (the example add-on's reminders, when it is on).
+        made["reminders"] = []
+        if "example/reminder" in store.plugins.stages.types:
+            for n in range(5):
+                text = f"Reminder {n + 1}: " + long_text if n % 2 == 0 else "   "
+                made["reminders"].append(tx.create("example/reminder", {"text": text}, ctx).id)
     return made
 
 

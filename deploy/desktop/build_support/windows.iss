@@ -71,9 +71,6 @@ UninstalledAll=Thimbleby was removed from this computer. Your work is still in A
 UninstalledMost=Thimbleby was removed from this computer. Your work is still in AppData\Local\Thimbleby.
 ButtonInstall=Install
 ButtonFinish=Finish
-; Inno draws its own Yes and No box for the removal question, with these captions.
-ButtonYes=&Remove the app
-ButtonNo=&Keep the app
 
 [CustomMessages]
 english.TaskDesktop=Put Thimbleby on the desktop
@@ -84,6 +81,10 @@ english.WorkStaysTitle=Thimbleby was removed
 english.WorkStaysText=Your work is still in AppData\Local\Thimbleby.
 english.OpenWorkFolder=Open the folder
 english.CloseButton=Close
+english.RemoveTitle=Remove Thimbleby from this computer?
+english.RemoveText=Your work stays in AppData\Local\Thimbleby: your workspace, backups and saved keys. Installing again picks it up.%n%nTo delete your work too, open Thimbleby first and use Settings > Advanced > Delete this workspace.
+english.RemoveButton=Remove the app
+english.KeepButton=Keep the app
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:TaskDesktop}"; Flags: checkedonce
@@ -132,6 +133,44 @@ begin
     WizardForm.NextButton.Caption := SetupMessage(msgButtonInstall);
 end;
 
+{ The entry Windows lists for removal runs the uninstaller silent, which skips Inno's own confirmation (a system Yes and No
+  box no message reaches); the question is asked here instead, with its own two buttons. The marker says a person is
+  removing the app, so a silent removal by an administrator's script asks and shows nothing. }
+function AskedFirst: Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+    if CompareText(ParamStr(I), '/ASKFIRST') = 0 then
+      Result := True;
+end;
+
+function InitializeUninstall: Boolean;
+var
+  Labels: TArrayOfString;
+  Answer: Integer;
+begin
+  Result := True;
+  if AskedFirst then
+  begin
+    SetArrayLength(Labels, 2);
+    Labels[0] := CustomMessage('RemoveButton');
+    Labels[1] := CustomMessage('KeepButton');
+    Answer := TaskDialogMsgBox(CustomMessage('RemoveTitle'), CustomMessage('RemoveText'), mbConfirmation, MB_YESNO, Labels, 0);
+    Result := Answer = IDYES;
+  end;
+end;
+
+{ Setup writes the entry's uninstall command when the files are in place; once it is done the command gains the two
+  switches, so removing from Windows' own list asks first and removes silently. }
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssDone then
+    RegWriteStringValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8B79A062-067C-46D5-94D7-A27CBAA00C33}_is1',
+      'UninstallString', '"' + ExpandConstant('{uninstallexe}') + '" /SILENT /ASKFIRST');
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   Labels: TArrayOfString;
@@ -142,7 +181,7 @@ begin
   if CurUninstallStep = usPostUninstall then
     RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Thimbleby');
   { The last page links the folder the work stays in. The folder is only opened, never changed. }
-  if (CurUninstallStep = usDone) and not UninstallSilent then
+  if (CurUninstallStep = usDone) and AskedFirst then
   begin
     Labels[0] := CustomMessage('OpenWorkFolder');
     Labels[1] := CustomMessage('CloseButton');

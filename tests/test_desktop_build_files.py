@@ -470,7 +470,16 @@ def test_the_setup_has_three_pages_in_the_targets_words_and_no_licence_folder_or
     assert "Settings > Advanced > Delete this workspace" in text
     assert "[UninstallDelete]" not in text
     # The removal button reads "Remove the app", and the last page links the folder the work stays in.
-    assert "ButtonYes=&Remove the app" in text and "ButtonNo=&Keep the app" in text
+    # Inno's own confirmation is a system box whose buttons no message reaches, so the uninstaller asks its own question
+    # (a task dialog with these two buttons) and the entry Windows runs is silent, which skips Inno's box.
+    assert "english.RemoveButton=Remove the app" in text and "english.KeepButton=Keep the app" in text
+    assert "ButtonYes" not in text and "ButtonNo" not in text
+    assert "function InitializeUninstall: Boolean;" in text and "CustomMessage('RemoveButton')" in text
+    assert "CustomMessage('KeepButton')" in text and "Result := Answer = IDYES" in text
+    assert "'UninstallString'" in text and "{uninstallexe}" in text and "/SILENT /ASKFIRST" in text
+    assert "CurStep = ssDone" in text
+    # The folder dialog shows after the person's own removal, which is silent, and never after an administrator's.
+    assert "(CurUninstallStep = usDone) and AskedFirst" in text and "not UninstallSilent" not in text
     assert "english.OpenWorkFolder=Open the folder" in text
     assert "usDone" in text and "{localappdata}\\Thimbleby" in text and "TaskDialogMsgBox" in text
     # Every line is in [Messages] or [CustomMessages], and the file is plain text the compiler reads without a mark.

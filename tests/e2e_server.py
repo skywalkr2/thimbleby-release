@@ -412,6 +412,8 @@ def main() -> None:
     if args.worst_case:
         # The mail add-on, and the stand-in outside services it signs in to, before the app is made.
         add_plugin(ws, str(Path(__file__).parent / "fixtures" / "plugins" / "journey_mail"))
+        # The example add-on: items with stages whose entry check can fail, for the Stages screen.
+        add_plugin(ws, "example")
         start_services(tmp / "services", args.port + 1)
     flags = {
         "server.base_path": args.base_path,
@@ -430,6 +432,13 @@ def main() -> None:
         flags["steward.hold_outside_hours"] = False
     if args.all_clear:
         flags.update(e2e_all_clear.flags())
+    if args.worst_case:
+        # The person's own projects move through steps too, with nothing started by entering one.
+        flags["stages.types.project.stages"] = [
+            {"id": "planned", "label": "Planned"},
+            {"id": "active", "label": "In progress"},
+            {"id": "complete", "label": "Complete"},
+        ]
     if not (args.plain_stages or args.worst_case):
         # A stage that starts work when entered, so the browser tests can exercise waiting for the go.
         flags["stages.types.project.stages"] = [

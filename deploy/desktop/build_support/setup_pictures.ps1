@@ -50,16 +50,21 @@ Start-Sleep -Seconds 5
 Stop-Process -Name 'Thimbleby' -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
-# The uninstaller: its first page (the answer is the button "Remove the app", with its key R), then the last page, which
-# links the folder the work stays in (its second button, Close, is reached with Tab).
-$uninstaller = Start-Process -FilePath (Join-Path $installed 'unins000.exe') -PassThru
-Start-Sleep -Seconds 4
+# The uninstaller, started the way Windows' own list starts it: the command the setup wrote as the entry's UninstallString.
+# Its first page is the uninstaller's own question (a task dialog), the answer is the button "Remove the app", the first and
+# default button, Enter. A removal then shows the progress window, and the last page links the folder the work stays in (its second
+# button, Close, is reached with Tab). No system Yes and No box comes between.
+$command = (Get-ItemProperty $uninstallKey).UninstallString
+if ($command -notmatch '^"([^"]+)"\s*(.*)$') { throw "Unexpected UninstallString: $command" }
+$uninstaller = Start-Process -FilePath $Matches[1] -ArgumentList $Matches[2] -PassThru
+Start-Sleep -Seconds 5
 Take 'remove-1-first.png'
-Press 'Thimbleby Uninstall' 'r'
-Start-Sleep -Seconds 8
-Take 'remove-2-done.png'
+# Both of the uninstaller's boxes are the foreground window when they show; the title names the first try.
 Press 'Thimbleby Uninstall' '{ENTER}'
 Start-Sleep -Seconds 3
+Take 'remove-2-done.png'
+# The removal is silent, so the folder page is a dialog that follows the progress window; wait for it.
+Start-Sleep -Seconds 8
 Take 'remove-3-folder.png'
-Press 'Thimbleby was removed' '{TAB}{ENTER}'
+Press 'Thimbleby Uninstall' '{TAB}{ENTER}'
 [void]$uninstaller.WaitForExit(60000)

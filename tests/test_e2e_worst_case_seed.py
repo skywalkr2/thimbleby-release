@@ -112,6 +112,37 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+def test_the_screens_beside_today_hold_files_knowledge_teams_and_organizations(seeded):
+    view, cfg, made, seed = seeded
+    tier3 = seed["tier3"]
+    # Files of several kinds with a long name, on a side and on none.
+    files = [view.get("file", fid).data for fid in tier3["files"]]
+    assert len(files) >= 10
+    assert any(len(f["name"]) > 90 for f in files)
+    assert {f["project"] for f in files} >= {None, *seed["sides"][:2]}
+    assert len({f["media_type"] for f in files}) >= 4
+    # Knowledge in each state, with many proposals, and a routine among them.
+    states = {state: [view.get(kind_of(view, i), i).data for i in ids] for state, ids in tier3["knowledge"].items()}
+    assert len(states["proposed"]) >= 10 and states["active"] and states["discarded"]
+    assert all(e["status"] == state for state, entries in states.items() for e in entries)
+    assert any(e.get("routine") for e in states["proposed"])
+    # A person on two teams, and a team nobody is in.
+    teams = [view.get("team", tid).data for tid in tier3["teams"]]
+    counts = Counter(m for t in teams for m in t["members"])
+    assert any(n >= 2 for n in counts.values())
+    assert any(not t["members"] for t in teams)
+    assert tier3["organizations"]
+
+
+def kind_of(view, record_id: str) -> str:
+    return next(
+        k for k in ("lesson", "glossary_entry", "routing_entry", "style_note") if record_id.startswith(PREFIXES[k])
+    )
+
+
+PREFIXES = {"lesson": "LES", "glossary_entry": "GLOSS", "routing_entry": "ROUTE", "style_note": "STYLE"}
+
+
 def test_the_running_app_has_three_accounts_signed_in_and_the_third_refused(tmp_path):
     port = free_port()
     # The services run on the next port; look for a pair that is free.
