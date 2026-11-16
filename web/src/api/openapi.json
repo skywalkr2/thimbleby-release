@@ -2740,7 +2740,7 @@
                 "type": "null"
               }
             ],
-            "description": "For an own entry that is a parcel or order on its way: its order, tracking number, carrier and status. One whose `dated` is false has no days (`days` is empty) and is shown under 'On its way'."
+            "description": "For an own entry that is a parcel or order on its way: its order, carrier, tracking page and status. One whose `dated` is false has no days (`days` is empty) and is shown under 'On its way'."
           },
           "end": {
             "anyOf": [
@@ -9469,7 +9469,7 @@
             "title": "Status",
             "type": "string"
           },
-          "tracking": {
+          "track": {
             "anyOf": [
               {
                 "type": "string"
@@ -9478,8 +9478,8 @@
                 "type": "null"
               }
             ],
-            "description": "The tracking number, as the mail gave it.",
-            "title": "Tracking"
+            "description": "The carrier's public tracking page for this parcel, when the carrier is known; untrusted, so show its real domain. The tracking number itself is never sent to a screen as text.",
+            "title": "Track"
           }
         },
         "title": "DeliveryView",
@@ -28678,7 +28678,7 @@
                 "type": "null"
               }
             ],
-            "description": "For an own entry that is a parcel or order on its way: its order, tracking number, carrier and status. One whose `dated` is false has no days (`days` is empty) and is shown under 'On its way'."
+            "description": "For an own entry that is a parcel or order on its way: its order, carrier, tracking page and status. One whose `dated` is false has no days (`days` is empty) and is shown under 'On its way'."
           },
           "end": {
             "anyOf": [
@@ -46104,7 +46104,7 @@
     },
     "/api/packs/{pack_id}/install": {
       "post": {
-        "description": "Install (or update) an add-on from the release file its catalog entry names, checked against the entry's\nchecksum. It isn't turned on; the app takes it in at once, in place, where this copy can swap itself, else\nafter the restart the person chooses.",
+        "description": "Install (or update) an add-on from the release file its catalog entry names, checked against the entry's\nchecksum. It isn't turned on; the app takes it in at once, in place, where this copy can swap itself, else\nafter the restart the person chooses. With `then_on` the screen turns it on next: that turn-on is what the app\ntakes in, once, so the install asks for nothing by itself and the swap never cuts off the turn-on.",
         "operationId": "install_api_packs__pack_id__install_post",
         "parameters": [
           {
@@ -46114,6 +46114,16 @@
             "schema": {
               "title": "Pack Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "then_on",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Then On",
+              "type": "boolean"
             }
           }
         ],

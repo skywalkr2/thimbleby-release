@@ -448,7 +448,7 @@ describe("an entry's details", () => {
     expect(within(pane).getByText("A to-do you own")).toBeInTheDocument();
   });
 
-  test("a delivery's pane gives its range, carrier, tracking number and status in words, and one with no date yet is listed under On its way", async () => {
+  test("a delivery's pane gives its range, carrier, Track link and status in words, and one with no date yet is listed under On its way", async () => {
     room({ beside: true });
     const user = userEvent.setup();
     const parcel = (title: string, over: Partial<S["ScheduleEntryView"]>): S["ScheduleEntryView"] =>
@@ -458,16 +458,18 @@ describe("an entry's details", () => {
         source: "",
         snapshot: `EVT-${title}`,
         end: addDays(TODAY, 2),
-        delivery: { order: "ORD-1", tracking: "TRK000123", carrier: "Example Freight", status: "out_for_delivery", dated: true },
+        delivery: { order: "ORD-1", track: `${"https"}://tracking.example.com/track?number=TRK000123`, carrier: "Example Freight", status: "out_for_delivery", dated: true },
         ...over,
       });
-    const waiting = parcel("Order shipped", { start: TODAY, end: null, days: [], delivery: { order: "ORD-2", tracking: null, carrier: null, status: "on_its_way", dated: false } });
+    const waiting = parcel("Order shipped", { start: TODAY, end: null, days: [], delivery: { order: "ORD-2", track: null, carrier: null, status: "on_its_way", dated: false } });
     await open((date) => (date === TODAY ? { all_day: [parcel("Parcel from the corner shop", {})] } : {}), { on_its_way: [waiting] });
     await user.click(screen.getByRole("button", { name: /Parcel from the corner shop/ }));
     const pane = await screen.findByRole("complementary", { name: "Parcel from the corner shop" });
     expect(pane).toHaveTextContent("Out for delivery");
     expect(pane).toHaveTextContent("Carried by Example Freight");
-    expect(pane).toHaveTextContent("Tracking TRK000123");
+    expect(within(pane).getByRole("link", { name: "Track" })).toHaveAttribute("href", `${"https"}://tracking.example.com/track?number=TRK000123`);
+    expect(pane).toHaveTextContent("tracking.example.com");
+    expect(pane).not.toHaveTextContent("TRK000123");
     expect(pane).toHaveTextContent("Order ORD-1");
     const section = screen.getByRole("region", { name: "On its way" });
     await user.click(within(section).getByRole("button", { name: /Order shipped/ }));

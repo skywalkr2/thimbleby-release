@@ -479,8 +479,10 @@ function AgendaRow(props: { event: Event; when: string; past: boolean; source: s
   // Where the meeting is on is its side, never the address of the account it was read from (that is the tooltip, and Connections').
   const sideOptions = useSideFilter().options;
   const sideShown = !event.own && !!event.side && sideOptions.some((o) => o.id === event.side);
-  const meta = [event.where, ...deliveryDetails(event, t), event.own ? ownWords(event, t) : null].filter(Boolean).join(" · ");
+  const meta = [event.where, ...deliveryDetails(event), event.own ? ownWords(event, t) : null].filter(Boolean).join(" · ");
   const status = deliveryStatusWord(event, t);
+  // The carrier's own page for a parcel, with its real domain; never the tracking number as text.
+  const track = event.delivery?.track ?? null;
   // A meeting of a series shows how many open items wait for it, linking to the series' page; with none, nothing is said.
   const open = event.series && (event.open_items ?? 0) > 0 ? event.open_items! : 0;
   return (
@@ -510,7 +512,7 @@ function AgendaRow(props: { event: Event; when: string; past: boolean; source: s
             </>
           )}
         </div>
-        {(meta || props.clash || sideShown) && (
+        {(meta || track || props.clash || sideShown) && (
           <div className="tb-meta" title={props.source || undefined}>
             {props.clash && (
               <span className={styles.clashMark} data-clash="">
@@ -518,11 +520,17 @@ function AgendaRow(props: { event: Event; when: string; past: boolean; source: s
                 {t("today.agenda.clash")}
               </span>
             )}
-            {props.clash && meta ? " · " : null}
+            {props.clash && (meta || track) ? " · " : null}
             {meta}
+            {track && (
+              <>
+                {meta && " · "}
+                <SafeLink label={t("today.agenda.delivery.track")} url={track} />
+              </>
+            )}
             {sideShown && (
               <>
-                {(meta || props.clash) && " · "}
+                {(meta || track || props.clash) && " · "}
                 <SideMark side={event.side} />
               </>
             )}

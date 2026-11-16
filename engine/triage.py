@@ -155,13 +155,14 @@ def automated_bulk_notice(change: dict[str, Any], params: dict[str, Any]) -> str
 
 
 def addressed_to_one(change: dict[str, Any]) -> bool:
-    """The message names exactly one other address on it (its To and Cc), so it was written to one person and not to
-    a list. No participants (a blind copy, or a service that doesn't say) is not known to be one person."""
+    """The message was written to the person alone, not to a list. `participants` is everyone else on it (its To
+    and Cc, as the mail add-on contract says), so none means no one but the person, and one other address is read the
+    same, for services that list the person too. Two or more other addresses is a list."""
     found = {
         parseaddr(str(p))[1].strip().lower() or str(p).strip().lower()
         for p in _message(change).get("participants") or []
     }
-    return len({f for f in found if f}) == 1
+    return len({f for f in found if f}) <= 1
 
 
 def _domain(text: Any) -> str:

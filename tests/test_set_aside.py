@@ -21,9 +21,11 @@ OWN = "own-mail.example.com"  # a public mail domain the person adds in the sett
 CLUB = "club.example.com"
 BUILDS = "builds.example.com"
 UNIQUE = "zebra-quartz-marmalade"  # a phrase that is only in the messages under test
+#: Everyone else on a message sent to a list: the mail add-on lists the others, never the person.
+TO_A_LIST = ["a@example.com", "b@example.com"]
 
 
-def mail(key, sender, *, bulk=None, categories=(), subject=None, body=None, hours=1):
+def mail(key, sender, *, bulk=None, categories=(), subject=None, body=None, hours=1, participants=()):
     """A fake source's item that is a mail message from `sender`, received `hours` before NOW."""
     subject = subject or f"Subject of {key}"
     received = (NOW - timedelta(hours=hours)).isoformat()
@@ -38,6 +40,7 @@ def mail(key, sender, *, bulk=None, categories=(), subject=None, body=None, hour
             "unread": True,
             "bulk": bulk,
             "categories": list(categories),
+            "participants": list(participants),
         },
     }
 
@@ -193,12 +196,18 @@ def test_bulk_mail_from_a_notification_sender_or_in_the_updates_category_is_an_a
     """A build failure or an account notice sent with list headers is a notice. A newsletter, and anything the mail
     service files under promotions or social, stays sales."""
     notice = ("notices", "Automated notices")
-    failure = {**change(f"notifications@{BUILDS}", bulk=True), "title": "Build failed on the main branch"}
+    failure = {
+        **change(f"notifications@{BUILDS}", bulk=True, participants=TO_A_LIST),
+        "title": "Build failed on the main branch",
+    }
     assert sorted_as(tmp_path / "a", failure) == notice
     # An automated sender that is not named "notifications": the other words of the setting count the same.
-    assert sorted_as(tmp_path / "b", change(f"no-reply@{BUILDS}", bulk=True)) == notice
+    assert sorted_as(tmp_path / "b", change(f"no-reply@{BUILDS}", bulk=True, participants=TO_A_LIST)) == notice
     # A sender the setting doesn't name, but the mail service files it under updates.
-    assert sorted_as(tmp_path / "c", change(f"ci@{BUILDS}", bulk=True, categories=["updates"])) == notice
+    assert (
+        sorted_as(tmp_path / "c", change(f"ci@{BUILDS}", bulk=True, categories=["updates"], participants=TO_A_LIST))
+        == notice
+    )
     # Sales stay sales: a newsletter, and promotions or social, even from a notification sender.
     assert sorted_as(tmp_path / "d", change(f"news@{LISTS}", bulk=True)) == ("sales", "Bulk mail")
     assert sorted_as(tmp_path / "e", change(f"news@{LISTS}", categories=["promotions"])) == (
@@ -243,13 +252,15 @@ def test_a_bill_sent_in_bulk_from_a_notification_sender_is_still_kept_and_so_is_
 
 
 def test_with_automated_notices_off_or_the_built_in_sorting_off_bulk_notifications_go_the_old_way(tmp_path):
-    one = change(f"notifications@{BUILDS}", bulk=True)
+    one = change(f"notifications@{BUILDS}", bulk=True, participants=TO_A_LIST)
     assert sorted_as(tmp_path / "a", one, automated_mail={"set_aside": False}) == ("sales", "Bulk mail")
     assert sorted_as(tmp_path / "b", one, set_aside_defaults=False) is None
     # The person's own sender words decide what an automated sender is.
     own = {"senders": ["alerts"]}
     assert sorted_as(tmp_path / "c", one, automated_mail=own) == ("sales", "Bulk mail")
-    assert sorted_as(tmp_path / "d", change(f"alerts@{BUILDS}", bulk=True), automated_mail=own) == (
+    assert sorted_as(
+        tmp_path / "d", change(f"alerts@{BUILDS}", bulk=True, participants=TO_A_LIST), automated_mail=own
+    ) == (
         "notices",
         "Automated notices",
     )
@@ -259,7 +270,13 @@ def test_a_build_failure_sent_in_bulk_is_set_aside_as_a_notice_when_the_mail_is_
     from engine.watch import refresh
 
     items = [
-        mail("ci", f"notifications@{BUILDS}", bulk=True, subject="Build failed on the main branch"),
+        mail(
+            "ci",
+            f"notifications@{BUILDS}",
+            bulk=True,
+            subject="Build failed on the main branch",
+            participants=TO_A_LIST,
+        ),
         mail("news", f"a@{LISTS}", bulk=True),
         mail("promo", f"notifications@{SHOP}", bulk=True, categories=["promotions"]),
         mail("work", WORK),
@@ -756,3 +773,54 @@ def test_the_sorting_rules_module_keeps_one_rule_per_choice():
     assert [r.get("set_aside") for r in rules] == ["never", None], "the emptied sales rule goes"
     with pytest.raises(ValueError):
         with_sender_rules(rules, "work", ["a@x.example.com"], [])
+
+
+# ---- a notice to the person alone, whatever the add-on lists in `participants` (S-0519) ----
+
+
+def test_a_notice_the_add_on_lists_no_one_on_is_to_the_person_alone_and_comes_through(tmp_path):
+    """The add-on lists everyone else on a message, never the person, so a notice written to the person alone has no
+    participants. It is filed under updates or sent from a no-reply address; either way it is not set aside."""
+    filed = change(f"ci@{BUILDS}", bulk=True, categories=["updates"], participants=[])
+    no_reply = change(f"no-reply@{BUILDS}", bulk=True, participants=[])
+    unsaid = change(f"no-reply@{BUILDS}", bulk=True)
+    assert sorted_as(tmp_path / "a", filed) is None
+    assert sorted_as(tmp_path / "b", no_reply) is None
+    assert sorted_as(tmp_path / "c", unsaid) is None
+    # One other address on it reads the same, for a service that lists the person.
+    assert (
+        sorted_as(tmp_path / "d", change(f"ci@{BUILDS}", bulk=True, categories=["updates"], participants=[WORK]))
+        is None
+    )
+
+
+def test_the_same_notice_with_two_other_people_on_it_is_still_set_aside_and_a_promotions_mailing_stays_sales(tmp_path):
+    two = ["a@example.com", "Bee <b@example.com>"]
+    assert sorted_as(tmp_path / "a", change(f"ci@{BUILDS}", bulk=True, categories=["updates"], participants=two)) == (
+        "notices",
+        "Automated notices",
+    )
+    sales = change(f"no-reply@{SHOP}", bulk=True, categories=["promotions"], participants=[])
+    assert sorted_as(tmp_path / "b", sales) == ("sales", "Bulk mail")
+
+
+def test_a_notice_to_the_person_alone_is_read_and_handed_to_the_assistant_not_filed_as_handled(tmp_path):
+    from engine.watch import refresh
+
+    items = [
+        mail("site", f"no-reply@{BUILDS}", bulk=True, categories=["updates"], subject="Some fixes failed on your site"),
+        mail("digest", f"no-reply@{LISTS}", bulk=True, subject="Your weekly digest"),
+    ]
+    ws, cfg, store = make(tmp_path, items)
+    try:
+        result = refresh(ws, store, cfg, "m", NOW)
+        view = store.read()
+        by_title = {
+            view.get("source", view.get("request", r).data["source"]).data["title"]: view.get("request", r)
+            for r in result.new
+        }
+        assert set(by_title) == {"Some fixes failed on your site", "Your weekly digest"}
+        assert all(not r.data.get("set_aside") for r in by_title.values())
+        assert all(r.data["state"] == "queued" for r in by_title.values())
+    finally:
+        store.close()

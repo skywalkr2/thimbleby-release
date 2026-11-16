@@ -7,6 +7,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from api.app import create_app
@@ -176,9 +177,15 @@ def test_sent_mail_suggests_only_real_people_not_no_reply_role_company_set_aside
 
 
 def test_a_local_part_that_is_a_code_is_not_a_person_but_names_with_digits_and_plus_tags_are():
-    for code in ("unsub-7f3a9c2e4b1d", "bounce-1234567890", "r-4f9a8b7c6d5e", "a1b2c3d4e5f6"):
+    for code in (
+        "unsub-7f3a9c2e4b1d",
+        "bounce-1234567890",
+        "r-4f9a8b7c6d5e",
+        "a1b2c3d4e5f6",
+        "taylor.quinn+7f3a9c2e4b1d",
+    ):
         assert people_suggestions.local_is_code(code), code
-    for name in ("sam.kin1985", "jo", "alex.o-neil", "taylor.quinn+7f3a9c2e4b1d", "casey_morgan_2", "abcdefghijkl"):
+    for name in ("sam.kin1985", "jo", "alex.o-neil", "taylor.quinn+news", "casey_morgan_2", "abcdefghijkl"):
         assert not people_suggestions.local_is_code(name), name
 
 
@@ -322,6 +329,11 @@ def api(tmp_path):
     items = [sent]
     ws, cfg, store = make(tmp_path, items, first_run="baseline")
     cfg.watch.sources[0].author = cfg.workspace.user.person
+    # The route reads the settings from the files, as a sign-in's own change to them is written there.
+    watch_file = ws.config_dir / "watch.yaml"
+    kept = yaml.safe_load(watch_file.read_text())
+    kept["sources"][0]["author"] = cfg.workspace.user.person
+    watch_file.write_text(yaml.safe_dump(kept))
     read((ws, cfg, store))
     store.close()
     application = create_app(ws, cfg, TOKEN, ui_dist=tmp_path / "no-ui", start_worker=False)
@@ -425,3 +437,24 @@ def test_a_pasted_list_adds_the_people_with_their_relation_and_none_of_the_junk(
     assert people["Correspondent A"]["relation"] == "my sister"
     assert people["Correspondent C"]["relation"] == "my accountant"
     assert not any(name in people for name in ("12345", "!!!", WEB + "example.com"))
+
+
+def test_a_services_per_message_reply_address_is_never_suggested_but_a_person_with_a_short_tag_is(tmp_path):
+    """The reported shape: `responses+<id>@replies.<service>`, sent to or from by a newsletter service."""
+    machine = "responses+8c4261ed-0c87-44f0-bed8-4d9b5892e623@replies.bulletin.example.com"
+    by_domain = "pat@bounce.bulletin.example.com"
+    tagged = "Kim Rowe <kim.rowe+news@example.com>"
+    items = [message("s1", "me@example.com", [f"<{machine}>", f"<{by_domain}>", tagged])]
+    _ws, cfg, store = setup(tmp_path, items, sent=True)
+    found = people_suggestions.suggest(store, cfg, 20)
+    store.close()
+    assert names(found) == ["Kim Rowe"], names(found)
+
+
+def test_a_reply_address_is_not_suggested_from_incoming_mail_either(tmp_path):
+    machine = "Responses 8c4261ed <responses+8c4261ed-0c87-44f0-bed8-4d9b5892e623@replies.bulletin.example.com>"
+    items = [message("in1", machine), message("in2", who(0))]
+    _ws, cfg, store = setup(tmp_path, items, sent=False)
+    found = people_suggestions.suggest(store, cfg, 20)
+    store.close()
+    assert names(found) == ["Correspondent A"]

@@ -23,6 +23,8 @@ from engine.workspace import init_workspace
 from tests.conftest import DEMO_B, fixture_records
 
 _ENGINE = WriteContext("engine", "trusted", "test")
+#: Made-up addresses are built from this, so no address is written out whole.
+WEB = "https" + "://"
 RECEIVED = "2026-10-28"
 RETAILER = "Parcel from the corner shop"
 ORDER_A, ORDER_B = "ORD-4471-20", "ORD-9021-07"
@@ -407,14 +409,14 @@ def test_a_dated_delivery_is_on_its_days_and_an_undated_one_is_on_none(env):
     apply(env, [delivery_op("Delivery: Oct 30-Nov 1", "--10-30", "--11-01", tracking=TRACKING_A, carrier=CARRIER)])
     apply(env, [delivery_op("Order shipped", order=ORDER_B)])
     items = today.agenda(store, cfg, NOW, through=date(2026, 11, 2))
-    assert [(i.days[0], i.delivery["tracking"]) for i in items] == [(date(2026, 10, 30), TRACKING_A)]
+    assert [(i.days[0], i.delivery["carrier"]) for i in items] == [(date(2026, 10, 30), CARRIER)]
     assert items[0].days == [date(2026, 10, 30), date(2026, 10, 31), date(2026, 11, 1)]
     listed = today.agenda(store, cfg, NOW, through=date(2026, 11, 2), undated=True)
     assert [i.days for i in listed] == [[date(2026, 10, 30), date(2026, 10, 31), date(2026, 11, 1)], []]
     assert listed[1].delivery["order"] == ORDER_B and listed[1].delivery["dated"] is False
     # The schedule's days read only what is on a day.
     days = schedule.schedule(store, cfg, NOW, date(2026, 10, 28), 6)
-    assert [e.item.delivery["tracking"] for d in days for e in d.all_day + d.timed] == [TRACKING_A] * 3
+    assert [e.item.delivery["carrier"] for d in days for e in d.all_day + d.timed] == [CARRIER] * 3
 
 
 def test_the_agenda_route_carries_the_delivery(env):
@@ -433,11 +435,12 @@ def test_the_agenda_route_carries_the_delivery(env):
     deliveries = {i["delivery"]["order"]: i for i in found if i.get("delivery")}
     assert deliveries[ORDER_A]["delivery"] == {
         "order": ORDER_A,
-        "tracking": TRACKING_A,
         "carrier": CARRIER,
+        "track": f"{WEB}tracking.example.com/track?number={TRACKING_A}",
         "status": "on_its_way",
         "dated": True,
     }
+    assert json.dumps(found).count(TRACKING_A) == 1, "the number is only inside the carrier's page address"
     assert deliveries[ORDER_B]["days"] == [] and deliveries[ORDER_B]["delivery"]["dated"] is False
 
 
@@ -466,3 +469,36 @@ def test_the_scorer_compares_the_delivery_a_case_states_and_only_that(env):
     assert not _op_matches(
         {"op": "event.add", "delivery": {"order": ORDER_A}}, store.read().get("changeset", plain).data["ops"][0], store
     )
+
+
+# ---- the carrier's tracking page, never the number as text (S-0521) -------------------------------------------------
+
+
+def test_a_delivery_the_screens_read_has_the_carriers_page_and_never_the_tracking_number_as_a_value(env):
+    _, cfg, store = env
+    apply(env, [delivery_op("Shipped", "--10-30", tracking="TRK 0001/2", carrier="EXAMPLE freight ltd")])
+    apply(env, [delivery_op("Other", "--10-31", tracking=TRACKING_B, carrier="A Carrier Nobody Listed", order=ORDER_B)])
+    apply(env, [delivery_op("No carrier", "--11-01", tracking="TRK777", order="ORD-1")])
+    by_order = {
+        (i.delivery["order"] or "none"): i.delivery for i in today.agenda(store, cfg, NOW, through=date(2026, 11, 2))
+    }
+    shown = list(by_order.values())
+    assert all("tracking" not in d for d in shown)
+    tracks = sorted(d["track"] or "" for d in shown)
+    assert tracks == ["", "", f"{WEB}tracking.example.com/track?number=TRK%200001%2F2"]
+
+
+def test_a_workspaces_own_carrier_page_is_used_and_one_that_is_not_a_plain_web_address_is_refused(env):
+    from engine import delivery_tracking
+    from engine.config.schema import CarrierPage
+
+    _, cfg, _ = env
+    cfg.ui.today.delivery_carriers_extra = [
+        CarrierPage(id="mine", words=["Quick", "Van"], page="t.example.com/{number}")
+    ]
+    assert delivery_tracking.page_for(cfg, "The Quick Van Co", " 123 ") == f"{WEB}t.example.com/123"
+    assert delivery_tracking.page_for(cfg, "Slow Van", "123") is None
+    assert delivery_tracking.page_for(cfg, "Quick Van", None) is None
+    for bad in (f"{WEB}t.example.com/{{number}}", "t.example.com/nonumber", "/{number}", "nodot/{number}"):
+        with pytest.raises(ValueError):
+            CarrierPage(id="x", words=["x"], page=bad)

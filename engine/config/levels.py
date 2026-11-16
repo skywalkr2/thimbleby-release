@@ -330,6 +330,8 @@ FILES_ONLY = (
     # apps are entries of a file.
     "ui.notifications.webhook_format",
     "ui.notifications.apps_extra",
+    # Carriers of the person's own for a delivery's Track link; the shipped ones are a file.
+    "ui.today.delivery_carriers_extra",
     # Mail services of the person's own for the guided mailbox step; the shipped ones are a file.
     "watch.mail_services_extra",
 )

@@ -513,3 +513,26 @@ def test_an_app_built_again_imports_its_add_ons_afresh(tmp_path, monkeypatch):
     addons.activate(str(root))
     assert "journey_old_addon" not in sys.modules
     assert sys.modules["journey_own_module"] is own
+
+
+def test_an_install_the_screen_turns_on_next_asks_for_no_swap_and_a_swap_on_its_way_asks_nothing_of_the_person(screen):
+    """Setup's Connect installs and then turns on: only the turn-on is taken in, so the swap never cuts off its
+    request. And while a swap is on its way, the status offers no "Restart now"."""
+    from fastapi.testclient import TestClient
+
+    from api.app import create_app
+
+    c, api, _, _ = screen
+    ws, cfg = c.made
+    able = TestClient(create_app(ws, cfg, "t", start_worker=False, on_restart=lambda: None))
+    able.headers["Authorization"] = "Bearer t"
+    done = able.post(f"{api}/packs/packdemo/install", params={"then_on": "true"})
+    assert done.status_code == 200, done.text
+    assert not done.json()["applying"] and not able.app.state.worker.restart_requested
+    worker = able.app.state.worker
+    worker.restart_needed, worker.restart_for = "add-ons", ["add-ons"]
+    assert able.get(f"{api}/status").json()["restart_needed"]
+    worker.request_restart()
+    status = able.get(f"{api}/status").json()
+    assert status["restart_needed"] is None and status["restart_for"] == []
+    able.close()

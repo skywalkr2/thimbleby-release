@@ -783,7 +783,8 @@ export const api = {
   testNoticeMail: () => call<S["NoticeMailTestResult"]>("POST", "notifications/mail/test"),
   testNotify: (target: S["NotifyTestIn"]["target"]) => call<S["NotifyTestResult"]>("POST", "notifications/test", { target } satisfies S["NotifyTestIn"]),
   /** Installs (or updates) an add-on from the release its catalog entry names. It isn't turned on, and it is used after a restart. */
-  installPack: (name: string) => call<S["PackInstalled"]>("POST", `packs/${id(name)}/install`),
+  /** With `thenOn`, the screen turns the add-on on next: that turn-on is what the app takes in. */
+  installPack: (name: string, thenOn = false) => call<S["PackInstalled"]>("POST", `packs/${id(name)}/install${thenOn ? "?then_on=true" : ""}`),
   /** Takes away an add-on the app installed from the screen; it has to be off first. Used after a restart. */
   removePack: (name: string) => call<S["PackInstalled"]>("POST", `packs/${id(name)}/uninstall`),
   /** The person's first go: starts every run waiting for it. */

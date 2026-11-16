@@ -2569,11 +2569,45 @@ class ScheduleSettings(ConfigModel):
         return self
 
 
+class CarrierPage(ConfigModel):
+    id: str = Field(
+        "",
+        min_length=1,
+        description="What a setting names the carrier by; an entry with a shipped carrier's id replaces it.",
+    )
+    words: list[str] = Field(
+        default_factory=list,
+        description="Words of the carrier's name as a mail writes it. A parcel's carrier that holds all of them, in "
+        "any order and in any capitals, is this carrier.",
+    )
+    page: str = Field(
+        "",
+        description="The carrier's public tracking page for one parcel, as a web address without its https:// start "
+        "and with {number} where the tracking number goes. The schedule's Track link opens it and shows its real "
+        "domain.",
+    )
+
+    @field_validator("page")
+    @classmethod
+    def _tracking_page(cls, value: str) -> str:
+        if value and (
+            "://" in value or value.startswith("/") or "{number}" not in value or "." not in value.split("/")[0]
+        ):
+            raise ValueError("a tracking page is a web address without https://, with {number} where the number goes")
+        return value
+
+
 class TodaySettings(ConfigModel):
     mail_hours: int = Field(
         24, ge=1, le=336, description="How far back, in hours, Today's list of what came in reaches."
     )
     mail_max: int = Field(50, ge=1, le=500, description="The most messages Today lists at once.")
+    delivery_carriers_extra: list[CarrierPage] = Field(
+        default_factory=list,
+        description="Carriers of your own whose tracking page the schedule's Track link opens for a parcel, each with "
+        "the words of its name and its page address. They are added to the carriers the app already knows; an entry "
+        "with a shipped carrier's id replaces it.",
+    )
     agenda_days_ahead: int = Field(
         6, ge=0, le=14, description="How many days after today the agenda also shows (0: today only)."
     )
@@ -2747,8 +2781,14 @@ class WalkthroughSettings(ConfigModel):
         ],
         description="Words a mail address starts with (before the @ sign, up to the first dot, dash or number) when it "
         "is a role or a service rather than a person, including unsubscribe and bounce addresses. The people step "
-        "never suggests such an address, nor one whose local part holds a long code (a run of eight or more letters "
-        "and digits that is hexadecimal or at least half digits).",
+        "never suggests such an address, nor one whose local part, or the tag after a plus sign in it, holds a long "
+        "code (a run of eight or more letters and digits that is hexadecimal or at least half digits).",
+    )
+    not_people_domain_words: list[str] = Field(
+        default_factory=lambda: ["reply", "replies", "respond", "responses", "bounce", "bounces", "mailer"],
+        description="Words that name automated replying or bouncing when one is a whole word of the first part of an "
+        "address's domain (the `replies` in an address at `replies.example.com`). The people step never suggests an "
+        "address at such a domain: the service made it, not a person.",
     )
     not_people_names: list[str] = Field(
         default_factory=lambda: [

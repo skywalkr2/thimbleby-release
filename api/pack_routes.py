@@ -214,10 +214,11 @@ def build_pack_router(ws: Workspace, cfg: Config, store: Store, worker: Worker) 
         )
 
     @r.post("/packs/{pack_id}/install")
-    def install(pack_id: str) -> PackInstalled:
+    def install(pack_id: str, then_on: bool = False) -> PackInstalled:
         """Install (or update) an add-on from the release file its catalog entry names, checked against the entry's
         checksum. It isn't turned on; the app takes it in at once, in place, where this copy can swap itself, else
-        after the restart the person chooses."""
+        after the restart the person chooses. With `then_on` the screen turns it on next: that turn-on is what the app
+        takes in, once, so the install asks for nothing by itself and the swap never cuts off the turn-on."""
         from engine.secrets import SecretError, resolve_secret
 
         if cfg.server.mode != "local":
@@ -279,8 +280,9 @@ def build_pack_router(ws: Workspace, cfg: Config, store: Store, worker: Worker) 
         if any(host.active(name) for name in {pack_id, *together}):
             # A running add-on was updated: work waits for the swap rather than mix old and new files.
             worker.add_ons_changed()
-        # The app takes in what the person just installed by replacing itself in place, where this copy can.
-        applying = apply_in_place()
+        # The app takes in what the person just installed by replacing itself in place, where this copy can; when the
+        # screen turns it on next, that turn-on does it instead.
+        applying = False if then_on else apply_in_place()
         return PackInstalled(
             name=done.name,
             version=done.version,

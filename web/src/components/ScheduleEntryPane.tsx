@@ -38,7 +38,22 @@ export function EntryDetails(props: { entry: Entry; date: string | null; calenda
     ...(alsoIn(entry, props.calendars).length > 0 ? [[t("schedule.pane.also_in"), alsoIn(entry, props.calendars).join(", ")] as [string, React.ReactNode]] : []),
     ...(entry.side ? [[t("schedule.pane.side"), <SideMark side={entry.side} />] as [string, React.ReactNode]] : []),
     ...(entry.kind === "due" && props.date ? [[t("schedule.pane.due"), day(props.date)] as [string, React.ReactNode]] : []),
-    ...(entry.delivery ? [[t("schedule.pane.delivery"), [range, ...delivery].filter(Boolean).join(" · ")] as [string, React.ReactNode]] : []),
+    ...(entry.delivery
+      ? [
+          [
+            t("schedule.pane.delivery"),
+            <>
+              {[range, ...delivery].filter(Boolean).join(" · ")}
+              {entry.delivery.track && (
+                <>
+                  {" · "}
+                  <SafeLink label={t("today.agenda.delivery.track")} url={entry.delivery.track} />
+                </>
+              )}
+            </>,
+          ] as [string, React.ReactNode],
+        ]
+      : []),
   ];
   const changeable = entry.kind === "due" || entry.kind === "delivery" ? null : entry.own ? entry.snapshot : (entry.entry ?? null);
   // Moving and calling off an entry that has a record of its own (the app's own entry, or a connected event the app keeps one for).

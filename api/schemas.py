@@ -2919,8 +2919,12 @@ class DeliveryView(BaseModel):
     """What makes an own calendar entry a delivery: the parcel or order and how far it has got."""
 
     order: str | None = Field(None, description="The order number, as the mail gave it.")
-    tracking: str | None = Field(None, description="The tracking number, as the mail gave it.")
     carrier: str | None = Field(None, description="Who carries it, as the mail gave it.")
+    track: str | None = Field(
+        None,
+        description="The carrier's public tracking page for this parcel, when the carrier is known; untrusted, so "
+        "show its real domain. The tracking number itself is never sent to a screen as text.",
+    )
     status: Literal["on_its_way", "out_for_delivery", "arrived"] = Field(
         "on_its_way", description="How far it has got; it only moves forward."
     )
@@ -2987,7 +2991,7 @@ class AgendaItemView(BaseModel):
     )
     delivery: DeliveryView | None = Field(
         None,
-        description="For an own entry that is a parcel or order on its way: its order, tracking number, carrier and "
+        description="For an own entry that is a parcel or order on its way: its order, carrier, tracking page and "
         "status. One whose `dated` is false has no days (`days` is empty) and is shown under 'On its way'.",
     )
     side: str | None = Field(

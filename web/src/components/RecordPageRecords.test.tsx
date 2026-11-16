@@ -338,7 +338,7 @@ test("an entry with nobody on it has no list of people, and one the person organ
   expect(within(section).queryByText(/Your answer/)).toBeNull();
 });
 
-test("a delivery entry's page says its status, carrier and numbers in words, never the stored object", async () => {
+test("a delivery entry's page says its status, carrier and order in words, never the stored object or the tracking number", async () => {
   const delivery = { order: "ORD-4471-20", tracking: "TRK000123456", carrier: "Example Freight", status: "out_for_delivery", dated: true };
   api("event", "EVT-8", { title: "Parcel from the corner shop", start: "2030-03-08", end: "2030-03-10", delivery }, page({ kind: "event", id: "EVT-8", name: "Parcel from the corner shop" }), {
     "GET plugin-actions?kind=event&id=EVT-8": () => [],
@@ -349,7 +349,7 @@ test("a delivery entry's page says its status, carrier and numbers in words, nev
   const row = (await within(details).findByText("Delivery")).closest("div") as HTMLElement;
   expect(row).toHaveTextContent("Out for delivery");
   expect(row).toHaveTextContent("Carried by Example Freight");
-  expect(row).toHaveTextContent("Tracking TRK000123456");
+  expect(row).not.toHaveTextContent("TRK000123456");
   expect(row).toHaveTextContent("Order ORD-4471-20");
   expect(details).not.toHaveTextContent(/\[object|\{|out_for_delivery|Dated/);
   first.unmount();

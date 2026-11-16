@@ -13,6 +13,7 @@ const TODAY = "2026-10-11";
 const FIRST = "2026-10-12";
 const LAST = "2026-10-14";
 const TRACKING = "TRK000123456";
+const TRACK = `${"https"}://tracking.example.com/track?number=${TRACKING}`;
 const CARRIER = "Example Freight";
 
 type Delivery = NonNullable<S["AgendaItemView"]["delivery"]>;
@@ -30,13 +31,13 @@ function parcel(title: string, delivery: Partial<Delivery>, over: Partial<S["Age
     own: true,
     open_items: 0,
     days: [FIRST, "2026-10-13", LAST],
-    delivery: { order: "ORD-4471-20", tracking: TRACKING, carrier: CARRIER, status: "on_its_way", dated: true, ...delivery },
+    delivery: { order: "ORD-4471-20", carrier: CARRIER, track: TRACK, status: "on_its_way", dated: true, ...delivery },
     ...over,
   };
 }
 
 /** A delivery with no date yet: on no day. */
-const undated = (title: string) => parcel(title, { dated: false, tracking: null, carrier: null }, { start: TODAY, end: null, days: [] });
+const undated = (title: string) => parcel(title, { dated: false, track: null, carrier: null }, { start: TODAY, end: null, days: [] });
 
 function open(agenda: S["AgendaItemView"][], extra: Routes = {}) {
   fakeApi({
@@ -98,7 +99,7 @@ test("a delivery that has arrived says Arrived in words, and one out for deliver
   expect(row("Parcel two")).not.toHaveTextContent("Arrived");
 });
 
-test("the schedule screen shows a delivery's range, carrier, tracking number and Arrived in words", async () => {
+test("the schedule screen shows a delivery's range, carrier, Track link and Arrived in words", async () => {
   window.localStorage.setItem("cockpit:schedule-view", "day");
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener: () => undefined, removeEventListener: () => undefined }));
   const entry = (date: string): S["ScheduleEntryView"] => ({
@@ -129,6 +130,8 @@ test("the schedule screen shows a delivery's range, carrier, tracking number and
   const pane = await screen.findByRole("dialog");
   expect(pane).toHaveTextContent(`${monthDay(FIRST)} – ${monthDay(LAST)}`);
   expect(pane).toHaveTextContent(CARRIER);
-  expect(pane).toHaveTextContent(`Tracking ${TRACKING}`);
+  expect(within(pane).getByRole("link", { name: "Track" })).toHaveAttribute("href", TRACK);
+  expect(pane).toHaveTextContent("tracking.example.com");
+  expect(pane).not.toHaveTextContent(TRACKING);
   expect(pane).toHaveTextContent("Arrived");
 });

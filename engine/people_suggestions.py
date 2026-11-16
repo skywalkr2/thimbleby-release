@@ -1,9 +1,9 @@
 """People the person writes to, suggested in the walkthrough's people step (design 7.8): taken from the mail the
 sources already read, never asked of a service. When the person's own sent mail is read, the people it was sent to
 count; otherwise the people the mail came from, and only senders who look like people. Anyone already on file, the
-person themselves, automated, role and company senders, addresses whose local part is a code (unsubscribe and
-bounce addresses), bulk mail, set-aside senders and the mail kinds the app tracks
-are left out. Reads only: adding someone is the People route's own add.
+person themselves, automated, role and company senders, addresses whose local part or +tag is a code (unsubscribe and
+bounce addresses), addresses at a domain that names automated replying, bulk mail, set-aside senders and the mail
+kinds the app tracks are left out. Reads only: adding someone is the People route's own add.
 """
 
 from __future__ import annotations
@@ -119,14 +119,21 @@ def local_is_code(local: str) -> bool:
     least `_CODE_LENGTH` letters and digits, with a digit, that is hexadecimal or at least half digits (the identifier
     in a mailing list's unsubscribe or bounce address), or a run of at least `_SCATTERED_LENGTH` with digits in
     `_SCATTERED_RUNS` or more separate places (a mixed-case identifier). A name with digits in it (`sam.kin1985`)
-    is not a code. A `+tag` after the name is ignored, since a person's own address may carry one."""
-    for word in _LOCAL_MARKS.split(local.lower().partition("+")[0]):
+    is not a code. A short `+tag` after the name is fine, since a person's own address may carry one, but a tag that is
+    itself a code makes the address machine-made (a service's per-message reply address)."""
+    for word in _LOCAL_MARKS.split(local.lower()):
         digits = sum(c.isdigit() for c in word)
         if len(word) >= _CODE_LENGTH and digits and (_HEX.fullmatch(word) or digits * 2 >= len(word)):
             return True
         if len(word) >= _SCATTERED_LENGTH and len(_DIGIT_RUNS.findall(word)) >= _SCATTERED_RUNS:
             return True
     return False
+
+
+def domain_is_automated(domain: str, words: set[str]) -> bool:
+    """Whether the first part of an address's domain names automated replying or bouncing, one of `words` being a
+    whole word of it (`replies` in `replies.example.com`, `bounce` in `bounce-mail.example.com`)."""
+    return any(w in words for w in _LOCAL_MARKS.split(domain.lower().partition(".")[0]))
 
 
 def _first_word(local: str) -> str:
@@ -162,6 +169,7 @@ def suggest(store: Any, cfg: Any, limit: int) -> list[Suggestion]:
     automated = tuple(w.lower() for w in cfg.watch.automated_mail.senders)
     roles = {w.strip().lower() for w in settings.not_people_addresses if w.strip()}
     companies = {w.strip().lower() for w in settings.not_people_names if w.strip()}
+    domain_words = {w.strip().lower() for w in settings.not_people_domain_words if w.strip()}
     blocked_addresses, blocked_domains = _blocked(store, cfg, sources)
     view = store.read()
     counts: Counter[str] = Counter()
@@ -181,6 +189,7 @@ def suggest(store: Any, cfg: Any, limit: int) -> list[Suggestion]:
                 or local.startswith(automated)
                 or _first_word(local) in roles
                 or local_is_code(local)
+                or domain_is_automated(domain, domain_words)
                 or (display and _names_a_company(display, companies))
             ):
                 continue

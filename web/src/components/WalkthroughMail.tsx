@@ -572,7 +572,7 @@ function ServiceRow(props: { service: Service; title: string; plain: boolean; on
     setNeedsKey(false);
     setKeySaved(false);
     try {
-      if (service.state === "not_installed") await api.installPack(service.id);
+      if (service.state === "not_installed") await api.installPack(service.id, true);
       // The settings as they are now, so a change made meanwhile is noticed rather than overwritten.
       const current = await freshSettings(client);
       const saved = await write(() => api.packOn(service.id, current.fingerprint), { also: ["packs", "status", "sign-ins", "watch"] });

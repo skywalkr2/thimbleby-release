@@ -228,6 +228,17 @@ def _on_its_way(data: dict[str, Any]) -> bool:
     return bool(delivery) and not delivery.get("dated", True) and delivery.get("status") != "arrived"
 
 
+def _delivery_view(delivery: dict[str, Any] | None, cfg: Any) -> dict[str, Any] | None:
+    """A delivery as the schedule shows it: what the entry holds without the tracking number (which is never shown as
+    text), and the carrier's tracking page for it when the carrier is known (`track`)."""
+    if not delivery:
+        return None
+    from engine import delivery_tracking
+
+    page = delivery_tracking.page_for(cfg, delivery.get("carrier"), delivery.get("tracking")) if cfg else None
+    return {**{k: v for k, v in delivery.items() if k != "tracking"}, "track": page}
+
+
 def _own_entries(
     store: Any, days: list[date], here: ZoneInfo, today: date, undated: bool = False, cfg: Any = None
 ) -> list[AgendaItem]:
@@ -286,7 +297,7 @@ def _own_entries(
                     series=data.get("series"),
                     open_items=_open_on(view, entry, today, here) if data.get("series") else 0,
                     agenda=agenda_module.for_entry(view, entry, today, here),
-                    delivery=data.get("delivery"),
+                    delivery=_delivery_view(data.get("delivery"), cfg),
                     repeats=(data["repeat"]["every"] if data.get("repeat") else None),
                     occurrence=_local_text(was, here) if was is not None else None,
                     made_by="assistant" if entry.id in made else "person",

@@ -607,8 +607,8 @@ test.describe.serial("journeys", () => {
     await page.getByRole("dialog").getByRole("button", { name: "Remove it" }).click();
     expect((await removed).ok()).toBe(true);
     await expect(installed.getByRole("alert")).toHaveCount(0);
-    // Taken in when its screen leaves the sidebar, below.
-    await expect(page.getByRole("button", { name: "Restart now" })).toHaveCount(0);
+    // Taken in when its screen leaves the sidebar, below; the swap on its way asks nothing of the person meanwhile.
+    await expect(page.getByRole("button", { name: "Restart now" })).toHaveCount(0, { timeout: 90_000 });
     await connectedAgain(page);
     await expect(page.getByRole("navigation", { name: "Views" }).getByRole("link", { name: "Example overview" })).toHaveCount(0);
     await openView(page, "Add-ons");

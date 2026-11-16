@@ -98,6 +98,7 @@ def poll_inbox(settings: InboxSettings, state: dict, context) -> Poll:
                     categories=tuple(message.get("categories", ())),
                     message_id=message.get("message_id"),
                     references=tuple(message.get("references", ())),
+                    participants=tuple(message.get("recipients", ())),
                 ),
             )
         )

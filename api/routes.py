@@ -9,6 +9,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -227,7 +228,7 @@ from engine.ai.smoke import ai_state
 from engine.applier import move_stage, pick_owner, release
 from engine.assistant_status import assistant_state
 from engine.backup import run_backup, state
-from engine.config import Config
+from engine.config import Config, ConfigError, load_config
 from engine.contacts import all_values, reach_lists, values_of
 from engine.corrections import answered_assistant
 from engine.dispatcher import (
@@ -339,6 +340,14 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
 
     def changed() -> None:
         events.changed()
+
+    def current() -> Config:
+        """The settings as the files hold them now: a sign-in or the person's own change adds sources after the app
+        started, and what a screen shows about them must include those."""
+        try:
+            return load_config(ws.config_dir, env=dict(os.environ))
+        except ConfigError:
+            return cfg
 
     def need(kind: str, record_id: str) -> None:
         if store.read().get(kind, record_id) is None:
@@ -764,10 +773,11 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
 
         read = failed = busy = handed = 0
         problems: list[str] = []
-        for source in [s for s in cfg.watch.sources if s.enabled]:
+        live = current()
+        for source in [s for s in live.watch.sources if s.enabled]:
             name = source.label or source.id
             try:
-                result = watch.refresh(ws, store, cfg, source.id)
+                result = watch.refresh(ws, store, live, source.id)
             except Exception:  # one source's failure must not stop the rest
                 log.exception("reading a source failed")
                 failed += 1
@@ -1571,9 +1581,10 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
             requests=RequestCounts(**counts),
             network_wait=NetworkWait(count=len(waiting), since=min(waiting)) if waiting else None,
             version=events.version,
-            restart_needed=worker.restart_needed,
+            # A restart already asked for starts by itself between requests: nothing is asked of the person meanwhile.
+            restart_needed=None if worker.restart_requested else worker.restart_needed,
             can_restart=worker.can_restart,
-            restart_for=list(worker.restart_for),
+            restart_for=[] if worker.restart_requested else list(worker.restart_for),
         )
 
     @r.get("/notes")
@@ -2643,7 +2654,8 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
         file, for the people step to offer each with an Add. Reads only; nothing is asked of a service."""
         from engine import people_suggestions
 
-        found = people_suggestions.suggest(store, cfg, cfg.ui.walkthrough.suggested_people)
+        now = current()
+        found = people_suggestions.suggest(store, now, now.ui.walkthrough.suggested_people)
         return PeopleSuggestionsView(people=[PersonSuggestion(**asdict(f)) for f in found])
 
     @r.post("/setup/people-paste/preview")

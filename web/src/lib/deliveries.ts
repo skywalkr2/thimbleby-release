@@ -22,11 +22,12 @@ export function deliveryRange(item: Item, t: T): string | null {
   return first === last ? null : t("today.agenda.range", { start: monthDay(first), end: monthDay(last) });
 }
 
-/** The carrier and the tracking number, each as it is written, for the line under the title. */
-export function deliveryDetails(item: Pick<S["AgendaItemView"], "delivery">, t: T): string[] {
+/** The carrier as it is written, for the line under the title. The tracking number is never shown as text: the carrier's
+ * own page for the parcel is the Track link beside it. */
+export function deliveryDetails(item: Pick<S["AgendaItemView"], "delivery">): string[] {
   const { delivery } = item;
   if (!delivery) return [];
-  return [delivery.carrier, delivery.tracking ? t("today.agenda.delivery.tracking", { number: delivery.tracking }) : null].filter((x): x is string => !!x);
+  return [delivery.carrier].filter((x): x is string => !!x);
 }
 
 /** "Arrived" or "Out for delivery" in words, for a delivery that has got that far; nothing while it is on its way. */
@@ -35,8 +36,8 @@ export function deliveryStatusWord(item: Pick<S["AgendaItemView"], "delivery">, 
   return status === "arrived" ? t("today.agenda.delivery.arrived") : status === "out_for_delivery" ? t("today.agenda.delivery.out") : null;
 }
 
-/** A delivery as the lines of a record page's details: its status, carrier, tracking number and order number in plain
- * words, and that its date is not known yet; never the stored object. */
+/** A delivery as the lines of a record page's details: its status, carrier and order number in plain words, and that its
+ * date is not known yet; never the stored object and never the tracking number. */
 export function deliveryLines(delivery: Delivery | null | undefined, t: T): string[] {
   if (!delivery) return [];
   const status = deliveryStatusWord({ delivery }, t) ?? t("today.agenda.on_its_way");
@@ -44,7 +45,6 @@ export function deliveryLines(delivery: Delivery | null | undefined, t: T): stri
     status,
     !delivery.dated && delivery.status !== "arrived" ? t("today.agenda.delivery.no_date") : null,
     delivery.carrier ? t("record.delivery.carrier", { carrier: delivery.carrier }) : null,
-    delivery.tracking ? t("today.agenda.delivery.tracking", { number: delivery.tracking }) : null,
     delivery.order ? t("record.delivery.order", { number: delivery.order }) : null,
   ].filter((x): x is string => !!x);
 }

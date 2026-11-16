@@ -2134,7 +2134,7 @@ describe("Mail and calendar", () => {
     await user.click(within(mine).getByRole("button", { name: oneButton }));
     await user.click(await screen.findByRole("button", { name: "Sign in to Service mail-addon" }, { timeout: 3000 }));
     await waitFor(() => expect(popup.location.href).toBe(login), { timeout: 3000 });
-    expect(calls.some((c) => c.route === "POST packs/mail-addon/install")).toBe(false);
+    expect(calls.some((c) => c.route === "POST packs/mail-addon/install?then_on=true")).toBe(false);
     expect(calls.some((c) => c.route === "POST packs/mail-addon/on")).toBe(true);
   });
 
@@ -2952,7 +2952,7 @@ describe("Mail and calendar", () => {
     await waitFor(() => expect(calls.some((c) => c.route === "POST packs/mail-addon/token")).toBe(true));
     expect(calls.find((c) => c.route === "POST packs/mail-addon/token")!.body).toMatchObject({ token: "pasted-key-value" });
     await user.click(await screen.findByRole("button", { name: "Try again" }));
-    await waitFor(() => expect(calls.filter((c) => c.route === "POST packs/mail-addon/install")).toHaveLength(2));
+    await waitFor(() => expect(calls.filter((c) => c.route === "POST packs/mail-addon/install?then_on=true")).toHaveLength(2));
   });
 
   test("with a private download refused, Or connect your mailbox with an app password goes to the guided mailbox", async () => {

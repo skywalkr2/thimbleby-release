@@ -343,6 +343,46 @@ test.describe.serial("acceptance scenario", () => {
     await page.setViewportSize({ width: 1280, height: 720 });
   });
 
+  // A delivery on the schedule shows its carrier and a Track link with the carrier page's real domain, never the long
+  // tracking number as text, and nothing is wider than the window. The agenda is answered here, since the shared
+  // workspace holds no delivery.
+  test("a delivery on Today shows its carrier and a Track link with its real domain, never the tracking number, at every width", async ({ page }) => {
+    const number = "TRK" + "0".repeat(23) + "7";
+    const today = new Date().toISOString().slice(0, 10);
+    const parcel = {
+      snapshot: "EVT-delivery-1",
+      source: "",
+      title: "Corner shop delivery: a pair of shoes",
+      start: today,
+      end: null,
+      all_day: true,
+      where: null,
+      link: null,
+      cancelled: false,
+      days: [today],
+      own: true,
+      open_items: 0,
+      agenda: [],
+      views: [],
+      also_in: [],
+      delivery: { order: null, carrier: "Example Freight", track: `${"https"}://tracking.example.com/track?number=${number}`, status: "on_its_way", dated: true },
+    };
+    await page.route("**/api/today/agenda", (route) => route.fulfill({ json: [parcel] }));
+    await signIn(page);
+    const row = page.locator("[data-event]").filter({ hasText: "Corner shop delivery" });
+    await expect(row).toBeVisible();
+    await expect(row).toContainText("Example Freight");
+    const track = row.getByRole("link", { name: "Track" });
+    await expect(track).toHaveAttribute("href", /^https:\/\/tracking\.example\.com\/track\?number=/);
+    await expect(row).toContainText("tracking.example.com");
+    await expect(row).not.toContainText(number);
+    for (const width of [320, 390, 768, 1280]) {
+      await page.setViewportSize({ width, height: 900 });
+      expect(await widerThanWindow(page, `Today at ${width}`)).toEqual([]);
+    }
+    await page.setViewportSize({ width: 1280, height: 720 });
+  });
+
   test("a new workspace shows the setup line, and what the assistant needs is in the status popover", async ({ page }) => {
     await signIn(page);
     const line = page.getByRole("region", { name: /^Finish setting up/ });

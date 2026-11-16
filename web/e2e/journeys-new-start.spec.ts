@@ -242,6 +242,12 @@ test.describe.serial("journey: new start", () => {
 
     // 7. People: skipping is fine.
     await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible();
+    // Signing in read the person's sent mail, so the people it went to are offered, with no extra step. The reply
+    // address a newsletter service made for one message is not a person and is not offered, by name or by address.
+    const suggested = main.locator("[data-people-suggestions]");
+    await expect(suggested).toContainText("Taylor Brandt", { timeout: 60_000 });
+    await expect(suggested).toContainText("Morgan Voss");
+    await expect(suggested).not.toContainText(/responses|8c4261ed|replies\./i);
     await visit(page);
     await main.getByRole("button", { name: "I'll do this later" }).click();
 

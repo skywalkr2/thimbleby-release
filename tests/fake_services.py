@@ -558,6 +558,16 @@ SENT_PROMISE_FROM = "will send the revised budget by 2026-11-05"
 SENT_SUBJECT = "Revised offsite budget"
 
 
+#: Who the persons sent mail went to: two people, and the per-message reply address a newsletter service makes (an
+#: address with a code after a plus sign at a replying domain), which is never a person to add.
+SENT_RECIPIENTS = [
+    "Taylor Brandt <taylor.brandt@example.com>",
+    "Morgan Voss <morgan.voss@example.com>",
+    "Responses 8c4261ed 0c87 44f0 Bed8 4d9b5892e623"
+    " <responses+8c4261ed-0c87-44f0-bed8-4d9b5892e623@replies.bulletin.example.com>",
+]
+
+
 def sent_messages(now: datetime) -> list[dict]:
     """The person's own sent mail: one message, from them, a few days old, holding a promise found nowhere else."""
     me = people()[0]
@@ -565,7 +575,7 @@ def sent_messages(now: datetime) -> list[dict]:
         "s-1", (me, address_of(me)), SENT_SUBJECT, timedelta(days=3), False, f"{me} {SENT_PROMISE_FROM}.", now=now
     )
     # The message's own Message-ID header: with several accounts every mailbox holding the copy has the same one.
-    return [{**sent, "message_id": "<revised-offsite-budget@example.com>"}]
+    return [{**sent, "message_id": "<revised-offsite-budget@example.com>", "recipients": SENT_RECIPIENTS}]
 
 
 def events(now: datetime, evening: bool = False) -> list[dict]:
