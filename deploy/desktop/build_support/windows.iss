@@ -71,12 +71,19 @@ UninstalledAll=Thimbleby was removed from this computer. Your work is still in A
 UninstalledMost=Thimbleby was removed from this computer. Your work is still in AppData\Local\Thimbleby.
 ButtonInstall=Install
 ButtonFinish=Finish
+; Inno draws its own Yes and No box for the removal question, with these captions.
+ButtonYes=&Remove the app
+ButtonNo=&Keep the app
 
 [CustomMessages]
 english.TaskDesktop=Put Thimbleby on the desktop
 english.TaskSignIn=Start Thimbleby when I sign in to Windows
 english.InstallsTo=Installs to %1
 english.RunNow=Open Thimbleby now
+english.WorkStaysTitle=Thimbleby was removed
+english.WorkStaysText=Your work is still in AppData\Local\Thimbleby.
+english.OpenWorkFolder=Open the folder
+english.CloseButton=Close
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:TaskDesktop}"; Flags: checkedonce
@@ -126,8 +133,20 @@ begin
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  Labels: TArrayOfString;
+  ErrorCode: Integer;
 begin
+  SetArrayLength(Labels, 2);
   { Whichever way "start at sign-in" was turned on, removing the app leaves no entry that points at nothing. }
   if CurUninstallStep = usPostUninstall then
     RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Thimbleby');
+  { The last page links the folder the work stays in. The folder is only opened, never changed. }
+  if (CurUninstallStep = usDone) and not UninstallSilent then
+  begin
+    Labels[0] := CustomMessage('OpenWorkFolder');
+    Labels[1] := CustomMessage('CloseButton');
+    if TaskDialogMsgBox(CustomMessage('WorkStaysTitle'), CustomMessage('WorkStaysText'), mbInformation, MB_YESNO, Labels, 0) = IDYES then
+      ShellExec('open', ExpandConstant('{localappdata}\Thimbleby'), '', '', SW_SHOWNORMAL, ewNoWait, ErrorCode);
+  end;
 end;

@@ -130,6 +130,9 @@ export const api = {
   erasePlan: () => call<S["ErasePlanView"]>("GET", "erase"),
   /** Deletes what the list with this token shows: the workspace, its history and its backups. The app stops after it. */
   erase: (body: S["EraseIn"]) => call<S["EraseDone"]>("POST", "erase", body),
+  removalCard: () => call<S["RemovalView"]>("GET", "desktop/removal"),
+  removalOpenFolder: () => call<void>("POST", "desktop/removal/open-folder"),
+  removalShowApp: () => call<void>("POST", "desktop/removal/show-app"),
   changes: () => call<S["ChangeItem"][]>("GET", "changes"),
   todayQueue: () => call<S["QueueLineView"][]>("GET", "today/queue"),
   /** What waits for the working hours: how many lines, and when the first arrives. */

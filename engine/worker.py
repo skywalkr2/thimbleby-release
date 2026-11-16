@@ -100,6 +100,7 @@ LIVE_KEYS = (
     "dispatch.knowledge.person_look_entries",
     "dispatch.knowledge.person_look_min_messages",
     "dispatch.knowledge.person_look_series",
+    "dispatch.knowledge.person_look_slot_weeks",
     "dispatch.knowledge.pack_searches",
 )
 

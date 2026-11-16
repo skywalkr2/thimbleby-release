@@ -39,6 +39,7 @@ from api.calendar_routes import build_calendar_router
 from api.correction_routes import build_correction_router
 from api.data_form_routes import build_data_form_router
 from api.day_routes import build_day_router
+from api.desktop_routes import build_desktop_router
 from api.erase_routes import build_erase_router
 from api.feedback_routes import build_feedback_router
 from api.first_promises_routes import build_first_promises_router
@@ -518,6 +519,7 @@ def create_app(
     inner.include_router(build_feedback_router(ws, cfg, store, worker))
     inner.include_router(build_records_router(ws, cfg, store, events, worker))
     inner.include_router(build_erase_router(ws, cfg, store, worker, on_erased))
+    inner.include_router(build_desktop_router(ws, cfg))
     inner.state.worker = worker
     inner.state.store = store
     inner.state.events = events

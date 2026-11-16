@@ -63,6 +63,8 @@ def page(words: Mapping[str, str], version: str = "", brand: Path = brandmark.BR
         "step_count": str(len(STEPS)),
         "copy_details": html.escape(words["desktop.copy_details"]),
         "try_again": html.escape(words["desktop.try_again"]),
+        "earlier_use": html.escape(words.get("desktop.earlier.use", "")),
+        "earlier_fresh": html.escape(words.get("desktop.earlier.fresh", "")),
         **marks,
     }
     text = PAGE.read_text(encoding="utf-8")
@@ -88,3 +90,11 @@ def script_tick(done: int) -> str:
 
 def script_problem(title: str, text: str) -> str:
     return f"problem({json.dumps(title)}, {json.dumps(text)})"
+
+
+def script_choice(title: str, found: str, facts: str, text: str) -> str:
+    return f"choice({json.dumps(title)}, {json.dumps(found)}, {json.dumps(facts)}, {json.dumps(text)})"
+
+
+def script_resume(title: str, sub: str) -> str:
+    return f"resume({json.dumps(title)}, {json.dumps(sub)})"

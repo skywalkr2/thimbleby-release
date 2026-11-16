@@ -120,19 +120,69 @@ def _clock(value: Any, here: Any) -> datetime | None:
     return moment.astimezone(here) if moment.tzinfo else moment.replace(tzinfo=here)
 
 
+def _slot_of(event: dict[str, Any], here: Any) -> tuple[str, str, str] | None:
+    """Where a timed calendar entry sits in a week: the weekday (lower case), its start and its end as HH:MM on the
+    person's clock. None for a day-long entry, one with no readable time or one that ends on another day."""
+    if event.get("all_day"):
+        return None
+    start, end = _clock(event.get("start"), here), _clock(event.get("end"), here)
+    if start is None or end is None or end.date() != start.date() or end <= start:
+        return None
+    return start.strftime("%A").lower(), start.strftime("%H:%M"), end.strftime("%H:%M")
+
+
+def _decided_slots(view: Any) -> set[tuple[str, str, str]]:
+    """The slots (weekday, start, end) of routines already kept, waiting for the person or discarded for good: a slot
+    the person has ruled on is not shown again, whatever it is called now."""
+    decided = _decisions(view)
+    found: set[tuple[str, str, str]] = set()
+    for entry in view.list("glossary_entry"):
+        routine = entry.data.get("routine")
+        if not routine:
+            continue
+        status = entry.data.get("status")
+        said_no = status == "discarded" and (decided.get(entry.id) or ("", None))[0] == "discarded"
+        if status in ("active", "proposed") or said_no:
+            found |= {(day, routine["start"], routine["end"]) for day in routine["days"]}
+    return found
+
+
+def _slot_text(slot: tuple[str, str, str]) -> str:
+    return f"{slot[0].capitalize()} {slot[1]}-{slot[2]}"
+
+
 def series_lines(store: Any, cfg: Any) -> list[str]:
     """The calendar's repeating entries, one line each: the title, the day of the week and the time of its first date
-    and the repeat rule as its source wrote it. Titles and times only; entries called off or gone are left out."""
+    and the repeat rule as its source wrote it. Then the slots kept week after week with no repeat rule: entries with
+    the same title, weekday and times on at least `person_look_slot_weeks` different weeks. Titles and times only;
+    entries called off or gone are left out, and so is a slot a routine already holds (kept, waiting or discarded)."""
     if _stand_in_lines is not None:
         return list(_stand_in_lines[1])
-    limit = cfg.dispatch.knowledge.person_look_series
+    settings = cfg.dispatch.knowledge
+    limit = settings.person_look_series
     here = zone(cfg)
+    view = store.read()
+    ruled_on = _decided_slots(view)
+    names = _already_decided(view)
     seen: set[str] = set()
     lines: list[str] = []
-    snaps = [s for s in store.read().list("snapshot") if s.data.get("event") and not s.data.get("gone")]
+    snaps = [s for s in view.list("snapshot") if s.data.get("event") and not s.data.get("gone")]
+    titles: set[str] = set()
+    weeks: dict[tuple[str, tuple[str, str, str]], tuple[str, set[tuple[int, int]]]] = {}
     for snap in sorted(snaps, key=lambda s: (str(s.data.get("title")).lower(), s.id)):
         event = snap.data["event"]
-        if not event.get("repeats") or event.get("cancelled"):
+        if event.get("cancelled"):
+            continue
+        title = _one_line(snap.data.get("title"))
+        slot = _slot_of(event, here)
+        if not event.get("repeats"):
+            start = _clock(event.get("start"), here)
+            if slot is not None and start is not None and title:
+                _, found = weeks.setdefault((_norm(title), slot), (title, set()))
+                found.add(tuple(start.isocalendar()[:2]))
+            continue
+        titles.add(_norm(title))
+        if (slot is not None and slot in ruled_on) or _norm(title) in names:
             continue
         start = _clock(event.get("start"), here)
         when = "no time"
@@ -141,7 +191,14 @@ def series_lines(store: Any, cfg: Any) -> list[str]:
             end = _clock(event.get("end"), here)
             if end is not None and not event.get("all_day"):
                 when += end.strftime("-%H:%M")
-        line = f"{_one_line(snap.data.get('title'))} | {when} | repeats: {_one_line(event['repeats'])[:80]}"
+        line = f"{title} | {when} | repeats: {_one_line(event['repeats'])[:80]}"
+        if line not in seen:
+            seen.add(line)
+            lines.append(line)
+    for (key, slot), (title, found) in sorted(weeks.items(), key=lambda kv: (kv[1][0].lower(), kv[0][1])):
+        if len(found) < settings.person_look_slot_weeks or key in titles or key in names or slot in ruled_on:
+            continue
+        line = f"{title} | {_slot_text(slot)} | repeats: same time on {len(found)} different weeks, no repeat rule"
         if line not in seen:
             seen.add(line)
             lines.append(line)

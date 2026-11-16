@@ -15,5 +15,5 @@
     "skipLibCheck": true,
     "types": ["node", "vite/client", "vitest/globals", "@testing-library/jest-dom"]
   },
-  "include": ["src", "e2e", "visual", "vite.config.ts", "playwright.config.ts"]
+  "include": ["src", "e2e", "e2e-install", "visual", "vite.config.ts", "playwright.config.ts"]
 }

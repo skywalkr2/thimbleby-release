@@ -17,12 +17,18 @@ class Shell:
         self.calls = []
         self.problems = []
         self.retry = False
+        self.asked = []
+        self.answer = False
 
     def show_starting(self):
         self.calls.append("starting")
 
     def step(self, done):
         self.calls.append(("step", done))
+
+    def ask_earlier(self, path, sides, todos, people, used):
+        self.asked.append((path, sides, todos, people))
+        return self.answer
 
     def problem(self, kind, details):
         self.problems.append((kind, details))
@@ -75,6 +81,8 @@ def test_the_first_start_makes_the_workspace_with_no_template_and_runs_the_windo
     desktop.start(root, shell, launch=launch, environ=env)
     ws = resolve(root)
     assert (root / "config").is_dir() and ws.db_path.exists()
+    # The installed app's first workspace starts with the bundled parcels add-on on, with no Add-ons screen.
+    assert ws.config().workspace.plugins.enabled == ["parcels"]
     assert not (root / "data" / "plugins").exists() and "demo" not in {p.name for p in root.iterdir()}
     assert given["port"] == ws.config().server.port and given["folder"] == ws.private_dir
     assert given["readiness_path"] == "/thimble/api/health" and given["health"] == 200
@@ -198,3 +206,78 @@ def test_the_entry_opens_quietly_at_login_and_runs_the_start_in_the_shell(tmp_pa
     made.clear()
     desktop.main(env_for(tmp_path), tmp_path / "home", argv=[], make_shell=Entry)
     assert made["quiet"] is False
+
+
+def earlier_workspace_of(tmp_path, monkeypatch):
+    """A workspace made by the command-line version in the person's home folder, with one person in it."""
+    from engine.folder_names import DEFAULT_FOLDER
+    from engine.workspace import init_workspace
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    earlier = init_workspace(tmp_path / "home" / DEFAULT_FOLDER, git=False, you="Example Person")
+    (earlier.root / "notes.txt").write_text("my own file", encoding="utf-8")
+    return earlier.root
+
+
+def snapshot(folder):
+    return {
+        p.relative_to(folder): p.read_bytes()
+        for p in sorted(folder.rglob("*"))
+        if p.is_file() and ".thimbleby" not in p.parts and not p.name.endswith(("-shm", "-wal"))
+    }
+
+
+def run_start(root, shell, tmp_path):
+    started = []
+    desktop.start(root, shell, launch=lambda *a, **k: started.append(1), environ=env_for(tmp_path))
+    return started
+
+
+def test_the_first_run_asks_about_earlier_work_and_use_it_brings_in_a_copy_and_leaves_the_original(
+    tmp_path, monkeypatch
+):
+    earlier = earlier_workspace_of(tmp_path, monkeypatch)
+    before = snapshot(earlier)
+    root = tmp_path / "share" / "thimbleby" / desktop.WORKSPACE_FOLDER
+    shell = Shell()
+    shell.answer = True
+    assert run_start(root, shell, tmp_path) == [1]
+    path, sides, todos, people = shell.asked[0]
+    assert path.endswith(earlier.name) and path.startswith("~/") and people == 1 and sides >= 1 and todos == 0
+    assert (root / "notes.txt").read_text(encoding="utf-8") == "my own file"
+    assert resolve(root).db_path.is_file()
+    assert snapshot(earlier) == before  # the original is as it was
+    # Asked once: the workspace is there now, so the next start asks nothing.
+    shell.asked.clear()
+    run_start(root, shell, tmp_path)
+    assert shell.asked == []
+
+
+def test_start_fresh_makes_a_new_workspace_and_touches_nothing_of_the_earlier_one(tmp_path, monkeypatch):
+    earlier = earlier_workspace_of(tmp_path, monkeypatch)
+    before = snapshot(earlier)
+    root = tmp_path / "share" / "thimbleby" / desktop.WORKSPACE_FOLDER
+    shell = Shell()
+    assert run_start(root, shell, tmp_path) == [1] and len(shell.asked) == 1
+    assert not (root / "notes.txt").exists() and resolve(root).db_path.is_file()
+    assert snapshot(earlier) == before
+    shell.asked.clear()
+    run_start(root, shell, tmp_path)
+    assert shell.asked == []
+
+
+def test_quitting_the_question_makes_nothing(tmp_path, monkeypatch):
+    earlier_workspace_of(tmp_path, monkeypatch)
+    root = tmp_path / "share" / "thimbleby" / desktop.WORKSPACE_FOLDER
+    shell = Shell()
+    shell.answer = None
+    assert run_start(root, shell, tmp_path) == []
+    assert not root.exists()
+
+
+def test_with_no_earlier_work_nothing_is_asked(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    root = tmp_path / "share" / "thimbleby" / desktop.WORKSPACE_FOLDER
+    shell = Shell()
+    run_start(root, shell, tmp_path)
+    assert shell.asked == []

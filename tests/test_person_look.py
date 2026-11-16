@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.app import create_app
-from engine import person_look, proposals
+from engine import person_look, proposals, routines
 from engine.ai.adapters.stub import set_responder
 from engine.ai.router import Router
 from engine.dispatcher import process
@@ -356,9 +356,128 @@ def test_the_worker_queues_the_look_once_and_a_pass_of_requests_runs_it(env):
     assert store.read().get("request", first).data["state"] == "done" and entries(store)
 
 
+# ---- routines (S-0530) -----------------------------------------------------------------------------------------------
+
+
+def add_entry(store, cfg, title, start, end, repeats=None, day="2026-10-13"):
+    """A calendar entry on a day at times on the person's clock, with or without a repeat rule."""
+    here = zone(cfg)
+    event = {
+        "start": datetime.fromisoformat(f"{day}T{start}:00").replace(tzinfo=here).isoformat(),
+        "end": datetime.fromisoformat(f"{day}T{end}:00").replace(tzinfo=here).isoformat(),
+    }
+    if repeats:
+        event["repeats"] = repeats
+    with store.transaction() as tx:
+        tx.create(
+            "snapshot",
+            {
+                "source": "cal",
+                "key": f"{title}-{day}",
+                "title": title,
+                "content_hash": "",
+                "seen_at": NOW.isoformat(),
+                "event": event,
+            },
+            _W,
+        )
+
+
+def routines_of(store, status=None):
+    return [e for e in entries(store) if e.data.get("routine") and (status is None or e.data["status"] == status)]
+
+
+def test_a_weekly_entry_that_is_the_persons_own_habit_is_proposed_as_a_routine_with_its_line_and_waits_for_keep(env):
+    _, cfg, store, _ = env
+    add_entry(store, cfg, "Morning swim", "07:00", "08:00", "FREQ=WEEKLY;BYDAY=TU")
+    add_series(store)  # a weekly sync is a meeting with other people, not a habit
+    look(env)
+    (found,) = routines_of(store)
+    assert found.data["term"] == "Morning swim" and found.data["status"] == "proposed"
+    assert found.data["routine"] == {"days": ["tuesday"], "start": "07:00", "end": "08:00"}
+    assert found.data["evidence"]["quote"] == "Morning swim | Tuesday 07:00-08:00 | repeats: FREQ=WEEKLY;BYDAY=TU"
+    assert found.data["trust"] == "untrusted" and found.data["kept_by"] is None
+    # Proposed, it is no part of the week yet.
+    assert routines.kept(store.read()) == []
+
+
+def test_keeping_a_routine_makes_it_a_fact_the_steward_reads(env):
+    _, cfg, store, client = env
+    add_entry(store, cfg, "Morning swim", "07:00", "08:00", "FREQ=WEEKLY;BYDAY=TU")
+    look(env)
+    (found,) = routines_of(store)
+    done = client.post(f"/api/knowledge/{found.id}/keep", json={"read_version": found.version})
+    assert done.status_code == 200, done.text
+    (slot,) = routines.kept(store.read())
+    assert (slot.entry, slot.label, slot.days) == (found.id, "Morning swim", (1,))
+
+
+def test_a_discarded_routine_is_never_proposed_again_whatever_it_is_called_then(env):
+    ws, cfg, store, client = env
+    add_entry(store, cfg, "Morning swim", "07:00", "08:00", "FREQ=WEEKLY;BYDAY=TU")
+    look(env)
+    (found,) = routines_of(store)
+    assert client.post(f"/api/knowledge/{found.id}/discard", json={"read_version": found.version}).status_code == 200
+    # The same slot turns up under another title, long after the hold on discards has run out.
+    add_entry(store, cfg, "Pool time", "07:00", "08:00", "FREQ=WEEKLY;BYDAY=TU", day="2026-10-20")
+    long_after = NOW + timedelta(days=cfg.dispatch.knowledge.discards_hold_days + 400)
+    assert not any("Tuesday 07:00-08:00" in line for line in person_look.series_lines(store, cfg))
+    request = person_look.queue(store, cfg, long_after)
+    text = build(ws, store, cfg, request, long_after.date()).task.request if request else ""
+    assert "Morning swim" not in text and "Pool time" not in text
+
+
+def test_a_routine_already_kept_or_waiting_is_left_out_of_the_next_packet(env):
+    _, cfg, store, _ = env
+    add_entry(store, cfg, "Morning swim", "07:00", "08:00", "FREQ=WEEKLY;BYDAY=TU")
+    assert len(person_look.series_lines(store, cfg)) == 1
+    look(env)
+    assert routines_of(store, "proposed") and person_look.series_lines(store, cfg) == []
+
+
+def test_a_slot_kept_week_after_week_with_no_repeat_rule_is_shown_only_from_the_third_week(env):
+    _, cfg, store, _ = env
+    weeks = cfg.dispatch.knowledge.person_look_slot_weeks
+    days = [f"2026-10-{d:02d}" for d in (7, 14, 21, 28)]  # four Wednesdays
+    for day in days[: weeks - 1]:
+        add_entry(store, cfg, "Piano lesson", "17:00", "18:00", day=day)
+    assert person_look.series_lines(store, cfg) == []
+    add_entry(store, cfg, "Piano lesson", "17:00", "18:00", day=days[weeks - 1])
+    assert person_look.series_lines(store, cfg) == [
+        f"Piano lesson | Wednesday 17:00-18:00 | repeats: same time on {weeks} different weeks, no repeat rule"
+    ]
+    # The same title at other times each week is no slot.
+    for i, day in enumerate(days):
+        add_entry(store, cfg, "Dentist", f"{9 + i}:00".zfill(5), f"{10 + i}:00".zfill(5), day=day)
+    assert len(person_look.series_lines(store, cfg)) == 1
+
+
+def test_the_stand_in_proposes_a_routine_for_a_repeated_slot_with_its_line_as_evidence(env):
+    _, cfg, store, _ = env
+    for day in ("2026-10-07", "2026-10-14", "2026-10-21"):
+        add_entry(store, cfg, "Piano lesson", "17:00", "18:00", day=day)
+    look(env)
+    (found,) = routines_of(store)
+    assert found.data["routine"] == {"days": ["wednesday"], "start": "17:00", "end": "18:00"}
+    assert "same time on 3 different weeks" in found.data["evidence"]["quote"]
+
+
+def test_an_entry_called_off_or_gone_is_no_routine(env):
+    _, cfg, store, _ = env
+    add_entry(store, cfg, "Morning swim", "07:00", "08:00", "FREQ=WEEKLY;BYDAY=TU")
+    with store.transaction() as tx:
+        snap = next(s for s in tx.list("snapshot") if s.data["title"] == "Morning swim")
+        tx.update("snapshot", snap.id, {"gone": True}, _W, read_version=snap.version)
+    assert person_look.series_lines(store, cfg) == []
+
+
 # ---- the evaluation cases --------------------------------------------------------------------------------------------
 
-CASES = ("weekly-look-proposes-people-from-the-tally", "hostile-weekly-look-name-is-data")
+CASES = (
+    "weekly-look-proposes-people-from-the-tally",
+    "hostile-weekly-look-name-is-data",
+    "weekly-look-proposes-a-routine-from-a-repeating-entry",
+)
 
 
 @pytest.mark.parametrize("template", ["DEMO_A", "DEMO_B"])

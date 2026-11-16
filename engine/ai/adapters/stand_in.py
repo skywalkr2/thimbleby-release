@@ -174,8 +174,8 @@ _LOOK_MOST, _LOOK_FEWEST = 3, 3
 def knowledge_person(request: str) -> dict[str, Any]:
     """A weekly look's answer: a glossary entry for each of the few people the user deals with most (at least
     `_LOOK_FEWEST` messages, both ways added, a shown name that is a person's and not on file), said as plainly as the
-    counts say it, with the tally line as its evidence. It suggests no organization and no routing: a plain rule can't
-    judge those."""
+    counts say it, with the tally line as its evidence. It also suggests a routine for each weekly entry that isn't a
+    meeting with other people. It suggests no organization and no routing: a plain rule can't judge those."""
     block = re.search(r'<untrusted source="contact-tally">\s*(.*?)\s*</untrusted>', request, re.S)
     found = []
     for line in (block.group(1) if block else "").splitlines():
@@ -201,7 +201,42 @@ def knowledge_person(request: str) -> dict[str, Any]:
                 "evidence": {"quote": line},
             }
         )
+    ops += _routine_ops(request)
     return {"summary": "People you deal with." if ops else "Nothing plain enough to suggest.", "ops": ops}
+
+
+_SERIES_LINE = re.compile(
+    r"^(?P<title>[^|]+) \| (?P<day>[A-Z][a-z]+) (?P<start>\d\d:\d\d)-(?P<end>\d\d:\d\d) \| repeats: (?P<rule>.*)$"
+)
+#: Words in a title that make it a meeting with other people, which the stand-in doesn't take as a routine.
+_MEETING_WORDS = ("sync", "meeting", "standup", "stand-up", "call", "review", "1:1", "interview", "with ")
+
+
+def _routine_ops(request: str) -> list[dict[str, Any]]:
+    """A routine for each weekly entry or slot kept week after week whose title isn't a meeting with other people."""
+    block = re.search(r'<untrusted source="repeating-entries">\s*(.*?)\s*</untrusted>', request, re.S)
+    ops = []
+    for line in (block.group(1) if block else "").splitlines():
+        row = _SERIES_LINE.match(line.strip())
+        if row is None or any(w in row["title"].lower() for w in _MEETING_WORDS):
+            continue
+        rule = row["rule"]
+        if not (rule.startswith("same time on") or (rule.startswith("FREQ=WEEKLY") and "INTERVAL" not in rule)):
+            continue
+        title, day, start, end = row["title"].strip(), row["day"], row["start"], row["end"]
+        meaning = f"{day}s {start} to {end}"
+        ops.append(
+            {
+                "op": "glossary.add",
+                "text": f"{title}: {meaning}",
+                "term": title,
+                "meaning": meaning,
+                "confidence": "assumed",
+                "routine": {"days": [day.lower()], "start": start, "end": end},
+                "evidence": {"quote": line.strip()},
+            }
+        )
+    return ops
 
 
 def learn(request: str) -> dict[str, Any]:

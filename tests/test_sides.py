@@ -284,7 +284,9 @@ def without(ws, *keys):
     return ws.config(env={})
 
 
-def test_a_persons_side_and_relation_are_set_by_record_set_and_refuse_a_side_that_is_not_one(env):
+def test_a_persons_side_is_set_by_record_set_and_refuses_a_side_that_is_not_one_and_a_relation_waits_for_the_person(
+    env,
+):
     _, cfg, store = env
     who = NO_SIDE_PERSON["id"]
 
@@ -297,9 +299,11 @@ def test_a_persons_side_and_relation_are_set_by_record_set_and_refuse_a_side_tha
         cs_id = apply_changeset(cs, [], ctx, run=None)
         return store.read().get("changeset", cs_id).data["ops"][0]["status"]
 
-    assert set_field("side", "personal") == "applied" and set_field("relation", "my sister") == "applied"
+    assert set_field("side", "personal") == "applied"
     assert store.read().get("person", who).data["side"] == "personal"
-    assert store.read().get("person", who).data["relation"] == "my sister"
+    # How someone relates to the person is the person's to say: from the assistant it is held (test_person_relation.py).
+    assert set_field("relation", "my sister") != "applied"
+    assert store.read().get("person", who).data.get("relation") == NO_SIDE_PERSON.get("relation")
     assert set_field("side", "sideways") != "applied"
     assert store.read().get("person", who).data["side"] == "personal"
 

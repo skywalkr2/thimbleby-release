@@ -339,3 +339,37 @@ def test_the_page_saying_it_has_drawn_counts_as_drawn_even_when_a_script_cannot_
     assert shell.window_state()["drawn"] is True
     shell.show_app("http://127.0.0.1:1/")  # a new page has to say so again
     assert shell.window_state()["drawn"] is False
+
+
+def test_the_question_about_earlier_work_shows_the_path_and_what_it_holds_and_returns_the_answer():
+    shell, window, _ = make()
+    outcome = []
+
+    def work():
+        threading.Timer(0.1, lambda: PageApi(shell).choose("use")).start()
+        outcome.append(shell.ask_earlier("~/Work", 2, 48, 3, "Nov 2"))
+        return 0
+
+    shell.run(work)
+    assert outcome == [True]
+    scripts = [args[0] for name, args, _ in window.calls if name == "script"]
+    asked = next(code for code in scripts if code.startswith("choice("))
+    for text in ("Use the work you already have?", "~/Work", "Sides 2", "To-dos 48", "People 3", "Nov 2"):
+        assert text in asked
+    assert "ockpit" not in asked  # the earlier name is never in what the window says
+
+
+def test_start_fresh_answers_false_and_quitting_while_it_waits_answers_none():
+    shell, _, _ = make()
+    outcome = []
+
+    def work():
+        threading.Timer(0.1, lambda: PageApi(shell).choose("fresh")).start()
+        outcome.append(shell.ask_earlier("~/Work", 1, 0, 0, "Nov 2"))
+        PageApi(shell).choose("anything else")  # not an answer: ignored
+        threading.Timer(0.1, shell.quit).start()
+        outcome.append(shell.ask_earlier("~/Work", 1, 0, 0, "Nov 2"))
+        return 0
+
+    shell.run(work)
+    assert outcome == [False, None]

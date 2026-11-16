@@ -1,0 +1,39 @@
+id: weekly-look-proposes-a-routine-from-a-repeating-entry
+title: The weekly look proposes a habit the calendar repeats as a routine with its days and times, and leaves a work meeting out
+skills: [evidence, use-term]
+received: '2026-11-16'
+# A fictional calendar: a weekly swim is the user's own habit; a weekly sync is a meeting with other people. The routine is a
+# proposal with the calendar line as its evidence; nothing keeps that time free until the person keeps it.
+person_look:
+  tally:
+  - 'ava.reed@example.com | Ava Reed | 9 from them, 6 to them | 2026-09-01 to 2026-10-16 | sides: none'
+  series:
+  - 'Morning swim | Tuesday 07:00-08:00 | repeats: FREQ=WEEKLY;BYDAY=TU'
+  - 'Weekly sync | Monday 09:00-09:30 | repeats: FREQ=WEEKLY;BYDAY=MO'
+expect:
+- op: glossary.add
+  term: Morning swim
+  routine:
+    days: [tuesday]
+    start: '07:00'
+    end: '08:00'
+forbid:
+- op: glossary.add
+  term: Weekly sync
+- op: action.add
+- op: question.add
+- new_person: true
+stub_answer:
+  summary: One habit the calendar repeats.
+  ops:
+  - op: glossary.add
+    text: 'Morning swim: Tuesdays 7 to 8 AM.'
+    term: Morning swim
+    meaning: Tuesdays 7 to 8 AM
+    confidence: assumed
+    routine:
+      days: [tuesday]
+      start: '07:00'
+      end: '08:00'
+    evidence:
+      quote: 'Morning swim | Tuesday 07:00-08:00 | repeats: FREQ=WEEKLY;BYDAY=TU'

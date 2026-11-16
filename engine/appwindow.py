@@ -162,6 +162,12 @@ class PageApi:
     def copy_details(self) -> None:
         self._shell.copy(self._shell.details)
 
+    def choose(self, answer: str) -> None:
+        """The person's answer to the question the starting window asks: "use" or "fresh"."""
+        if answer in ("use", "fresh"):
+            self._shell.answer = answer
+            self._shell.answer_event.set()
+
     def page_drawn(self) -> None:
         """The app's page says it has drawn: the surest sign there is, since a system web view may not answer a script
         run in it from outside."""
@@ -200,6 +206,8 @@ class AppShell:
         self.restart_enabled: Callable[[], bool] = lambda: False
         self.quit_event = threading.Event()
         self.retry_event = threading.Event()
+        self.answer = ""
+        self.answer_event = threading.Event()
         self.main = MainThread(window.post)
         self._actions: dict[str, Callable[[], None]] = {}
         self._quitting = False
@@ -278,6 +286,7 @@ class AppShell:
     def quit(self) -> None:
         self.quit_event.set()
         self.retry_event.set()
+        self.answer_event.set()
         self.main.call(self._hide)
 
     # --- the window -----------------------------------------------------------------------------------------------
@@ -326,6 +335,32 @@ class AppShell:
         self.main.call(self._show)
         if fragment and self._app_loaded:
             self.main.call(self.window.script, f"location.hash = {fragment!r}")
+
+    def ask_earlier(self, path: str, sides: int, todos: int, people: int, used: str) -> bool | None:
+        """Ask in the starting window whether to use the work already on this computer: true for "Use it", false for
+        "Start fresh", none when the person quit instead of answering."""
+        w = self.words
+        facts = w["desktop.earlier.facts"].format(path=path, sides=sides, todos=todos, people=people)
+        self.answer, _ = "", self.answer_event.clear()
+        self.quiet = False
+        self.main.call(self._show)
+        self.main.call(
+            self.window.script,
+            startpage.script_choice(
+                w["desktop.earlier.title"],
+                w["desktop.earlier.found"].format(used=used),
+                facts,
+                w["desktop.earlier.text"],
+            ),
+        )
+        self.answer_event.wait()
+        if self.quit_event.is_set():
+            return None
+        self.main.call(
+            self.window.script,
+            startpage.script_resume(w["desktop.starting.title"], w["desktop.starting.subtitle"]),
+        )
+        return self.answer == "use"
 
     def problem(self, kind: str, details: str) -> bool:
         """Turn the window into one message with Try again and Copy details; true when the person chose Try again."""

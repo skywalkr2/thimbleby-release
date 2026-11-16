@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, time, timedelta, tzinfo
 from typing import Any
 
-from engine import running
+from engine import routines, running
 from engine.blocked import standing_hold
 from engine.config.schema import WEEKDAYS
 from engine.reminders import QuietHours, Reminder, Snooze, WorkingHours, in_quiet_hours, next_fire, snooze
@@ -89,6 +89,7 @@ def plan(reader: Any, cfg: Any, now: datetime, gaps: list[running.Gap] | None = 
     """The reminders that have reached the person and are still waiting for them: actions that are open and not on
     hold, with a `remind_at` whose time has come. `gaps` are the times the app is known not to have been running."""
     r = rules(cfg)
+    slots = routines.kept(reader)
     found = Plan()
     waiting: list[Due] = []
     for action in reader.list("action"):
@@ -96,7 +97,8 @@ def plan(reader: Any, cfg: Any, now: datetime, gaps: list[running.Gap] | None = 
         if d.get("status") != "open" or standing_hold(reader, d) or not d.get("remind_at"):
             continue
         due = datetime.fromisoformat(str(d["remind_at"])).astimezone(r.tz)
-        at = _scheduled(due, r)
+        # Nothing reaches the person inside a routine they kept: it arrives where the routine ends.
+        at = routines.clear_of(slots, _scheduled(due, r), r.tz)
         if at > now:
             continue
         item = Due(

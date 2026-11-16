@@ -27535,6 +27535,26 @@
         "title": "ReminderWhereView",
         "type": "object"
       },
+      "RemovalView": {
+        "properties": {
+          "available": {
+            "description": "Whether the card for removing the app shows: the installed app on a Mac.",
+            "title": "Available",
+            "type": "boolean"
+          },
+          "folder": {
+            "description": "The folder the person's work stays in when the app is removed; empty when not shown.",
+            "title": "Folder",
+            "type": "string"
+          }
+        },
+        "required": [
+          "available",
+          "folder"
+        ],
+        "title": "RemovalView",
+        "type": "object"
+      },
       "RepeatCheckIn": {
         "properties": {
           "phrase": {
@@ -41483,6 +41503,48 @@
           }
         },
         "summary": "Restore"
+      }
+    },
+    "/api/desktop/removal": {
+      "get": {
+        "description": "Whether the removal card shows, and the folder the work stays in.",
+        "operationId": "view_api_desktop_removal_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemovalView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "View"
+      }
+    },
+    "/api/desktop/removal/open-folder": {
+      "post": {
+        "operationId": "open_folder_api_desktop_removal_open_folder_post",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Open Folder"
+      }
+    },
+    "/api/desktop/removal/show-app": {
+      "post": {
+        "description": "Show the app in Finder, then quit it by the menu's own path once the answer is sent.",
+        "operationId": "show_app_api_desktop_removal_show_app_post",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Show App"
       }
     },
     "/api/erase": {

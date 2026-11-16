@@ -26,7 +26,7 @@ from pydantic.json_schema import SkipJsonSchema
 
 from engine.dates import DayOrMonthDay, parse_month_day
 from engine.id_words import KNOWLEDGE_KINDS, named, named_one_of, named_text_of
-from engine.records import ActTemplate, EntryRepeat, FiledBy, RefTo, Scope, canonical_time, entry_problem
+from engine.records import ActTemplate, EntryRepeat, FiledBy, RefTo, Routine, Scope, canonical_time, entry_problem
 
 Tier = Literal["data", "outbound", "system"]
 
@@ -1556,6 +1556,12 @@ class GlossaryAddOp(OpModel):
     id_patterns: list[str] = Field(
         default_factory=list, description="Patterns for splitting compound ids that use the term."
     )
+    routine: Routine | None = Field(
+        None,
+        description="Only for a slot the person keeps for the same thing week after week (the term says what it is "
+        "for, the meaning says when in plain words): its weekdays and its start and end times. Leave it out for "
+        "everything else.",
+    )
     applies_to: Scope = Field(default_factory=Scope, description="What it applies to.")
     evidence: EvidenceIn | None = Field(None, description="The exact words from the input it rests on, if any.")
 
@@ -2479,7 +2485,18 @@ EVIDENCE_UNLESS_PERSON = {
     "action.part",
     "question.drop",
 }
-EVIDENCE_FIELDS = {"due", "status", "owners", "target", "owner", "event", "series", "effort_minutes", "remind_at"}
+EVIDENCE_FIELDS = {
+    "due",
+    "status",
+    "owners",
+    "target",
+    "owner",
+    "event",
+    "series",
+    "effort_minutes",
+    "remind_at",
+    "relation",
+}
 
 #: Fields record.set may change, per kind.
 SETTABLE: dict[str, set[str]] = {

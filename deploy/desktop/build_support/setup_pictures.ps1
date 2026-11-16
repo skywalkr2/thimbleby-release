@@ -50,12 +50,16 @@ Start-Sleep -Seconds 5
 Stop-Process -Name 'Thimbleby' -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
-# The uninstaller's first page (its answer is Yes, with the key).
+# The uninstaller: its first page (the answer is the button "Remove the app", with its key R), then the last page, which
+# links the folder the work stays in (its second button, Close, is reached with Tab).
 $uninstaller = Start-Process -FilePath (Join-Path $installed 'unins000.exe') -PassThru
 Start-Sleep -Seconds 4
 Take 'remove-1-first.png'
-Press 'Thimbleby Uninstall' 'y'
+Press 'Thimbleby Uninstall' 'r'
 Start-Sleep -Seconds 8
 Take 'remove-2-done.png'
 Press 'Thimbleby Uninstall' '{ENTER}'
+Start-Sleep -Seconds 3
+Take 'remove-3-folder.png'
+Press 'Thimbleby was removed' '{TAB}{ENTER}'
 [void]$uninstaller.WaitForExit(60000)

@@ -1646,6 +1646,15 @@ class KnowledgeSettings(ConfigModel):
         "shows the assistant. 0 shows none.",
         json_schema_extra={"internal": True},
     )
+    person_look_slot_weeks: int = Field(
+        3,
+        ge=2,
+        le=52,
+        description="How many different weeks an entry with no repeat rule must turn up at the same weekday and time, "
+        "under the same title, before a look at who you deal with shows it to the assistant as a slot you keep "
+        "week after week.",
+        json_schema_extra={"internal": True},
+    )
 
 
 class DispatchFile(FileModel):

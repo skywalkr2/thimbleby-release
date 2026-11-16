@@ -76,6 +76,7 @@ import { JobsPanel } from "./JobsPanel";
 import { BusinessSides } from "./BusinessSides";
 import { AddonSecrets, BackupKey } from "./KeptSecrets";
 import { DeleteWorkspace } from "./DeleteWorkspace";
+import { RemovingTheApp } from "./RemovingTheApp";
 import { BackupsPanel } from "./BackupsPanel";
 import { Notifications } from "./Notifications";
 import { PageLinks } from "./PageLinks";
@@ -936,6 +937,7 @@ export function Settings(props: {
           <p className="hint">{t("settings.advanced_intro")}</p>
           <div className="settings-topics">{advanced()}</div>
           {setup.data?.local && <DeleteWorkspace />}
+          {setup.data?.local && <RemovingTheApp />}
         </>
       );
     }

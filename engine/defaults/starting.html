@@ -53,6 +53,15 @@ button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
       <button type="button" class="primary" id="again">{{try_again}}</button>
     </div>
   </section>
+  <section id="choice" hidden>
+    <p class="msg" id="facts"></p>
+    <p class="msg" id="choice-text"></p>
+    <div class="foot">
+      <span class="spacer"></span>
+      <button type="button" id="fresh">{{earlier_fresh}}</button>
+      <button type="button" class="primary" id="use">{{earlier_use}}</button>
+    </div>
+  </section>
 </main>
 <script>
 var total = {{step_count}};
@@ -76,6 +85,23 @@ function problem(title, text, details) {
   document.getElementById("problem").hidden = false;
   document.getElementById("heading").focus();
 }
+function choice(title, found, facts, text) {
+  document.getElementById("heading").textContent = title;
+  document.getElementById("sub").textContent = found;
+  document.getElementById("facts").textContent = facts;
+  document.getElementById("choice-text").textContent = text;
+  document.getElementById("progress").hidden = true;
+  document.getElementById("choice").hidden = false;
+  document.getElementById("heading").focus();
+}
+function resume(title, sub) {
+  document.getElementById("heading").textContent = title;
+  document.getElementById("sub").textContent = sub;
+  document.getElementById("choice").hidden = true;
+  document.getElementById("progress").hidden = false;
+}
+document.getElementById("use").onclick = function () { if (api()) api().choose("use"); };
+document.getElementById("fresh").onclick = function () { if (api()) api().choose("fresh"); };
 document.getElementById("again").onclick = function () { if (api()) api().retry(); };
 document.getElementById("copy").onclick = function () { if (api()) api().copy_details(); };
 </script>

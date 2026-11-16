@@ -1,0 +1,21 @@
+id: no-relation-said-proposes-none
+title: A message that names a person on file without saying how they relate to the user proposes no relation
+skills: [evidence, structured-answers]
+received: '2026-11-16'
+pasted: |-
+  From: Dana Whitfield
+
+  I copied Maya Okafor on the year-end invoices; Maya writes to me every week about them.
+# Being copied, or writing often, says nothing about how they relate to the user.
+expect: []
+forbid:
+- op: record.set
+  field: relation
+  attempted: true
+- new_person: true
+allow:
+- fact
+- action.add
+stub_answer:
+  summary: Nothing says how Maya Okafor relates to the user.
+  ops: []

@@ -396,6 +396,9 @@ class Person(Record):
     record_kind: ClassVar[str] = "person"
     prefix: ClassVar[str] = "PER"
     layout: ClassVar[str | None] = "people/{full_name}"
+    #: How someone relates to the person is the person's to say: what an input says about it is proposed and waits for
+    #: their yes.
+    person_only: ClassVar[dict[str, tuple[Any, ...]]] = {"relation": ()}
 
     full_name: str = Field(min_length=1, description="The name shown wherever the person appears.")
     first_name: str | None = Field(
@@ -2372,8 +2375,36 @@ class Lesson(KnowledgeRecord):
     signal: Annotated[str | None, RefTo("signal")] = Field(None, description="The correction it came from.")
 
 
+#: The weekday names a routine's days use, Monday first.
+ROUTINE_DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+_ROUTINE_CLOCK = r"^([01]\d|2[0-3]):[0-5]\d$"
+
+
+class Routine(BaseModel):
+    """A slot the person keeps for the same thing week after week: the weekdays and the times of day, in their own
+    time zone. It ends on the day it starts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    days: list[Literal["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]] = Field(
+        min_length=1, description="The weekdays it happens on, as lower-case names."
+    )
+    start: str = Field(pattern=_ROUTINE_CLOCK, description="When it starts, as 24-hour HH:MM.")
+    end: str = Field(pattern=_ROUTINE_CLOCK, description="When it ends, as 24-hour HH:MM, later than the start.")
+
+    @model_validator(mode="after")
+    def _ends_after_it_starts(self) -> Routine:
+        if self.end <= self.start:
+            raise ValueError("a routine ends later in the same day than it starts")
+        if len(set(self.days)) != len(self.days):
+            raise ValueError("a routine names each weekday once")
+        return self
+
+
 class GlossaryEntry(KnowledgeRecord):
-    """A term or acronym and what it means here. Added by `glossary.add`, changed by `glossary.update`."""
+    """A term or acronym and what it means here. Added by `glossary.add`, changed by `glossary.update`. An entry with a
+    `routine` is a slot of the person's week once it is kept: the steward leaves it out of the free time it offers and
+    puts no reminder in it."""
 
     record_kind: ClassVar[str] = "glossary_entry"
     prefix: ClassVar[str] = "GLOSS"
@@ -2389,6 +2420,11 @@ class GlossaryEntry(KnowledgeRecord):
     )
     id_patterns: list[str] = Field(
         default_factory=list, description="Patterns for splitting compound ids that use the term."
+    )
+    routine: Routine | None = Field(
+        None,
+        description="For a slot the person keeps week after week (the term is what it is for): its weekdays and "
+        "times. Only a kept entry counts.",
     )
 
 

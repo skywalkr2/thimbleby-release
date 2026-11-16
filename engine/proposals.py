@@ -59,6 +59,10 @@ def subject_of(kind: str, data: dict[str, Any]) -> str:
     """What an entry is about, in normalized words: a glossary entry's term, a routing entry's topic and who it
     names, a style note's audience and observation, a lesson's or rule's wording."""
     if kind == "glossary_entry":
+        routine = data.get("routine")
+        if routine:
+            # A slot is the same slot by its label and its times: the same label at another time is another routine.
+            return _norm(f"{data.get('term')} {' '.join(routine['days'])} {routine['start']} {routine['end']}")
         return _norm(data.get("term"))
     if kind == "routing_entry":
         who = data.get("person") or data.get("team") or ""

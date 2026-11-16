@@ -45,6 +45,7 @@ knowledge:
   person_look_entries: 40      # the most people from the tally one look shows the assistant
   person_look_min_messages: 2  # the fewest messages (both ways added) an address needs to be shown
   person_look_series: 20       # the most repeating calendar entries one look shows
+  person_look_slot_weeks: 3    # weeks an entry with no repeat rule must recur at one time to be shown as a slot kept weekly
   learn_later_inputs: 5
   new_terms_per_input: 3
   new_terms_per_day: 3

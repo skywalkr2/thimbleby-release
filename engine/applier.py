@@ -2612,7 +2612,7 @@ def _proposed_reminder(
         stored = tx.get("fact", made)
         if stored is not None:
             found = dated_facts.fact_reminder(
-                ctx.cfg, {**stored.data, "quote": op.evidence.quote, "on": op.on}, made, now
+                ctx.cfg, {**stored.data, "quote": op.evidence.quote, "on": op.on}, made, now, tx
             )
     elif isinstance(op, ActionAddOp) and records[0]["kind"] == "action":
         stored = tx.get("action", made)
@@ -2625,6 +2625,7 @@ def _proposed_reminder(
                 date.fromisoformat(str(due)),
                 stored.data.get("remind_at"),
                 now,
+                tx,
             )
     return RecordSetOp.model_validate(found) if found is not None else None
 

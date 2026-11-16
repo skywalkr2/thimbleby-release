@@ -9239,3 +9239,10 @@ class EraseFailedView(BaseModel):
 class EraseDone(BaseModel):
     removed: int = Field(description="How many places were deleted.")
     failed: list[EraseFailedView] = Field(description="The places that could not be deleted; the rest are gone.")
+
+
+class RemovalView(BaseModel):
+    available: bool = Field(description="Whether the card for removing the app shows: the installed app on a Mac.")
+    folder: str = Field(
+        description="The folder the person's work stays in when the app is removed; empty when not shown."
+    )

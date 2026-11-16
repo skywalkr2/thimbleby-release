@@ -125,6 +125,12 @@ desktop.problem.held.text: Something else on this computer stops Thimbleby from 
 desktop.problem.other.title: Thimbleby couldn't start
 desktop.problem.other.text: Try again. If it keeps happening, copy the details and send them to the people who look after Thimbleby.
 desktop.try_again: Try again
+desktop.earlier.title: Use the work you already have?
+desktop.earlier.found: "Found on this computer, last used {used}."
+desktop.earlier.facts: "{path} · Sides {sides} · To-dos {todos} · People {people}"
+desktop.earlier.text: Using it brings it into this app. The original stays where it is as a copy.
+desktop.earlier.use: Use it
+desktop.earlier.fresh: Start fresh
 desktop.copy_details: Copy details
 desktop.copied: Copied
 

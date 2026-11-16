@@ -49,7 +49,21 @@ def lead_days(cfg: Any, kind: str) -> int:
     return int(getattr(cfg.steward.dates.lead_days, kind))
 
 
-def reminder_moment(cfg: Any, day: date, kind: str, now: datetime) -> datetime | None:
+def reminder_moment(cfg: Any, day: date, kind: str, now: datetime, view: Any = None) -> datetime | None:
+    """When the reminder offer for a day is placed (`_reminder_moment`), moved to where a routine the person kept ends
+    when it would land inside one (`view` is where the routines are read); None when that leaves it after the day."""
+    from engine import routines
+    from engine.today import zone
+
+    moment = _reminder_moment(cfg, day, kind, now)
+    if moment is None or view is None:
+        return moment
+    here = zone(cfg)
+    clear = routines.clear_of(routines.kept(view), moment, here)
+    return clear if clear.astimezone(here).date() <= day else None
+
+
+def _reminder_moment(cfg: Any, day: date, kind: str, now: datetime) -> datetime | None:
     """When to offer to remind the person of a day: the morning their working hours start, `lead_days` before it (the
     working day before when that one is not a working day). When that moment has passed and the day is still ahead,
     the next working morning, up to the day itself. None for a day that is today or past, and for a setting that
@@ -80,13 +94,15 @@ def reminder_moment(cfg: Any, day: date, kind: str, now: datetime) -> datetime |
     return morning(following) if following <= day and morning(following) > now else None
 
 
-def fact_reminder(cfg: Any, fact: dict[str, Any], fact_id: str, now: datetime) -> dict[str, Any] | None:
+def fact_reminder(
+    cfg: Any, fact: dict[str, Any], fact_id: str, now: datetime, view: Any = None
+) -> dict[str, Any] | None:
     """The `record.set` that proposes a reminder for a dated fact just made, as the op's own fields, or None when no
     reminder is offered (no day, the offer is off, the day has come, or the fact already has one)."""
     day, kind = fact.get("on"), fact.get("on_kind")
     if day is None or kind not in KINDS or fact.get("remind_at"):
         return None
-    moment = reminder_moment(cfg, day if isinstance(day, date) else date.fromisoformat(str(day)), kind, now)
+    moment = reminder_moment(cfg, day if isinstance(day, date) else date.fromisoformat(str(day)), kind, now, view)
     if moment is None:
         return None
     return {
@@ -116,7 +132,7 @@ def labeled_day(cfg: Any, text: str, day: date, now: datetime) -> tuple[str, str
 
 
 def action_reminder(
-    cfg: Any, text: str, action_id: str, due: date | None, remind_at: Any, now: datetime
+    cfg: Any, text: str, action_id: str, due: date | None, remind_at: Any, now: datetime, view: Any = None
 ) -> dict[str, Any] | None:
     """The `record.set` that proposes a reminder for a to-do just made whose day an input labels, or None."""
     if due is None or remind_at:
@@ -125,7 +141,7 @@ def action_reminder(
     if labeled is None:
         return None
     kind, quote = labeled
-    moment = reminder_moment(cfg, due, kind, now)
+    moment = reminder_moment(cfg, due, kind, now, view)
     if moment is None:
         return None
     return {
@@ -141,17 +157,21 @@ def action_reminder(
 def coming(reader: Any, cfg: Any, now: datetime) -> list[Any]:
     """The dated facts whose reminder has come: a `remind_at` that has passed while the day it is for has not, newest
     reminder first by their day. A fact a newer one replaced is left out."""
+    from engine import routines
     from engine.facts import superseded_by
     from engine.today import zone
 
     here = zone(cfg)
     today = now.astimezone(here).date()
+    slots = routines.kept(reader)
     found = []
     for fact in reader.list("fact"):
         d = fact.data
         if not d.get("on") or not d.get("remind_at"):
             continue
-        if datetime.fromisoformat(str(d["remind_at"])) > now or date.fromisoformat(str(d["on"])) < today:
+        # A reminder never reaches the person inside a routine they kept: it waits until the routine ends.
+        arrives = routines.clear_of(slots, datetime.fromisoformat(str(d["remind_at"])), here)
+        if arrives > now or date.fromisoformat(str(d["on"])) < today:
             continue
         if superseded_by(reader, fact.id) is not None:
             continue

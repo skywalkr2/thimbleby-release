@@ -34,8 +34,9 @@ action to the assistant, as the button on its row does, with no input handed in;
 `draft`, and no ops. A case that names `person_look` (`tally`, the lines of a fictional contact tally as the packet
 shows them, and `series`, the repeating calendar entries) starts from the weekly look at who the person deals with,
 queued as the worker queues it, with no input handed in; its `stub_answer` holds the ops, an expected `glossary.add` may
-name `meaning_has`, and a forbidden one may name `term`. A case may name the
-`project` its input is about (as the person does when handing it in), or give `watched` (title, change, author,
+name `meaning_has` and `routine` (its weekdays and times), and a forbidden one may name `term`. A forbidden `record.set`
+may name the `field` it sets (with `attempted: true` it counts when it only waits for the person's yes). A case may
+name the `project` its input is about (as the person does when handing it in), or give `watched` (title, change, author,
 by_us, by_you, credited_to) to be received as the item a watched source found. A case may expect a held op (`held:
 <op>`, with `text_has` words in its fields) or a held "who is this?" question (`held: who-is`). A case may forbid a
 question about what a word means (`forbid: [{term_question: true}]` for any, or a word or a list of words), which the
@@ -826,6 +827,7 @@ def _op_matches(e: dict[str, Any], o: dict[str, Any], store: Store) -> bool:
             entry
             and ("term" not in e or _squeezed(entry["term"]) == _squeezed(e["term"]))
             and ("confidence" not in e or entry.get("confidence") == e["confidence"])
+            and ("routine" not in e or entry.get("routine") == e["routine"])
             and _has_words(entry.get("meaning") or "", e.get("meaning_has", []))
         )
     if op in ("action.tie", "event.guests"):
@@ -1004,6 +1006,8 @@ def _forbidden(f: dict[str, Any], outcomes: list[dict[str, Any]], store: Store, 
             if a is None or not set(a.get("promised_to") or []) & set(f["promised_to"]):
                 continue
         if "term" in f and _squeezed(o["op"].get("term")) != _squeezed(f["term"]):
+            continue
+        if "field" in f and o["op"].get("field") != f["field"]:
             continue
         if "text_has" in f:
             text = json.dumps(o["op"])

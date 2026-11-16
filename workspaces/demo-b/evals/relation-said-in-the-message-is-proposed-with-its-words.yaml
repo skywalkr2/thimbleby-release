@@ -1,0 +1,31 @@
+id: relation-said-in-the-message-is-proposed-with-its-words
+title: A message that says how a person on file relates to the user proposes it with the exact words, and changes nothing before the person says yes
+skills: [evidence, structured-answers]
+received: '2026-11-16'
+pasted: |-
+  From: Dana Whitfield
+
+  Maya Okafor is our accountant these days, so send the year-end invoices to Maya directly.
+# The record's relation changes only when the person confirms: the proposal waits for their yes.
+expect:
+- held: record.set
+  text_has:
+  - PER-2
+  - relation
+  - accountant
+forbid:
+- op: person.add
+- new_person: true
+allow:
+- fact
+- action.add
+stub_answer:
+  summary: The sender says who Maya Okafor is to the user.
+  ops:
+  - op: record.set
+    kind: person
+    id: PER-2
+    field: relation
+    value: our accountant
+    evidence:
+      quote: Maya Okafor is our accountant these days

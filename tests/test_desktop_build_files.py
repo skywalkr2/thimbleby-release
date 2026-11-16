@@ -55,6 +55,8 @@ def test_every_bundled_folder_is_in_the_repository_and_nothing_made_up_is_bundle
         if folder != "web/dist":  # built before a freeze
             assert (REPO / folder).is_dir() and any((REPO / folder).rglob("*")), folder
     assert not any(f.startswith(("workspaces", "plugins/example")) for f in BUNDLED_FOLDERS)
+    # The parcels add-on ships in the installed app, with its data files (carriers, prompts, guidance).
+    assert "plugins/parcels" in BUNDLED_FOLDERS
     # The folders of non-code files inside `engine/` are all there, so no data file is missing in a frozen app.
     holding = {
         path.parent.relative_to(REPO).parts[:3]
@@ -154,7 +156,7 @@ def test_specs_preserve_resources_and_disable_console(monkeypatch, filename, sys
 def test_the_freeze_looks_for_the_thimbleby_command_and_collects_what_is_loaded_by_name():
     text = (BUILD / "freeze_common.py").read_text()
     assert 'name="thimbleby"' in text and 'name="cockpit"' not in text
-    for package in ("api", "plugins.kit", "uvicorn", "pystray", "webview"):
+    for package in ("api", "plugins.kit", "plugins.parcels", "uvicorn", "pystray", "webview"):
         assert f'"{package}"' in text
     assert "plugins.example" not in text
     # The window library's script files, which put the bridge into each page: without them, nothing in the page can
@@ -467,6 +469,10 @@ def test_the_setup_has_three_pages_in_the_targets_words_and_no_licence_folder_or
     assert "Your work stays in AppData\\Local\\Thimbleby: your workspace, backups and saved keys." in text
     assert "Settings > Advanced > Delete this workspace" in text
     assert "[UninstallDelete]" not in text
+    # The removal button reads "Remove the app", and the last page links the folder the work stays in.
+    assert "ButtonYes=&Remove the app" in text and "ButtonNo=&Keep the app" in text
+    assert "english.OpenWorkFolder=Open the folder" in text
+    assert "usDone" in text and "{localappdata}\\Thimbleby" in text and "TaskDialogMsgBox" in text
     # Every line is in [Messages] or [CustomMessages], and the file is plain text the compiler reads without a mark.
     assert "[Messages]" in text and "[CustomMessages]" in text
     text.encode("ascii")
@@ -497,7 +503,14 @@ def test_each_runner_takes_a_picture_of_the_disk_image_and_of_every_setup_page()
     pictures = next(step for name, step in by_name.items() if name.startswith("Run the setup"))
     assert "setup_pictures.ps1" in pictures["run"]
     script = (BUILD / "setup_pictures.ps1").read_text()
-    for page in ("setup-1-welcome", "setup-2-choices", "setup-3-progress", "setup-4-installed", "remove-1-first"):
+    for page in (
+        "setup-1-welcome",
+        "setup-2-choices",
+        "setup-3-progress",
+        "setup-4-installed",
+        "remove-1-first",
+        "remove-3-folder",
+    ):
         assert f"'{page}.png'" in script
     assert "WScript.Shell" in script and "{ENTER}" in script
     # The pictures are downloads of the run, beside the window pictures, after every step that adds one.
@@ -506,3 +519,23 @@ def test_each_runner_takes_a_picture_of_the_disk_image_and_of_every_setup_page()
     assert keep > names.index(pictures["name"]) > names.index("Compile the per-user installer")
     assert keep > names.index("Mount the disk image and take a picture of its window")
     assert flow[keep]["if"] == "always()"
+
+
+def test_each_runner_tests_a_fresh_install_from_first_start_to_uninstall_after_the_installer_is_kept():
+    """S-0459: the built installer is installed on an empty home, started, closed, started again, put over, and removed,
+    with a browser test of the page on the first and the later visits. It runs after the installer is kept."""
+    steps = workflow()["jobs"]["desktop"]["steps"]
+    names = [step.get("name") for step in steps]
+    check = next(i for i, step in enumerate(steps) if "fresh_install_check.py" in step.get("run", ""))
+    assert check > names.index("Upload the installer and checksums")
+    assert any("playwright install" in step.get("run", "") for step in steps[:check])
+    assert steps[check + 1]["if"] == "always()" and "fresh-install" in steps[check + 1]["with"]["name"]
+    script = (BUILD / "fresh_install_check.py").read_text()
+    for visit in ('"first start"', '"start again"', '"after the update"'):
+        assert visit in script
+    # The uninstall removes the app and never the work; both systems do it.
+    assert "unins000.exe" in script and "Removing the app removed the person's work" in script
+    assert "hdiutil" in script and "/VERYSILENT" in script
+    spec = (REPO / "web" / "e2e-install" / "fresh-install.spec.ts").read_text()
+    assert "Getting started" in spec and "FRESH_INSTALL_VISIT" in spec
+    assert "testMatch: /fresh-install\\.spec\\.ts/" in (REPO / "web" / "playwright.install.config.ts").read_text()

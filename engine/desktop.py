@@ -25,6 +25,9 @@ from engine.legacy_names import app_name, workspace_from_env
 WORKSPACE_FOLDER = "workspace"
 #: The file in the app's logs folder that says why the app could not start.
 LOG_FILE = "desktop.log"
+#: The add-ons bundled in the installed app that its first workspace starts with turned on (a workspace made any other
+#: way keeps the setting `server.new_workspace_addons`, empty by default).
+INSTALLED_APP_ADDONS = ("parcels",)
 
 
 def places(
@@ -50,6 +53,40 @@ def note_failure(logs: Path) -> None:
         pass
 
 
+def _first_workspace(root: Path, shell: Any) -> bool:
+    """Make the app's own workspace. When the command-line version left one on this computer, ask once whether to
+    use it:
+    "Use it" brings in a copy and leaves the original as it was, "Start fresh" leaves it alone. False when the person
+    quit instead of answering (nothing is made)."""
+    import datetime
+
+    from engine import earlier_workspace
+    from engine.legacy_names import db_file
+    from engine.workspace import init_workspace
+
+    found = earlier_workspace.find(Path.home(), root)
+    if found is not None and hasattr(shell, "ask_earlier"):
+        used = datetime.datetime.fromtimestamp(db_file(found.path).stat().st_mtime)
+        answer = shell.ask_earlier(
+            _shown_path(found.path), found.sides, found.todos, found.people, f"{used:%b} {used.day}"
+        )
+        if answer is None:
+            return False
+        if answer:
+            earlier_workspace.bring_in(found.path, root)
+            return True
+    init_workspace(root, addons=INSTALLED_APP_ADDONS)
+    return True
+
+
+def _shown_path(path: Path) -> str:
+    """The folder as a person reads it: under their home folder it starts with ~."""
+    try:
+        return "~/" + path.relative_to(Path.home()).as_posix()
+    except ValueError:
+        return str(path)
+
+
 def start(
     root: Path,
     shell: Any,
@@ -65,7 +102,7 @@ def start(
     from engine.legacy_names import private_dir
     from engine.local_guards import local_address_problem
     from engine.sides import word
-    from engine.workspace import WorkspaceError, init_workspace, resolve
+    from engine.workspace import WorkspaceError, resolve
 
     folder = private_dir(root)
     if launcher.is_running(folder):
@@ -75,7 +112,8 @@ def start(
     if not (root / "config").is_dir():
         if root.exists() and any(p for p in root.iterdir() if p.name != folder.name):
             raise WorkspaceError(f"{root} already holds other files, so a workspace can't be made there.")
-        init_workspace(root)
+        if not _first_workspace(root, shell):
+            return
     ws = resolve(root)
     env = dict(environ) if environ is not None else None
     cfg = ws.config(env=env)

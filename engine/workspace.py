@@ -107,13 +107,15 @@ def init_workspace(
     assistant: str | None = None,
     history: bool = False,
     personal: bool = True,
+    addons: tuple[str, ...] = (),
 ) -> Workspace:
     """Create a workspace folder and its database. With a template, copy its config and data and load the data (with
     `history`, and a template that has one, its history instead of its starting records alone, for a demo);
     otherwise write default config files. Without a template, `you` (the PM's full name) becomes the first person and
     the workspace's user, `name` and `assistant` set the display names, and the Personal project is made unless
     `personal` is off (a computer joining a synced folder takes the folder's own). The new workspace is committed to its
-    own git repository."""
+    own git repository. `addons` names installed add-ons the caller (the installed app) wants on in a workspace
+    made with no template, besides those `server.new_workspace_addons` names."""
     if template is not None and (you or name or assistant):
         raise WorkspaceError("Your name and the workspace's names come from the template; leave them out with --from.")
     root = path.expanduser().resolve()
@@ -155,17 +157,18 @@ def init_workspace(
             _set_identity(ws, store, you, name, assistant, personal=personal)
             export_data(store, ws.data_dir)
         if template is None:
-            start_addons(ws)
+            start_addons(ws, extra=addons)
     finally:
         store.close()
     commit_export(root, "Create workspace")
     return ws
 
 
-def start_addons(ws: Workspace, *, env: dict[str, str] | None = None) -> list[str]:
+def start_addons(ws: Workspace, *, env: dict[str, str] | None = None, extra: tuple[str, ...] = ()) -> list[str]:
     """Turn on, in a new workspace, the installed add-ons `server.new_workspace_addons` names, so the first start shows
     them ready to set up with no Add-ons screen and no restart. A name that isn't installed on this computer is skipped,
-    and a workspace that already exists is never changed (this runs only when one is made). Returns the names turned on.
+    and a workspace that already exists is never changed (this runs only when one is made). `extra` is added to the
+    setting's names. Returns the names turned on.
     """
 
     from engine import addons
@@ -174,7 +177,7 @@ def start_addons(ws: Workspace, *, env: dict[str, str] | None = None) -> list[st
     from engine.yaml_load import load_yaml
 
     cfg = ws.config(env=env)
-    wanted = list(dict.fromkeys(cfg.server.new_workspace_addons))
+    wanted = list(dict.fromkeys([*cfg.server.new_workspace_addons, *extra]))
     if not wanted:
         return []
     addons.activate(cfg.server.addons_dir)

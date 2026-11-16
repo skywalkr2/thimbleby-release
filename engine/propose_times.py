@@ -3,7 +3,7 @@
 Every calendar entry kept in the workspace blocks its time, except one the person declined or one called off; a
 tentative one blocks too. The gaps are found by `engine.free_slots` inside the working hours and days of
 `steward.reminders`, in the person's time zone. Each gap offers one slot: its start, as long as the invitation itself.
-Nothing here writes."""
+A routine the person kept blocks its slot too (`engine.routines`). Nothing here writes."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from engine import routines
 from engine.free_slots import Busy, free_slots
 from engine.reminder_lines import rules
 from engine.reminders import crosses_midnight
@@ -98,7 +99,8 @@ def slots(view: Any, cfg: Any, now: datetime, about: str) -> list[Slot]:
     step = timedelta(minutes=cfg.watch.propose_round_minutes)
     opens = datetime.fromtimestamp(math.ceil(now.timestamp() / step.total_seconds()) * step.total_seconds(), UTC)
     found = free_slots(
-        busy_of(view.list("event"), tz, skip=about),
+        # A routine the person kept is a slot of their week: never offered as free.
+        [*busy_of(view.list("event"), tz, skip=about), *routines.busy(routines.kept(view), tz, opens, until)],
         working.start,
         working.end,
         working.days,

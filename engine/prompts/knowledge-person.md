@@ -16,6 +16,14 @@ What to suggest, each with the line it rests on:
 - An organization behind several people (the part of their addresses after the @ that several of them share), as a
   glossary entry whose term is the organization's name, when the names and counts make it plain. Never invent a name
   the lines don't support.
+- A routine: a slot the user keeps for the same thing week after week, from a line of the repeating entries (a repeat
+  rule such as FREQ=WEEKLY, or "same time on N different weeks, no repeat rule"). Use "glossary.add" with the entry's
+  name as the term, the days and times in plain words as the meaning ("Tuesdays 7 to 8 AM"), and "routine": the
+  weekdays as lower-case names and the start and end as 24-hour HH:MM, exactly as the line shows them. Only something
+  that is the user's own habit counts (exercise, a class, school pickup, a standing hour for deep work, a weekly call
+  with a family member). A meeting with other people for work, such as a team sync or a one-to-one, is not a routine:
+  leave it out. A line that is not plainly a habit gets nothing. Once the user keeps it, the assistant never offers
+  that time as free and puts no reminder in it, so propose only what the user would want protected.
 - Who answers what, for someone on file: a routing entry naming their id, when their repeated messages and the
   calendar's titles show what they handle. Never route to someone not on file.
 

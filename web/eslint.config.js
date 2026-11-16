@@ -8,7 +8,7 @@ import tseslint from "typescript-eslint";
 import { BARE_INVALIDATE_EXCEPTIONS } from "./eslint.bare-invalidate-exceptions.js";
 
 export default tseslint.config(
-  { ignores: ["dist/**", "node_modules/**", "src/api/schema.d.ts", "visual/**", "e2e/**", "stylelint/**", "playwright*.ts", "src/lib/lint-fixtures/**"] },
+  { ignores: ["dist/**", "node_modules/**", "src/api/schema.d.ts", "visual/**", "e2e/**", "e2e-install/**", "stylelint/**", "playwright*.ts", "src/lib/lint-fixtures/**"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

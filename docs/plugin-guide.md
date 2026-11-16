@@ -1999,7 +1999,7 @@ What went wrong, why, and the guard that prevents a repeat. Added by `lesson.add
 
 ### `glossary_entry` (GLOSS-n)
 
-A term or acronym and what it means here. Added by `glossary.add`, changed by `glossary.update`.
+A term or acronym and what it means here. Added by `glossary.add`, changed by `glossary.update`. An entry with a `routine` is a slot of the person's week once it is kept: the steward leaves it out of the free time it offers and puts no reminder in it.
 
 | Field | Type | Default | What it is |
 |---|---|---|---|
@@ -2037,6 +2037,10 @@ A term or acronym and what it means here. Added by `glossary.add`, changed by `g
 | `confidence` | Literal['confirmed', 'assumed', 'unknown'] | `'assumed'` | confirmed: someone who knows said so. assumed: a reasonable reading. unknown: not yet. |
 | `project` | str \| None | `None` | The project it is about; none means it holds everywhere. |
 | `id_patterns` | list[str] | `[]` | Patterns for splitting compound ids that use the term. |
+| `routine` | Routine \| None | see below | For a slot the person keeps week after week (the term is what it is for): its weekdays and times. Only a kept entry counts. |
+| `routine.days` | list[Literal['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']] | required | The weekdays it happens on, as lower-case names. |
+| `routine.start` | str | required | When it starts, as 24-hour HH:MM. |
+| `routine.end` | str | required | When it ends, as 24-hour HH:MM, later than the start. |
 
 ### `routing_entry` (ROUTE-n)
 
@@ -3163,6 +3167,10 @@ Keep a glossary entry: a term or acronym and what it means here. From the person
 | `confidence` | Literal['confirmed', 'assumed', 'unknown'] | `'assumed'` | confirmed: someone who knows said so. assumed: a reasonable reading. unknown: not yet. |
 | `project` | str \| None | `None` | Project id, if the term is about one project only. |
 | `id_patterns` | list[str] | `[]` | Patterns for splitting compound ids that use the term. |
+| `routine` | Routine \| None | see below | Only for a slot the person keeps for the same thing week after week (the term says what it is for, the meaning says when in plain words): its weekdays and its start and end times. Leave it out for everything else. |
+| `routine.days` | list[Literal['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']] | required | The weekdays it happens on, as lower-case names. |
+| `routine.start` | str | required | When it starts, as 24-hour HH:MM. |
+| `routine.end` | str | required | When it ends, as 24-hour HH:MM, later than the start. |
 | `applies_to` | Scope | see below | What it applies to. |
 | `applies_to.task_kinds` | list[str] | `[]` | Task kinds it applies to; empty means all. |
 | `applies_to.records` | list[str] | `[]` | Record types or type.field targets it applies to; empty means all. |

@@ -14,6 +14,7 @@ from datetime import date, datetime, time, timedelta
 from typing import Any
 
 from engine import capacity as capacity_rules
+from engine import routines
 from engine.day_calendar import timed
 from engine.free_slots import Busy, free_slots
 from engine.lists import value_rank
@@ -79,6 +80,9 @@ def free_minutes(store: Any, cfg: Any, now: datetime) -> int | None:
         Busy(t.start, t.end, "tentative" if t.tentative else "busy")
         for t in timed(store, cfg, now, through=today + timedelta(days=1))
     ]
+    window_end = datetime.combine(today + timedelta(days=1), time(), here)
+    # A routine the person kept is a slot of their day: its time is not free.
+    busy += routines.busy(routines.kept(store.read()), here, now, window_end)
     found = free_slots(
         busy,
         working.start,
@@ -87,7 +91,7 @@ def free_minutes(store: Any, cfg: Any, now: datetime) -> int | None:
         here,
         buffer_minutes=settings.buffer_minutes,
         window_start=now,
-        window_end=datetime.combine(today + timedelta(days=1), time(), here),
+        window_end=window_end,
         tentative_as_free=settings.tentative_is_free,
     )
     return int(round(found.free_minutes.get(today, 0)))

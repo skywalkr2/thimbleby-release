@@ -33,7 +33,7 @@ OP_KIND = {
 #: The fields each add op gives beyond the fields every entry has.
 OWN_FIELDS = {
     "lesson": ("guard", "signal"),
-    "glossary_entry": ("term", "meaning", "confidence", "project", "id_patterns"),
+    "glossary_entry": ("term", "meaning", "confidence", "project", "id_patterns", "routine"),
     "routing_entry": ("topic", "person", "team", "negative", "look_up"),
     "style_note": ("audience", "observation"),
 }
@@ -43,6 +43,11 @@ EDITABLE = ("proposed", "active")
 #: The fields of an entry the applier fills in, as stand-ins while a new entry is checked.
 _STAND_IN = {"id": "X-1", "origin": "assistant", "learned_at": "2000-01-01T00:00:00Z", "status": "proposed"}
 _PERSON_ID = re.compile(rf"^{re.escape(Person.prefix)}-[0-9]+$")
+
+
+def _stored(value: Any) -> Any:
+    """A field of an op as it is stored: a nested model as its plain values."""
+    return value.model_dump(mode="json") if hasattr(value, "model_dump") else value
 
 
 def kind_of(entry_id: str) -> str | None:
@@ -182,7 +187,7 @@ def apply(tx: Any, op: Any, w: WriteContext, st: Standing) -> list[dict[str, Any
         "kept_by": st.pm if kept else None,
         "kept_at": st.now if kept else None,
         "applies_to": join_scope(tx, op.applies_to.model_dump(mode="json", by_alias=True)),
-        **{name: getattr(op, name) for name in OWN_FIELDS[kind]},
+        **{name: _stored(getattr(op, name)) for name in OWN_FIELDS[kind]},
     }
     if not kept:
         held = proposal_rules(tx, kind, data, w, st)

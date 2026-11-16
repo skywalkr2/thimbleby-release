@@ -133,7 +133,7 @@ def _copy_prepared_workspaces() -> None:
         )
 
     def init_workspace(
-        path, *, template=None, git=True, you=None, name=None, assistant=None, history=False, personal=True
+        path, *, template=None, git=True, you=None, name=None, assistant=None, history=False, personal=True, addons=()
     ):
         if template is None or you or name or assistant:
             return original(
@@ -145,6 +145,7 @@ def _copy_prepared_workspaces() -> None:
                 assistant=assistant,
                 history=history,
                 personal=personal,
+                addons=addons,
             )
         root = Path(path).expanduser().resolve()
         if root.exists() and any(root.iterdir()):
