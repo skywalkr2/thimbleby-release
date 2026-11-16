@@ -143,6 +143,15 @@ def is_sorting(user: str) -> bool:
     return SORTING_MARK in user
 
 
+#: How the weekly look at who the person deals with opens its request: the tally, marked as outside content.
+LOOK_MARK = '<untrusted source="contact-tally">'
+
+
+def is_look(user: str) -> bool:
+    """Whether this packet is the weekly look at who the person deals with (learning, not a handed-in item)."""
+    return LOOK_MARK in user
+
+
 def is_check(user: str) -> bool:
     """Whether this packet is part of an account's connection check: the fixed reply, or the learning round-trip."""
     return "Reply with exactly" in user or learning_check.CHECK_REQUEST in user
@@ -165,6 +174,8 @@ def answer_to(system: str, user: str) -> str:
         return json.dumps(stand_in.learn(user))
     if is_sorting(user):
         return json.dumps(stand_in.sort_mail(user))
+    if is_look(user):
+        return json.dumps(stand_in.knowledge_person(user))
     if "<question>" in user:
         return json.dumps(stand_in.answer(user, system))
     if "<untrusted" in user or "<note>" in user:
@@ -210,6 +221,7 @@ def ai_routes(state: State) -> list[Route]:
                 "at": time.time(),
                 "smoke": is_check(user),
                 "sorting": is_sorting(user),
+                "learning": is_look(user),
                 "input": first[:200],
             }
         )
@@ -1072,13 +1084,15 @@ def helper_routes(state: State, base: str) -> list[Route]:
 
     async def requests(_request: Request) -> JSONResponse:
         asked = [c for c in state.chats if not c["smoke"]]
-        work = [c for c in asked if not c["sorting"]]
+        learning = [c for c in asked if c["learning"]]
+        work = [c for c in asked if not c["sorting"] and not c["learning"]]
         inputs = [c["input"] for c in work]
         return JSONResponse(
             {
                 "total": len(state.chats),
                 "smoke": len(state.chats) - len(asked),
-                "sorting": len(asked) - len(work),
+                "sorting": len([c for c in asked if c["sorting"]]),
+                "learning": len(learning),
                 "work": len(work),
                 "inputs": inputs,
                 "models": [c["model"] for c in work],

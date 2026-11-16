@@ -31,7 +31,10 @@ on the entry it made: each one it states must match). An expected `text.draft` (
 pending draft) may name the `field` it is for and `text_has` (words in the drafted text). A case that names
 `handed_over` (`action`, an open action among its starting records, and a `note`) starts from the person handing that
 action to the assistant, as the button on its row does, with no input handed in; its `stub_answer` holds the prose as
-`draft`, and no ops. A case may name the
+`draft`, and no ops. A case that names `person_look` (`tally`, the lines of a fictional contact tally as the packet
+shows them, and `series`, the repeating calendar entries) starts from the weekly look at who the person deals with,
+queued as the worker queues it, with no input handed in; its `stub_answer` holds the ops, an expected `glossary.add` may
+name `meaning_has`, and a forbidden one may name `term`. A case may name the
 `project` its input is about (as the person does when handing it in), or give `watched` (title, change, author,
 by_us, by_you, credited_to) to be received as the item a watched source found. A case may expect a held op (`held:
 <op>`, with `text_has` words in its fields) or a held "who is this?" question (`held: who-is`). A case may forbid a
@@ -71,7 +74,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from engine import action_work, new_terms
+from engine import action_work, new_terms, person_look
 from engine.ai import pricing
 from engine.ai.adapters import make_adapter
 from engine.ai.adapters.stub import set_responder
@@ -277,6 +280,13 @@ def _check_case(folder: Path, case: dict[str, Any]) -> None:
         raise ValueError(f"{where}: score names a plugin's scorer, which only the plugin's own cases use")
     if case.get("watched") is not None and not isinstance(case["watched"], dict):
         raise ValueError(f"{where}: watched is a mapping (title, change, author, by_us, by_you, credited_to)")
+    look = case.get("person_look")
+    if look is not None and not (
+        isinstance(look, dict)
+        and isinstance(look.get("tally"), list)
+        and all(isinstance(x, str) for x in [*look["tally"], *(look.get("series") or [])])
+    ):
+        raise ValueError(f"{where}: person_look is a mapping with `tally` (lines) and, if wanted, `series` (lines)")
     given = case.get("handed_over")
     if given is not None:
         if not isinstance(given, dict) or not isinstance(given.get("action"), str):
@@ -552,6 +562,7 @@ def _run_case(
         finally:
             store.close()
             set_responder(None)
+            person_look.use_lines(None)
 
 
 def configured_models(cfg: Config, runs: list[dict[str, Any]]) -> list[str]:
@@ -635,6 +646,14 @@ def _hand_in_case(ws: Workspace, store: Store, cfg: Config, case: dict[str, Any]
     """Hand a case's input in. A case with `typed_on` is a note typed on a button of an action or question: it names
     the item (`kind`, `id`), the button (`route`) and, for They finished it, the person it waited on. The button's own
     change is made first, as the screen does, then the note is handed in as the person's own words."""
+    if case.get("person_look") is not None:
+        # The weekly look: queued as the worker queues it, from the case's fictional tally.
+        look = case["person_look"]
+        person_look.use_lines(look["tally"], look.get("series"))
+        request = person_look.queue(store, cfg, now)
+        if request is None:
+            raise ValueError(f"case {case['id']}: the look has nothing to look at or is switched off")
+        return request
     if case.get("handed_over") is not None:
         # An action handed to the assistant: its request is queued as the button does, for the work to be drafted.
         given = case["handed_over"]
@@ -807,6 +826,7 @@ def _op_matches(e: dict[str, Any], o: dict[str, Any], store: Store) -> bool:
             entry
             and ("term" not in e or _squeezed(entry["term"]) == _squeezed(e["term"]))
             and ("confidence" not in e or entry.get("confidence") == e["confidence"])
+            and _has_words(entry.get("meaning") or "", e.get("meaning_has", []))
         )
     if op in ("action.tie", "event.guests"):
         # A tie names the action and the entry; guests name the entry and the people (as the op gave them).
@@ -983,6 +1003,8 @@ def _forbidden(f: dict[str, Any], outcomes: list[dict[str, Any]], store: Store, 
             a = _record(store, o, "action")
             if a is None or not set(a.get("promised_to") or []) & set(f["promised_to"]):
                 continue
+        if "term" in f and _squeezed(o["op"].get("term")) != _squeezed(f["term"]):
+            continue
         if "text_has" in f:
             text = json.dumps(o["op"])
             if not _has_words(text, f["text_has"]):

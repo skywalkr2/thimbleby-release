@@ -12,6 +12,10 @@
 .chip:hover { background: var(--surface-sunk); }
 .head { display: inline-flex; align-items: center; gap: var(--space-2); flex: 0 1 auto; min-width: 0; }
 .dot { width: 8px; height: 8px; flex: none; border-radius: var(--radius-full); background: var(--ok); }
+/* Work is running: a ring with a gap that turns where the dot is; with reduced motion it stands still. */
+.ring { width: 12px; height: 12px; flex: none; box-sizing: border-box; border-radius: var(--radius-full); border: 2px solid var(--ok); border-top-color: transparent; animation: status-turn 0.9s linear infinite; }
+@keyframes status-turn { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ring { animation: none; } }
 .warn .dot { background: var(--warn); }
 .danger .dot { background: var(--danger); }
 /* A long word is cut with an ellipsis rather than push the row wider than the window; its full words are the chip's name and the popover. */

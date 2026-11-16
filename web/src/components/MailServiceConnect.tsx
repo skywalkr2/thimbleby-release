@@ -20,7 +20,7 @@ type Service = S["MailServiceView"];
 /** What `onPick` is told when the person chooses to type the server by hand. */
 export const OTHER_MAILBOX = "other";
 /** How often a connection made here is read, as the full form offers it first. */
-const EVERY_MINUTES = 60;
+const EVERY_MINUTES = 10;
 
 /** A numbered list of plain steps, each with its number. */
 function Steps(props: { steps: string[]; label: string }) {

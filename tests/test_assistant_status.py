@@ -102,3 +102,46 @@ def test_a_failed_last_run_on_a_paused_account_is_a_pause_not_a_failure(served):
     assert alive["last_run_failed"] is False
     assert [p["account"] for p in alive["paused"]] == [main]
     assert datetime.fromisoformat(alive["paused"][0]["until"]).utcoffset() == timedelta(hours=9)
+
+
+def run_now(store, request_id: str) -> None:
+    from engine.dispatcher import _set
+
+    _set(store, request_id, state="running", waiting="With the assistant now")
+
+
+def test_nothing_is_being_worked_on_while_nothing_runs(served):
+    client, _, _ = served
+    client.post("/api/handin", json={"note": "remember the reading series"})
+    alive = assistant(client)
+    assert alive["working_on"] is None and alive["working_count"] == 0
+
+
+def test_running_work_is_named_by_one_plain_word_with_its_count_and_the_rest_still_queued(served):
+    client, store, _ = served
+    for note in ("remember the reading series", "call the printer", "plan the launch"):
+        client.post("/api/handin", json={"note": note})
+    queued = [r.id for r in store.read().find("request", {"state": "queued"})]
+    for request_id in queued[:2]:
+        run_now(store, request_id)
+    alive = assistant(client)
+    assert alive["working_on"] == "reading" and alive["working_count"] == 2
+    assert alive["queued"] == 1
+
+
+def test_work_that_finished_is_no_longer_working_on(served):
+    client, store, _ = served
+    client.post("/api/handin", json={"note": "remember the reading series"})
+    request_id = store.read().find("request", {"state": "queued"})[0].id
+    run_now(store, request_id)
+    assert assistant(client)["working_on"] == "reading"
+    from engine.dispatcher import _set
+
+    _set(store, request_id, state="done")
+    assert assistant(client)["working_on"] is None
+
+
+def test_the_held_route_says_how_many_wait_and_when_with_none_held_on_a_fresh_workspace(served):
+    client, _, _ = served
+    held = client.get("/api/today/held").json()
+    assert held == {"count": 0, "until": None}

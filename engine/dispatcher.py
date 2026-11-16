@@ -22,6 +22,7 @@ from engine import (
     learn,
     new_terms,
     pack_tiers,
+    person_look,
     quality,
     read_image,
     transcribe,
@@ -179,9 +180,17 @@ def hidden_words(cfg: Config) -> list[str]:
 
 
 def process(
-    ws: Workspace, store: Store, cfg: Config, router: Router, request_id: str, *, now: datetime | None = None
+    ws: Workspace,
+    store: Store,
+    cfg: Config,
+    router: Router,
+    request_id: str,
+    *,
+    now: datetime | None = None,
+    started: Callable[[], None] | None = None,
 ) -> str | None:
-    """Run one queued request through the assistant. Returns the changeset id, or None if it needs the PM."""
+    """Run one queued request through the assistant. Returns the changeset id, or None if it needs the PM. `started`
+    is called once the request is marked running, so a caller can tell the screens the assistant is at work."""
     now = now or datetime.now(UTC)
     req = store.read().get("request", request_id)
     if req is None:
@@ -194,16 +203,19 @@ def process(
     if req.data["task"] == follow_on.TASK and (why := follow_on.skip_reason(store, cfg, req.data)) is not None:
         follow_on.close(store, request_id, why)  # the move is gone or stands no more: no packet, no estimate, no call
         return None
+    if req.data["task"] == person_look.TASK and (why := person_look.skip_reason(store, cfg, req.data)) is not None:
+        person_look.close(store, request_id, why)  # nothing to look at any more: no packet, no estimate, no call
+        return None
     if req.data.get("approval") == "required":
         from engine.stages import wording
 
         return needs_you(store, request_id, wording(cfg, "waiting"))
     if req.data["task"] == transcribe.TASK:
         # A voice note: its own estimate, go and call, and its words go on as the person's own note.
-        return transcribe.process(ws, store, cfg, router, request_id, now=now)
+        return transcribe.process(ws, store, cfg, router, request_id, now=now, started=started)
     if req.data["task"] == read_image.TASK:
         # A picture: its estimate, go and call, and its reading goes on as outside material.
-        return read_image.process(ws, store, cfg, router, request_id, now=now)
+        return read_image.process(ws, store, cfg, router, request_id, now=now, started=started)
     if not person_is_set(store, cfg):
         # Nothing is estimated or asked before the person is named: the assistant's work needs someone to address.
         return needs_you(store, request_id, SAY_WHO_FIRST, cause={"kind": "no_person"})
@@ -218,6 +230,8 @@ def process(
         cause=None,
         attempts=req.data["attempts"] + 1,
     )
+    if started is not None:
+        started()
 
     known = store.read().versions()  # read before the packet, so an edit meanwhile is never taken as seen
     try:
@@ -520,6 +534,8 @@ def process(
         learn.finish(store, request_id, cs_id)
     if kind.name == follow_on.TASK:
         follow_on.finish(store, request_id, cs_id)
+    if kind.name == person_look.TASK:
+        person_look.finish(store, request_id, cs_id)
     if _applied_something(store, cs_id):
         retire_earlier_attempts(store, request_id)
     return cs_id

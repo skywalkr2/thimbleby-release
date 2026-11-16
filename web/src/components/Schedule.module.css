@@ -310,10 +310,6 @@
 .dayList { display: grid; gap: var(--space-2); margin-top: var(--space-3); min-width: 0; }
 .dayList .caption { margin: 0; }
 
-/* The card that says a range is empty keeps the toolbar's rhythm above it. */
-.emptyCard { margin-top: var(--space-2); }
-/* The empty day's card is centred in the content width, capped by the shared card. */
-.emptyCard.emptyCard { width: 100%; box-sizing: border-box; }
 
 /* A to-do among a day's entries: its mark, then the entry's own button, in one row. */
 .dueRow { display: flex; align-items: center; gap: var(--space-1); min-width: 0; }
@@ -370,11 +366,6 @@
 .sideKeyButton { min-height: var(--hit-min); padding: 0 var(--space-2); font: inherit; font-size: var(--text-meta); line-height: var(--lh-meta); font-weight: var(--weight-semibold); color: var(--text); background: transparent; border: 0; border-radius: var(--radius-sm); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
 .sideKeyButton:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 
-/* An empty range keeps its grid behind the card: the grid is drawn quiet and cannot be reached, the card is centred over it. */
-.emptyOver { position: relative; min-width: 0; }
-.emptyBehind { opacity: 0.45; pointer-events: none; max-height: clamp(24rem, calc(100vh - 19rem), 60rem); overflow: hidden; }
-.emptyFront { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); margin: 0; width: min(100%, 32rem); background: var(--surface); border: 1px solid var(--border); }
-.emptyCard.emptyFront { width: min(100%, 32rem); }
 
 /* The stale-calendar line is one line with its button: the words give way with an ellipsis (the whole line is on hover and in the button's name). */
 .staleList > li { flex-wrap: nowrap; }

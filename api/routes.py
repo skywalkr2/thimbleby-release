@@ -92,6 +92,7 @@ from api.schemas import (
     HeldMessageChanged,
     HeldMessageIn,
     HeldMessageRestore,
+    HeldWork,
     HoldChanged,
     HoldIn,
     HoldRestore,
@@ -872,6 +873,16 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
             )
         ]
 
+    @r.get("/today/held")
+    def today_held() -> HeldWork:
+        """What waits for the person's working hours (design 6.35): how many lines, and when the first arrives."""
+        from engine.today import zone
+        from engine.today_queue import held_for_hours
+
+        with store.read_scope():
+            count, until = held_for_hours(ws, store, cfg, worker.now())
+        return HeldWork(count=count, until=until.astimezone(zone(cfg)) if until else None)
+
     @r.get("/plugin-today")
     def plugin_today() -> list[TodayLineView]:
         """Lines running plugins add to Today."""
@@ -1560,6 +1571,8 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
                 paused=[AssistantPaused(**vars(x)) for x in alive.paused],
                 loop_restarted_at=alive.loop_restarted_at,
                 loop_stuck_since=alive.loop_stuck_since,
+                working_on=alive.working_on,
+                working_count=alive.working_count,
             ),
             spend=SpendStatus(
                 today_usd=spent.today_usd,

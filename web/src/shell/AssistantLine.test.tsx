@@ -228,3 +228,76 @@ test("the words after the icon start with a capital and no stray space, so no AI
   const text = within(dialog.querySelector("[data-section='problem']") as HTMLElement).getByText("No AI account yet");
   expect(text.textContent).toBe("No AI account yet");
 });
+
+test("busy: while work runs the line shows a moving ring and says what is being done with how many wait, and it rests when done (S-0526)", async () => {
+  const user = userEvent.setup();
+  let status = statusFixture({}, { assistant: { ...ran, working_on: "reading", working_count: 12, queued: 3, oldest_queued_since: `${TODAY}T09:50:00+09:00` } });
+  fakeApi({ "GET status": () => status, "GET runtime-config": () => ({ instance: null }), "GET today/held": () => ({ count: 0, until: null }) });
+  const { client } = renderApp(
+    <RestartProvider hellos={1}>
+      <AssistantLine onOpenGuide={() => undefined} />
+    </RestartProvider>,
+  );
+  const button = await screen.findByRole("button", { name: /^Helper/ });
+  await waitFor(() => expect(button).toHaveAttribute("data-busy"));
+  // The state is in words for a screen reader, the mark is a ring and never the resting dot, and the words are on the line.
+  expect(button).toHaveAccessibleName("Helper: Reading 12 new items, 3 waiting");
+  expect(button.querySelector("[data-working]")).not.toBeNull();
+  expect(button.querySelector("[data-indicator]")).toBeNull();
+  expect(button.querySelector("[data-doing]")).toHaveTextContent("Reading 12 new items, 3 waiting");
+  const dialog = await open(user);
+  expect(within(dialog.querySelector("[data-section='working']") as HTMLElement).getByText("Reading 12 new items, 3 waiting")).toBeInTheDocument();
+  await user.keyboard("{Escape}");
+  // The server says the work is done (the live stream refreshes the status): the line goes back to rest.
+  status = statusFixture({}, { assistant: { ...ran } });
+  await client.invalidateQueries({ queryKey: ["status"] });
+  await waitFor(() => expect(lineNow()).not.toHaveAttribute("data-busy"));
+  expect(lineNow().querySelector("[data-working]")).toBeNull();
+  expect(lineNow().querySelector("[data-indicator]")).not.toBeNull();
+  expect(lineNow()).toHaveAccessibleName("Helper: Working");
+});
+
+test("busy words come from the wording sheet for each kind of work, never a task's id (S-0526)", async () => {
+  show(statusFixture({}, { assistant: { ...ran, working_on: "sorting", working_count: 1 } }));
+  await waitFor(() => expect(lineNow()).toHaveAttribute("data-busy"));
+  expect(lineNow()).toHaveAccessibleName("Helper: Sorting new mail");
+  expect(lineNow().textContent).not.toMatch(/sort-mail|notes|action-work/);
+});
+
+test("a problem keeps its own mark while work runs: busy never hides a failing account (S-0526)", async () => {
+  show(statusFixture({}, { assistant: { ...ran, last_run_failed: true, working_on: "reading", working_count: 1 } }));
+  await waitFor(() => expect(lineNow()).toHaveAttribute("data-alive", "run_failed"));
+  expect(lineNow()).not.toHaveAttribute("data-busy");
+  expect(lineNow()).toHaveAccessibleName("Helper: Not working");
+});
+
+test("held work is listed in the popover as waiting until the working day's start, and the section is absent when nothing is held (S-0527)", async () => {
+  const user = userEvent.setup();
+  fakeApi({ "GET status": () => statusFixture({}, { assistant: ran }), "GET runtime-config": () => ({ instance: null }), "GET today/held": () => ({ count: 3, until: `${TODAY}T23:30:00+09:00` }) });
+  renderApp(
+    <RestartProvider hellos={1}>
+      <AssistantLine onOpenGuide={() => undefined} />
+    </RestartProvider>,
+  );
+  const dialog = await open(user);
+  const held = await waitFor(() => {
+    const found = dialog.querySelector<HTMLElement>("[data-section='held']");
+    expect(found).not.toBeNull();
+    return found as HTMLElement;
+  });
+  expect(held).toHaveTextContent("Waiting for your working hours");
+  expect(held).toHaveTextContent(/3 things, waiting until 11:30 PM/);
+});
+
+test("nothing held: the popover has no held section (S-0527)", async () => {
+  const user = userEvent.setup();
+  fakeApi({ "GET status": () => statusFixture({}, { assistant: ran }), "GET runtime-config": () => ({ instance: null }), "GET today/held": () => ({ count: 0, until: null }) });
+  renderApp(
+    <RestartProvider hellos={1}>
+      <AssistantLine onOpenGuide={() => undefined} />
+    </RestartProvider>,
+  );
+  const dialog = await open(user);
+  await waitFor(() => expect(dialog.querySelector("[data-section='queue']")).not.toBeNull());
+  expect(dialog.querySelector("[data-section='held']")).toBeNull();
+});

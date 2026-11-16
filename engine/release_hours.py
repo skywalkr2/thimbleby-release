@@ -104,10 +104,16 @@ def causes(
 
 
 def keep_hours(
-    lines: list[Any], caused: dict[str, datetime], cfg: Any, now: datetime, make_row: Callable[..., Any]
+    lines: list[Any],
+    caused: dict[str, datetime],
+    cfg: Any,
+    now: datetime,
+    make_row: Callable[..., Any],
+    held: list[datetime] | None = None,
 ) -> list[Any]:
     """The lines whose hours have come, and one `away` row counting those that waited and were released today (the
-    person's day, so the row goes with it). A line is held while its cause's release moment is still ahead."""
+    person's day, so the row goes with it). A line is held while its cause's release moment is still ahead; when `held`
+    is given, the release moment of each line still held is added to it."""
     r = reminder_lines.rules(cfg)
     today = now.astimezone(r.tz).date()
     shown: list[Any] = []
@@ -120,6 +126,8 @@ def keep_hours(
             continue
         released = release_at(cause, r.tz, r.quiet, r.working)
         if released > now:
+            if held is not None:
+                held.append(released)
             continue
         shown.append(line)
         if released > cause and released.astimezone(r.tz).date() == today:

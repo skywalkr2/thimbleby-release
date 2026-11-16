@@ -6056,6 +6056,33 @@
             },
             "title": "Runs Today",
             "type": "array"
+          },
+          "working_count": {
+            "default": 0,
+            "description": "How many pieces of that same work are running now.",
+            "title": "Working Count",
+            "type": "integer"
+          },
+          "working_on": {
+            "anyOf": [
+              {
+                "enum": [
+                  "reading",
+                  "sorting",
+                  "drafting",
+                  "answering",
+                  "learning",
+                  "updating",
+                  "working"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the assistant is working on now, as one plain word for the oldest running work; none while nothing runs. The header says it in words and shows a moving mark; it comes with the status, which the live stream refreshes as work starts and ends.",
+            "title": "Working On"
           }
         },
         "required": [
@@ -14321,6 +14348,34 @@
           "holds"
         ],
         "title": "HeldMessageRestore",
+        "type": "object"
+      },
+      "HeldWork": {
+        "description": "What the assistant added on its own that waits for the person's working hours.",
+        "properties": {
+          "count": {
+            "description": "How many lines are held; 0 when holding is off or nothing waits.",
+            "title": "Count",
+            "type": "integer"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the first of them arrives, on the person's own clock; none when nothing is held.",
+            "title": "Until"
+          }
+        },
+        "required": [
+          "count"
+        ],
+        "title": "HeldWork",
         "type": "object"
       },
       "HoldChanged": {
@@ -35649,7 +35704,7 @@
             "type": "string"
           },
           "every_minutes": {
-            "default": 60,
+            "default": 10,
             "minimum": 5.0,
             "title": "Every Minutes",
             "type": "integer"
@@ -52404,6 +52459,25 @@
           }
         },
         "summary": "Today Arrived Check"
+      }
+    },
+    "/api/today/held": {
+      "get": {
+        "description": "What waits for the person's working hours (design 6.35): how many lines, and when the first arrives.",
+        "operationId": "today_held_api_today_held_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldWork"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Today Held"
       }
     },
     "/api/today/priorities": {

@@ -50,6 +50,8 @@ class StubAdapter:
             body = stand_in.learn(task.request)
         elif task.kind == "follow-on":
             body = stand_in.follow_on()
+        elif task.kind == "knowledge-person":
+            body = stand_in.knowledge_person(task.request)
         else:
             body = {"summary": "Filed the input as a note.", "ops": [{"op": "note", "text": first or "(empty input)"}]}
         return AiResult(text=json.dumps(body), model_served="stub", seconds=0.0)

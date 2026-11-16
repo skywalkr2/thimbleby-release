@@ -9,7 +9,6 @@ kinds the app tracks are left out. Reads only: adding someone is the People rout
 from __future__ import annotations
 
 import re
-from collections import Counter
 from dataclasses import dataclass
 from email.utils import getaddresses
 from typing import Any
@@ -155,71 +154,26 @@ def _looks_like_a_person(display: str) -> bool:
 
 
 def suggest(store: Any, cfg: Any, limit: int) -> list[Suggestion]:
-    """The real people the person writes to, the ones they wrote to most first, at most `limit`. Sent mail is read
-    first (who it went to). When none is read, who wrote to the person counts, but only a sender whose shown name
-    is a person's. Left out always: the person themselves, anyone on file, automated and role addresses, senders
-    whose names say a company or a service, bulk mail, mail the person set aside and the kinds of mail the app tracks.
-    Reads only."""
-    settings = cfg.ui.walkthrough
-    sources = _mail_sources(store, cfg)
-    person = cfg.workspace.user.person
-    sent_ids = {s.id for s in sources if person and s.author == person}
-    own = _own_addresses(store, cfg, sources)
+    """The real people the person writes to, the ones they wrote to most first, at most `limit`, read from the contact
+    tally (`engine.contact_tally`). Sent mail is read first (who it went to). When none is read, who wrote to the person
+    counts, but only a sender whose shown name is a person's. Left out always: the person themselves, anyone on file,
+    automated and role addresses, senders whose names say a company or a service, bulk mail, mail the person set aside
+    and the kinds of mail the app tracks (the tally keeps those apart). Reads only."""
+    from engine.contact_tally import tally
+
     known_addresses, known_names = _known(store)
-    automated = tuple(w.lower() for w in cfg.watch.automated_mail.senders)
-    roles = {w.strip().lower() for w in settings.not_people_addresses if w.strip()}
-    companies = {w.strip().lower() for w in settings.not_people_names if w.strip()}
-    domain_words = {w.strip().lower() for w in settings.not_people_domain_words if w.strip()}
-    blocked_addresses, blocked_domains = _blocked(store, cfg, sources)
-    view = store.read()
-    counts: Counter[str] = Counter()
-    names: dict[str, str] = {}
-
-    def note(entries: list[str], *, strict: bool) -> None:
-        seen: set[str] = set()
-        for entry in entries:
-            display, address = _parsed(entry)
-            display = re.sub(r"\s+", " ", display.replace('"', "")).strip()
-            if not address or address in seen or address in own or address in known_addresses:
-                continue
-            local, _, domain = address.partition("@")
-            if (
-                address in blocked_addresses
-                or domain in blocked_domains
-                or local.startswith(automated)
-                or _first_word(local) in roles
-                or local_is_code(local)
-                or domain_is_automated(domain, domain_words)
-                or (display and _names_a_company(display, companies))
-            ):
-                continue
-            if strict and not (display and "@" not in display and _looks_like_a_person(display)):
-                continue
-            name = _name_of(display, address)
-            if not name or name.lower() in known_names:
-                continue
-            seen.add(address)
-            counts[address] += 1
-            names.setdefault(address, name)
-
-    def usable(snap: Any) -> bool:
-        data = snap.data
-        return bool(data.get("message")) and not (data.get("gone") or data.get("deleted") or data.get("set_aside"))
-
-    for s in sources:
-        if s.id in sent_ids:
-            for snap in view.find("snapshot", {"source": s.id}):
-                if usable(snap):
-                    note(list(snap.data["message"].get("participants") or []), strict=False)
-    from_sent = bool(counts)
-    if not from_sent:
-        for s in sources:
-            for snap in view.find("snapshot", {"source": s.id}):
-                message = snap.data.get("message") or {}
-                if usable(snap) and not message.get("bulk") and message.get("sender"):
-                    note([message["sender"]], strict=True)
-    ranked = sorted(counts, key=lambda a: (-counts[a], names[a].lower(), a))
-    return [Suggestion(names[a], a, counts[a], from_sent) for a in ranked[: max(0, limit)]]
+    contacts = [
+        c
+        for c in tally(store, cfg)
+        if c.apart is None and c.address not in known_addresses and c.name.lower() not in known_names
+    ]
+    wrote_to = [c for c in contacts if c.to_them]
+    if wrote_to:
+        ranked = sorted(wrote_to, key=lambda c: (-c.to_them, c.name.lower(), c.address))
+        return [Suggestion(c.name, c.address, c.to_them, True) for c in ranked[: max(0, limit)]]
+    named = [c for c in contacts if c.from_them_named]
+    ranked = sorted(named, key=lambda c: (-c.from_them_named, c.name.lower(), c.address))
+    return [Suggestion(c.name, c.address, c.from_them_named, False) for c in ranked[: max(0, limit)]]
 
 
 #: The most names one pasted list adds.

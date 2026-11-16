@@ -1072,7 +1072,9 @@ class Budgets(ConfigModel):
         json_schema_extra=MONEY,
     )
     per_task: dict[str, TaskBudget] = Field(
-        default_factory=dict, description="Limits for one kind of work, on top of the overall ones."
+        default_factory=lambda: {"knowledge-person": TaskBudget(per_day_usd=0.25, per_month_usd=2.0)},
+        description="Limits for one kind of work, on top of the overall ones. The weekly look at who you deal with "
+        "has its own, so it never uses more than this.",
     )
     per_day_usd: float = Field(
         2.0,
@@ -1604,6 +1606,45 @@ class KnowledgeSettings(ConfigModel):
         le=1000,
         description="The fewest promises the assistant must have found in the quality window before the quality page "
         "shows figures. With fewer, the page says it is too early to tell and how many it is waiting for.",
+    )
+    person_look: bool = Field(
+        True,
+        description="Whether the assistant looks, once a week and once after your first read, at who you deal with in "
+        "your mail and at your repeating calendar entries, and suggests the people and companies that matter to you "
+        "and who answers what. Nothing it suggests is used until you keep it. When this is off, the tally of who "
+        "you deal with is still kept and nothing is suggested from it.",
+        json_schema_extra={"internal": True},
+    )
+    person_look_every_days: int = Field(
+        7,
+        ge=1,
+        le=90,
+        description="How many days pass between one look at who you deal with and the next.",
+        json_schema_extra={"internal": True},
+    )
+    person_look_entries: int = Field(
+        40,
+        ge=1,
+        le=500,
+        description="The most people and companies from the tally of who you deal with (counts and names, never "
+        "message text) that one look shows the assistant, the ones you deal with most first.",
+        json_schema_extra={"internal": True},
+    )
+    person_look_min_messages: int = Field(
+        2,
+        ge=1,
+        le=1000,
+        description="The fewest messages, from and to you together, that an address needs before a look at who you "
+        "deal with shows it to the assistant.",
+        json_schema_extra={"internal": True},
+    )
+    person_look_series: int = Field(
+        20,
+        ge=0,
+        le=200,
+        description="The most repeating calendar entries (title and time only) that one look at who you deal with "
+        "shows the assistant. 0 shows none.",
+        json_schema_extra={"internal": True},
     )
 
 
@@ -3379,7 +3420,11 @@ class WatchSource(ConfigModel):
     )
     label: str = Field("", description="What to call it on screen.")
     enabled: bool = Field(True, description="Off keeps its history and stops reading it.")
-    every_minutes: int = Field(60, ge=5, description="How often it is read while the app runs.")
+    every_minutes: int = Field(
+        10,
+        ge=5,
+        description="How often it is read while the app runs, in minutes. A source set before keeps its own.",
+    )
     project: str | None = Field(None, description="The project its changes are about, if they all are.")
     stance: Literal["follow", "understand"] = Field(
         "follow",

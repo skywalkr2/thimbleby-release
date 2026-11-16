@@ -17,7 +17,6 @@ import { onAnySide, onSide, useSideFilter } from "../lib/sides";
 import { useWords } from "../lib/wording";
 import { Button } from "../ui/Button";
 import { sideSlot } from "../ui/MarkDot";
-import { EmptyState } from "../ui/EmptyState";
 import { IconButton } from "../ui/IconButton";
 import { FilterSheet } from "../ui/FilterSheet";
 import { ListDetail } from "../ui/ListDetail";
@@ -362,7 +361,6 @@ export function Schedule() {
     const found = calendars.side?.(o.id);
     return found && drawnSides.has(o.id) ? [{ id: o.id, name: found.name, slot: found.slot }] : [];
   });
-  const anyStale = (watch.data ?? []).some((s) => (s.reads ?? []).includes("calendar") && signInNeed(s) !== null);
   const empty = days.every((d) => d.all_day.length === 0 && d.timed.length === 0);
 
   return (
@@ -448,7 +446,7 @@ export function Schedule() {
             <LoadFailed message={t("schedule.timeline.load_failed")} onRetry={() => void timeline.refetch()} />
           ) : (
             <div className={styles.frame} data-swipe="" data-view={view} data-shown={shown} onTouchStart={swipeStart} onTouchEnd={swipeEnd} onTouchCancel={() => (touch.current = null)}>
-              <Timeline data={tl} lanes={lanes} onLater={() => go(1)} sideName={(side) => filter.options.find((o) => o.id === side)?.name} selected={picked} onOpen={open} colorOf={(e) => calendars.color(e.source)} nameOf={(e) => calendars.name(e.source)} />
+              <Timeline data={tl} lanes={lanes} sideName={(side) => filter.options.find((o) => o.id === side)?.name} selected={picked} onOpen={open} colorOf={(e) => calendars.color(e.source)} nameOf={(e) => calendars.name(e.source)} />
             </div>
           )
         ) : page.isPending ? (
@@ -461,29 +459,6 @@ export function Schedule() {
               // The answer for a new range is on its way: the days of the new range are never drawn from the answer for another one (a bare
               // lane for a day that holds entries). The frame stays, so a swipe or a key goes on working; its days wait for their answer.
               <ScheduleSkeleton view={view === "month" ? "month" : asList ? "list" : "grid"} days={range.shown.length} />
-            ) : empty ? (
-              // Nothing in the range: the grid or the month stays, quiet, behind one card that says so and gives the way on; a list (a phone) is the card alone.
-              <div className={asList ? undefined : styles.emptyOver} data-empty-over={asList ? undefined : ""}>
-                {!asList && (
-                  <div className={styles.emptyBehind} inert aria-hidden="true">
-                    {view === "month" ? (
-                      <MonthGrid days={days} today={data.today} month={date} limit={data.month_entries} calendars={calendars} selected={null} onOpen={open} onOpenDay={openDay} />
-                    ) : (
-                      <TimeGrid lead={null} onOpenGroup={openGroup} days={days} today={data.today} startsAt={data.grid_starts} endsAt={data.grid_ends} now={now} calendars={calendars} selected={null} onOpen={open} />
-                    )}
-                  </div>
-                )}
-                <EmptyState
-                  card
-                  className={asList ? styles.emptyCard : `${styles.emptyCard} ${styles.emptyFront}`}
-                  title={t(`schedule.empty.${anyStale ? "title_stale" : "title"}.${view === "day" ? "day" : view === "month" ? "month" : "week"}`)}
-                  text={t(anyStale ? "schedule.empty.text_stale" : "schedule.empty.text")}
-                  action={{ label: t(`schedule.empty.next.${unit}`), onClick: () => go(1) }}
-                  data-schedule-empty=""
-                >
-                  {phone && <AddMeeting today={today} minutes={means.event_minutes} />}
-                </EmptyState>
-              </div>
             ) : view === "month" ? (
               <>
                 <ScheduleSides sides={keySides} />

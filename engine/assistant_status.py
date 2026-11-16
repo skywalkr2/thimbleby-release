@@ -20,6 +20,22 @@ LATEST_WINDOW = 20
 # How long a restart of stopped background work stays on the status.
 RESTARTED_WINDOW = timedelta(hours=1)
 
+#: What each kind of work is called to the person, by task kind: one plain word per kind (the screen words it from the
+#: wording sheet). A kind not listed here, a plugin's among them, is "working".
+WORK_WORDS = {
+    "notes": "reading",
+    "read-image": "reading",
+    "transcribe": "reading",
+    "sort-mail": "sorting",
+    "action-work": "drafting",
+    "monday-message": "drafting",
+    "meeting-prep": "drafting",
+    "ask": "answering",
+    "learn-correction": "learning",
+    "follow-on": "updating",
+}
+OTHER_WORK = "working"
+
 
 @dataclass(frozen=True)
 class AccountRuns:
@@ -53,6 +69,10 @@ class AssistantState:
     loop_restarted_at: datetime | None = None
     #: When the longest-stuck piece of background work last checked in, while one is stuck.
     loop_stuck_since: datetime | None = None
+    #: What the assistant is working on now: the word for the oldest running work (`WORK_WORDS`), and how many pieces of
+    #: that same work run; none while nothing runs.
+    working_on: str | None = None
+    working_count: int = 0
 
 
 def _at(text: str) -> datetime:
@@ -115,6 +135,13 @@ def assistant_state(
     ]
     oldest = min((_at(str(r["created_at"])) for r in queued), default=None)
 
+    running = sorted(
+        (r.data for r in view.find("request", {"state": "running"}) if not r.data.get("dismissed")),
+        key=lambda d: str(d.get("created_at") or ""),
+    )
+    working_on = WORK_WORDS.get(running[0]["task"], OTHER_WORK) if running else None
+    working_count = sum(WORK_WORDS.get(d["task"], OTHER_WORK) == working_on for d in running)
+
     paused = sorted(Pauses(pauses_path(store), lambda: now).active().items(), key=lambda x: (x[1], x[0]))
     return AssistantState(
         last_run_at=_at(newest["started_at"]).astimezone(here) if newest else None,
@@ -131,4 +158,6 @@ def assistant_state(
             else None
         ),
         loop_stuck_since=loop_stuck_since.astimezone(here) if loop_stuck_since else None,
+        working_on=working_on,
+        working_count=working_count,
     )

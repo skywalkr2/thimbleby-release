@@ -2037,3 +2037,25 @@ test("Settings says which version of the app this is, from what the server repor
   open();
   expect(await screen.findByText("Version 9.8.7")).toBeInTheDocument();
 });
+
+test("Today holds the working-hours hold as one clear switch with a one-line explanation, on by default, and turning it off is one click (S-0527)", async () => {
+  const user = userEvent.setup();
+  const calls = api([
+    item("steward.hold_outside_hours", {
+      group: "steward",
+      type: "yes_no",
+      value: true,
+      default: true,
+      description: "What the assistant adds on its own waits for your working hours, then arrives together.",
+    }),
+  ]);
+  open("today");
+  await screen.findByText("Hold what arrives outside working hours");
+  const row = rowOf("Hold what arrives outside working hours");
+  const box = within(row).getByRole("checkbox");
+  expect(box).toBeChecked();
+  expect(row).toHaveTextContent("What the assistant adds on its own waits for your working hours, then arrives together.");
+  await user.click(box);
+  await waitFor(() => expect(posted(calls)).toHaveLength(1));
+  expect(posted(calls)[0]).toMatchObject({ changes: { "steward.hold_outside_hours": false } });
+});

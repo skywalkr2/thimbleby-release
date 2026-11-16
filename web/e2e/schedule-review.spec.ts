@@ -36,7 +36,7 @@ async function openView(page: Page, key: "1" | "2" | "3" | "4" | "5", day: strin
   await expect(page.getByRole("main").getByRole("heading", { level: 1, name: "Schedule" })).toBeVisible();
   await expect(page.locator("main [data-skeleton]")).toHaveCount(0, LOAD);
   await page.locator("body").press(key);
-  const here = key === "5" ? "main [data-timeline]" : key === "4" ? "main [data-month]" : "main [data-grid], main [data-schedule-empty]";
+  const here = key === "5" ? "main [data-timeline]" : key === "4" ? "main [data-month]" : "main [data-grid]";
   await expect(page.locator(here).first()).toBeVisible(LOAD);
   // Forward by the view's unit until the day is on the screen (Day shows one day: go by day).
   for (let n = 0; n < 40 && key !== "5" && (await page.locator(`main [data-day="${day}"]`).count()) === 0; n += 1) {
@@ -412,8 +412,8 @@ test.describe("the Schedule, as the review used it", () => {
     // The phone: a list by day, the clash a heading that says Clash and each meeting a row with its whole title.
     await page.setViewportSize({ width: 390, height: 844 });
     await openScreen(page, "schedule");
-    // The meetings are on the next weekday, which on a Friday is next week: move to its week first (an empty week is one card, not a list).
-    await expect(page.locator("main [data-schedule-list], main [data-schedule-empty]").first()).toBeVisible(LOAD);
+    // The meetings are on the next weekday, which on a Friday is next week: move to its week first (an empty week is the empty list).
+    await expect(page.locator("main [data-schedule-list]").first()).toBeVisible(LOAD);
     // Next weekday is at most one week on; the page is given the time to draw the week it moved to.
     if ((await page.locator(`main section[data-day="${day}"]`).count()) === 0) await page.locator("body").press("ArrowRight");
     await expect(page.locator(`main section[data-day="${day}"]`)).toBeVisible(LOAD);

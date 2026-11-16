@@ -704,6 +704,24 @@ class AssistantStatus(BaseModel):
         description="When background work that is stuck last checked in; none while nothing is stuck. The person "
         "chooses Restart now (POST /api/restart); the app never restarts itself.",
     )
+    working_on: Literal["reading", "sorting", "drafting", "answering", "learning", "updating", "working"] | None = (
+        Field(
+            None,
+            description="What the assistant is working on now, as one plain word for the oldest running work; none "
+            "while nothing runs. The header says it in words and shows a moving mark; it comes with the status, which "
+            "the live stream refreshes as work starts and ends.",
+        )
+    )
+    working_count: int = Field(0, description="How many pieces of that same work are running now.")
+
+
+class HeldWork(BaseModel):
+    """What the assistant added on its own that waits for the person's working hours."""
+
+    count: int = Field(description="How many lines are held; 0 when holding is off or nothing waits.")
+    until: datetime | None = Field(
+        None, description="When the first of them arrives, on the person's own clock; none when nothing is held."
+    )
 
 
 class Status(BaseModel):
@@ -7026,7 +7044,7 @@ class WatchSourceIn(BaseModel):
 
     connector: str = Field(description="The kind of source, from GET /api/watch/kinds.")
     label: str = ""
-    every_minutes: int = Field(60, ge=5)
+    every_minutes: int = Field(10, ge=5)
     project: str | None = None
     stance: Literal["follow", "understand"] | None = Field(
         None,

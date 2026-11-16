@@ -163,6 +163,47 @@ def follow_on() -> dict[str, Any]:
     return {"summary": "Nothing tied needed a change.", "ops": []}
 
 
+_TALLY_LINE = re.compile(
+    r"^(?P<address>\S+@\S+) \| (?P<name>[^|]+) \| (?P<from>\d+) from them, (?P<to>\d+) to them \| [^|]+"
+    r"(?: \| sides: [^|]*)?(?P<on_file> \| on file: \S+)?$"
+)
+#: The most people the stand-in suggests from one look, and the fewest messages (both ways added) it takes as a pattern.
+_LOOK_MOST, _LOOK_FEWEST = 3, 3
+
+
+def knowledge_person(request: str) -> dict[str, Any]:
+    """A weekly look's answer: a glossary entry for each of the few people the user deals with most (at least
+    `_LOOK_FEWEST` messages, both ways added, a shown name that is a person's and not on file), said as plainly as the
+    counts say it, with the tally line as its evidence. It suggests no organization and no routing: a plain rule can't
+    judge those."""
+    block = re.search(r'<untrusted source="contact-tally">\s*(.*?)\s*</untrusted>', request, re.S)
+    found = []
+    for line in (block.group(1) if block else "").splitlines():
+        row = _TALLY_LINE.match(line.strip())
+        if row is None or row["on_file"]:
+            continue
+        name = row["name"].strip()
+        count = int(row["from"]) + int(row["to"])
+        parts = name.split()
+        if count >= _LOOK_FEWEST and 2 <= len(parts) <= 4 and all(w[:1].isupper() for w in parts):
+            found.append((count, name, int(row["from"]), int(row["to"]), line.strip()))
+    found.sort(key=lambda f: (-f[0], f[1]))
+    ops = []
+    for _count, name, sent_by, sent_to, line in found[:_LOOK_MOST]:
+        meaning = f"Someone you deal with: {sent_by} messages from them and {sent_to} sent to them."
+        ops.append(
+            {
+                "op": "glossary.add",
+                "text": f"{name}: {meaning}",
+                "term": name,
+                "meaning": meaning,
+                "confidence": "assumed",
+                "evidence": {"quote": line},
+            }
+        )
+    return {"summary": "People you deal with." if ops else "Nothing plain enough to suggest.", "ops": ops}
+
+
 def learn(request: str) -> dict[str, Any]:
     """A learning run's answer: the one lesson the account check's correction teaches, and nothing for any other."""
     if learning_check.CHECK_REQUEST not in request:

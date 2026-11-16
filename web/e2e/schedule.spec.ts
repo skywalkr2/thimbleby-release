@@ -589,7 +589,7 @@ test.describe("the calendar page", () => {
 
   // Day view at the full width of the content, with no gutter beside it; the empty day is the shared card, centred in the content and capped
   // at 32rem, and neither moves the toolbar.
-  test("the Day grid spans the content width, the empty-day card is centred and capped, and the toolbar does not move between them", async ({ page }) => {
+  test("the Day grid spans the content width, an empty day keeps its place with no notice over it, and the toolbar does not move between them", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await seed(page);
     await open(page);
@@ -604,11 +604,14 @@ test.describe("the calendar page", () => {
     expect(grid.x).toBeLessThanOrEqual(full.left + 2);
     expect(grid.x + grid.width).toBeGreaterThanOrEqual(full.right - 2);
     await page.getByRole("button", { name: "Next day" }).click();
-    const card = page.locator("main [data-schedule-empty]");
-    await expect(card).toBeVisible();
-    const box = (await card.boundingBox())!;
-    expect(box.width).toBeLessThanOrEqual(512 + 2);
-    expect(Math.abs(box.x + box.width / 2 - (full.left + full.right) / 2)).toBeLessThanOrEqual(2);
+    // A day with nothing on it is the same grid, with no notice over it, and the page keeps its shape (S-0525).
+    await expect(page.locator("main [data-schedule-empty]")).toHaveCount(0);
+    await expect(page.locator("main [data-grid]")).toBeVisible();
+    await expect(page.getByText(/^Nothing on this day/)).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^Look at / })).toHaveCount(0);
+    const after = (await page.locator("main [data-grid]").boundingBox())!;
+    expect(Math.abs(after.x - grid.x)).toBeLessThanOrEqual(2);
+    expect(Math.abs(after.width - grid.width)).toBeLessThanOrEqual(2);
     expect((await content()).tabsTop).toBeCloseTo(full.tabsTop, 0);
   });
 

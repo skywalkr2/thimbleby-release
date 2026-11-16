@@ -164,6 +164,8 @@ test.describe.serial("journey: mail", () => {
     await expect(came.getByText(recentMail[0])).toBeVisible({ timeout: 10_000 });
     await startOnToday(page);
     await expect.poll(async () => (await requests()).work, { timeout: 60_000 }).toBe(handedIn);
+    // The weekly look at who the person deals with ran once after the first read, and is not counted as work.
+    await expect.poll(async () => (await requests()).learning, { timeout: 60_000 }).toBe(1);
     const asked = await requests();
     // The work mail the rules could not place was sorted in one run for the whole batch; it is not counted as work.
     expect(asked.sorting).toBe(1);

@@ -184,7 +184,7 @@ describe("the Timeline", () => {
     expect(screen.getByRole("heading", { level: 4, name: "Harbor" })).toBeInTheDocument();
   });
 
-  test("nothing in the range says so, and the to-dos with no date are listed under the timeline", async () => {
+  test("nothing in the range draws no notice, and the to-dos with no date are listed under the timeline", async () => {
     await open([], {}, {
       "GET open-items": () => ({
         actions: [{ id: "A-1", version: 1, text: "Tidy the style sheet", state: "open", owners: [], due: null, project: "PRJ-1", project_name: "Harbor", needs_date: true, views: [] }],
@@ -192,7 +192,7 @@ describe("the Timeline", () => {
         stale_days: 21,
       }),
     });
-    expect(screen.getByText("Nothing with a date in these weeks")).toBeInTheDocument();
+    expect(document.querySelector("[data-schedule-empty]")).toBeNull();
     expect(await screen.findByRole("heading", { name: /Needs a date/ })).toBeInTheDocument();
     expect(screen.getByText(/not on the timeline/)).toBeInTheDocument();
   });
@@ -260,10 +260,12 @@ describe("the Timeline's finishing", () => {
     expect(document.querySelector("[data-timeline-count]")).toHaveTextContent("1 item");
   });
 
-  test("with nothing on it the Timeline is one card with the way on and no legend for patterns that are not shown", async () => {
+  test("with nothing on it the Timeline draws no notice and no button, and no legend for patterns that are not shown (S-0525)", async () => {
     await open([lane("PRJ-1", "Harbor", [])], { off_days: [{ day: addDays(TODAY, 3), kind: "weekend", reason: null }] });
-    expect(document.querySelector("[data-schedule-empty]")).not.toBeNull();
-    expect(screen.getByRole("button", { name: "Look at later weeks" })).toBeInTheDocument();
+    expect(document.querySelector("[data-timeline]")).not.toBeNull();
+    expect(document.querySelector("[data-schedule-empty]")).toBeNull();
+    expect(screen.queryByText("Nothing with a date in these weeks")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Look at later weeks" })).toBeNull();
     expect(screen.queryByRole("list", { name: "Key" })).toBeNull();
   });
 

@@ -395,7 +395,7 @@ describe("adding a source", () => {
     expect(within(form).getByLabelText("About address")).toBeInTheDocument();
     expect(within(form).getByLabelText("About days_ahead")).toHaveValue("30");
     expect(within(form).getByLabelText("Name")).toBeInTheDocument();
-    expect(within(form).getByLabelText("How often to read")).toHaveValue("60");
+    expect(within(form).getByLabelText("How often to read")).toHaveValue("10");
     // Switching kind shows that kind's form.
     await backToKinds(user, form);
     await user.click(within(form).getByRole("radio", { name: "A mailbox" }));
@@ -542,14 +542,16 @@ describe("adding a source", () => {
     expect(within(form).getByText("Leave empty to name it after what it reads.")).toBeInTheDocument();
   });
 
-  test("how often is 15, 30, 60 or 240 minutes", async () => {
+  test("how often is 10, 15, 30, 60 or 240 minutes, and a new source starts at 10", async () => {
     const user = userEvent.setup();
     open([]);
     await user.click(await screen.findByRole("button", { name: "Add mail, calendar or folder" }));
     await user.click(await screen.findByRole("radio", { name: "A feed" }));
     await continueAdd(user);
     const every = screen.getByLabelText("How often to read");
+    expect(every).toHaveValue("10");
     expect(within(await snapshotOf(every)).getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "every 10 minutes",
       "every 15 minutes",
       "every 30 minutes",
       "every hour",

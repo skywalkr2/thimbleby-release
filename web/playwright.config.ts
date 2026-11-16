@@ -67,6 +67,7 @@ const firstDay = { port: 8764 + offset };
 // And quick edits in a row: a server of its own, so a save refused as "changed since you opened it" can only be the
 // screen's own race and never another scenario writing Settings at the same moment.
 const quickEdits = { port: 8766 + offset };
+const assistantBusy = { port: 8776 + offset };
 // The data-and-trust checks edit records (several quick edits, a follow-on), so they have a server of their own.
 const dataTrust = { port: 8775 + offset };
 
@@ -199,6 +200,7 @@ export const allProjects = [
   { name: "people-records", testMatch: /(people-records|person-quality-setup-46)\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${peopleRecords.port}/` } },
   { name: "first-day", testMatch: /first-day.*\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${firstDay.port}/` } },
   { name: "quick-edits", testMatch: /quick-edits\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${quickEdits.port}/` } },
+  { name: "assistant-busy", testMatch: /assistant-busy\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${assistantBusy.port}/` } },
   { name: "data-and-trust", testMatch: /data-and-trust\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${dataTrust.port}/` } },
   { name: "late", testMatch: /late-evening\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${late.port}/` } },
   {
@@ -355,6 +357,13 @@ export const allServers = [
       command: `uv run python -m tests.e2e_server --port ${quickEdits.port} --base-path /${clockFlag}`,
       cwd: "..",
       url: `http://127.0.0.1:${quickEdits.port}/api/health`,
+      reuseExistingServer: false,
+      timeout: 60_000,
+    }),
+    on(assistantBusy.port, {
+      command: `uv run python -m tests.e2e_server --port ${assistantBusy.port} --base-path /${clockFlag}`,
+      cwd: "..",
+      url: `http://127.0.0.1:${assistantBusy.port}/api/health`,
       reuseExistingServer: false,
       timeout: 60_000,
     }),

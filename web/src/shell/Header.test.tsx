@@ -295,6 +295,24 @@ test("below 1440px the assistant's state moves into the status chip's popover, a
   expect(alive).toHaveTextContent("No tasks yet");
 });
 
+test("below 1440px the status chip says what the assistant is doing, with a ring where the dot is, and says Live again when it is done (S-0526)", async () => {
+  below1440();
+  show({ status: statusFixture({}, { assistant: { working_on: "sorting", working_count: 1 } }) });
+  const chip = await screen.findByRole("button", { name: "App status: Sorting new mail" });
+  expect(chip).toHaveAttribute("data-busy");
+  expect(chip.querySelector("[data-working]")).not.toBeNull();
+  expect(chip).toHaveTextContent("Sorting new mail");
+});
+
+test("from 1440px the line beside the chip says it and the chip stays Live, so one thing is said once (S-0526)", async () => {
+  show({ status: statusFixture({}, { assistant: { working_on: "sorting", working_count: 1 } }) });
+  const line = await screen.findByRole("button", { name: /^Helper: Sorting new mail/ });
+  expect(line).toHaveAttribute("data-busy");
+  const chip = screen.getByRole("button", { name: /^App status: / });
+  expect(chip).not.toHaveAttribute("data-busy");
+  expect(chip).not.toHaveTextContent("Sorting");
+});
+
 test("the header has no Quick links button: the links are the first group of the person's menu, each opening in a new tab", async () => {
   const user = userEvent.setup();
   const address = "https" + "://boards.example.org/plan";

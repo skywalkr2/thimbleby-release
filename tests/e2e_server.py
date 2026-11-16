@@ -18,6 +18,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -52,6 +53,8 @@ from tests.roundtrip import round_trip
 TOKEN = "e2e-token"
 #: The id of the extra stand-in account `--standin-account` adds; the browser test reads its label from the screen.
 STANDIN_ACCOUNT = "standin"
+# The longest a run that was told to hold waits for its release.
+HOLD_LIMIT_SECONDS = 60
 LAYOUT_FIXTURE = Path(__file__).parents[1] / "web" / "e2e" / "fixtures" / "layout-strings.json"
 
 # The browser tests run with the wording check on, so a message that names a file, a key or a command fails there too.
@@ -491,8 +494,15 @@ def main() -> None:
 
     capture_text: dict[str, str | None] = {"text": None}
 
+    # A note that says to hold the assistant keeps its run going until /__e2e/release, so a test can look at the header
+    # while the assistant is working (and a run left holding ends by itself after the limit).
+    release = threading.Event()
+
     def responder(task):  # the case whose longest pasted line is in the request
         request = normalize(task.request)
+        if "hold the assistant" in request:
+            release.clear()
+            release.wait(timeout=HOLD_LIMIT_SECONDS)
         for case in cases:
             longest = max(case.get("pasted", "").splitlines() or [""], key=len)
             if longest.strip() and normalize(longest) in request:
@@ -545,6 +555,10 @@ def main() -> None:
         seed_first_go(store)
     if args.all_clear:
         e2e_all_clear.seed_all_clear(ws, cfg, store)
+
+    async def release_run(_request):
+        release.set()
+        return JSONResponse({"released": True})
 
     async def server_now(_request):
         """The server's clock now, in milliseconds, so a page can follow it (web/e2e/test.ts)."""
@@ -719,6 +733,7 @@ def main() -> None:
             Route("/__e2e/acts", acted),
             Route("/__e2e/capture", capture_fixture, methods=["GET", "POST"]),
             Route("/__e2e/now", server_now),
+            Route("/__e2e/release", release_run, methods=["POST"]),
             Route("/__e2e/cases", case_list),
             Route("/__e2e/ledger", ledger),
             Route("/__e2e/closed-by-assistant", closed_by_assistant, methods=["POST"]),

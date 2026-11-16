@@ -1,0 +1,67 @@
+// The header says when the assistant is working (S-0526): a moving ring and words while a run is going, with nothing to poll
+// (the status arrives over the live stream), and the resting dot again once it ends. The server holds a run that was handed a
+// note saying so until the test releases it.
+import { expect, type Page } from "@playwright/test";
+import { test } from "./test";
+import { openScreen } from "./open-screen";
+
+const LOADED = { timeout: 20_000 };
+
+async function assistantName(page: Page): Promise<string> {
+  const response = await page.request.get("api/runtime-config");
+  expect(response.ok()).toBe(true);
+  return (await response.json()).assistant_name;
+}
+
+// A run left holding (a failed test) is let go, so the next try starts from rest.
+test.afterEach(async ({ page }) => {
+  await page.request.post("__e2e/release");
+});
+
+test("a run in hand shows in the header as a moving ring and words, and the header rests when it ends", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openScreen(page);
+  const name = await assistantName(page);
+  const line = page.getByRole("banner").getByRole("button", { name: new RegExp(`^${name}`) });
+  await expect(line).toBeVisible(LOADED);
+  await expect(line).not.toHaveAttribute("data-busy", "");
+  await expect(line).toHaveAccessibleName(`${name}: Working`);
+
+  const handed = await page.request.post("api/handin", { data: { note: `Hold the assistant while it reads this (${Date.now()}).` } });
+  expect(handed.ok()).toBe(true);
+
+  // The server tells the page the work began: the ring, the words and an accessible name that says the state in words.
+  await expect(line).toHaveAttribute("data-busy", "", LOADED);
+  await expect(line).toHaveAccessibleName(new RegExp(`^${name}: (Reading|Working on something|Sorting|Drafting)`));
+  const ring = line.locator("[data-working]");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await expect(ring).toBeVisible();
+  await expect(line.locator("[data-indicator]")).toHaveCount(0);
+  await expect(line.locator("[data-doing]")).toBeVisible();
+  expect(await ring.evaluate((el) => getComputedStyle(el).animationName)).not.toBe("none");
+
+  // The row stays one row and the page never scrolls sideways, whatever the width.
+  for (const width of [1440, 1100, 900, 390]) {
+    await page.setViewportSize({ width, height: 800 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth), `at ${width}px`).toBeLessThanOrEqual(0);
+    // Where the header has the line (it is left to the status chip on a narrow window), it stays one row.
+    if ((await line.count()) > 0) expect((await line.boundingBox())!.height, `at ${width}px`).toBeLessThan(56);
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+
+  // With reduced motion the ring stands still: the words still say what is going on.
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  expect(await ring.evaluate((el) => getComputedStyle(el).animationName)).toBe("none");
+
+  // The popover says it too, in words.
+  await line.click();
+  const dialog = page.getByRole("dialog", { name: name });
+  await expect(dialog.locator("[data-section='working']")).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  const released = await page.request.post("__e2e/release");
+  expect(released.ok()).toBe(true);
+  await expect(line).not.toHaveAttribute("data-busy", "", LOADED);
+  await expect(line.locator("[data-indicator]")).toBeVisible();
+  await expect(line).toHaveAccessibleName(`${name}: Working`);
+});

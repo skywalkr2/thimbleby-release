@@ -541,10 +541,25 @@ def queue(
     return queue_split(ws, store, cfg, now, handover, stuck).shown
 
 
+def held_for_hours(ws: Any, store: Any, cfg: Any, now: datetime) -> tuple[int, datetime | None]:
+    """How many lines are held until the person's working hours, and when the first of them arrives; none and no time
+    when holding is off or nothing waits (`steward.hold_outside_hours`)."""
+    held: list[datetime] = []
+    _everything(ws, store, cfg, now, held_out=held)
+    return len(held), min(held, default=None)
+
+
 def _everything(
-    ws: Any, store: Any, cfg: Any, now: datetime, handover: tuple[str, str] | None = None, stuck: str | None = None
+    ws: Any,
+    store: Any,
+    cfg: Any,
+    now: datetime,
+    handover: tuple[str, str] | None = None,
+    stuck: str | None = None,
+    held_out: list[datetime] | None = None,
 ) -> list[Line]:
-    """Every line, in rank order, before the attention rules."""
+    """Every line, in rank order, before the attention rules. `held_out` collects the arrival time of each line held for
+    working hours."""
     today = now.astimezone(zone(cfg)).date()
     people = People(store, cfg)
     reader = store.read()
@@ -1936,7 +1951,7 @@ def _everything(
     if cfg.steward.hold_outside_hours:
         # What the assistant or a rule added on its own waits for the person's hours; what waited arrives under one row.
         caused = release_hours.causes(lines, reader, requests, by_changeset, sources)
-        lines = release_hours.keep_hours(lines, caused, cfg, now, Line)
+        lines = release_hours.keep_hours(lines, caused, cfg, now, Line, held_out)
     lines = review_batches.fold(once_each(lines), now, cfg.ui.today.fold_batches_after_days, Line)
     return sorted(lines, key=_rank)
 

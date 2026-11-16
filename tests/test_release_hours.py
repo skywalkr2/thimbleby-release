@@ -323,3 +323,31 @@ def test_work_the_person_gave_their_go_to_shows_when_it_is_done_even_at_night(en
         cur = tx.get("request", request)
         tx.update("request", request, {"approval": "granted"}, _TEST, read_version=cur.version)
     assert [x.request for x in lines(env, at(MONDAY, 23, 30))] == [request]
+
+
+# ---- what is held is told, with when it arrives (S-0527) --------------------------------------------
+
+
+def test_what_is_held_is_counted_with_when_the_first_arrives_and_the_count_ends_when_it_arrives(env):
+    from engine.today_queue import held_for_hours
+
+    ws, cfg, store = env
+    asks_go(store, at(MONDAY, 23))
+    tuesday = MONDAY + timedelta(days=1)
+    count, until = held_for_hours(ws, store, cfg, at(MONDAY, 23, 30))
+    assert count == 1 and until == at(tuesday, 9)
+    assert held_for_hours(ws, store, cfg, at(tuesday, 9, 1)) == (0, None)
+
+
+def test_nothing_is_counted_held_in_working_hours_or_with_holding_off(env, tmp_path):
+    from engine.today_queue import held_for_hours
+
+    ws, cfg, store = env
+    asks_go(store, at(MONDAY, 10))
+    assert held_for_hours(ws, store, cfg, at(MONDAY, 10, 1)) == (0, None)
+    off_ws, off_cfg, off_store = build(tmp_path / "off", COCKPIT__STEWARD__HOLD_OUTSIDE_HOURS="false")
+    try:
+        asks_go(off_store, at(MONDAY, 23))
+        assert held_for_hours(off_ws, off_store, off_cfg, at(MONDAY, 23, 30)) == (0, None)
+    finally:
+        off_store.close()

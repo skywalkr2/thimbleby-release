@@ -6,6 +6,7 @@ count and the account's input price; the existing approval and budget rules deci
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -143,7 +144,14 @@ def hand_in(
 
 
 def process(
-    ws: Workspace, store: Store, cfg: Config, router: Router, request_id: str, *, now: datetime | None = None
+    ws: Workspace,
+    store: Store,
+    cfg: Config,
+    router: Router,
+    request_id: str,
+    *,
+    now: datetime | None = None,
+    started: Callable[[], None] | None = None,
 ) -> str | None:
     """Read one queued picture and apply the usual spending rules.
 
@@ -236,6 +244,8 @@ def process(
         )
         return None
     _set(store, request_id, state="running", waiting="With the assistant now", cause=None)
+    if started is not None:
+        started()
     try:
         result, _, _ = router.call(
             task,

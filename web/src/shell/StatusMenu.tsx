@@ -105,7 +105,9 @@ export function StatusMenu(props: {
   // The assistant's own section below says an account that is missing or failing; the line above it would say the same twice.
   const accountSaid = !!ai && ai.state !== "ok" && (alive?.kind === "not_set_up" || alive?.kind === "failing");
   const assistantShown = !!alive && (props.narrow || assistant !== undefined) && !accountSaid;
-  const word = (kind === "connection_failed" || kind === "connection_signed_out") && needing.length > 0 ? tn("status.chip_accounts_need", needing.length) : t(CHIP_WORD[kind]);
+  // Where the assistant's own line is not drawn (a narrow window), the chip says what it is doing while all is well, in place of "Live".
+  const doing = props.narrow && kind === "live" ? (alive?.doing ?? null) : null;
+  const word = doing ?? ((kind === "connection_failed" || kind === "connection_signed_out") && needing.length > 0 ? tn("status.chip_accounts_need", needing.length) : t(CHIP_WORD[kind]));
   const b = status.data?.backup;
   const spend = status.data ? spendText(status.data.spend, t, total) : null;
   const wait = status.data?.network_wait;
@@ -240,7 +242,7 @@ export function StatusMenu(props: {
           </ul>
   );
   const chip = (
-    <StatusChip tone={toneOf(kind)} aria-label={t("status.chip_named", { state: word })} data-status={kind} {...(phone ? { onPress: () => setSheet(true) } : {})}>
+    <StatusChip tone={toneOf(kind)} busy={doing !== null} aria-label={t("status.chip_named", { state: word })} data-status={kind} {...(phone ? { onPress: () => setSheet(true) } : {})}>
       {word}
     </StatusChip>
   );

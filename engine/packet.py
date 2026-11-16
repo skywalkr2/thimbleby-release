@@ -125,6 +125,10 @@ def build(ws: Workspace, store: Store, cfg: Config, request_id: str, today: date
         from engine.week_plan import build as monday_message_packet
 
         return monday_message_packet(ws, store, cfg, req, kind, today)
+    if kind.name == "knowledge-person":
+        from engine.person_look import build as person_look_packet
+
+        return person_look_packet(ws, store, cfg, req, kind, today)
     if kind.name == "follow-on":
         from engine.follow_on import build as follow_on_packet
 

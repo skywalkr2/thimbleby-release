@@ -2,7 +2,8 @@
 // held up or the assistant can't do its work the dot is an icon of another shape (amber or red), so the color is never
 // alone, and the button's name says the state in words. Its popover says the last task and what is wrong, then today's
 // runs by account, what waits for the assistant and the order the accounts are tried in. It sits beside the status chip,
-// whose own states it reuses and does not repeat.
+// whose own states it reuses and does not repeat. While work runs the dot is a moving ring (still, with reduced motion)
+// and the line says in words what is being done; the popover also lists work held until working hours and when it arrives.
 import { useQuery } from "@tanstack/react-query";
 import { Button as AriaButton, DialogTrigger } from "react-aria-components";
 import { Popover } from "../ui/Popover";
@@ -18,6 +19,30 @@ import { aliveState, type AliveKind, type AliveTone } from "./status";
 import styles from "./AssistantLine.module.css";
 
 const ICON: Record<AliveTone, IconName> = { ok: "check", warn: "alert", bad: "close" };
+
+type Words = (key: string, vars?: Record<string, string | number>) => string;
+
+/** What the assistant is doing now, in plain words from the wording sheet; null while nothing runs. */
+export function workingWords(a: S["AssistantStatus"], t: Words, tn: (key: string, n: number, vars?: Record<string, string | number>) => string, has: (key: string) => boolean): string | null {
+  if (!a.working_on) return null;
+  const key = `alive.working.${a.working_on}`;
+  const words = has(`${key}.other`) ? tn(key, a.working_count, { n: a.working_count }) : t(key);
+  return a.queued > 0 ? `${words}${t("alive.working_join")}${tn("alive.working_behind", a.queued, { n: a.queued })}` : words;
+}
+
+/** Work held until working hours and when it arrives: one line, shown only while something is held. It reads when the
+ * popover is open, so the status the header keeps live stays cheap. */
+function HeldWork() {
+  const { t, tn } = useWords();
+  const held = useQuery({ queryKey: ["today", "held"], queryFn: api.todayHeld });
+  if (!held.data || held.data.count === 0 || !held.data.until) return null;
+  return (
+    <li className={styles.section} data-section="held">
+      <p className={styles.heading}>{t("alive.held")}</p>
+      <p className={styles.text}>{tn("alive.held_some", held.data.count, { time: wallWhen(held.data.until) })}</p>
+    </li>
+  );
+}
 
 /** The words after the icon: the problem when there is one, otherwise when the assistant last ran. */
 function sayText(kind: AliveKind, a: S["AssistantStatus"], t: (key: string, vars?: Record<string, string | number>) => string, nameOf: (id: string) => string): string {
@@ -43,14 +68,16 @@ function sayText(kind: AliveKind, a: S["AssistantStatus"], t: (key: string, vars
 
 /** The assistant's alive state in words, for the line beside the status chip and for the chip's popover on a phone; null
  * until the status has answered. */
-export function useAlive(): { kind: AliveKind; tone: AliveTone; say: string; icon: IconName } | null {
-  const { t } = useWords();
+export function useAlive(): { kind: AliveKind; tone: AliveTone; say: string; icon: IconName; doing: string | null } | null {
+  const { t, tn, has } = useWords();
   const restart = useRestart();
   const status = useQuery({ queryKey: ["status"], queryFn: api.status });
   const nameOf = useAccountNames();
   if (!status.data) return null;
   const { kind, tone } = aliveState({ status: status.data, restartPhase: restart.phase });
-  return { kind, tone, say: sayText(kind, status.data.assistant, t, nameOf), icon: ICON[tone] };
+  // What is being done now, while all is well: the words a narrow window's status chip says in place of "Live".
+  const doing = tone === "ok" ? workingWords(status.data.assistant, t, tn, has) : null;
+  return { kind, tone, say: doing ?? sayText(kind, status.data.assistant, t, nameOf), icon: ICON[tone], doing };
 }
 
 export function AssistantLine(props: { onOpenGuide: (step?: string) => void }) {
@@ -62,6 +89,10 @@ export function AssistantLine(props: { onOpenGuide: (step?: string) => void }) {
   if (!status.data || !alive) return null;
   const a = status.data.assistant;
   const { kind, tone, say } = alive;
+  const working = workingWords(a, t, tn, has);
+  // Busy shows only while all is well: a problem keeps its own mark, and its words stay what the line says.
+  const doing = alive.doing;
+  const busy = doing !== null;
   const work = (tier: string) => (has(`welcome.ai.tier.${tier}`) ? t(`welcome.ai.tier.${tier}`) : tier);
   const toGuide = (close: () => void) => {
     close();
@@ -69,11 +100,22 @@ export function AssistantLine(props: { onOpenGuide: (step?: string) => void }) {
   };
   return (
     <DialogTrigger>
-      <AriaButton className={styles.line} data-tone={tone} data-alive={kind} aria-label={t("alive.line_named", { name: t("alive.name"), state: t(`alive.icon.${tone}`) })}>
-        {tone === "ok" ? <span className={styles.dot} data-indicator="" aria-hidden="true" /> : <Icon name={ICON[tone]} size={16} />}
+      <AriaButton
+        className={styles.line}
+        data-tone={tone}
+        data-alive={kind}
+        data-busy={busy ? "" : undefined}
+        aria-label={t("alive.line_named", { name: t("alive.name"), state: busy ? doing : t(`alive.icon.${tone}`) })}
+      >
+        {busy ? <span className={styles.working} data-working="" aria-hidden="true" /> : tone === "ok" ? <span className={styles.dot} data-indicator="" aria-hidden="true" /> : <Icon name={ICON[tone]} size={16} />}
         <span className={styles.name} title={t("alive.name")}>
           {t("alive.name")}
         </span>
+        {busy && (
+          <span className={styles.doing} data-doing="" title={doing}>
+            {doing}
+          </span>
+        )}
       </AriaButton>
       <Popover label={t("alive.title")}>
         {(close) => (
@@ -97,6 +139,12 @@ export function AssistantLine(props: { onOpenGuide: (step?: string) => void }) {
                       {t("alive.open")}
                     </Button>
                   )}
+                </li>
+              )}
+              {working && (
+                <li className={styles.section} data-section="working">
+                  <p className={styles.heading}>{t("alive.working")}</p>
+                  <p className={styles.text}>{working}</p>
                 </li>
               )}
               <li className={styles.section} data-section="last">
@@ -125,6 +173,7 @@ export function AssistantLine(props: { onOpenGuide: (step?: string) => void }) {
                     : t("alive.queue_none")}
                 </p>
               </li>
+              <HeldWork />
               <li className={styles.section} data-section="chains">
                 <p className={styles.heading}>{t("alive.chains")}</p>
                 {a.chains.length === 0 ? (

@@ -13,6 +13,7 @@ teach the assistant is read, and logged, by the notes work that follows."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -113,7 +114,14 @@ def _title(words: str) -> str:
 
 
 def process(
-    ws: Workspace, store: Store, cfg: Config, router: Router, request_id: str, *, now: datetime | None = None
+    ws: Workspace,
+    store: Store,
+    cfg: Config,
+    router: Router,
+    request_id: str,
+    *,
+    now: datetime | None = None,
+    started: Callable[[], None] | None = None,
 ) -> str | None:
     """Run one queued voice note: find an account that can transcribe, estimate, wait for the person's go when the
     rules ask, turn the sound into text and hand the words in as the person's own note. Returns the id of the notes
@@ -188,6 +196,8 @@ def process(
         )
         return None
     _set(store, request_id, state="running", waiting="With the assistant now", cause=None)
+    if started is not None:
+        started()
     try:
         result, _, _ = router.call(
             task,

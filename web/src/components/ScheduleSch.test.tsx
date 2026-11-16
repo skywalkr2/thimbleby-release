@@ -54,10 +54,11 @@ test("the account line holds its place while the days load, so nothing moves whe
   expect(document.querySelector("[data-skeleton] [class*='skeletonEvent']")).toBeNull();
 });
 
-test("an empty range with a calendar that can't be read does not claim there is nothing", async () => {
+test("an empty range with a calendar that can't be read shows the one quiet line above the calendar and no card (S-0525)", async () => {
   await open("week", () => ({}));
-  expect(await screen.findByText("Nothing this week in the calendars that can be read")).toBeInTheDocument();
-  expect(screen.getByText("A calendar needs you to sign in again, so there may be more.")).toBeInTheDocument();
+  await waitFor(() => expect(document.querySelector("[data-schedule-stale]")).not.toBeNull());
+  expect(document.querySelector("[data-schedule-empty]")).toBeNull();
+  expect(screen.queryByText(/in the calendars that can be read/)).toBeNull();
 });
 
 test("the line above the grid holds \"Show all hours\" as a button, on the line the key to the sides shares", async () => {

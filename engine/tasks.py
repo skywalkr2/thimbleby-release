@@ -253,6 +253,17 @@ TASKS: dict[str, TaskKind] = {
         label="Reading a picture",
         defaults={"max_output": 4000, "expected_output": 500, "expected_image_tokens": 1600},
     ),
+    # The weekly look at who the person deals with (engine/person_look.py): the contact tally's top entries and the
+    # repeating calendar entries in, glossary and routing proposals out, kept or discarded by the person. Low-cost tier.
+    "knowledge-person": TaskKind(
+        name="knowledge-person",
+        ops=("glossary.add", "routing.add"),
+        prompt="knowledge-person",
+        playbook="knowledge-person",
+        label="Looking at who you deal with",
+        defaults={"max_output": 2500, "expected_output": 600},
+        max_ops=12,
+    ),
     "follow-on": TaskKind(
         name="follow-on",
         ops=FOLLOW_ON_OPS,

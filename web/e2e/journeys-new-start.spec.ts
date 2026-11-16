@@ -271,6 +271,8 @@ test.describe.serial("journey: new start", () => {
     // once, and the promises found arrive below as lines to look over, never in setup.
     await startOnToday(page);
     await expect.poll(async () => (await requests()).work, { timeout: 60_000 }).toBe(handedIn);
+    // The weekly look at who the person deals with ran once after the first read, and is not counted as work.
+    await expect.poll(async () => (await requests()).learning, { timeout: 60_000 }).toBe(1);
     const asked = await requests();
     // The work mail the rules could not place was sorted in one run for each source's batch (the inbox, and the sent mail
     // when the rules leave it unplaced); sorting is not counted as work.

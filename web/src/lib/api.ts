@@ -132,6 +132,8 @@ export const api = {
   erase: (body: S["EraseIn"]) => call<S["EraseDone"]>("POST", "erase", body),
   changes: () => call<S["ChangeItem"][]>("GET", "changes"),
   todayQueue: () => call<S["QueueLineView"][]>("GET", "today/queue"),
+  /** What waits for the working hours: how many lines, and when the first arrives. */
+  todayHeld: () => call<S["HeldWork"]>("GET", "today/held"),
   source: (src: string) => call<S["SourceView"]>("GET", `sources/${id(src)}`),
   widenSource: (src: string, body: S["SourceWiden"]) => call<S["Applied"]>("POST", `sources/${id(src)}/widen`, body),
   followups: () => call<S["FollowupSection"][]>("GET", "followups"),

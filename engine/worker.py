@@ -95,6 +95,11 @@ LIVE_KEYS = (
     "dispatch.knowledge.quality_window_days",
     "dispatch.knowledge.min_corrections_per_week",
     "dispatch.knowledge.quality_min_promises",
+    "dispatch.knowledge.person_look",
+    "dispatch.knowledge.person_look_every_days",
+    "dispatch.knowledge.person_look_entries",
+    "dispatch.knowledge.person_look_min_messages",
+    "dispatch.knowledge.person_look_series",
     "dispatch.knowledge.pack_searches",
 )
 
@@ -800,7 +805,15 @@ class Worker:
                 self._hold_queued()
                 break
             try:
-                process(self.ws, self.store, self.cfg, self.router_factory(), queued[0].id, now=now)
+                process(
+                    self.ws,
+                    self.store,
+                    self.cfg,
+                    self.router_factory(),
+                    queued[0].id,
+                    now=now,
+                    started=self.events.changed,  # the screens learn the assistant is at work, not only that it is done
+                )
                 if queued[0].data.get("sort_pending"):
                     waiting_for_sort.add(queued[0].id)
                     continue
@@ -982,6 +995,22 @@ class Worker:
         moved = series.roll_items(self.store, today, here, self.events.changed)
         self._rolled_on = today
         return moved
+
+    def look_at_the_person_if_due(self) -> str | None:
+        """Once a week, and once after the first read, queue the look at who the person deals with and what repeats in
+        their calendar (`engine.person_look`), for the person's go when it costs more than the configured amount. A
+        failure is logged and never stops the worker. Returns the request made."""
+        from engine import person_look
+        from engine.config import ConfigError, load_config
+
+        try:
+            cfg = load_config(self.ws.config_dir, env=dict(os.environ))
+        except ConfigError:
+            cfg = self.cfg
+        made = person_look.queue(self.store, cfg, self.now())
+        if made:
+            self.events.changed()
+        return made
 
     def ask_about_meetings(self) -> list[str]:
         """Ask about each date of a meeting the person runs that has no agenda or needs someone who is away (design
@@ -1330,6 +1359,11 @@ class Worker:
         except (Exception, SystemExit):  # the roll runs again the next time round; nothing here may stop the thread
             log.exception("moving items to the next instance of a series failed")
             self._problem("moving items to the next instance of a series failed")
+        try:
+            self.look_at_the_person_if_due()
+        except (Exception, SystemExit):  # asked again the next time round; nothing here may stop the thread
+            log.exception("queueing the look at who the person deals with failed")
+            self._problem("queueing the look at who the person deals with failed")
         try:
             self.ask_about_meetings()
         except (Exception, SystemExit):  # asked again the next time round; nothing here may stop the thread

@@ -29,7 +29,7 @@ sources:
     sides: [PRJ-21]        # the side of your work it serves, as its top project; its entries show that side's name on the schedule
     color: blue          # the small mark beside its name on the schedule: blue, teal, green, orange, red, pink, purple or gray; left out, none
     enabled: false        # turn on once the calendar's private address is set
-    every_minutes: 60
+    every_minutes: 10
     first_run: recent     # the first read hands in what happens within a day of now; the rest is only noted
     first_run_hours: 24
     settings:
@@ -50,7 +50,7 @@ sources:
     connector: mailbox
     label: Project mail
     enabled: false        # turn on once an app password is set
-    every_minutes: 15
+    every_minutes: 10
     first_run: intake     # the first read takes in the last first_run_days of mail quietly: one list to look over
     first_run_days: 14    # older mail isn't read; Today says "Not looked at before <date>"
     settings:

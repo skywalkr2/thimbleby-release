@@ -40,6 +40,11 @@ knowledge:
   correction_reach_items: 20   # the most other open items a correction's request shows after the corrected item
   follow_on_match: 0.67
   check_on_switch: true
+  person_look: true            # the weekly look at who you deal with (mail headers' counts and repeating calendar entries)
+  person_look_every_days: 7    # days between one look and the next
+  person_look_entries: 40      # the most people from the tally one look shows the assistant
+  person_look_min_messages: 2  # the fewest messages (both ways added) an address needs to be shown
+  person_look_series: 20       # the most repeating calendar entries one look shows
   learn_later_inputs: 5
   new_terms_per_input: 3
   new_terms_per_day: 3

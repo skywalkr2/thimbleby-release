@@ -37,7 +37,9 @@ export interface Requests {
   smoke: number;
   /** Runs that sorted mail headers, which are counted apart from the work. */
   sorting: number;
-  /** Runs that read an item handed in (not account tests, not sorting). */
+  /** Runs of the weekly look at who the person deals with, counted apart from the work. */
+  learning: number;
+  /** Runs that read an item handed in (not account tests, not sorting, not the look). */
   work: number;
   /** What each work request was given to read, in the order asked (the smoke tests of an account are not here). */
   inputs: string[];

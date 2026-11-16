@@ -278,3 +278,23 @@ def test_signing_in_again_reads_every_source_of_the_account_at_once_and_clears_i
     assert source not in refused_accounts(store, cfg)
     # Nothing is queued twice.
     assert worker.read_accounts_now() == 0
+
+
+def test_a_source_made_by_signing_in_without_an_interval_is_read_every_10_minutes(
+    signing,
+):  # noqa: F811
+    ws, cfg, store, _ = signing
+    store.close()
+    _with_sources(ws)
+    c, api = _app(ws, cfg)
+    sign_in(c, api)
+    assert [s["every_minutes"] for s in sources(ws) if s["connector"] == "p18/inbox"] == [10]
+
+
+def test_the_interval_a_source_defaults_to_is_10_minutes_and_a_saved_one_is_kept():
+    from api.schemas import WatchSourceIn
+    from engine.config.schema import WatchSource
+
+    assert WatchSource(id="a", connector="folder").every_minutes == 10
+    assert WatchSourceIn.model_fields["every_minutes"].default == 10
+    assert WatchSource(id="a", connector="folder", every_minutes=60).every_minutes == 60

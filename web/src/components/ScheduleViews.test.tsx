@@ -40,17 +40,17 @@ async function open(content: Content = WEEK, over: Partial<S["ScheduleView"]> = 
   const calls = fakeApi(scheduleRoutes(content, over, extra));
   const view = renderApp(<Schedule />);
   await screen.findByRole("heading", { level: 2, name: /–|2026/ });
-  await waitFor(() => expect(document.querySelector("[data-grid], [data-month], [data-schedule-empty]")).not.toBeNull());
+  await waitFor(() => expect(document.querySelector("[data-grid], [data-month]")).not.toBeNull());
   // The first page asked for is the computer's week; the server's today (the fixtures') follows. Waiting for its day
   // keeps the tests the same in any week the suite runs.
-  await waitFor(() => expect(document.querySelector(`[data-day="${TODAY}"], [data-schedule-empty]`)).not.toBeNull());
-  // An empty card is also drawn for the computer's own week, before the server's today is known: the wait ends once the days asked for hold the fixtures' today.
+  await waitFor(() => expect(document.querySelector(`[data-day="${TODAY}"]`)).not.toBeNull());
+  // The grid is also drawn for the computer's own week, before the server's today is known: the wait ends once the days asked for hold the fixtures' today.
   await waitFor(() => {
     const last = requested(calls).at(-1) ?? "";
     const from = /from=(\d{4}-\d{2}-\d{2})&days=(\d+)/.exec(last);
     expect(from !== null && from[1] <= TODAY && TODAY <= addDays(from[1], Number(from[2]) - 1)).toBe(true);
   });
-  await waitFor(() => expect(document.querySelector(`[data-day="${TODAY}"], [data-schedule-empty]`)).not.toBeNull());
+  await waitFor(() => expect(document.querySelector(`[data-day="${TODAY}"]`)).not.toBeNull());
   return { calls, view };
 }
 
@@ -107,14 +107,16 @@ describe("the views", () => {
     expect(checked()).toBe("Day");
   });
 
-  test("a day with nothing on it says so in Day view", async () => {
+  test("a day with nothing on it is the ordinary empty grid, with no notice over it (S-0525)", async () => {
     const user = userEvent.setup();
     await open(() => ({}));
     await user.click(radio("Day"));
-    expect(await screen.findByText("Nothing on this day")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Look at tomorrow" })).toBeInTheDocument();
-    // The grid stays behind the card, quiet and out of reach, so the page keeps its shape.
-    expect(document.querySelector("[data-empty-over] [aria-hidden='true'][inert] [data-grid]")).not.toBeNull();
+    await waitFor(() => expect(checked()).toBe("Day"));
+    await waitFor(() => expect(document.querySelector("[data-grid]")).not.toBeNull());
+    expect(document.querySelector("[data-schedule-empty]")).toBeNull();
+    expect(document.querySelector("[inert] [data-grid]")).toBeNull();
+    expect(screen.queryByText(/^Nothing on this day/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Look at tomorrow" })).toBeNull();
   });
 
   test("the pick is remembered on this browser, and a browser that keeps nothing opens on the work week", async () => {
@@ -158,11 +160,11 @@ describe("a new range on its way", () => {
     fireEvent.click(screen.getByRole("button", { name: "Next day" }));
     await waitFor(() => expect(document.querySelector("[data-skeleton]")).not.toBeNull());
     expect(lanes()).toEqual([]);
-    expect(document.querySelector("[data-schedule-empty]")).toBeNull();
     release();
-    // The next day holds nothing in the fixtures, and now the screen says so.
-    await waitFor(() => expect(document.querySelector("[data-schedule-empty]")).not.toBeNull());
-    expect(document.querySelector("[data-skeleton]")).toBeNull();
+    // The next day holds nothing in the fixtures: its ordinary empty grid replaces the skeleton, with no notice.
+    await waitFor(() => expect(document.querySelector("[data-skeleton]")).toBeNull());
+    expect(document.querySelector("[data-grid]")).not.toBeNull();
+    expect(document.querySelector("[data-schedule-empty]")).toBeNull();
   });
 });
 
@@ -621,20 +623,22 @@ test("the Add drawer's disabled Add says why beside it", async () => {
 });
 
 describe("an empty calendar and the details pane", () => {
-  test("a week, a month or a day with nothing on it is one card that says so and offers the next one, over its grid or month kept quiet behind it", async () => {
+  test("a week, a month or a day with nothing on it is its ordinary empty grid or month, with no card, notice or button over it (S-0525)", async () => {
     const user = userEvent.setup();
     await open(() => ({}));
-    expect(screen.getByText("Nothing this week")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Look at next week" })).toBeInTheDocument();
-    expect(screen.getByText("No meetings")).toBeInTheDocument();
-    expect(document.querySelector("[data-schedule-empty]")?.className).toMatch(/card/);
-    expect(document.querySelector("[data-empty-over] [inert] [data-grid]")).not.toBeNull();
+    const bare = () => {
+      expect(document.querySelector("[data-schedule-empty], [data-empty-over], [inert]")).toBeNull();
+      expect(screen.queryByText(/^Nothing (this|on this)/)).toBeNull();
+      expect(screen.queryByRole("button", { name: /^Look at / })).toBeNull();
+    };
+    expect(document.querySelector("[data-grid]")).not.toBeNull();
+    bare();
     await user.click(radio("Month"));
-    expect(await screen.findByText("Nothing this month")).toBeInTheDocument();
-    expect(document.querySelector("[data-empty-over] [inert] [data-month]")).not.toBeNull();
+    await waitFor(() => expect(document.querySelector("[data-month]")).not.toBeNull());
+    bare();
     await user.click(radio("Day"));
-    expect(await screen.findByText("Nothing on this day")).toBeInTheDocument();
-    expect(screen.queryByText("Nothing this week")).toBeNull();
+    await waitFor(() => expect(document.querySelector("[data-grid]")).not.toBeNull());
+    bare();
   });
 
   test("the details cover the edge of the calendar instead of squeezing the week when it would be left too narrow", async () => {

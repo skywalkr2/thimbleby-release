@@ -423,8 +423,8 @@ test.describe('"Just me" sees no work words', () => {
     await expect(page.getByRole("tab", { name: "Weekdays" })).toBeVisible(LOADED);
     await scan("Schedule");
     await page.getByRole("tab", { name: "Timeline" }).click();
-    // The timeline has drawn: its lanes when an item has a day, else the words that say there is none.
-    await expect(page.getByRole("group", { name: "Lanes by area" }).or(page.getByText(/Not filed under an area|Nothing with a date/)).first()).toBeVisible(LOADED);
+    // The timeline has drawn: its lanes when an item has a day, else its bare frame with no notice.
+    await expect(page.locator("main [data-timeline]")).toBeVisible(LOADED);
     await scan("Timeline");
     for (const hash of ["work/stages", "handover", "quality", "settings/ai"]) {
       await go(page, hash);

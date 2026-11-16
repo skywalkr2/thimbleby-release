@@ -11,6 +11,12 @@
 .line:hover { background: var(--surface-sunk); }
 .dot { width: 8px; height: 8px; flex: none; border-radius: var(--radius-full); background: var(--ok); }
 .name { min-width: 0; max-width: 16ch; overflow: hidden; text-overflow: ellipsis; font-weight: var(--weight-semibold); color: var(--text); }
+/* Work is running: a ring with a gap that turns (a different shape from the resting dot, so it is not color alone); with reduced
+   motion it stands still, and the words beside it say what is being done. */
+.working { width: 12px; height: 12px; flex: none; box-sizing: border-box; border-radius: var(--radius-full); border: 2px solid var(--ok); border-top-color: transparent; animation: assistant-turn 0.9s linear infinite; }
+@keyframes assistant-turn { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .working { animation: none; } }
+.doing { min-width: 0; max-width: 24ch; overflow: hidden; text-overflow: ellipsis; color: var(--text-muted); }
 .line[data-tone="warn"] .name, .line[data-tone="warn"] svg { color: var(--warn); }
 .line[data-tone="bad"] .name, .line[data-tone="bad"] svg { color: var(--danger); }
 

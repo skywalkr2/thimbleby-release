@@ -111,7 +111,7 @@ export function problemOf(source: Source, t: T, has: (key: string) => boolean): 
 type Form = { type: "add"; plugin: string | null; account?: string } | { type: "change"; id: string };
 
 /** How often a source can be read, in minutes. */
-const EVERY_CHOICES = [15, 30, 60, 240];
+const EVERY_CHOICES = [10, 15, 30, 60, 240];
 
 /** How often, in the person's words: whole hours as hours ("every 4 hours"), anything else as minutes. */
 export function everyText(minutes: number, tn: (key: string, n: number) => string): string {
@@ -737,7 +737,7 @@ function SourceForm(props: {
   const listFirst = adding && chosen === "mailbox" && !given && (mailServices.data?.length ?? 0) > 0 && guide === "";
 
   const [label, setLabel] = useState(source?.label ?? "");
-  const [every, setEvery] = useState(String(source?.every_minutes ?? 60));
+  const [every, setEvery] = useState(String(source?.every_minutes ?? 10));
   const [project, setProject] = useState("");
   const [author, setAuthor] = useState(source?.author ?? "");
   const [account, setAccount] = useState(source?.account ?? (mode.type === "add" ? (mode.account ?? "") : ""));
@@ -762,7 +762,7 @@ function SourceForm(props: {
   const [opened, setOpened] = useState<string | null>(null);
   // What the form showed when it opened (or was last refreshed), to tell which fields the person touched after a refusal,
   // and what a refusal refreshed.
-  const shown = useRef({ label: source?.label ?? "", every: String(source?.every_minutes ?? 60), author: source?.author ?? "", account: source?.account ?? "", color: source?.color ?? "" });
+  const shown = useRef({ label: source?.label ?? "", every: String(source?.every_minutes ?? 10), author: source?.author ?? "", account: source?.account ?? "", color: source?.color ?? "" });
   const storedWas = useRef<unknown>(undefined);
   const [refreshed, setRefreshed] = useState<{ lines: Refreshed[]; time: string }>({ lines: [], time: "" });
 

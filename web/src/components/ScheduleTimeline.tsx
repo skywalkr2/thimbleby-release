@@ -13,7 +13,6 @@ import { useWidth } from "../lib/media";
 import { recordView, toHash } from "../lib/views";
 import { useWords } from "../lib/wording";
 import { Definition, DefinitionList } from "../ui/DefinitionList";
-import { EmptyState } from "../ui/EmptyState";
 import { Icon } from "../ui/Icon";
 import { entryKey, fullWhen, type Entry } from "./ScheduleEntry";
 import styles from "./ScheduleTimeline.module.css";
@@ -177,8 +176,6 @@ export function Timeline(props: {
   colorOf?: (entry: Entry) => string | undefined;
   /** The name of the calendar an entry is on, for the key. */
   nameOf?: (entry: Entry) => string | undefined;
-  /** Moves the range on, for the empty card's one action. */
-  onLater?: () => void;
 }) {
   const { t } = useWords();
   const { data } = props;
@@ -208,9 +205,6 @@ export function Timeline(props: {
 
   return (
     <div className={styles.frame} ref={frame} data-timeline="" data-mode={wide ? "wide" : "list"}>
-      {empty && (
-        <EmptyState title={t("schedule.timeline.empty")} text={t("schedule.timeline.empty.text")} action={props.onLater ? { label: t("schedule.empty.next.timeline"), onClick: props.onLater } : null} data-schedule-empty="" />
-      )}
       {!empty && wide && axisLanes.length > 0 && (
         <div className={styles.lanes} style={{ ["--label" as string]: `${LABEL_W}px` }} role="group" aria-label={t("schedule.timeline.lanes")}>
           <div className={styles.head} aria-hidden="true" data-axis="">

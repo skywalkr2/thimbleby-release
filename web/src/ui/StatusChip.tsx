@@ -8,14 +8,16 @@ export interface StatusChipProps extends Omit<AriaButtonProps, "children" | "cla
   tone?: "ok" | "warn" | "danger";
   children: ReactNode;
   className?: string;
+  /** The assistant is working: a turning ring stands where the dot is (a different shape, so never color alone). */
+  busy?: boolean;
 }
 
 export function StatusChip(props: StatusChipProps) {
-  const { tone = "ok", children, className, ...rest } = props;
+  const { tone = "ok", children, className, busy = false, ...rest } = props;
   return (
-    <AriaButton {...rest} className={[styles.chip, tone === "warn" ? styles.warn : "", tone === "danger" ? styles.danger : "", className ?? ""].filter(Boolean).join(" ")} data-tone={tone}>
+    <AriaButton {...rest} className={[styles.chip, tone === "warn" ? styles.warn : "", tone === "danger" ? styles.danger : "", className ?? ""].filter(Boolean).join(" ")} data-tone={tone} data-busy={busy ? "" : undefined}>
       <span className={styles.head}>
-        <span className={styles.dot} aria-hidden="true" />
+        <span className={busy ? styles.ring : styles.dot} aria-hidden="true" data-working={busy ? "" : undefined} />
         <span className={styles.word}>{children}</span>
       </span>
     </AriaButton>
