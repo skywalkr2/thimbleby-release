@@ -60,3 +60,26 @@ test("new words arriving while waiting do not drop the answer", async () => {
   act(() => announceSignIn(different));
   await waitFor(() => expect(result.current.phase).toBe("different"));
 });
+
+test("in the app's own window the service's page opens in the person's browser, no pop-up opens, and the outcome is read by its ticket", async () => {
+  const opened: string[] = [];
+  const popups: unknown[] = [];
+  vi.stubGlobal("open", (...a: unknown[]) => (popups.push(a), null));
+  vi.stubGlobal("pywebview", { api: { open_external: (url: string) => opened.push(url) } });
+  let outcome = "waiting";
+  let startedWith = "";
+  fakeApi({
+    "POST sign-ins/pack/account/start": (_body: unknown, query?: URLSearchParams) => ((startedWith = query?.toString() ?? ""), { url: "http://localhost:9090/login", ticket: "tk-1" }),
+    "GET sign-ins/outcome/tk-1": () => ({ outcome, name: NAME, error: "", detail: "" }),
+    "GET sign-ins": () => [{ name: NAME, status: "signed_out" }],
+  });
+  const { result } = renderHook(() => useSignInWindow(NAME));
+  await act(() => result.current.start());
+  expect(result.current.phase).toBe("waiting");
+  expect(result.current.away).toBe(true);
+  expect(opened).toEqual(["http://localhost:9090/login"]);
+  expect(popups).toEqual([]);
+  expect(startedWith).toContain("away_from_app=true");
+  outcome = "done";
+  await waitFor(() => expect(result.current.phase).toBe("done"), { timeout: 3000 });
+});

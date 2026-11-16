@@ -171,6 +171,9 @@ class Server:
     def stop(self):
         self.calls.append("stop")
 
+    def swap(self):
+        self.calls.append("swap")
+
     def alive(self):
         return True
 
@@ -293,9 +296,10 @@ def test_restart_runs_only_when_the_app_asked_and_shows_the_new_sign_in(environm
 
     shell = FakeShell(restart)
     launch(tmp_path, shell, restart_waiting=lambda: True, restarted=lambda: acknowledged.append(True))
-    assert environment[0].calls == ["start", "stop", "start", "stop"]
+    # In place: the server is not stopped and started again, and the window is not pointed at the app a second time.
+    assert environment[0].calls == ["start", "swap", "stop"]
     assert acknowledged == [True]
-    assert [c for c in shell.calls if c[0] == "show_app"] == [("show_app", "http://127.0.0.1:8123/")] * 2
+    assert [c for c in shell.calls if c[0] == "show_app"] == [("show_app", "http://127.0.0.1:8123/")]
     assert ("state", "restarting") in shell.calls
 
 
@@ -426,13 +430,15 @@ def test_local_server_start_uses_one_factory_worker(monkeypatch):
     controller.start()
     assert captured["address"] == ("127.0.0.1", 8123)
     assert captured["workers"] == 1 and captured["reload"] is False and captured["factory"] is True
-    assert captured["factory_callable"] is factory
+    # The server runs the thin front, which builds the app with the factory when the server starts.
+    assert captured["factory_callable"]() is controller.front and controller.front.factory is factory
     assert len(captured["sockets"]) == 1
     controller.stop()
 
 
 def test_the_window_opens_on_the_base_path_and_the_current_sign_in(environment, tmp_path):
     answers = iter(["/a/?token=one", "/a/?token=two"])
+    # A swap in place keeps the page open on its session, so only the first start points the window at the app.
     shell = FakeShell(lambda s: s.actions["restart"]())
     launcher.launch(
         lambda: object(),
@@ -444,7 +450,6 @@ def test_the_window_opens_on_the_base_path_and_the_current_sign_in(environment, 
     )
     assert [c[1] for c in shell.calls if c[0] == "show_app"] == [
         "http://127.0.0.1:8123/a/?token=one",
-        "http://127.0.0.1:8123/a/?token=two",
     ]
 
 
@@ -460,7 +465,7 @@ def test_the_app_asking_for_a_restart_runs_it_as_the_menu_would(environment, tmp
     shell.quit_event.wait = lambda timeout=None: shell.quit() or True  # the loop's first pause ends it
     shell.step = lambda n: shell.calls.append(("step", n))
     launch(tmp_path, shell, restart_waiting=lambda: True, restart_requested=asked)
-    assert environment[0].calls == ["start", "stop", "start", "stop"]
+    assert environment[0].calls == ["start", "swap", "stop"]
     assert not asked.is_set() and ("state", "restart") in shell.calls
 
 

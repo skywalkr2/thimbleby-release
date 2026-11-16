@@ -142,3 +142,30 @@ def test_the_services_refusal_code_comes_back_to_the_screen(signing):
     query = parse_qs(urlsplit(landing(back)).query)
     assert query["sign_in"] == ["refused"] and query["error"] == ["consent_required"]
     assert query["detail"] == ["An administrator must approve."]
+
+
+def test_a_sign_in_from_the_apps_window_is_answered_there_and_the_browser_is_told_only_how_it_went(signing):
+    """The installed app's window opens no pop-ups, so the service's page opens in the person's own browser. That
+    browser has no session of the app: it gets a plain page saying how it went, never a way into the app, and the
+    window that started the sign-in reads the outcome by its ticket."""
+    from api.app import create_app
+
+    ws, cfg, store, _ = signing
+    c = TestClient(create_app(ws, cfg, "t", start_worker=False), follow_redirects=False)
+    c.headers["Authorization"] = "Bearer t"
+    api = cfg.server.base_path.rstrip("/") + "/api"
+    started = c.post(f"{api}/sign-ins/p18/service/start", params={"away_from_app": "true"}).json()
+    ticket = started["ticket"]
+    assert ticket and c.get(f"{api}/sign-ins/outcome/{ticket}").json()["outcome"] == "waiting"
+    state = parse_qs(urlsplit(started["url"]).query)["state"][0]
+    browser = TestClient(c.app, follow_redirects=False)  # the person's own browser: no session
+    page = browser.get(f"{api}/sign-ins/callback", params={"state": state, "code": "good"})
+    assert page.status_code == 200 and "You're signed in" in page.text
+    assert "refresh" not in page.text and "href" not in page.text  # nothing that leads into the app
+    told = c.get(f"{api}/sign-ins/outcome/{ticket}").json()
+    assert told["outcome"] == "done" and told["name"] == "p18/service"
+    assert c.get(f"{api}/sign-ins").json()[0]["account"] == "Pat at example"
+    assert c.get(f"{api}/sign-ins/outcome/not-a-ticket").json()["outcome"] == "expired"
+    # Without a session the outcome is not readable; a sign-in started the usual way still goes back into the app.
+    assert browser.get(f"{api}/sign-ins/outcome/{ticket}").status_code in (401, 403)
+    assert "sign_in=done" in landing(sign_in(c, api))

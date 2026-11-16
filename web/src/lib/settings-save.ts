@@ -32,9 +32,11 @@ export function useAfterSave() {
   const restart = useRestart();
   const words = useSettingWordsFromCache();
   return useCallback(
-    (saved: S["SettingsSaved"], opts: { message?: string; quiet?: boolean } = {}): Promise<void> => {
+    (saved: S["SettingsSaved"], opts: { message?: string; quiet?: boolean; adding?: string } = {}): Promise<void> => {
       rememberFingerprint(client, saved.fingerprint);
-      if (saved.needs_restart) restart.offer();
+      // An add-on change the person just made is used by the app swapping itself in place: nothing to ask.
+      if (saved.applying) restart.begin(opts.adding ?? t("restart.adding_generic"));
+      else if (saved.needs_restart) restart.offer();
       // A theme or spacing saved here shows at once on this device, as the menu under the initials does.
       applyAppearanceChanges(saved.changes);
       const refreshed = refreshSince(client, lastWriteMark());

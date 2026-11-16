@@ -3206,6 +3206,18 @@
       "AiAccountAdded": {
         "description": "The settings saved for a new account, and what filling its tiers on its own could not do.",
         "properties": {
+          "applying": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An add-on was turned on or off and the app is replacing itself in place, between requests, to use it: nothing for the person to choose. `needs_restart` is false then.",
+            "title": "Applying"
+          },
           "changes": {
             "description": "What changed, for the read-back and Undo.",
             "items": {
@@ -6304,6 +6316,18 @@
       },
       "BackupKeySaved": {
         "properties": {
+          "applying": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An add-on was turned on or off and the app is replacing itself in place, between requests, to use it: nothing for the person to choose. `needs_restart` is false then.",
+            "title": "Applying"
+          },
           "changes": {
             "description": "What changed, for the read-back and Undo.",
             "items": {
@@ -20070,6 +20094,18 @@
       },
       "PackInstalled": {
         "properties": {
+          "applying": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The app is replacing itself in place, between requests, to use this add-on change: nothing for the person to choose. Only when this copy can do so.",
+            "title": "Applying"
+          },
           "file_kept": {
             "default": false,
             "description": "Only this add-on was removed: other installed add-ons come in the same file, so the file stays.",
@@ -20090,7 +20126,7 @@
             "type": "string"
           },
           "needs_restart": {
-            "description": "It is used after a restart the person chooses; turning it on is separate.",
+            "description": "It is used after a restart the person chooses; turning it on is separate. False when the app is already swapping itself in place (`applying`).",
             "title": "Needs Restart",
             "type": "boolean"
           },
@@ -30291,6 +30327,18 @@
       },
       "SettingsSaved": {
         "properties": {
+          "applying": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An add-on was turned on or off and the app is replacing itself in place, between requests, to use it: nothing for the person to choose. `needs_restart` is false then.",
+            "title": "Applying"
+          },
           "changes": {
             "description": "What changed, for the read-back and Undo.",
             "items": {
@@ -30970,8 +31018,103 @@
         "title": "SignInApp",
         "type": "object"
       },
+      "SignInOutcome": {
+        "description": "How a sign-in opened in the person's own browser went.",
+        "properties": {
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For `different`: the address the sign-in came back as.",
+            "title": "Address"
+          },
+          "again": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For an account already signed in: its address; its tokens were replaced.",
+            "title": "Again"
+          },
+          "detail": {
+            "default": "",
+            "description": "For `refused`: the service's reason, shown as text.",
+            "title": "Detail",
+            "type": "string"
+          },
+          "error": {
+            "default": "",
+            "description": "For `refused`: the service's standard error code.",
+            "title": "Error",
+            "type": "string"
+          },
+          "expected": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For `different`: the address it was meant for.",
+            "title": "Expected"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The sign-in's name.",
+            "title": "Name"
+          },
+          "outcome": {
+            "description": "`waiting` until the service sends the browser back; `expired` for a ticket no longer known.",
+            "enum": [
+              "waiting",
+              "done",
+              "failed",
+              "refused",
+              "expired",
+              "different"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome"
+        ],
+        "title": "SignInOutcome",
+        "type": "object"
+      },
       "SignInStarted": {
         "properties": {
+          "ticket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For a sign-in opened in the person's own browser from the app's window: what to ask for its outcome with (GET /api/sign-ins/outcome/{ticket}).",
+            "title": "Ticket"
+          },
           "url": {
             "description": "The service's sign-in page, to open in the person's browser.",
             "title": "Url",
@@ -45851,7 +45994,7 @@
     },
     "/api/packs/{name}/off": {
       "post": {
-        "description": "Turn an add-on off, with Undo: it stops after the restart the person chooses; its records and settings\nstay.",
+        "description": "Turn an add-on off, with Undo: it stops at once, in place, where this copy can swap itself, else after the\nrestart the person chooses; its records and settings stay. With `removing` it is the first step of a removal:\nthe removal that follows is what the app takes in, once, so this step asks for nothing by itself.",
         "operationId": "pack_off_api_packs__name__off_post",
         "parameters": [
           {
@@ -45861,6 +46004,16 @@
             "schema": {
               "title": "Name",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "removing",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Removing",
+              "type": "boolean"
             }
           }
         ],
@@ -45901,7 +46054,7 @@
     },
     "/api/packs/{name}/on": {
       "post": {
-        "description": "Turn on an add-on installed on this computer: it is added to the add-ons that run, with Undo. Its code\nruns after the restart the person chooses.",
+        "description": "Turn on an add-on installed on this computer: it is added to the add-ons that run, with Undo. Its code\nruns at once, in place, where this copy can swap itself, else after the restart the person chooses.",
         "operationId": "pack_on_api_packs__name__on_post",
         "parameters": [
           {
@@ -45951,7 +46104,7 @@
     },
     "/api/packs/{pack_id}/install": {
       "post": {
-        "description": "Install (or update) an add-on from the release file its catalog entry names, checked against the entry's\nchecksum. It isn't turned on; it is used after the restart the person chooses.",
+        "description": "Install (or update) an add-on from the release file its catalog entry names, checked against the entry's\nchecksum. It isn't turned on; the app takes it in at once, in place, where this copy can swap itself, else\nafter the restart the person chooses.",
         "operationId": "install_api_packs__pack_id__install_post",
         "parameters": [
           {
@@ -50780,6 +50933,46 @@
         "summary": "Sign Ins"
       }
     },
+    "/api/sign-ins/outcome/{ticket}": {
+      "get": {
+        "description": "How a sign-in opened in the person's own browser went: `waiting` until the service sends the browser back.",
+        "operationId": "outcome_api_sign_ins_outcome__ticket__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticket",
+            "required": true,
+            "schema": {
+              "title": "Ticket",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignInOutcome"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Outcome"
+      }
+    },
     "/api/sign-ins/{name}": {
       "delete": {
         "description": "Sign out of a service: one account, by its key (`?account=`), or every account when none is named. Only the\nsources reading with a signed-out account stop, with the usual line asking to sign in again.",
@@ -51007,7 +51200,7 @@
     },
     "/api/sign-ins/{name}/start": {
       "post": {
-        "description": "The address of the service's sign-in page. With `acting` it asks for the acting access as well as reading\n(the person turned acting on for the account); without it, reading only. With `account` (an address), the\nsign-in is for that account: if the service answers with another address, nothing is kept.",
+        "description": "The address of the service's sign-in page. With `acting` it asks for the acting access as well as reading\n(the person turned acting on for the account); without it, reading only. With `account` (an address), the\nsign-in is for that account: if the service answers with another address, nothing is kept. With\n`away_from_app`, the page opens in the person's own browser: the answer carries a ticket to ask for the outcome\nwith, and the browser is told only how it went.",
         "operationId": "start_api_sign_ins__name__start_post",
         "parameters": [
           {
@@ -51043,6 +51236,16 @@
                 }
               ],
               "title": "Account"
+            }
+          },
+          {
+            "in": "query",
+            "name": "away_from_app",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Away From App",
+              "type": "boolean"
             }
           }
         ],

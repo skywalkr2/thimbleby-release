@@ -531,7 +531,7 @@ test.describe.serial("journeys", () => {
     await visit(page);
   });
 
-  test("J4. An add-on from the list: I install it, restart, turn it on, restart, open its screen, then turn it off and remove it", async ({
+  test("J4. An add-on from the list: I install it, turn it on, open its screen, then remove it, and the app takes in each change by itself", async ({
     page,
   }) => {
     test.setTimeout(240_000);
@@ -553,32 +553,26 @@ test.describe.serial("journeys", () => {
     await visit(page);
     expect(existsSync(join(String(info.install_target), "journey_panel"))).toBe(false);
 
-    // Install puts it in place and says a restart is needed; it does not turn it on.
+    // Install puts it in place and the app takes it in by itself (the person's install is their word for it): the waiting
+    // notice names the add-on, nothing asks for a restart, and it is not turned on.
     await row.getByRole("button", { name: "Install Example panel" }).click();
-    await expect(row.getByText(/is installed\. Restart, then turn it on/)).toBeVisible();
+    const notices = page.getByRole("region", { name: "Notifications" });
+    await expect(notices.getByText("Example panel is ready.")).toBeVisible({ timeout: 90_000 });
     expect(existsSync(join(String(info.install_target), "journey_panel"))).toBe(true);
     // Nothing reaches the computer's own add-ons place.
     expect(existsSync(join(String(info.real_install_target), "journey_panel"))).toBe(false);
-    await visit(page);
-
-    // Restart now: the app comes back on the same address, and the notice says so.
-    await row.getByRole("button", { name: "Restart now" }).click();
-    await expect(page.getByRole("region", { name: "Notifications" }).getByText("Restarted with the new settings.")).toBeVisible({ timeout: 90_000 });
+    await expect(page.getByRole("button", { name: "Restart now" })).toHaveCount(0);
     await connectedAgain(page);
     await visit(page);
 
-    // After the restart the add-on is listed under Installed, off; turning it on waits for another restart. (Available leaves out
-    // what is installed.)
+    // It is listed under Installed, off; turning it on is taken in the same way, with no restart to choose. (Available leaves
+    // out what is installed.)
     await page.getByRole("tab", { name: "Installed" }).click();
     const onList = page.locator("[data-row-list] > li", { hasText: "Example panel" });
     await expect(onList.getByText("Off", { exact: true }).first()).toBeVisible();
     await onList.getByRole("button", { name: "Turn on Example panel" }).click();
-    // The row still carries the install note, so that text proves nothing about Turn on. Wait for the row to say what was saved:
-    // a restart asked for before then can reach the app ahead of the request.
-    await expect(onList).toContainText("On after a restart");
-    await expect(page.getByRole("link", { name: /Example overview/ })).toHaveCount(0);
-    await onList.getByRole("button", { name: "Restart now" }).first().click();
-    await expect(page.getByRole("region", { name: "Notifications" }).getByText(/^Restarted with the new settings\./)).toBeVisible({ timeout: 90_000 });
+    // Taken in when its screen reaches the sidebar, below.
+    await expect(page.getByRole("button", { name: "Restart now" })).toHaveCount(0);
     await connectedAgain(page);
 
     // Its screen is in the sidebar (once the app has told the page about it) and opens. The page learns of it when it
@@ -606,20 +600,15 @@ test.describe.serial("journeys", () => {
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect(installed.getByRole("button", { name: "Turn off Example panel" })).toBeVisible();
     await installed.getByRole("button", { name: "More actions for Example panel" }).click();
-    // It still runs until the restart, so new work waits for that restart, which the header offers.
+    // Removing is taken in by itself too: the add-on stops, with no restart to choose.
     const removed = page.waitForResponse((r) => r.url().endsWith("/uninstall") && r.request().method() === "POST");
     await page.getByRole("menuitem", { name: "Remove" }).click();
     // Removing asks first; the backup is made and the removal goes ahead when the person says so.
     await page.getByRole("dialog").getByRole("button", { name: "Remove it" }).click();
-    // The restart below must come after the removal has been answered, not race it.
     expect((await removed).ok()).toBe(true);
     await expect(installed.getByRole("alert")).toHaveCount(0);
-    await page.getByRole("button", { name: /^App status: / }).click();
-    await page.getByRole("dialog", { name: "Status" }).getByRole("button", { name: "Restart now" }).click();
-    await expect(page.getByText("Restarted with the new settings.").first()).toBeVisible({ timeout: 90_000 });
-    // Close the status popover with Escape before using the sidebar.
-    await page.getByRole("dialog", { name: "Status" }).press("Escape");
-    await expect(page.getByRole("dialog", { name: "Status" })).toHaveCount(0);
+    // Taken in when its screen leaves the sidebar, below.
+    await expect(page.getByRole("button", { name: "Restart now" })).toHaveCount(0);
     await connectedAgain(page);
     await expect(page.getByRole("navigation", { name: "Views" }).getByRole("link", { name: "Example overview" })).toHaveCount(0);
     await openView(page, "Add-ons");

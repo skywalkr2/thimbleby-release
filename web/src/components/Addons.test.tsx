@@ -675,6 +675,30 @@ test("turning on refetches the add-ons list so the row reads what was saved", as
 
 const INSTALLED = (name: string, version = "1.0.0") => ({ name, version, needs_restart: true });
 
+test("an install the app takes in by itself asks for no restart: the row says nothing more and the waiting notice names the add-on", async () => {
+  const user = userEvent.setup();
+  let done = false;
+  fakeApi({
+    "GET packs": () => view({ available: [pack("tool", { installable: true, installed_version: done ? "1.0.0" : null })] }),
+    "GET status": () => ({ restart_needed: null, can_restart: true, restart_for: [] }),
+    "POST packs/tool/install": () => {
+      done = true;
+      return { name: "tool", version: "1.0.0", needs_restart: false, applying: true };
+    },
+  });
+  renderApp(
+    <RestartProvider hellos={1}>
+      <RestartNotice />
+      <Addons onBack={() => undefined} />
+    </RestartProvider>,
+  );
+  const tool = await row("Name of tool");
+  await user.click(within(tool).getByRole("button", { name: "Install Name of tool" }));
+  await waitFor(() => expect(document.body).toHaveTextContent("Adding Name of tool…"));
+  expect(within(tool).queryByText(/Restart, then turn it on/)).toBeNull();
+  expect(screen.queryByRole("button", { name: "Restart now" })).toBeNull();
+});
+
 test("an add-on with a release has Install as its one action: it installs, then says a restart is needed and offers Restart now", async () => {
   const user = userEvent.setup();
   let done = false;
@@ -1374,7 +1398,7 @@ test("an add-on to get says before Install that installing needs a restart, and 
     }),
   );
   const fresh = await row("Name of fresh");
-  expect(fresh).toHaveTextContent("Installing needs a restart, which you choose");
+  expect(fresh).toHaveTextContent("Ready a moment after it's installed");
   expect(within(fresh).getByRole("button", { name: "Install Name of fresh" })).toBeInTheDocument();
   await user.click(screen.getByRole("tab", { name: "Installed" }));
   expect((await screen.findAllByText(/Version 2\.3\.1/)).length).toBeGreaterThan(0);

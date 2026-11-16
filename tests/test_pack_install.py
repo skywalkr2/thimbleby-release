@@ -176,6 +176,7 @@ def test_the_install_route_uses_the_catalog_entry(tmp_path, monkeypatch):
         "name": "pack-demo",
         "version": "0.1.0",
         "needs_restart": True,
+        "applying": None,
         "file_kept": False,
         "still_used_by": [],
         "libraries": [],
@@ -211,6 +212,7 @@ def screen(tmp_path, monkeypatch):
     app = create_app(ws, cfg, "t", start_worker=False)
     c = TestClient(app)
     c.headers["Authorization"] = "Bearer t"
+    c.made = (ws, cfg)  # type: ignore[attr-defined]  # for a test that builds the app again
     return c, cfg.server.base_path.rstrip("/") + "/api", app.state.worker, place
 
 
@@ -394,6 +396,7 @@ def test_removing_one_entry_of_a_shared_file_keeps_the_file_while_another_entry_
         "name": "pack-duo",
         "version": "0.1.0",
         "needs_restart": False,
+        "applying": None,
         "file_kept": True,
         "still_used_by": ["beta"],
         "libraries": [],
@@ -465,3 +468,48 @@ def test_the_install_command_refuses_a_file_that_needs_compiling_and_a_missing_f
     assert main(["install", str(native)]) == 1
     assert "pure Python" in capsys.readouterr().err
     assert main(["install", str(tmp_path / "nothing.whl")]) == 1
+
+
+def test_an_add_on_installed_where_the_app_can_swap_itself_is_taken_in_at_once(screen):
+    """Installing is the person's own act: where the app can replace itself in place, it does so at once, and the
+    screen asks for no restart (the wait the person had after downloading an add-on)."""
+    from fastapi.testclient import TestClient
+
+    from api.app import create_app
+
+    c, api, _, place = screen
+    asked: list[bool] = []
+    ws, cfg = c.made
+    able = TestClient(create_app(ws, cfg, "t", start_worker=False, on_restart=lambda: asked.append(True)))
+    able.headers["Authorization"] = "Bearer t"
+    done = able.post(f"{api}/packs/packdemo/install")
+    assert done.status_code == 200, done.text
+    assert done.json()["needs_restart"] is False and done.json()["applying"] is True
+    assert (place / "pack_demo").exists()
+    worker = able.app.state.worker
+    assert asked == [] and worker.restart_requested  # asked for; it starts between requests, never inside the install
+    assert worker.restart_due() and asked == [True]
+    able.close()
+
+
+def test_an_app_built_again_imports_its_add_ons_afresh(tmp_path, monkeypatch):
+    """The previous app has stopped when the next is built in the same process, so a module it loaded from the add-ons
+    folder is dropped (an updated add-on's new files are used); the app's own modules stay."""
+    import sys
+    import types
+
+    from engine import addons
+
+    root = tmp_path / "addons"
+    place = root / addons.SITE
+    place.mkdir(parents=True)
+    old = types.ModuleType("journey_old_addon")
+    old.__file__ = str(place / "journey_old_addon" / "__init__.py")
+    own = types.ModuleType("journey_own_module")
+    own.__file__ = str(tmp_path / "elsewhere.py")
+    monkeypatch.setitem(sys.modules, "journey_old_addon", old)
+    monkeypatch.setitem(sys.modules, "journey_own_module", own)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    addons.activate(str(root))
+    assert "journey_old_addon" not in sys.modules
+    assert sys.modules["journey_own_module"] is own

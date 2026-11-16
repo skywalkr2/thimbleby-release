@@ -3,6 +3,7 @@
 // lib/sign-in-return.ts) announces how it went; a window closed with no answer is checked against the sign-in's status.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
+import { inAppWindow, openInBrowser } from "./external-links";
 import { problemText } from "./problem";
 import { useWords } from "./wording";
 
@@ -77,11 +78,14 @@ export function useSignInWindow(name: string): {
   problem: string;
   /** After a sign-in to an account that was already signed in: "Already signed in as …; refreshed." Empty otherwise. */
   refreshed: string;
+  /** The service's page opened in the person's own browser (the installed app's window), not in a window of this app. */
+  away: boolean;
 } {
   const { t } = useWords();
   const [phase, setPhase] = useState<SignInPhase>("idle");
   const [text, setText] = useState("");
   const [refreshed, setRefreshed] = useState("");
+  const [away, setAway] = useState(false);
   const opened = useRef<Window | null>(null);
   const timer = useRef<number | undefined>(undefined);
   // Listening for the answer lasts until it comes, the sign-in is cancelled or started again, or the screen goes: not until the
@@ -100,8 +104,10 @@ export function useSignInWindow(name: string): {
     window.clearInterval(timer.current);
   }, []);
 
+  const answered = useRef<(m: SignInAnnounced) => void>(() => undefined);
   useEffect(() => {
-    const off = listen((m) => {
+    const off = listen((m) => answered.current(m));
+    answered.current = (m: SignInAnnounced) => {
       if (!live.current || (m.name && m.name !== sentFor.current)) return;
       stop();
       const t = words.current;
@@ -119,7 +125,7 @@ export function useSignInWindow(name: string): {
         setPhase("failed");
         setText(t(`sign_in.return.${m.outcome === "expired" ? "expired" : "failed"}`));
       }
-    });
+    };
     return () => {
       off();
       stop();
@@ -145,6 +151,42 @@ export function useSignInWindow(name: string): {
     setText("");
     setRefreshed("");
     setPhase("starting");
+    if (inAppWindow()) {
+      // The app's own window opens no pop-ups: the service's page opens in the person's browser, which comes back to a
+      // page that only says how it went, and this screen asks the app for the outcome until it is known.
+      setAway(true);
+      let ticket = "";
+      try {
+        const started = await api.startSignIn(current.current, false, account, true);
+        ticket = started.ticket ?? "";
+        if (!ticket || !openInBrowser(started.url)) throw new Error("not opened");
+      } catch (err) {
+        setPhase("failed");
+        setText(err instanceof Error && err.message === "not opened" ? t("sign_in.window.blocked") : problemText(err, t));
+        return;
+      }
+      live.current = true;
+      setPhase("waiting");
+      timer.current = window.setInterval(() => {
+        api.signInOutcome(ticket).then(
+          (o) => {
+            if (o.outcome === "waiting") return;
+            answered.current({
+              outcome: o.outcome,
+              name: o.name ?? sentFor.current,
+              error: o.error ?? "",
+              detail: o.detail ?? "",
+              address: o.address ?? undefined,
+              expected: o.expected ?? undefined,
+              again: o.again ?? undefined,
+            });
+          },
+          () => undefined, // A read that failed is asked again at the next tick.
+        );
+      }, WATCH_MS);
+      return;
+    }
+    setAway(false);
     // Opened at the click, empty, so the browser lets it through; it is sent to the service's page when that is known.
     const win = window.open("", "_blank");
     if (!win) {
@@ -193,5 +235,5 @@ export function useSignInWindow(name: string): {
   }, [stop, stopWatching]);
 
   const busy = phase === "starting" || phase === "waiting";
-  return { start, cancel, phase, text, refreshed, busy, problem: phase === "done" ? "" : text };
+  return { start, cancel, phase, text, refreshed, busy, problem: phase === "done" ? "" : text, away };
 }

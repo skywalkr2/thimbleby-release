@@ -4678,6 +4678,11 @@ class SettingsSaved(BaseModel):
         description="These settings take effect after a restart. Nothing restarts until the person chooses to: ask "
         "them first, then POST /api/restart. False when the change is in use already (AI accounts are)."
     )
+    applying: bool | None = Field(
+        None,
+        description="An add-on was turned on or off and the app is replacing itself in place, between requests, to use "
+        "it: nothing for the person to choose. `needs_restart` is false then.",
+    )
     kept_secrets_going: int | None = Field(
         None,
         description="How many passwords or keys kept on this computer go with what was just removed (a source or an "
@@ -6378,6 +6383,27 @@ class SignInApp(BaseModel):
 
 class SignInStarted(BaseModel):
     url: str = Field(description="The service's sign-in page, to open in the person's browser.")
+    ticket: str | None = Field(
+        None,
+        description="For a sign-in opened in the person's own browser from the app's window: what to ask for its "
+        "outcome with (GET /api/sign-ins/outcome/{ticket}).",
+    )
+
+
+class SignInOutcome(BaseModel):
+    """How a sign-in opened in the person's own browser went."""
+
+    outcome: Literal["waiting", "done", "failed", "refused", "expired", "different"] = Field(
+        description="`waiting` until the service sends the browser back; `expired` for a ticket no longer known."
+    )
+    name: str | None = Field(None, description="The sign-in's name.")
+    error: str = Field("", description="For `refused`: the service's standard error code.")
+    detail: str = Field("", description="For `refused`: the service's reason, shown as text.")
+    address: str | None = Field(None, description="For `different`: the address the sign-in came back as.")
+    expected: str | None = Field(None, description="For `different`: the address it was meant for.")
+    again: str | None = Field(
+        None, description="For an account already signed in: its address; its tokens were replaced."
+    )
 
 
 class PackAdds(BaseModel):
@@ -7098,7 +7124,15 @@ class WatchSourceChange(BaseModel):
 class PackInstalled(BaseModel):
     name: str = Field(description="The installed package's name.")
     version: str
-    needs_restart: bool = Field(description="It is used after a restart the person chooses; turning it on is separate.")
+    needs_restart: bool = Field(
+        description="It is used after a restart the person chooses; turning it on is separate. False when the app is "
+        "already swapping itself in place (`applying`)."
+    )
+    applying: bool | None = Field(
+        None,
+        description="The app is replacing itself in place, between requests, to use this add-on change: nothing for "
+        "the person to choose. Only when this copy can do so.",
+    )
     file_kept: bool = Field(
         False,
         description="Only this add-on was removed: other installed add-ons come in the same file, so the file stays.",

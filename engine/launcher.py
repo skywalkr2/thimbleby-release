@@ -5,6 +5,7 @@ reacts to the person's choices. Nothing here touches a window or the item except
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import os
@@ -182,6 +183,152 @@ def restart_enabled(restart_waiting: Callable[[], bool], busy: bool = False) -> 
     return not busy and bool(restart_waiting())
 
 
+class _AppLifespan:
+    """Drive one ASGI app's lifespan by hand, so an app can be started and stopped while the server keeps listening."""
+
+    def __init__(self, app: Any):
+        self.app = app
+        self.to_app: asyncio.Queue = asyncio.Queue()
+        self.from_app: asyncio.Queue = asyncio.Queue()
+        self.task: asyncio.Task | None = None
+
+    async def _answer(self) -> dict:
+        assert self.task is not None
+        getting = asyncio.ensure_future(self.from_app.get())
+        await asyncio.wait({getting, self.task}, return_when=asyncio.FIRST_COMPLETED)
+        if getting.done():
+            return getting.result()
+        getting.cancel()
+        error = self.task.exception()
+        raise RuntimeError("The app ended before it answered") from error
+
+    async def start(self) -> None:
+        async def receive() -> dict:
+            return await self.to_app.get()
+
+        async def send(message: dict) -> None:
+            await self.from_app.put(message)
+
+        self.task = asyncio.ensure_future(
+            self.app({"type": "lifespan", "asgi": {"version": "3.0"}, "state": {}}, receive, send)
+        )
+        await self.to_app.put({"type": "lifespan.startup"})
+        message = await self._answer()
+        if message["type"] != "lifespan.startup.complete":
+            raise RuntimeError(message.get("message") or "The app could not start")
+
+    async def stop(self) -> None:
+        if self.task is None:
+            return
+        await self.to_app.put({"type": "lifespan.shutdown"})
+        try:
+            await self._answer()
+        finally:
+            await asyncio.gather(self.task, return_exceptions=True)
+            self.task = None
+
+
+class SwappableApp:
+    """A thin ASGI front that hands each request to the current app, so the app can be replaced while the server keeps
+    its port and keeps answering.
+
+    A swap holds new requests (they wait, and are answered by the new app, so the screen sees a slower answer and no
+    error; after `hold_seconds` a request that is still waiting gets a 503), ends the old app's live streams, waits for
+    the requests it is answering, stops it (its worker, its database and its instance lease: the new app takes the lease
+    the old one gives back, so the old goes first), then builds, starts and switches to the new one."""
+
+    def __init__(self, factory: Callable[[], Any], *, hold_seconds: float = 30, drain_seconds: float = 10):
+        self.factory = factory
+        self.hold_seconds = hold_seconds
+        self.drain_seconds = drain_seconds
+        self.current: Any = None
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self._run: _AppLifespan | None = None
+        self._serving: asyncio.Event | None = None
+        self._idle: asyncio.Event | None = None
+        self._busy = 0
+        self.swaps = 0
+
+    def close_streams(self) -> None:
+        """End the live streams of the current app (the screen reconnects); safe from any thread."""
+        events = getattr(getattr(self.current, "state", None), "events", None)
+        if events is not None:
+            events.close()
+
+    async def _start(self) -> None:
+        app = await asyncio.to_thread(self.factory)
+        run = _AppLifespan(app)
+        await run.start()
+        self.current, self._run = app, run
+
+    async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
+        if scope["type"] == "lifespan":
+            await self._lifespan(receive, send)
+            return
+        assert self._serving is not None and self._idle is not None
+        try:
+            await asyncio.wait_for(self._serving.wait(), self.hold_seconds)
+        except TimeoutError:
+            if scope["type"] == "http":
+                body = b'{"detail":"The app is not ready yet."}'
+                headers = [
+                    (b"content-type", b"application/json"),
+                    (b"retry-after", b"2"),
+                    (b"content-length", str(len(body)).encode()),
+                ]
+                await send({"type": "http.response.start", "status": 503, "headers": headers})
+                await send({"type": "http.response.body", "body": body})
+            else:
+                await send({"type": "websocket.close", "code": 1013})
+            return
+        self._busy += 1
+        self._idle.clear()
+        try:
+            await self.current(scope, receive, send)
+        finally:
+            self._busy -= 1
+            if self._busy == 0:
+                self._idle.set()
+
+    async def _lifespan(self, receive: Callable, send: Callable) -> None:
+        self.loop = asyncio.get_running_loop()
+        self._serving, self._idle = asyncio.Event(), asyncio.Event()
+        self._idle.set()
+        await receive()
+        try:
+            await self._start()
+        except BaseException as error:
+            await send({"type": "lifespan.startup.failed", "message": str(error)})
+            raise
+        self._serving.set()
+        await send({"type": "lifespan.startup.complete"})
+        await receive()
+        self._serving.clear()
+        if self._run is not None:
+            await self._run.stop()
+        await send({"type": "lifespan.shutdown.complete"})
+
+    async def swap(self) -> None:
+        """Replace the app with a new one built by the factory. A failure to build leaves the front holding requests
+        (the old app has given back what the new one needs) and is raised to the caller."""
+        assert self._serving is not None and self._idle is not None
+        self._serving.clear()
+        old, run = self.current, self._run
+        self.current = self._run = None
+        if old is not None and run is not None:
+            events = getattr(getattr(old, "state", None), "events", None)
+            if events is not None:
+                events.close()
+            try:
+                await asyncio.wait_for(self._idle.wait(), self.drain_seconds)
+            except TimeoutError:
+                note("a request was still running when the app was replaced")
+            await run.stop()
+        await self._start()
+        self.swaps += 1
+        self._serving.set()
+
+
 class LocalServer:
     """Own one server thread and a prebound socket, detecting bind failures first."""
 
@@ -189,6 +336,7 @@ class LocalServer:
         if not 1 <= port <= 65535:
             raise ValueError("port must be between 1 and 65535")
         self.app_factory = app_factory
+        self.front = SwappableApp(app_factory)
         self.port = port
         self.shutdown_timeout = shutdown_timeout
         self.thread = None
@@ -209,8 +357,9 @@ class LocalServer:
                 listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             listener.bind(("127.0.0.1", self.port))
             listener.listen(128)
+            front = self.front
             config = uvicorn.Config(
-                self.app_factory,
+                lambda: front,
                 factory=True,
                 host="127.0.0.1",
                 port=self.port,
@@ -240,9 +389,16 @@ class LocalServer:
     def alive(self) -> bool:
         return self.thread is not None and self.thread.is_alive()
 
+    def swap(self, timeout: float = 60) -> None:
+        """Replace the app behind the listening server, in place: the port stays and keeps answering."""
+        if self.front.loop is None or not self.alive():
+            raise RuntimeError("The server is not running")
+        asyncio.run_coroutine_threadsafe(self.front.swap(), self.front.loop).result(timeout)
+
     def stop(self) -> None:
         if self.server is None or self.thread is None:
             return
+        self.front.close_streams()  # a screen's open live stream would hold the shutdown for its whole wait
         self.server.should_exit = True
         self.thread.join(self.shutdown_timeout + 2)
         if self.thread.is_alive():
@@ -415,8 +571,10 @@ def launch(
     when given, is set by the app when it has nothing left to run (the person deleted the workspace): the loop then
     ends as Quit would.
 
-    Restart recreates the ASGI app in this process; it does not replace Python modules, install updates, or restart the
-    interpreter. The waiting callback must be thread-safe. restarted acknowledges a successful server restart.
+    Restart replaces the ASGI app in this process, behind the same listening server (`SwappableApp`); it does not
+    replace Python modules, install updates, or restart the interpreter.
+    The waiting callback must be thread-safe.
+    restarted acknowledges a successful server restart.
     """
     if not 1 <= port <= 65535:
         raise ValueError("port must be between 1 and 65535")
@@ -458,12 +616,11 @@ def launch(
                 if not restart_waiting():
                     return
                 shell.set_state("restarting")
-                controller.stop()
-                controller.start()
+                # In place: the server keeps its port and the page stays open on its session, so no reload.
+                controller.swap()
                 if not wait_ready(health, timeout=startup_timeout, alive=controller.alive):
                     raise RuntimeError("Restarted server failed readiness") from controller.error
                 restarted()
-                shell.show_app(url_now())
                 shell.set_state("live")
             except Exception as error:
                 failures.append(error)

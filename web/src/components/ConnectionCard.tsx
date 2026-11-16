@@ -208,7 +208,7 @@ export function ConnectionCardView(props: {
       )}
       {(again.phase === "waiting" || again.phase === "starting") && (
         <p className={styles.waiting} role="status" data-sign-in-waiting="">
-          <span>{again.phase === "starting" ? t("sign_in.working") : t("sign_in.window.waiting")}</span>
+          <span>{again.phase === "starting" ? t("sign_in.working") : t(again.away ? "sign_in.window.away" : "sign_in.window.waiting")}</span>
           <Button size="sm" onClick={again.cancel} aria-label={t("connection.cancel_named", { account: accountName })}>
             {t("action.cancel")}
           </Button>

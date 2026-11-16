@@ -127,3 +127,8 @@ desktop.problem.other.text: Try again. If it keeps happening, copy the details a
 desktop.try_again: Try again
 desktop.copy_details: Copy details
 desktop.copied: Copied
+
+# The page the person's own browser shows after a sign-in started from the installed app's window.
+sign_in.away.done: You're signed in
+sign_in.away.not_done: The sign-in didn't finish
+sign_in.away.back: You can close this tab and go back to Thimbleby, which shows what happened.

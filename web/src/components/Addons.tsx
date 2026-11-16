@@ -117,8 +117,8 @@ function useSwitch(name: string, label: string) {
     try {
       // The settings as they are now, so a change made meanwhile is noticed rather than overwritten.
       const current = await freshSettings(client);
-      const saved = await (on ? api.packOn : api.packOff)(name, current.fingerprint);
-      await afterSave(saved, quiet ? { quiet: true } : { message: t(on ? "addons.switched_on" : "addons.switched_off", { name: label }) });
+      const saved = await (on ? api.packOn(name, current.fingerprint) : api.packOff(name, current.fingerprint, quiet));
+      await afterSave(saved, quiet ? { quiet: true } : { message: t(on ? "addons.switched_on" : "addons.switched_off", { name: label }), adding: label });
       // The list reads which add-ons are on from the saved settings: read it again so the row says what was just saved.
       await client.refetchQueries({ queryKey: ["packs"] });
       return true;
@@ -152,9 +152,11 @@ export function usePackChange(
   // The refusal says a read token for the release's host would fix it: the row asks for one in place.
   const [needsToken, setNeedsToken] = useState(false);
   const [tokenSaved, setTokenSaved] = useState(false);
-  const restarts = useRestart().restarts;
+  const restartApi = useRestart();
+  const restarts = restartApi.restarts;
   // What was done, and how many restarts had happened by then: once another has, the restart it asked for is over.
-  const [last, setLast] = useState<{ what: "installed" | "removed"; at: number } | null>(null);
+  // `applying`: the app is putting the change in place by itself, and the waiting notice says so, so the row asks nothing.
+  const [last, setLast] = useState<{ what: "installed" | "removed"; at: number; applying: boolean } | null>(null);
   const done = last && last.at === restarts ? last.what : null;
   useEffect(() => {
     if (last && last.at !== restarts) {
@@ -176,7 +178,8 @@ export function usePackChange(
         // Only this add-on went: the file stays while others of the same file use it, and nothing needs a restart.
         push({ message: t("addons.removed_kept_note", { name, others: (result.still_used_by ?? []).map(nameOf).join(", ") }) });
       } else {
-        setLast({ what: what === "install" ? "installed" : "removed", at: restarts });
+        setLast({ what: what === "install" ? "installed" : "removed", at: restarts, applying: Boolean(result.applying) });
+        if (result.applying) restartApi.begin(name);
       }
       await Promise.all([
         client.invalidateQueries({ queryKey: ["packs"] }),
@@ -201,7 +204,7 @@ export function usePackChange(
       setProblem("");
       setTokenSaved(true);
     },
-    note: done ? t(done === "installed" ? "addons.installed_note" : "addons.removed_note", { name }) : "",
+    note: done && !last?.applying ? t(done === "installed" ? "addons.installed_note" : "addons.removed_note", { name }) : "",
     installed: done === "installed",
     install: () => run("install"),
     remove: () => run("remove"),

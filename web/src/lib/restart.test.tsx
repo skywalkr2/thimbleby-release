@@ -194,3 +194,29 @@ test("while a restart the person chose is under way the connection is not offlin
   begin();
   await waitFor(() => expect(screen.getByTestId("says")).toHaveTextContent("not offline"));
 });
+
+test("an add-on the app swaps in by itself says it is being added, never that it is restarting", async () => {
+  let instance = "one";
+  fakeApi({ "GET runtime-config": () => ({ instance }) });
+  function Adder() {
+    const { begin: start } = useRestart();
+    return (
+      <button type="button" onClick={() => start("Mail")}>
+        add
+      </button>
+    );
+  }
+  render(
+    <WordingProvider>
+      <RestartProvider hellos={1} seconds={60} doneSeconds={0.2} pollSeconds={0.05}>
+        <Adder />
+        <RestartNotice />
+      </RestartProvider>
+    </WordingProvider>,
+  );
+  act(() => screen.getByRole("button", { name: "add" }).click());
+  await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Adding Mail…"));
+  expect(screen.getByRole("status")).not.toHaveTextContent("Restart");
+  instance = "two";
+  await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Mail is ready."));
+});

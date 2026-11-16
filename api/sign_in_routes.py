@@ -5,24 +5,34 @@ signing out."""
 from __future__ import annotations
 
 import logging
+import secrets
+import time
 from html import escape
-from urllib.parse import quote, urlencode
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse
 
-from api.schemas import Ok, SignInAccount, SignInApp, SignInStarted, SignInStep, SignInView
+from api.schemas import Ok, SignInAccount, SignInApp, SignInOutcome, SignInStarted, SignInStep, SignInView
 from engine import act_accounts, audit
 from engine import sign_in as flow
 from engine.config import Config
 from engine.connectors import ConnectorError
 from engine.legacy_names import private_dir
+from engine.sides import word
 from engine.sign_in_sources import not_read, refused_accounts, start_sources
 from engine.storage import Store
 from engine.worker import Worker
 from engine.workspace import Workspace
 
 log = logging.getLogger(__name__)
+
+
+# Sign-ins started from a window that opens the service's page in the person's own browser: the browser comes back to a
+# page that only says how it went, and the window asks for the outcome by its ticket. Kept for the process, as the
+# pending sign-ins are, so a rebuilt app still knows them.
+away: dict[str, str] = {}
+outcomes: dict[str, tuple[float, SignInOutcome]] = {}
 
 
 def build_sign_in_router(ws: Workspace, cfg: Config, store: Store, worker: Worker) -> APIRouter:
@@ -161,11 +171,19 @@ def build_sign_in_router(ws: Workspace, cfg: Config, store: Store, worker: Worke
         lost_with_registration(s, had)
         return view(s)
 
+    def forget_old(now: float) -> None:
+        for ticket in [k for k, (at, _) in outcomes.items() if now - at > 2 * flow.PENDING_SECONDS]:
+            del outcomes[ticket]
+
     @r.post("/sign-ins/{name:path}/start")
-    def start(name: str, acting: bool = False, account: str | None = None) -> SignInStarted:
+    def start(
+        name: str, acting: bool = False, account: str | None = None, away_from_app: bool = False
+    ) -> SignInStarted:
         """The address of the service's sign-in page. With `acting` it asks for the acting access as well as reading
         (the person turned acting on for the account); without it, reading only. With `account` (an address), the
-        sign-in is for that account: if the service answers with another address, nothing is kept."""
+        sign-in is for that account: if the service answers with another address, nothing is kept. With
+        `away_from_app`, the page opens in the person's own browser: the answer carries a ticket to ask for the outcome
+        with, and the browser is told only how it went."""
         s = find(name)
         if acting and not s.acting_scopes:
             raise HTTPException(status_code=409, detail=f"{s.label} has no acting access to ask for.")
@@ -175,9 +193,47 @@ def build_sign_in_router(ws: Workspace, cfg: Config, store: Store, worker: Worke
             )
         except flow.SignInError as err:
             raise HTTPException(status_code=409, detail=str(err)) from None
-        return SignInStarted(url=url)
+        if not away_from_app:
+            return SignInStarted(url=url)
+        state = (parse_qs(urlsplit(url).query).get("state") or [""])[0]
+        ticket = secrets.token_urlsafe(24)
+        now = time.monotonic()
+        forget_old(now)
+        if state:
+            away[state] = ticket
+        outcomes[ticket] = (now, SignInOutcome(outcome="waiting", name=s.name))
+        return SignInStarted(url=url, ticket=ticket)
 
-    def back(query: str) -> HTMLResponse:
+    @r.get("/sign-ins/outcome/{ticket}")
+    def outcome(ticket: str) -> SignInOutcome:
+        """How a sign-in opened in the person's own browser went: `waiting` until the service sends the browser back."""
+        held = outcomes.get(ticket)
+        if held is None:
+            return SignInOutcome(outcome="expired")
+        return held[1]
+
+    def told(query: str, ticket: str) -> HTMLResponse:
+        """Keep the outcome for the window that asked, and tell the person's browser, in plain words, how it went."""
+        got = {k: v[0] for k, v in parse_qs(query).items()}
+        result = SignInOutcome(
+            outcome=got.get("sign_in", "failed"),
+            name=got.get("name"),
+            error=got.get("error", ""),
+            detail=got.get("detail", ""),
+            address=got.get("address"),
+            expected=got.get("expected"),
+            again=got.get("again"),
+        )
+        outcomes[ticket] = (time.monotonic(), result)
+        key = "sign_in.away.done" if result.outcome == "done" else "sign_in.away.not_done"
+        heading, rest = escape(word(cfg, key), quote=False), escape(word(cfg, "sign_in.away.back"), quote=False)
+        page = (
+            '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+            f"<title>{heading}</title></head><body><h1>{heading}</h1><p>{rest}</p></body></html>"
+        )
+        return HTMLResponse(page, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+
+    def go_back(query: str) -> HTMLResponse:
         """A page that takes the person back into the app. The page it gives is the app's own address, where the
         browser's stored session is found again."""
         target = escape(f"{prefix}/?{query}", quote=True)
@@ -193,6 +249,12 @@ def build_sign_in_router(ws: Workspace, cfg: Config, store: Store, worker: Worke
         """The service sends the person back here; the screen then says how it went, with the service's own code
         and words when it refused (shown as text). Served with no session (see OPEN_PATHS): only a
         state this app issued, unexpired and unused, does anything."""
+        ticket = away.pop(state, None)
+
+        def back(query: str) -> HTMLResponse:
+            """A sign-in started from the app's window is answered there; any other goes back into the app."""
+            return told(query, ticket) if ticket else go_back(query)
+
         s = flow.pending_sign_in(state)
         if error:
             if s is not None:

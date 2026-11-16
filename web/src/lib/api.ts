@@ -791,8 +791,9 @@ export const api = {
   /** Adds an installed add-on to the ones that run; its code runs after the restart the person chooses. With Undo. */
   packOn: (name: string, fingerprint: string) =>
     call<S["SettingsSaved"]>("POST", `packs/${id(name)}/on`, { fingerprint } satisfies S["FingerprintIn"]),
-  packOff: (name: string, fingerprint: string) =>
-    call<S["SettingsSaved"]>("POST", `packs/${id(name)}/off`, { fingerprint } satisfies S["FingerprintIn"]),
+  /** With `removing`, the first step of a removal: the removal that follows is what the app takes in. */
+  packOff: (name: string, fingerprint: string, removing = false) =>
+    call<S["SettingsSaved"]>("POST", `packs/${id(name)}/off${removing ? "?removing=true" : ""}`, { fingerprint } satisfies S["FingerprintIn"]),
 
   /** Leaves the add-ons that are installed and off as they are, so the setup guide stops asking about them. */
   leaveAddonsOff: () => call<S["Ok"]>("POST", "setup/addons/leave-off"),
@@ -820,9 +821,13 @@ export const api = {
     call<S["DataFileSaved"]>("POST", `data-forms/${named(form)}/restore`, body),
 
   signIns: () => call<S["SignInView"][]>("GET", "sign-ins"),
+  /** How a sign-in opened in the person's own browser went, by the ticket its start gave. */
+  signInOutcome: (ticket: string) => call<S["SignInOutcome"]>("GET", `sign-ins/outcome/${encodeURIComponent(ticket)}`),
   /** The service's sign-in page; with `acting`, asking for the wider access that acting needs as well. */
-  startSignIn: (name: string, acting = false, account?: string) => {
-    const query = [acting ? "acting=true" : "", account ? `account=${encodeURIComponent(account)}` : ""].filter(Boolean).join("&");
+  startSignIn: (name: string, acting = false, account?: string, awayFromApp = false) => {
+    const query = [acting ? "acting=true" : "", account ? `account=${encodeURIComponent(account)}` : "", awayFromApp ? "away_from_app=true" : ""]
+      .filter(Boolean)
+      .join("&");
     return call<S["SignInStarted"]>("POST", `sign-ins/${named(name)}/start${query ? `?${query}` : ""}`);
   },
   /** Signs out of a service: one account by its key, or every account when none is named. */

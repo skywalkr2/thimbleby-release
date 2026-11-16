@@ -30,6 +30,16 @@ function ask(name: keyof Bridge, ...args: string[]): boolean {
   return true;
 }
 
+/** True in the installed app's own window: pop-ups don't open there, and an outside page opens in the person's browser. */
+export function inAppWindow(): boolean {
+  return Boolean(bridge()?.open_external || channel());
+}
+
+/** In the app's own window, open an outside address in the person's own browser. False in a browser tab. */
+export function openInBrowser(url: string): boolean {
+  return inAppWindow() && ask("open_external", url);
+}
+
 function outside(href: string): string | null {
   try {
     const url = new URL(href, window.location.href);

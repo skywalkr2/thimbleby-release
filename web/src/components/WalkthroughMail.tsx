@@ -576,7 +576,12 @@ function ServiceRow(props: { service: Service; title: string; plain: boolean; on
       // The settings as they are now, so a change made meanwhile is noticed rather than overwritten.
       const current = await freshSettings(client);
       const saved = await write(() => api.packOn(service.id, current.fingerprint), { also: ["packs", "status", "sign-ins", "watch"] });
-      if (saved.needs_restart && props.canRestart && oneClick) {
+      if (saved.applying) {
+        // The app swaps itself in place: no restart to ask for, and the sign-in is the next click.
+        setAfter(true);
+        setDone(true);
+        restart.begin(props.title);
+      } else if (saved.needs_restart && props.canRestart && oneClick) {
         setAfter(true);
         setDone(true);
         void restart.now();
@@ -705,13 +710,19 @@ function ServiceRow(props: { service: Service; title: string; plain: boolean; on
 
 /** What the screen says while the service's own window is open: where to finish, that this page carries on by itself, and the way
  * to stop waiting. */
-function WaitingBanner(props: { onCancel: () => void }) {
+function WaitingBanner(props: { onCancel: () => void; away?: boolean }) {
   const { t } = useWords();
   return (
     <div className="wait-banner" role="status" data-sign-in-waiting="">
       <Icon name="external" size={16} />
       <p>
-        <strong>{t("sign_in.window.waiting_title")}</strong> {t("sign_in.window.waiting_rest")}
+        {props.away ? (
+          <strong>{t("sign_in.window.away")}</strong>
+        ) : (
+          <>
+            <strong>{t("sign_in.window.waiting_title")}</strong> {t("sign_in.window.waiting_rest")}
+          </>
+        )}
       </p>
       <Button size="sm" onClick={props.onCancel}>
         {t("action.cancel")}
@@ -728,7 +739,7 @@ function ServiceSignIn(props: { item: SignIn; resumed?: string; onStarted?: () =
   const { t } = useWords();
   const client = useQueryClient();
   const { item } = props;
-  const { start, cancel, phase, text, refreshed } = useSignInWindow(item.name);
+  const { start, cancel, phase, text, refreshed, away } = useSignInWindow(item.name);
   const [leaving, setLeaving] = useState<{ key: string | null; who: string } | null>(null);
   const act = useAct();
   const button = useRef<HTMLButtonElement>(null);
@@ -787,7 +798,7 @@ function ServiceSignIn(props: { item: SignIn; resumed?: string; onStarted?: () =
           )}
           {several && (
             <>
-              {phase === "waiting" && <WaitingBanner onCancel={cancel} />}
+              {phase === "waiting" && <WaitingBanner onCancel={cancel} away={away} />}
               {text && (
                 <p className="problem-note" role="alert">
                   {text}
@@ -818,7 +829,7 @@ function ServiceSignIn(props: { item: SignIn; resumed?: string; onStarted?: () =
               {t("walkthrough.mail.resumed", { service: resumed })}
             </p>
           )}
-          {phase === "waiting" && <WaitingBanner onCancel={cancel} />}
+          {phase === "waiting" && <WaitingBanner onCancel={cancel} away={away} />}
           {phase === "done" && (
             <p className="hint" role="status">
               {t("sign_in.window.done")}

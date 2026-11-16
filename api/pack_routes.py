@@ -70,6 +70,14 @@ def build_pack_router(ws: Workspace, cfg: Config, store: Store, worker: Worker) 
     r = APIRouter(prefix="/api")
     host = store.plugins
 
+    def apply_in_place() -> bool:
+        """The person's own add-on change is applied by the app replacing itself in place, between requests, when this
+        copy can; otherwise it waits for the restart the person chooses."""
+        if not worker.can_restart:
+            return False
+        worker.request_restart()
+        return True
+
     def costs(entry: packs.Entry) -> list[dict]:
         from engine.ai.router import Router
 
@@ -208,7 +216,8 @@ def build_pack_router(ws: Workspace, cfg: Config, store: Store, worker: Worker) 
     @r.post("/packs/{pack_id}/install")
     def install(pack_id: str) -> PackInstalled:
         """Install (or update) an add-on from the release file its catalog entry names, checked against the entry's
-        checksum. It isn't turned on; it is used after the restart the person chooses."""
+        checksum. It isn't turned on; the app takes it in at once, in place, where this copy can swap itself, else
+        after the restart the person chooses."""
         from engine.secrets import SecretError, resolve_secret
 
         if cfg.server.mode != "local":
@@ -268,12 +277,15 @@ def build_pack_router(ws: Workspace, cfg: Config, store: Store, worker: Worker) 
         together = pack_install.entries_in(done.name)
         pack_install.set_removed(ws.private_dir, [pack_id, *together], False)
         if any(host.active(name) for name in {pack_id, *together}):
-            # A running add-on was updated: work waits for the restart rather than mix old and new files.
+            # A running add-on was updated: work waits for the swap rather than mix old and new files.
             worker.add_ons_changed()
+        # The app takes in what the person just installed by replacing itself in place, where this copy can.
+        applying = apply_in_place()
         return PackInstalled(
             name=done.name,
             version=done.version,
-            needs_restart=True,
+            needs_restart=not applying,
+            applying=applying or None,
             libraries=[PackLibrary(name=n, version=v) for n, _, v in (item.partition(" ") for item in done.libraries)],
         )
 
@@ -313,9 +325,11 @@ def build_pack_router(ws: Workspace, cfg: Config, store: Store, worker: Worker) 
         except pack_install.InstallError as err:
             raise HTTPException(status_code=409, detail=_sentence(str(err))) from None
         pack_install.set_removed(ws.private_dir, together, False)
+        applying = False
         if running:
             worker.add_ons_changed()
-        return PackInstalled(name=name, version=version, needs_restart=True)
+            applying = apply_in_place()
+        return PackInstalled(name=name, version=version, needs_restart=not applying, applying=applying or None)
 
     @r.get("/packs")
     def listed() -> PacksView:

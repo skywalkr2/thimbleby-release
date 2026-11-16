@@ -11,6 +11,7 @@ import { useWords } from "../lib/wording";
 import { LoadFailed } from "../ui/LoadFailed";
 import { Skeleton } from "../ui/Skeleton";
 import styles from "./ActingAccounts.module.css";
+import { inAppWindow, openInBrowser } from "../lib/external-links";
 
 const KEY = "watch.acting";
 type Account = S["ActAccountView"];
@@ -31,8 +32,10 @@ export function ActingAccounts() {
     setProblem("");
     // The service's page opens in its own window, never the app's: the window is opened at the click, empty, so the
     // browser lets it through, and sent to the service once its address is known.
-    const win = on && account.sign_in ? window.open("", "_blank") : null;
-    if (on && account.sign_in && !win) {
+    // In the app's own window no pop-up opens: the service's page opens in the person's own browser instead.
+    const away = inAppWindow();
+    const win = on && account.sign_in && !away ? window.open("", "_blank") : null;
+    if (on && account.sign_in && !away && !win) {
       setProblem(t("sign_in.window.blocked"));
       return;
     }
@@ -51,11 +54,14 @@ export function ActingAccounts() {
       const current = Array.isArray(held) ? held.map(String) : [];
       const next = on ? [...current.filter((x) => !sameAccount(x, account.id)), account.id] : current.filter((x) => !sameAccount(x, account.id));
       // A signed-in account asks the service for the wider access first, so a refusal leaves nothing changed.
-      const started = on && account.sign_in ? await api.startSignIn(account.sign_in, true) : null;
+      const started = on && account.sign_in ? await api.startSignIn(account.sign_in, true, undefined, away) : null;
       const saved = await api.saveSettings({ changes: { [KEY]: next }, reset: [], fingerprint: settings.fingerprint ?? (await fingerprint()) });
       if (started && win) {
         rememberFingerprint(client, saved.fingerprint);
         win.location.href = started.url;
+      } else if (started && away) {
+        rememberFingerprint(client, saved.fingerprint);
+        openInBrowser(started.url);
       }
       await afterSave(saved, { message: t(on ? "acting.on_toast" : "acting.off_toast", { account: account.label }) });
       await client.invalidateQueries({ queryKey: ["act-accounts"] });

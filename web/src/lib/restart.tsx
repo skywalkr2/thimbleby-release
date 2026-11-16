@@ -22,8 +22,11 @@ interface RestartApi {
   problem: string;
   /** A restart was asked for and the answer has not come yet. */
   busy: boolean;
-  /** Starts the notice that waits for the app to come back; the request itself is `now`. */
-  begin: () => void;
+  /** Starts the notice that waits for the app to come back; the request itself is `now`. `adding` names an add-on the
+   * app is swapping in by itself (the server already asked for it): the notice then says "Adding <name>…". */
+  begin: (adding?: unknown) => void;
+  /** The add-on being added by that swap, or "" for an ordinary restart. */
+  adding: string;
   /** Asks the person whether to restart now; nothing restarts until they say so. */
   offer: () => void;
   /** Asks the app to restart, then waits for it. A refusal is shown in the notice. */
@@ -37,6 +40,7 @@ const RestartContext = createContext<RestartApi>({
   restarts: 0,
   problem: "",
   busy: false,
+  adding: "",
   begin: () => undefined,
   offer: () => undefined,
   now: () => Promise.resolve(),
@@ -59,6 +63,7 @@ export function RestartProvider(props: { hellos: number; seconds?: number; doneS
   const [problem, setProblem] = useState("");
   const [busy, setBusy] = useState(false);
   const [restarts, setRestarts] = useState(0);
+  const [adding, setAdding] = useState("");
   const [since, setSince] = useState(0);
   // The start the app was on when the wait began: a text, null when the server doesn't say, undefined while it is looked up.
   const [baseline, setBaseline] = useState<string | null | undefined>(undefined);
@@ -70,8 +75,9 @@ export function RestartProvider(props: { hellos: number; seconds?: number; doneS
   const doneSeconds = props.doneSeconds ?? RESTART_DONE_SECONDS;
   const pollSeconds = props.pollSeconds ?? RESTART_POLL_SECONDS;
 
-  const begin = useCallback(() => {
+  const begin = useCallback((addingName?: unknown) => {
     const mine = ++round.current;
+    setAdding(typeof addingName === "string" ? addingName : "");
     setPhase("waiting");
     setSince(latest.current);
     setBaseline(known.current);
@@ -132,7 +138,7 @@ export function RestartProvider(props: { hellos: number; seconds?: number; doneS
       setPhase("done");
       setRestarts((n) => n + 1);
       // The status popover that carries the notice is usually closed, so the app says it was done where it can be seen.
-      push({ message: t("restart.done") });
+      push({ message: adding ? t("restart.adding_done", { name: adding }) : t("restart.done") });
     };
     if (baseline === undefined) return;
     if (baseline === null) {
@@ -142,7 +148,7 @@ export function RestartProvider(props: { hellos: number; seconds?: number; doneS
     if (props.hellos > since) check(mine, baseline, finish);
     const timer = window.setInterval(() => check(mine, baseline, finish), pollSeconds * 1000);
     return () => window.clearInterval(timer);
-  }, [phase, baseline, since, props.hellos, pollSeconds, check, push, t]);
+  }, [phase, baseline, since, props.hellos, pollSeconds, check, push, t, adding]);
 
   useEffect(() => {
     if (phase !== "waiting") return;
@@ -160,8 +166,8 @@ export function RestartProvider(props: { hellos: number; seconds?: number; doneS
   }, [phase, doneSeconds]);
 
   const value = useMemo(
-    () => ({ waiting: phase === "waiting", phase, restarts, problem, busy, begin, offer, now, dismiss }),
-    [phase, restarts, problem, busy, begin, offer, now, dismiss],
+    () => ({ waiting: phase === "waiting", phase, restarts, problem, busy, adding, begin, offer, now, dismiss }),
+    [phase, restarts, problem, busy, adding, begin, offer, now, dismiss],
   );
   return <RestartContext.Provider value={value}>{props.children}</RestartContext.Provider>;
 }
@@ -169,8 +175,10 @@ export function RestartProvider(props: { hellos: number; seconds?: number; doneS
 /** The words for where a restart stands, or nothing while there is none. `what` names what waits for it, when known. */
 export function useRestartText(what = ""): string {
   const { t } = useWords();
-  const { phase, problem } = useRestart();
+  const { phase, problem, adding } = useRestart();
   if (phase === "idle") return "";
+  if (adding && phase === "waiting") return t("restart.adding", { name: adding });
+  if (adding && phase === "done") return t("restart.adding_done", { name: adding });
   if (phase === "asking") return what ? `${t("restart.ask")} ${what}` : t("restart.ask");
   if (phase === "waiting") return t("restart.restarting");
   if (phase === "done") return t("restart.done");

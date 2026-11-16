@@ -1541,12 +1541,20 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
             signal(store, "set_aside", [body.mail], f"Always set aside mail like this ({body.choice})")
         return result
 
+    def applied_in_place(done: SettingsSaved) -> SettingsSaved:
+        """The person's own add-on change is used at once: the app replaces itself in place, between requests, when this
+        copy can. Anything else that needs a restart still waits for the person's "Restart now"."""
+        if done.needs_restart and worker.can_restart:
+            worker.request_restart()
+            return done.model_copy(update={"needs_restart": False, "applying": True})
+        return done
+
     # ---- turning add-ons on and off -------------------------------------------------------------------------------
 
     @r.post("/packs/{name}/on")
     def pack_on(name: str, body: FingerprintIn) -> SettingsSaved:
         """Turn on an add-on installed on this computer: it is added to the add-ons that run, with Undo. Its code
-        runs after the restart the person chooses."""
+        runs at once, in place, where this copy can swap itself, else after the restart the person chooses."""
         from engine.plugin_manifest import declared_plugins
 
         if name not in {m.name for m in declared_plugins(ws.config_dir, None)}:
@@ -1557,19 +1565,21 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
         changes = {"workspace.plugins.enabled": [*enabled, name]}
         done = saved(save(changes, [], body.fingerprint, allow=("workspace.plugins.enabled",)))
         setup.decide_addons(ws, [name])
-        return done
+        return applied_in_place(done)
 
     @r.post("/packs/{name}/off")
-    def pack_off(name: str, body: FingerprintIn) -> SettingsSaved:
-        """Turn an add-on off, with Undo: it stops after the restart the person chooses; its records and settings
-        stay."""
+    def pack_off(name: str, body: FingerprintIn, removing: bool = False) -> SettingsSaved:
+        """Turn an add-on off, with Undo: it stops at once, in place, where this copy can swap itself, else after the
+        restart the person chooses; its records and settings stay. With `removing` it is the first step of a removal:
+        the removal that follows is what the app takes in, once, so this step asks for nothing by itself."""
         enabled = list(current().workspace.plugins.enabled)
         setup.decide_addons(ws, [name])
         if name not in enabled:
             # Off already: leaving it off is the person's choice, so the setup step stops asking about it.
             return SettingsSaved(changes=[], fingerprint=body.fingerprint, needs_restart=False)
         changes = {"workspace.plugins.enabled": [n for n in enabled if n != name]}
-        return saved(save(changes, [], body.fingerprint, allow=("workspace.plugins.enabled",)))
+        done = saved(save(changes, [], body.fingerprint, allow=("workspace.plugins.enabled",)))
+        return done if removing else applied_in_place(done)
 
     # ---- catalogs and the read tokens for private release files ---------------------------------------------------
 

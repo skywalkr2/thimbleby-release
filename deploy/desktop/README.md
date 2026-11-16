@@ -53,7 +53,8 @@ Both follow the product's installer design and its mockups; the pictures are dra
 (first time, no template) in the app-data folder (`<data>/thimbleby/workspace`; `THIMBLEBY_WORKSPACE` names another), then starts
 the app on it (`engine/launcher.py`, `engine/appwindow.py`): the server on loopback, the starting window, then the app in
 its own window once the server answers, one instance per workspace (a second open shows the running window), and the
-menu-bar or tray item's menu (see "The window, the menu-bar item and the check in a desktop session"). With arguments it is the `thimbleby` command. A start that fails
+menu-bar or tray item's menu (the server listens through a front that swaps the app in place, so an add-on the person turns on
+is used at once, with no restart and no reload; see "The window, the menu-bar item and the check in a desktop session"). With arguments it is the `thimbleby` command. A start that fails
 writes why to `desktop.log` in the logs folder. Resources are read from the frozen folder; data, logs and add-ons are in the
 user folders, never inside the app.
 

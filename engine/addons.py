@@ -60,6 +60,17 @@ def site_folder() -> Path:
     return folder() / SITE
 
 
+def _from(module: object, place: Path) -> bool:
+    """Whether a loaded module's file is inside the add-ons folder."""
+    where = getattr(module, "__file__", None)
+    if not where:
+        return False
+    try:
+        return Path(where).resolve().is_relative_to(place.resolve())
+    except (OSError, ValueError):
+        return False
+
+
 def activate(configured: str | None = None) -> Path:
     """Put the add-ons folder on the import path (and so on the path add-on entry points are found on), and move any
     add-on installed the old way, into the Python environment, here. Called once at start before add-ons are
@@ -73,6 +84,11 @@ def activate(configured: str | None = None) -> Path:
     except OSError as err:
         log.warning("The add-ons folder %s can't be made (%s); add-ons installed from the app won't load.", place, err)
         return place
+    # An app built again in the same process (an add-on installed, updated or removed) imports its add-ons afresh: the
+    # previous app has stopped, so modules it loaded from this folder are dropped and an updated add-on's new files are
+    # the ones used.
+    for module in [n for n, m in sys.modules.items() if _from(m, place)]:
+        del sys.modules[module]
     if str(place) not in sys.path:
         # Appended, so the app's own packages win. Never `site.addsitedir`: it runs the `import` lines of every `.pth`
         # file in the folder, and installing an add-on must not run anything.
