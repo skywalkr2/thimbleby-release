@@ -262,6 +262,9 @@ jobs:
 
       - name: Get the browser test's packages and browser
         shell: bash
+        env:
+          # One browser folder for this step and the check: the check gives the app an empty home of its own.
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/pw-browsers
         run: |
           npm --prefix web ci
           npm --prefix web exec -- playwright install chromium
@@ -270,6 +273,8 @@ jobs:
         # The built installer, installed on an empty home as a person installs it: first start (the walkthrough, every step
         # skipped, to Today), closed and started again, the same installer put over the installed version, then removed.
         # The work is still there after the removal. It runs after the installer is kept, so a red run still has its download.
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/pw-browsers
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then INSTALLER="$(ls "$PWD"/dist/*.dmg | head -n 1)"; else INSTALLER="$(cygpath -w "$(ls "$PWD"/dist/*-setup.exe | head -n 1)")"; fi

@@ -29,12 +29,18 @@ test("a fresh install opens on the walkthrough and skipping it reaches Today, an
       await name.fill("Sam Example");
       await main.getByRole("button", { name: "Continue" }).click();
     }
+    // Each step's own way on: "I'll do this later" where a step offers it, else its Continue, and on the last step
+    // "Go to Today". Never the header's "Finish later", which leaves setup unfinished. Each click waits for the next
+    // step's heading rather than a fixed time.
     for (let step = 0; step < 30 && !(await today(page).isVisible()); step++) {
-      const skip = main.getByRole("button", { name: /^(I'll do this later|Skip)/ }).first();
-      const next = main.getByRole("button", { name: /^(Continue|Finish|Done|Go to Today)/ }).first();
+      const heading = await main.getByRole("heading", { level: 2 }).first().textContent();
+      const skip = main.getByRole("button", { name: "I'll do this later", exact: true }).first();
+      const next = main.getByRole("button", { name: /^(Continue|Go to Today)$/ }).first();
       if (await skip.isVisible()) await skip.click();
-      else if (await next.isVisible()) await next.click();
-      await page.waitForTimeout(400);
+      else await next.click();
+      await expect
+        .poll(async () => (await today(page).isVisible()) || (await main.getByRole("heading", { level: 2 }).first().textContent()) !== heading, { timeout: 30_000 })
+        .toBe(true);
     }
     await expect(today(page)).toBeVisible({ timeout: 30_000 });
   }
