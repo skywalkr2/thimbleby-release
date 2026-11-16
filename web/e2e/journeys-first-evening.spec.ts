@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { expect } from "@playwright/test";
 import { test } from "./test";
 import { choose } from "./choose";
-import { collectProblems, fakeAddress, openView, pressStart, startOnToday, visit, widerThanWindow, type Info, type Requests, type SignInSeen } from "./journey-helpers";
+import { collectProblems, fakeAddress, openView, pressStart, startOnToday, visit, widerThanWindow, type Info, type Requests, type SignInSeen, pickFolder } from "./journey-helpers";
 import { openScreen, screenReady } from "./open-screen";
 
 const FAKE = fakeAddress("JOURNEY_EVENING_FAKE_PORT", 8761);
@@ -153,7 +153,7 @@ test.describe.serial("journey: a first evening", () => {
     // Backups, then People.
     await expect(main.getByRole("heading", { level: 2, name: "Backups" })).toBeVisible();
     expect(await widerThanWindow(page, "Backups")).toEqual([]);
-    await main.getByLabel("Folder", { exact: true }).fill(info.backup_folder);
+    await pickFolder(page, main, ["offsite"]);
     await main.getByRole("button", { name: "Continue" }).click();
 
     // 5. People by relation.

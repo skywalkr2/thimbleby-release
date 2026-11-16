@@ -1,4 +1,4 @@
-// A service's own reply to a failed read, behind a button and kept to two lines when open (design 7.9): the sentence a person reads is the
+// A service's own reply to a failed read, behind a button and shown whole when open (design 7.9): the sentence a person reads is the
 // app's, and this is for the one who wants the reply word for word. Nothing is drawn when there is no reply to show.
 import { useId, useState } from "react";
 import { failureDetail } from "../lib/sources";

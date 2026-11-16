@@ -1838,6 +1838,9 @@ describe("each screen", () => {
       await waitFor(() => expect(calls.some((c) => c.route === "POST setup/people-paste")).toBe(true));
       expect(calls.find((c) => c.route === "POST setup/people-paste")!.body).toEqual({ text: "Casey Kin\nLee Kin <lee@example.com>\nPat Kin", side: "personal" });
       expect(await screen.findByRole("status")).toHaveTextContent("Added 2 people. You can say how they relate to you in the list above. Already on your list: Pat Kin.");
+      // The preview of what was just added is gone, so the same names are never offered to add twice (H2-06).
+      expect(screen.queryByRole("region", { name: "These will be added" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Add 2 people" })).toBeNull();
     });
 
     test("a pasted list with junk lines shows them as left out and adds only the people, with how they relate", async () => {
@@ -2375,9 +2378,9 @@ describe("Mail and calendar", () => {
     const step = block.closest(".mail-step") as HTMLElement;
     expect(step.firstElementChild).toBe(block);
     expect(within(block).getByText(/Helper is reading: Your inbox and Your calendar\./)).toBeInTheDocument();
-    expect(within(block).getByText(/Nothing is read or spent until you start the assistant on the next screen/)).toBeInTheDocument();
+    expect(within(block).getByText(/Your mail and calendar are fetched when you sign in\. The assistant does not use the AI, and nothing is spent, until you start it on the next screen/)).toBeInTheDocument();
     // That the reading waits for the first Go is said once on the screen, not again in the step's own lead line.
-    expect(screen.getAllByText(/Nothing is read or spent until you start the assistant/)).toHaveLength(1);
+    expect(screen.getAllByText(/Your mail and calendar are fetched when you sign in/)).toHaveLength(1);
     // Exactly one Continue, in the footer on the column's edge like every other step's, not in the body; the list is behind
     // "Connect another" and shows when it is pressed.
     expect(screen.getAllByRole("button", { name: "Continue" })).toHaveLength(1);

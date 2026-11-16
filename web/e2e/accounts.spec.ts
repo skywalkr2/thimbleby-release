@@ -513,7 +513,7 @@ test.describe.serial("several accounts", () => {
     await expect(pick).toHaveAttribute("value", addresses[2]);
   });
 
-  test("R1 / S-0337. a failing account whose server answers in its own long words shows a plain sentence with Sign in again as a button and the server's words only behind Show details, capped at two lines, on every screen that says it failed", async ({
+  test("R1 / S-0337. a failing account whose server answers in its own long words shows a plain sentence with Sign in again as a button and the server's words only behind Show details, shown whole, on every screen that says it failed", async ({
     page,
   }) => {
     test.setTimeout(240_000);
@@ -538,17 +538,24 @@ test.describe.serial("several accounts", () => {
     const sentence = bad.locator("[data-problem-sentence]");
     await expect(sentence).toBeVisible();
     expect((await sentence.innerText()).length, "a sentence, not the reply").toBeLessThan(320);
-    // The details are behind a button, and open to at most two lines of the server's words.
+    // The details are behind a button, and open in full: the last of the server's words is readable, wrapped inside the card (H2-09).
     const show = bad.getByRole("button", { name: "Show details" });
     await expect(show).toBeVisible();
     await show.click();
     const details = bad.locator("[data-problem-details]");
     await expect(details).toContainText("fictional-step");
-    const lines = await details.evaluate((el) => {
-      const style = getComputedStyle(el);
-      return Math.round(el.getBoundingClientRect().height / (parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.3));
+    await expect(details).toContainText("fictional-step-16");
+    const fit = await details.evaluate((el) => {
+      const box = el.getBoundingClientRect();
+      const card = el.closest("[data-need]")!.getBoundingClientRect();
+      return { whole: el.scrollHeight <= Math.ceil(box.height), inside: box.right <= card.right + 1, shown: getComputedStyle(el).webkitLineClamp };
     });
-    expect(lines, "the opened details are at most two lines").toBeLessThanOrEqual(2);
+    expect(fit.whole, "no part of the reply is cut off").toBe(true);
+    expect(fit.inside, "the reply stays inside the card").toBe(true);
+    expect(fit.shown).toBe("none");
+    // One remedy that fits how the account signed in (H2-03): it signed in on the service's page, so there is no password box to name.
+    expect(await bad.locator("[data-problem-sentence]").innerText()).not.toMatch(/app password|password box/i);
+    expect(await bad.locator("[data-problem-sentence]").innerText()).toMatch(/sign in again/i);
     await bad.getByRole("button", { name: "Hide details" }).click();
     expect(await bad.innerText()).not.toMatch(SERVER);
     // The rows under the card, the Read now toast's text and the whole page say none of it.

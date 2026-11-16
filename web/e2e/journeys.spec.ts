@@ -10,7 +10,7 @@ import { expect, type Locator } from "@playwright/test";
 import { test } from "./test";
 import { screenReady } from "./open-screen";
 import { choose } from "./choose";
-import { collectProblems, expectQueueShows, connectedAgain, dismissToasts, fakeAddress, openView, pressStart, visit, type Info, type Requests, FIRST_SCREEN } from "./journey-helpers";
+import { collectProblems, expectQueueShows, connectedAgain, dismissToasts, fakeAddress, openView, pressStart, visit, type Info, type Requests, FIRST_SCREEN, pickFolder } from "./journey-helpers";
 
 const FAKE = fakeAddress("JOURNEY_FAKE_PORT", 8790);
 
@@ -106,7 +106,7 @@ test.describe.serial("journeys", () => {
 
     // Backups: a folder outside the workspace, which is checked before it is saved.
     await expect(main.getByRole("heading", { level: 2, name: "Backups" })).toBeVisible();
-    await main.getByLabel("Folder", { exact: true }).fill(info.backup_folder);
+    await pickFolder(page, main, ["offsite"]);
     await main.getByRole("button", { name: "Continue" }).click();
     await expect(page.locator('[data-screen="backup"][data-state]')).toContainText("Done", { timeout: 30_000 });
     await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible();

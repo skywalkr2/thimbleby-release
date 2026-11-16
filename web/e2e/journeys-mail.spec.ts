@@ -123,7 +123,7 @@ test.describe.serial("journey: mail", () => {
     const reading = main.locator("[data-reading]");
     await expect(reading.getByText("Your inbox")).toBeVisible();
     await expect(reading.getByText("Your calendar")).toBeVisible();
-    await expect(reading.getByText(/Nothing is read or spent until you start the assistant/)).toBeVisible();
+    await expect(reading.getByText(/Your mail and calendar are fetched when you sign in/)).toBeVisible();
     await expect(page.locator('[data-screen="mail"][data-state]')).toContainText("Done");
     await visit(page);
     // The mailbox also holds a social update (the service's own category) and a sales mail (a bulk flag), both from the

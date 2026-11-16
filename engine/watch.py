@@ -290,6 +290,7 @@ def _refresh(ws: Any, store: Any, cfg: Any, source_id: str, now: datetime | None
             ) from None
         poll = _poll(store, connector, settings, state, ws, cfg, now, source.account)
     except ConnectorError as err:
+        err.advice_key = _sign_in_advice(store, source.connector, err.advice_key)
         outcome = {"offline": "offline", "throttled": "throttled"}.get(err.kind, "failed")
         wait = err.retry_after if err.retry_after is not None else source.every_minutes * 60
         _record(
@@ -1337,6 +1338,31 @@ def _advice() -> dict[str, str]:
     return yaml.safe_load(ADVICE_FILE.read_text(encoding="utf-8")) or {}
 
 
+#: The advice that sends the person to a password box: it fits a connection with a password, never one that signed in on
+#: the service's own page.
+PASSWORD_ADVICE = frozenset(
+    f"sources.advice.{key}"
+    for key in ("check_credentials", "check_password", "create_app_password", "review_server_message")
+)
+SIGN_IN_AGAIN = "sources.advice.sign_in_again"
+
+
+def _sign_in_advice(store: Any, connector: str, advice_key: str | None) -> str | None:
+    """The advice a failed read of this connector carries: a connector of an add-on that signs in as the person never
+    sends them to a password box (it has none); it says to sign in again."""
+    if advice_key in PASSWORD_ADVICE and _signs_in(store, connector):
+        return SIGN_IN_AGAIN
+    return advice_key
+
+
+def _signs_in(store: Any, connector: str) -> bool:
+    """Whether this connector belongs to an add-on that signs in as the person on the service's own page."""
+    if "/" not in connector:
+        return False
+    plugin = connector.split("/", 1)[0]
+    return any(sign.plugin == plugin for sign in store.plugins.sign_ins().values())
+
+
 def advice_for(kind: str, advice_key: str | None = None) -> str:
     """What to do about a source that failed: the sentence the connector named by wording key, else the kind's usual
     one. The screen words the same key from its own sheet."""
@@ -1364,6 +1390,10 @@ def _maybe_ask(store: Any, cfg: Any, source: Any, err: ConnectorError) -> str:
     what = f"{where} can't be read: {err.detail}" if own else f"{where} can't be read"
     problem = _problem(what, advice_for(err.kind, err.advice_key))
     if failures_in_a_row(store, source.id) != cfg.watch.failures_before_asking:
+        return problem
+    # A connection that signs in as the person is told on Today as its account's one line, with the button that signs in
+    # again: a question for each of its connections would say the same thing again.
+    if source.account or _signs_in(store, source.connector):
         return problem
     pm = cfg.workspace.user.person
     if not pm or store.read().get("person", pm) is None:

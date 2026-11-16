@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 import type { S } from "../lib/api";
 import { revealOrKeep } from "../lib/reveal";
+import { setSideChoice } from "../lib/sides";
 import { day } from "../lib/dates";
 import { besidePane, fakeApi, renderApp } from "../test-utils";
 import { ChangeRow, WhatChanged } from "./WhatChanged";
@@ -1012,4 +1013,35 @@ test("an email's row and a calendar entry's row have different glyphs in their l
   expect(glyph("REQ-10")).toBeTruthy();
   expect(glyph("REQ-11")).toBeTruthy();
   expect(glyph("REQ-10")).not.toBe(glyph("REQ-11"));
+});
+
+// H2-08: under a side's filter, a change on no side stays listed and says "Every side", so it is never read as that side's own.
+test("under a side's filter a change on no side says Every side, and the side's own change does not", async () => {
+  const WORK = "PRJ-work";
+  setSideChoice(WORK);
+  const own = { ...change("REQ-1", { source_title: "Email from the printer" }), project: WORK };
+  const loose = { ...change("REQ-2", { source_title: "Email from the bank" }), project: null };
+  fakeApi({
+    "GET changes": () => [own, loose],
+    "GET setup/business": () => ({ business: true, name: "Orchard Press", personal: "PRJ-personal", sides: [{ project: WORK, kind: "business", name: "Orchard Press" }], chosen: null }),
+    "GET projects": () => [{ id: WORK, name: "Orchard Press", group: null, status: null, phase: null, target: null, owner: null, owner_name: null, summary: null, language: "en-US", language_own: false, role: "run", completed: false, spent_usd: 0, open_actions: 0, open_questions: 0, no_end: true }],
+    "GET views": () => [],
+    ...QUIET,
+  });
+  renderApp(<WhatChanged />);
+  const row = await screen.findByRole("listitem", { name: "Email from the bank" });
+  expect(within(row).getByText(/Every side/)).toBeInTheDocument();
+  expect(within(screen.getByRole("listitem", { name: "Email from the printer" })).queryByText(/Every side/)).toBeNull();
+  setSideChoice("all");
+});
+
+// H2-11: the number on the side menu's entry is a number the screen names in the same words.
+test("the count the side menu shows for What changed is said on the screen in the same words", async () => {
+  fakeApi({
+    "GET changes": () => [change("REQ-1")],
+    "GET waiting": () => ({ changed: { total: 5, new: 0 }, handled: { total: 0, new: 0 }, followups: { total: 0, new: 0 }, open: { total: 0, new: 0 } }),
+    ...QUIET,
+  });
+  renderApp(<WhatChanged />);
+  expect(await screen.findByText("5 changes not yet checked")).toBeInTheDocument();
 });

@@ -58,8 +58,9 @@ def prepare(state: Path) -> Workspace:
     """A clean state folder holding the workspace `cockpit init` makes, and the two folders the journeys use."""
     shutil.rmtree(state, ignore_errors=True)
     state.mkdir(parents=True)
-    for name in ("offsite", "source"):
-        (state / name).mkdir()
+    # `home` is the app's home folder, where the folder chooser starts: it holds the backup folder, not the workspace.
+    (state / "home" / "offsite").mkdir(parents=True)
+    (state / "source").mkdir()
     path = state / "workspace"
     if cockpit(["init", str(path)]) != 0:
         raise SystemExit("cockpit init failed")
@@ -143,7 +144,10 @@ def main() -> None:
     info = {
         "token": "e2e-token",
         "workspace": str(ws.root),
-        "backup_folder": str(state / "offsite"),
+        # The app's home folder is `home` in the state folder, so the folder chooser starts there and the person picks
+        # `offsite` from its list: the way to a folder is never typed.
+        "home": str(state / "home"),
+        "backup_folder": str(state / "home" / "offsite"),
         "source_folder": str(state / "source"),
     }
     python = Path(sys.executable)
@@ -174,6 +178,7 @@ def main() -> None:
             os.dup2(log.fileno(), 2)
     # Always through the test serve command: it pins this token as the app's install token and as a session value.
     os.environ["E2E_INSTALL_TOKEN"] = info["token"]
+    os.environ["HOME"] = info["home"]
     module = "tests.e2e_serve"
     command = [str(python), "-m", module, "serve", "-w", str(ws.root), "--port", str(args.port), "--no-open"]
     sys.stdout.flush()

@@ -37,6 +37,15 @@ export function alreadyOut(client: QueryClient, once: string): boolean {
   return (out.get(client)?.get(once) ?? 0) > 0;
 }
 
+/** How long after a write answered the same press, asked again, is the person's own second press of a double press. */
+const DOUBLE_PRESS_MS = 700;
+
+/** Whether a write with this name answered within the time of a double press: a press now is the second press of that one. */
+export function justAnswered(client: QueryClient, once: string): boolean {
+  const at = done.get(client)?.get(once);
+  return at !== undefined && Date.now() - at < DOUBLE_PRESS_MS;
+}
+
 /** Whether a write with this name answered a moment ago: a refusal of "changed since you read it" is then the person's own second press. */
 export function justDone(client: QueryClient, once: string): boolean {
   const at = done.get(client)?.get(once);

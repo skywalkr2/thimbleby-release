@@ -4,11 +4,14 @@ import { createContext, useCallback, useContext } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "./api";
 import { useFailedSaves, useToasts, type ToastInput } from "./toasts";
-import { alreadyOut, justDone, runWrite, type WriteOptions } from "./write";
+import { alreadyOut, justAnswered, justDone, runWrite, type WriteOptions } from "./write";
 import { useWords } from "./wording";
 
 /** What an action names about its write: the order key and the families to read again (none named reads everything). */
 export type ActWrites = Pick<WriteOptions<unknown>, "key" | "touches" | "kinds" | "once"> & {
+  /** With `once`: a press asked again within a double press's time after the first answered is ignored too, for an act that records
+   * something each time it is done (a chase), so a double press never records it twice. */
+  settle?: boolean;
   /** Where a failure is shown: the thing's key (the row's) and its name in the person's words. A failed save is then named beside that row, with Try again, instead of a toast. */
   fail?: { id: string; what: string };
 };
@@ -33,7 +36,7 @@ export function useAct() {
     ): Promise<T | undefined> {
       const writes: ActWrites = given.once === undefined && scope !== null ? { ...given, once: `scope:${scope}` } : given;
       // A second press of the same thing while the first is out does nothing: the change is sent once.
-      if (writes.once !== undefined && alreadyOut(client, writes.once)) return undefined;
+      if (writes.once !== undefined && (alreadyOut(client, writes.once) || (writes.settle && justAnswered(client, writes.once)))) return undefined;
       try {
         const result = await runWrite(client, run, {
           key: writes.key,

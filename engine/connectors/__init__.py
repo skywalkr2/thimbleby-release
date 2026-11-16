@@ -187,6 +187,10 @@ class Poll:
     unreadable: list[Unreadable] = field(default_factory=list)
 
 
+#: The most of a service's own reply a connector error keeps: enough to read a long one whole behind Show details.
+DETAIL_MAX = 4000
+
+
 class ConnectorError(Exception):
     """Why a read failed. `kind`: auth (sign in again), no_access, not_found, outage (the service is failing),
     offline (no network here: never counted as a failure), or throttled (the service asked to wait: `retry_after`
@@ -209,7 +213,7 @@ class ConnectorError(Exception):
     ):
         self.kind = kind
         self.advice_key = advice_key
-        self.detail = detail[:500]
+        self.detail = detail[:DETAIL_MAX]
         self.retry_after = retry_after
         self.status = status
         self.headers = dict(headers or {})

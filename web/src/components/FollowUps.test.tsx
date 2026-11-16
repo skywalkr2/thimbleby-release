@@ -322,6 +322,21 @@ test("Mark sent records the box's text and offers Undo", async () => {
   );
 });
 
+// H2-02: the button turns into Mark sent under the cursor once it has copied; the second click of a double click must not press it.
+test("a double click on Copy copies once and never marks the message sent", async () => {
+  const user = userEvent.setup();
+  const calls = fakeApi(markSentRoutes);
+  renderApp(<FollowUps />);
+  await user.click(await screen.findByRole("button", { name: /^Robin Sample/ }));
+  await user.dblClick(underBox());
+  expect(await screen.findAllByRole("button", { name: "Mark sent" })).toHaveLength(1);
+  expect(calls.some((c) => c.route === "POST followups/PER-2/mark-sent")).toBe(false);
+  expect(screen.queryByText("Marked as sent to Robin Sample")).toBeNull();
+  // A later, deliberate press is the next step.
+  await user.click(screen.getAllByRole("button", { name: "Mark sent" })[0]);
+  await waitFor(() => expect(calls.some((c) => c.route === "POST followups/PER-2/mark-sent")).toBe(true));
+});
+
 test("the row menu's Mark sent works without copying", async () => {
   const user = userEvent.setup();
   const calls = fakeApi(markSentRoutes);
@@ -531,6 +546,19 @@ test("Followed up records the chase, says so on the row and can be undone", asyn
       previous_told: "2026-10-09",
     }),
   );
+});
+
+// H2-01: two presses fast send one record, so the one Undo takes it all back.
+test("Followed up pressed twice fast records the chase once", async () => {
+  const user = userEvent.setup();
+  const calls = fakeApi({ "GET followups": () => chaseSections(), "GET people": () => [], ...finishRoutes });
+  renderApp(<FollowUps />);
+  await user.click(await screen.findByRole("button", { name: "Waiting on them" }));
+  const button = screen.getByRole("button", { name: "Followed up" });
+  await user.dblClick(button);
+  await waitFor(() => expect(calls.some((c) => c.route === "POST followups/PER-2/actions/ACT-1/followed-up")).toBe(true));
+  await screen.findByText("Recorded your follow-up with Robin. It stays open.");
+  expect(calls.filter((c) => c.route === "POST followups/PER-2/actions/ACT-1/followed-up")).toHaveLength(1);
 });
 
 test("a followed-up row shows when, and the menu can chase again", async () => {

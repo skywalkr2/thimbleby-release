@@ -44,6 +44,8 @@ export function usePromiseChoices(line: Line, onClosed?: () => void): PromiseCho
         message: noted(t("toast.action_done"), result.request),
         undo: () => api.actionStatus(action, "open"),
       }),
+      undefined,
+      { once: `followed-up:${action}`, settle: true },
     );
   const followedUp = (note?: string) =>
     act(
@@ -52,6 +54,8 @@ export function usePromiseChoices(line: Line, onClosed?: () => void): PromiseCho
         message: noted(t("toast.followed_up", { name: first }), result.request),
         undo: () => api.unfollow(person ?? "", action, { on: result.on, previous_told: result.previous_told }),
       }),
+undefined,
+      { once: `followed-up:${action}`, settle: true },
     );
   const close = () => {
     setDating(false);

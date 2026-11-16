@@ -17,6 +17,7 @@ import { showRow, useReveal } from "../lib/reveal";
 import { recordView, viewHref } from "../lib/views";
 import { useEstimate, useSpent } from "../lib/money";
 import { useSetAside } from "../lib/set-aside";
+import { useWaiting, waitingUnder } from "../lib/waiting";
 import { useActSaved } from "../lib/settings-save";
 import { useQueue, useTodayCount } from "../lib/today";
 import { useFactLine } from "../lib/fact-line";
@@ -81,7 +82,11 @@ export function WhatChanged(props: { compact?: boolean; onOpenGuide?: (step: str
   const own = useOwnRequests();
   const stageToday = useStageToday();
   // What waits for the person is on Today; this screen says how much, once, and links there.
-  const waitingOnToday = useTodayCount();
+  // The count is the one Today shows under the same side choice, so the line and the screen it opens agree.
+  const waitingOnToday = useTodayCount(useSideFilter().picked);
+  // The number the side menu shows on this screen, said in the same words, so the badge is a number the screen names too.
+  const sideChoice = useSideFilter().choice;
+  const notChecked = waitingUnder(useWaiting()?.changed, sideChoice);
   const [filter, setFilter] = useState<Filter>("all");
   const [shown, setShown] = useState<Set<string> | null>(null);
   const [announce, setAnnounce] = useState("");
@@ -237,8 +242,9 @@ export function WhatChanged(props: { compact?: boolean; onOpenGuide?: (step: str
       <p className="sr" aria-live="polite">
         {announce}
       </p>
-      {((waitingOnToday !== null && waitingOnToday > 0) || handledCount > 0) && (
+      {((waitingOnToday !== null && waitingOnToday > 0) || handledCount > 0 || notChecked > 0) && (
         <p className="hint summary" data-changes-summary="">
+          {notChecked > 0 && <span data-not-checked="">{tn("nav.count.changed", notChecked)}</span>}
           {waitingOnToday !== null && waitingOnToday > 0 && (
             <span data-waiting-on-today="">
               {tn("changes.waiting_on_today", waitingOnToday)} <ButtonLink variant="quiet" size="sm" href={viewHref("today")}>{t("changes.open_today")}</ButtonLink>
@@ -593,6 +599,13 @@ const folded = (item: S["ChangeItem"]): boolean => (item.edits ?? []).length > 1
 /** "You changed Pay the deposit 5 times": the title of a row of folded edits. */
 const editsTitle = (item: S["ChangeItem"], t: T): string => t("changes.you_changed", { name: shortTitle(item.edited ?? "") || t("changes.untitled"), n: (item.edits ?? []).length });
 
+/** Whether a row on this project is on no side while one side's filter is on: it shows under every choice, and says so. */
+function useEverySide(project: string | null | undefined): boolean {
+  const side = useSideFilter();
+  const sideOf = useSideOf();
+  return side.choice !== "all" && sideOf(project) === null;
+}
+
 /** One row for the person's own edits of one item on one day; choosing it lists the edits in the detail, each a change of its own
  * with its own Undo. */
 function FoldedListRow(props: { item: S["ChangeItem"]; choice: ListChoice; reveal: number }) {
@@ -604,6 +617,7 @@ function FoldedListRow(props: { item: S["ChangeItem"]; choice: ListChoice; revea
   }, [props.reveal]);
   useRowKeys(ref, { toggle: () => choice.enter(item.id) });
   const title = editsTitle(item, t);
+  const everySide = useEverySide(item.project);
   return (
     <ExpandableRow
       ref={ref}
@@ -611,7 +625,7 @@ function FoldedListRow(props: { item: S["ChangeItem"]; choice: ListChoice; revea
       {...choice.rowProps(item.id)}
       title={title}
       titleId={`t-${item.id}`}
-      meta={t("changes.edits_sub", { edits: tn("changes.edits", (item.edits ?? []).length), when: dayAndTime(item.created_at) })}
+      meta={[t("changes.edits_sub", { edits: tn("changes.edits", (item.edits ?? []).length), when: dayAndTime(item.created_at) }), everySide ? t("queue.every_side") : ""].filter(Boolean).join(" · ")}
       expand={{ expanded: choice.chosen === item.id, inert: choice.chosen === item.id, onToggle: () => choice.choose(item.id) }}
     />
   );
@@ -672,7 +686,9 @@ function SingleChangeListRow(props: ChangeListRowProps) {
   const sub = useChangeSub(item);
   // A title written "Kind from Sender · Subject" leads with what is distinct, the subject; the kind and the sender go to the meta.
   const { subject, lead } = leadWithSubject(title, withTopicJoin(t));
-  const base = lead ? `${lead} · ${sub}` : sub;
+  // Under one side's filter, a change on no side says so, so it is never read as that side's.
+  const everySide = useEverySide(item.project);
+  const base = [lead ? `${lead} · ${sub}` : sub, everySide ? t("queue.every_side") : ""].filter(Boolean).join(" · ");
   const subLine = props.accounts && props.accounts.length > 1 ? `${base} · ${t("changes.twin", { accounts: props.accounts.join(", ") })}` : base;
   useEffect(() => {
     if (props.reveal) showRow(ref.current);

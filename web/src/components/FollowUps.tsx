@@ -421,6 +421,7 @@ function FollowListRow(props: {
   const days = [...questions.map((q) => q.waiting_days), ...actions.map((a) => a.told_days)].filter((d): d is number => d !== null);
   const oldest = days.length ? Math.max(...days) : null;
   const chase = questions.some((q) => q.chase_due) || actions.some((a) => a.chase_due);
+  const soonToSend = s.is_pm ? 0 : s.actions.filter((a) => isDueSoon(a) && a.to_send).length;
   const name = s.name;
   // A batch that has waited says since when ("ready since Tue"), so a stale one shows; one ready today says nothing of it.
   const since = sinceDay(s.ready_since, new Date());
@@ -430,7 +431,13 @@ function FollowListRow(props: {
       ? sinceText(tn("followups.to_send", s.to_send))
       : kind === "later"
         ? tn("followups.later_count", (s.later ?? []).length)
-        : tn("followups.waiting_count", questions.length + actions.length);
+        : [
+            tn("followups.waiting_count", questions.length + actions.length),
+            // The panel also lists the not yet sent to-dos that are due soon, in a band of their own: the line counts them too.
+            soonToSend > 0 ? tn("followups.due_soon.title", soonToSend) : "",
+          ]
+            .filter(Boolean)
+            .join(" · ");
   // The line's keys and button reach the person's message in the detail once it is shown there. Until then they show it, with
   // the cursor in the message, and the next press is the one that acts.
   const showFirst = () => {
@@ -481,7 +488,7 @@ function FollowListRow(props: {
       // The detail holds the one Copy: a line only opens it (its keys still copy), so the same action is never in view twice.
       primary={
         kind === "send" && props.compact ? (
-          <Button variant="primary" onClick={() => toDetail("primary")}>
+          <Button variant="primary" onClick={(e) => (props.copied && e.detail > 1 ? undefined : toDetail("primary"))}>
             {props.copied ? t("followups.mark_sent") : t("followups.copy_message")}
           </Button>
         ) : undefined
@@ -731,6 +738,8 @@ export function PersonSection(props: { section: S["FollowupSection"]; open?: boo
         message: t("toast.marked_sent", { name: s.name }),
         undo: () => api.unmarkSent(s.person, { question_ids: counts.question_ids, action_ids: counts.action_ids }),
       }),
+undefined,
+      { once: `mark-sent:${s.person}`, settle: true },
     );
     if (result) {
       setDraft(null);
@@ -743,6 +752,9 @@ export function PersonSection(props: { section: S["FollowupSection"]; open?: boo
   // (with the cursor in it) and the next Copy is the one that copies.
   const copyShown = () => void (!open ? edit() : view === "table" ? copyTable() : copy());
   const primary = () => void (copied ? markSent() : copyShown());
+  // The button turns into Mark sent under the cursor once it has copied: the second click of a double click is Copy's own, never
+  // the next step, so nothing is marked sent that was not sent.
+  const press = (e: { detail: number }) => (copied && e.detail > 1 ? undefined : primary());
   const hold = useHoldFor(questions, s.person);
   const menu: MenuAction[] = [
     { id: "edit", label: t("followups.edit"), run: edit },
@@ -762,7 +774,7 @@ export function PersonSection(props: { section: S["FollowupSection"]; open?: boo
 
   const buttons = (
     <Actions>
-      <Button variant="primary" onClick={primary}>
+      <Button variant="primary" onClick={press}>
         {copied ? t("followups.mark_sent") : t("followups.copy_message")}
       </Button>
       <RowMenu label={s.name} actions={menu} />
@@ -842,7 +854,7 @@ export function PersonSection(props: { section: S["FollowupSection"]; open?: boo
                       {t("followups.mark_sent")}
                     </Button>
                   )}
-                  <Button variant="primary" onClick={primary} disabled={!!s.withheld}>
+                  <Button variant="primary" onClick={press} disabled={!!s.withheld}>
                     {copied ? t("followups.mark_sent") : t("followups.copy_message")}
                   </Button>
                 </Actions>
@@ -870,7 +882,7 @@ export function PersonSection(props: { section: S["FollowupSection"]; open?: boo
       meta={tn("followups.to_send", s.to_send)}
       expand={{ expanded: open, onToggle: () => setOpen(!open) }}
       primary={
-        <Button variant="primary" onClick={primary}>
+        <Button variant="primary" onClick={press}>
           {copied ? t("followups.mark_sent") : t("followups.copy_message")}
         </Button>
       }
@@ -1046,6 +1058,8 @@ function NudgeCard(props: { section: S["FollowupSection"]; nudge: S["NudgeView"]
             signal_at: result.signal_at ?? null,
           }),
       }),
+undefined,
+      { once: `nudge-sent:${s.person}`, settle: true },
     );
     if (done) {
       setDraft(null);
@@ -1261,6 +1275,8 @@ function WaitingAction(props: { action: S["FollowupAction"]; person: string; nam
         message: noted(t("toast.they_finished", { name: first }), result.request),
         undo: () => api.actionStatus(a.id, "open"),
       }),
+      undefined,
+      { once: `followed-up:${a.id}`, settle: true },
     );
   const followedUp = (note?: string) =>
     act(
@@ -1269,6 +1285,8 @@ function WaitingAction(props: { action: S["FollowupAction"]; person: string; nam
         message: noted(t("toast.followed_up", { name: first }), done.request),
         undo: () => api.unfollow(props.person, a.id, { on: done.on, previous_told: done.previous_told }),
       }),
+undefined,
+      { once: `followed-up:${a.id}`, settle: true },
     );
   const chase = a.chase_due;
   const hold = useHold(a);

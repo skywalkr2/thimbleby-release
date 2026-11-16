@@ -129,7 +129,15 @@ export function WelcomeBackup(props: {
     }
   };
 
-  const missing = looking ? t("welcome.backup.looking") : ownFolder && !path.trim() ? t("welcome.backup.why_path") : !settings.data ? t("welcome.backup.getting_ready") : "";
+  // A folder the check refused holds Continue, with the reason under the box once: the press never has to find it out again.
+  const refused = ownFolder && !!checked && !checked.ok;
+  const missing = looking
+    ? t("welcome.backup.looking")
+    : ownFolder && !path.trim()
+      ? t("welcome.backup.why_path")
+      : refused
+        ? t("welcome.backup.why_refused")
+        : !settings.data ? t("welcome.backup.getting_ready") : "";
   useContinue(hasSlot ? { run: save, label: t("welcome.backup.go"), disabled: !!missing, why: missing } : null);
 
   return (
@@ -193,6 +201,9 @@ export function WelcomeBackup(props: {
                   id="backup-path"
                   type="text"
                   value={path}
+                  // On the person's own computer the folder is picked from the list, never typed; only where the app cannot list
+                  // folders (a hosted install) is the address a typed one.
+                  readOnly={props.local}
                   autoComplete="off"
                   aria-describedby="backup-path-hint"
                   // The folder is checked as soon as the person leaves the box (or presses Enter), with the result in words under it.
@@ -237,7 +248,7 @@ export function WelcomeBackup(props: {
             </div>
           </>
         )}
-        {problem && (
+        {problem && !(refused && problem === checked?.problem) && (
           <p className="problem-note" role="alert">
             {problem}
           </p>

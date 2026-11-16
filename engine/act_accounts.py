@@ -80,7 +80,9 @@ def known(store: Any, cfg: Any) -> list[AccountInfo]:
     for source in cfg.watch.sources:
         if source.connector == MAILBOX:
             found.append(_info(cfg, account_id(MAILBOX, source.id), source.label or source.id))
-    return found
+    # A fixed order, by what the person reads: signing an account in again (the wider sign-in) rewrites its stored
+    # sign-in, which must never move its row under the pointer.
+    return sorted(found, key=lambda a: (a.label.casefold(), a.id))
 
 
 def _info(cfg: Any, account: str, label: str) -> AccountInfo:

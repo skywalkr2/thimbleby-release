@@ -4,7 +4,7 @@
 // first Start is pressed on Today, the assistant's scripted answer to the message is one to-do, and To-dos shows it once.
 import { expect } from "@playwright/test";
 import { test } from "./test";
-import { collectProblems, fakeAddress, pressStart, startOnToday, type Info } from "./journey-helpers";
+import { collectProblems, fakeAddress, pressStart, startOnToday, type Info, pickFolder } from "./journey-helpers";
 
 const FAKE = fakeAddress("JOURNEY_THREE_FAKE_PORT", 8721);
 const LOADED = { timeout: 60_000 };
@@ -69,8 +69,7 @@ test.describe.serial("journey: one sent message in three mailboxes", () => {
     expect(scripted.ok).toBe(true);
     await main.getByRole("button", { name: "Continue" }).click();
     await expect(main.getByRole("heading", { level: 2, name: "Backups" })).toBeVisible(LOADED);
-    await main.getByLabel("Folder", { exact: true }).fill(info.backup_folder);
-    await main.getByLabel("Folder", { exact: true }).blur();
+    await pickFolder(page, main, ["offsite"]);
     await expect(main.getByText(/That folder works/)).toBeVisible(LOADED);
     await main.getByRole("button", { name: "Continue" }).click();
     // With three accounts still being read, the settings can change under the step (the app says so); pressing Continue again goes on.
@@ -82,8 +81,7 @@ test.describe.serial("journey: one sent message in three mailboxes", () => {
       await expect(main.getByRole("heading", { level: 2, name: "Backups" })).toBeVisible(LOADED);
       const folder = main.getByLabel("Folder", { exact: true });
       if ((await folder.inputValue()) === "") {
-        await folder.fill(info.backup_folder);
-        await folder.blur();
+        await pickFolder(page, main, ["offsite"]);
         await expect(main.getByText(/That folder works/)).toBeVisible(LOADED);
       }
       await main.getByRole("button", { name: "Continue" }).click();

@@ -139,12 +139,46 @@ def test_a_mailbox_with_a_sent_folder_lists_the_persons_own_message_only_there(s
     inbox = subjects()
     assert subjects(folder=fake_services.SENT_FOLDER) == set()  # a mailbox with no sent mail has an empty sent folder
     state.sent_mail = True
-    assert subjects(folder=fake_services.SENT_FOLDER) == {fake_services.SENT_SUBJECT}
-    assert subjects(folder="inbox") == inbox and fake_services.SENT_SUBJECT not in inbox
+    sent_subjects = {m["subject"] for m in fake_services.sent_messages(state.moment)}
+    assert subjects(folder=fake_services.SENT_FOLDER) == sent_subjects
+    assert fake_services.SENT_SUBJECT in sent_subjects and len(sent_subjects) > 1
+    assert subjects(folder="inbox") == inbox and not sent_subjects & inbox
     from datetime import UTC, datetime
 
     taken = fake_services.intake_items(datetime.now(UTC))
-    assert taken["sent"] == [fake_services.SENT_SUBJECT] and fake_services.SENT_SUBJECT not in taken["mail"]
+    assert set(taken["sent"]) == sent_subjects and not sent_subjects & set(taken["mail"])
+
+
+def test_the_sent_folder_holds_several_messages_to_several_people_most_to_the_first(service):
+    state, _client = service
+    sent = fake_services.sent_messages(state.moment)
+    tally: dict[str, int] = {}
+    for m in sent:
+        for to in m["recipients"]:
+            if "responses+" not in to:
+                tally[to] = tally.get(to, 0) + 1
+    counts = list(tally.values())
+    assert len(counts) >= 3 and counts == sorted(counts, reverse=True) and len(set(counts)) == len(counts)
+    assert all(to.endswith("@example.com>") or "example.com" in to for m in sent for to in m["recipients"])
+
+
+def test_the_notice_flag_adds_a_bulk_updates_notice_to_the_person_alone_and_a_mailing_to_many(service):
+    state, client = service
+    headers = {"Authorization": f"Bearer {exchange(client, code_from(sign_in_page(client))).json()['access_token']}"}
+
+    def inbox():
+        return {m["subject"]: m for m in client.get("/mail/v1/messages", headers=headers).json()["messages"]}
+
+    assert fake_services.NOTICE_SUBJECT not in inbox()
+    state.notice_mail = True
+    got = inbox()
+    alone, many = got[fake_services.NOTICE_SUBJECT], got[fake_services.MAILING_SUBJECT]
+    assert alone["bulk"] and alone["categories"] == ["updates"] and "recipients" not in alone
+    assert many["bulk"] and len(many["recipients"]) == 2
+    from datetime import UTC, datetime
+
+    taken = fake_services.intake_items(datetime.now(UTC), notice=True)
+    assert fake_services.NOTICE_SUBJECT in taken["mail"] and fake_services.MAILING_SUBJECT in taken["set_aside"]
 
 
 def test_a_review_counts_only_the_items_that_hold_something_to_check():

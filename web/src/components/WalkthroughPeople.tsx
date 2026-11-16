@@ -254,9 +254,10 @@ function PasteList(props: { place: Place; sided: boolean }) {
       const done = await api.pastePeople({ text, ...where });
       const added = done.added.length > 0 ? tn("walkthrough.people.paste.added", done.added.length) : t("walkthrough.people.paste.none");
       setResult([added, done.skipped.length > 0 ? t("walkthrough.people.paste.skipped", { names: done.skipped.join(", ") }) : ""].filter(Boolean).join(" "));
-      // Text pasted or typed since the paste was sent stays, with its own preview.
+      // The preview is of what was just added, and the text can't be changed while it shows: it closes, so the same names are never
+      // offered twice. Text typed since stays.
       clearIfUnchanged(setText, pasted);
-      if (field.current?.value === pasted) setPreview(null);
+      setPreview(null);
       await client.invalidateQueries({ queryKey: ["people"] });
       await client.invalidateQueries({ queryKey: ["people-suggestions"] });
       await client.invalidateQueries({ queryKey: ["setup"] });

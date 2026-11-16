@@ -20,6 +20,8 @@ export interface Info {
   people: string[];
   projects: string[];
   backup_folder: string;
+  /** The folder the app calls home: the folder chooser starts there. */
+  home: string;
   source_folder: string;
   workspace: string;
   https_base: string;
@@ -57,6 +59,8 @@ export interface SignInSeen {
   /** The titles a first read hands the assistant (work messages and events within a day of now), the mail the app sets
    * aside by what the service says about it, and what it only notes. */
   recent_items: { mail: string[]; events: string[]; noted: string[]; set_aside: string[] };
+  /** With the notice mail on: the subject of a notice written to the person alone, and of a mailing to many. */
+  notice?: { alone: string; many: string };
   /** What a quiet first read (the sources a sign-in starts) takes in: the work messages of the last 14 days and every event,
    * the mail the app sets aside by what the service says about it, and what is older than that, which it only notes. */
   intake_items: {
@@ -68,6 +72,8 @@ export interface SignInSeen {
     noted: string[];
     set_aside: string[];
     sent: string[];
+    /** The sent mail that holds something to look over: what the sent-mail source's review line counts. */
+    sent_to_check: string[];
   };
 }
 
@@ -332,4 +338,20 @@ export async function pickPersonalIfSides(page: Page): Promise<void> {
     await button.click();
     await page.getByRole("dialog").locator("[data-side-option]").filter({ hasText: /^Personal$/ }).click();
   }
+}
+
+
+/** Picks a folder the way a person does: opens "Choose a folder" in `scope`, starts from the home folder, opens each folder of
+ * `way` in turn and uses the one shown. The box itself takes no typing, so a path is never filled in. */
+export async function pickFolder(page: Page, scope: Locator, way: string[]) {
+  await scope.getByRole("button", { name: "Choose a folder" }).click();
+  const dialog = page.getByRole("dialog", { name: "Choose a folder" });
+  const trail = dialog.getByRole("navigation", { name: "Where you are" });
+  await expect(trail).toBeVisible({ timeout: 15_000 });
+  // A list that opens where the folder already chosen is starts again from the top of the way.
+  const first = trail.getByRole("button").first();
+  if (await first.isVisible().catch(() => false)) await first.click();
+  for (const name of way) await dialog.getByRole("button", { name, exact: true }).click();
+  await dialog.getByRole("button", { name: "Use this folder" }).click();
+  await expect(dialog).toHaveCount(0);
 }

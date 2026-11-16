@@ -436,7 +436,7 @@ export const allServers = [
     // The new-start journey changes nothing by hand: the catalog is named through the environment, and what the app
     // prints is kept so the restarts can be counted.
     freshServer(newStart, "--add-ons --catalog-by-environment --log"),
-    fakeServices(newStart, "--catalog journey_mail --sent-mail"),
+    fakeServices(newStart, "--catalog journey_mail --sent-mail --notice-mail"),
     // The same start as the new-start journey: the mail add-on is installed from the catalog, which restarts the app once.
     freshServer(rough, "--add-ons --catalog-by-environment --log"),
     fakeServices(rough, "--catalog journey_mail --sent-mail"),

@@ -24,6 +24,8 @@ import {
   type Requests,
   type SignInSeen,
   FIRST_SCREEN,
+  openView,
+  pickFolder,
 } from "./journey-helpers";
 
 const FAKE = fakeAddress("JOURNEY_NEW_START_FAKE_PORT", 8794);
@@ -158,20 +160,27 @@ test.describe.serial("journey: new start", () => {
     let seen = await service();
     expect(seen).toMatchObject({ authorizations: 1, exchanges: 1, refused: 0 });
     expect(page.url()).not.toMatch(/code=|state=|sign_in=/);
-    // The screen says what is read now, and that what it reads Nothing is read or spent until you start the assistant.
+    // The screen says what is read now, and that it is fetched at sign-in and the AI is not used or paid until Start.
     const reading = main.locator("[data-reading]");
     await expect(reading.getByText("Your inbox")).toBeVisible();
     await expect(reading.getByText("Your calendar")).toBeVisible();
-    await expect(reading.getByText(/Nothing is read or spent until you start the assistant/)).toBeVisible();
+    await expect(reading.getByText(/Your mail and calendar are fetched when you sign in/)).toBeVisible();
     await expect(page.locator('[data-screen="mail"][data-state]')).toContainText("Done");
     await visit(page);
     expect((await requests()).work).toBe(0);
     const { mail: recentMail, events: recentEvents, noted: recentNoted } = seen.recent_items;
+    // S-0519: the inbox holds a bulk notice filed under updates and written to me alone (no one else listed on it), and a mailing
+    // of the same kind to many. The notice is handed in as work; the mailing is set aside.
+    const notice = seen.notice!;
+    expect(seen.intake_items.mail).toContain(notice.alone);
+    expect(seen.intake_items.set_aside).not.toContain(notice.alone);
+    expect(seen.intake_items.set_aside).toContain(notice.many);
+    expect(seen.intake_items.mail).not.toContain(notice.many);
     expect(recentMail.length).toBeGreaterThan(0);
     expect(recentNoted.length).toBeGreaterThan(0);
     // The look back takes in the last 14 days of work mail and every event, so each is counted once below.
     // The sign-in also names the account's sent mail, which is read with the inbox and credited to me, with no folder chosen.
-    const { mail, events, noted, sent, mail_to_check: mailToCheck, events_to_check: eventsToCheck } = seen.intake_items;
+    const { mail, events, noted, sent, sent_to_check: sentToCheck, mail_to_check: mailToCheck, events_to_check: eventsToCheck } = seen.intake_items;
     expect(sent.length).toBeGreaterThan(0);
     const handedIn = mail.length + events.length + sent.length;
     expect(handedIn).toBeGreaterThan(recentMail.length + recentEvents.length);
@@ -233,7 +242,7 @@ test.describe.serial("journey: new start", () => {
 
     // 6. Backups: a folder outside the workspace, checked before it is saved.
     await expect(main.getByRole("heading", { level: 2, name: "Backups" })).toBeVisible();
-    await main.getByLabel("Folder", { exact: true }).fill(info.backup_folder);
+    await pickFolder(page, main, ["offsite"]);
     await main.getByRole("button", { name: "Continue" }).click();
     await expect(page.locator('[data-screen="backup"][data-state]')).toContainText("Done");
     // Choosing the folder makes the first backup at once, and Continue goes on to People.
@@ -248,6 +257,12 @@ test.describe.serial("journey: new start", () => {
     await expect(suggested).toContainText("Taylor Brandt", { timeout: 60_000 });
     await expect(suggested).toContainText("Morgan Voss");
     await expect(suggested).not.toContainText(/responses|8c4261ed|replies\./i);
+    // S-0520: the sent folder holds several messages to several people, and the one written to most comes first, then the next,
+    // then the one written to once.
+    await expect(suggested).toContainText("Jordan Hale");
+    const listed = await suggested.innerText();
+    expect(listed.indexOf("Taylor Brandt"), "most written to first").toBeLessThan(listed.indexOf("Morgan Voss"));
+    expect(listed.indexOf("Morgan Voss")).toBeLessThan(listed.indexOf("Jordan Hale"));
     await visit(page);
     await main.getByRole("button", { name: "I'll do this later" }).click();
 
@@ -286,7 +301,8 @@ test.describe.serial("journey: new start", () => {
     // 9. The recent mail is on Came in within seconds; what is older isn't.
     const came = page.getByRole("region", { name: "Came in" });
     await expect(came.getByText(recentMail[0])).toBeVisible({ timeout: 10_000 });
-    for (const title of recentMail) await expect(came.getByText(title, { exact: true })).toBeVisible();
+    // Came in lists the first few rows; the notice (S-0519) is proven below by what the assistant was handed and by Handled for you.
+    for (const title of recentMail.filter((t) => t !== notice.alone).slice(0, 3)) await expect(came.getByText(title, { exact: true })).toBeVisible();
     // Which day a meeting falls on is the Schedule's own check (schedule.spec.ts); a journey that crosses midnight must not depend on it.
     for (const title of recentNoted) await expect(came.getByText(title, { exact: true })).toHaveCount(0);
     await visit(page);
@@ -299,7 +315,7 @@ test.describe.serial("journey: new start", () => {
     await expectFoundLine(found.filter({ hasText: "Your inbox" }), "your inbox", mailToCheck.length);
     await expectFoundLine(found.filter({ hasText: "Your calendar" }), "your calendar", eventsToCheck.length);
     // The sent mail is its own source, so it has its own line.
-    await expectFoundLine(found.filter({ hasText: "Your sent mail" }), "your sent mail", sent.length);
+    await expectFoundLine(found.filter({ hasText: "Your sent mail" }), "your sent mail", sentToCheck.length);
     await expect(found).toHaveCount(3);
     await expect(page.locator('[data-queue-line="review"]')).toHaveCount(0);
     await visit(page);
@@ -316,6 +332,16 @@ test.describe.serial("journey: new start", () => {
     await expect(page.getByRole("button", { name: /^Show \d+ new items?$/ })).toHaveCount(0);
     await visit(page);
     await expect(page.getByText(/stopped, see why below/)).toHaveCount(0);
+
+    // S-0519, on Handled for you: the mailing to many is there, set aside; the notice to me alone is not, since Reginald has it.
+    await visit(page);
+    await openView(page, "Handled for you");
+    const handled = page.locator("main#main");
+    await expect(handled.getByRole("heading", { level: 1, name: "Handled for you" })).toBeVisible();
+    // Each group is a button that opens its rows: the mailing is among the automated notices.
+    for (const group of [/^Automated notices/, /^Sales, promotions and social updates/]) await handled.getByRole("button", { name: group }).click();
+    await expect(handled.getByText(notice.many)).toBeVisible({ timeout: 30_000 });
+    await expect(handled.getByText(notice.alone)).toHaveCount(0);
 
     // The whole path: one request per item and none before Start, one sign-in, and exactly one restart.
     expect((await requests()).work).toBe(handedIn);

@@ -126,3 +126,29 @@ def test_the_sources_list_carries_the_advice_key_for_the_screen(tmp_path, monkey
     (listed,) = client.get(cfg.server.base_path.rstrip("/") + "/api/watch").json()
     assert listed["last"]["error_advice"] == "sources.advice.create_app_password"
     assert listed["last"]["error_kind"] == "auth" and "\u201c" in listed["last"]["error"]
+
+
+def test_a_connector_of_an_add_on_that_signs_in_never_sends_the_person_to_a_password_box():
+    from types import SimpleNamespace
+
+    from engine import watch
+
+    signs_in = SimpleNamespace(plugins=SimpleNamespace(sign_ins=lambda: {"mail": SimpleNamespace(plugin="mailer")}))
+    for key in watch.PASSWORD_ADVICE:
+        assert watch._sign_in_advice(signs_in, "mailer/inbox", key) == watch.SIGN_IN_AGAIN
+    words = watch.advice_sentence(watch.SIGN_IN_AGAIN)
+    assert words == WORDS[watch.SIGN_IN_AGAIN] and "password" not in words
+    # A core connector with a password, an add-on with no sign-in, and advice that is not about a password keep theirs.
+    key = "sources.advice.create_app_password"
+    assert watch._sign_in_advice(signs_in, "mailbox", key) == key
+    assert watch._sign_in_advice(signs_in, "other/inbox", key) == key
+    assert watch._sign_in_advice(signs_in, "mailer/inbox", "sources.advice.retry_later") == "sources.advice.retry_later"
+
+
+def test_a_long_service_reply_is_kept_whole_for_show_details():
+    from engine.connectors import DETAIL_MAX, ConnectorError
+
+    reply = " ".join(f"step-{n} needs the second factor confirmed first." for n in range(1, 60))
+    assert 500 < len(reply) < DETAIL_MAX
+    assert ConnectorError("auth", reply).detail == reply
+    assert len(ConnectorError("auth", reply * 100).detail) == DETAIL_MAX

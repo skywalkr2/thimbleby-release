@@ -5,7 +5,7 @@
 // S-0373 search · S-0374 a folder connection · S-0362 money fields · S-0375 the accent.
 import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
-import { collectProblems, fakeAddress, pressStart, type Info } from "./journey-helpers";
+import { collectProblems, fakeAddress, pressStart, type Info, pickFolder } from "./journey-helpers";
 
 const FAKE = fakeAddress("JOURNEY_R2_FAKE_PORT", 8735);
 const LOADED = { timeout: 30_000 };
@@ -166,8 +166,7 @@ test.describe.serial("review R2: setup and Settings", () => {
 
     // S-0339: Backups, one Continue; the copies listed afterwards are one, and no file name shows.
     await expect(main.getByRole("heading", { level: 2, name: "Backups" })).toBeVisible(LOADED);
-    await main.getByLabel("Folder", { exact: true }).fill(info.backup_folder);
-    await main.getByLabel("Folder", { exact: true }).blur();
+    await pickFolder(page, main, ["offsite"]);
     await expect(main.getByText(/That folder works/)).toBeVisible(LOADED);
     await main.getByRole("button", { name: "Continue" }).click();
     await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible(LOADED);

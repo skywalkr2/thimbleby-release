@@ -94,6 +94,41 @@ def test_first_run_all_hands_in_everything(tmp_path):
         store.close()
 
 
+def test_a_failing_connection_of_a_signed_in_account_asks_no_question_of_its_own(tmp_path):
+    """Its account is told on Today as one line with the button that signs in again; a question for each of the
+    account's connections would say the same thing again (H2-07)."""
+    from engine.watch import refresh
+
+    ws, cfg, store = make(
+        tmp_path,
+        [
+            {
+                "id": "a",
+                "connector": "fake",
+                "label": "Inbox",
+                "account": "me@example.com",
+                "settings": {"error": "auth"},
+            },
+            {
+                "id": "b",
+                "connector": "fake",
+                "label": "Calendar",
+                "account": "me@example.com",
+                "settings": {"error": "auth"},
+            },
+        ],
+        failures_before_asking=2,
+    )
+    try:
+        for source in ("a", "b"):
+            for hours in range(3):
+                refresh(ws, store, cfg, source, NOW + timedelta(hours=hours))
+        asked = [q for q in store.read().list("question") if (q.data.get("resolves") or {}).get("kind") == "watch"]
+        assert asked == []
+    finally:
+        store.close()
+
+
 def test_failures_ask_once_and_a_good_read_ends_the_question(tmp_path):
     from engine.watch import refresh
 

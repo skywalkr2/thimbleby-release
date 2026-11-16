@@ -100,6 +100,7 @@ class State:
             else datetime.now(UTC)
         )
         self.evening = False  # the first-evening journey's extra mail, event and retired model
+        self.notice_mail = False  # the inbox also holds a notice to the person alone and a mailing to many (S-0519)
         self.sent_mail = False  # the mailbox also has a sent folder, which the mail service lists by its name
         self.later_mail: list[dict] = []  # messages that arrive after the first read (added by a helper route)
         #: With `--accounts N` (more than none) each sign-in is one of N people, each with a mailbox and calendar of
@@ -504,7 +505,44 @@ def evening_messages(now: datetime) -> list[dict]:
     ]
 
 
-def messages(now: datetime, later: list[dict] | None = None, evening: bool = False) -> list[dict]:
+#: A search service's notice written to the person alone: it lists no one else on it (the shape the mail add-on gives
+#: mail written to the person alone), it is bulk and the mail service files it under updates.
+NOTICE_SENDER = ("Site Checker Example", "noreply@sitechecker.example.com")
+NOTICE_SUBJECT = "Some pages on your site could not be indexed"
+#: A mailing to many: the same kind of sender and category, but with two other people on it.
+MAILING_SENDER = ("Neighborhood Digest Example", "digest@lists.example.com")
+MAILING_SUBJECT = "This week's digest for the street"
+NOTICE_KEYS = ("m-n1",)
+
+
+def notice_messages(now: datetime) -> list[dict]:
+    """A notice to the person alone (it must come through) and a mailing to many (it is set aside)."""
+    alone = message(
+        "m-n1",
+        NOTICE_SENDER,
+        NOTICE_SUBJECT,
+        timedelta(hours=5),
+        True,
+        "Some fixes failed on your site. Open the report to see which pages.",
+        now=now,
+        bulk=True,
+        categories=("updates",),
+    )
+    many = message(
+        "m-n2",
+        MAILING_SENDER,
+        MAILING_SUBJECT,
+        timedelta(hours=6),
+        True,
+        "Bins, bikes and a street party.",
+        now=now,
+        bulk=True,
+        categories=("updates",),
+    )
+    return [alone, {**many, "recipients": ["Ada Example <ada@example.com>", "Bo Example <bo@example.com>"]}]
+
+
+def messages(now: datetime, later: list[dict] | None = None, evening: bool = False, notice: bool = False) -> list[dict]:
     """Six messages: three work messages from the last day, with the shapes the stand-in reads, a social update with
     the service's category and a sales mail with a bulk flag, both from the last day too, and one from last week.
     `later` are messages that arrived after the first read."""
@@ -555,6 +593,7 @@ def messages(now: datetime, later: list[dict] | None = None, evening: bool = Fal
             bulk=True,
         ),
         *(evening_messages(now) if evening else []),
+        *(notice_messages(now) if notice else []),
         *(later or []),
     ]
 
@@ -580,14 +619,34 @@ SENT_RECIPIENTS = [
 ]
 
 
+#: The people the sent mail went to, by how many messages: the first most, the last once.
+SENT_TO = {
+    "taylor": "Taylor Brandt <taylor.brandt@example.com>",
+    "morgan": "Morgan Voss <morgan.voss@example.com>",
+    "jordan": "Jordan Hale <jordan.hale@example.com>",
+}
+#: More sent mail, each with a subject, its age in days and whom it went to; none holds a promise.
+MORE_SENT = (
+    ("s-2", "Catching up on the schedule", 2, ("taylor",)),
+    ("s-3", "Notes from the call", 5, ("taylor", "morgan")),
+    ("s-4", "Quick question about the venue", 7, ("taylor", "jordan")),
+    ("s-5", "Photos from the walk-through", 9, ("morgan",)),
+)
+
+
 def sent_messages(now: datetime) -> list[dict]:
-    """The person's own sent mail: one message, from them, a few days old, holding a promise found nowhere else."""
+    """The person's own sent mail: one message holding a promise found nowhere else, and several more to several
+    people (most to the first, least to the last), all from them and a few days old."""
     me = people()[0]
     sent = message(
         "s-1", (me, address_of(me)), SENT_SUBJECT, timedelta(days=3), False, f"{me} {SENT_PROMISE_FROM}.", now=now
     )
     # The message's own Message-ID header: with several accounts every mailbox holding the copy has the same one.
-    return [{**sent, "message_id": "<revised-offsite-budget@example.com>", "recipients": SENT_RECIPIENTS}]
+    out = [{**sent, "message_id": "<revised-offsite-budget@example.com>", "recipients": SENT_RECIPIENTS}]
+    for key, subject, days, to in MORE_SENT:
+        more = message(key, (me, address_of(me)), subject, timedelta(days=days), False, "Speak soon.", now=now)
+        out.append({**more, "recipients": [SENT_TO[name] for name in to]})
+    return out
 
 
 def events(now: datetime, evening: bool = False) -> list[dict]:
@@ -627,7 +686,15 @@ def events(now: datetime, evening: bool = False) -> list[dict]:
     ]
 
 
-def recent_items(now: datetime, hours: int = 24) -> dict[str, list[str]]:
+def set_aside_by_service(m: dict) -> bool:
+    """Whether the app sets this message aside by what the service says about it: bulk mail or a category of sales and
+    social mail, except a notice written to the person alone (it lists no one else), which comes through."""
+    if m["id"] in NOTICE_KEYS:
+        return False
+    return bool(m["bulk"] or {"promotions", "social", "forums"} & set(m["categories"]))
+
+
+def recent_items(now: datetime, hours: int = 24, notice: bool = False) -> dict[str, list[str]]:
     """The titles of the work messages that came in and the events that fall within `hours` of now, which a first read
     hands the assistant; of the mail the app sets aside by what the service says about it (bulk, or a category); and
     of those further away, which it only notes."""
@@ -635,8 +702,8 @@ def recent_items(now: datetime, hours: int = 24) -> dict[str, list[str]]:
     def near(stamped: str) -> bool:
         return abs(datetime.fromisoformat(stamped) - now) <= timedelta(hours=hours)
 
-    mail, events_ = messages(now), events(now)
-    aside = [m for m in mail if m["bulk"] or {"promotions", "social", "forums"} & set(m["categories"])]
+    mail, events_ = messages(now, notice=notice), events(now)
+    aside = [m for m in mail if set_aside_by_service(m)]
     return {
         "mail": [m["subject"] for m in mail if near(m["received"]) and m not in aside],
         "set_aside": [m["subject"] for m in aside if near(m["received"])],
@@ -650,15 +717,17 @@ def recent_items(now: datetime, hours: int = 24) -> dict[str, list[str]]:
 #: files as a fact, a plain announcement. A review on Today counts only what needs a look, so these are not counted.
 QUIET_MESSAGES = ("m-3",)
 QUIET_EVENTS = ("e-2", "e-3")
+#: The sent messages that hold nothing to check (a plain note to someone): only the one with a promise needs a look.
+QUIET_SENT = tuple(key for key, *_ in MORE_SENT)
 
 
-def intake_items(now: datetime, days: int = 14) -> dict[str, list[str]]:
+def intake_items(now: datetime, days: int = 14, notice: bool = False) -> dict[str, list[str]]:
     """What a quiet first read takes in (a sign-in's sources): the work messages of the last `days` and every event,
     whatever its day; the mail the app sets aside by what the service says about it within those days; and the mail
     older than that, which it only notes. `mail_to_check` and `events_to_check` are the taken-in items that hold
     something to look over (the rest are filed quietly), which is what a source's review line on Today counts."""
-    mail = messages(now)
-    aside = [m for m in mail if m["bulk"] or {"promotions", "social", "forums"} & set(m["categories"])]
+    mail = messages(now, notice=notice)
+    aside = [m for m in mail if set_aside_by_service(m)]
 
     def within(stamped: str) -> bool:
         return datetime.fromisoformat(stamped) >= now - timedelta(days=days)
@@ -673,6 +742,9 @@ def intake_items(now: datetime, days: int = 14) -> dict[str, list[str]]:
         "events_to_check": [e["title"] for e in events(now) if e["id"] not in QUIET_EVENTS],
         "noted": [m["subject"] for m in mail if not within(m["received"])],
         "sent": [m["subject"] for m in sent_messages(now) if within(m["received"])],
+        "sent_to_check": [
+            m["subject"] for m in sent_messages(now) if within(m["received"]) and m["id"] not in QUIET_SENT
+        ],
     }
 
 
@@ -730,7 +802,7 @@ def account_messages(state: State, number: int) -> list[dict]:
         )
     ]
     if number == 0:
-        out += messages(now, state.later_mail, state.evening)
+        out += messages(now, state.later_mail, state.evening, state.notice_mail)
     if number < 2:
         key, subject, name, address = SHARED_THREAD
         copy = message(
@@ -902,7 +974,7 @@ def mail_routes(state: State) -> list[Route]:
         if folder == SENT_FOLDER:
             # A mailbox with no sent mail has an empty sent folder, never the inbox's mail under another name.
             return JSONResponse({"messages": sent_messages(state.moment) if state.sent_mail else []})
-        return JSONResponse({"messages": messages(state.moment, state.later_mail, state.evening)})
+        return JSONResponse({"messages": messages(state.moment, state.later_mail, state.evening, state.notice_mail)})
 
     return [Route("/messages", listed), *change_routes(state)]
 
@@ -1135,8 +1207,9 @@ def helper_routes(state: State, base: str) -> list[Route]:
             {
                 **state.seen,
                 "tokens": len(state.access),
-                "recent_items": recent_items(datetime.now(UTC)),
-                "intake_items": intake_items(datetime.now(UTC)),
+                "recent_items": recent_items(datetime.now(UTC), notice=state.notice_mail),
+                "intake_items": intake_items(datetime.now(UTC), notice=state.notice_mail),
+                "notice": {"alone": NOTICE_SUBJECT, "many": MAILING_SUBJECT},
                 "moment": stamp(state.moment),
             }
         )
@@ -1272,6 +1345,11 @@ def _configure(argv: list[str] | None):
         "hand reads it with no other switch; tests/e2e_fresh_server.py --no-sent-mail turns that off)",
     )
     parser.add_argument(
+        "--notice-mail",
+        action="store_true",
+        help="the inbox also holds a notice written to the person alone and a mailing to many",
+    )
+    parser.add_argument(
         "--accounts",
         type=int,
         default=0,
@@ -1292,6 +1370,7 @@ def _configure(argv: list[str] | None):
     state = State(args.state)
     state.evening = args.evening
     state.sent_mail = args.sent_mail
+    state.notice_mail = args.notice_mail
     state.accounts = args.accounts
     state.spread_week = args.spread_week
     state.failing_account = args.failing_account

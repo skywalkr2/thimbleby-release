@@ -6,7 +6,7 @@
 // workspace made as a person makes it, with the add-ons on, beside the fake services (tests/fake_services.py).
 import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
-import { collectProblems, fakeAddress, pressStart, visit, FIRST_SCREEN, type Info } from "./journey-helpers";
+import { collectProblems, fakeAddress, pressStart, visit, FIRST_SCREEN, pickFolder, type Info } from "./journey-helpers";
 
 const FAKE = fakeAddress("JOURNEY_SETTINGS_FAKE_PORT", 8773);
 const LOADED = { timeout: 30_000 };
@@ -81,8 +81,8 @@ test.describe.serial("setup and settings fixes", () => {
     // X97: the Backups step. The chooser starts where the checked folder is, shows the way down as a breadcrumb, can make a
     // folder, and refuses the computer's own folders in words.
     await expect(main.getByRole("heading", { level: 2, name: "Backups" })).toBeVisible();
-    await main.getByLabel("Folder", { exact: true }).fill(info.backup_folder);
-    await main.getByLabel("Folder", { exact: true }).blur();
+    await expect(main.getByLabel("Folder", { exact: true })).toHaveAttribute("readonly", "");
+    await pickFolder(page, main, ["offsite"]);
     await expect(main.getByText(/That folder works/)).toBeVisible(LOADED);
     await main.getByRole("button", { name: "Choose a folder" }).click();
     const dialog = page.getByRole("dialog", { name: "Choose a folder" });
@@ -96,10 +96,9 @@ test.describe.serial("setup and settings fixes", () => {
     await dialog.getByRole("button", { name: "Use this folder" }).click();
     await expect(main.getByLabel("Folder", { exact: true })).toHaveValue(/Made in the chooser$/);
     // A folder the computer keeps for itself is refused with a plain reason, in the check and in the chooser's list.
-    await main.getByLabel("Folder", { exact: true }).fill("/etc");
-    await main.getByLabel("Folder", { exact: true }).blur();
-    await expect(main.getByText(/belongs to the computer itself/)).toBeVisible(LOADED);
-    await main.getByLabel("Folder", { exact: true }).fill(info.backup_folder);
+    const refused = await page.request.get("api/setup/folder-check?path=%2Fetc", { headers: { Authorization: `Bearer ${info.token}` } });
+    expect(((await refused.json()) as { ok: boolean; problem: string }).problem).toMatch(/belongs to the computer itself/);
+    await pickFolder(page, main, ["offsite"]);
     await main.getByRole("button", { name: "Continue" }).click();
     await expect(page.locator('[data-screen="backup"][data-state]')).toContainText("Done");
     await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible();
@@ -125,12 +124,10 @@ test.describe.serial("setup and settings fixes", () => {
     const folders = where.locator("ul.plain-list li").filter({ has: page.getByRole("button", { name: /^Remove / }) });
     await expect(folders.first()).toContainText("offsite");
     await where.getByRole("radio", { name: /Choose another folder/ }).check();
-    await where.getByLabel("Folder", { exact: true }).fill(`${info.backup_folder}/second`);
     const made = await page.request.post("api/setup/folders/new", { headers: { Authorization: `Bearer ${info.token}` }, data: { inside: info.backup_folder, name: "second" } });
     expect(made.ok()).toBe(true);
-    // The folder is checked when the cursor leaves the box. Pressing the button leaves it too, and the check then takes the button
-    // away between the press and the release; so the person goes on (Tab), reads that it works, and then presses.
-    await where.getByLabel("Folder", { exact: true }).press("Tab");
+    // The folder is picked from the list; the check runs as it is picked, and the person reads that it works, and then presses.
+    await pickFolder(page, where, ["offsite", "second"]);
     await expect(where.getByText(/That folder works/)).toBeVisible(LOADED);
     await where.getByRole("button", { name: /Use this folder for backups/ }).first().click();
     await expect(folders).toHaveCount(1, LOADED);

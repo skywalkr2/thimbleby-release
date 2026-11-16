@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import type { S } from "../lib/api";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { setSideChoice } from "../lib/sides";
 import { fakeApi, renderApp, type Routes } from "../test-utils";
 import en from "../wording/en.json";
 import { Handled } from "./Handled";
@@ -663,4 +664,21 @@ test("Take a closer look while Today waits for Start says it waits until the per
 test("the rows keep a reading width, so a row's words and its action stay close on a wide window", () => {
   const css = readFileSync(join(__dirname, "Handled.module.css"), "utf8");
   expect(css).toMatch(/\.groups \{[^}]*max-width: 56rem/);
+});
+
+// H2-08: under a side's filter, a row from a source that serves no one side stays listed and says "Every side".
+test("under a side's filter a row on no side says Every side, and the side's own row does not", async () => {
+  const WORK = "PRJ-work";
+  setSideChoice(WORK);
+  const view: S["HandledView"] = { ...ASIDE, groups: [group("kind:sales", [row("a", { side: WORK }), row("b", { side: null })])] };
+  const rowName = (id: string) => new RegExp(`Offer ${id}`);
+  open({
+    "GET handled": () => view,
+    "GET setup/business": () => ({ business: true, name: "Orchard Press", personal: "PRJ-personal", sides: [{ project: WORK, kind: "business", name: "Orchard Press" }], chosen: null }),
+    "GET views": () => [],
+  });
+  const loose = await screen.findByRole("listitem", { name: rowName("b") });
+  expect(within(loose).getByText(/Every side/)).toBeInTheDocument();
+  expect(within(screen.getByRole("listitem", { name: rowName("a") })).queryByText(/Every side/)).toBeNull();
+  setSideChoice("all");
 });
