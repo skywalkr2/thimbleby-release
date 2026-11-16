@@ -85,7 +85,17 @@ test.describe("States of the list screens", () => {
       await page.goto(`?token=e2e-token#${screen.hash}`);
       await expect(screen.ready(page)).toBeVisible(LOADED);
       await expect(page.locator("main [data-skeleton]")).toHaveCount(0, LOADED);
-      const before = await page.locator("main").innerText();
+      // The text counts only once it has stopped changing: a read that answers late still redraws the screen, and a count taken
+      // mid-draw is not what "stays readable" is measured against.
+      let before = "";
+      await expect
+        .poll(async () => {
+          const now = await page.locator("main").innerText();
+          const same = now === before;
+          before = now;
+          return same;
+        }, LOADED)
+        .toBe(true);
       await context.setOffline(true);
       const banner = page.locator("[data-offline-banner]");
       await expect(banner).toBeVisible(LOADED);

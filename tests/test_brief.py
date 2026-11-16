@@ -813,6 +813,18 @@ def test_goals_are_proposed_from_what_is_due_until_the_person_confirms_them(env)
     assert (goals.fewest, goals.most) == (cfg.steward.brief.goals_min, cfg.steward.brief.goals_max)
 
 
+def test_each_proposed_goal_says_which_side_its_to_do_is_on_so_a_side_filter_can_leave_the_others_out(env):
+    from tests.test_many_sides import add_side
+
+    ws, cfg, store, clock = env
+    job = add_side((ws, cfg, store), "Weekday job", kind="job")
+    own(store, cfg, "Finish the job report", due=day(1), project=job)
+    own(store, cfg, "Renew the passport", due=day(2))
+    goals = built(env, "monday").goals
+    on = dict(zip(goals.proposed, goals.proposed_sides, strict=True))
+    assert on["Finish the job report"] == job and on["Renew the passport"] is None
+
+
 def test_confirmed_goals_are_kept_for_the_week_and_read_by_the_morning_brief(env):
     from engine import week_plan
 

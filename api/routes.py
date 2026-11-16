@@ -226,6 +226,7 @@ from engine import (
     restore_in_app,
     review_batches,
     source_intake,
+    week_ahead,
 )
 from engine import backup as backup_module
 from engine.ai.smoke import ai_state
@@ -3177,11 +3178,16 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
                 if seen_now != seen:
                     touched = events.touched_since(seen)
                     seen = seen_now
+                    before = position
                     position, kinds = store.read().changed_kinds(position)
                     news: dict[str, Any] = {"version": seen, "kinds": kinds, "position": position}
                     if touched is not None:
                         # Only these screens read again beside the ones the kinds name (a change that wrote no record).
                         news["families"] = sorted(touched)
+                    # A change to a request of the week ahead's own kind reaches the card, which no other request does.
+                    more = week_ahead.touched_families(store, before, kinds)
+                    if more:
+                        news["families"] = sorted({*news.get("families", []), *more})
                     yield f"event: changed\ndata: {json.dumps(news)}\n\n"
                 else:
                     yield ": keep-alive\n\n"

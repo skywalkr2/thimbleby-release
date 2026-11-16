@@ -13,3 +13,5 @@
 .when { flex: 0 0 9rem; min-width: 0; color: var(--text-muted); }
 .words { flex: 1 1 14rem; min-width: 0; display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-2); overflow-wrap: anywhere; }
 .kind { color: var(--text-muted); font-size: var(--text-meta); line-height: var(--lh-meta); }
+/* The way to a row's source is a press target at every width (WCAG 2.5.8): as tall as the floor for any control. */
+.words a { display: inline-flex; align-items: center; min-height: var(--target-min); box-sizing: border-box; }

@@ -109,6 +109,34 @@ def seed_views(store, cfg, seeded):
     return {**seeded, "views": VIEWS}
 
 
+#: What the week ahead's browser test reads: one calendar entry on each side's project and one on none.
+WEEK_ENTRIES = {"job": "Quarterly planning day", "business": "Supplier tasting", "none": "Dentist visit"}
+
+
+def _seed_week(store, cfg, homes, ctx):
+    """One entry of the person's own calendar for each home (the job, the business, none), on a day of this week that is
+    neither today nor tomorrow (so Today's and the day footer's counts stay as they are). Returns the entries'
+    titles."""
+    from engine.week_ahead import week_of
+
+    today = date.today()
+    first, last = week_of(cfg, today)
+    days = [first + timedelta(days=n) for n in range(7)]
+    day = [d for d in days if d not in (today, today + timedelta(days=1))][-1]
+    with store.transaction() as tx:
+        for hour, (key, home) in zip((9, 11, 13), homes.items(), strict=True):  # one after another: no clash
+            data = {
+                "title": WEEK_ENTRIES[key],
+                "start": f"{day.isoformat()}T{hour:02d}:00:00+00:00",
+                "end": f"{day.isoformat()}T{hour + 1:02d}:00:00+00:00",
+                "trust": "trusted",
+            }
+            if home:
+                data["project"] = home
+            tx.create("event", data, ctx)
+    return WEEK_ENTRIES
+
+
 def seed_sides(client, store, cfg):
     """The to-dos, promises and meetings above, once the two sides are made through the setup route (as setup makes
     them). `client` is a test client of the running app. Returns what the browser test reads."""
@@ -167,7 +195,9 @@ def seed_sides(client, store, cfg):
                 },
                 ctx,
             )
+    week = _seed_week(store, cfg, {"job": job, "business": business, "none": None}, ctx)
     return {
+        "week": week,
         "sides": {
             "personal": {"id": personal, "name": "Personal"},
             "job": {"id": job, "name": job_name},

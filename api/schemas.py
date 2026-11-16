@@ -8790,6 +8790,7 @@ class BriefGoalsView(BaseModel):
     proposed: list[str]
     fewest: int
     most: int
+    proposed_sides: list[str | None] = []
 
 
 class BriefChoiceView(OwnerNameView):
@@ -8843,6 +8844,11 @@ class WeekAheadRowView(BaseModel):
     words: str
     kind: Literal["delivery", "deadline", "window", "meeting", "routine", "task", "entry"]
     link: RecordRef
+    side: str | None = Field(
+        default=None,
+        description="The side (project id) of the record the row cites; null when it is on no side, so it shows under "
+        "every choice of the side filter.",
+    )
 
 
 class WeekAheadView(BaseModel):

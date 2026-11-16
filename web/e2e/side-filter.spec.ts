@@ -16,6 +16,7 @@ interface Seeded {
   promises: Record<"personal" | "job" | "business", string>;
   owed_by: Record<"personal" | "job" | "business", string>;
   meetings: Record<"job" | "business", string[]>;
+  week: Record<"job" | "business" | "none", string>;
   views: { project: string; todo: string; only_project: string; only_todo: string; first: string; second: string };
 }
 
@@ -180,6 +181,28 @@ test.describe("The side filter changes what the screens show", () => {
     await expect(main.getByText(seeded.meetings.job[0]).first()).toBeVisible(LOADED);
     const meetings = bySide({ personal: [], job: [seeded.meetings.job[0]], business: [seeded.meetings.business[0], seeded.meetings.business[1]] });
     await expectUnder(page, main, meetings.shown, meetings.hidden);
+  });
+
+  test("the week ahead card on the Schedule: under one side's filter only that side's rows and those on no side (saying Every side) show, with no sentence", async ({ page }) => {
+    test.setTimeout(120_000);
+    await go(page, "schedule");
+    await heading(page, "Schedule");
+    await page.getByRole("tab", { name: "Week", exact: true }).click();
+    const card = page.locator("main [data-week-ahead]");
+    await expect(card).toBeVisible(LOADED);
+    const week = seeded.week;
+    await choose(page, "job");
+    await expect(card.getByText(week.job)).toBeVisible(LOADED);
+    await expect(card.getByText(week.none)).toBeVisible(LOADED);
+    await expect(card.getByText(week.business)).toHaveCount(0, LOADED);
+    await expect(card.locator(`[data-week-ahead-row] [data-every-side]`)).toHaveCount(1);
+    await expect(card.locator("[data-week-ahead-sentence]")).toHaveCount(0);
+    await choose(page, "business");
+    await expect(card.getByText(week.business)).toBeVisible(LOADED);
+    await expect(card.getByText(week.job)).toHaveCount(0, LOADED);
+    await choose(page, "all");
+    for (const title of Object.values(week)) await expect(card.getByText(title)).toBeVisible(LOADED);
+    await expect(card.locator("[data-every-side]")).toHaveCount(0);
   });
 
   test("Views: a project in two views shows its to-do under each, one in a single view only under that view, and nothing drops on the switch", async ({ page }) => {

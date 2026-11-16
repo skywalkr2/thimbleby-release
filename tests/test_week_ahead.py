@@ -618,3 +618,70 @@ def test_the_fake_service_answers_a_reading_of_the_week_with_rows_that_pass_the_
     changeset = parse(json.dumps({"summary": "x", "ops": ops}), store.plugins.ops)
     first, last = week_ahead.week_of(cfg, TODAY)
     assert week_ahead.problems(ws, store, cfg, NOW, first, list(changeset.ops[0].rows), {held}) == []
+
+
+def test_each_row_carries_the_side_of_the_record_it_cites_so_a_side_filter_can_leave_the_others_out(env):
+    from tests.test_many_sides import add_side
+
+    ws, cfg, store = env
+    job = add_side((ws, cfg, store), "Weekday job", kind="job")
+    mine = todo(store, cfg, "Finish the job report", day(2))
+    with store.transaction() as tx:
+        current = tx.get("action", mine)
+        tx.update("action", mine, {"project": job}, _W, read_version=current.version)
+    loose = fact(store, "The permit lapses", day(3))
+    on = {r.source: r.side for r in week_ahead.card_of(ws, store, cfg, NOW).rows}
+    assert on[mine] == job and on[loose] is None
+
+
+# ---- the week ahead starts tomorrow (S-0566) -------------------------------------------------------------------------
+
+
+def test_the_week_ahead_starts_tomorrow_and_a_record_dated_today_is_no_candidate_or_row(env):
+    ws, cfg, store = env
+    today_fact = fact(store, "Today's thing", day(0))
+    tomorrow_fact = fact(store, "Tomorrow's thing", day(1))
+    assert week_ahead.ahead(cfg, TODAY) == (TODAY + timedelta(days=1), TODAY + timedelta(days=6))
+    ids = [i.id for i in week_ahead.candidates(ws, store, cfg, NOW)]
+    assert today_fact not in ids and tomorrow_fact in ids
+    card = week_ahead.card_of(ws, store, cfg, NOW)
+    assert [r.source for r in card.rows] == [tomorrow_fact]
+    # The checks refuse a row dated today, like a row for a record Today holds.
+    assert "not a record that falls in the week" in problems(env, [R(today_fact, 0)])[0]
+
+
+def test_the_packet_says_the_week_starts_tomorrow_and_leaves_out_what_is_dated_today(env):
+    ws, cfg, store = env
+    today_fact = fact(store, "Today's thing", day(0))
+    tomorrow_fact = fact(store, "Tomorrow's thing", day(1))
+    request = week_ahead.read_again(store, cfg, NOW)
+    text = packets.build(ws, store, cfg, request, TODAY).task.request
+    assert f"runs from {day(1)} (tomorrow" in text
+    assert f"[{tomorrow_fact}]" in text and f"[{today_fact}]" not in text
+
+
+def test_on_the_last_working_day_the_week_ahead_is_the_weekend_alone(env):
+    ws, cfg, store = env
+    friday = NOW + timedelta(days=4)
+    fact(store, "Friday's thing", day(4))
+    saturday = fact(store, "Saturday's thing", day(5))
+    assert week_ahead.ahead(cfg, friday.date()) == (FIRST + timedelta(days=5), FIRST + timedelta(days=6))
+    card = week_ahead.card_of(ws, store, cfg, friday)
+    assert [r.source for r in card.rows] == [saturday]
+    assert week_ahead.items(store, cfg, friday, FIRST + timedelta(days=7), FIRST + timedelta(days=6)) == []
+
+
+def test_only_a_change_to_the_week_aheads_own_request_names_its_card_for_the_live_stream(env):
+    ws, cfg, store = env
+    position, _ = store.read().changed_kinds(0)
+    with store.transaction() as tx:
+        other = tx.create(
+            "request", {"task": "extract", "origin": "pm", "state": "queued", "created_at": NOW.isoformat()}, _W
+        ).id
+    after, kinds = store.read().changed_kinds(position)
+    assert other and week_ahead.touched_families(store, position, kinds) == []
+    fact(store, "Tomorrow's thing", day(1))
+    week_ahead.read_again(store, cfg, NOW)
+    _, kinds = store.read().changed_kinds(after)
+    assert week_ahead.touched_families(store, after, kinds) == ["week-ahead"]
+    assert week_ahead.touched_families(store, after, ["fact"]) == []

@@ -50,6 +50,7 @@ def build_week_ahead_router(ws: Workspace, cfg: Config, store: Store, events: Ev
                         words=row.words,
                         kind=row.kind,  # type: ignore[arg-type]
                         link=RecordRef(kind=kind, id=row.source),
+                        side=row.side,
                     )
                 )
             return WeekAheadView(

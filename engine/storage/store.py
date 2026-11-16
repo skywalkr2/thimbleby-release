@@ -694,6 +694,13 @@ class Tx:
         rows = self._c.execute("SELECT DISTINCT kind FROM ledger WHERE seq > ? ORDER BY kind", (after,)).fetchall()
         return int(last), [r["kind"] for r in rows]
 
+    def changed_ids(self, after: int, kind: str) -> list[str]:
+        """The ids of the records of one kind written after position `after`."""
+        rows = self._c.execute(
+            "SELECT DISTINCT record_id FROM ledger WHERE seq > ? AND kind = ? ORDER BY record_id", (after, kind)
+        ).fetchall()
+        return [r["record_id"] for r in rows]
+
     # ---- ids ---------------------------------------------------------------------------------------------------------
 
     def new_id(self, kind: str) -> str:

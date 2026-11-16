@@ -25,7 +25,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from engine import routines, week_plan
+from engine import routines, sides, week_plan
 from engine.blocked import standing_hold
 from engine.facts import superseded_by
 from engine.firm_due import firm_due
@@ -66,6 +66,13 @@ def week_of(cfg: Any, today: date) -> tuple[date, date]:
     the weekend is in it (the Monday briefing's week)."""
     first, _ = week_plan.week_bounds(cfg, today)
     return first, first + timedelta(days=6)
+
+
+def ahead(cfg: Any, today: date) -> tuple[date, date]:
+    """The days the week ahead covers: from tomorrow (today is Today's) through the last day of the week `today` belongs
+    to. Past the week's last day there are none, and `start` is after `last`."""
+    first, last = week_of(cfg, today)
+    return max(first, today + timedelta(days=1)), last
 
 
 def _one_line(text: Any) -> str:
@@ -208,7 +215,11 @@ def _routine_items(store: Any, cfg: Any, first: date, last: date) -> list[Item]:
     away = _away_periods(view, cfg)
     found = []
     for slot in routines.kept(view):
-        happens = [first + timedelta(days=n) for n in range(7) if (first + timedelta(days=n)).weekday() in slot.days]
+        happens = [
+            first + timedelta(days=n)
+            for n in range(7)
+            if first + timedelta(days=n) <= last and (first + timedelta(days=n)).weekday() in slot.days
+        ]
         paused = [d for d in happens if any(s <= d <= e for s, e in away)]
         if paused:
             found.append(
@@ -241,7 +252,9 @@ def _routine_items(store: Any, cfg: Any, first: date, last: date) -> list[Item]:
 
 
 def items(store: Any, cfg: Any, now: datetime, first: date, last: date) -> list[Item]:
-    """Everything in the week the assistant may give a row, by day: each record once."""
+    """Everything in the days from `first` through `last` the assistant may give a row, by day: each record once."""
+    if first > last:
+        return []
     found = [
         *_agenda_items(store, cfg, now, first, last),
         *_fact_items(store, first, last),
@@ -253,10 +266,22 @@ def items(store: Any, cfg: Any, now: datetime, first: date, last: date) -> list[
 
 def candidates(ws: Any, store: Any, cfg: Any, now: datetime) -> list[Item]:
     """The week's things that Today holds no line for: what a row may be made from."""
-    today = now.astimezone(zone(cfg)).date()
-    first, last = week_of(cfg, today)
+    first, last = ahead(cfg, now.astimezone(zone(cfg)).date())
     held = on_today(ws, store, cfg, now)
     return [i for i in items(store, cfg, now, first, last) if i.id not in held]
+
+
+def touched_families(store: Any, after: int, kinds: list[str]) -> list[str]:
+    """The screen families the writes after ledger position `after` touch beyond what their kinds name: the week ahead's
+    card, when one of its own requests changed state (a request of any other task kind cannot change the card)."""
+    if "request" not in kinds:
+        return []
+    view = store.read()
+    for request_id in view.changed_ids(after, "request"):
+        record = view.get("request", request_id)
+        if record is not None and record.data.get("task") == TASK:
+            return ["week-ahead"]
+    return []
 
 
 # ---- the checks ------------------------------------------------------------------------------------------------------
@@ -275,7 +300,9 @@ def problems(
     exists and falls in the week, the row's days are in the week, each record has one row, nothing Today holds is
     repeated, and there are at most `steward.week_ahead.max_rows`. `held` is what Today held when the packet was built;
     without it, what Today holds now."""
-    first, last = week, week + timedelta(days=6)
+    # Rows start from tomorrow, as of when the request was made: a row dated today is Today's, and is refused.
+    last = week + timedelta(days=6)
+    first = max(week, now.astimezone(zone(cfg)).date() + timedelta(days=1))
     found = {i.id: i for i in items(store, cfg, now, first, last)}
     if held is None:
         held = on_today(ws, store, cfg, now)
@@ -334,7 +361,8 @@ def apply(tx: Any, op: Any, ctx: Any, w: Any) -> list[dict[str, Any]]:
         raise StoreError("the week this reading was for is gone")
     now = _stamp(request.data.get("created_at")) or datetime.now(UTC)
     week = date.fromisoformat(str(plan.data["week"]))
-    kinds = {i.id: i.kind for i in items(ctx.store, ctx.cfg, now, week, week + timedelta(days=6))}
+    first = max(week, now.astimezone(zone(ctx.cfg)).date() + timedelta(days=1))
+    kinds = {i.id: i.kind for i in items(ctx.store, ctx.cfg, now, first, week + timedelta(days=6))}
     rows = [
         {
             "from_day": r.from_day.isoformat(),
@@ -482,8 +510,7 @@ def _line(item: Item) -> str:
 
 def lines(ws: Any, store: Any, cfg: Any, now: datetime) -> tuple[list[str], list[str]]:
     """The week's records as the packet shows them, and Today's lines (so they are not repeated)."""
-    today = now.astimezone(zone(cfg)).date()
-    first, last = week_of(cfg, today)
+    first, last = ahead(cfg, now.astimezone(zone(cfg)).date())
     held_lines: list[str] = []
     held: set[str] = set()
     for line in _today_lines(ws, store, cfg, now):
@@ -531,6 +558,7 @@ def build(ws: Any, store: Any, cfg: Any, req: Any, kind: Any, today: date) -> An
     if not week:
         raise PacketRefused("there is nothing dated in the week to read")
     first = date.fromisoformat(str(plan.data["week"]))
+    start, _ = ahead(cfg, zoned.astimezone(zone(cfg)).date())
     people = _packet_people(store, cfg)
     shown_week = neutralize("\n".join(week))
     shown_today = neutralize("\n".join(held)) if held else "(none)"
@@ -550,7 +578,8 @@ def build(ws: Any, store: Any, cfg: Any, req: Any, kind: Any, today: date) -> An
     )
     parts = [
         f"Today is {today.isoformat()} ({today.strftime('%A')}).",
-        f"The week runs from {first.isoformat()} through {(first + timedelta(days=6)).isoformat()}. "
+        f"The week ahead runs from {start.isoformat()} (tomorrow; today is Today's) through "
+        f"{(first + timedelta(days=6)).isoformat()}. "
         f"Give at most {cfg.steward.week_ahead.max_rows} rows.",
         learned.per_input,
         f'# The week\'s records\n<untrusted source="{WEEK_BLOCK}">\n{shown_week}\n</untrusted>',
@@ -589,6 +618,8 @@ class Row:
     words: str
     source: str
     kind: str
+    #: The side of the record the row cites (None: on no side, shown under every choice of the side filter).
+    side: str | None = None
 
 
 @dataclass(frozen=True)
@@ -610,8 +641,24 @@ class Card:
     hidden: int = 0
 
 
-def _rules_rows(found: list[Item], most: int) -> list[Row]:
-    return [Row(i.first, i.last, i.title, i.id, i.kind) for i in found[:most]]
+#: The kinds of record a row's source can be, in the order they are looked for.
+_SOURCE_KINDS = ("action", "fact", "event", "snapshot", "glossary_entry")
+
+
+def _side_of(view: Any, cfg: Any, source: str) -> str | None:
+    """The side of the record a row cites, by the one shared function (None when it is on no side)."""
+    for kind in _SOURCE_KINDS:
+        record = view.get(kind, source)
+        if record is not None:
+            # A calendar event the app keeps no entry for is on the side its watched source serves.
+            return sides.side_of_item(view, cfg, record) or (
+                sides.watch_source_side(view, cfg, record.data.get("source")) if kind == "snapshot" else None
+            )
+    return None
+
+
+def _rules_rows(found: list[Item], most: int, view: Any = None, cfg: Any = None) -> list[Row]:
+    return [Row(i.first, i.last, i.title, i.id, i.kind, _side_of(view, cfg, i.id)) for i in found[:most]]
 
 
 def card_of(ws: Any, store: Any, cfg: Any, now: datetime) -> Card:
@@ -619,10 +666,11 @@ def card_of(ws: Any, store: Any, cfg: Any, now: datetime) -> Card:
     view = store.read()
     today = now.astimezone(zone(cfg)).date()
     first, last = week_of(cfg, today)
+    start, _ = ahead(cfg, today)
     most = cfg.steward.week_ahead.max_rows
     plan = week_plan.plan_of(view, People(store, cfg).pm, first)
     held = on_today(ws, store, cfg, now)
-    mine = {i.id: i for i in items(store, cfg, now, first, last)}
+    mine = {i.id: i for i in items(store, cfg, now, start, last)}
     aside = set(plan.data.get("set_aside") or []) if plan is not None else set()
     shown = [i for i in mine.values() if i.id not in held and i.id not in aside]
     request = None
@@ -639,6 +687,7 @@ def card_of(ws: Any, store: Any, cfg: Any, now: datetime) -> Card:
                 r["words"],
                 r["source"],
                 r["kind"],
+                _side_of(view, cfg, r["source"]),
             )
             for r in plan.data.get("read_rows") or []
             if r["source"] in mine and r["source"] not in held and r["source"] not in aside
@@ -646,7 +695,7 @@ def card_of(ws: Any, store: Any, cfg: Any, now: datetime) -> Card:
         rows = tuple(kept[:most])
         card = Card(first, last, "read", plan.data.get("read_sentence"), rows)
     else:
-        card = Card(first, last, "rules" if shown else "empty", None, tuple(_rules_rows(shown, most)))
+        card = Card(first, last, "rules" if shown else "empty", None, tuple(_rules_rows(shown, most, view, cfg)))
     if request is not None and state_of in ("queued", "running"):
         return replace(card, state="working" if card.state != "read" else card.state, request=request.id)
     if request is not None and state_of == "needs_you":

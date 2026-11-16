@@ -218,8 +218,10 @@ test.describe.serial("journey: a first evening", () => {
     if ((await page.locator(`ul[data-day="${ahead.toISOString().slice(0, 10)}"]`).count()) === 0) {
       await page.getByRole("button", { name: "Next week", exact: true }).click();
     }
-    await expect(agenda.getByText(HALL).first()).toBeVisible({ timeout: 60_000 });
-    await expect(agenda.getByText(new RegExp(HALL))).toHaveCount(1);
+    // The week ahead card above the grid may name the same meeting once; the one entry is counted in the calendar's own grid.
+    const grid = agenda.locator("[data-grid]");
+    await expect(grid.getByText(HALL).first()).toBeVisible({ timeout: 60_000 });
+    await expect(grid.getByText(new RegExp(HALL))).toHaveCount(1);
     await visit(page);
 
     // The one-time code is set aside under notices, and is not in What changed, which is the history of the work.

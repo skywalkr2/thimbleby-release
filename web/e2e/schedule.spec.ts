@@ -62,6 +62,31 @@ async function pick(page: Page, key: "1" | "2" | "3" | "4") {
   await expect(page.locator("main [data-skeleton]")).toHaveCount(0, { timeout: 15_000 });
 }
 
+/**
+ * Waits until what a view draws has stopped moving: in the Work week and Week views the week ahead card arrives after the grid is first
+ * drawn and pushes it down, and the grid measures its own boxes again when its frame changes size. Settled is the grid, its lanes and their
+ * entries keeping the same boxes for 12 frames in a row (frames, never a time, so a busy computer takes as long as it needs).
+ */
+async function settled(page: Page, weekCard: boolean) {
+  if (weekCard) await expect(page.locator("main [data-week-ahead]")).toBeVisible(LOADED);
+  await page.waitForFunction(
+    () => {
+      const w = window as unknown as { __still?: { sig: string; frames: number } };
+      const sig = Array.from(document.querySelectorAll<HTMLElement>("main [data-grid], main [data-grid] ul[data-day], main [data-grid] [data-entry-key], main [data-group-card]"))
+        .map((e) => {
+          const r = e.getBoundingClientRect();
+          return `${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)},${Math.round(r.height)}`;
+        })
+        .join("|");
+      const now = w.__still;
+      w.__still = { sig, frames: now && now.sig === sig ? now.frames + 1 : 0 };
+      return w.__still.frames >= 12;
+    },
+    undefined,
+    { polling: "raf", timeout: 30_000 },
+  );
+}
+
 /** Waits for the view just picked to be drawn: a new range is read first, and a busy computer takes longer than an assertion's own wait. */
 async function drawn(page: Page, anyOf = "main [data-grid], main [data-month], main [data-schedule-list]") {
   await expect(page.locator("main [data-skeleton]")).toHaveCount(0, { timeout: 15_000 });
@@ -511,6 +536,7 @@ test.describe("the calendar page", () => {
       await open(page);
       await pick(page, key);
       await expect(page.locator("main [data-grid] ul[data-day]").first()).toBeVisible();
+      await settled(page, key !== "1");
       const dates = await page.locator("main ul[data-day]").evaluateAll((els) => els.map((e) => e.getAttribute("data-day") as string));
       const first = dates[0];
       const read = (await (await page.request.get(`api/schedule?from=${first}&days=${dates.length}`)).json()) as { days: { date: string; timed: { title: string; begins: string; ends?: string }[] }[] };

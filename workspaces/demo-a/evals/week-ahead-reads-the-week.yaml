@@ -4,7 +4,7 @@ skills: [dates, structured-answers, stay-in-scope]
 received: '2026-11-16T15:00:00+00:00'
 # A fictional Monday. In the week: two parcels on their way, a case reply due, a print offer open for five days, a morning
 # swim paused by days away, and a planning meeting. A to-do with its reminder due is already a line on Today, so the week
-# ahead leaves it out. Each row cites the record it comes from; nothing is made up that the records don't say.
+# ahead leaves it out, and so does a thing dated today: the week ahead starts tomorrow. Each row cites the record it comes from; nothing is made up that the records don't say.
 week_ahead: true
 given:
 - {kind: event, id: EVT-90, fields: {title: Parcel of printer ink, start: '2026-11-18', delivery: {carrier: Example Courier, status: on_its_way, dated: true}}}
@@ -14,6 +14,7 @@ given:
 - {kind: glossary_entry, id: GLOSS-90, fields: {term: Morning swim, text: 'Morning swim: Tuesdays and Thursdays 7 to 8 AM.', meaning: Tuesdays and Thursdays 7 to 8 AM, origin: person, learned_at: '2026-10-01T12:00:00+00:00', status: active, kept_by: PER-1, kept_at: '2026-10-01T12:00:00+00:00', routine: {days: [tuesday, thursday], start: '07:00', end: '08:00'}}}
 - {kind: person, id: PER-1, update: true, fields: {away: [{start: '2026-11-17', end: '2026-11-19', label: away}]}}
 - {kind: event, id: EVT-93, fields: {title: Planning with the design lead, start: '2026-11-18T15:00:00-06:00', end: '2026-11-18T16:00:00-06:00', invitation: true, attendees: [{name: Dana Fictional, response: accepted}]}}
+- {kind: fact, id: FACT-91, fields: {text: The standup notes are due, 'on': '2026-11-16', on_kind: deadline, basis: person}}
 - {kind: action, id: ACT-90, fields: {project: PRJ-1, text: Send the reconciliation notes, due: '2026-11-16', remind_at: '2026-11-16T14:00:00+00:00', owners: [{person: PER-1}]}}
 expect:
 - op: week.read
@@ -21,6 +22,9 @@ expect:
   rows: 6
   sources: [EVT-90, EVT-91, FACT-90, EVT-92, GLOSS-90, EVT-93]
 forbid:
+- op: week.read
+  row: FACT-91
+  attempted: true
 - op: week.read
   row: ACT-90
   attempted: true

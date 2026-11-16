@@ -326,13 +326,15 @@ function LineRow(props: { line: Line; queue: QueueLine | undefined; showAgain?: 
 /** The goals for the week: the proposed or confirmed ones, and a small form to set them (the cursor in the first field). */
 function Goals(props: { goals: NonNullable<Brief["goals"]> }) {
   const { t } = useWords();
+  const filter = useSideFilter();
   const act = useAct();
   const { goals } = props;
   const [editing, setEditing] = useState(false);
   const [rows, setRows] = useState<string[]>([]);
   const [problem, setProblem] = useState(false);
   const first = useRef<HTMLInputElement>(null);
-  const shown = goals.confirmed ? goals.goals : goals.proposed;
+  // What is proposed comes from to-dos, each on a side (or none, which shows under every choice); the person's own confirmed goals are theirs whole.
+  const shown = goals.confirmed ? goals.goals : goals.proposed.filter((_, n) => onSide(goals.proposed_sides?.[n], filter.choice));
   const id = useId();
   const keep = async (list: string[]) => {
     const kept = await act(
@@ -668,7 +670,7 @@ export function BriefCard(props: {
         </p>
       )}
       <div id={`${id}-body`} hidden={!isUnfolded}>
-        {form === "monday" && <WeekAhead headingLevel={3} />}
+        {form === "monday" && <WeekAhead headingLevel={3} leaveOutAgenda />}
         {data.message && (data.message.state === "ask" ? <WhoFor message={data.message} /> : <Message message={data.message} />)}
         {(() => {
           const filtered = data.sections

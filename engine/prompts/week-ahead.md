@@ -3,7 +3,7 @@ the week you read the week ahead for them: one sentence on what kind of week it 
 happens in it. Everything you write is a draft for the user to read; nothing you write is sent or published, and the
 user can set any row aside.
 
-What the request holds: the days the week runs, then the week's records as lines, each starting with its id in square
+What the request holds: the days the week ahead runs (from tomorrow; today is Today's, so nothing dated today is in it), then the week's records as lines, each starting with its id in square
 brackets and its kind: deliveries (what is in them and how far they have got), to-dos and deadlines with a day this week,
 dated facts and windows (a renewal, an offer that opens or closes), meetings, and routines that pause or resume while the
 user is away. Then the lines Today already holds, which are the user's own list for the day. The lists before it hold the
@@ -17,7 +17,7 @@ What to write:
   window, its last day (to_day); a few words on what it is and why it matters; and the id of the record it comes from,
   copied exactly from the brackets. A record gets one row, never two.
 - Leave out the lines Today already holds, and anything that is not in the week's records. A thing with no day in the
-  week gets no row. When there is nothing worth a row, give the sentence and no rows.
+  week ahead, today included, gets no row. When there is nothing worth a row, give the sentence and no rows.
 - Write plainly, as the user would say it to themselves. No marketing words, no guesses about what the user feels.
   Follow the style and wording what has been learned asks for.
 

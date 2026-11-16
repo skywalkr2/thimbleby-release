@@ -26,6 +26,24 @@ test("a correction and what was learned from it refresh the lines under cards an
   }
 });
 
+test("the week ahead reads again after what the week is made from, and not after a reviewed change is kept", () => {
+  expect(unmapped(["week-ahead"])).toBe(false);
+  for (const kind of ["action", "fact", "person", "snapshot", "glossary_entry", "week_plan", "setting_change"]) {
+    expect(familiesFor([kind])).toContain("week-ahead");
+  }
+  for (const kind of ["request", "changeset", "signal", "run", "lesson"]) expect(familiesFor([kind])).not.toContain("week-ahead");
+  const client = new QueryClient();
+  for (const key of [["week-ahead"], ["changes"]]) client.setQueryData(key, []);
+  invalidateFor(client, '{"version": 2, "kinds": ["changeset", "signal"]}');
+  expect(client.getQueryState(["week-ahead"])!.isInvalidated).toBe(false);
+  invalidateFor(client, '{"version": 3, "kinds": ["action"]}');
+  expect(client.getQueryState(["week-ahead"])!.isInvalidated).toBe(true);
+  client.setQueryData(["week-ahead"], []);
+  // A change to the week ahead's own request names the card's family beside its kinds, so the card reads again.
+  invalidateFor(client, '{"version": 4, "kinds": ["request"], "families": ["week-ahead"]}');
+  expect(client.getQueryState(["week-ahead"])!.isInvalidated).toBe(true);
+});
+
 test("no kinds, or a kind nobody knows, means refresh everything", () => {
   expect(familiesFor([])).toBeNull();
   expect(familiesFor(["person", "something_new"])).toBeNull();

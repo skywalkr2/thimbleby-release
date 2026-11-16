@@ -6905,6 +6905,21 @@
             },
             "title": "Proposed",
             "type": "array"
+          },
+          "proposed_sides": {
+            "default": [],
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Proposed Sides",
+            "type": "array"
           }
         },
         "required": [
@@ -36341,6 +36356,18 @@
           },
           "link": {
             "$ref": "#/components/schemas/RecordRef"
+          },
+          "side": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The side (project id) of the record the row cites; null when it is on no side, so it shows under every choice of the side filter.",
+            "title": "Side"
           },
           "to_day": {
             "anyOf": [

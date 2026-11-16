@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import type { S } from "../lib/api";
 import { actFixture } from "../lib/acts-fixtures";
 import { day } from "../lib/dates";
+import { setSideChoice } from "../lib/sides";
 import { fakeApi, rcFixture, Refuse, renderApp as render, type Routes, snapshotOf } from "../test-utils";
 
 /** The card with room for every line, unless a test says how many rows the card holds (`ui.today.rail_rows`). */
@@ -72,7 +73,7 @@ const EVENING: Brief = {
     { key: "waiting", more: 0, lines: [line({ key: "waiting:ACT-5", kind: "waiting", text: "the measurements", person_name: "Dev Example", day: "2026-10-22" })] },
   ],
 };
-const GOALS_PROPOSED: S["BriefGoalsView"] = { first: "2026-10-19", last: "2026-10-23", confirmed: false, goals: [], proposed: ["Ship the proof", "Close the print order", "Plan the launch"], fewest: 3, most: 5 };
+const GOALS_PROPOSED: S["BriefGoalsView"] = { first: "2026-10-19", last: "2026-10-23", confirmed: false, goals: [], proposed: ["Ship the proof", "Close the print order", "Plan the launch"], proposed_sides: [], fewest: 3, most: 5 };
 const WEEK: S["WeekAheadView"] = {
   first: "2026-10-19",
   last: "2026-10-25",
@@ -406,6 +407,19 @@ test("a proposed goal taken from a to-do's own words shows its year-month-day as
   const block = (await screen.findByRole("heading", { name: "Goals for the week" })).closest("[data-block]") as HTMLElement;
   expect(block.textContent).not.toMatch(/\d{4}-\d{2}-\d{2}/);
   expect(within(block).getAllByRole("listitem")[0].textContent).toMatch(/^Send the headcount by \w{3}, \w{3} 21\.$/);
+});
+
+test("under a side's filter the proposed goals are only that side's and those on no side", async () => {
+  const sides: S["SideView"][] = [
+    { project: "PRJ-first", kind: "business", name: "Orchard Press", removable: false, filed: 0 },
+    { project: "PRJ-second", kind: "job", name: "Lantern Works", removable: false, filed: 0 },
+  ];
+  setSideChoice("PRJ-first");
+  const goals = { ...GOALS_PROPOSED, proposed: ["Print the proofs", "Pay the venue deposit", "Renew the passport"], proposed_sides: ["PRJ-first", "PRJ-second", null] };
+  await show({ ...MONDAY, goals }, { "GET setup/business": () => ({ business: true, name: "Orchard Press", personal: "PRJ-personal", sides, chosen: "work" }) });
+  const block = (await screen.findByRole("heading", { name: "Goals for the week" })).closest("[data-block]") as HTMLElement;
+  await waitFor(() => expect(within(block).getAllByRole("listitem").map((x) => x.textContent)).toEqual(["Print the proofs", "Renew the passport"]));
+  setSideChoice("all");
 });
 
 test("the proposed goals are confirmed as they are in one press, and Undo sends back what they replaced", async () => {

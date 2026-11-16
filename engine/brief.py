@@ -34,6 +34,7 @@ from engine import (
     day_clashes,
     invitation_changes,
     invitation_history,
+    sides,
     since_yesterday,
     suggestions,
     week_plan,
@@ -135,6 +136,8 @@ class Goals:
     proposed: list[str]
     fewest: int
     most: int
+    #: The side each proposed goal's to-do is on, in `proposed`'s order (None: on no side, shown under every choice).
+    proposed_sides: list[str | None] = field(default_factory=list)
 
 
 @dataclass
@@ -1078,19 +1081,20 @@ def _on_today(c: _Day) -> set[str]:
     return ids
 
 
-def _proposed(c: _Day) -> list[str]:
-    """Up to the most goals, from the person's own open to-dos due through the week, soonest first."""
+def _proposed(c: _Day) -> list[tuple[str, str | None]]:
+    """Up to the most goals, from the person's own open to-dos due through the week, soonest first, each with the side
+    its to-do is on (None when on none)."""
     found = []
     for a in c.open_actions():
         day = firm_due(a.data)
         if c.mine(a.data) and day is not None and day <= c.last:
-            found.append((day, a.data["text"].lower(), a.data["text"]))
+            found.append((day, a.data["text"].lower(), a.data["text"], sides.side_of_item(c.view, c.cfg, a)))
     seen: set[str] = set()
-    proposed = []
-    for _, key, text in sorted(found):
+    proposed: list[tuple[str, str | None]] = []
+    for _, key, text, side in sorted(found, key=lambda f: f[:3]):
         if key not in seen:
             seen.add(key)
-            proposed.append(text)
+            proposed.append((text, side))
     return proposed[: c.cfg.steward.brief.goals_max]
 
 
@@ -1100,8 +1104,16 @@ def _monday(c: _Day) -> Brief:
     (`engine/week_ahead.py`), which the screen shows as one card in the briefing's place for "This week"."""
     rule = c.cfg.steward.brief
     confirmed = week_plan.goals_of(c.view, c.pm, c.first)
+    ideas = [] if confirmed else _proposed(c)
     goals = Goals(
-        c.first, c.last, bool(confirmed), confirmed, [] if confirmed else _proposed(c), rule.goals_min, rule.goals_max
+        c.first,
+        c.last,
+        bool(confirmed),
+        confirmed,
+        [text for text, _ in ideas],
+        rule.goals_min,
+        rule.goals_max,
+        [side for _, side in ideas],
     )
     return Brief(
         "monday",

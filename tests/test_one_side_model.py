@@ -112,7 +112,11 @@ def test_the_agenda_and_the_week_name_the_side_each_meeting_is_on(sided):
     assert by_title[MEETINGS["job"][0]] == seeded["sides"]["job"]["id"]
     assert {by_title[t] for t in MEETINGS["business"]} == {seeded["sides"]["business"]["id"]}
     week = client.get("/api/today/week").json()
-    assert {m["title"]: m["side"] for m in week["meetings"]} == by_title
+    in_week = {m["title"]: m["side"] for m in week["meetings"]}
+    # Every meeting seeded is in both, and each one the week lists names the same side the agenda does. The agenda also
+    # lists the person's own entries of the week (no one else in them), which the week's meetings leave out.
+    assert {*MEETINGS["job"], *MEETINGS["business"]} <= set(in_week)
+    assert in_week == {title: by_title[title] for title in in_week}
 
 
 def test_each_person_waited_on_from_two_sides_is_a_row_for_each(sided):

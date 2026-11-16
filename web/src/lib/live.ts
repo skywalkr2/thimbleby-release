@@ -37,6 +37,12 @@ const FOLLOWUPS = ["followups", "open-items", "brief", "notifications-waiting", 
 const FILES = ["files", "text", "working-copies", "text-review", "file-kinds", "changes", "record", "plugin-today"];
 const PLUGIN = ["plugin-today", "panels", "panel-rows", "panel-document", "record", "kind", "stages", "plugin-actions", "text", "working-copies", "today", "changes"];
 
+// The week ahead's card reads again only after a kind of record the week is made from: a to-do, a dated fact, a person's days
+// away, a kept routine (a glossary entry), a calendar snapshot, the person's record for the week, or a setting. Never after a
+// change that cannot touch it (a reviewed change kept, a signal, a run, a request of another kind). The assistant's own
+// request to read the week is named by the live stream (`touched_families` in `engine/week_ahead.py`), not by its kind.
+const WEEK = "week-ahead";
+
 /** The query families each kind of record affects (the first part of their keys). */
 const AFFECTS: Record<string, string[]> = {
   request: CHANGES,
@@ -45,15 +51,15 @@ const AFFECTS: Record<string, string[]> = {
   source: SOURCES,
   signal: CHANGES,
   lesson: LEARNING,
-  glossary_entry: LEARNING,
+  glossary_entry: [...LEARNING, WEEK],
   routing_entry: LEARNING,
   style_note: LEARNING,
   rule: LEARNING,
   question: FOLLOWUPS,
-  action: FOLLOWUPS,
-  fact: ["notes", "changes", "today", "record", "record-page", "projects"],
+  action: [...FOLLOWUPS, WEEK],
+  fact: ["notes", "changes", "today", "record", "record-page", "projects", WEEK],
   note: ["notes", "changes", "today", "record", "record-page", "projects"],
-  person: ["people", "followups", "waiting", "today", "me", "setup", "organizations", "teams", "record", "record-page"],
+  person: ["people", "followups", "waiting", "today", "me", "setup", "organizations", "teams", "record", "record-page", WEEK],
   team: ["people", "organizations", "teams", "followups", "record", "record-page"],
   organization: ["organizations", "people", "record", "record-page"],
   project: ["projects", "business", "followups", "waiting", "today", "stages", "panels", "setup", "record", "record-page", "notes"],
@@ -68,8 +74,10 @@ const AFFECTS: Record<string, string[]> = {
   job_run: ["jobs", "watch", "today", "status", "setup", "sync"],
   watch_run: ["watch", "watch-kinds", "waiting", "today", "status", "sign-ins", "jobs"],
   tool_run: ["jobs", "status", "files", "working-copies"],
-  snapshot: ["status", "sync", "setup", "waiting"],
-  setting_change: ["settings", "status", "setup", "panels", "today", "lists", "ai-accounts", "ai-endpoints", "watch", "packs", "runtime-config", "reminder-where", "notifications-waiting", "brief"],
+  snapshot: ["status", "sync", "setup", "waiting", WEEK],
+  // The person's record for a week: the assistant's reading, the rows set aside and the goals the briefing shows.
+  week_plan: [WEEK, "brief", "changes"],
+  setting_change: ["settings", "status", "setup", "panels", "today", "lists", "ai-accounts", "ai-endpoints", "watch", "packs", "runtime-config", "reminder-where", "notifications-waiting", "brief", WEEK],
   value_list: ["lists", "settings", "people", "projects"],
   // The audit trail has no screen yet, so writing an entry refreshes nothing.
   audit_entry: [],

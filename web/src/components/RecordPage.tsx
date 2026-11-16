@@ -826,12 +826,8 @@ function TeamMembers(props: { team: string }) {
       ) : (
         <p className="hint">
           {t("team.no_members")}
-          {available.length === 0 && (
-            <>
-              {" "}
-              <a href={viewHref("records/people")}>{t("team.see_people")}</a>
-            </>
-          )}
+          {" "}
+          <a href={viewHref("records/people")}>{t("team.see_people")}</a>
         </p>
       )}
       {available.length > 0 && (
