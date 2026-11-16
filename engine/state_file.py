@@ -10,12 +10,31 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+#: How many times, and how long apart, a replace the system refuses for a moment is tried again (a file another
+#: thread or a scanner has open cannot be replaced on some systems); about a second and a half in all.
+REPLACE_TRIES = 15
+REPLACE_WAIT = 0.1
+
 _LOCKS: dict[str, threading.RLock] = {}
 _LOCKS_GUARD = threading.Lock()
+
+
+def _replace(temporary: Path, path: Path) -> None:
+    """Put the finished file in place. A refusal for permission, which some systems give while the old file is open
+    elsewhere, is tried again a few times; one that stays is raised."""
+    for attempt in range(REPLACE_TRIES):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            if attempt == REPLACE_TRIES - 1:
+                raise
+            time.sleep(REPLACE_WAIT)
 
 
 def write_whole(path: Path, text: str | Iterable[str], *, mode: int | None = None) -> None:
@@ -32,7 +51,7 @@ def write_whole(path: Path, text: str | Iterable[str], *, mode: int | None = Non
                 handle.write(piece)
         if mode is not None:
             os.chmod(temporary, mode)
-        temporary.replace(path)
+        _replace(temporary, path)
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise

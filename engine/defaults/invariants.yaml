@@ -212,6 +212,14 @@ invariants:
       A question to anyone but the person needs at least one link, to the thing it is about, that the reader can
       open: a public web address, never a file on a computer, a local address or a page inside this app. When no such
       link exists, put the question to the person instead, or leave it out.
+  conflict-sides:
+    ops: [question.add]
+    line: A question about a conflict gives each side's source, author, date and exact words, quotes only what a source says, and a quote that isn't in its cited source is refused.
+    seed: >-
+      A question about two things that disagree gives each side in sides: the record or document its words are from,
+      who said or wrote it, the day, and the exact words, copied from that source and quoted in the question's text.
+      Never present your own summary of a record as a source ("the direction recorded"): quote the source or leave the
+      sentence out.
   audience:
     ops: [question.add, question.move, action.add, source.limit, act.draft, act.edit]
     line: A question or reply drawn from a message its sender limited goes only to people the limit allows, and a limit can only be narrowed here.

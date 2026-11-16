@@ -77,6 +77,11 @@ def _questions(text: str) -> tuple[str, ...]:
     return tuple(found)
 
 
+def questions_in(text: str) -> tuple[str, ...]:
+    """The questions a message's new text asks, each as written."""
+    return _questions(text)
+
+
 def _answered(question: str, response: str, only_question: bool) -> bool:
     escaped = re.escape(question)
     explicit = re.search(rf'Answer to ["“]{escaped}["”]\s*:\s*(.+)', response, re.IGNORECASE)

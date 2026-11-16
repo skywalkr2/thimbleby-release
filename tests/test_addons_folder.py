@@ -135,3 +135,24 @@ def test_a_startup_file_already_in_the_folder_is_never_run_when_the_folder_is_pu
     assert addons.activate() == place
     assert not marker.exists(), "a startup file in the add-ons folder ran"
     assert str(place) in sys.path and sys.path.index(str(place)) == len(sys.path) - 1, "appended: the app's own win"
+
+
+def test_starting_while_another_thread_imports_a_module_never_fails():
+    """At the first start another thread may import modules while the add-on folder is put in place; looking at each
+    loaded module's file must not trip over the list of loaded modules growing meanwhile."""
+
+    class Importing:
+        """A loaded module whose file is looked up while something else is imported."""
+
+        @property
+        def __file__(self) -> str:
+            sys.modules.setdefault("tests._imported_meanwhile", type(sys)("tests._imported_meanwhile"))
+            return __file__
+
+    sys.modules["tests._importing_meanwhile"] = Importing()  # type: ignore[assignment]
+    try:
+        place = addons.activate()
+        assert place.is_dir()
+    finally:
+        sys.modules.pop("tests._importing_meanwhile", None)
+        sys.modules.pop("tests._imported_meanwhile", None)

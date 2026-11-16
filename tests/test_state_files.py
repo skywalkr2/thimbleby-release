@@ -230,3 +230,38 @@ def test_every_file_the_app_writes_goes_through_the_whole_file_helper():
                 if ".write_text(" in line:
                     found.append(f"{path.relative_to(root)}:{number}")
     assert not found, f"write through engine.state_file.write_whole instead: {found}"
+
+
+def test_a_replace_the_system_refuses_for_a_moment_is_tried_again_and_the_write_lands(tmp_path, monkeypatch):
+    """On Windows a file another thread or a scanner has open cannot be replaced for a moment (a permission error). The
+    write waits that out a few times, so a click that saves never fails for it; the old file stays until it lands."""
+    target = tmp_path / "state.json"
+    target.write_text("old", encoding="utf-8")
+    real = Path.replace
+    refused = {"left": 3}
+
+    def replace(self, destination):
+        if refused["left"]:
+            refused["left"] -= 1
+            raise PermissionError(13, "The process cannot access the file because it is being used by another process")
+        return real(self, destination)
+
+    monkeypatch.setattr(Path, "replace", replace)
+    write_whole(target, "new")
+    assert target.read_text(encoding="utf-8") == "new"
+    assert refused["left"] == 0
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["state.json"]
+
+
+def test_a_replace_that_stays_refused_fails_in_the_end_and_leaves_the_old_file(tmp_path, monkeypatch):
+    target = tmp_path / "state.json"
+    target.write_text("old", encoding="utf-8")
+
+    def replace(self, destination):
+        raise PermissionError(13, "in use")
+
+    monkeypatch.setattr(Path, "replace", replace)
+    with pytest.raises(PermissionError):
+        write_whole(target, "new")
+    assert target.read_text(encoding="utf-8") == "old"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["state.json"]

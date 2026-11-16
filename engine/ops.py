@@ -10,6 +10,7 @@ import json
 import re
 import types
 from datetime import date
+from datetime import date as date_type
 from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 from pydantic import (
@@ -782,6 +783,24 @@ class WouldChange(BaseModel):
         return self
 
 
+class ConflictSideIn(BaseModel):
+    """One side of a conflict a question is about: where it was said, by whom, when, and the exact words."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = Field(
+        description='The record or document the words are from, by its id from the lists you were given, or "input" '
+        "for the input being read. Never the assistant's own summary of a record."
+    )
+    author: str = Field(min_length=1, description="Who said or wrote it, by name or id, as the source gives it.")
+    date: date_type = Field(description="The day it was said or written, as the source gives it (YYYY-MM-DD).")
+    quote: str = Field(
+        min_length=3,
+        description="The exact words of this side, copied from that source. A quote that isn't in the source is "
+        "refused.",
+    )
+
+
 class QuestionAddOp(OpModel):
     """A question for a person, written for its reader. A decision is a question to whoever decides, the user when
     nobody is named. A question to anyone else needs at least one link the recipient can open."""
@@ -826,6 +845,13 @@ class QuestionAddOp(OpModel):
         None,
         description='Who asked it, by name or id, when the input says who put the question to the user ("Ana asks '
         "which trim size to use\"). Leave it out when the input doesn't say; never guess.",
+    )
+    sides: list[ConflictSideIn] = Field(
+        default_factory=list,
+        description="For a question about a conflict (asks_about mistake): each side, with the record or document its "
+        "words are from, its author, its date and the exact words. Two or more. Put each side's words in the "
+        "question's text, quoted, and never describe a side in your own words as if a source said them (not "
+        '"the direction recorded"): the reader must see whose words each is.',
     )
     term: str | None = Field(
         None,

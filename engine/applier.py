@@ -9,7 +9,7 @@ dropped and shown, returned lints hold an op that would reach another person and
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from email.utils import parseaddr
@@ -137,6 +137,7 @@ from engine.ops import (
 from engine.origin import marked_name
 from engine.plugin_api import NeedsPerson
 from engine.records import REGISTRY, entry_problem, model_for
+from engine.replies_owed import questions_in
 from engine.reply_split import split_message
 from engine.rule_use import RULE_CHECK, failing_rules
 from engine.storage import Store, StoreError, WriteContext
@@ -331,6 +332,7 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
     problems += _thread_promise_unanswered(cs, ctx)
     problems += _owner_mail_unanswered(cs, ctx)
     problems += _own_promise_missed(cs, ctx)
+    problems += _reply_asked_back(cs, ctx)
     problems += _promise_as_fact(cs, ctx)
     problems += _due_move_missed(cs, ctx)
     problems += _due_reading_differs(cs, ctx)
@@ -873,6 +875,8 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
                 for link in op.links:
                     if not _openable(link.url):
                         refuse(i, "question-links", f"{link.url} isn't a link the recipient can open")
+            for why in _conflict_problems(op, ctx, view, assistant_names):
+                refuse(i, "conflict-sides", why)
             _wording(i, op.title + " " + op.text, ctx, lint, _quotes_in(op, ctx))
             _item_text(i, op.title, ctx, lint, _quotes_in(op, ctx), asks=True)
             if not to_pm:
@@ -2989,6 +2993,108 @@ def _own_promises(text: str, ctx: Context) -> list[str]:
     words = [w for w in language_words(ctx.cfg.language, "own_promise_words") if w.strip()]
     sentences = (s.strip() for s in re.split(r"(?<=[.!?\u3002\uff01\uff1f])\s+|\n+", text))
     return [s for s in sentences if s and any(scope.has_word(s, w) for w in words)]
+
+
+def _reply_asked_back(cs: ChangesetIn, ctx: Context) -> list[Problem]:
+    """A reply handed in against a question that went out holds a question of its own: the run drafts the answer first
+    (a reply owed, with the draft in its reply) and asks the replier nothing new. A question to the replier in that run
+    is sent back once (a lint: a question mark is only a sign of a question). A rule on the reply's own words and the
+    person it was asked of, with no AI: a reply with no question in it, a question to anyone else and the person's
+    own changes are left alone."""
+    name = "reply-question-first"
+    level = ctx.cfg.checks.lints.get(name, "off")
+    if level == "off" or ctx.actor == "pm" or ctx.confirmed_by_pm or not ctx.inputs.request:
+        return []
+    view = ctx.store.read()
+    request = view.get("request", ctx.inputs.request)
+    asked = (
+        view.get("question", request.data["answers"]) if request is not None and request.data.get("answers") else None
+    )
+    if asked is None or not asked.data.get("to"):
+        return []
+    head = reply_lines.leading_headers(ctx.inputs.raw_input)
+    held = questions_in(split_message(head[1] if head is not None else ctx.inputs.raw_input).new)
+    if not held:
+        return []
+    drafted = any(isinstance(op, ActionAddOp) and op.reply_owed for op in cs.ops)
+    why = (
+        "ask nothing new of them in the same run: their question is answered by the draft"
+        if drafted
+        else "the reply holds a question of its own, so the run drafts the answer first: add the reply owed, with the "
+        "draft in its reply and where the answer comes from, and ask nothing new of them"
+    )
+    return [
+        Problem(
+            name,
+            ctx.cfg.checks.projects.get(op.project or "", {}).get(name) or level,
+            i,
+            f"{_shown_name(ctx, asked.data['to'])} replied with a question ({held[0]!r}); {why}",
+            held[0],
+        )
+        for i, op in enumerate(cs.ops)
+        if isinstance(op, QuestionAddOp) and ctx.people.resolve(op.to).person == asked.data["to"]
+    ]
+
+
+def _side_text(ctx: Context, view: Any, source: str) -> str | None:
+    """The words of what a conflict side cites, or None when it cites nothing the run was given: the input being read
+    (by its source id or "input") or a record by its id, whose own words are its text, or for a saved source its
+    content."""
+    if source.casefold() == "input" or source == ctx.inputs.source:
+        return ctx.inputs.raw_input + "\n" + ctx.inputs.note
+    kind = id_words.prefixes(ctx.store.plugins.records).get(source.rsplit("-", 1)[0])
+    record = view.get(kind, source) if kind is not None else None
+    if record is None:
+        return None
+    if kind == "source":
+        return source_text(Workspace(ctx.store.path.parent), ctx.store, source)
+    return " ".join(v for v in _strings(record.data))
+
+
+def _strings(value: Any) -> Iterable[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item)
+
+
+def _conflict_problems(op: QuestionAddOp, ctx: Context, view: Any, assistant_names: list[str]) -> list[str]:
+    """Why a question about a conflict doesn't say whose words each side is, in plain words. A question about a mistake
+    gives two or more sides; each side's quote must be in the source it cites (the evidence check's own test, against
+    that source), its author is never the assistant, the question's text carries each quote, and any other passage the
+    text quotes is one of the sides' or the input's. The person's own questions are left alone."""
+    if ctx.actor == "pm":
+        return []
+    if op.asks_about == "mistake" and len(op.sides) < 2:
+        return [
+            "a question about a conflict gives each side in sides: the record or document, its author, its date and "
+            "the exact words. Never your own summary of a side"
+        ]
+    if not op.sides:
+        return []
+    found: list[str] = []
+    named = {n.casefold() for n in assistant_names}
+    for side in op.sides:
+        text = _side_text(ctx, view, side.source)
+        if text is None:
+            found.append(f"{side.source!r} isn't a record or the input: cite the record or document the words are from")
+        elif normalize(side.quote) not in normalize(text) and not (
+            side.source.casefold() == "input" and ctx.inputs.evidence_source(side.quote) is not None
+        ):
+            found.append(f"the quote {side.quote!r} isn't in {side.source}; copy the words exactly")
+        if side.author.casefold() in named:
+            found.append("a side's author is who said it, never the assistant")
+        if normalize(side.quote) not in normalize(f"{op.title} {op.text}"):
+            found.append(f"the question doesn't show the words of {side.source}: quote {side.quote!r} in its text")
+    allowed = [normalize(side.quote) for side in op.sides] + [normalize(ctx.inputs.raw_input)]
+    for passage in quoted_passages(f"{op.title} {op.text}"):
+        if not any(normalize(passage) in held for held in allowed):
+            found.append(f"{passage!r} is quoted but is from none of the sides' sources: quote only what a source says")
+    return found
 
 
 def _own_promise_missed(cs: ChangesetIn, ctx: Context) -> list[Problem]:

@@ -1633,6 +1633,11 @@ class Request(Record):
         "plus the high figure; none until the first dispatch after a go.",
     )
     note: str | None = Field(None, description="The person's own words that came with the request.")
+    answers: str | None = Field(
+        None,
+        description="The id of the question that went out, when the input is a reply handed in against it. The rules "
+        "that answer a reply's own question first read it.",
+    )
     source: str | None = Field(None, description="The id of the source the request is about, if any.")
     origin: Literal["pm", "input", "schedule"] = Field(
         description="Who started it: pm, the person (handing something in or sending work back); input, an outside "

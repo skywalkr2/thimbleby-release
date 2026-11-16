@@ -31,7 +31,12 @@ on the entry it made: each one it states must match). An expected `text.draft` (
 pending draft) may name the `field` it is for and `text_has` (words in the drafted text). A case that names
 `handed_over` (`action`, an open action among its starting records, and a `note`) starts from the person handing that
 action to the assistant, as the button on its row does, with no input handed in; its `stub_answer` holds the prose as
-`draft`, and no ops. A case that names `person_look` (`tally`, the lines of a fictional contact tally as the packet
+`draft`, and no ops. A case that names `answers` (one of its starting questions) hands its pasted text in as the
+reply to that question, with the note the Reply button writes (forbid `question.add` and `lesson.add` with
+`attempted: true` to refuse a new question or a correction even when the checks stop it); an expected `action.add`
+may name `reply_owed` (true for the action that is the reply the person owes), and an expected `question.add` may
+name `sides` (how many sides of a conflict it cites).
+A case that names `person_look` (`tally`, the lines of a fictional contact tally as the packet
 shows them, and `series`, the repeating calendar entries) starts from the weekly look at who the person deals with,
 queued as the worker queues it, with no input handed in; its `stub_answer` holds the ops, an expected `glossary.add` may
 name `meaning_has` and `routine` (its weekdays and times), and a forbidden one may name `term`. A forbidden `record.set`
@@ -87,6 +92,7 @@ from engine.endings import CHOICE_CHECK
 from engine.followups import they_finished
 from engine.intake import hand_in, note_as_input
 from engine.names import People
+from engine.prompts import render
 from engine.records import REGISTRY, canonical_time
 from engine.skills import check_level, check_named, within_level
 from engine.state_file import write_whole
@@ -662,6 +668,17 @@ def _hand_in_case(ws: Workspace, store: Store, cfg: Config, case: dict[str, Any]
     on = case.get("typed_on")
     if on is None and case.get("watched") is not None:
         return _hand_in_watched(ws, store, case, now)
+    if on is None and case.get("answers"):
+        # A reply handed in against a question that went out, with the note the screen's Reply button writes.
+        asked = store.read().get("question", case["answers"])
+        if asked is None:
+            raise ValueError(f"case {case['id']}: answers names a question the case doesn't start with")
+        note = render(
+            "reply",
+            {"name": People(store, cfg).name(asked.data["to"]), "title": asked.data["title"], "question": asked.id},
+            ws.root,
+        )
+        return hand_in(ws, store, note=note, pasted=case.get("pasted", ""), now=now, answers=asked.id).request
     if on is None:
         request = hand_in(
             ws, store, note=case.get("note", ""), pasted=case.get("pasted", ""), now=now, project=case.get("project")
@@ -800,6 +817,8 @@ def _op_matches(e: dict[str, Any], o: dict[str, Any], store: Store) -> bool:
             return False
         if e.get("no_reply") and a.get("reply"):
             return False
+        if "reply_owed" in e and bool(a.get("reply_owed")) != bool(e["reply_owed"]):
+            return False
         if "due" in e and a.get("due") != e["due"]:
             return False
         if "promised_to" in e and sorted(a.get("promised_to") or []) != sorted(e["promised_to"]):
@@ -847,6 +866,7 @@ def _op_matches(e: dict[str, Any], o: dict[str, Any], store: Store) -> bool:
             and q["to"] == e.get("to", q["to"])
             and q["kind"] == e.get("kind", q["kind"])
             and _has_words(q["title"], e.get("text_has", []))
+            and ("sides" not in e or len(o["op"].get("sides") or []) == e["sides"])
         )
     if op == "fact":
         f = _record(store, o, "fact")

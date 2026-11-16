@@ -1767,6 +1767,7 @@ def _default_lints() -> dict[str, Severity]:
         "decision-from-list": "return",
         "decided-as-fact": "return",
         "claim-asked-of-the-person": "return",
+        "reply-question-first": "return",
         "owner-mail-unanswered": "return",
         "promise-owed-to-reader": "return",
     }

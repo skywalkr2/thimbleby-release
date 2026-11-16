@@ -1,0 +1,49 @@
+id: reply-with-a-question-is-answered-first
+title: A reply that confirms an issue and asks where a phrase came from gets a drafted answer, no new question and no correction
+skills: [no-repeat-question, use-facts, evidence]
+received: '2026-10-14'
+# The reply confirms what the question asked and asks "where did you see ...?". The answer is in the records, so the
+# first output is the reply owed with its draft naming where it comes from. The confirmation closes the question;
+# nothing is asked of the replier again and nothing is learned as a correction.
+given_file: busy-portfolio.yaml
+given:
+- kind: fact
+  id: FACT-90
+  fields:
+    project: PRJ-4
+    text: The pilot's January window is set out in the vendor's rollout plan, issued on 2026-10-05 by the vendor's delivery lead.
+answers: Q-5
+pasted: |-
+  From: Tobias Wren
+
+  Yes, the pilot covers the north and east depots. Where did you see the January window mentioned?
+expect:
+- op: question.done
+  id: Q-5
+- op: action.add
+  reply_owed: true
+  reply_has:
+  - January window
+  - rollout plan
+forbid:
+- op: question.add
+  attempted: true
+- op: lesson.add
+  attempted: true
+stub_answer:
+  summary: Tobias confirmed the depots and asked where the January window came from; the answer is drafted for you to send.
+  ops:
+  - op: question.done
+    id: Q-5
+    answer: The north and east depots.
+    evidence:
+      quote: the pilot covers the north and east depots
+  - op: action.add
+    project: PRJ-4
+    text: Tell Tobias Wren where the January window for the pilot comes from
+    owners:
+    - PER-1
+    reply_owed: true
+    reply: The January window comes from the vendor's rollout plan, issued on 5 October 2026 by the vendor's delivery lead.
+    evidence:
+      quote: Where did you see the January window mentioned?

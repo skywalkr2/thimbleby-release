@@ -50,6 +50,7 @@ def hand_in(
     data_level: str | None = None,
     project: str | None = None,
     cfg: Config | None = None,
+    answers: str | None = None,
 ) -> HandedIn:
     note, pasted = note.strip(), as_text(pasted).strip()
     if not note and not pasted:
@@ -95,6 +96,7 @@ def hand_in(
                 "created_at": now.isoformat(),
                 **({"sensitivity": data_level} if data_level else {}),
                 **({"project": project} if project else {}),
+                **({"answers": answers} if answers else {}),
             },
             _PM,
         )

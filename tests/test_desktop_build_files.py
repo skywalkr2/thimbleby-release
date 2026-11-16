@@ -548,3 +548,33 @@ def test_each_runner_tests_a_fresh_install_from_first_start_to_uninstall_after_t
     spec = (REPO / "web" / "e2e-install" / "fresh-install.spec.ts").read_text()
     assert "Getting started" in spec and "FRESH_INSTALL_VISIT" in spec
     assert "testMatch: /fresh-install\\.spec\\.ts/" in (REPO / "web" / "playwright.install.config.ts").read_text()
+
+
+def test_the_fresh_install_check_keeps_the_apps_log_and_the_slow_or_failed_requests_beside_its_pictures(tmp_path):
+    """S-0542: after every visit, passed or failed, the app's log folder is copied beside the pictures, and the browser
+    test writes every request that failed or took over two seconds; so a slow or failing install shows its cause."""
+    import fresh_install_check
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "desktop.log").write_text("the app said this", encoding="utf-8")
+    kept = tmp_path / "pictures" / "app-log-first-start"
+    fresh_install_check.keep_log(logs, kept)
+    assert (kept / "desktop.log").read_text(encoding="utf-8") == "the app said this"
+    # A folder that is not there, or cannot be copied, never raises over the visit's own failure.
+    fresh_install_check.keep_log(tmp_path / "missing", tmp_path / "nowhere")
+    assert not (tmp_path / "nowhere").exists()
+    script = (BUILD / "fresh_install_check.py").read_text()
+    assert "finally:" in script.split("def visit(")[1].split("def keep_log(")[0]
+    spec = (REPO / "web" / "e2e-install" / "fresh-install.spec.ts").read_text()
+    assert "slow-or-failed-requests.txt" in spec and "test.afterEach" in spec
+    assert "responseEnd > 2000" in spec and "status() >= 400" in spec
+
+
+def test_the_fresh_install_walk_presses_a_button_only_when_it_is_enabled_and_checks_the_bundled_add_ons():
+    """S-0542 and S-0551: the walk presses a step's button once it is enabled and still on the step it was found on
+    (a press on a disabled button landed a step late and waited on a button that had gone), and the check proves the
+    first workspace's bundled add-on is on and the Add-ons screen opens, on both systems."""
+    spec = (REPO / "web" / "e2e-install" / "fresh-install.spec.ts").read_text()
+    assert "toBeEnabled" in spec
+    assert "#settings/addons" in spec and "parcels" in spec and '"Add-ons"' in spec

@@ -1,0 +1,48 @@
+id: conflict-question-cites-each-side
+title: A question about two documents that disagree cites each side by its source, author and date, with the exact words
+skills: [evidence, no-repeat-question]
+received: '2026-10-14'
+# Two documents disagree on the pilot's start. The question to the person quotes each side and says where it is from;
+# it never calls one side "the direction recorded". One side is the message being read, the other a record.
+given_file: busy-portfolio.yaml
+given:
+- kind: fact
+  id: FACT-91
+  fields:
+    project: PRJ-4
+    text: 'Rollout plan, issued 2026-10-05 by the vendor delivery lead: the pilot starts on 2027-01-11.'
+pasted: |-
+  From: Tobias Wren
+  Date: Tue, 13 Oct 2026 09:00:00 +0000
+
+  Per the steering notes, the pilot starts on 2026-12-07, before the holidays.
+expect:
+- op: question.add
+  to: PER-1
+  sides: 2
+  text_has:
+  - pilot
+stub_answer:
+  summary: The rollout plan and the steering notes give different start days for the pilot.
+  ops:
+  - op: question.add
+    to: PER-1
+    title: 'Route Optimizer Pilot: which start day holds, 7 December or 11 January?'
+    text: 'The rollout plan (the vendor delivery lead, 5 October 2026) says "the pilot starts on 2027-01-11". The steering
+      notes (Tobias Wren, 13 October 2026) say "the pilot starts on 2026-12-07, before the holidays". Which one holds?'
+    project: PRJ-4
+    asks_about: mistake
+    kind: decision
+    would_change:
+      what: field
+      record: PRJ-4
+      field: target
+    sides:
+    - source: FACT-91
+      author: the vendor delivery lead
+      date: '2026-10-05'
+      quote: the pilot starts on 2027-01-11
+    - source: input
+      author: Tobias Wren
+      date: '2026-10-13'
+      quote: the pilot starts on 2026-12-07, before the holidays

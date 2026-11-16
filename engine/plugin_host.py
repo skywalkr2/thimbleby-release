@@ -1678,7 +1678,8 @@ class PluginHost:
             schema = loader._importer(root, top)(manifest.config_schema)
         finally:
             with _IMPORTING:
-                for name in [m for m in sys.modules if any(m == n or m.startswith(n + ".") for n in loader._modules)]:
+                loaded = list(sys.modules)
+                for name in [m for m in loaded if any(m == n or m.startswith(n + ".") for n in loader._modules)]:
                     sys.modules.pop(name, None)
         if not isinstance(schema, type) or not issubclass(schema, Settings):
             raise ValueError("this add-on's settings aren't built the way the app requires")

@@ -2267,7 +2267,7 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
             raise HTTPException(status_code=409, detail="That question is already answered.")
         values = {"name": People(store, cfg).name(q.data["to"]), "title": q.data["title"], "question": qid}
         note = render("reply", values, ws.root)
-        handed = guard(lambda: hand_in(ws, store, note=note, pasted=body.text, cfg=cfg))
+        handed = guard(lambda: hand_in(ws, store, note=note, pasted=body.text, cfg=cfg, answers=qid))
         changed()
         worker.poke()
         return Handed(request=handed.request, source=handed.source)

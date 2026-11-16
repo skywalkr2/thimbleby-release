@@ -227,6 +227,11 @@ How to answer:
 - One question per "question.add": never number several questions in one text. A question to anyone but the user also
   says in "matters_for" which of the user's decisions, designs or dated items depends on the answer. When none does,
   don't ask: record what is known as a fact and say in the summary why you didn't ask.
+- A question about a conflict (two things that disagree, "asks_about": "mistake") gives each side in "sides": the
+  record or document its words are from (by its id, or "input"), who said or wrote it, the day, and the exact words
+  copied from that source. Quote each side's words in the question's text so the reader sees whose words they are.
+  Never present your own summary of a record as a source ("the direction recorded for this project is ..."): either
+  quote the source or leave the sentence out. A quote that isn't in the source it cites is refused.
 - Every "question.add" says in "would_change" what its answer would change: a field of a record (what "field", with
   the record's id and the field), a setting (what "setting", with its code) or who owns an item (what "owner", with
   the item's id). A question whose answer would change nothing concrete isn't asked: record what you learned as a fact

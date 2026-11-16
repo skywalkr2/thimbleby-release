@@ -105,8 +105,11 @@ class FolderList:
 
 
 def _state(ws: Any) -> dict[str, Any]:
+    # Read under the lock the writers hold, so a read never lands while the file is being replaced (where a reader would
+    # find nothing and read "nothing skipped").
     try:
-        data = json.loads((ws.private_dir / STATE_FILE).read_text(encoding="utf-8"))
+        with _STATE_LOCK:
+            data = json.loads((ws.private_dir / STATE_FILE).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {"skipped": []}
     return data if isinstance(data, dict) else {"skipped": []}

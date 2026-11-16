@@ -55,6 +55,25 @@ def visit(system: str, app: Path, env: dict[str, str], port: int, which: str, pi
     """Start the app, run one visit of the browser test against it, and quit it through the menu's own path."""
     workspace, logs = places({**os.environ, **env}, Path(env["HOME"]), system)
     start_app(system, app, env)
+    try:
+        _walk(system, workspace, logs, env, port, which, pictures)
+    finally:
+        keep_log(logs, pictures / f"app-log-{which.replace(' ', '-')}")
+
+
+def keep_log(logs: Path, into: Path) -> None:
+    """Copy the app's log folder beside the pictures after every visit, passed or failed, so a slow or failing install
+    shows what the app said (the browser test keeps its own list of slow or failed requests in the same place)."""
+    try:
+        if logs.is_dir():
+            shutil.copytree(logs, into, dirs_exist_ok=True)
+    except OSError as err:
+        # A log that cannot be copied never hides why the visit failed.
+        print(f"The app's log could not be kept: {err}")
+
+
+def _walk(system: str, workspace: Path, logs: Path, env: dict[str, str], port: int, which: str, pictures: Path) -> None:
+    """The visit itself: wait for the app, find its sign-in link, run the browser test, quit by the menu path."""
     if not wait_ready(f"http://127.0.0.1:{port}/api/health", timeout=120, interval=0.5, request_timeout=2):
         problem = (logs / "desktop.log").read_text() if (logs / "desktop.log").exists() else "no log"
         raise SystemExit(f"The app did not answer on the {which} visit.\n{problem}")

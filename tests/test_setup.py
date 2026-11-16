@@ -1418,3 +1418,43 @@ def test_setup_state_survives_changes_made_at_the_same_time(tmp_path):
     kept = setup_module._state(ws)
     assert kept["addons_decided"] == sorted(names)
     assert kept["walkthrough"] == {"step": "ai", "started": True, "closed": False}
+
+
+def test_a_step_skipped_while_the_screen_reads_the_steps_is_never_lost_or_read_as_not_skipped(tmp_path, monkeypatch):
+    """Skipping a step writes the setup file while the screen reads it for the list of steps. The read waits for the
+    write (one lock for both), so a reader never finds the file missing or half there and reads "nothing skipped"."""
+    import threading
+    from types import SimpleNamespace
+
+    from engine import setup as setup_module
+
+    ws = SimpleNamespace(private_dir=tmp_path)
+    # A computer where the file is out of reach for a moment while it is replaced (a reader finds nothing).
+    real_write = setup_module.write_whole
+
+    def gappy(path, text, **kwargs):
+        path.unlink(missing_ok=True)
+        threading.Event().wait(0.002)
+        real_write(path, text, **kwargs)
+
+    monkeypatch.setattr(setup_module, "write_whole", gappy)
+    seen: list[set[str]] = []
+    names = [f"step{n}" for n in range(30)]
+    stop = threading.Event()
+
+    def reader():
+        while not stop.is_set():
+            seen.append(set(setup_module._state(ws).get("skipped", [])))
+
+    thread = threading.Thread(target=reader)
+    thread.start()
+    try:
+        for name in names:
+            setup_module.skip(ws, name)
+    finally:
+        stop.set()
+        thread.join()
+    assert set(setup_module._state(ws)["skipped"]) == set(names)
+    # What a reader sees only ever grows: a read that failed would show an empty list after a longer one.
+    sizes = [len(s) for s in seen]
+    assert sizes == sorted(sizes)

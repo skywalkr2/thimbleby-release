@@ -86,9 +86,9 @@ def activate(configured: str | None = None) -> Path:
         return place
     # An app built again in the same process (an add-on installed, updated or removed) imports its add-ons afresh: the
     # previous app has stopped, so modules it loaded from this folder are dropped and an updated add-on's new files are
-    # the ones used.
-    for module in [n for n, m in sys.modules.items() if _from(m, place)]:
-        del sys.modules[module]
+    # the ones used. A copy is looked through, since looking up each module's file lets other threads import meanwhile.
+    for module in [n for n, m in sys.modules.copy().items() if _from(m, place)]:
+        sys.modules.pop(module, None)
     if str(place) not in sys.path:
         # Appended, so the app's own packages win. Never `site.addsitedir`: it runs the `import` lines of every `.pth`
         # file in the folder, and installing an add-on must not run anything.

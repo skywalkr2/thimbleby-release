@@ -1725,6 +1725,7 @@ A unit of work for the assistant. The engine creates it when something is handed
 | `range_account` | str \| None | `None` | The AI account the estimate was priced on: the first one that may see the material and whose model's context window holds the packet and its answer. |
 | `spend_cap_usd` | float \| None | `None` | The most the request may spend in all under the person's go: what it had spent before the go plus the high figure; none until the first dispatch after a go. |
 | `note` | str \| None | `None` | The person's own words that came with the request. |
+| `answers` | str \| None | `None` | The id of the question that went out, when the input is a reply handed in against it. The rules that answer a reply's own question first read it. |
 | `source` | str \| None | `None` | The id of the source the request is about, if any. |
 | `origin` | Literal['pm', 'input', 'schedule'] | required | Who started it: pm, the person (handing something in or sending work back); input, an outside input; schedule, a schedule or a stage entry. |
 | `state` | Literal['queued', 'running', 'review', 'done', 'needs_you', 'failed'] | `'queued'` | queued: waiting its turn. running: with the assistant. review: its changeset awaits the person. done: finished. needs_you: stopped until the person acts (a request waiting for their go is needs_you with approval `required`). failed: ended with an error. |
@@ -3446,6 +3447,11 @@ A question for a person, written for its reader. A decision is a question to who
 | `would_change.field` | str \| None | `None` | For field: the name of the field. |
 | `would_change.setting` | str \| None | `None` | For setting: the setting's code from the settings list. |
 | `asker` | str \| None | `None` | Who asked it, by name or id, when the input says who put the question to the user ("Ana asks which trim size to use"). Leave it out when the input doesn't say; never guess. |
+| `sides` | list[ConflictSideIn] | `[]` | For a question about a conflict (asks_about mistake): each side, with the record or document its words are from, its author, its date and the exact words. Two or more. Put each side's words in the question's text, quoted, and never describe a side in your own words as if a source said them (not "the direction recorded"): the reader must see whose words each is. |
+| `sides[].source` | str | required | The record or document the words are from, by its id from the lists you were given, or "input" for the input being read. Never the assistant's own summary of a record. |
+| `sides[].author` | str | required | Who said or wrote it, by name or id, as the source gives it. |
+| `sides[].date` | date | required | The day it was said or written, as the source gives it (YYYY-MM-DD). |
+| `sides[].quote` | str | required | The exact words of this side, copied from that source. A quote that isn't in the source is refused. |
 | `term` | str \| None | `None` | A question to the user asking what a word or acronym means here: the word, copied from the "unknown_words" block of the request. The title and text are then written for you and the question goes to the user. Leave it out for every other question. |
 
 ### `question.done`
