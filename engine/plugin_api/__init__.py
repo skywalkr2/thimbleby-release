@@ -52,7 +52,7 @@ from engine.tasks import TaskKind
 from engine.texts import LongText, Unit
 from engine.tools import ToolBox, ToolError, ToolResult
 
-PLUGIN_API_VERSION = "0.3.97"
+PLUGIN_API_VERSION = "0.3.98"
 
 #: The earlier minor version this core still serves (one minor back). A pack whose range reaches the end of that minor
 #: stays on, marked "Built for an earlier version"; the window ends with the next minor release. Every name the core
@@ -344,6 +344,16 @@ class ReadView:
     #: Set by the host: the plugin's data layers, shipped first and the most specific last.
     data_layers: Callable[[str | None], list[Path]] | None = None
 
+    #: Set by the host: the carrier's tracking page for a parcel, from the carriers the app and running add-ons know.
+    read_tracking_page: Callable[[str | None, str | None], str | None] | None = None
+
+    def tracking_page(self, carrier: str | None, tracking: str | None) -> str | None:
+        """The public tracking page of the carrier that carries a parcel, as a full https address with the tracking
+        number in it, or None when the carrier isn't known (no one's page: the app's own list, running add-ons'
+        `provides.delivery_carriers` and the workspace's own carriers are all read) or there is no number. `carrier`
+        is the carrier's name as a mail wrote it, as a calendar entry's `delivery` holds it."""
+        return self.read_tracking_page(carrier, tracking) if self.read_tracking_page else None
+
     def data(self, path: str, *, project: str | None = None) -> bytes | None:
         """A data file by relative path ("templates/classic.yaml"), from the most specific layer that has it: the
         project's (`plugin-data/<plugin>/projects/<project>/`), the workspace's (`plugin-data/<plugin>/`), then what
@@ -612,6 +622,10 @@ class OpWriter(ReadView):
 class EventContext(ReadView):
     """What an event handler gets: a read view, the plugin's settings, and two commands the core carries out after the
     handler returns (never direct writes or sends). If the handler raises, its commands are dropped."""
+
+    #: Set by the host for a job whose plugin lists hosts in `requires.network`: a web client that reaches only those
+    #: hosts. None in an event handler, and for a plugin with no hosts.
+    web: Any = None
 
     def __init__(self, view: Any, plugin: str, config: Settings):
         super().__init__(view, plugin)
@@ -2230,7 +2244,11 @@ class Registrar:
         `every_minutes` by default; the workspace changes it or turns the job off in
         `workspace.plugins.jobs.<name>`. Like an event handler it reads, queues requests, files questions, raises
         interface events and stages its own ops; it never writes records directly and never calls AI itself. It runs
-        only while the app runs, and each run is recorded."""
+        only while the app runs, and each run is recorded. When `requires.network` lists hosts, `context.web` is the
+        same web client a connector gets, reaching only those hosts (`.get(url, ...)` and the others; a refused or
+        failed read raises `ConnectorError`, which a job catches itself or lets fail the run); an event handler's
+        `context.web` is None. Text a job reads this way is untrusted: it reaches a run only through the note of a
+        request it queues, or a packet function that marks it so."""
         self._name(name)
         if name in self.jobs or not callable(run) or not isinstance(every_minutes, int) or every_minutes < 5:
             raise RegistrationRefused("job", "duplicate job, invalid run function, or a schedule under 5 minutes")

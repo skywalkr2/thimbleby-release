@@ -817,7 +817,7 @@ def _assistant_sorted(
         store,
         cfg,
         router,
-        [mail_sorting.header_of(key, facts, cfg.watch.mail_kinds) for key, facts in unplaced.items()],
+        [mail_sorting.header_of(key, facts, cfg.watch.mail_kinds, cfg) for key, facts in unplaced.items()],
         data_level_of(cfg, source),
         go,
     )
@@ -913,8 +913,10 @@ def first_go_sorting(
     sources = {s.id: s for s in cfg.watch.sources}
     runs, total, unpriced = 0, 0.0, 0
     for source_id, items in found.items():
-        headers = [mail_sorting.header_of(item.key, facts, cfg.watch.mail_kinds) for _, _, item, facts in items]
-        priced, missing = mail_sorting.estimate(ws, cfg, router, headers, data_level_of(cfg, sources[source_id]))
+        headers = [mail_sorting.header_of(item.key, facts, cfg.watch.mail_kinds, cfg) for _, _, item, facts in items]
+        priced, missing = mail_sorting.estimate(
+            ws, cfg, router, headers, data_level_of(cfg, sources[source_id]), store.read()
+        )
         batches = -(-len(headers) // cfg.watch.sorting_batch)
         runs += batches
         total += priced

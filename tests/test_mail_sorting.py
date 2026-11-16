@@ -4,6 +4,7 @@ set-aside mail produces no request, signal or knowledge and that "This is work" 
 
 import json
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 import yaml
@@ -12,6 +13,8 @@ from fastapi.testclient import TestClient
 from engine.ai.adapters.stub import set_responder
 from engine.config import load_config
 from engine.mail_sorting import ANSWERS, RULE, read_answers
+from engine.set_aside import address_of
+from engine.storage import WriteContext
 from tests.conftest import DEMO_B
 from tests.test_set_aside import CLUB, NOW, UNIQUE, mail, requests_in
 
@@ -139,18 +142,29 @@ def test_a_subject_cannot_close_the_block_or_carry_a_second_line(tmp_path, accou
         store.close()
 
 
-def test_mail_the_rules_place_is_never_sent_to_the_run(tmp_path, account):
+def test_mail_the_persons_own_rules_place_is_never_sent_to_the_run(tmp_path, account):
     items = [
         mail("bulk", "a@lists.example.com", bulk=True),
         mail("kept", f"keep@{CLUB}", subject="Kept"),
         unplaced(1),
     ]
-    triage = [{"name": "Keep", "kind": "sender-rule", "params": {"senders": [f"keep@{CLUB}"]}, "set_aside": "never"}]
+    items.append(mail("sold", "deals@shop.example.com", subject="Sold"))
+    triage = [
+        {"name": "Keep", "kind": "sender-rule", "params": {"senders": [f"keep@{CLUB}"]}, "set_aside": "never"},
+        {
+            "name": "Shop",
+            "kind": "sender-rule",
+            "params": {"senders": ["deals@shop.example.com"]},
+            "set_aside": "sales",
+        },
+    ]
     ws, cfg, store = make(tmp_path, items, triage=triage)
     try:
         result = read(ws, store)
-        assert [row["subject"] for row in account.headers] == ["Subject 1"], "not the bulk mail, nor the kept sender"
-        assert len(result.new) == 3 and len(requests_in(store, "queued")) == 2
+        assert sorted(row["subject"] for row in account.headers) == ["Subject 1", "Subject of bulk"], (
+            "the bulk mail goes to the run (no built-in rule closes it); not the kept sender, nor the set-aside one"
+        )
+        assert len(result.new) == 4 and len(requests_in(store, "queued")) == 3
     finally:
         store.close()
 
@@ -837,3 +851,164 @@ def test_the_sorting_that_comes_later_keeps_the_kind_on_a_request_it_does_not_se
         assert snapshots(store)["bill-0"]["set_aside"] is None, "a bill is never set aside, whatever else was said"
     finally:
         store.close()
+
+
+# ---- no built-in rule closes mail: the rules give hints and the run decides (S-0523) ---------------------------------
+
+
+def updates_notice(key="site", **kw):
+    """A bulk notice the mail service files under updates, from an address that is not a no-reply one."""
+    return mail(key, "reports@lists.example.com", bulk=True, categories=["updates"], subject="Your site report", **kw)
+
+
+def test_a_bulk_updates_notice_is_not_closed_by_a_rule_and_reaches_the_run_with_the_rules_hints(tmp_path, account):
+    ws, cfg, store = make(tmp_path, [updates_notice(), unplaced(0)])
+    try:
+        read(ws, store)
+        sent = {row["subject"]: row for row in account.headers}
+        assert set(sent) == {"Your site report", "Subject 0"}, "both reach the run; nothing is closed first"
+        hints = sent["Your site report"]["hints"]
+        assert any("many people" in h for h in hints) and any("updates" in h for h in hints)
+        assert "hints" not in sent["Subject 0"], "mail no rule noticed carries no hints"
+        # Still only the sender, the subject and the categories: no body, no new field beyond the hints.
+        assert set(sent["Your site report"]) == {"id", "from", "subject", "categories", "hints"}
+        assert all(UNIQUE not in t.request for t in account.tasks)
+        # The run said work (the default answer): nothing is set aside, and the message is handed in.
+        assert not any(r.data.get("set_aside") for r in store.read().list("request"))
+        assert len(requests_in(store, "queued")) == 2
+    finally:
+        store.close()
+
+
+def test_the_run_decides_what_the_hints_noticed_a_notice_is_set_aside_with_the_runs_own_reason(tmp_path, account):
+    account.answers = {"Your site report": "notice"}
+    ws, cfg, store = make(tmp_path, [updates_notice()])
+    try:
+        read(ws, store)
+        mark = snapshots(store)["site"]["set_aside"]
+        assert mark["rule"] == RULE and mark["by"] == "assistant" and mark["section"] == "notices"
+        assert mark["reason"] == "the assistant sorted it as automated notices"
+    finally:
+        store.close()
+
+
+def test_with_rules_only_sorting_the_built_in_rules_close_the_notice_as_before(tmp_path, account):
+    to_many = updates_notice(participants=["x@example.com", "y@example.com"])
+    ws, cfg, store = make(tmp_path, [to_many, mail("promo", "b@shop.example.com", categories=["promotions"])])
+    ws.config_dir.joinpath("watch.yaml").write_text(
+        yaml.safe_dump(
+            {
+                **yaml.safe_load((ws.config_dir / "watch.yaml").read_text()),
+                "sorting": "rules",
+            }
+        )
+    )
+    try:
+        read(ws, store)
+        assert account.tasks == [], "no run with rules only"
+        marks = {k: v["set_aside"] for k, v in snapshots(store).items()}
+        assert marks["site"]["section"] == "notices" and marks["promo"]["section"] == "sales"
+    finally:
+        store.close()
+
+
+def test_the_prompt_says_the_hints_are_weighed_and_never_orders():
+    text = Path("engine/prompts/sort-mail.md").read_text()
+    assert '"hints"' in text and "never orders" in text
+
+
+# ---- corrections teach the sorting ----------------------------------------------------------------------------------
+
+
+def lessons(store):
+    return [r for r in store.read().list("lesson")]
+
+
+def test_bring_it_in_proposes_one_sorting_lesson_and_the_next_packet_carries_it_once_kept(app, account):
+    from engine import knowledge
+
+    ws, cfg, store, client, base, items = app
+    read(ws, store)
+    item = next(i for i in client.get(f"{base}/set-aside").json()["items"] if i["title"] == "Subject 0")
+    done = client.post(f"{base}/set-aside/{item['id']}/work", json={"read_version": item["version"]})
+    assert done.status_code == 200
+    found = lessons(store)
+    assert len(found) == 1, "one lesson, and no second one from a learning run"
+    lesson = found[0]
+    assert lesson.data["status"] == "proposed" and lesson.data["applies_to"]["task_kinds"] == ["sort-mail"]
+    assert lesson.data["origin"] == "assistant" and CLUB in lesson.data["text"]
+    assert "Subject 0" not in lesson.data["text"], "the lesson holds the sender, never the message's words"
+    signal = next(s for s in store.read().list("signal") if s.data["kind"] == "pulled_back")
+    assert signal.data["learned"] == [lesson.id], "the signal names the lesson, so no learning run is queued for it"
+    assert not [r for r in store.read().list("request") if r.data["task"] == "learn-correction"]
+    # Proposed: the next sorting packet does not carry it yet.
+    source = yaml.safe_load((ws.config_dir / "watch.yaml").read_text())
+    source["sources"][0]["settings"]["items"] = [*items, unplaced(7)]
+    (ws.config_dir / "watch.yaml").write_text(yaml.safe_dump(source))
+    read(ws, store)
+    assert lesson.data["text"] not in account.tasks[-1].stable
+    # Kept: the packet after it carries the lesson, in the stable part, before the batch.
+    with store.transaction() as tx:
+        current = tx.get("lesson", lesson.id)
+        fields = knowledge.keep_fields(current, "person-x", "2026-11-16T10:00:00+00:00")
+        tx.update(
+            "lesson", lesson.id, fields, WriteContext("pm", "trusted", "knowledge.keep"), read_version=current.version
+        )
+    source["sources"][0]["settings"]["items"] = [*items, unplaced(7), unplaced(8)]
+    (ws.config_dir / "watch.yaml").write_text(yaml.safe_dump(source))
+    read(ws, store)
+    task = account.tasks[-1]
+    assert lesson.data["text"] in task.stable and "# Lessons" in task.stable and lesson.data["text"] not in task.request
+
+
+def test_setting_aside_by_hand_a_message_the_run_kept_proposes_a_sorting_lesson_and_one_signal(app, account):
+    ws, cfg, store, client, base, items = app
+    read(ws, store)
+    kept = next(s for s in store.read().list("snapshot") if s.data["title"] == "Subject 1")
+    done = client.post(f"{base}/mail/{kept.id}/set-aside", json={"section": "sales"})
+    assert done.status_code == 200
+    found = lessons(store)
+    assert len(found) == 1 and found[0].data["status"] == "proposed"
+    assert found[0].data["applies_to"]["task_kinds"] == ["sort-mail"] and "doesn't need you" in found[0].data["text"]
+    signals = [s for s in store.read().list("signal") if s.data["kind"] == "set_aside"]
+    assert len(signals) == 1 and signals[0].data["learned"] == [found[0].id]
+
+
+def test_bringing_in_mail_the_persons_own_rule_set_aside_teaches_no_sorting_lesson(app, account):
+    ws, cfg, store, client, base, items = app
+    read(ws, store)
+    fingerprint = client.get(f"{base}/settings").json()["fingerprint"]
+    sent = next(s for s in store.read().list("snapshot") if s.data["title"] == "Subject 1")
+    sender = address_of(sent, ws)
+    client.post(
+        f"{base}/watch/sorting",
+        json={"choice": "sales", "senders": [sender], "domains": [], "fingerprint": fingerprint},
+    )
+    source = yaml.safe_load((ws.config_dir / "watch.yaml").read_text())
+    source["sources"][0]["settings"]["items"] = [*items, mail("ruled", sender, subject="Ruled")]
+    (ws.config_dir / "watch.yaml").write_text(yaml.safe_dump(source))
+    read(ws, store)
+    ruled = next(i for i in client.get(f"{base}/set-aside").json()["items"] if i["title"] == "Ruled")
+    client.post(f"{base}/set-aside/{ruled['id']}/work", json={"read_version": ruled["version"]})
+    assert lessons(store) == [], "the person's own rule is their word; bringing its mail in doesn't teach the sorting"
+
+
+def test_the_stand_ins_sorting_weighs_the_hints_as_the_prompt_asks_a_real_model_to():
+    from engine.ai.adapters.stand_in import sort_mail
+
+    def row(name, *hints):
+        return json.dumps({"id": name, "from": "x", "subject": "s", "categories": [], "hints": list(hints)})
+
+    request = "\n".join(
+        [
+            "<untrusted>",
+            row("m1", "it was sent to many people, as a mailing list or bulk mail"),
+            row("m2", "your mail service files it under promotions"),
+            row("m3", "it is an automated notice, not a sales mailing", "your mail service files it under updates"),
+            row("m4", "your mail service files it under updates", "it was written to you alone, not to a list"),
+            json.dumps({"id": "m5", "from": "x", "subject": "s", "categories": []}),
+            "</untrusted>",
+        ]
+    )
+    said = {a["id"]: a["answer"] for a in sort_mail(request)["answers"]}
+    assert said == {"m1": "sales", "m2": "sales", "m3": "notice", "m4": "work", "m5": "work"}

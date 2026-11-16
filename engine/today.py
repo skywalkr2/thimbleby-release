@@ -228,14 +228,16 @@ def _on_its_way(data: dict[str, Any]) -> bool:
     return bool(delivery) and not delivery.get("dated", True) and delivery.get("status") != "arrived"
 
 
-def _delivery_view(delivery: dict[str, Any] | None, cfg: Any) -> dict[str, Any] | None:
+def _delivery_view(delivery: dict[str, Any] | None, cfg: Any, added: Any = ()) -> dict[str, Any] | None:
     """A delivery as the schedule shows it: what the entry holds without the tracking number (which is never shown as
     text), and the carrier's tracking page for it when the carrier is known (`track`)."""
     if not delivery:
         return None
     from engine import delivery_tracking
 
-    page = delivery_tracking.page_for(cfg, delivery.get("carrier"), delivery.get("tracking")) if cfg else None
+    page = None
+    if cfg:
+        page = delivery_tracking.page_for(cfg, delivery.get("carrier"), delivery.get("tracking"), added)
     return {**{k: v for k, v in delivery.items() if k != "tracking"}, "track": page}
 
 
@@ -248,6 +250,7 @@ def _own_entries(
     found = []
     view = store.read()
     made = _made_by_assistant(view)
+    carriers = store.plugins.delivery_carriers() if cfg is not None and getattr(store, "plugins", None) else ()
     for entry in view.list("event"):
         data = entry.data
         if data.get("key"):
@@ -297,7 +300,7 @@ def _own_entries(
                     series=data.get("series"),
                     open_items=_open_on(view, entry, today, here) if data.get("series") else 0,
                     agenda=agenda_module.for_entry(view, entry, today, here),
-                    delivery=_delivery_view(data.get("delivery"), cfg),
+                    delivery=_delivery_view(data.get("delivery"), cfg, carriers),
                     repeats=(data["repeat"]["every"] if data.get("repeat") else None),
                     occurrence=_local_text(was, here) if was is not None else None,
                     made_by="assistant" if entry.id in made else "person",

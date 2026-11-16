@@ -21,7 +21,7 @@ project:
   sides: [{project: PRJ-22, kind: job, data_level: internal}]  # the sides of your work beside your own life, each a top project and what it is (job or business)
   side_words: {personal: [school run], business: [freight audit]}   # words that place an item on a side when its people don't (used with a business)
 plugins:
-  enabled: [example, kit]
+  enabled: [example, kit, parcels]
   actions:
     keep_minutes: 60
     preview_mb: 5

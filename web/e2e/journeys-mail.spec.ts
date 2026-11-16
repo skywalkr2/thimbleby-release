@@ -251,8 +251,9 @@ test.describe.serial("journey: mail", () => {
     for (let closed = await collapsed.count(); closed > 0; closed = await collapsed.count()) await collapsed.first().click();
     const socialRow = folder.locator("[data-row-list] > li", { hasText: social });
     const salesRow = folder.locator("[data-row-list] > li", { hasText: sales });
-    await expect(socialRow).toContainText("Set aside because your mail service files it under social");
-    await expect(salesRow).toContainText("Set aside because it was sent to many people");
+    // The built-in signs only hint; the assistant's sorting set both aside and gives its own reason.
+    await expect(socialRow).toContainText("Set aside because the assistant sorted it as sales mail");
+    await expect(salesRow).toContainText("Set aside because the assistant sorted it as sales mail");
     await visit(page);
 
     // Bring it in on the sales mail hands it in at once (this person has no side to name): it gets its own request, and nothing else

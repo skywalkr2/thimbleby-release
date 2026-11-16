@@ -252,6 +252,7 @@ def test_the_set_aside_tab_lists_both_a_set_aside_mail_and_a_file_a_rule_closed_
         ws,
         store,
         [plan, mail("sale", SHOP_LIST, bulk=True, subject="Sale of the week", body="Our budget range.")],
+        sorting="rules",  # the built-in rules set the sale mail aside only when the person chose no assistant sorting
     )
     store.close()
     current = yaml.safe_load((ws.config_dir / "watch.yaml").read_text())

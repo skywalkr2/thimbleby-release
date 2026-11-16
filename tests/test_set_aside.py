@@ -129,14 +129,13 @@ def test_a_keep_rule_goes_first_and_wins_over_set_aside_rules_and_the_built_in_s
 # ---- built in, without a setting to edit ---------------------------------------------------------------------------
 
 
-def test_a_fresh_workspace_sets_aside_bulk_and_category_mail_with_no_rule_to_write(tmp_path):
+def test_a_fresh_workspace_sets_aside_bulk_and_category_mail_with_no_rule_to_write_when_sorting_is_rules_only(tmp_path):
+    from engine.storage import Store
     from engine.triage import first_match
     from engine.workspace import init_workspace
 
     ws = init_workspace(tmp_path / "fresh", git=False)
-    cfg = ws.config(env={})
-    from engine.storage import Store
-
+    cfg = ws.config(env={"COCKPIT__WATCH__SORTING": "rules"})
     store = Store(ws.db_path, cfg=cfg)
     try:
         assert cfg.watch.set_aside_defaults is True and cfg.watch.triage == []
@@ -146,6 +145,34 @@ def test_a_fresh_workspace_sets_aside_bulk_and_category_mail_with_no_rule_to_wri
         assert social["section"] == "sales" and "social" in social["reason"]
         assert first_match(store, cfg, change(f"a@{LISTS}", categories=["primary"])) is None
         assert first_match(store, cfg, change(f"a@{LISTS}", bulk=False)) is None
+    finally:
+        store.close()
+
+
+def test_with_the_assistants_sorting_no_built_in_rule_closes_mail_and_each_gives_a_hint(tmp_path):
+    from engine.storage import Store
+    from engine.triage import built_in_hints, first_match
+    from engine.workspace import init_workspace
+
+    ws = init_workspace(tmp_path / "fresh", git=False)
+    cfg = ws.config(env={})
+    assert cfg.watch.sorting == "ai"
+    store = Store(ws.db_path, cfg=cfg)
+    try:
+        sent_to_many = change(f"a@{LISTS}", bulk=True, participants=["x@example.com", "y@example.com"])
+        updates = change(f"a@{LISTS}", bulk=True, categories=["updates"], participants=[])
+        social = change(f"a@{LISTS}", categories=["social"])
+        code = {**change(f"no-reply@{LISTS}"), "title": "Your verification code is 123456"}
+        for case in (sent_to_many, updates, social, code):
+            assert first_match(store, cfg, case) is None
+        assert any("many people" in h for h in built_in_hints(cfg, sent_to_many))
+        assert any("updates" in h for h in built_in_hints(cfg, updates))
+        assert any("written to you alone" in h for h in built_in_hints(cfg, updates))
+        assert any("social" in h for h in built_in_hints(cfg, social))
+        assert any("one-time code" in h for h in built_in_hints(cfg, code))
+        assert built_in_hints(cfg, change(f"a@{LISTS}", categories=["primary"])) == []
+        off = ws.config(env={"COCKPIT__WATCH__SET_ASIDE_DEFAULTS": "false"})
+        assert built_in_hints(off, sent_to_many) == []
     finally:
         store.close()
 

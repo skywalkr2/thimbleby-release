@@ -86,7 +86,8 @@ def workspace(tmp_path, fixture=FIXTURE, jobs=None):
     (plugin / "fixture.py").write_text(fixture)
     (plugin / "plugin.yaml").write_text(yaml.safe_dump(MANIFEST))
     settings = yaml.safe_load((ws.config_dir / "workspace.yaml").read_text())
-    settings["plugins"]["enabled"] = [*settings["plugins"]["enabled"], "p18"]
+    # The jobs under test are the fixture's own: a bundled add-on's job would be counted with them.
+    settings["plugins"]["enabled"] = [*(n for n in settings["plugins"]["enabled"] if n != "parcels"), "p18"]
     if jobs is not None:
         settings["plugins"]["jobs"] = jobs
     (ws.config_dir / "workspace.yaml").write_text(yaml.safe_dump(settings))

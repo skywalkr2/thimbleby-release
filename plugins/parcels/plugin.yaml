@@ -1,0 +1,25 @@
+name: parcels
+version: 0.1.0
+plugin_api: '>=0.3,<0.4'
+description: Names the common carriers' public tracking pages, and reads one for a parcel that has no arrival day yet.
+depends_on: []
+interfaces: {provides: [], uses: []}
+subscribes: []
+provides:
+  ai_task_kinds: [parcels/read-arrival]
+  jobs: [parcels/lookup]
+  delivery_carriers: [carriers.yaml]
+config_schema: parcels:Config
+requires:
+  network:
+    - www.ups.com
+    - www.fedex.com
+    - tools.usps.com
+    - www.dhl.com
+    - www.royalmail.com
+    - www.canadapost-postescanada.ca
+    - auspost.com.au
+  secrets: []
+  data_levels: [open, internal]
+  tools: []
+entry: parcels:register

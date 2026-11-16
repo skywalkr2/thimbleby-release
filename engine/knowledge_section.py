@@ -217,6 +217,13 @@ def stable_section(view: Any, task_kind: str, settings: KnowledgeSettings) -> St
     return Stable(text, ids, sorted(moved, key=_id_key))
 
 
+def lessons_for(view: Any, task_kind: str) -> tuple[str, list[str]]:
+    """Only the active lessons that cover this task kind, for a run whose packet carries no rules or glossary: the
+    section's text (empty when there are none) and the ids it holds."""
+    lessons = [s for s in _active(view, "lesson") if _whole_workspace(_scope(s)) and _covers_task(_scope(s), task_kind)]
+    return _section(view, HEADINGS["lessons"], [(s, _entry_line(s)) for s in lessons]), [s.id for s in lessons]
+
+
 def all_guidance(view: Any) -> tuple[str, list[str], list[str]]:
     """Every active rule and lesson, whatever it applies to, for work that judges the guidance itself: the text (rules
     first, then lessons, by id, with no dates or counts), the ids it holds, and the ids of the rules among them."""

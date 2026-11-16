@@ -456,9 +456,11 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
     def set_aside_mail(snapshot_id: str, body: SetAsideIn) -> SetAsideDone:
         """Move a mail item to the Set aside folder, as sales mail or automated notices (personal is accepted for Undo
         of an older row only), and close its request if one is waiting for the assistant."""
+        from engine import sorting_lessons
         from engine.dispatcher import signal
 
-        mail_snapshot(snapshot_id)
+        before = mail_snapshot(snapshot_id)
+        kept_by_sorting = not before.data.get("set_aside") and not body.restore and body.section != "personal"
         try:
             closed = set_aside.set_aside_item(
                 store,
@@ -470,7 +472,9 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
             raise HTTPException(status_code=409, detail=str(err)) from None
         result = done(snapshot_id, body.section)
         note = body.section + (", with a sorting rule offered for the sender" if result.address else "")
-        signal(store, "set_aside", closed or [snapshot_id], note)
+        # A message the assistant kept that the person sets aside by hand teaches the sorting: one proposed lesson.
+        lesson = sorting_lessons.propose(ws, store, current(), snapshot_id, body.section) if kept_by_sorting else None
+        signal(store, "set_aside", closed or [snapshot_id], note, learned=[lesson] if lesson else None)
         events.changed()
         return result
 
@@ -522,10 +526,24 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
     def set_aside_is_work(snapshot_id: str, body: TreatAsIn) -> SetAsideDone:
         """This is work: hand the message in after all, as Take a closer look does, and keep the correction. With a
         `side`, it is filed under that side."""
+        from engine import sorting_lessons
         from engine.dispatcher import signal
 
         waiting, mark = hand_in_aside(snapshot_id, body.read_version, personal=False, side=body.side)
-        signal(store, "pulled_back", [waiting or snapshot_id], f"Set aside: {mark['reason']}")
+        # Bringing in mail the assistant's sorting (or a built-in rule) set aside proposes one lesson for the sorting;
+        # the lesson is that correction's learning, so no second run is queued for it.
+        lesson = (
+            sorting_lessons.propose(ws, store, current(), snapshot_id, "work")
+            if (sorting_lessons.set_aside_by_sorting(mark))
+            else None
+        )
+        signal(
+            store,
+            "pulled_back",
+            [waiting or snapshot_id],
+            f"Set aside: {mark['reason']}",
+            learned=[lesson] if lesson else None,
+        )
         events.changed()
         worker.poke()
         return done(snapshot_id, mark["section"], mark)

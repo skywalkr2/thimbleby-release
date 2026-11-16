@@ -205,6 +205,8 @@ class PluginHost:
         self._dispatching = False
         self._chain: frozenset = frozenset()
         self._follows: str | None = None  # the change whose event is being delivered
+        self._carriers_for: tuple[str, ...] | None = None  # the running plugins `_carriers` was read for
+        self._carriers: list[Any] = []
         self._asked_again: list[str] = []  # questions a running job filed that had already been asked
         self._lock = threading.RLock()
         from engine.pack_calls import PackCalls
@@ -1422,6 +1424,11 @@ class PluginHost:
         registrar = self.registrars[plugin]
         started, clock = now or datetime.now(UTC), time.monotonic()
         context = self._with_files(EventContext(self.store.read(), plugin, registrar.config))
+        network = list(self.manifests[plugin].requires.network)
+        if network:
+            from engine.net import WebClient
+
+            context.web = WebClient(network)
         outcome, error = "ok", None
         self._asked_again = []
         try:
@@ -1435,6 +1442,9 @@ class PluginHost:
             self.failed(plugin, f"job {name}", error)
         else:
             self.succeeded(plugin, f"job {name}")
+        finally:
+            if context.web is not None:
+                context.web.close()
         with self.store.transaction() as tx:
             tx.create(
                 "job_run",
@@ -2021,8 +2031,14 @@ class PluginHost:
         view.find_interface_about = lambda item, task: self.interface_about(plugin, item, task)
         view.user = self.cfg.workspace.user.person
         view.source_cfg = self.cfg
+        view.read_tracking_page = self._tracking_page
         view.stage_status_of = self._stage_status
         return view
+
+    def _tracking_page(self, carrier: str | None, tracking: str | None) -> str | None:
+        from engine import delivery_tracking
+
+        return delivery_tracking.page_for(self.cfg, carrier, tracking, self.delivery_carriers())
 
     def _stage_status(self, record: Any) -> Any:
         """A record's place in the effective stages, for ReadView.stage_status; refused inside a stage check, whose
@@ -2087,6 +2103,41 @@ class PluginHost:
                         continue
                     found[key] = " ".join(text.split())
         return found
+
+    def delivery_carriers(self) -> list[Any]:
+        """The carriers whose tracking page running plugins ship (`provides.delivery_carriers`), as the app's own list
+        reads them. An entry that isn't valid is left out and noted on the plugin; the first plugin (by name) to give a
+        carrier's id keeps it."""
+        from pydantic import ValidationError
+
+        from engine.config.schema import CarrierPage
+        from engine.yaml_load import load_yaml
+
+        running = tuple(p for p in sorted(self.manifests) if self.active(p))
+        if self._carriers_for == running:
+            return list(self._carriers)
+        found: dict[str, Any] = {}
+        for plugin in running:
+            for relative in self.manifests[plugin].provides.delivery_carriers:
+                path = self.candidates[plugin].parent / relative
+                try:
+                    data = load_yaml(path.read_text(encoding="utf-8")) or {}
+                    entries = data.get("carriers", []) if isinstance(data, dict) else None
+                except (OSError, yaml.YAMLError) as err:
+                    self._note(plugin, f"its carriers file {relative} can't be read: {err}")
+                    continue
+                if not isinstance(entries, list):
+                    self._note(plugin, f"its carriers file {relative} has no list of carriers")
+                    continue
+                for entry in entries:
+                    try:
+                        carrier = CarrierPage.model_validate(entry)
+                    except ValidationError:
+                        self._note(plugin, f"a carrier in {relative} was left out: it isn't a name and a page address")
+                        continue
+                    found.setdefault(carrier.id, carrier)
+        self._carriers_for, self._carriers = running, list(found.values())
+        return list(self._carriers)
 
     def help_sections(self) -> list[Any]:
         """Every running plugin's help, one section per `##` heading, titled "<plugin>: <heading>"."""

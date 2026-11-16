@@ -178,6 +178,14 @@ class Provides(Strict):
         "names something in the plugin's namespace; the workspace's ui.wording overrides any of them.",
     )
 
+    delivery_carriers: list[str] = Field(
+        default_factory=list,
+        description="Files the plugin ships (YAML, paths relative to its manifest) listing carriers whose public "
+        "tracking page the schedule's Track link opens for a parcel, in the format of the app's own list: a `carriers` "
+        "list of {id, words, page}. They are added to the app's own carriers, and a workspace's own carrier with the "
+        "same id replaces one.",
+    )
+
     @field_validator("connector_reads")
     @classmethod
     def _reads_name_connectors(cls, value: dict[str, str], info: ValidationInfo) -> dict[str, str]:
@@ -202,6 +210,14 @@ class Provides(Strict):
         for path in value:
             if path.startswith("/") or ".." in Path(path).parts or not path.endswith((".yaml", ".yml")):
                 raise ValueError("a wording file must be a YAML file inside the plugin")
+        return value
+
+    @field_validator("delivery_carriers")
+    @classmethod
+    def _carrier_paths(cls, value: list[str]) -> list[str]:
+        for path in value:
+            if path.startswith("/") or ".." in Path(path).parts or not path.endswith((".yaml", ".yml")):
+                raise ValueError("a carriers file must be a YAML file inside the plugin")
         return value
 
     playbook: str | None = Field(None, description="The plugin's own playbook. Not yet available.")

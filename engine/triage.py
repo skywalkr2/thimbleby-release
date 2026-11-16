@@ -209,9 +209,36 @@ def matchers(store: Any) -> dict[str, Matcher]:
 
 def first_match(store: Any, cfg: Any, change: dict[str, Any]) -> dict[str, str] | None:
     """The first rule that closes this change: {rule, reason}, plus `section` (sales or notices) when the rule sets
-    mail aside, or None. A matching `never` rule keeps the mail with the assistant against every later set-aside rule
-    and the built-in sorting; other rules still apply."""
+    mail aside, or None. Only the person's own rules close mail while `watch.sorting` is `ai`; the built-in rules
+    then close it only with `rules` (with the assistant's sorting they are hints, `built_in_hints`). A matching
+    `never` rule keeps the mail with the assistant against every later set-aside rule and the built-in sorting;
+    other rules still apply."""
     return classify(store, cfg, change)[0]
+
+
+def built_in_hints(cfg: Any, change: dict[str, Any]) -> list[str]:
+    """What the built-in set-aside rules see in a mail message, as plain reasons: a one-time code from an automated
+    sender, an automated or bulk notice (and that it was written to the person alone), mail sent to many, and the mail
+    service's own categories. They close nothing: the assistant's sorting weighs them with the sender and subject.
+    Empty for a change that is not mail, and when `watch.set_aside_defaults` is off."""
+    if not change.get("message") or not cfg.watch.set_aside_defaults:
+        return []
+    found: list[str] = []
+    auto = cfg.watch.automated_mail
+    if auto.set_aside:
+        for reason in (
+            automated_code_mail(change, {"senders": auto.senders, "words": auto.words}),
+            automated_bulk_notice(change, {"senders": auto.senders}),
+        ):
+            if reason:
+                found.append(reason)
+    if auto.set_aside and automated_bulk_notice(change, {"senders": auto.senders}) and addressed_to_one(change):
+        found.append("it was written to you alone, not to a list")
+    for kind, params, _name, _section in BUILT_IN_SET_ASIDE:
+        reason = CORE[kind](change, params)
+        if reason and reason not in found:
+            found.append(reason)
+    return found
 
 
 def classify(store: Any, cfg: Any, change: dict[str, Any]) -> tuple[dict[str, str] | None, bool]:
@@ -258,16 +285,19 @@ def classify_placed(store: Any, cfg: Any, change: dict[str, Any]) -> tuple[dict[
         return closed, kept, False
     if kept or not change.get("message"):
         return None, kept, False
+    if cfg.watch.sorting == "ai":
+        # With the assistant's sorting, the built-in rules only hint (`built_in_hints`): the run places the message,
+        # the one the words hint is a bill, an order or a delivery included.
+        return None, kept, False
     auto = cfg.watch.automated_mail
     if cfg.watch.set_aside_defaults and auto.set_aside:
         reason = automated_code_mail(change, {"senders": auto.senders, "words": auto.words})
         if reason:
             return {"rule": "Automated notices", "reason": reason, "section": "notices"}, kept, False
     if kind_of_change(cfg.watch.mail_kinds, change):
-        # The words only hint that this is a bill, an order or a delivery. With the assistant's sorting on, the mail
-        # goes to that run unplaced (no later rule sets it aside) and the run's kind decides; mail the run says is of a
-        # kind is never set aside. With no sorting to ask, the words stand in and keep the mail with the assistant.
-        return None, cfg.watch.sorting != "ai", False
+        # The words only hint that this is a bill, an order or a delivery. With no sorting to ask, the words stand in
+        # and keep the mail with the assistant.
+        return None, True, False
     if not cfg.watch.set_aside_defaults:
         return None, kept, False
     if cfg.watch.set_aside_defaults and auto.set_aside:

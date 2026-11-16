@@ -3548,10 +3548,11 @@ class VersionFamilies(FileModel):
 class AutomatedMail(FileModel):
     set_aside: bool = Field(
         True,
-        description="Set aside automated notices into the Automated notices section, with no AI run, such as a "
-        "one-time code, a sign-in alert or a security notice from a no-reply address, and bulk mail from an automated "
-        "sender or in the mail service's updates category. It applies after your own rules, so a rule that "
-        "keeps mail from a sender wins.",
+        description="Let the built-in rules notice automated notices, such as a one-time code, a sign-in alert or a "
+        "security notice from a no-reply address, and bulk mail from an automated sender or in the mail service's "
+        "updates category. With the assistant sorting your mail they are only hints it weighs. When you sort with "
+        "rules only, they set that mail aside into the Automated notices section with no AI run, after your own rules, "
+        "so a rule that keeps mail from a sender wins.",
     )
     senders: list[str] = Field(
         default_factory=lambda: ["no-reply", "noreply", "no_reply", "do-not-reply", "donotreply", "notification"],
@@ -3745,9 +3746,11 @@ class WatchFile(FileModel):
     )
     set_aside_defaults: bool = Field(
         True,
-        description="Set aside mail the mail itself says is not work, with no AI run: mailing lists and bulk mail, and "
-        "mail the mail service files under promotions, social or forums. It applies after your own rules, so a rule "
-        "that keeps mail from a sender wins.",
+        description="What the app's built-in rules notice about mail: mailing lists and bulk mail, mail the mail "
+        "service files under promotions, social, forums or updates, and automated notices. With the assistant sorting "
+        "your mail, they only give it hints and set nothing aside. When you sort with rules only, they set that mail "
+        "aside with no AI run, after your own rules, so a rule that keeps mail from a sender wins. Off, they notice "
+        "nothing.",
     )
     versions: VersionFamilies = Field(
         default_factory=VersionFamilies,
@@ -3765,13 +3768,14 @@ class WatchFile(FileModel):
     )
     sorting: Literal["ai", "rules"] = Field(
         "ai",
-        description="How mail that none of the rules above place is sorted. With the assistant, one small, low-cost "
+        description="How mail that none of your own rules place is sorted. With the assistant, one small, low-cost "
         "run reads only each message's sender, subject line and the mail service's category (never the text) and says "
         "whether it is for your job or business, personal, sales or a notice, and whether it is a bill, an order or a "
-        "delivery. Sales and notices are set aside, except a bill, an order or a delivery, which is never set aside, "
-        "and personal mail is handed in and filed as personal. When it is unsure, the message is treated as for your "
-        "job or business, so nothing is hidden on a guess. With rules only, there is no run and only the rules set "
-        "mail aside.",
+        "delivery. The app's built-in rules (bulk mail, the mail service's categories, one-time codes) only give it "
+        "hints beside each header, and it decides. Sales and notices are set aside, except a bill, an order or a "
+        "delivery, which is never set aside, and personal mail is handed in and filed as personal. When it is unsure, "
+        "the message is treated as for your job or business, so nothing is hidden on a guess. With rules only, there "
+        "is no run and only the rules set mail aside.",
     )
     acting: list[str] = Field(
         default_factory=list,

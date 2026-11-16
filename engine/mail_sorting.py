@@ -1,11 +1,13 @@
 """The assistant's sorting of mail the rules can't place (design 6.5, step 3).
 
-After the person's rules and the built-in sorting, mail that is still unplaced is sorted by one small run over a batch
-of headers: for each message an opaque id, the sender, the subject line and the mail service's own categories, all
-marked as outside content. The run never sees a message's text, its thread or its attachments. It answers work,
-personal, sales or notice for each id; an answer that is missing or isn't one of those words counts as work, so
-nothing is hidden on a guess. Only sales and notice answers set mail aside: personal mail is handed in like work and
-filed under the Personal project.
+After the person's own rules, mail that is still unplaced is sorted by one small run over a batch of headers: for each
+message an opaque id, the sender, the subject line and the mail service's own categories, all marked as outside
+content. The built-in set-aside rules (one-time codes, automated and bulk notices, bulk mail, the service's
+promotions, social and forums categories) close nothing here: what they saw goes beside the header as hints the run
+weighs. The lessons the person kept for sorting are in the stable part of the packet. The run never sees a message's
+text, its thread or its attachments. It answers work, personal, sales or notice for each id; an answer that is missing
+or isn't one of those words counts as work, so nothing is hidden on a guess. Only sales and notice answers set mail
+aside: personal mail is handed in like work and filed under the Personal project.
 
 It also answers a kind for each message: bill, order, delivery or none. The kind is the run's to decide; the word lists
 of `watch.mail_kinds` only put a hint beside a header ("words suggest: bill"). Mail of a kind is tracked for the person
@@ -81,6 +83,7 @@ class Header:
     subject: str
     categories: tuple[str, ...] = ()
     hint: str | None = None  # what the word lists suggest the kind is (bill, order or delivery); the run decides
+    hints: tuple[str, ...] = ()  # what the built-in set-aside rules saw, as plain reasons; the run weighs them
 
 
 class Answer(NamedTuple):
@@ -120,22 +123,35 @@ def _clip(text: Any, limit: int = HEADER_CHARS) -> str:
     return " ".join(str(text or "").split())[:limit]
 
 
-def header_of(key: str, change: dict[str, Any], kinds: Any = None) -> Header:
+def header_of(key: str, change: dict[str, Any], kinds: Any = None, cfg: Any = None) -> Header:
     """The headers of a watched mail change, as its triage facts hold them. `kinds` is `watch.mail_kinds`: with it, the
-    header carries what its words suggest the kind is."""
+    header carries what its words suggest the kind is. With `cfg`, it also carries what the built-in set-aside rules
+    saw (`triage.built_in_hints`): hints the run weighs, never an order."""
     from engine.mail_kinds import hint_of_change
+    from engine.triage import built_in_hints
 
     message = change.get("message") or {}
     categories = tuple(_clip(c, CATEGORY_CHARS) for c in (message.get("categories") or [])[:MAX_CATEGORIES])
     hint = hint_of_change(kinds, change) if kinds is not None else None
+    hints = tuple(_clip(h) for h in built_in_hints(cfg, change)) if cfg is not None else ()
     return Header(
-        key, _clip(message.get("sender") or change.get("author")), _clip(change.get("title")), categories, hint
+        key, _clip(message.get("sender") or change.get("author")), _clip(change.get("title")), categories, hint, hints
     )
 
 
-def build_task(ws: Any, cfg: Any, headers: list[Header]) -> tuple[AiTask, dict[str, str]]:
-    """The run for a batch of headers, and the opaque id each message goes by (id to key). Stable parts first, the
-    batch last. Each message is one JSON line with its angle brackets escaped, so a subject can't close the block."""
+def _lessons(view: Any, cfg: Any) -> str:
+    """The kept lessons for this task kind (the knowledge section), or nothing without a view of the records."""
+    if view is None:
+        return ""
+    from engine.knowledge_section import lessons_for
+
+    return lessons_for(view, KIND)[0]
+
+
+def build_task(ws: Any, cfg: Any, headers: list[Header], view: Any = None) -> tuple[AiTask, dict[str, str]]:
+    """The run for a batch of headers, and the opaque id each message goes by (id to key). Stable parts first (the
+    practice, then the lessons the person kept for sorting, from `view`), the batch last. Each message is one JSON
+    line with its angle brackets escaped, so a subject can't close the block."""
     kind = task_kind(KIND)
     chosen = settings(cfg, kind)
     ids = {f"m{n}": header.key for n, header in enumerate(headers, 1)}
@@ -147,6 +163,7 @@ def build_task(ws: Any, cfg: Any, headers: list[Header]) -> tuple[AiTask, dict[s
                 "subject": header.subject,
                 "categories": list(header.categories),
                 **({"hint": f"words suggest: {header.hint}"} if header.hint else {}),
+                **({"hints": list(header.hints)} if header.hints else {}),
             },
             ensure_ascii=False,
         )
@@ -157,7 +174,7 @@ def build_task(ws: Any, cfg: Any, headers: list[Header]) -> tuple[AiTask, dict[s
     task = AiTask(
         kind=KIND,
         instructions=render(kind.prompt, {"assistant_name": cfg.workspace.assistant_name}, ws.root, kind.prompt_file),
-        stable="# Practice\n" + practice(kind.playbook),
+        stable="\n\n".join(p for p in ("# Practice\n" + practice(kind.playbook), _lessons(view, cfg)) if p),
         request='<untrusted source="mail headers">\n' + "\n".join(lines) + "\n</untrusted>",
         output_schema=SCHEMA,
         temperature=chosen.temperature,
@@ -266,13 +283,13 @@ def _tier_of(cfg: Any, task: AiTask, level: str) -> str:
     )
 
 
-def estimate(ws: Any, cfg: Any, router: Any, headers: list[Header], level: str) -> tuple[float, int]:
+def estimate(ws: Any, cfg: Any, router: Any, headers: list[Header], level: str, view: Any = None) -> tuple[float, int]:
     """What sorting these headers would cost, as `sort` would run it: one run per `watch.sorting_batch`. Returns the
     total of the runs that have a price and how many runs have none."""
     priced, unpriced = 0.0, 0
     size = cfg.watch.sorting_batch
     for start in range(0, len(headers), size):
-        task, _ids = build_task(ws, cfg, headers[start : start + size])
+        task, _ids = build_task(ws, cfg, headers[start : start + size], view)
         cost = router.estimate(task, tier=_tier_of(cfg, task, level), data_level=level)
         if cost is None:
             unpriced += 1
@@ -284,7 +301,7 @@ def estimate(ws: Any, cfg: Any, router: Any, headers: list[Header], level: str) 
 def _sort_batch(ws: Any, store: Any, cfg: Any, router: Any, batch: list[Header], level: str, go: bool = False) -> _Try:
     from engine.dispatcher import has_account
 
-    task, ids = build_task(ws, cfg, batch)
+    task, ids = build_task(ws, cfg, batch, store.read())
     tier = _tier_of(cfg, task, level)
     budgets = cfg.ai.budgets
     estimate = router.estimate(task, tier=tier, data_level=level)

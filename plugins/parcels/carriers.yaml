@@ -1,0 +1,36 @@
+# The public tracking page of each common carrier, for one parcel (the app's format: `delivery_carriers.yaml` in the
+# core's defaults). `words` are the words of the carrier's name as a mail writes it (all of them, any order, any
+# capitals); `page` is the address without its https:// start, with {number} where the tracking number goes. Every host
+# here is also in `requires.network` in plugin.yaml, which is what lets the lookup read the page. A workspace adds or
+# replaces a carrier in Settings (`ui.today.delivery_carriers_extra`).
+carriers:
+  - id: ups
+    words: [ups]
+    page: www.ups.com/track?tracknum={number}
+  - id: ups-long
+    words: [united, parcel, service]
+    page: www.ups.com/track?tracknum={number}
+  - id: fedex
+    words: [fedex]
+    page: www.fedex.com/fedextrack/?trknbr={number}
+  - id: fedex-long
+    words: [federal, express]
+    page: www.fedex.com/fedextrack/?trknbr={number}
+  - id: usps
+    words: [usps]
+    page: tools.usps.com/go/TrackConfirmAction?tLabels={number}
+  - id: usps-long
+    words: [united, states, postal]
+    page: tools.usps.com/go/TrackConfirmAction?tLabels={number}
+  - id: dhl
+    words: [dhl]
+    page: www.dhl.com/global-en/home/tracking/tracking-express.html?submit=1&tracking-id={number}
+  - id: royal-mail
+    words: [royal, mail]
+    page: www.royalmail.com/track-your-item#/tracking-results/{number}
+  - id: canada-post
+    words: [canada, post]
+    page: www.canadapost-postescanada.ca/track-reperage/en#/search?searchFor={number}
+  - id: australia-post
+    words: [australia, post]
+    page: auspost.com.au/mypost/track/#/details/{number}

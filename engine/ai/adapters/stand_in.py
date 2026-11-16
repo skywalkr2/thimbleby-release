@@ -18,6 +18,7 @@ lesson the check expects.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -129,9 +130,31 @@ def answer(request: str, stable: str) -> dict[str, Any]:
 
 
 def sort_mail(request: str) -> dict[str, Any]:
-    """Sorting mail headers: every message is work. The stand-in reads no headers and claims no judgment, so it hides
-    nothing."""
-    return {"answers": [{"id": name, "answer": "work"} for name in re.findall(r'"id": "(m\d+)"', request)]}
+    """Sorting mail headers: the stand-in weighs the built-in rules' `hints` the way the prompt asks a real model to.
+    Mail sent to many or filed under promotions, social or forums is sales; an automated notice not written to the
+    person alone is a notice; a notice written to the person alone, and anything with no such hint, is work. It reads
+    nothing else, so it hides nothing on a guess."""
+    answers = []
+    for line in request.splitlines():
+        if not line.startswith("{"):
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        hints = " ".join(str(h) for h in row.get("hints") or []).lower()
+        if "written to you alone" in hints:
+            word = "work"
+        elif any(c in hints for c in ("promotions", "social", "forums")):
+            word = "sales"
+        elif "automated notice" in hints or "one-time code" in hints or "under updates" in hints:
+            word = "notice"
+        elif "many people" in hints:
+            word = "sales"
+        else:
+            word = "work"
+        answers.append({"id": row.get("id"), "answer": word})
+    return {"answers": answers}
 
 
 def follow_on() -> dict[str, Any]:
