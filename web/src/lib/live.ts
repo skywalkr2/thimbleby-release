@@ -53,8 +53,8 @@ const AFFECTS: Record<string, string[]> = {
   action: FOLLOWUPS,
   fact: ["notes", "changes", "today", "record", "record-page", "projects"],
   note: ["notes", "changes", "today", "record", "record-page", "projects"],
-  person: ["people", "followups", "waiting", "today", "me", "setup", "organizations", "record", "record-page"],
-  team: ["people", "organizations", "followups", "record", "record-page"],
+  person: ["people", "followups", "waiting", "today", "me", "setup", "organizations", "teams", "record", "record-page"],
+  team: ["people", "organizations", "teams", "followups", "record", "record-page"],
   organization: ["organizations", "people", "record", "record-page"],
   project: ["projects", "business", "followups", "waiting", "today", "stages", "panels", "setup", "record", "record-page", "notes"],
   // What waits to go out (a message, an entry, a file): its screen, Today's lines for it and what changed.

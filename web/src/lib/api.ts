@@ -493,6 +493,9 @@ export const api = {
     call<S["Applied"]>("POST", `knowledge/${id(entry)}/narrow`, body),
   retireKnowledge: (entry: string, readVersion: number) =>
     call<S["Applied"]>("POST", `knowledge/${id(entry)}/retire`, { read_version: readVersion }),
+  /** Brings a retired or set-aside entry back into use, as the person's own Keep. */
+  reuseKnowledge: (entry: string, readVersion: number) =>
+    call<S["Applied"]>("POST", `knowledge/${id(entry)}/reuse`, { read_version: readVersion }),
   /** "Change this" on a row the assistant made; the note is the person's own words and is required. */
   changeThis: (kind: string, item: string, note: string) =>
     call<S["ChangeRequested"]>("POST", `items/${id(kind)}/${id(item)}/change`, { note }),
@@ -550,6 +553,12 @@ export const api = {
   previewPaste: (body: S["PeoplePasteIn"]) => call<S["PeoplePastePreview"]>("POST", "setup/people-paste/preview", body),
   pastePeople: (body: S["PeoplePasteIn"]) => call<S["PeoplePasteDone"]>("POST", "setup/people-paste", body),
   organizations: () => call<S["OrganizationView"][]>("GET", "organizations"),
+  /** The teams, each with the people in it. */
+  teams: () => call<S["TeamView"][]>("GET", "teams"),
+  /** Puts a person on a team (one change, one Undo). */
+  addTeamMember: (team: string, person: string) => call<S["Applied"]>("POST", `teams/${id(team)}/members/add`, { person }),
+  /** Takes a person off a team, however the team came to name them. */
+  removeTeamMember: (team: string, person: string) => call<S["Applied"]>("POST", `teams/${id(team)}/members/remove`, { person }),
   addOrganization: (body: Partial<S["OrganizationIn"]> & { name: string }) => call<S["Created"]>("POST", "organizations", body),
   editOrganization: (o: string, body: S["OrganizationPatch"]) => call<S["Ok"]>("POST", `organizations/${id(o)}`, body),
   removeOrganization: (o: string) => call<S["Ok"]>("POST", `organizations/${id(o)}/remove`),

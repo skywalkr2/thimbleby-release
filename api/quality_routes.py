@@ -174,6 +174,7 @@ def build_quality_router(ws: Workspace, cfg: Config, store: Store, events: Event
                 missed=counted.missed,
                 entered=counted.entered,
                 days=[QualityCountDay(day=d.day, present=d.present, missed=d.missed) for d in counted.days],
+                limit=gate_measures.COUNT_LIMIT,
             ),
             replays=QualityReplays(count=gate_measures.replay_count(ws.root)),
             review=QualityReview(

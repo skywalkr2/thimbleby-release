@@ -44,6 +44,10 @@ _COUNT = WriteContext(actor="pm", trust="trusted", op="gate.count")
 #: The kind of source a note typed on "Followed up" is.
 NUDGE_SOURCE = "note:followed_up"
 
+#: The most promises one count (a day's, or one message's) can hold: a slip of a few digits is refused, not kept
+#: in the figures.
+COUNT_LIMIT = 1000
+
 
 class CountError(StoreError):
     """The day's count can't be saved as it was typed."""
@@ -264,6 +268,8 @@ def save_count(
         raise CountError("A count can't be less than zero.")
     if missed > present:
         raise CountError("You can't have missed more than you counted.")
+    if present > COUNT_LIMIT:
+        raise CountError(f"A day's list can't hold more than {COUNT_LIMIT} promises. Check the number.")
     if day > now.astimezone(zone(cfg)).date():
         raise CountError("That day hasn't happened yet.")
     person = People(store, cfg).pm

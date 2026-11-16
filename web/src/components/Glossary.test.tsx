@@ -86,6 +86,19 @@ test("a word with no meaning is only added to the words never asked about, saved
   expect(screen.getByLabelText("A word")).toHaveValue("");
 });
 
+test("Add word pressed twice fast adds the word once, with a meaning or without (T3-03)", async () => {
+  const user = userEvent.setup();
+  const { calls } = show([], [], { "POST knowledge/terms": () => ({ changeset: "CS-1" }) });
+  await user.type(await screen.findByLabelText("A word"), "Zebra");
+  await user.dblClick(screen.getByRole("button", { name: "Add word" }));
+  await waitFor(() => expect(posted(calls)).toHaveLength(1));
+  expect(posted(calls)).toHaveLength(1);
+  await user.type(screen.getByLabelText("A word"), "Quagga");
+  await user.type(screen.getByLabelText("What it means"), "a kind of zebra");
+  await user.dblClick(screen.getByRole("button", { name: "Add word" }));
+  await waitFor(() => expect(calls.filter((c) => c.route === "POST knowledge/terms")).toHaveLength(1));
+});
+
 test("a word already there, in any case, as a word with a meaning or without, is not added twice", async () => {
   const user = userEvent.setup();
   const { calls } = show([entry()], ["Acme"]);

@@ -401,6 +401,12 @@ class Person(Record):
     person_only: ClassVar[dict[str, tuple[Any, ...]]] = {"relation": ()}
 
     full_name: str = Field(min_length=1, description="The name shown wherever the person appears.")
+
+    @field_validator("full_name")
+    @classmethod
+    def _full_name_filled(cls, value: str) -> str:
+        return _filled(value)
+
     first_name: str | None = Field(
         None,
         description="The name a greeting to them uses, as they write it; empty means the first word of the full name.",
@@ -475,6 +481,14 @@ class Person(Record):
     )
 
 
+def _filled(value: str) -> str:
+    """A name with something in it: surrounding spaces are dropped, and one that is only spaces is refused."""
+    value = value.strip()
+    if not value:
+        raise ValueError("a name needs something in it")
+    return value
+
+
 class Organization(Record):
     """A company, client, supplier or other body people work for (design 5.1). Its name lives here only: people refer
     to it by id, so a rename shows everywhere at once."""
@@ -484,6 +498,12 @@ class Organization(Record):
     unique: ClassVar[tuple[tuple[str, ...], ...]] = (("name",),)
 
     name: str = Field(min_length=1, description="The name shown wherever the organization appears.")
+
+    @field_validator("name")
+    @classmethod
+    def _name_filled(cls, value: str) -> str:
+        return _filled(value)
+
     aliases: list[str] = Field(default_factory=list, description="Other names that mean this organization.")
     notes: str | None = Field(None, description="Anything worth knowing about it, in plain words.")
 
@@ -496,8 +516,15 @@ class Team(Record):
     record_kind: ClassVar[str] = "team"
     prefix: ClassVar[str] = "TEAM"
     layout: ClassVar[str | None] = "teams/{name}"
+    unique: ClassVar[tuple[tuple[str, ...], ...]] = (("name",),)
 
     name: str = Field(min_length=1, description="The name shown wherever the team appears.")
+
+    @field_validator("name")
+    @classmethod
+    def _name_filled(cls, value: str) -> str:
+        return _filled(value)
+
     aliases: list[str] = Field(default_factory=list, description="Other names that mean this team.")
     members: list[str] = Field(default_factory=list, description="The ids of the people in the team.")
     holiday_calendar: str | None = Field(
@@ -528,6 +555,12 @@ class Project(Record):
     person_only: ClassVar[dict[str, tuple[Any, ...]]] = {"priority": (), "organization": ()}
 
     name: str = Field(min_length=1, description="The name shown wherever the project appears.")
+
+    @field_validator("name")
+    @classmethod
+    def _name_filled(cls, value: str) -> str:
+        return _filled(value)
+
     group: Annotated[str | None, InList("project-group")] = Field(
         None, description="The portfolio grouping the project is listed under, from the project-group list."
     )

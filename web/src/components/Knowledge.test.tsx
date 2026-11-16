@@ -322,12 +322,67 @@ test("Not used in a while and what was retired are behind one link, each with it
   expect(within(idle).getAllByRole("listitem")[1]).toHaveTextContent("Used 2 times · last 45 days ago");
   const retired = within(fold).getByRole("list", { name: "No longer used" });
   expect(texts(retired)).toEqual(["Never close an action without an owner.", "An old habit."]);
-  // What is retired says so in words and has no action; what is idle can still be stopped.
-  expect(retired.querySelectorAll("button:not([aria-label^='More'])")).toHaveLength(0);
+  // What is retired says so in words and can be used again (T3-10); what is idle can still be stopped.
+  expect(within(retired).getAllByRole("button", { name: /^Use again: / })).toHaveLength(2);
   expect(within(retired).getAllByRole("listitem")[0]).toHaveTextContent("No longer used");
   await user.click(within(idle).getByRole("button", { name: "Stop using: Mail from the print shop is about proofs." }));
   await waitFor(() => expect(body(calls, "POST knowledge/LES-5/retire")).toEqual({ read_version: 4 }));
   expect(screen.queryByRole("list", { name: "Mail from the print shop is about proofs." })).toBeNull();
+});
+
+test("a retired entry is brought back from where it is listed, with Undo (T3-10)", async () => {
+  const user = userEvent.setup();
+  const { calls } = open({ "POST knowledge/LES-3/reuse": () => ({ changeset: "CS-20" }), "POST changesets/CS-20/undo": () => ({ restored: [0] }) });
+  await screen.findByRole("list", { name: "Waiting for your OK" });
+  await user.click(past());
+  await user.click(screen.getByRole("button", { name: "Use again: An old habit." }));
+  await waitFor(() => expect(body(calls, "POST knowledge/LES-3/reuse")).toEqual({ read_version: 4 }));
+  expect(await screen.findByText("Using this again.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+});
+
+test("an entry that was set aside is listed under What was set aside, with Use again (T3-10)", async () => {
+  const user = userEvent.setup();
+  const set = entry("LES-8", "Always copy the venue.", { status: "discarded", learned_at: ago(3) });
+  open({ "GET knowledge": () => [...ENTRIES, set], "POST knowledge/LES-8/reuse": () => ({ changeset: "CS-21" }) });
+  await screen.findByRole("list", { name: "Waiting for your OK" });
+  await user.click(past());
+  const aside = screen.getByRole("list", { name: "What was set aside" });
+  expect(texts(aside)).toEqual(["Always copy the venue."]);
+  expect(within(aside).getByRole("listitem")).toHaveTextContent("Set aside");
+  await user.click(within(aside).getByRole("button", { name: "Use again: Always copy the venue." }));
+  expect(await screen.findByText("Using this again.")).toBeInTheDocument();
+});
+
+// T3-01 and T3-02: a second press while the first is out sends nothing; one just after it worked is refused as "changed since you
+// looked" and says nothing, so the Undo of the first stays.
+test("Keep pressed twice while the first save is out keeps once", async () => {
+  const user = userEvent.setup();
+  let release = () => undefined as void;
+  const { calls } = open({ "POST knowledge/LES-2/keep": () => new Promise((resolve) => (release = () => resolve({ changeset: "CS-22" }))) });
+  await screen.findByRole("list", { name: "Waiting for your OK" });
+  const keep = screen.getByRole("button", { name: "Keep: Catering work goes to the venue lead." });
+  await user.click(keep);
+  await user.click(keep);
+  release();
+  expect(await screen.findByText(/Kept\./)).toBeInTheDocument();
+  expect(calls.filter((c) => c.route === "POST knowledge/LES-2/keep")).toHaveLength(1);
+  expect(screen.queryByText(/didn't work/)).toBeNull();
+});
+
+test("a second Stop using just after the first worked is refused as changed since you looked and says nothing, and Undo stays", async () => {
+  const user = userEvent.setup();
+  let sent = 0;
+  const { calls } = open({
+    "POST knowledge/LES-1/retire": () => (++sent === 1 ? { changeset: "CS-23" } : new Refuse(409, "That changed since you last looked. It is up to date now, so look again and choose again.", { "X-Cockpit-Needs": "look-again" })),
+  });
+  await screen.findByRole("list", { name: "Waiting for your OK" });
+  const stop = screen.getByRole("button", { name: "Stop using: Release dates come from the schedule." });
+  await user.dblClick(stop);
+  await waitFor(() => expect(calls.filter((c) => c.route === "POST knowledge/LES-1/retire").length).toBeGreaterThanOrEqual(1));
+  expect(await screen.findByText("No longer used by Helper.")).toBeInTheDocument();
+  expect(screen.queryByText(/didn't work/)).toBeNull();
+  expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
 });
 
 test("a recent lesson never used yet is followed, not called idle", async () => {

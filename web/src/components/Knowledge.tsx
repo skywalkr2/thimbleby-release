@@ -54,7 +54,7 @@ export function Knowledge(props: { onOpenReview: () => void }) {
   const empty =
     all.length === 0 && !(plainWords && Array.isArray(plainWords.value) && plainWords.value.length > 0);
   const shown = (item: Item) => ({ item, now, words, reach: reachWords(item.scope, reach.names, words), projects: reach.projectList, onActed: () => setActed((n) => n + 1) });
-  const list = (items: Item[], label: string, as: "waiting" | "follows" | "idle" | "retired") => (
+  const list = (items: Item[], label: string, as: "waiting" | "follows" | "idle" | "retired" | "setAside") => (
     <ul className={styles.list} aria-label={label}>
       {items.map((item) => (
         <KnowledgeRow key={item.id} {...shown(item)} as={as} />
@@ -117,7 +117,7 @@ export function Knowledge(props: { onOpenReview: () => void }) {
       )}
       {/* A learned-items list that could not be read does not stop a word being added. */}
       {!loading && (failed || !empty) && <Glossary entries={sections.words} now={now} onActed={() => setActed((n) => n + 1)} />}
-      {!failed && !loading && (sections.idle.length > 0 || sections.retired.length > 0) && (
+      {!failed && !loading && (sections.idle.length > 0 || sections.retired.length > 0 || sections.setAside.length > 0) && (
         <details className="more-options">
           <summary>{t("knowledge.past.title")}</summary>
           {sections.idle.length > 0 && (
@@ -133,6 +133,12 @@ export function Knowledge(props: { onOpenReview: () => void }) {
               {list(sections.retired, t("knowledge.past.retired"), "retired")}
             </div>
           )}
+          {sections.setAside.length > 0 && (
+            <div className={styles.group}>
+              <h3>{t("knowledge.past.set_aside")}</h3>
+              {list(sections.setAside, t("knowledge.past.set_aside"), "setAside")}
+            </div>
+          )}
         </details>
       )}
     </section>
@@ -141,7 +147,7 @@ export function Knowledge(props: { onOpenReview: () => void }) {
 
 function KnowledgeRow(props: {
   item: Item;
-  as: "waiting" | "follows" | "idle" | "retired";
+  as: "waiting" | "follows" | "idle" | "retired" | "setAside";
   now: Date;
   words: ReturnType<typeof useWords>;
   reach: string;
@@ -163,6 +169,7 @@ function KnowledgeRow(props: {
     // What a proposal would change, in words; what is retired says so, so state is never colour alone.
     waiting ? t(`knowledge.changes.${changesOf(item)}`) : "",
     props.as === "retired" ? t("knowledge.status.retired") : "",
+    props.as === "setAside" ? t("knowledge.status.set_aside") : "",
     t(`knowledge.from.${item.learnedFrom}`),
     item.untrusted ? t("knowledge.outside") : "",
     item.enforced ? t("knowledge.enforced") : "",
@@ -185,6 +192,10 @@ function KnowledgeRow(props: {
   ) : inUse ? (
     <Button size="sm" data-key="primary" aria-label={t("knowledge.stop_named", { text: item.text })} onClick={() => void done(acts.retire(item))}>
       {t("knowledge.retire")}
+    </Button>
+  ) : props.as === "retired" || props.as === "setAside" ? (
+    <Button size="sm" data-key="primary" aria-label={t("knowledge.reuse_named", { text: item.text })} onClick={() => void done(acts.reuse(item))}>
+      {t("knowledge.reuse")}
     </Button>
   ) : null;
   const extra = narrowing || editing || item.origin;

@@ -24387,6 +24387,11 @@
             "title": "Entered",
             "type": "integer"
           },
+          "limit": {
+            "description": "The most promises one count can hold; a bigger number is refused.",
+            "title": "Limit",
+            "type": "integer"
+          },
           "missed": {
             "description": "Of those, how many the app didn't have.",
             "title": "Missed",
@@ -24414,7 +24419,8 @@
           "present",
           "missed",
           "entered",
-          "days"
+          "days",
+          "limit"
         ],
         "title": "QualityCounts",
         "type": "object"
@@ -33050,6 +33056,50 @@
           "request"
         ],
         "title": "TaskStarted",
+        "type": "object"
+      },
+      "TeamMemberIn": {
+        "additionalProperties": false,
+        "properties": {
+          "person": {
+            "description": "The id of the person to put on the team or take off it.",
+            "minLength": 1,
+            "title": "Person",
+            "type": "string"
+          }
+        },
+        "required": [
+          "person"
+        ],
+        "title": "TeamMemberIn",
+        "type": "object"
+      },
+      "TeamView": {
+        "description": "A team and the people in it: those it lists and those whose own record names it.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "people": {
+            "description": "The ids of the people in the team, by name.",
+            "items": {
+              "type": "string"
+            },
+            "title": "People",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "people"
+        ],
+        "title": "TeamView",
         "type": "object"
       },
       "TemplateAdds": {
@@ -44776,6 +44826,56 @@
         "summary": "Retire"
       }
     },
+    "/api/knowledge/{entry_id}/reuse": {
+      "post": {
+        "description": "Bring a retired or set-aside entry or standing rule back into use, as the person's own Keep. Undo puts it\nback as it was.",
+        "operationId": "reuse_api_knowledge__entry_id__reuse_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entry_id",
+            "required": true,
+            "schema": {
+              "title": "Entry Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReadVersion"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Applied"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reuse"
+      }
+    },
     "/api/list-suggestion": {
       "get": {
         "description": "The tone, and for a status list the meaning, offered for a value being added; the person can change both.",
@@ -52149,6 +52249,129 @@
           }
         },
         "summary": "Task Start"
+      }
+    },
+    "/api/teams": {
+      "get": {
+        "description": "The teams, by name, each with the people in it: those the team lists and those whose own record names it.",
+        "operationId": "teams_api_teams_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TeamView"
+                  },
+                  "title": "Response Teams Api Teams Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Teams"
+      }
+    },
+    "/api/teams/{team_id}/members/add": {
+      "post": {
+        "description": "Put a person on a team.",
+        "operationId": "team_add_api_teams__team_id__members_add_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "team_id",
+            "required": true,
+            "schema": {
+              "title": "Team Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeamMemberIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Applied"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Team Add"
+      }
+    },
+    "/api/teams/{team_id}/members/remove": {
+      "post": {
+        "description": "Take a person off a team, whether the team lists them or their own record names it.",
+        "operationId": "team_remove_api_teams__team_id__members_remove_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "team_id",
+            "required": true,
+            "schema": {
+              "title": "Team Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeamMemberIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Applied"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Team Remove"
       }
     },
     "/api/templates": {

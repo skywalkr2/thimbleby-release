@@ -252,7 +252,7 @@ export const allProjects = [
   { name: "review-r2-sides", testMatch: /review-r2-sides\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${manySides.port}/` } },
   { name: "review-r3", testMatch: /review-r3\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${reviewR3.port}/` } },
   { name: "review-r4", testMatch: /review-r4\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${reviewR4.port}/` } },
-  { name: "worst-case", testMatch: /h1-worst-case\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${worstCase.port}/` } },
+  { name: "worst-case", testMatch: /(h1|t3)-worst-case\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${worstCase.port}/` } },
   {
     name: "journeys-first-evening",
     testMatch: /journeys-first-evening\.spec\.ts/,

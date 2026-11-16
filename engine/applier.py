@@ -2190,6 +2190,8 @@ def edit_problem(store: Store, view: Any, op: Any) -> str | None:
         if set(group) & set(op.fields):
             equals = {f: merged.get(f) for f in group}
             if any(s.id != current.id for s in view.find(op.record.kind, equals)):
+                if len(group) == 1 and group[0] == "name":
+                    return f"there is already a {op.record.kind} called {equals['name']}"
                 return f"there is already a {op.record.kind} with " + ", ".join(f"{f}={v}" for f, v in equals.items())
     for path, target in ref_fields(model):
         if path.split(".")[0].removesuffix("[]") in op.fields:

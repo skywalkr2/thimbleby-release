@@ -20,38 +20,60 @@ export function useKnowledgeActs() {
       act(
         () => api.keepKnowledge(item.id, { read_version: item.version, ...body }),
         (done) => ({ message: t("knowledge.toast.kept"), undo: undo(done) }),
+        undefined,
+        { once: `knowledge:${item.id}` },
       ),
     discard: (item: Target) =>
       act(
         () => api.discardKnowledge(item.id, item.version),
         (done) => ({ message: t("knowledge.toast.discarded"), undo: undo(done) }),
+        undefined,
+        { once: `knowledge:${item.id}` },
       ),
     justThisTime: (item: Target) =>
       act(
         () => api.justThisTime(item.id, item.version),
         (done) => ({ message: t("knowledge.toast.just_this_time"), undo: undo(done) }),
+        undefined,
+        { once: `knowledge:${item.id}` },
       ),
     retire: (item: Target) =>
       act(
         () => api.retireKnowledge(item.id, item.version),
         (done) => ({ message: t("knowledge.toast.retired"), undo: undo(done) }),
+        undefined,
+        { once: `knowledge:${item.id}` },
+      ),
+    /** Bring a retired or set-aside entry back into use. */
+    reuse: (item: Target) =>
+      act(
+        () => api.reuseKnowledge(item.id, item.version),
+        (done) => ({ message: t("knowledge.toast.reused"), undo: undo(done) }),
+        undefined,
+        { once: `knowledge:${item.id}` },
       ),
     narrow: (item: Target, applies_to: S["Scope"]) =>
       act(
         () => api.narrowKnowledge(item.id, { read_version: item.version, applies_to }),
         (done) => ({ message: t("knowledge.toast.narrowed"), undo: undo(done) }),
+        undefined,
+        { once: `knowledge:${item.id}` },
       ),
     /** Add a word of the person's own with what it means: active at once, in their words. */
     addTerm: (term: string, meaning: string) =>
       act(
         () => api.addTerm(term, meaning),
         (done) => ({ message: t("knowledge.words.added", { word: term }), undo: undo(done) }),
+        undefined,
+        { once: "knowledge:add-term" },
       ),
     /** Keep a standing rule as it is in the review: its next review starts now. */
     keepRule: (item: Target) =>
       act(
         () => api.keepRule(item.id, item.version),
         (done) => ({ message: t("rules_review.kept"), undo: undo(done) }),
+        undefined,
+        { once: `knowledge:${item.id}` },
       ),
   };
 }

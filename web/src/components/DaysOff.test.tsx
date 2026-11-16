@@ -37,6 +37,7 @@ function serve(kind: "team" | "person", id: string, fields: Record<string, unkno
     "GET settings": () => ({ fingerprint: "fp", items: [] }),
     "GET lists": () => [],
     "GET organizations": () => [],
+    "GET teams": () => [{ id: "TEAM-2", name: "Lantern Design", people: ["PER-3"] }, { id: "TEAM-5", name: "Night Desk", people: ["PER-3"] }],
     "GET me": () => ({ person: "PER-1", full_name: "Robin Sample" }),
     "GET people/PER-3/memory": () => ({ person: "PER-3", name: "Sam Okoro", last_in_touch: null, asked_of: [], asked_by: [], promised_to: [], promised_by: [], reach: { kept: {}, replies_on: null, replies_record: null }, dates: [], matters: [] }),
     "GET setup/business": () => ({ business: false, name: "", personal: "PRJ-personal", sides: [], chosen: "both" }),
@@ -173,4 +174,52 @@ test("the team's days off are mentioned under an empty Time away only when the p
   serve("person", "PER-3", { full_name: "Sam Okoro", team: "TEAM-2", away: [] }, []);
   renderApp(<RecordPage kind="person" id="PER-3" onBack={() => {}} />);
   expect(await screen.findByText("No time away. Their team's days off count too.")).toBeInTheDocument();
+});
+
+// T3-04: the weekday boxes wait while a change is being saved, so two quick clicks send one change and never leave a box showing what
+// was not saved.
+test("clicking a weekday twice fast sends one change", async () => {
+  const sent: Sent[] = [];
+  const section = await teamPage(sent);
+  const monday = within(section).getByRole("checkbox", { name: "Monday" });
+  fireEvent.click(monday);
+  fireEvent.click(monday);
+  await waitFor(() => expect(sent).toHaveLength(1));
+  expect(sent[0].fields).toEqual({ working_days: ["tuesday", "wednesday", "thursday"] });
+});
+
+// T3-09: a team's page puts people on it from a list of the people on file and takes them off; a person's page says each team they are on.
+test("a team's page takes a person off and puts one on, from a list, each with Undo", async () => {
+  const user = userEvent.setup();
+  const calls: Array<{ body: unknown }> = [];
+  const asked: string[] = [];
+  serve("team", "TEAM-2", team, []);
+  const base = globalThis.fetch;
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    if (path.includes("teams/TEAM-2/members/")) {
+      asked.push(path);
+      calls.push({ body: JSON.parse(String(init?.body)) });
+      return Promise.resolve(new Response(JSON.stringify({ changeset: "CS-9" }), { status: 200, headers: { "content-type": "application/json" } }));
+    }
+    return base(input, init);
+  });
+  renderApp(<RecordPage kind="team" id="TEAM-2" onBack={() => {}} />);
+  const section = await screen.findByRole("region", { name: "People" });
+  expect(within(section).getByRole("link", { name: "Sam Okoro" })).toBeInTheDocument();
+  // The list to pick from holds the people not on the team yet, never a box to type in.
+  expect(within(section).queryByRole("textbox")).toBeNull();
+  await user.click(within(section).getByRole("button", { name: "Take Sam Okoro off the team" }));
+  await waitFor(() => expect(asked).toEqual(["api/teams/TEAM-2/members/remove"]));
+  expect(calls[0].body).toEqual({ person: "PER-3" });
+  expect(await screen.findByText("Sam Okoro is off the team.")).toBeInTheDocument();
+});
+
+test("a person's page says every team they are on, each a link", async () => {
+  serve("person", "PER-3", { full_name: "Sam Okoro" }, []);
+  renderApp(<RecordPage kind="person" id="PER-3" onBack={() => {}} />);
+  const teams = await screen.findByText("Teams");
+  const row = teams.closest("div")!;
+  expect(within(row).getByRole("link", { name: "Lantern Design" })).toHaveAttribute("href", expect.stringContaining("TEAM-2"));
+  expect(within(row).getByRole("link", { name: "Night Desk" })).toBeInTheDocument();
 });

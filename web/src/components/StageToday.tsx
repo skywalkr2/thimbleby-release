@@ -10,6 +10,7 @@ import {
   waitingForGo,
   type StageRequest,
   type StageView,
+  titleOfView,
 } from "../lib/stages";
 import { useEstimate } from "../lib/money";
 import { useWords } from "../lib/wording";
@@ -51,7 +52,7 @@ function GoRow(props: { request: StageRequest; item: StageView | null }) {
   const { error, busy, go } = useGo();
   const run = () => void go(props.request);
   const titleId = `go-${props.request.id}`;
-  const title = props.item?.title ?? t("stages.item_unknown");
+  const title = props.item ? titleOfView(props.item, t) : t("stages.item_unknown");
   return (
     <Row
       aria-labelledby={titleId}
@@ -91,7 +92,7 @@ function ReadyRow(props: { view: StageView }) {
       pill={<Pill tone="need">{t("stages.pill_ready")}</Pill>}
       title={
         <span id={titleId}>
-          <SafeText text={t("stages.ready_for", { title: view.title, stage: next.label })} />
+          <SafeText text={t("stages.ready_for", { title: titleOfView(view, t), stage: next.label })} />
         </span>
       }
       primary={

@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from engine.gate_measures import Window, window
+from engine.gate_measures import COUNT_LIMIT, Window, window
 from engine.names import People
 from engine.storage import StoreError, WriteContext
 from engine.today import zone
@@ -131,6 +131,8 @@ def record_reading(
         raise StoreError("A count can't be less than zero.")
     if missed > present:
         raise StoreError("You can't have missed more than you found.")
+    if present > COUNT_LIMIT:
+        raise StoreError(f"A message can't hold more than {COUNT_LIMIT} promises. Check the number.")
     return _set(store, sample_id, source_id, {"present": present, "missed": missed}, now)
 
 

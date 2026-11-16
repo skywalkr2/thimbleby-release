@@ -148,7 +148,9 @@ function CountForm(props: { view: View }) {
   const counted = whole(present);
   const gone = whole(missed);
   const tooMany = counted !== null && gone !== null && gone > counted;
-  const ready = counted !== null && gone !== null && !tooMany && !busy;
+  // One slip of a few digits would skew every figure on the page: a count past what a day's list can hold is not saved.
+  const tooBig = counted !== null && counted > props.view.counts.limit;
+  const ready = counted !== null && gone !== null && !tooMany && !tooBig && !busy;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -170,7 +172,18 @@ function CountForm(props: { view: View }) {
         <DateField id={`${base}-date`} value={day} max={today} onChange={(e) => setDate(e.target.value)} required />
       </FormField>
       <FormField id={`${base}-present`} label={t("quality.counts.present")}>
-        <input id={`${base}-present`} type="number" inputMode="numeric" min={0} step={1} value={present} onChange={(e) => setPresent(e.target.value)} />
+        <input
+          id={`${base}-present`}
+          type="number"
+          inputMode="numeric"
+          min={0}
+          max={props.view.counts.limit}
+          step={1}
+          value={present}
+          aria-invalid={tooBig || undefined}
+          aria-describedby={tooBig ? `${base}-problem` : undefined}
+          onChange={(e) => setPresent(e.target.value)}
+        />
       </FormField>
       <FormField id={`${base}-missed`} label={t("quality.counts.missed")}>
         <input
@@ -186,13 +199,13 @@ function CountForm(props: { view: View }) {
         />
       </FormField>
       <div className={styles.act}>
-        <Button type="submit" variant="primary" disabled={!ready} reason={busy || tooMany ? undefined : t("quality.counts.why_disabled")}>
+        <Button type="submit" variant="primary" disabled={!ready} reason={busy || tooMany || tooBig ? undefined : t("quality.counts.why_disabled")}>
           {t(busy ? "quality.counts.saving" : "quality.counts.save")}
         </Button>
       </div>
-      {tooMany && (
+      {(tooMany || tooBig) && (
         <p id={`${base}-problem`} className="problem-note" role="alert">
-          {t("quality.counts.too_many")}
+          {tooBig ? t("quality.counts.too_big", { limit: props.view.counts.limit }) : t("quality.counts.too_many")}
         </p>
       )}
     </form>
@@ -222,7 +235,7 @@ function OwnCount(props: { view: View; tn?: (key: string, count: number, values?
   );
 }
 
-function SampleRow(props: { sample: NonNullable<View["sample"]>; item: NonNullable<View["sample"]>["items"][number] }) {
+function SampleRow(props: { sample: NonNullable<View["sample"]>; item: NonNullable<View["sample"]>["items"][number]; limit: number }) {
   const { t } = useWords();
   const act = useAct();
   const base = useId();
@@ -238,7 +251,8 @@ function SampleRow(props: { sample: NonNullable<View["sample"]>; item: NonNullab
   const counted = whole(present);
   const gone = whole(missed);
   const tooMany = counted !== null && gone !== null && gone > counted;
-  const ready = counted !== null && gone !== null && !tooMany && !busy;
+  const tooBig = counted !== null && counted > props.limit;
+  const ready = counted !== null && gone !== null && !tooMany && !tooBig && !busy;
   const subject = item.title;
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -274,13 +288,13 @@ function SampleRow(props: { sample: NonNullable<View["sample"]>; item: NonNullab
           />
         </FormField>
         <div className={styles.act}>
-          <Button type="submit" aria-label={t("quality.sample.save_named", { subject })} disabled={!ready} reason={busy || tooMany ? undefined : t("quality.counts.why_disabled")}>
+          <Button type="submit" aria-label={t("quality.sample.save_named", { subject })} disabled={!ready} reason={busy || tooMany || tooBig ? undefined : t("quality.counts.why_disabled")}>
             {t("quality.sample.save")}
           </Button>
         </div>
-        {tooMany && (
+        {(tooMany || tooBig) && (
           <p id={`${base}-problem`} className="problem-note" role="alert">
-            {t("quality.sample.too_many")}
+            {tooBig ? t("quality.counts.too_big", { limit: props.limit }) : t("quality.sample.too_many")}
           </p>
         )}
       </form>
@@ -343,7 +357,7 @@ function Sample(props: { view: View }) {
       <p className={styles.sum}>{t("quality.sample.sum", { read: sample.read, size: sample.size, present: sample.present, missed: sample.missed })}</p>
       <ul className={styles.list} aria-label={t("quality.sample.list")}>
         {sample.items.map((item) => (
-          <SampleRow key={item.source} sample={sample} item={item} />
+          <SampleRow key={item.source} sample={sample} item={item} limit={props.view.counts.limit} />
         ))}
       </ul>
     </>

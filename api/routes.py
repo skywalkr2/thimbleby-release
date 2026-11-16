@@ -191,6 +191,8 @@ from api.schemas import (
     TaskKindView,
     TaskStart,
     TaskStarted,
+    TeamMemberIn,
+    TeamView,
     TextChoices,
     TextEdit,
     TextFieldView,
@@ -2548,12 +2550,19 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
 
     def _people() -> list[PersonView]:
         from engine import sides
-        from engine.record_page import counts
+        from engine.record_page import counts, open_count
 
         pm = cfg.workspace.user.person
         view = store.read()
         orgs = {o.id: o.data["name"] for o in view.list("organization")}
         seen = counts(view)["people"]
+        # The number beside a person is the number their page counts, so the table and the page never say two.
+        for person in view.list("person"):
+            seen[person.id] = {
+                "last_contact": None,
+                **seen.get(person.id, {}),
+                "open_items": open_count(view, person.id, pm),
+            }
         held = {p.id: sides.person_sides(view, cfg, p.data) for p in view.list("person")}
         return [
             PersonView(
@@ -2794,6 +2803,65 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
         guard(lambda: _restore(store, "person", pid))
         changed()
         return Ok(ok=pid)
+
+    @r.get("/teams")
+    def teams() -> list[TeamView]:
+        """The teams, by name, each with the people in it: those the team lists and those whose own record names it."""
+        view = store.read()
+        names = {p.id: p.data["full_name"].casefold() for p in view.list("person")}
+        found = []
+        for t in view.list("team"):
+            ids = list(t.data.get("members") or [])
+            ids += [p.id for p in view.list("person") if p.data.get("team") == t.id and p.id not in ids]
+            ids = [i for i in ids if i in names]
+            found.append(TeamView(id=t.id, name=t.data["name"], people=sorted(ids, key=lambda i: names[i])))
+        return sorted(found, key=lambda t: t.name.casefold())
+
+    def team_change(team_id: str, body: TeamMemberIn, put_on: bool) -> Applied:
+        """Put a person on a team or take them off it, as one change with one Undo."""
+        from engine.applier import apply_as_person
+
+        view = store.read()
+        team, person = view.get("team", team_id), view.get("person", body.person)
+        if team is None or person is None:
+            raise HTTPException(status_code=404, detail="not found")
+        members = [m for m in (team.data.get("members") or []) if m != person.id]
+        ops: list[dict[str, Any]] = []
+        if put_on:
+            members.append(person.id)
+        if members != list(team.data.get("members") or []):
+            ops.append(
+                {
+                    "op": "record.edit",
+                    "record": {"kind": "team", "id": team.id},
+                    "fields": {"members": members},
+                    "read_version": team.version,
+                }
+            )
+        if not put_on and person.data.get("team") == team.id:
+            ops.append(
+                {
+                    "op": "record.edit",
+                    "record": {"kind": "person", "id": person.id},
+                    "fields": {"team": None},
+                    "read_version": person.version,
+                }
+            )
+        if not ops:
+            raise HTTPException(status_code=409, detail="That is already so.")
+        cs_id = guard(lambda: apply_as_person(store, cfg, ops, "Changed who is on a team"))
+        changed()
+        return Applied(changeset=cs_id)
+
+    @r.post("/teams/{team_id}/members/add")
+    def team_add(team_id: str, body: TeamMemberIn) -> Applied:
+        """Put a person on a team."""
+        return team_change(team_id, body, True)
+
+    @r.post("/teams/{team_id}/members/remove")
+    def team_remove(team_id: str, body: TeamMemberIn) -> Applied:
+        """Take a person off a team, whether the team lists them or their own record names it."""
+        return team_change(team_id, body, False)
 
     @r.get("/organizations")
     def organizations() -> list[OrganizationView]:

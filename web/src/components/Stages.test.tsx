@@ -285,3 +285,19 @@ test("the stage list says it can move to the next stage, not that it is ready fo
   expect(screen.getByText("Can't move to Ready for review yet")).toBeInTheDocument();
   expect(document.body.textContent).not.toMatch(/ready for ready for/i);
 });
+
+// T3-13: an item with no name of its own goes by a plain word, never by its id, in its row and in the toast.
+test("an item with no name is called a plain word, never its id", async () => {
+  const user = userEvent.setup();
+  const bare = view("REM-2", "REM-2");
+  fakeApi({
+    "GET stages/records": () => [bare],
+    "GET stages/requests": () => [],
+    "POST stages/move": () => ({ changeset: "CS-9", stages: bare }),
+  });
+  renderApp(<Stages />);
+  const item = await screen.findByRole("listitem", { name: "An item with no name" });
+  expect(screen.queryByText("REM-2")).toBeNull();
+  await user.click(within(item).getByRole("button", { name: "Move to Third step" }));
+  expect(await screen.findByText("Moved An item with no name to Third step.")).toBeInTheDocument();
+});

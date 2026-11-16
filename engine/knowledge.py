@@ -114,7 +114,7 @@ def problem(view: Any, op: Any) -> str | None:
     if why is not None:
         return why
     if op.op == "knowledge.retire":
-        return None if found.data["status"] == "active" else f"{op.id} isn't active, so there is nothing to retire"
+        return None if found.data["status"] == "active" else "That isn't in use, so there is nothing to retire"
     if found.data["status"] not in EDITABLE:
         return f"{op.id} is {found.data['status']} and can't be changed"
     changes = op.changes()
@@ -275,6 +275,19 @@ def keep_fields(
     return fields
 
 
+def reuse_fields(found: Any, person: str, now: str) -> dict[str, Any]:
+    """The fields that bring a retired or set-aside entry back into use: it is active again, with the person as the one
+    who kept it, and what was said against it is cleared. Raises StoreError for an entry that is in use or waiting."""
+    if found.data["status"] not in ("retired", "discarded"):
+        raise StoreError("That is already in use or waiting for your OK")
+    fields: dict[str, Any] = {"status": "active", "kept_by": person, "kept_at": now, "discard_reason": None}
+    if found.data.get("trust") == "untrusted":
+        # Choosing to use it again, having seen its wording, is the person's own Keep; the source stays beside it as
+        # evidence.
+        fields["trust"] = "trusted"
+    return fields
+
+
 def discard_fields(found: Any, reason: str | None) -> dict[str, Any]:
     """The fields that discard a proposed entry, keeping it with the reason. Raises StoreError for an entry that isn't
     proposed."""
@@ -292,12 +305,14 @@ def just_this_time_fields(found: Any) -> dict[str, Any]:
 
 
 def is_keep(kind: str, current: dict[str, Any], fields: dict[str, Any]) -> bool:
-    """Whether a change is Keep: a proposal of a kind of knowledge or a rule becoming active, which may also make its
-    content trusted, because the person is the author of what they kept."""
+    """Whether a change is Keep: a proposal of a kind of knowledge or a rule becoming active (or a retired or set-aside
+    one brought back into use), which may also make its content trusted, because the person is the author of what they
+    kept."""
     return (
         (kind in KINDS or kind == "rule")
-        and current.get("status") == "proposed"
+        and current.get("status") in ("proposed", "retired", "discarded")
         and fields.get("status") == "active"
-        and set(fields) <= {"status", "kept_by", "kept_at", "trust", "text", "applies_to"}
+        and set(fields) <= {"status", "kept_by", "kept_at", "trust", "text", "applies_to", "discard_reason"}
+        and fields.get("discard_reason") is None
         and fields.get("trust", "trusted") == "trusted"
     )

@@ -12,6 +12,7 @@ import {
   waitingForGo,
   type StageRequest,
   type StageView,
+  titleOfView,
 } from "../lib/stages";
 import { usePluginActions } from "../lib/plugin-actions";
 import { useWords } from "../lib/wording";
@@ -172,7 +173,7 @@ function StageRow(props: { view: StageView; waiting: StageRequest[] }) {
       ref={ref}
       aria-labelledby={titleId}
       pill={<Pill tone={view.current === null ? "neutral" : "need"}>{stageName}</Pill>}
-      title={<SafeText text={view.title} />}
+      title={<SafeText text={titleOfView(view, t)} />}
       titleId={titleId}
       meta={sub}
       primary={
@@ -182,7 +183,7 @@ function StageRow(props: { view: StageView; waiting: StageRequest[] }) {
           </Button>
         )
       }
-      menu={<RowMenu label={view.title} actions={menu} />}
+      menu={<RowMenu label={titleOfView(view, t)} actions={menu} />}
     >
       {hasBody && (
         <RowBody>

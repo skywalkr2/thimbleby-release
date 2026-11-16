@@ -41,12 +41,23 @@ export function DaysOff(props: { kind: "person" | "team"; record: S["GenericReco
   const week = Array.isArray(record.fields.working_days) ? (record.fields.working_days as string[]) : [];
   const ids = useId();
 
+  // While a change is being saved the weekday boxes wait, and a second press of any control here sends nothing: two quick presses
+  // never send the same change twice or leave a box showing what was not saved.
+  const [saving, setSaving] = useState(false);
   /** Save fields of the record as the person's own change, at once, with Undo. */
-  const save = (fields: Record<string, unknown>, message: string) =>
-    act(
-      () => api.editRecord({ kind, id: record.id, fields, read_version: record.version }),
-      (result) => ({ message, undo: () => api.undo(result.changeset) }),
-    );
+  const save = async (fields: Record<string, unknown>, message: string) => {
+    setSaving(true);
+    try {
+      return await act(
+        () => api.editRecord({ kind, id: record.id, fields, read_version: record.version }),
+        (result) => ({ message, undo: () => api.undo(result.changeset) }),
+        undefined,
+        { once: `days-off:${record.id}` },
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
   const saveList = (next: Period[], message: string) => save({ [field]: next }, message);
   const close = () => {
     setEditing(null);
@@ -112,6 +123,7 @@ export function DaysOff(props: { kind: "person" | "team"; record: S["GenericReco
                 <input
                   type="checkbox"
                   checked={week.includes(w)}
+                  disabled={saving}
                   onChange={(e) => {
                     const next = WEEKDAYS.filter((d) => (d === w ? e.target.checked : week.includes(d)));
                     void save({ working_days: next.length > 0 ? next : null }, t("daysoff.changed"));

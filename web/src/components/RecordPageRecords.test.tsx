@@ -737,6 +737,35 @@ test("an organization nobody works for says so in its People section", async () 
   expect(document.querySelector("[data-page-header]")).toHaveTextContent("0 people · 0 open items");
 });
 
+// T3-08: an organization with no note, no people and nothing else to list still opens its edit form.
+test("Edit details on an organization with nothing to list opens the form, with the name in it", async () => {
+  const user = userEvent.setup();
+  api("organization", "ORG-5", { name: "Quiet Works" }, { ...page({ kind: "organization", id: "ORG-5" }), name: "Quiet Works" }, {
+    "GET kinds/organization": () => ({ kind: "organization", fields: [{ name: "name", description: "", type: "text", required: true, editable: true }] }),
+  });
+  renderApp(<RecordPage kind="organization" id="ORG-5" onBack={() => {}} />);
+  await user.click(await screen.findByRole("button", { name: "Edit details" }));
+  const form = await screen.findByRole("form", { name: "Edit details" });
+  expect(within(form).getByLabelText("Name")).toHaveValue("Quiet Works");
+});
+
+// T3-05: a name with nothing in it but spaces is not saved, and the form says why.
+test("Save is off for a name that is only spaces, and says why", async () => {
+  const user = userEvent.setup();
+  api("team", "TEAM-4", { name: "Empty team", members: [] }, { ...page({ kind: "team", id: "TEAM-4" }), name: "Empty team" }, {
+    "GET kinds/team": () => ({ kind: "team", fields: [{ name: "name", description: "", type: "text", required: true, editable: true }] }),
+    "GET teams": () => [],
+  });
+  renderApp(<RecordPage kind="team" id="TEAM-4" onBack={() => {}} />);
+  await user.click(await screen.findByRole("button", { name: "Edit details" }));
+  const form = await screen.findByRole("form", { name: "Edit details" });
+  const name = within(form).getByLabelText("Name");
+  await user.clear(name);
+  await user.type(name, "     ");
+  expect(within(form).getByRole("button", { name: "Save" })).toBeDisabled();
+  expect(within(form).getByText("Name can't be empty.")).toBeInTheDocument();
+});
+
 test("a side's page lists a to-do that is open in it once, never twice (the side page shows what is inside beside what is open)", async () => {
   const shop = { business: true, name: "Shop", personal: "PRJ-personal", sides: [{ project: "PRJ-shop", name: "Shop", kind: "business" }], chosen: "both" };
   api(

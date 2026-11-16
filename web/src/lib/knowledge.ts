@@ -139,6 +139,8 @@ export interface Sections {
   idle: Item[];
   /** Retired. */
   retired: Item[];
+  /** Said no to when proposed: set aside, and listed so it can be used again. */
+  setAside: Item[];
 }
 
 /** Every item in the one section it belongs to; `items` is newest first and each section keeps that order. */
@@ -148,7 +150,7 @@ export function sectionsOf(items: Item[], now: Date, days: number | undefined): 
   const idle = items.filter((i) => notUsedInAWhile(i, now, days));
   const lately = items.filter((i) => i.status === "active" && i.kind !== "glossary_entry" && !idle.includes(i));
   const follows = GROUPS.map((group) => ({ group, items: lately.filter((i) => groupOf(i) === group) })).filter((g) => g.items.length > 0);
-  return { waiting, follows, words, idle, retired: items.filter((i) => i.status === "retired") };
+  return { waiting, follows, words, idle, retired: items.filter((i) => i.status === "retired"), setAside: items.filter((i) => i.status === "discarded") };
 }
 
 /** "today", "yesterday", "3 days ago" or "2 months ago". */

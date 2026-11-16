@@ -24,6 +24,7 @@ import { useSideSlot } from "../lib/marks";
 import { FilteredEmpty } from "../ui/FilteredEmpty";
 import { ListState } from "../ui/ListState";
 import { Organizations } from "./Organizations";
+import { Teams } from "./Teams";
 import styles from "./People.module.css";
 import { PersonDrawer, heldReach } from "./PersonForm";
 import { RecordConversation } from "./RecordConversation";
@@ -152,6 +153,7 @@ export function People() {
         </ListState>
       </ListDetail>
       {!justMe && !people.isError && <Organizations />}
+      {!people.isError && <Teams />}
       {adding && <PersonDrawer onClose={() => setAdding(false)} onSaved={(id) => setChosen(id)} />}
       {editing && <PersonDrawer person={editing} onClose={() => setEditing(null)} />}
     </section>

@@ -8,6 +8,9 @@ import { useWords } from "./wording";
 import { runWrite } from "./write";
 
 export type StageView = S["StageView"];
+
+/** The name an item goes by on the stage screens: its own, or a plain word when it has none (the server then gives its id). */
+export const titleOfView = (view: StageView, t: (key: string) => string): string => (view.title === view.record.id ? t("stages.item_unnamed") : view.title);
 export type StageRequest = S["StageRequestView"];
 
 export function useStageRecords() {
@@ -99,7 +102,7 @@ export function useMove() {
     run(
       () => api.stageMove({ record: view.record, to: to.id, read_version: view.version }),
       (moved) => ({
-        message: t("toast.stage_moved", { title: view.title, stage: to.label }),
+        message: t("toast.stage_moved", { title: titleOfView(view, t), stage: to.label }),
         undo: async () => {
           const report = await api.undo(moved.changeset);
           if (!report.restored.length) throw new Error("not undone");

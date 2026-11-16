@@ -1,6 +1,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { S } from "../lib/api";
+import { setSideChoice } from "../lib/sides";
 import { fakeApi, renderApp } from "../test-utils";
 import { Files } from "./Files";
 
@@ -306,4 +307,22 @@ test("Remove and forget says why a file something still uses stays", async () =>
   await user.click(screen.getByRole("menuitem", { name: "Remove and forget its stored copy" }));
   await user.click(await screen.findByRole("button", { name: "Forget it" }));
   expect(await screen.findByText("notes.txt can't be removed while something still uses it.")).toBeInTheDocument();
+});
+
+// T3-12: under a side's filter, a file that is on no side stays listed and says "Every side", so it is never read as that side's own.
+test("under a side's filter a file on no side says Every side, and the side's own file does not", async () => {
+  const PERSONAL = "PRJ-personal";
+  const WORK = "PRJ-work";
+  setSideChoice(WORK);
+  fakeApi({
+    "GET files": () => [file("FILE-1", "invoice.txt", { project: WORK }), file("FILE-2", "notes.txt", { project: null })],
+    "GET projects": () => [{ ...project, id: WORK, name: "Orchard Press", side: true }],
+    "GET setup/business": () => ({ business: true, name: "Orchard Press", personal: PERSONAL, sides: [{ project: WORK, kind: "business", name: "Orchard Press" }] }),
+    "GET plugin-actions": () => [],
+  });
+  renderApp(<Files />);
+  const loose = await screen.findByRole("listitem", { name: "notes.txt" });
+  expect(within(loose).getByText(/Every side/)).toBeInTheDocument();
+  expect(within(screen.getByRole("listitem", { name: "invoice.txt" })).queryByText(/Every side/)).toBeNull();
+  setSideChoice("all");
 });

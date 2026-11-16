@@ -40,6 +40,7 @@ from engine.records import Rule, Scope
 from engine.references import join_scope
 from engine.rule_review import due, review, take_back_not_now
 from engine.storage import Store, StoreError
+from engine.storage.store import CONFLICT_WORDS
 from engine.worker import Events, Worker
 
 Kind = Literal["lesson", "glossary_entry", "routing_entry", "style_note"]
@@ -160,7 +161,7 @@ def build_knowledge_router(cfg: Config, store: Store, events: Events, worker: Wo
         if found is None:
             raise HTTPException(status_code=404, detail=f"{entry_id} doesn't exist")
         if found.version != read_version:
-            raise HTTPException(status_code=409, detail=f"{entry_id} changed since it was read")
+            raise HTTPException(status_code=409, detail=CONFLICT_WORDS)
         return found
 
     def act(found: Any, op: dict[str, Any], summary: str, kind: str) -> Applied:
@@ -257,6 +258,20 @@ def build_knowledge_router(cfg: Config, store: Store, events: Events, worker: Wo
         except StoreError as err:
             raise HTTPException(status_code=409, detail=str(err)) from None
         return act(found, edit(found, fields), "Discarded what was learned", "discarded")
+
+    @r.post("/knowledge/{entry_id}/reuse")
+    def reuse(entry_id: str, body: ReadVersion) -> Applied:
+        """Bring a retired or set-aside entry or standing rule back into use, as the person's own Keep. Undo puts it
+        back as it was."""
+        found = entry(entry_id, body.read_version, rules=True)
+        person = cfg.workspace.user.person
+        if person is None:
+            raise HTTPException(status_code=409, detail=SAY_WHO_FIRST)
+        try:
+            fields = knowledge.reuse_fields(found, person, store.clock())
+        except StoreError as err:
+            raise HTTPException(status_code=409, detail=str(err)) from None
+        return act(found, edit(found, fields), "Brought back what was learned", "kept")
 
     @r.post("/knowledge/{entry_id}/retire")
     def retire(entry_id: str, body: ReadVersion) -> Applied:

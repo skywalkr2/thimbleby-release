@@ -448,6 +448,14 @@ def _bookkeeping(row: dict[str, Any], made_with: Any) -> bool:
     return bool(pointed & made_with(row["changeset"]) - {row["record_id"]})
 
 
+def open_count(view: Any, person_id: str, pm: str | None) -> int:
+    """How many open things a person's page counts for them: what is open with them, as `_open_with` lists it. On the
+    page of the person themselves only the actions count (their questions are a tab of their own), so the table and the
+    page say one number."""
+    actions, questions = _open_with(view, "person", person_id, pm)
+    return len(actions) if person_id == pm else len(actions) + len(questions)
+
+
 def counts(view: Any) -> dict[str, dict[str, Any]]:
     """For the tables: per person, open items with them and when they were last contacted; per project, open
     actions, open questions and when it last changed."""

@@ -26,7 +26,7 @@ const quality = (over: Partial<View> = {}): View => ({
   until: "2026-10-19",
   closes: { total: 0, silent: 0, days: [] },
   endings: { made: 0, wrong: 0, declined: 0, undone: 0, reopened: 0, days: [] },
-  counts: { person: "PER-1", present: 0, missed: 0, entered: 0, days: [] },
+  counts: { person: "PER-1", present: 0, missed: 0, entered: 0, days: [], limit: 1000 },
   replays: { count: 0, last_run: null },
   outcome: { promises_found: 0, promises_kept: 0, dismissed: 0, corrected: 0, review_seconds: 0, review_visits: 0, follow_ups_completed: 0, weeks: [] },
   review: { median_seconds: null, days_reviewed: 0, total_seconds: 0, visits: 0, days: [] },
@@ -41,7 +41,7 @@ const quality = (over: Partial<View> = {}): View => ({
 const FULL = quality({
   closes: { total: 41, silent: 2, days: [{ day: "2026-10-18", total: 30, silent: 1 }, { day: "2026-10-19", total: 11, silent: 1 }] },
   endings: { made: 12, wrong: 3, declined: 1, undone: 1, reopened: 1, days: [{ day: "2026-10-19", made: 12, wrong: 3 }] },
-  counts: { person: "PER-1", present: 30, missed: 4, entered: 2, days: [{ day: "2026-10-18", present: 20, missed: 3 }, { day: "2026-10-19", present: 10, missed: 1 }] },
+  counts: { person: "PER-1", present: 30, missed: 4, entered: 2, days: [{ day: "2026-10-18", present: 20, missed: 3 }, { day: "2026-10-19", present: 10, missed: 1 }], limit: 1000 },
   missed: [
     { person: "PER-1", person_name: "Casey Example", week: "2026-10-05", week_end: "2026-10-11", count: 0 },
     { person: "PER-1", person_name: "Casey Example", week: "2026-10-12", week_end: "2026-10-18", count: 3 },
@@ -460,6 +460,15 @@ test("more missed than counted is said at once and can't be saved", async () => 
   await user.type(await screen.findByLabelText("Promises on your own list"), "2");
   await user.type(screen.getByLabelText("Of those, how many the app didn't have"), "5");
   expect(screen.getByRole("alert")).toHaveTextContent("The app can't have missed more than you counted.");
+  expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+});
+
+test("a count past what one list can hold is said at once and can't be saved (T3-07)", async () => {
+  const user = userEvent.setup();
+  show(quality());
+  await user.type(await screen.findByLabelText("Promises on your own list"), "999999999999");
+  await user.type(screen.getByLabelText("Of those, how many the app didn't have"), "1");
+  expect(screen.getByRole("alert")).toHaveTextContent("more than one list can hold (1000 at most)");
   expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
 });
 

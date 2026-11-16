@@ -111,6 +111,7 @@ export function RecordPage(props: { kind: string; id: string; onBack: () => void
   const people = useQuery({ queryKey: ["people"], queryFn: api.people });
   const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects });
   const organizations = useQuery({ queryKey: ["organizations"], queryFn: api.organizations });
+  const teams = useQuery({ queryKey: ["teams"], queryFn: api.teams, enabled: kind === "person" });
   // What is open with the record, what was finished and what happened to it; a record the page can't be read for shows none.
   const page = useQuery({ queryKey: ["record-page", kind, id], queryFn: () => api.recordPage(kind, id) });
   const lines = useValueLines();
@@ -226,7 +227,7 @@ export function RecordPage(props: { kind: string; id: string; onBack: () => void
   const due = kind === "action" && typeof data?.fields.due === "string" ? data.fields.due : null;
   const name = data && settled ? plainTitle(page.data?.name || shown("title", data.fields.title)[0] || shown("name", data.fields.name)[0] || "", due) : "";
   const ownOrganization = kind === "project" ? sides.find((s) => s.project === id) : undefined;
-  type Row = { name: string; label?: string; lines: Array<string | { label: string; url: string }>; link?: { text: string; href: string }; muted?: boolean; onAdd?: () => void; reach?: string };
+  type Row = { name: string; label?: string; lines: Array<string | { label: string; url: string }>; link?: { text: string; href: string }; links?: Array<{ text: string; href: string }>; muted?: boolean; onAdd?: () => void; reach?: string };
   const person = kind === "person" ? (people.data ?? []).find((p) => p.id === id) : undefined;
   // Someone forgotten has no details left and none can be added, so no control here offers to edit them.
   const forgottenOn = person?.forgotten_on ?? null;
@@ -320,9 +321,14 @@ export function RecordPage(props: { kind: string; id: string; onBack: () => void
       // The person's own page lists every job and business they keep, not only the one their record names.
       personRows.push({ name: "org", label: t("person.row.own_orgs"), lines: sides.map((x) => x.name) });
     } else if (org && !sides.some((x) => x.name === org)) personRows.push({ name: "org", label: labelOf("org"), lines: [org] });
-    const team = names.get(String(data.fields.team ?? ""));
-    // Their team's page is where its days off are kept, so the team is a link to it.
-    if (team) personRows.push({ name: "team", label: labelOf("team"), lines: [team], link: { text: team, href: viewHref(recordView("team", String(data.fields.team))) } });
+    // The teams they are on, each a link: a team's page is where its people and days off are kept.
+    const ownTeam = String(data.fields.team ?? "");
+    const onTeams = (teams.data ?? []).filter((x) => x.people.includes(id));
+    // The team their own record names is on the list before the teams are read.
+    if (ownTeam && names.get(ownTeam) && !onTeams.some((x) => x.id === ownTeam)) onTeams.push({ id: ownTeam, name: names.get(ownTeam)!, people: [id] });
+    if (onTeams.length > 0) {
+      personRows.push({ name: "team", label: tn("person.row.teams", onTeams.length), lines: onTeams.map((x) => x.name), links: onTeams.map((x) => ({ text: x.name, href: viewHref(recordView("team", x.id)) })) });
+    }
     if (person && !justMe && sides.length > 0) {
       const named = (person.sides ?? []).map((sid) => (sid === personal ? t("sides.filter.personal") : sides.find((x) => x.project === sid)?.name)).filter((n): n is string => !!n);
       if (named.length > 0) personRows.push({ name: "sides", label: labelOf("sides"), lines: named });
@@ -389,7 +395,7 @@ export function RecordPage(props: { kind: string; id: string; onBack: () => void
   const asCard = isPerson && !isSelf;
   const firstName = person?.first_name || name.split(" ")[0] || name;
   const cardSlot = person ? slotOf((person.sides ?? [])[0]) : null;
-  const nothingToList = kind === "organization" && rows.length === 0 && folded.length === 0;
+  const nothingToList = kind === "organization" && rows.length === 0 && folded.length === 0 && !editing;
   // A page with nothing to put in its card draws none, and the column goes to the page.
   const bare = !asCard && !editing && settled && rows.length === 0 && folded.length === 0 && !hasOrigin(data?.origin) && !hasDaysOff && kind !== "action" && !isPerson;
   const detailsPanel = data && !nothingToList && (
@@ -433,6 +439,12 @@ export function RecordPage(props: { kind: string; id: string; onBack: () => void
                     <div>
                       <a href={row.link.href}>{row.link.text}</a>
                     </div>
+                  ) : row.links ? (
+                    row.links.map((link) => (
+                      <div key={link.href}>
+                        <a href={link.href}>{link.text}</a>
+                      </div>
+                    ))
                   ) : row.reach ? (
                     <PersonReach person={id} name={name} kind={row.reach} held={data.fields.how_to_reach} />
                   ) : row.onAdd ? (
@@ -628,7 +640,7 @@ export function RecordPage(props: { kind: string; id: string; onBack: () => void
                 )}
               </section>
             )}
-            {kind === "team" && <TeamMembers ids={Array.isArray(data.fields.members) ? (data.fields.members as string[]) : []} names={names} />}
+            {kind === "team" && <TeamMembers team={id} />}
             {kind === "source" && <SourceBody id={id} />}
             {kind === "note" && <NoteBody text={String(data.fields.text ?? "")} title={heading} />}
             {kind === "event" && <AgendaSection items={page.data?.agenda ?? []} id="record-agenda" />}
@@ -761,22 +773,81 @@ function Offers(props: { kind: string; id: string }) {
   );
 }
 
-/** A team's members, as a list of their own on its page; with no one in it, the page says so and where people are. */
-function TeamMembers(props: { ids: string[]; names: Map<string, string> }) {
+/** A team's people, as a list of their own on its page: each can be taken off, and a person is put on from a list of the people on
+ * file (never a typed name). Both act at once with Undo. With no one in it, the page says so. */
+function TeamMembers(props: { team: string }) {
   const { t } = useWords();
+  const act = useAct();
+  const teams = useQuery({ queryKey: ["teams"], queryFn: api.teams });
+  const people = useQuery({ queryKey: ["people"], queryFn: api.people });
+  const [pick, setPick] = useState("");
+  const here = teams.data?.find((x) => x.id === props.team)?.people ?? [];
+  const byId = new Map((people.data ?? []).map((p) => [p.id, p]));
+  const available = (people.data ?? []).filter((p) => p.status === "active" && !here.includes(p.id));
+  const once = { once: `team:${props.team}` };
+  const add = async () => {
+    const who = byId.get(pick);
+    if (!who) return;
+    const done = await act(
+      () => api.addTeamMember(props.team, who.id),
+      (result) => ({ message: t("team.added", { name: who.name }), undo: () => api.undo(result.changeset) }),
+      undefined,
+      once,
+    );
+    if (done) setPick("");
+  };
+  const remove = (personId: string, name: string) =>
+    void act(
+      () => api.removeTeamMember(props.team, personId),
+      (result) => ({ message: t("team.removed", { name }), undo: () => api.undo(result.changeset) }),
+      undefined,
+      once,
+    );
   return (
     <section aria-labelledby="team-members" data-team-members="">
       <h2 id="team-members">{t("team.members")}</h2>
-      {props.ids.length > 0 ? (
-        <RowList>
-          {props.ids.map((personId) => (
-            <Row key={personId} title={<a href={viewHref(recordView("person", personId))}>{props.names.get(personId) ?? t("record.removed")}</a>} />
-          ))}
+      {here.length > 0 ? (
+        <RowList aria-label={t("team.members")}>
+          {here.map((personId) => {
+            const name = byId.get(personId)?.name ?? t("record.removed");
+            return (
+              <Row
+                key={personId}
+                title={<a href={viewHref(recordView("person", personId))}>{name}</a>}
+                primary={
+                  <Button variant="quiet" size="sm" aria-label={t("team.remove_named", { name })} onClick={() => remove(personId, name)}>
+                    {t("team.remove")}
+                  </Button>
+                }
+              />
+            );
+          })}
         </RowList>
       ) : (
         <p className="hint">
-          {t("team.no_members")} <a href={viewHref("records/people")}>{t("team.see_people")}</a>
+          {t("team.no_members")}
+          {available.length === 0 && (
+            <>
+              {" "}
+              <a href={viewHref("records/people")}>{t("team.see_people")}</a>
+            </>
+          )}
         </p>
+      )}
+      {available.length > 0 && (
+        <form
+          className="inline-field"
+          aria-label={t("team.add_form")}
+          onSubmit={(e) => {
+            e.preventDefault();
+            void add();
+          }}
+        >
+          <PersonPicker label={t("team.add_label")} value={pick} onChange={setPick} suggested={[]} people={available} noAdd />
+          <Button type="submit" disabled={!pick} reason={t("team.add_reason")}>
+            {t("team.add")}
+          </Button>
+        </form>
       )}
     </section>
   );
@@ -841,10 +912,13 @@ function DetailsForm(props: {
   const [saving, setSaving] = useState(false);
   const changed = changedFields(fields, record.fields, draft);
   const dirty = Object.keys(changed).length > 0;
+  // A name (or a field the kind needs) with nothing in it but spaces is not saved: the record would have no name on any screen.
+  const blank = (f: S["FieldView"]) => f.type === "text" && typeof draft[f.name] === "string" && !String(draft[f.name]).trim();
+  const empty = fields.find((f) => blank(f) && (f.required || (NAME_FIELDS.has(f.name) && String(record.fields[f.name] ?? "").trim() !== "")));
   const set = (name: string, value: string | boolean) => setDraft((d) => ({ ...d, [name]: value }));
 
   const save = async () => {
-    if (!dirty) return;
+    if (!dirty || empty || saving) return;
     setSaving(true);
     setError(null);
     setConflicts([]);
@@ -930,7 +1004,7 @@ function DetailsForm(props: {
         <Button variant="quiet" onClick={props.onDone}>
           {t("action.cancel")}
         </Button>
-        <Button variant="primary" type="submit" disabled={!dirty || saving}>
+        <Button variant="primary" type="submit" disabled={!dirty || !!empty || saving} reason={empty ? t("record.name_missing", { field: labelOf(empty.name) }) : undefined}>
           {t("record.save")}
         </Button>
       </Actions>

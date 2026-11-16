@@ -1541,6 +1541,19 @@ class OrganizationView(BaseModel):
     side_kind: Literal["job", "business"] | None = Field(None, description="Whether that side is a job or a business.")
 
 
+class TeamView(BaseModel):
+    """A team and the people in it: those it lists and those whose own record names it."""
+
+    id: str
+    name: str
+    people: list[str] = Field(description="The ids of the people in the team, by name.")
+
+
+class TeamMemberIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    person: str = Field(min_length=1, description="The id of the person to put on the team or take off it.")
+
+
 class OrganizationIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1)
@@ -7525,6 +7538,7 @@ class QualityCounts(BaseModel):
     missed: int = Field(description="Of those, how many the app didn't have.")
     entered: int = Field(description="How many days have an entry.")
     days: list[QualityCountDay] = Field(description="Each day with an entry, oldest first.")
+    limit: int = Field(description="The most promises one count can hold; a bigger number is refused.")
 
 
 class QualityReplays(BaseModel):

@@ -159,7 +159,8 @@ describe("the Timeline", () => {
     await open();
     screen.getByRole("button", { name: /^To-do: Send the quote\./ }).focus();
     await user.keyboard("{Enter}");
-    expect(window.location.hash).toBe("#records/action/ACT-Send%20the%20quote");
+    // The page change lands after the key's handler; on a busy machine that is later than the key returns.
+    await waitFor(() => expect(window.location.hash).toBe("#records/action/ACT-Send%20the%20quote"));
   });
 
   test("days off are hatched on every lane, and a lane's own days off are named in the details of an item that falls on one", async () => {

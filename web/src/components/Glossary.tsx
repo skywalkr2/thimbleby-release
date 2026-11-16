@@ -3,7 +3,7 @@
 // two boxes: with a meaning it is a glossary entry in the person's words, active at once; with no meaning it is only added to
 // the words the assistant never asks about (`language.known_terms`), saved at once with the same read-back and Undo as on
 // Settings. Case is ignored.
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { useKnowledgeActs } from "../lib/knowledge-acts";
 import { usedWords, type Item } from "../lib/knowledge";
 import { useSettingEdits } from "../lib/use-setting-edits";
@@ -33,13 +33,20 @@ export function Glossary(props: { entries: Item[]; now: Date; onActed: () => voi
   // With no meaning a word can only go to the words never asked about, which needs that setting.
   const cannot = !meaning && (!item || locked);
   const saveWords = (next: string[], message: string) => (item ? edit.save(KEY, { changes: { [KEY]: next } }, message) : Promise.resolve(false));
+  // A second press (or Enter) while the word is being saved sends nothing: one word is added once.
+  const adding = useRef(false);
   const add = async () => {
-    if (!word || known || cannot) return;
-    const saved = meaning ? (await acts.addTerm(word, meaning)) !== undefined : await saveWords([...plain, word], t("knowledge.words.added", { word }));
-    if (saved) {
-      setTyped("");
-      setMeant("");
-      props.onActed();
+    if (!word || known || cannot || adding.current) return;
+    adding.current = true;
+    try {
+      const saved = meaning ? (await acts.addTerm(word, meaning)) !== undefined : await saveWords([...plain, word], t("knowledge.words.added", { word }));
+      if (saved) {
+        setTyped("");
+        setMeant("");
+        props.onActed();
+      }
+    } finally {
+      adding.current = false;
     }
   };
   const problem = edit.problems[KEY];

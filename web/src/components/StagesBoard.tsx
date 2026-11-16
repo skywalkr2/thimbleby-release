@@ -6,7 +6,7 @@ import { useRef, useState } from "react";
 import { monthDay } from "../lib/dates";
 import { useRowKeys } from "../lib/keys";
 import { usePluginActions } from "../lib/plugin-actions";
-import { sameItem, useMove, type StageRequest, type StageView } from "../lib/stages";
+import { sameItem, titleOfView, useMove, type StageRequest, type StageView } from "../lib/stages";
 import { useWords } from "../lib/wording";
 import { initials } from "../shell/status";
 import { IconButton } from "../ui/IconButton";
@@ -182,11 +182,11 @@ function Card(props: { view: StageView; waiting: StageRequest[]; onDrag: (starte
     >
       <div className={styles.top}>
         <div id={titleId} className={styles.title}>
-          <SafeText text={view.title} />
+          <SafeText text={titleOfView(view, t)} />
         </div>
         <MenuButton
           groups={[{ id: "actions", entries: menu }]}
-          trigger={<IconButton icon="more" size="sm" label={t("menu.more", { what: view.title })} tooltip={false} data-card-menu="" />}
+          trigger={<IconButton icon="more" size="sm" label={t("menu.more", { what: titleOfView(view, t) })} tooltip={false} data-card-menu="" />}
         />
       </div>
       {meta.length > 0 && <p className={styles.meta}>{meta.join(" · ")}</p>}
