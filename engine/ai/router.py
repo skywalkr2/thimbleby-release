@@ -714,6 +714,14 @@ class Router:
             return (read * info.input_per_million + max(0, output) * info.output_per_million) / 1e6
         return None
 
+    def first_choice_for(self, kind: str, data_level: str = "internal") -> Choice | None:
+        """The account a run of `kind` would use first, or None when no account takes the work."""
+        try:
+            options = choices(self.cfg, kind, data_level, tier=self._tier_for(kind), unchecked=self._unchecked())
+        except NoProvider:
+            return None
+        return options[0] if options else None
+
     def _tier_for(self, kind: str) -> str:
         """The tier a kind of work runs on now: the workspace's `ai.tasks.<kind>.tier`, then the tier the kind declares,
         then its role's tier, then the usual one; a plugin's own tier, once the person mapped it, is itself, and else

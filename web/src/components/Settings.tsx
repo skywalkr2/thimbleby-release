@@ -3,6 +3,7 @@
 // with a toast that reads it back and offers Undo; there is no Save button. Each save carries the fingerprint of the
 // settings as the screen last knew them, so a change made elsewhere meanwhile is refused in plain words and what was
 // typed stays.
+import { useSortingCostWords } from "../lib/sorting-cost";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useEffect,
@@ -655,7 +656,9 @@ export function Settings(props: {
   })();
   const writeAmount = useWriteAmount();
   // Ask-before above the most one run may cost is never asked: those runs don't start. Said beside the amount, nothing refused.
+  const sortingCost = useSortingCostWords(everything.some((i) => i.key === "watch.sorting"));
   const crossNote = (item: Item): string | undefined => {
+    if (item.key === "watch.sorting") return sortingCost ?? undefined;
     if (item.key !== "ai.budgets.confirm_above_usd") return undefined;
     const run = everything.find((i) => i.key === "ai.budgets.per_run_usd");
     const ask = parseAmount(String(draftOf(item)), locale);

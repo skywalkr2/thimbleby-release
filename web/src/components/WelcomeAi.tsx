@@ -120,7 +120,16 @@ export function WelcomeAi(props: {
   const [askedGo, setAskedGo] = useState(false);
   const { push } = useToasts();
   const drawer = props.drawer;
-  const endpoints = useQuery({ queryKey: ["ai-endpoints"], queryFn: api.endpoints });
+  // Check looks again for the installed apps; every other read uses the look made when the app started.
+  const lookAgain = useRef(false);
+  const endpoints = useQuery({
+    queryKey: ["ai-endpoints"],
+    queryFn: () => {
+      const again = lookAgain.current;
+      lookAgain.current = false;
+      return again ? api.endpointsRechecked() : api.endpoints();
+    },
+  });
   const found = useQuery({ queryKey: ["ai-local"], queryFn: api.aiLocal });
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const accounts = useQuery({ queryKey: ["ai-accounts"], queryFn: api.aiAccounts });
@@ -1217,7 +1226,10 @@ export function WelcomeAi(props: {
                     disabled={endpoints.isFetching}
                     aria-describedby="ai-app-status"
                     onClick={() =>
-                      void endpoints.refetch().then((again) => {
+                      void (() => {
+                        lookAgain.current = true;
+                        return endpoints.refetch();
+                      })().then((again) => {
                         const now = again.data?.find((e) => e.id === kind.id);
                         if (guide && now?.installed) void verify(now, { model: !now.model_optional ? firstExample(now) : "" });
                       })

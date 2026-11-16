@@ -39,6 +39,7 @@ import { ScheduleList } from "./ScheduleList";
 import { GroupDetails } from "./ScheduleGroupPane";
 import { groupKey, type GroupRef } from "./ScheduleGroupCard";
 import { ScheduleStale } from "./ScheduleStale";
+import { WeekAhead } from "./WeekAhead";
 import { ScheduleSides, type KeySide } from "./ScheduleSides";
 import { MonthGrid } from "./ScheduleMonth";
 import { NeedsADate } from "./NeedsADate";
@@ -419,6 +420,8 @@ export function Schedule() {
           )}
         </div>
       </div>
+      {/* The assistant's reading of this week sits at the top of the week's views (this week only: it reads no other). */}
+      {(view === "week" || view === "work_week") && anchor === null && <WeekAhead />}
       <ListDetail
         title={found ? entryTitle(found.entry, t) : grouped ? t(grouped.allDay ? "schedule.group.all_all_day" : "schedule.group.all", { n: grouped.keys.length, time: grouped.time, date: grouped.allDay ? shortDay(grouped.date) : "" }) : ""}
         onClose={close}

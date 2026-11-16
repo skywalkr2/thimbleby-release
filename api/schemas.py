@@ -4323,6 +4323,19 @@ class FirstGoSorting(BaseModel):
     unpriced: int = Field(0, description="How many of the runs have no price (they use the plan's allowance).")
 
 
+class SortingCostView(BaseModel):
+    """About what the assistant's sorting costs a typical day of mail, on the account that would sort it."""
+
+    kind: Literal["money", "runs", "unknown", "none"] = Field(
+        description="money: a priced account, an amount a day; runs: a plan, runs a day and no money; unknown: an "
+        "account whose price isn't known, runs a day; none: no account takes the work, so the built-in rules sort."
+    )
+    messages: int = Field(description="The typical day's messages.")
+    runs: int = Field(description="How many sorting runs a typical day makes.")
+    estimate_usd: float | None = Field(None, description="What a typical day costs, for a priced account.")
+    measured: bool = Field(description="The typical day was counted from mail already read, not set by the person.")
+
+
 class InboxView(BaseModel):
     items: list[ArrivedView]
     left_out: int = Field(description="Messages in the same hours that a triage rule closed (newsletters, say).")
@@ -8819,6 +8832,50 @@ class BriefView(BaseModel):
     on_today: int = 0
     goals: BriefGoalsView | None = None
     message: BriefMessageView | None = None
+
+
+class WeekAheadRowView(BaseModel):
+    """One thing in the week ahead: the day or window it falls on, a few words and the record it comes from (`link`;
+    for a calendar event the app keeps no entry for, `snapshot`)."""
+
+    from_day: date
+    to_day: date | None = None
+    words: str
+    kind: Literal["delivery", "deadline", "window", "meeting", "routine", "task", "entry"]
+    link: RecordRef
+
+
+class WeekAheadView(BaseModel):
+    """The assistant's reading of this week (GET /api/week-ahead): `sentence` and `rows` when it has read the week
+    (`state` read), rows built by rules with no sentence when it has not (rules), a reading under way (working),
+    one held for the person's go with its `estimate_usd` (needs_go), or nothing dated in the week (empty).
+    `waiting` says why a reading stopped. `read_again` is false while a reading is in hand."""
+
+    first: date
+    last: date
+    state: Literal["read", "rules", "working", "needs_go", "empty"]
+    sentence: str | None = None
+    rows: list[WeekAheadRowView]
+    request: str | None = None
+    estimate_usd: float | None = None
+    waiting: str | None = None
+    read_again: bool = True
+
+
+class WeekAheadSetAside(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = Field(description="The id of the record whose row is left out of this week (Not this week).")
+
+
+class WeekAheadSetAsideKept(BaseModel):
+    previous: list[str] = Field(description="What was set aside before; sending it to restore is Undo.")
+
+
+class WeekAheadRestore(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    previous: list[str]
 
 
 class BriefGoalsIn(BaseModel):

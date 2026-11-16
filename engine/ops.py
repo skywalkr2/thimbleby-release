@@ -1026,6 +1026,38 @@ class AwayReadOp(OpModel):
         return f"Take {who}'s days away off the calendar" if self.gone else f"Note that {who} is away"
 
 
+class WeekRowIn(BaseModel):
+    """One row of the week ahead as the assistant gives it: the day or window, a few words and the record it comes
+    from."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    from_day: date = Field(description="The day it falls on, or the first day of its window (YYYY-MM-DD).")
+    to_day: date | None = Field(None, description="The last day of its window; leave out for a single day.")
+    words: str = Field(min_length=1, max_length=160, description="A few words on what it is and why it matters.")
+    source: str = Field(min_length=1, description="The id of the record it comes from, exactly as the packet lists it.")
+
+    @model_validator(mode="after")
+    def _in_order(self) -> WeekRowIn:
+        if self.to_day is not None and self.to_day < self.from_day:
+            raise ValueError("the last day of a window can't come before the first")
+        return self
+
+
+class WeekReadOp(OpModel):
+    """The assistant's reading of the coming week, kept on the person's record for the week: one sentence and one row
+    for each thing that happens in it. Every row names a record that exists and falls in the week, each record has one
+    row, nothing Today already holds a line for is repeated, and there are at most the configured number of rows.
+    The week is the one the request is for."""
+
+    op: Literal["week.read"] = "week.read"
+    sentence: str = Field(min_length=1, max_length=400, description="One sentence that reads the week as a whole.")
+    rows: list[WeekRowIn] = Field(default_factory=list, description="One row for each thing that happens in the week.")
+
+    def describe(self, view: Any = None) -> str | None:
+        return "Read the week ahead"
+
+
 class PersonStanceOp(OpModel):
     """Who a person is to the person, proposed from a correction such as "not my job to ask them" or "we are not their
     boss". A system op: it changes what the assistant may draft or ask them, so from anyone but the person's own words
@@ -2130,6 +2162,7 @@ Op = Annotated[
     | PersonContactOp
     | PersonAwayOp
     | AwayReadOp
+    | WeekReadOp
     | PersonStanceOp
     | StageMoveOp
     | RecordDeleteOp
@@ -2220,6 +2253,7 @@ OP_MODELS: dict[str, type[OpModel]] = {
     "person.contact": PersonContactOp,
     "person.away": PersonAwayOp,
     "away.read": AwayReadOp,
+    "week.read": WeekReadOp,
     "person.stance": PersonStanceOp,
     "stage.move": StageMoveOp,
     "record.delete": RecordDeleteOp,
@@ -2320,6 +2354,7 @@ NON_OVERWRITING_OPS: frozenset[str] = frozenset(
         "person.contact",
         "person.away",
         "away.read",
+        "week.read",
         "stage.move",
         "record.delete",
         "file.forget",

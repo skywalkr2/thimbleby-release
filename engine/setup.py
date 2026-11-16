@@ -18,6 +18,7 @@ import re
 import shutil
 import tempfile
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -614,9 +615,8 @@ def known_endpoints() -> list[dict[str, Any]]:
     takes, by tier name), a note and an optional one-line summary for its card.
     Entries missing an id, a name or an adapter are left out. At most one entry is the recommended one and at most one
     the alternative: the first marked, so the guide never offers two."""
-    try:
-        data = load_yaml(CATALOG.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError):
+    data = _catalog()
+    if data is None:
         return []
     found = []
     marked = {"recommended": False, "alternative": False}
@@ -663,6 +663,85 @@ def known_endpoints() -> list[dict[str, Any]]:
             }
         )
     return found
+
+
+_catalog_kept: tuple[tuple[int, int], dict[str, Any]] | None = None
+
+
+def _catalog() -> dict[str, Any] | None:
+    """The catalog's contents, parsed again only when the file changed; None when it can't be read."""
+    global _catalog_kept
+    try:
+        stat = CATALOG.stat()
+        mark = (stat.st_mtime_ns, stat.st_size)
+        if _catalog_kept is not None and _catalog_kept[0] == mark:
+            return _catalog_kept[1]
+        data = load_yaml(CATALOG.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    _catalog_kept = (mark, data)
+    return data
+
+
+#: How long a look for installed programs is trusted when nobody asked to look again.
+PROGRAM_LOOK_SECONDS = 30.0
+_programs_lock = threading.Lock()
+_programs_seen: tuple[float, dict[str, bool]] | None = None
+_programs_thread: threading.Thread | None = None
+
+
+def _programs_wanted() -> list[str]:
+    return sorted({e["program"] for e in known_endpoints() if e["program"]})
+
+
+def _look_for_programs() -> dict[str, bool]:
+    """Whether each program the catalog's apps need is on this computer. Looking walks the system's program folders,
+    which is slow on some computers, so the answer is kept and shared by whoever asks while it is being made."""
+    global _programs_seen
+    with _programs_lock:
+        found = {name: shutil.which(name) is not None for name in _programs_wanted()}
+        _programs_seen = (time.monotonic(), found)
+        return found
+
+
+def installed_programs(*, recheck: bool = False) -> dict[str, bool]:
+    """Which of the apps' programs are on this computer. The look runs once, in the background, when the app starts
+    (`warm_programs`); a later ask gets that answer, and only an explicit re-check (or an answer older than
+    `PROGRAM_LOOK_SECONDS`) looks again."""
+    seen = _programs_seen
+    if not recheck and seen is not None and time.monotonic() - seen[0] < PROGRAM_LOOK_SECONDS:
+        return seen[1]
+    if not recheck and _programs_thread is not None and _programs_thread.is_alive():
+        with _programs_lock:  # the look under way answers this ask too
+            seen = _programs_seen
+        if seen is not None:
+            return seen[1]
+    return _look_for_programs()
+
+
+def warm_programs() -> None:
+    """Start the look for installed programs in the background, so no screen waits for it."""
+    global _programs_thread
+    if _programs_thread is not None and _programs_thread.is_alive():
+        return
+    _programs_thread = threading.Thread(target=_look_for_programs, name="program-look", daemon=True)
+    _programs_thread.start()
+
+
+def wait_for_programs() -> None:
+    """Wait for the look started by `warm_programs` (for tests)."""
+    if _programs_thread is not None:
+        _programs_thread.join()
+
+
+def forget_programs() -> None:
+    """Drop the kept answer (for tests)."""
+    global _programs_seen, _programs_thread
+    wait_for_programs()
+    _programs_seen = None
+    _programs_thread = None
 
 
 def endpoint(endpoint_id: str) -> dict[str, Any] | None:

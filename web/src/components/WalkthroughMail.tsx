@@ -7,6 +7,7 @@
 // the services list folds behind "Connect another". The core's own mail folder and calendar address are offered as
 // "Add mail, calendar or folder". With no service listed and nothing read yet, the step is one sentence, one button and the way
 // out the walkthrough already has (skip it).
+import { useSortingCostWords } from "../lib/sorting-cost";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError, type S } from "../lib/api";
@@ -121,6 +122,7 @@ function SortingSwitch() {
   const fresh = useFreshFingerprint();
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const [problem, setProblem] = useState("");
+  const cost = useSortingCostWords();
   // The choice that was being saved, so Try again saves the same one.
   const [again, setAgain] = useState(false);
   const on = settings.data?.items.find((i) => i.key === SORTING)?.value !== "rules";
@@ -142,6 +144,7 @@ function SortingSwitch() {
         <span>{t("walkthrough.mail.sorting")}</span>
       </label>
       <p className="hint">{t("walkthrough.mail.sorting_hint")}</p>
+      {cost && <p className="hint" data-sorting-cost="">{cost}</p>}
       {problem && (
         <div className="problem-note" role="alert">
           <p>{problem}</p>

@@ -43,6 +43,7 @@ import zipfile
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import uvicorn
@@ -52,6 +53,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
+from engine import week_ahead
 from engine.ai import learning_check
 from engine.ai.adapters import stand_in
 from tests import fake_tls
@@ -153,6 +155,30 @@ def is_look(user: str) -> bool:
     return LOOK_MARK in user
 
 
+WEEK_MARK = f'<untrusted source="{week_ahead.WEEK_BLOCK}">'
+
+
+def is_week(user: str) -> bool:
+    """Whether this packet is the assistant's reading of the week ahead (made once a week, not a handed-in item)."""
+    return WEEK_MARK in user
+
+
+def week_packet_facts(system: str, user: str, model: Any) -> dict:
+    """What one reading of the week was asked: when, its "Today is" line, the model's tier, and the words after the
+    packet's last block (a return round ends with the refusal's words; a first reading ends with the block)."""
+    today = next((line for line in user.splitlines() if line.startswith("Today is ")), "")
+    held = user.split("# Lines Today already holds", 1)[-1].split("</untrusted>", 1)[0]
+    tail = user.rsplit("</untrusted>", 1)[-1].strip()
+    return {
+        "at": time.strftime("%H:%M:%S", time.localtime()) + f".{int(time.time() * 1000) % 1000:03d}",
+        "today": today,
+        "model": model,
+        "held_lines": len([line for line in held.splitlines() if line.strip().startswith(("-", "*"))]),
+        "return_round": bool(tail),
+        "after_packet": tail[:300],
+    }
+
+
 def is_check(user: str) -> bool:
     """Whether this packet is part of an account's connection check: the fixed reply, or the learning round-trip."""
     return "Reply with exactly" in user or learning_check.CHECK_REQUEST in user
@@ -179,6 +205,8 @@ def answer_to(system: str, user: str) -> str:
         return json.dumps(stand_in.knowledge_person(user))
     if "<question>" in user:
         return json.dumps(stand_in.answer(user, system))
+    if is_week(user):
+        return json.dumps(stand_in.week_ahead(user))
     if "<untrusted" in user or "<note>" in user:
         return json.dumps(stand_in.read(user))
     return json.dumps({"summary": "Nothing to do.", "ops": []})
@@ -223,7 +251,9 @@ def ai_routes(state: State) -> list[Route]:
                 "smoke": is_check(user),
                 "sorting": is_sorting(user),
                 "learning": is_look(user),
+                "week": is_week(user),
                 "input": first[:200],
+                "week_packet": week_packet_facts(system, user, body.get("model")) if is_week(user) else None,
             }
         )
         text = (None if is_check(user) else scripted_answer(state, user)) or answer_to(system, user)
@@ -1157,7 +1187,7 @@ def helper_routes(state: State, base: str) -> list[Route]:
     async def requests(_request: Request) -> JSONResponse:
         asked = [c for c in state.chats if not c["smoke"]]
         learning = [c for c in asked if c["learning"]]
-        work = [c for c in asked if not c["sorting"] and not c["learning"]]
+        work = [c for c in asked if not c["sorting"] and not c["learning"] and not c.get("week")]
         inputs = [c["input"] for c in work]
         return JSONResponse(
             {
@@ -1165,6 +1195,8 @@ def helper_routes(state: State, base: str) -> list[Route]:
                 "smoke": len(state.chats) - len(asked),
                 "sorting": len([c for c in asked if c["sorting"]]),
                 "learning": len(learning),
+                "week": len([c for c in asked if c.get("week")]),
+                "week_runs": [c["week_packet"] for c in asked if c.get("week")],
                 "work": len(work),
                 "inputs": inputs,
                 "models": [c["model"] for c in work],

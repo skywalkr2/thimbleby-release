@@ -26,6 +26,7 @@ import { useWords } from "../lib/wording";
 import { Button } from "../ui/Button";
 import { useLineTitle } from "./TodayQueue";
 import { RowMenu } from "./RowMenu";
+import { WeekAhead } from "./WeekAhead";
 import styles from "./BriefCard.module.css";
 import { Select } from "../ui/Select";
 
@@ -667,6 +668,7 @@ export function BriefCard(props: {
         </p>
       )}
       <div id={`${id}-body`} hidden={!isUnfolded}>
+        {form === "monday" && <WeekAhead headingLevel={3} />}
         {data.message && (data.message.state === "ask" ? <WhoFor message={data.message} /> : <Message message={data.message} />)}
         {(() => {
           const filtered = data.sections

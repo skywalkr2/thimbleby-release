@@ -276,6 +276,7 @@ FILES_ONLY = (
     "steward.brief.offer_reminders",
     "steward.brief.remind_within_days",
     "steward.brief.dated_risk_days",
+    "steward.week_ahead.max_rows",
     "steward.meetings.prep_min_open",
     "steward.meetings.capture_hours_after",
     "steward.meetings.max_items",

@@ -45,6 +45,7 @@ ACTION_CORE_OPS = (
         "text.draft",
         "reminder.entry",
         "away.read",
+        "week.read",
     }
     - (ACT_OPS - {"act.draft"})
 )

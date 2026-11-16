@@ -131,6 +131,28 @@ test.describe("the calendar page", () => {
     });
   }
 
+  test("the week ahead card is at the top of the Week and Work week views, above the calendar, and not in Day or Month", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await seed(page);
+    await open(page);
+    for (const key of ["2", "3"] as const) {
+      await pick(page, key);
+      const card = page.locator("main [data-week-ahead]");
+      await expect(card).toBeVisible(LOADED);
+      await expect(card.getByRole("heading", { name: "The week ahead" })).toBeVisible();
+      const [cardBox, gridBox] = await Promise.all([card.boundingBox(), page.locator("main [data-grid]").first().boundingBox()]);
+      expect(cardBox).not.toBeNull();
+      expect(gridBox).not.toBeNull();
+      expect(cardBox!.y + cardBox!.height).toBeLessThanOrEqual(gridBox!.y + 1); // the card is above the week's days
+      const found = await measure(page);
+      expect(found.page).toBeLessThanOrEqual(found.window);
+    }
+    for (const key of ["1", "4"] as const) {
+      await pick(page, key);
+      await expect(page.locator("main [data-week-ahead]")).toHaveCount(0);
+    }
+  });
+
   test("below 1100px the Week view is the working days and says so; at 1100px and over it is the whole week", async ({ page }) => {
     await seed(page);
     await page.setViewportSize({ width: 1024, height: 900 });

@@ -73,6 +73,14 @@ const EVENING: Brief = {
   ],
 };
 const GOALS_PROPOSED: S["BriefGoalsView"] = { first: "2026-10-19", last: "2026-10-23", confirmed: false, goals: [], proposed: ["Ship the proof", "Close the print order", "Plan the launch"], fewest: 3, most: 5 };
+const WEEK: S["WeekAheadView"] = {
+  first: "2026-10-19",
+  last: "2026-10-25",
+  state: "read",
+  sentence: "A light week with a parcel coming.",
+  rows: [{ from_day: "2026-10-21", to_day: null, words: "A parcel of ink arrives", kind: "delivery", link: { kind: "event", id: "EVT-1" } }],
+  read_again: true,
+};
 const MONDAY: Brief = {
   form: "monday",
   day: "2026-10-19",
@@ -385,15 +393,12 @@ test("another form that is due can be shown from the card", async () => {
   expect(screen.getByRole("button", { name: "Show this week's briefing" })).toBeInTheDocument();
 });
 
-test("the Monday briefing lists the week by who owns it, says how much Today already holds and repeats none of it", async () => {
-  await show(MONDAY);
+test("the Monday briefing holds the week ahead card in place of a rule-made list of the week, and nothing from Today is repeated", async () => {
+  await show({ ...MONDAY, on_today: 0, sections: [] }, { "GET week-ahead": () => WEEK });
   expect(await screen.findByRole("heading", { level: 2, name: "This week's briefing" })).toBeInTheDocument();
-  expect(headings()).toEqual(["Your promises this week", "Promised to you", "Questions to send"]);
-  expect(screen.getByText("Draft the proposal, due Wed, Oct 21")).toBeInTheDocument();
-  expect(screen.getByText("to Mira Example")).toBeInTheDocument();
-  expect(screen.getByText("Dev Example: the measurements, was due Sun, Oct 18")).toBeInTheDocument();
-  expect(screen.getByText("Send Mira Example: Which cover?")).toBeInTheDocument();
-  expect(screen.getByText("2 more things are already on Today.")).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { level: 3, name: "The week ahead" })).toBeInTheDocument();
+  expect(headings()).not.toContain("Your promises this week");
+  expect(screen.getByText("A light week with a parcel coming.")).toBeInTheDocument();
 });
 
 test("a proposed goal taken from a to-do's own words shows its year-month-day as a date reads", async () => {

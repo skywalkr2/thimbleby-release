@@ -174,6 +174,7 @@ from api.schemas import (
     SentCounts,
     SentText,
     SetupPersonIn,
+    SortingCostView,
     SourceLimit,
     SourceLimitPerson,
     SourceView,
@@ -231,7 +232,8 @@ from engine.ai.smoke import ai_state
 from engine.applier import move_stage, pick_owner, release
 from engine.assistant_status import assistant_state
 from engine.backup import run_backup, state
-from engine.config import Config, ConfigError, load_config
+from engine.config import Config, ConfigError
+from engine.config.current import load_config_now
 from engine.contacts import all_values, reach_lists, values_of
 from engine.corrections import answered_assistant
 from engine.dispatcher import (
@@ -348,7 +350,7 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
         """The settings as the files hold them now: a sign-in or the person's own change adds sources after the app
         started, and what a screen shows about them must include those."""
         try:
-            return load_config(ws.config_dir, env=dict(os.environ))
+            return load_config_now(ws.config_dir, env=os.environ)
         except ConfigError:
             return cfg
 
@@ -1536,6 +1538,22 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
             return FirstGoSorting(runs=0)
         runs, estimate, unpriced = watch.first_go_sorting(ws, store, cfg)
         return FirstGoSorting(runs=runs, estimate_usd=estimate, unpriced=unpriced)
+
+    @r.get("/watch/sorting-cost")
+    def sorting_cost_of_a_day() -> SortingCostView:
+        """About what the assistant's sorting costs a typical day of mail, shown beside the switch that turns it on."""
+        from engine import sorting_cost
+        from engine.ai.router import Router
+
+        live = current()
+        found = sorting_cost.cost_of_a_day(ws, store, live, Router(live, store, env=os.environ))
+        return SortingCostView(
+            kind=found.kind,
+            messages=found.messages,
+            runs=found.runs,
+            estimate_usd=found.estimate_usd,
+            measured=found.measured,
+        )
 
     @r.post("/runs/first-go")
     def first_go() -> FirstGoStarted:
@@ -3157,9 +3175,13 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
                 if events.closed:
                     break
                 if seen_now != seen:
+                    touched = events.touched_since(seen)
                     seen = seen_now
                     position, kinds = store.read().changed_kinds(position)
-                    news = {"version": seen, "kinds": kinds, "position": position}
+                    news: dict[str, Any] = {"version": seen, "kinds": kinds, "position": position}
+                    if touched is not None:
+                        # Only these screens read again beside the ones the kinds name (a change that wrote no record).
+                        news["families"] = sorted(touched)
                     yield f"event: changed\ndata: {json.dumps(news)}\n\n"
                 else:
                     yield ": keep-alive\n\n"

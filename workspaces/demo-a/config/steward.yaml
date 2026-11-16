@@ -37,6 +37,8 @@ brief:
   offer_reminders: true   # the morning brief offers a reminder for a to-do with a day coming up and no reminder
   remind_within_days: 3   # a to-do's day can be up to this many days ahead for a reminder to be offered
   dated_risk_days: 3   # a deadline, renewal or expiry a mail or booking states is at risk in the brief from this many days ahead; 0 is off
+week_ahead:
+  max_rows: 8   # the most rows the week ahead shows for the coming week; the soonest are kept
 meetings:
   prep_hours_before: 24   # the prep for an entry with other people shows on Today this many hours before it starts
   prep_min_open: 0   # the fewest open things with the people coming that an entry needs for a line on Today; 0 gives every one a line

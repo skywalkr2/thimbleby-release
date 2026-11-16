@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
 import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { CONNECT_LIMIT_MS, PROBE_RETRY_MS, REOPEN_MS, RETRY_BEFORE_OFFLINE_MS, familiesFor, inFamilies, invalidateFor, kindsOf, servedHere, unmapped, useLive } from "./live";
+import { CONNECT_LIMIT_MS, PROBE_RETRY_MS, REOPEN_MS, RETRY_BEFORE_OFFLINE_MS, familiesFor, familiesOf, inFamilies, invalidateFor, kindsOf, servedHere, unmapped, useLive } from "./live";
 
 test("each kind of record names the queries it affects", () => {
   expect(familiesFor(["request", "changeset"])).toEqual(expect.arrayContaining(["changes", "today/queue", "stages/requests", "plugin-today"]));
@@ -295,4 +295,19 @@ test("the echo of the person's own write, at or before its answered place, still
   noteOwnRefresh(client, ["request"], Date.now(), 5, null); // the write read everything again
   invalidateFor(client, '{"version": 2, "kinds": ["request"], "position": 5}');
   expect(client.getQueryState(["today", "queue"])!.isInvalidated).toBe(false);
+});
+
+test("a change that wrote no record and names its screens reads only those, never everything", () => {
+  const { client, stale } = seeded();
+  invalidateFor(client, '{"version": 4, "kinds": [], "position": 9, "families": ["setup", "today"]}');
+  expect(familiesOf('{"kinds": [], "families": ["setup"]}')).toEqual(["setup"]);
+  expect(familiesOf("7")).toBeNull();
+  // Settings, people and the rest of the record screens stay as they were: a step of setup changed none of them.
+  expect(stale()).toEqual({ changes: false, followups: false, people: false, projects: false, settings: false });
+});
+
+test("a change that names no screens still reads everything", () => {
+  const { client, stale } = seeded();
+  invalidateFor(client, '{"version": 5, "kinds": [], "position": 9}');
+  expect(Object.values(stale()).every(Boolean)).toBe(true);
 });

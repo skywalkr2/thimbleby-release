@@ -1466,6 +1466,16 @@ describe("each screen", () => {
     expect(calls.some((c) => c.route === "POST settings")).toBe(false);
   });
 
+  // A step reads the settings once however many parts of it ask, and moving on to the next step does not ask again.
+  test("skipping the AI step and arriving on the next one asks for the settings once", async () => {
+    const user = userEvent.setup();
+    const calls = fakeApi(routes({ ...WITH_SERVICE, "POST setup/ai/skip": () => ({ ok: "ai" }) }, CORE.map((id) => step(id)), { step: "ai" }));
+    open();
+    await user.click(await screen.findByRole("button", { name: "I'll do this later" }));
+    await screen.findByRole("heading", { level: 2, name: /mail/i });
+    expect(calls.filter((c) => c.route === "GET settings")).toHaveLength(1);
+  });
+
   test("Your AI account: Continue says what is missing until a service is chosen, and I'll do this later skips it", async () => {
     const user = userEvent.setup();
     const calls = fakeApi(routes({ ...WITH_SERVICE, "POST setup/ai/skip": () => ({ ok: "ai" }) }, CORE.map((id) => step(id)), { step: "ai" }));

@@ -129,6 +129,10 @@ def build(ws: Workspace, store: Store, cfg: Config, request_id: str, today: date
         from engine.person_look import build as person_look_packet
 
         return person_look_packet(ws, store, cfg, req, kind, today)
+    if kind.name == "week-ahead":
+        from engine.week_ahead import build as week_ahead_packet
+
+        return week_ahead_packet(ws, store, cfg, req, kind, today)
     if kind.name == "follow-on":
         from engine.follow_on import build as follow_on_packet
 

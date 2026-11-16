@@ -26,6 +26,7 @@ from engine import (
     quality,
     read_image,
     transcribe,
+    week_ahead,
 )
 from engine import search as workspace_search
 from engine.ai import pricing
@@ -206,6 +207,12 @@ def process(
     if req.data["task"] == person_look.TASK and (why := person_look.skip_reason(store, cfg, req.data)) is not None:
         person_look.close(store, request_id, why)  # nothing to look at any more: no packet, no estimate, no call
         return None
+    if (
+        req.data["task"] == week_ahead.TASK
+        and (why := week_ahead.skip_reason(ws, store, cfg, req.data, now)) is not None
+    ):
+        week_ahead.close(store, request_id, why)  # nothing falls in the week any more: no packet, no estimate, no call
+        return None
     if req.data.get("approval") == "required":
         from engine.stages import wording
 
@@ -239,6 +246,8 @@ def process(
         packet = build(ws, store, cfg, request_id, now.astimezone(zone(cfg)).date())
     except PacketRefused as err:
         return needs_you(store, request_id, str(err))
+    if req.data["task"] == week_ahead.TASK:
+        week_ahead.keep_held(store, request_id, packet)  # the reading is checked against the lines this packet held
     if packet.too_long:
         return needs_you(
             store,
@@ -536,6 +545,8 @@ def process(
         follow_on.finish(store, request_id, cs_id)
     if kind.name == person_look.TASK:
         person_look.finish(store, request_id, cs_id)
+    if kind.name == week_ahead.TASK:
+        week_ahead.finish(store, request_id, cs_id)
     if _applied_something(store, cs_id):
         retire_earlier_attempts(store, request_id)
     return cs_id

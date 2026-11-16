@@ -36,6 +36,7 @@ NOT_FROM_NOTES = (
         "report.draft",
         "reminder.entry",
         "away.read",
+        "week.read",
     }
     # Drafting something to send is the person's, or an add-on's action they apply; outward acts are never offered to
     # the assistant's reading of notes (design 6.12).
@@ -263,6 +264,19 @@ TASKS: dict[str, TaskKind] = {
         label="Looking at who you deal with",
         defaults={"max_output": 2500, "expected_output": 600},
         max_ops=12,
+    ),
+    # The assistant's reading of the coming week (engine/week_ahead.py): the week's records in, one sentence and one
+    # sourced row for each thing out, kept on the person's record for the week.
+    "week-ahead": TaskKind(
+        name="week-ahead",
+        ops=("week.read",),
+        prompt="week-ahead",
+        playbook="week-ahead",
+        label="Reading the week ahead",
+        on="week_plan",
+        defaults={"max_output": 2000, "expected_output": 500},
+        max_ops=1,
+        requires_ops=("week.read",),
     ),
     "follow-on": TaskKind(
         name="follow-on",

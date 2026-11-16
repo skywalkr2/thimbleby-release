@@ -3886,6 +3886,13 @@ class WatchFile(FileModel):
         description="How many messages one sorting run covers: the unsorted mail of a read goes in groups of this "
         "size, one run for each group.",
     )
+    sorting_typical_day: int = Field(
+        60,
+        ge=1,
+        le=5000,
+        description="How many messages a day to count on when the app shows what the assistant's sorting costs a day, "
+        "until it has read enough of your mail to count them itself.",
+    )
     set_aside_keep_seconds: int = Field(
         60,
         ge=0,
@@ -4100,6 +4107,16 @@ class SentMatchSettings(ConfigModel):
         description="A message you copied that no sent message matches gets one line on Today asking whether it went "
         "out, after this many days. Only when a mailbox's sent folder is being read. Still to send asks again after "
         "the same number of days.",
+    )
+
+
+class WeekAheadSettings(ConfigModel):
+    max_rows: int = Field(
+        8,
+        ge=1,
+        le=20,
+        description="The most rows the week ahead shows for the coming week, one for each thing that happens in it. "
+        "What doesn't fit is left out, the soonest kept.",
     )
 
 
@@ -4650,6 +4667,11 @@ class StewardFile(FileModel):
         default_factory=BriefSettings,
         description="When the morning brief, the evening wrap-up and the Monday briefing show on Today, and how much "
         "each shows.",
+    )
+    week_ahead: WeekAheadSettings = Field(
+        default_factory=WeekAheadSettings,
+        description="The assistant's reading of the coming week, at the top of the Schedule and in the Monday "
+        "briefing.",
     )
     meetings: MeetingSettings = Field(
         default_factory=MeetingSettings,

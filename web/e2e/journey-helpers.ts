@@ -41,6 +41,10 @@ export interface Requests {
   sorting: number;
   /** Runs of the weekly look at who the person deals with, counted apart from the work. */
   learning: number;
+  /** Readings of the week ahead: made at most once a week, after the Start, never counted as work. */
+  week: number;
+  /** What each reading of the week was asked (when, its "Today is" line, whether a return round), shown when the count is wrong. */
+  week_runs: unknown[];
   /** Runs that read an item handed in (not account tests, not sorting, not the look). */
   work: number;
   /** What each work request was given to read, in the order asked (the smoke tests of an account are not here). */

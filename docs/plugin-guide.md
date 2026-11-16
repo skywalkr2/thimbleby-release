@@ -1754,6 +1754,7 @@ A unit of work for the assistant. The engine creates it when something is handed
 | `may_answer` | list[str] | `[]` | For a message the person sent: the open replies owed (action ids) it may answer, found by the rules from its conversation and recipient. The assistant reads it with them and decides whether it answers each one; the rules close nothing. |
 | `intake` | str \| None | `None` | The id of the watched source this request was taken in from when the source was newly added (or looked at further back): its results are gathered into one line on Today and one list, not one line each. |
 | `intake_seen` | bool | `False` | For a request taken in from a new source: the person opened the list of what was found (or marked it seen), so its results show on Today one by one again if they still need a look. |
+| `held_on_today` | list[str] \| None | `None` | For a reading of the week ahead: the ids of the records Today held a line for when the run's packet was built. The reading is checked against these, not against lines that reached Today after the packet was made, so a first answer is never refused for what its packet could not have told it. |
 | `attempts` | int | `0` | How many times the assistant has started on it. |
 | `retries` | int | `0` | How many times it was tried again by itself after a run that gave no usable answer. |
 | `created_at` | datetime | required | When the request was made. |
@@ -2312,6 +2313,15 @@ The person's own plan for one week (design 6.32, the Monday briefing): the goals
 | `offer_dismissed_at` | datetime \| None | `None` | When the person dismissed the offer of the week's briefing for this week, so the morning brief stops offering it; none while it is offered. Taking the dismissal back clears it. |
 | `reports_to_nobody_at` | datetime \| None | `None` | When the person said they report to nobody, so the Monday briefing stops asking who its message is for in every week, not only this one; none while it is still asked. Taking it back clears it. |
 | `message` | str \| None | `None` | The message to the person they report to, drafted from the week's records. It is long text: a draft waits for the person's review and is theirs once they copy it. |
+| `read_sentence` | str \| None | `None` | The assistant's one sentence on the week, from its latest reading of it; none until it has read the week. It is a draft: the assistant's words, never the person's. |
+| `read_rows` | list[WeekRow] | `[]` | The things the assistant found in the week in its latest reading, one for each record, each with the record it comes from. |
+| `read_rows[].from_day` | date | required | The day it falls on, or the first day of its window. |
+| `read_rows[].to_day` | date \| None | `None` | The last day of its window; none for a single day. |
+| `read_rows[].words` | str | required | A few words on what it is and why it matters. |
+| `read_rows[].source` | str | required | The id of the record it comes from. |
+| `read_rows[].kind` | Literal['delivery', 'deadline', 'window', 'meeting', 'routine', 'task', 'entry'] | required | What the record is: a delivery, a dated fact such as a deadline or renewal, a window of days, a meeting, a routine paused or resuming, a to-do with a day, or another calendar entry. |
+| `read_at` | datetime \| None | `None` | When the week was last read by the assistant; none before. |
+| `set_aside` | list[str] | `[]` | The ids of the records the person set aside for this week with Not this week, so the week ahead no longer shows a row for them. |
 
 ### `audit_entry` (AUD-n)
 
@@ -3847,3 +3857,17 @@ Change a view: rename it, change its tag, or replace its projects. Only the pers
 | `name` | str \| None | `None` | Its new name. |
 | `label` | str \| None | `None` | Its new tag. |
 | `projects` | list[Annotated[str, RefTo(kind='project', blocks_delete=True)]] \| None | `None` | The projects the view now holds, replacing the list it had. |
+
+### `week.read`
+
+The assistant's reading of the coming week, kept on the person's record for the week: one sentence and one row for each thing that happens in it. Every row names a record that exists and falls in the week, each record has one row, nothing Today already holds a line for is repeated, and there are at most the configured number of rows. The week is the one the request is for.
+
+| Field | Type | Default | What it is |
+|---|---|---|---|
+| `group` | str \| None | `None` | Ops that must be undone together share a group name. |
+| `sentence` | str | required | One sentence that reads the week as a whole. |
+| `rows` | list[WeekRowIn] | `[]` | One row for each thing that happens in the week. |
+| `rows[].from_day` | date | required | The day it falls on, or the first day of its window (YYYY-MM-DD). |
+| `rows[].to_day` | date \| None | `None` | The last day of its window; leave out for a single day. |
+| `rows[].words` | str | required | A few words on what it is and why it matters. |
+| `rows[].source` | str | required | The id of the record it comes from, exactly as the packet lists it. |

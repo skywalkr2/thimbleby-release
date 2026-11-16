@@ -119,6 +119,7 @@ from engine import set_aside as set_aside_mail
 from engine import settings as config_screens
 from engine import sorting_rules as sorting
 from engine.config import Config, ConfigError, load_config
+from engine.config.current import load_config_now
 from engine.config.schema import WatchSource, WorkspaceFile
 from engine.connectors import declared_reads, reads
 from engine.drop_notes import dropped_actions, note_the_drops
@@ -246,7 +247,7 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
     def current() -> Config:
         """The settings as the files hold them now; the running app may have started with older ones."""
         try:
-            return load_config(ws.config_dir, env=dict(os.environ))
+            return load_config_now(ws.config_dir, env=os.environ)
         except ConfigError:
             return cfg
 
@@ -775,15 +776,18 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
 
     # ---- AI accounts ---------------------------------------------------------------------------------------------
 
-    @r.get("/ai/endpoints")
-    def endpoints() -> list[EndpointView]:
-        import shutil
+    if local:
+        setup.warm_programs()  # the look for installed programs happens once now, not inside a screen's request
 
-        found = []
-        for e in setup.known_endpoints():
-            installed = (shutil.which(e["program"]) is not None) if (e["program"] and local) else None
-            found.append(EndpointView(**e, installed=installed))
-        return found
+    @r.get("/ai/endpoints")
+    def endpoints(recheck: bool = False) -> list[EndpointView]:
+        """The kinds of account on offer, and for an app that runs on this computer whether it is installed. A `recheck`
+        looks again; otherwise the look made when the app started is used."""
+        programs = setup.installed_programs(recheck=recheck) if local else {}
+        return [
+            EndpointView(**e, installed=programs.get(e["program"]) if e["program"] and local else None)
+            for e in setup.known_endpoints()
+        ]
 
     # ---- watched sources ----------------------------------------------------------------------------------------
 

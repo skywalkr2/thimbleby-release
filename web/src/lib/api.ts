@@ -658,6 +658,13 @@ export const api = {
   /** Confirm the goals for this week as the person's own; the answer holds what they replaced, which is Undo. */
   /** Dismiss the offer of this week's briefing, or take that back. */
   briefSeen: () => call<S["Ok"]>("POST", "brief/seen"),
+  /** The assistant's reading of this week (or its rows by rules while it has not read it). */
+  weekAhead: () => call<S["WeekAheadView"]>("GET", "week-ahead"),
+  /** Ask the assistant to read this week again. */
+  readWeekAhead: () => call<S["HandedOver"]>("POST", "week-ahead/read"),
+  /** "Not this week": leave one thing out of the week's rows; the answer is what to send back to restore it. */
+  setAsideWeekAhead: (source: string) => call<S["WeekAheadSetAsideKept"]>("POST", "week-ahead/set-aside", { source }),
+  restoreWeekAhead: (previous: string[]) => call<S["Ok"]>("POST", "week-ahead/restore", { previous }),
   dismissWeekly: () => call<S["Ok"]>("POST", "brief/weekly/dismiss"),
   undismissWeekly: () => call<S["Ok"]>("POST", "brief/weekly/undismiss"),
   putGoals: (body: S["BriefGoalsIn"]) => call<S["BriefGoalsKept"]>("PUT", "brief/goals", body),
@@ -803,6 +810,7 @@ export const api = {
   removePack: (name: string) => call<S["PackInstalled"]>("POST", `packs/${id(name)}/uninstall`),
   /** The person's first go: starts every run waiting for it. */
   firstGo: () => call<S["FirstGoStarted"]>("POST", "runs/first-go"),
+  sortingCost: () => call<S["SortingCostView"]>("GET", "watch/sorting-cost"),
   /** Adds an installed add-on to the ones that run; its code runs after the restart the person chooses. With Undo. */
   packOn: (name: string, fingerprint: string) =>
     call<S["SettingsSaved"]>("POST", `packs/${id(name)}/on`, { fingerprint } satisfies S["FingerprintIn"]),
@@ -884,6 +892,8 @@ export const api = {
   cloudFolders: () => call<S["CloudFoldersView"]>("GET", "setup/backup-folders"),
   backupToCloudFolder: (body: S["CloudFolderChoice"]) => call<S["SettingsSaved"]>("POST", "setup/backup-folder/cloud", body),
   endpoints: () => call<S["EndpointView"][]>("GET", "ai/endpoints"),
+  /** The same list, after looking again for the installed apps (the look made at the start is otherwise used). */
+  endpointsRechecked: () => call<S["EndpointView"][]>("GET", "ai/endpoints?recheck=true"),
   aiModels: (body: S["AiModelsAsk"]) => call<S["AiModelsView"]>("POST", "ai/models", body),
   checkAccount: (body: S["AiAccountCheck"]) => call<S["AiAccountChecked"]>("POST", "ai/account-check", body),
   aiLocal: () => call<S["LocalServerView"][]>("GET", "ai/local"),

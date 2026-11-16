@@ -1095,87 +1095,10 @@ def _proposed(c: _Day) -> list[str]:
 
 
 def _monday(c: _Day) -> Brief:
+    """The Monday briefing: the week's goals and the message to whoever the person reports to. What happens in the week
+    is not built here by rules: it is the week ahead, the assistant's reading of the week
+    (`engine/week_ahead.py`), which the screen shows as one card in the briefing's place for "This week"."""
     rule = c.cfg.steward.brief
-    held = _on_today(c)
-    left_out = 0
-    # The week runs through the day before the next week's first working day, so weekend items are in it.
-    through = c.first + timedelta(days=6)
-    yours: list[tuple[date, str, Line]] = []
-    owed: list[tuple[date, str, Line]] = []
-    for a in c.open_actions():
-        d = a.data
-        day = firm_due(d)
-        if day is None or day > through:
-            continue
-        mine = c.mine(d)
-        to = next((p for p in d.get("promised_to") or [] if p != c.pm), None)
-        who = next((o["person"] for o in d.get("owners") or [] if o.get("person") and o["person"] != c.pm), None)
-        if not mine and c.pm not in (d.get("promised_to") or []):
-            continue
-        person = to if mine else who
-        line = Line(
-            f"week:{a.id}",
-            "week_promise",
-            text=d["text"],
-            person=person,
-            person_name=c.name(person),
-            state="overdue" if day < c.today else "due",
-            day=day.isoformat(),
-            days=max(0, (c.today - day).days),
-            you=mine,
-            link=("action", a.id),
-            on_today_line=a.id in held,
-        )
-        (yours if mine else owed).append((day, d["text"].lower(), line))
-    send: list[Line] = []
-    chase: list[Line] = []
-    decide: list[Line] = []
-    for q in c.view.list("question"):
-        d = q.data
-        if d.get("status") not in ("open", "sent"):
-            continue
-        if q.id in held:
-            left_out += 1
-            continue
-        about_me = d.get("to") == c.pm
-        if d["status"] == "open" and about_me and d.get("kind") == "decision":
-            decide.append(Line(f"week:{q.id}", "decision", text=d["title"], link=("question", q.id)))
-        elif d["status"] == "open" and not about_me:
-            held_for = (d.get("held_for") or {}).get("on")
-            if held_for and held_for > c.last.isoformat():
-                continue
-            send.append(
-                Line(
-                    f"week:{q.id}",
-                    "send_question",
-                    text=d["title"],
-                    person=d["to"],
-                    person_name=c.name(d["to"]),
-                    link=("question", q.id),
-                )
-            )
-        elif d["status"] == "sent" and not about_me:
-            sent = _stamp(d.get("sent_at"))
-            chase.append(
-                Line(
-                    f"week:{q.id}",
-                    "chase_answer",
-                    text=d["title"],
-                    person=d["to"],
-                    person_name=c.name(d["to"]),
-                    days=(c.today - c.local_day(sent)).days if sent else None,
-                    link=("question", q.id),
-                )
-            )
-    ordered = [sorted(group, key=lambda t: (t[0], t[1], t[2].key)) for group in (yours, owed)]
-    sections = [
-        _cap([line for _, _, line in ordered[0]], "yours", rule),
-        _cap([line for _, _, line in ordered[1]], "owed", rule),
-        _cap(send, "send", rule),
-        _cap(chase, "chase", rule),
-        _cap(decide, "decide", rule),
-    ]
-    sections = [s for s in sections if s.lines]
     confirmed = week_plan.goals_of(c.view, c.pm, c.first)
     goals = Goals(
         c.first, c.last, bool(confirmed), confirmed, [] if confirmed else _proposed(c), rule.goals_min, rule.goals_max
@@ -1183,9 +1106,8 @@ def _monday(c: _Day) -> Brief:
     return Brief(
         "monday",
         c.today,
-        sections=sections,
-        quiet=not sections,
-        on_today=left_out,
+        sections=[],
+        quiet=False,
         goals=goals,
         message=week_plan.message_of(c.view, c.cfg, c.store, c.now),
     )

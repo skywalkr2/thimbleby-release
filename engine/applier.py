@@ -130,6 +130,7 @@ from engine.ops import (
     TextDraftOp,
     TextEditOp,
     TextProposeOp,
+    WeekReadOp,
     overwritten_by,
     reach_choices,
     reach_problem,
@@ -787,6 +788,13 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
             refuse(i, "targets", f"there is no person {op.person}")
         if isinstance(op, AwayReadOp) and ctx.actor != "absence":
             refuse(i, "targets", "only the engine's reading of an absence calendar writes days away this way")
+        if isinstance(op, WeekReadOp):
+            from engine import week_ahead
+
+            said = week_ahead.check(ctx, op)
+            if said:
+                refuse(i, "targets", "; ".join(said))
+                continue
         if isinstance(op, PersonStanceOp):
             if view.get("person", op.id) is None:
                 refuse(i, "targets", f"there is no person {op.id}")
@@ -4688,6 +4696,11 @@ def _apply_op(
             away.append(period)
             tx.update("person", op.person, {"away": away}, w, read_version=found.version)
             made("person", op.person)
+    elif isinstance(op, WeekReadOp):
+        from engine import week_ahead
+
+        for ref in week_ahead.apply(tx, op, ctx, w):
+            made(ref["kind"], ref["id"])
     elif isinstance(op, AwayReadOp):
         from engine import absence
 

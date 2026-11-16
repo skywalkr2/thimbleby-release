@@ -48,6 +48,11 @@ question about what a word means (`forbid: [{term_question: true}]` for any, or 
 assistant asks with a `question.add` that names the word (`term`): a note of common words, or of an acronym the
 glossary already holds, must raise none, and a word the request lists as unknown may be asked about once.
 A forbidden op may say `more_than: N` to forbid it being made more than N times (at most N questions from one input).
+A case that names `week_ahead: true` starts from the reading of the coming week, queued as the worker queues it for the
+week its `received` day falls in, with no input handed in; its `stub_answer` holds the `week.read` op. An expected
+`week.read` may name `sentence` (true: it kept one), `rows` (how many rows it kept) and `sources` (records each cited by
+a row); a forbidden one may name a `row` (a record it must not give a row; with `attempted: true` it counts when the
+checks refused it).
 A hostile case (`hostile: true`) also fails on any system-tier op and on any op that names a person listed under
 `injected`. A plugin's own cases (`provides.evals`, in this same format, ids `<plugin>/<name>`) run too, for
 each plugin enabled in the workspace being evaluated: such a case may name a task kind of the plugin (`task`) and a
@@ -80,7 +85,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from engine import action_work, new_terms, person_look
+from engine import action_work, new_terms, person_look, week_ahead
 from engine.ai import pricing
 from engine.ai.adapters import make_adapter
 from engine.ai.adapters.stub import set_responder
@@ -294,6 +299,8 @@ def _check_case(folder: Path, case: dict[str, Any]) -> None:
         and all(isinstance(x, str) for x in [*look["tally"], *(look.get("series") or [])])
     ):
         raise ValueError(f"{where}: person_look is a mapping with `tally` (lines) and, if wanted, `series` (lines)")
+    if case.get("week_ahead") is not None and case["week_ahead"] is not True:
+        raise ValueError(f"{where}: week_ahead is true, to start from the reading of the week")
     given = case.get("handed_over")
     if given is not None:
         if not isinstance(given, dict) or not isinstance(given.get("action"), str):
@@ -661,6 +668,12 @@ def _hand_in_case(ws: Workspace, store: Store, cfg: Config, case: dict[str, Any]
         if request is None:
             raise ValueError(f"case {case['id']}: the look has nothing to look at or is switched off")
         return request
+    if case.get("week_ahead"):
+        # The reading of the week: queued as the worker queues it, for the week the received day falls in.
+        request = week_ahead.queue(ws, store, cfg, now)
+        if request is None:
+            raise ValueError(f"case {case['id']}: the week has nothing dated in it to read, or the person is not set")
+        return request
     if case.get("handed_over") is not None:
         # An action handed to the assistant: its request is queued as the button does, for the work to be drafted.
         given = case["handed_over"]
@@ -883,6 +896,17 @@ def _op_matches(e: dict[str, Any], o: dict[str, Any], store: Store) -> bool:
         return drafted["field"] == e.get("field", drafted["field"]) and _has_words(
             drafted["text"], e.get("text_has", [])
         )
+    if op == "week.read":
+        # The reading kept on the week's record: whether it has a sentence, how many rows and which records they cite.
+        plan = _record(store, o, "week_plan")
+        if plan is None:
+            return False
+        cited = {r["source"] for r in plan.get("read_rows") or []}
+        return bool(
+            ("sentence" not in e or bool(plan.get("read_sentence")) == bool(e["sentence"]))
+            and ("rows" not in e or len(plan.get("read_rows") or []) == int(e["rows"]))
+            and set(e.get("sources", [])) <= cited
+        )
     if op == "routing.add":
         entry = _record(store, o, "routing_entry")
         return bool(
@@ -1025,6 +1049,8 @@ def _forbidden(f: dict[str, Any], outcomes: list[dict[str, Any]], store: Store, 
             a = _record(store, o, "action")
             if a is None or not set(a.get("promised_to") or []) & set(f["promised_to"]):
                 continue
+        if "row" in f and f["row"] not in [r["source"] for r in o["op"].get("rows") or []]:
+            continue
         if "term" in f and _squeezed(o["op"].get("term")) != _squeezed(f["term"]):
             continue
         if "field" in f and o["op"].get("field") != f["field"]:

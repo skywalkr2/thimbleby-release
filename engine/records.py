@@ -1375,6 +1375,22 @@ class GateSample(Record):
     items: list[SampleItem] = Field(default_factory=list, description="The chosen messages, oldest first.")
 
 
+class WeekRow(BaseModel):
+    """One thing in the week ahead: the day or window it falls on, a few words on why it matters and the record it
+    comes from. `kind` is what that record is, read from the record itself and never taken from the assistant."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    from_day: date = Field(description="The day it falls on, or the first day of its window.")
+    to_day: date | None = Field(None, description="The last day of its window; none for a single day.")
+    words: str = Field(min_length=1, max_length=160, description="A few words on what it is and why it matters.")
+    source: str = Field(min_length=1, description="The id of the record it comes from.")
+    kind: Literal["delivery", "deadline", "window", "meeting", "routine", "task", "entry"] = Field(
+        description="What the record is: a delivery, a dated fact such as a deadline or renewal, a window of days, "
+        "a meeting, a routine paused or resuming, a to-do with a day, or another calendar entry."
+    )
+
+
 class WeekPlan(Record):
     """The person's own plan for one week (design 6.32, the Monday briefing): the goals they confirmed for it and the
     message to whoever they report to. One record for each person and week, made when the first goal is confirmed or
@@ -1410,6 +1426,23 @@ class WeekPlan(Record):
         None,
         description="The message to the person they report to, drafted from the week's records. It is long text: a "
         "draft waits for the person's review and is theirs once they copy it.",
+    )
+    read_sentence: str | None = Field(
+        None,
+        max_length=400,
+        description="The assistant's one sentence on the week, from its latest reading of it; none until it has "
+        "read the week. It is a draft: the assistant's words, never the person's.",
+    )
+    read_rows: list[WeekRow] = Field(
+        default_factory=list,
+        description="The things the assistant found in the week in its latest reading, one for each record, each "
+        "with the record it comes from.",
+    )
+    read_at: datetime | None = Field(None, description="When the week was last read by the assistant; none before.")
+    set_aside: list[str] = Field(
+        default_factory=list,
+        description="The ids of the records the person set aside for this week with Not this week, so the week "
+        "ahead no longer shows a row for them.",
     )
 
     @field_validator("goals")
@@ -1722,6 +1755,12 @@ class Request(Record):
         False,
         description="For a request taken in from a new source: the person opened the list of what was found (or "
         "marked it seen), so its results show on Today one by one again if they still need a look.",
+    )
+    held_on_today: list[str] | None = Field(
+        None,
+        description="For a reading of the week ahead: the ids of the records Today held a line for when the run's "
+        "packet was built. The reading is checked against these, not against lines that reached Today after the "
+        "packet was made, so a first answer is never refused for what its packet could not have told it.",
     )
     attempts: int = Field(0, description="How many times the assistant has started on it.")
     retries: int = Field(

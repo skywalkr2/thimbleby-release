@@ -245,10 +245,15 @@ def requeue_interrupted(store: Store) -> tuple[list[str], list[str]]:
 class Events:
     """A change counter that waiters can block on; the live-update stream reads it."""
 
+    #: How many of the latest changes remember which screens they touched; an older one reads as touching all.
+    REMEMBERED = 200
+
     def __init__(self) -> None:
         self._cond = threading.Condition()
         self.version = 0
         self.closed = False
+        #: The screens each recent change touched, newest last: (version, families); None when it named none.
+        self._touched: list[tuple[int, frozenset[str] | None]] = []
 
     def close(self) -> None:
         """Release every waiter and make later waits return at once, so live streams can end."""
@@ -256,10 +261,31 @@ class Events:
             self.closed = True
             self._cond.notify_all()
 
-    def changed(self) -> None:
+    def changed(self, *families: str) -> None:
+        """Something changed. Name the screens' query families it touched when it is only those (a step of setup);
+        a change that names none is taken to touch everything."""
         with self._cond:
             self.version += 1
+            self._touched.append((self.version, frozenset(families) if families else None))
+            del self._touched[: -self.REMEMBERED]
             self._cond.notify_all()
+
+    def touched_since(self, after: int) -> set[str] | None:
+        """The families the changes after `after` touched, or None when one of them (or one no longer remembered)
+        named none, so everything may have changed."""
+        with self._cond:
+            if self.version <= after:
+                return set()
+            if self._touched and self._touched[0][0] > after + 1:
+                return None
+            touched: set[str] = set()
+            for version, families in self._touched:
+                if version <= after:
+                    continue
+                if families is None:
+                    return None
+                touched |= families
+            return touched
 
     def wait(self, after: int, timeout: float) -> int:
         with self._cond:
@@ -1013,6 +1039,18 @@ class Worker:
             self.events.changed()
         return made
 
+    def read_the_week_if_due(self) -> str | None:
+        """Once a week, queue the assistant's reading of the coming week (`engine.week_ahead`) when something dated
+        falls in it, for the person's go when it costs more than the configured amount. It is never queued again for
+        the same week by itself: the person asks again. A failure is logged and never stops the worker. Returns the
+        request made."""
+        from engine import week_ahead
+
+        made = week_ahead.queue(self.ws, self.store, self.cfg, self.now())
+        if made:
+            self.events.changed()
+        return made
+
     def ask_about_meetings(self) -> list[str]:
         """Ask about each date of a meeting the person runs that has no agenda or needs someone who is away (design
         6.32); every date once. Returns the ids of the questions made."""
@@ -1365,6 +1403,11 @@ class Worker:
         except (Exception, SystemExit):  # asked again the next time round; nothing here may stop the thread
             log.exception("queueing the look at who the person deals with failed")
             self._problem("queueing the look at who the person deals with failed")
+        try:
+            self.read_the_week_if_due()
+        except (Exception, SystemExit):  # asked again the next time round; nothing here may stop the thread
+            log.exception("queueing the reading of the week ahead failed")
+            self._problem("queueing the reading of the week ahead failed")
         try:
             self.ask_about_meetings()
         except (Exception, SystemExit):  # asked again the next time round; nothing here may stop the thread

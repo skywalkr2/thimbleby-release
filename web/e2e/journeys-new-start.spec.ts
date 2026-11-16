@@ -236,6 +236,7 @@ test.describe.serial("journey: new start", () => {
     await expect(main.getByText("Optional extras")).toHaveCount(0);
     await visit(page);
     expect((await requests()).work).toBe(0);
+    expect((await requests()).week).toBe(0);
     seen = await service();
     // The inbox and the sent folder are each read once; nobody chose a folder.
     expect(seen).toMatchObject({ mail_reads: 2, calendar_reads: 1, unauthorized: 0 });
@@ -289,6 +290,8 @@ test.describe.serial("journey: new start", () => {
     // The weekly look at who the person deals with ran once after the first read, and is not counted as work.
     await expect.poll(async () => (await requests()).learning, { timeout: 60_000 }).toBe(1);
     const asked = await requests();
+    // The reading of the week ahead is its own kind of run, made at most once a week, and only after the Start.
+    expect(asked.week, `week-ahead runs: ${JSON.stringify(asked.week_runs, null, 1)}`).toBeLessThanOrEqual(1);
     // The work mail the rules could not place was sorted in one run for each source's batch (the inbox, and the sent mail
     // when the rules leave it unplaced); sorting is not counted as work.
     expect(asked.sorting).toBeGreaterThanOrEqual(1);

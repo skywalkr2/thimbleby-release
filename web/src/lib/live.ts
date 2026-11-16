@@ -137,6 +137,20 @@ export function kindsOf(data: string): string[] | null {
   return null;
 }
 
+/** The query families a "changed" event names besides its kinds (a change that wrote no record, such as a step of setup), or
+ * null when it names none. */
+export function familiesOf(data: string): string[] | null {
+  try {
+    const parsed: unknown = JSON.parse(data);
+    if (parsed && typeof parsed === "object" && "families" in parsed && Array.isArray(parsed.families)) {
+      return parsed.families.filter((f): f is string => typeof f === "string");
+    }
+  } catch {
+    // A bare number, or anything else, names no families.
+  }
+  return null;
+}
+
 /** How long after the person's own write the stream's echo of it is not read again for a screen the write is still reading. */
 export const OWN_WRITE_WINDOW_MS = 1500;
 interface OwnRefresh {
@@ -205,7 +219,9 @@ export function invalidateFor(client: QueryClient, data: string): void {
  * change and reads. */
 function applyEvent(client: QueryClient, data: string): void {
   const kinds = kindsOf(data) ?? [];
-  const families = familiesFor(kinds);
+  const named = familiesOf(data);
+  // Kinds that name nothing, with families the change itself named, read only those; kinds and families read both.
+  const families = kinds.length ? (familiesFor(kinds) && named ? [...familiesFor(kinds)!, ...named] : familiesFor(kinds)) : (named ?? familiesFor(kinds));
   const wanted = families ? new Set(families) : null;
   const own = ownRefreshes.get(client);
   const position = positionOf(data);

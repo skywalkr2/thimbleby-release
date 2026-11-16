@@ -794,125 +794,12 @@ def watched(store, name="Oren Fictional") -> str:
     return someone(store, name, stance="watch")
 
 
-def test_the_week_lists_what_is_due_through_the_last_working_day_by_who_owns_it(env):
+def test_the_monday_briefing_builds_no_rule_made_this_week_sections_the_week_ahead_card_is_its_place(env):
     ws, cfg, store, clock = env
-    tracked = watched(store)
-    yours = own(store, cfg, "Draft the proposal", due=day(2))
-    friday = own(store, cfg, "Check the proofs", due=day(4))
-    next_week = own(store, cfg, "Plan next month", due=day(8))
-    owed = make(
-        store, "action", text="Send the measurements", owners=[{"person": tracked}], promised_to=[me(cfg)], due=day(1)
-    )
+    own(store, cfg, "Draft the proposal", due=day(2))
     found = built(env, "monday")
-    mine = [x for x in lines_of(found, "yours") if x.link[1] in {yours, friday}]
-    assert [x.link[1] for x in mine] == [yours, friday]
-    assert [(x.kind, x.state, x.day) for x in mine] == [
-        ("week_promise", "due", day(2)),
-        ("week_promise", "due", day(4)),
-    ]
-    assert [(x.link[1], x.person_name) for x in lines_of(found, "owed")] == [(owed, "Oren Fictional")]
-    assert next_week not in {x.link[1] for s in found.sections for x in s.lines}
-    keys = [s.key for s in found.sections]
-    assert keys == sorted(keys, key=["yours", "owed", "send", "chase", "decide"].index)
-
-
-def test_the_week_lists_late_and_due_today_to_dos_marked_on_today_and_weekend_ones(env):
-    from engine.today_queue import queue
-
-    ws, cfg, store, clock = env
-    late = own(store, cfg, "Reply to the printer", due=day(-3))
-    today = own(store, cfg, "Send the invoice", due=day(0))
-    saturday = own(store, cfg, "Pack the samples", due=day(5))
-    after = own(store, cfg, "Plan next month", due=day(8))
-    found = built(env, "monday")
-    listed = {x.link[1]: x for x in lines_of(found, "yours")}
-    assert {late, today, saturday} <= set(listed) and after not in listed
-    held = {i for q in queue(ws, store, cfg, NOW) for i in (*q.actions, *q.questions) if i}
-    assert held & {late, today}, "Today holds a line for the late or due-today to-do"
-    for action in (late, today, saturday):
-        assert listed[action].on_today_line == (action in held)
-    assert any(listed[a].on_today_line for a in (late, today))
-    assert [x.state for x in (listed[late], listed[today])] == ["overdue", "due"]
-
-
-def test_what_today_already_holds_a_line_for_is_not_repeated_but_counted(env):
-    ws, cfg, store, clock = env
-    from engine.today_queue import queue
-
-    other = someone(store, "Mira Fictional")
-    promise = make(
-        store, "action", text="Send the draft", owners=[{"person": other}], promised_to=[me(cfg)], due=day(2)
-    )
-    on_today = {i for q in queue(ws, store, cfg, NOW) for i in (*q.actions, *q.questions, q.question) if i}
-    assert promise in on_today  # what someone owes the person is a line to send or follow up on
-    found = built(env, "monday")
-    (listed,) = [x for s in found.sections for x in s.lines if x.link and x.link[1] == promise]
-    assert listed.on_today_line  # it is listed, marked as already on Today
-
-
-def test_questions_to_send_answers_to_chase_and_decisions_waiting_are_their_own_sections(env):
-    ws, cfg, store, clock = env
-    other = someone(store, "Mira Fictional")
-    held = make(store, "question", to=other, title="Which cover is final?", held_for={"on": day(3)})
-    sent = make(store, "question", to=other, title="Who signs off the proof?", status="sent", sent_at=NOW.isoformat())
-    found = built(env, "monday")
-    assert [x.link[1] for x in lines_of(found, "send")] == [held]
-    chase = lines_of(found, "chase")
-    assert [(x.link[1], x.kind, x.person_name, x.days) for x in chase] == [(sent, "chase_answer", "Mira Fictional", 0)]
-    # The fixtures' decision for the person is a line on Today, so it is counted, not listed again.
-    assert section(found, "decide") is None and found.on_today >= 1
-
-
-def test_a_decision_not_on_today_is_listed_in_the_monday_decide_section(env):
-    ws, cfg, store, _ = env
-    source = next(source for source in cfg.watch.sources if source.enabled)
-    make(
-        store,
-        "watch_run",
-        source=source.id,
-        started_at=(NOW - timedelta(hours=2)).isoformat(),
-        outcome="failed",
-        error_kind="outage",
-        error="The source could not be read.",
-    )
-    with store.transaction() as tx:
-        decision = tx.create(
-            "question",
-            {
-                "to": me(cfg),
-                "title": "Should the source be checked another way?",
-                "kind": "decision",
-                "resolves": {"kind": "watch", "source": source.id},
-            },
-            _TEST,
-        ).id
-    from engine.today_queue import queue
-
-    on_today = {
-        item for line in queue(ws, store, cfg, NOW) for item in (*line.actions, *line.questions, line.question) if item
-    }
-    assert decision not in on_today
-    (listed,) = lines_of(built(env, "monday"), "decide")
-    assert (listed.kind, listed.link) == ("decision", ("question", decision))
-
-
-def test_a_question_held_for_the_weekly_note_is_in_that_mondays_briefing_and_not_the_one_before(env):
-    from engine.followups import hold_question
-
-    ws, cfg, store, clock = env
-    other = someone(store, "Mira Fictional")
-    asked = make(store, "question", to=other, title="Which cover is final?")
-    next_monday = TODAY + timedelta(days=7)
-    assert next_monday.weekday() == 0
-    assert hold_question(store, asked, {"on": next_monday.isoformat()}, today=TODAY) is None
-    assert asked not in [x.link[1] for x in lines_of(built(env, "monday"), "send")]
-    # On that Monday it is a line on Today to send, which the briefing counts and links to instead of repeating.
-    from engine.today_queue import queue
-
-    later = NOW + timedelta(days=7)
-    assert asked in {i for q in queue(ws, store, cfg, later) if q.kind == "send" for i in q.questions}
-    assert asked not in [x.link[1] for x in lines_of(built(env, "monday", later), "send")]
-    assert built(env, "monday", later).on_today >= 1
+    assert found.form == "monday" and found.sections == [] and found.on_today == 0 and not found.quiet
+    assert found.goals is not None  # the goals and the message stay; what happens in the week is the week ahead
 
 
 def test_goals_are_proposed_from_what_is_due_until_the_person_confirms_them(env):

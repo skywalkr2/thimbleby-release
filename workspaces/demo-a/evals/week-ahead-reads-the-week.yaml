@@ -1,0 +1,38 @@
+id: week-ahead-reads-the-week
+title: The week ahead gives one sentence and one sourced row for each thing in the week, and none for what Today already holds
+skills: [dates, structured-answers, stay-in-scope]
+received: '2026-11-16T15:00:00+00:00'
+# A fictional Monday. In the week: two parcels on their way, a case reply due, a print offer open for five days, a morning
+# swim paused by days away, and a planning meeting. A to-do with its reminder due is already a line on Today, so the week
+# ahead leaves it out. Each row cites the record it comes from; nothing is made up that the records don't say.
+week_ahead: true
+given:
+- {kind: event, id: EVT-90, fields: {title: Parcel of printer ink, start: '2026-11-18', delivery: {carrier: Example Courier, status: on_its_way, dated: true}}}
+- {kind: event, id: EVT-91, fields: {title: Parcel of shelf brackets, start: '2026-11-20', delivery: {carrier: Example Courier, status: out_for_delivery, dated: true}}}
+- {kind: fact, id: FACT-90, fields: {text: The reply in the Harlow case is due, 'on': '2026-11-19', on_kind: deadline, basis: person}}
+- {kind: event, id: EVT-92, fields: {title: Print shop offer, start: '2026-11-17', end: '2026-11-21'}}
+- {kind: glossary_entry, id: GLOSS-90, fields: {term: Morning swim, text: 'Morning swim: Tuesdays and Thursdays 7 to 8 AM.', meaning: Tuesdays and Thursdays 7 to 8 AM, origin: person, learned_at: '2026-10-01T12:00:00+00:00', status: active, kept_by: PER-1, kept_at: '2026-10-01T12:00:00+00:00', routine: {days: [tuesday, thursday], start: '07:00', end: '08:00'}}}
+- {kind: person, id: PER-1, update: true, fields: {away: [{start: '2026-11-17', end: '2026-11-19', label: away}]}}
+- {kind: event, id: EVT-93, fields: {title: Planning with the design lead, start: '2026-11-18T15:00:00-06:00', end: '2026-11-18T16:00:00-06:00', invitation: true, attendees: [{name: Dana Fictional, response: accepted}]}}
+- {kind: action, id: ACT-90, fields: {project: PRJ-1, text: Send the reconciliation notes, due: '2026-11-16', remind_at: '2026-11-16T14:00:00+00:00', owners: [{person: PER-1}]}}
+expect:
+- op: week.read
+  sentence: true
+  rows: 6
+  sources: [EVT-90, EVT-91, FACT-90, EVT-92, GLOSS-90, EVT-93]
+forbid:
+- op: week.read
+  row: ACT-90
+  attempted: true
+stub_answer:
+  summary: The week ahead.
+  ops:
+  - op: week.read
+    sentence: A busy middle of the week, with two parcels arriving, the Harlow reply due Thursday and the swim paused while you are away.
+    rows:
+    - {from_day: '2026-11-17', to_day: '2026-11-21', words: The print shop offer is open all week, source: EVT-92}
+    - {from_day: '2026-11-17', to_day: '2026-11-19', words: Morning swim is paused while you are away, source: GLOSS-90}
+    - {from_day: '2026-11-18', words: A parcel of printer ink is due, source: EVT-90}
+    - {from_day: '2026-11-18', words: Planning with the design lead at 3 PM, source: EVT-93}
+    - {from_day: '2026-11-19', words: The reply in the Harlow case is due, source: FACT-90}
+    - {from_day: '2026-11-20', words: The shelf brackets are out for delivery, source: EVT-91}

@@ -1233,7 +1233,9 @@ test("an app that is not found says what to do, and Check looks again and then c
   await user.click(screen.getByRole("button", { name: "Check" }));
   expect(await screen.findByText("Installed on this computer")).toBeInTheDocument();
   expect(await screen.findByText("Works. Ready to use.")).toBeInTheDocument();
-  expect(calls.filter((c) => c.route === "GET ai/endpoints").length).toBeGreaterThan(1);
+  // Check asks for the look to be made again; the first read used the look made when the app started.
+  expect(calls.filter((c) => c.route === "GET ai/endpoints")).toHaveLength(1);
+  expect(calls.filter((c) => c.route === "GET ai/endpoints?recheck=true")).toHaveLength(1);
   expect(checks(calls)[0].body).toMatchObject({ endpoint: "app-b", models: { everyday: "gamma" } });
 });
 

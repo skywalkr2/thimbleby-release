@@ -31945,6 +31945,57 @@
         "title": "SnoozeIn",
         "type": "object"
       },
+      "SortingCostView": {
+        "description": "About what the assistant's sorting costs a typical day of mail, on the account that would sort it.",
+        "properties": {
+          "estimate_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What a typical day costs, for a priced account.",
+            "title": "Estimate Usd"
+          },
+          "kind": {
+            "description": "money: a priced account, an amount a day; runs: a plan, runs a day and no money; unknown: an account whose price isn't known, runs a day; none: no account takes the work, so the built-in rules sort.",
+            "enum": [
+              "money",
+              "runs",
+              "unknown",
+              "none"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "measured": {
+            "description": "The typical day was counted from mail already read, not set by the person.",
+            "title": "Measured",
+            "type": "boolean"
+          },
+          "messages": {
+            "description": "The typical day's messages.",
+            "title": "Messages",
+            "type": "integer"
+          },
+          "runs": {
+            "description": "How many sorting runs a typical day makes.",
+            "title": "Runs",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "messages",
+          "runs",
+          "measured"
+        ],
+        "title": "SortingCostView",
+        "type": "object"
+      },
       "SortingRuleIn": {
         "additionalProperties": false,
         "description": "Always set aside mail from these senders and domains in a section, or never set it aside (work).",
@@ -36250,6 +36301,195 @@
         "title": "WatchSourceView",
         "type": "object"
       },
+      "WeekAheadRestore": {
+        "additionalProperties": false,
+        "properties": {
+          "previous": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Previous",
+            "type": "array"
+          }
+        },
+        "required": [
+          "previous"
+        ],
+        "title": "WeekAheadRestore",
+        "type": "object"
+      },
+      "WeekAheadRowView": {
+        "description": "One thing in the week ahead: the day or window it falls on, a few words and the record it comes from (`link`;\nfor a calendar event the app keeps no entry for, `snapshot`).",
+        "properties": {
+          "from_day": {
+            "format": "date",
+            "title": "From Day",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "delivery",
+              "deadline",
+              "window",
+              "meeting",
+              "routine",
+              "task",
+              "entry"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "link": {
+            "$ref": "#/components/schemas/RecordRef"
+          },
+          "to_day": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Day"
+          },
+          "words": {
+            "title": "Words",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from_day",
+          "words",
+          "kind",
+          "link"
+        ],
+        "title": "WeekAheadRowView",
+        "type": "object"
+      },
+      "WeekAheadSetAside": {
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "description": "The id of the record whose row is left out of this week (Not this week).",
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "title": "WeekAheadSetAside",
+        "type": "object"
+      },
+      "WeekAheadSetAsideKept": {
+        "properties": {
+          "previous": {
+            "description": "What was set aside before; sending it to restore is Undo.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Previous",
+            "type": "array"
+          }
+        },
+        "required": [
+          "previous"
+        ],
+        "title": "WeekAheadSetAsideKept",
+        "type": "object"
+      },
+      "WeekAheadView": {
+        "description": "The assistant's reading of this week (GET /api/week-ahead): `sentence` and `rows` when it has read the week\n(`state` read), rows built by rules with no sentence when it has not (rules), a reading under way (working),\none held for the person's go with its `estimate_usd` (needs_go), or nothing dated in the week (empty).\n`waiting` says why a reading stopped. `read_again` is false while a reading is in hand.",
+        "properties": {
+          "estimate_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimate Usd"
+          },
+          "first": {
+            "format": "date",
+            "title": "First",
+            "type": "string"
+          },
+          "last": {
+            "format": "date",
+            "title": "Last",
+            "type": "string"
+          },
+          "read_again": {
+            "default": true,
+            "title": "Read Again",
+            "type": "boolean"
+          },
+          "request": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/WeekAheadRowView"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "sentence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sentence"
+          },
+          "state": {
+            "enum": [
+              "read",
+              "rules",
+              "working",
+              "needs_go",
+              "empty"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "waiting": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waiting"
+          }
+        },
+        "required": [
+          "first",
+          "last",
+          "state",
+          "rows"
+        ],
+        "title": "WeekAheadView",
+        "type": "object"
+      },
       "WeekDueView": {
         "description": "A to-do due by the week's end.",
         "properties": {
@@ -38691,7 +38931,20 @@
     },
     "/api/ai/endpoints": {
       "get": {
+        "description": "The kinds of account on offer, and for an app that runs on this computer whether it is installed. A `recheck`\nlooks again; otherwise the look made when the app started is used.",
         "operationId": "endpoints_api_ai_endpoints_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "recheck",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Recheck",
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -38706,6 +38959,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Endpoints"
@@ -53602,6 +53865,25 @@
         "summary": "Sorting Rule"
       }
     },
+    "/api/watch/sorting-cost": {
+      "get": {
+        "description": "About what the assistant's sorting costs a typical day of mail, shown beside the switch that turns it on.",
+        "operationId": "sorting_cost_of_a_day_api_watch_sorting_cost_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SortingCostView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Sorting Cost Of A Day"
+      }
+    },
     "/api/watch/sources": {
       "post": {
         "description": "Start reading a new source, with Undo. Its id comes from its label. A mailbox with no author also reads its\nsent folder, as the person's own mail, when it can be found.",
@@ -54215,6 +54497,122 @@
           }
         },
         "summary": "Watch Sent Folder Dismiss Undo"
+      }
+    },
+    "/api/week-ahead": {
+      "get": {
+        "description": "This week as the assistant read it, or its rows by rules while it hasn't.",
+        "operationId": "get_week_ahead_api_week_ahead_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WeekAheadView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Week Ahead"
+      }
+    },
+    "/api/week-ahead/read": {
+      "post": {
+        "description": "Ask the assistant to read this week again.",
+        "operationId": "read_again_api_week_ahead_read_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HandedOver"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Again"
+      }
+    },
+    "/api/week-ahead/restore": {
+      "post": {
+        "description": "Take back \"Not this week\": the week's set-aside list as `previous` had it.",
+        "operationId": "restore_api_week_ahead_restore_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WeekAheadRestore"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Restore"
+      }
+    },
+    "/api/week-ahead/set-aside": {
+      "post": {
+        "description": "Leave one thing out of this week's rows (\"Not this week\"). Sending `previous` to restore is Undo.",
+        "operationId": "set_aside_api_week_ahead_set_aside_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WeekAheadSetAside"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WeekAheadSetAsideKept"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Aside"
       }
     },
     "/api/working-copies": {

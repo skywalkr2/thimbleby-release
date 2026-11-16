@@ -69,6 +69,7 @@ from api.todo_routes import build_todo_router
 from api.view_routes import build_view_router
 from api.waiting_routes import build_waiting_router
 from api.watch_routes import build_watch_router
+from api.week_ahead_routes import build_week_ahead_router
 from engine import __version__, problems, slow_screens
 from engine.ai.router import Router
 from engine.brand import LOGO_TYPES, logo_path
@@ -504,6 +505,7 @@ def create_app(
     inner.include_router(build_reply_router(ws, cfg, store, events, worker))
     inner.include_router(build_action_work_router(ws, cfg, store, events, worker))
     inner.include_router(build_brief_router(ws, cfg, store, events, worker))
+    inner.include_router(build_week_ahead_router(ws, cfg, store, events, worker))
     inner.include_router(build_meeting_router(ws, cfg, store, events, worker))
     inner.include_router(build_calendar_router(ws, cfg, store, events, worker))
     inner.include_router(build_sent_router(cfg, store, events, worker))

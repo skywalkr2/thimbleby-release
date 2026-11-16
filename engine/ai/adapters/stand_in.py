@@ -205,6 +205,34 @@ def knowledge_person(request: str) -> dict[str, Any]:
     return {"summary": "People you deal with." if ops else "Nothing plain enough to suggest.", "ops": ops}
 
 
+_WEEK_LINE = re.compile(
+    r"^\[(?P<id>[^\]]+)\] (?P<kind>\w+) \| (?P<first>\d{4}-\d\d-\d\d)"
+    r"(?: to (?P<last>\d{4}-\d\d-\d\d))? \| (?P<title>[^|]+)"
+)
+
+
+def week_ahead(request: str) -> dict[str, Any]:
+    """A week-ahead answer by plain rules: one row for each record the request lists, the soonest first, as many as the
+    request allows, saying only the title; and a sentence that counts them. A rule can't tell what matters; this is for
+    trying the app with no account."""
+    block = re.search(r'<untrusted source="week-records">\s*(.*?)\s*</untrusted>', request, re.S)
+    most = re.search(r"Give at most (\d+) rows", request)
+    held = re.search(r'<untrusted source="today-lines">\s*(.*?)\s*</untrusted>', request, re.S)
+    rows = []
+    for line in (block.group(1) if block else "").splitlines():
+        found = _WEEK_LINE.match(line.strip())
+        if found is None or (held and found["id"] in held.group(1)):  # what Today holds is left out, as asked
+            continue
+        row = {"from_day": found["first"], "words": found["title"].strip()[:160], "source": found["id"]}
+        if found["last"]:
+            row["to_day"] = found["last"]
+        rows.append(row)
+    rows = rows[: int(most.group(1)) if most else 8]
+    count = len(rows)
+    sentence = f"{count} {'thing' if count == 1 else 'things'} in the week ahead." if count else "A quiet week."
+    return {"summary": "The week ahead.", "ops": [{"op": "week.read", "sentence": sentence, "rows": rows}]}
+
+
 _SERIES_LINE = re.compile(
     r"^(?P<title>[^|]+) \| (?P<day>[A-Z][a-z]+) (?P<start>\d\d:\d\d)-(?P<end>\d\d:\d\d) \| repeats: (?P<rule>.*)$"
 )
