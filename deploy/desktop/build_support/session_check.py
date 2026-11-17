@@ -107,7 +107,8 @@ def open_menu_on_mac(pictures: Path) -> bool:
 
 
 CLOSE_WINDOW = 'tell application "System Events" to tell process "Thimbleby" to click button 1 of window 1'
-COMMAND_Q = 'tell application "System Events" to tell process "Thimbleby" to keystroke "q" using command down'
+#: The Quit the Dock and the application menu send, addressed to the app itself. A keystroke through System Events goes
+#: to whichever app is in front, and an app whose window is closed lives in the menu bar and is never in front.
 QUIT_EVENT = 'tell application "Thimbleby" to quit'
 QUIT_SECONDS = 30
 
@@ -130,8 +131,8 @@ def system_quit_ends_app(
     seconds: int = QUIT_SECONDS,
 ) -> str | None:
     """Send the system's Quit; None when the process is gone and the workspace unlocked in time, else why not."""
-    if run(["osascript", "-e", COMMAND_Q]) != 0:
-        run(["osascript", "-e", QUIT_EVENT])
+    if run(["osascript", "-e", QUIT_EVENT]) != 0:
+        return "The session refused to send the app the system's Quit, so Quit was not checked."
     for _ in range(seconds):
         if not pids():
             return None if unlocked() else "The app exited but left the workspace locked."

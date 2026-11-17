@@ -596,9 +596,11 @@ def test_the_mac_session_check_closes_the_window_then_quits_by_the_systems_quit(
     assert sent[0] == session_check.CLOSE_WINDOW
     alive = iter([[7], [7], []])
     assert session_check.system_quit_ends_app(run, lambda: next(alive), lambda: True, lambda s: None) is None
-    assert sent[-1] == session_check.COMMAND_Q
+    assert sent[-1] == session_check.QUIT_EVENT
     assert "locked" in session_check.system_quit_ends_app(run, lambda: [], lambda: False, lambda s: None)
     assert "still running" in session_check.system_quit_ends_app(run, lambda: [7], lambda: True, lambda s: None, 3)
     refused = []
-    session_check.system_quit_ends_app(lambda c: refused.append(c[-1]) or 1, lambda: [], lambda: True, lambda s: None)
-    assert refused == [session_check.COMMAND_Q, session_check.QUIT_EVENT]
+    told = session_check.system_quit_ends_app(
+        lambda c: refused.append(c[-1]) or 1, lambda: [], lambda: True, lambda s: None
+    )
+    assert refused == [session_check.QUIT_EVENT] and "not checked" in told
