@@ -109,6 +109,14 @@ def fit_window(
     )
 
 
+def _note(words: str) -> None:
+    """A line on the app's own error stream (the build machines' checks print it)."""
+    with contextlib.suppress(Exception):
+        from engine.launcher import note
+
+        note(words)
+
+
 #: Seconds the window loop has to end after quitting before the process ends itself.
 END_GRACE_SECONDS = 10.0
 
@@ -262,6 +270,7 @@ class AppShell:
             self.tray.start(self.lines, self._act, self.words["desktop.title"])
 
     def _finish(self) -> None:
+        _note("the work has stopped; closing the window")
         self._quitting = True
         if self.tray is not None:
             self.tray.stop()
@@ -273,10 +282,7 @@ class AppShell:
         loop that still hasn't returned after the grace period is ended with the process."""
         if self._ended.wait(self.end_grace_seconds):
             return
-        with contextlib.suppress(Exception):
-            from engine.launcher import note
-
-            note(f"the window loop was still running {self.end_grace_seconds} seconds after quitting; ending the app")
+        _note(f"the window loop was still running {self.end_grace_seconds} seconds after quitting; ending the app")
         self._exit(0)
 
     def _closing(self) -> bool:
@@ -322,6 +328,7 @@ class AppShell:
             self.main.call(self.tray.refresh)
 
     def quit(self) -> None:
+        _note("quitting: the work is asked to stop")
         self.quit_event.set()
         self.retry_event.set()
         self.answer_event.set()

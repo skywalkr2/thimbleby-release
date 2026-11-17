@@ -6,6 +6,7 @@ reacts to the person's choices. Nothing here touches a window or the item except
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hmac
 import json
 import os
@@ -22,10 +23,20 @@ from urllib.error import URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
+#: Where the installed app keeps its notes as well (the logs folder's desktop log); None outside the installed app.
+NOTE_FILE: Path | None = None
+
 
 def note(words: str) -> None:
-    """One line on the app's own error stream, which nobody sees but the build machines' start check prints."""
-    print(f"launcher[{os.getpid()}]: {words}", file=sys.stderr, flush=True)
+    """One line on the app's own error stream, which nobody sees but the build machines' start check prints; the
+    installed app also adds it to its desktop log, which the build machines' checks print when one fails."""
+    line = f"launcher[{os.getpid()}]: {words}"
+    print(line, file=sys.stderr, flush=True)
+    if NOTE_FILE is not None:
+        with contextlib.suppress(OSError):
+            NOTE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with NOTE_FILE.open("a", encoding="utf-8") as out:
+                out.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}\n")
 
 
 class InstanceLock:
@@ -648,10 +659,13 @@ def launch(
         if failures:
             raise RuntimeError("The server could not restart") from failures[0]
     finally:
+        note("stopping the control listener")
         control.stop()
+        note("stopping the server")
         # Keep ownership until shutdown finishes; a hung server must not overlap a new one.
         try:
             controller.stop()
+            note("the server stopped")
         except Exception:
 
             def release_after_exit() -> None:

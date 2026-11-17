@@ -164,15 +164,6 @@ jobs:
         shell: bash
         run: python deploy/desktop/build_support/smoke_frozen.py "${{ matrix.frozen }}"
 
-      - name: Open the frozen app in the desktop session, keep it a minute, and take pictures
-        # The app as a person opens it: `open` on the Mac (under Apple's main-thread checker, set to stop the app on any
-        # report) and Start-Process on Windows. It must answer, stay running for a minute, and exit when quit through the
-        # menu's own path. The pictures are kept as a download of the run.
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "macOS" ]; then APP="$PWD/dist/Thimbleby.app"; else APP="$(cygpath -w "$PWD/dist/Thimbleby/Thimbleby.exe")"; fi
-          python deploy/desktop/build_support/session_check.py "$APP" "$RUNNER_TEMP/session-pictures"
-
       - name: Create the disk image
         if: runner.os == 'macOS'
         run: python deploy/desktop/build_support/release_tools.py dmg
@@ -228,15 +219,6 @@ jobs:
           $setup = (Get-ChildItem "$env:GITHUB_WORKSPACE\dist\*-setup.exe" | Select-Object -First 1).FullName
           & deploy/desktop/build_support/setup_pictures.ps1 -Setup $setup -Pictures "$env:RUNNER_TEMP\session-pictures"
 
-      - name: Keep the pictures of the app's window, menu, disk image and setup
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: Thimbleby-window-pictures-${{ matrix.target }}
-          path: ${{ runner.temp }}/session-pictures
-          if-no-files-found: warn
-          retention-days: 14
-
       - name: Write installer checksums
         shell: bash
         run: python deploy/desktop/build_support/release_tools.py hashes
@@ -251,6 +233,25 @@ jobs:
             dist/SHA256SUMS.txt
           if-no-files-found: error
           compression-level: 0
+          retention-days: 14
+
+      - name: Open the frozen app in the desktop session, keep it a minute, and take pictures
+        # After the installer is kept, so a build whose check fails still leaves its installer to try by hand (the job
+        # still fails, and a tag attaches nothing). The app as a person opens it: `open` on the Mac (under Apple's main-thread checker, set to stop the app on any
+        # report) and Start-Process on Windows. It must answer, stay running for a minute, and exit when quit through the
+        # menu's own path. The pictures are kept as a download of the run.
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then APP="$PWD/dist/Thimbleby.app"; else APP="$(cygpath -w "$PWD/dist/Thimbleby/Thimbleby.exe")"; fi
+          python deploy/desktop/build_support/session_check.py "$APP" "$RUNNER_TEMP/session-pictures"
+
+      - name: Keep the pictures of the app's window, menu, disk image and setup
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Thimbleby-window-pictures-${{ matrix.target }}
+          path: ${{ runner.temp }}/session-pictures
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Install the tools the fresh-install browser test needs

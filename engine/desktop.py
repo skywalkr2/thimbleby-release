@@ -208,6 +208,9 @@ def main(
     from engine.sides import words_sheet
 
     root, logs = places(environ, home)
+    from engine import launcher
+
+    launcher.NOTE_FILE = logs / LOG_FILE
     if already_running(root):
         return 0
     system = platform.system()

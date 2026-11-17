@@ -63,6 +63,13 @@ def asked_by_quit(frame: Any = None) -> bool:
     return False
 
 
+def _note(words: str) -> None:
+    with contextlib.suppress(Exception):
+        from engine.launcher import note
+
+        note(words)
+
+
 def wake_mac_loop() -> None:
     """Post an empty application event, so a stop the app was asked for takes effect now, not at the next input."""
     import AppKit
@@ -81,7 +88,9 @@ def closing_handler(
     """The window's closing event: a Quit ends the app and keeps the window until the app ends it; a close hides."""
 
     def handle() -> bool:
-        if asked():
+        quitting = asked()
+        _note(f"the window library asked to close the window ({'a Quit' if quitting else 'a close'})")
+        if quitting:
             on_quit()
             return False
         return on_closing()

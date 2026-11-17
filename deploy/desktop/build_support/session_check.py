@@ -213,7 +213,8 @@ def main(app: str, pictures_folder: str, port: int = 8792) -> None:
             print("closing the window left the app running")
             problem = system_quit_ends_app(osa, lambda: running_pids(system), lock.acquire, pause)
             if problem:
-                raise SystemExit(problem)
+                log = (logs / "desktop.log").read_text()[-6000:] if (logs / "desktop.log").exists() else "no log"
+                raise SystemExit(f"{problem}\nThe app's log, last lines:\n{log}")
             print("the system's Quit ended the app and the workspace was unlocked")
             return
         connection_port = lock.control_port()
