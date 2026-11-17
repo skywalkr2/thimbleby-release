@@ -31,10 +31,33 @@ export function nameFromAddress(address: string, fallback: string): string {
   }
 }
 
+/** The kind where the person types the address of a service of their own: its catalog name is a menu choice, not a name for an account. */
+const OWN_SERVICE = "other";
+
+/** What an account with no name of its own is called: the service's name and "account", or for the service the person typed an
+ * address for, a plain name of its own. */
+export function defaultName(kind: Kind | undefined, t: T): string {
+  if (!kind) return t("ai_accounts.default_name_plain");
+  return kind.id === OWN_SERVICE ? t("ai_accounts.default_name_own") : t("ai_accounts.default_name", { service: kind.name });
+}
+
 export function accountName(account: Account, kind: Kind | undefined, t: T): string {
   const own = (account.label ?? "").trim();
   if (own && !isHostName(own)) return own;
-  return kind ? t("ai_accounts.default_name", { service: kind.name }) : t("ai_accounts.default_name_plain");
+  return defaultName(kind, t);
+}
+
+/** Whether a kind is the one the person gives an address for (its name is a menu choice, so a row never says it). */
+export const isOwnService = (kind: Kind | undefined): boolean => kind?.id === OWN_SERVICE;
+
+/** How an account's kinds of work fall: both, everyday only, harder only, or something else. */
+export function workShape(tiers: string[]): "both" | "routine" | "deep" | "other" {
+  const set = new Set(tiers);
+  const other = [...set].some((x) => !TIERS.includes(x));
+  if (set.has("routine") && set.has("deep") && !other) return "both";
+  if (set.has("routine") && !other && !set.has("deep")) return "routine";
+  if (set.has("deep") && !other && !set.has("routine")) return "deep";
+  return "other";
 }
 
 export const roleOf = (a: Account): Role => (a.used_for.length ? "work" : (a.backup_for ?? []).length ? "backup" : "none");

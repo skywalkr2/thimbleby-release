@@ -1,0 +1,46 @@
+id: short-answer-moves-a-date
+title: A three-word answer to a question about a day is read, and the day it names is recorded
+skills: [dates, evidence]
+received: '2026-10-14'
+given:
+- kind: action
+  id: ACT-90
+  fields:
+    text: Walk the vendor through the server room
+    project: PRJ-1
+    owners:
+    - person: PER-1
+    due: '2026-10-21'
+- kind: question
+  id: Q-90
+  fields:
+    kind: decision
+    projects: [PRJ-1]
+    title: Which day should the vendor visit the server room, Tuesday or Wednesday?
+    text: The vendor can come on Tuesday, October 20, or on Wednesday, October 21.
+    to: PER-1
+typed_on:
+  route: answered
+  kind: question
+  id: Q-90
+note: Tuesday works, not Wednesday
+expect:
+- source: trusted
+- op: record.set
+  id: ACT-90
+  field: due
+  value: '2026-10-20'
+forbid:
+- op: event.add
+- op: question.add
+- new_person: true
+stub_answer:
+  summary: The visit moves to Tuesday, October 20.
+  ops:
+  - op: record.set
+    kind: action
+    id: ACT-90
+    field: due
+    value: '2026-10-20'
+    evidence:
+      quote: Tuesday works, not Wednesday

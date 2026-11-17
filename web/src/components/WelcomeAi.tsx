@@ -19,12 +19,14 @@ import { useToasts } from "../lib/toasts";
 import { useDraftState, useRestored } from "../lib/draft";
 import { useContinue, useHasContinueSlot } from "../lib/walkthrough-continue";
 import { useWords } from "../lib/wording";
-import { accountName, nameFromAddress, roleOf } from "../lib/ai-accounts";
+import { accountName, defaultName, nameFromAddress, roleOf } from "../lib/ai-accounts";
 import { HARDER as HARDER_SHORT, planFor, useAccountActs, useConfirmAbove } from "../lib/ai-account-acts";
 import { AiAccounts } from "./AiAccounts";
 import { useSpendLine } from "./AiSpendLine";
 import { domainOf } from "./SafeText";
 import { Button, ButtonLink } from "../ui/Button";
+import { Drawer } from "../ui/Drawer";
+import { restoreFocus } from "./ModalPanel";
 import { Icon } from "../ui/Icon";
 import { Skeleton } from "../ui/Skeleton";
 import { Pill } from "../ui/Pill";
@@ -175,6 +177,10 @@ export function WelcomeAi(props: {
   const [problem, setProblem] = useState("");
   const [busy, setBusy] = useState(false);
   const [added, setAdded] = useState<string | null>(null);
+  // Once the step has an account its accounts lead and another is added in a panel; these are that panel's state.
+  const [adding, setAdding] = useState(false);
+  const [addDirty, setAddDirty] = useState(false);
+  const addButton = useRef<HTMLButtonElement>(null);
   const [results, setResults] = useState<S["AiTestResult"][] | null>(null);
   const [testProblem, setTestProblem] = useState("");
   const [testing, setTesting] = useState(false);
@@ -215,7 +221,7 @@ export function WelcomeAi(props: {
   const defaultLabel = (() => {
     if (!kind) return "";
     // Named for the service when the address typed is a host and a port (a server on this computer or a private network).
-    const fallback = t("ai_accounts.default_name", { service: kind.name });
+    const fallback = defaultName(kind, t);
     const base = asksAddress(kind) && address.trim() ? nameFromAddress(address.trim(), fallback) : fallback;
     let n = 2;
     let found = base;
@@ -741,7 +747,7 @@ export function WelcomeAi(props: {
   /** What is still missing to add the account being set up, in words; nothing when it could be added. */
   const incomplete = (() => {
     if (!guide) return "";
-    if (!kind) return props.done ? "" : t("welcome.ai.why.kind");
+    if (!kind) return props.done || (accounts.data ?? []).length > 0 ? "" : t("welcome.ai.why.kind");
     if (added) return "";
     if (builtin && kind.installed === false) return t("welcome.ai.why.app");
     if (kind.local && !usingFound && verdict.state === "idle") return t("welcome.ai.why.local");
@@ -1102,6 +1108,35 @@ export function WelcomeAi(props: {
       </p>
     </FormField>
   );
+
+  // With an account the step reads as done: the accounts lead, one row each, then the way to add another, then the spending limits.
+  if (guide && (accounts.data ?? []).length > 0 && !kind && !added) {
+    const closeAdd = () => {
+      setAdding(false);
+      setAddDirty(false);
+      restoreFocus(() => addButton.current);
+    };
+    return (
+      <div className="guide-body" data-ai-accounts-lead="">
+        <AiAccounts local={props.local} level={3} compact />
+        <Actions>
+          <Button ref={addButton} variant="secondary" size="sm" icon="plus" aria-haspopup="dialog" onClick={() => setAdding(true)}>
+            {t("walkthrough.ai.add_another")}
+          </Button>
+        </Actions>
+        {spend.node}
+        <div className="guide-test">
+          <div role="status" aria-live="polite">
+            {testing && <p className="hint">{t("welcome.ai.testing")}</p>}
+            {testProblem && <p className="problem-note">{testProblem}</p>}
+          </div>
+        </div>
+        <Drawer open={adding} title={t("ai_add.title")} dirty={addDirty} wide onClose={closeAdd}>
+          {adding && <WelcomeAi local={props.local} done drawer={{ onAdded: closeAdd, onCancel: closeAdd, onDirty: setAddDirty }} />}
+        </Drawer>
+      </div>
+    );
+  }
 
   return (
     <div className="guide-body">

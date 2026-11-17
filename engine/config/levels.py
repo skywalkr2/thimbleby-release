@@ -339,6 +339,7 @@ FILES_ONLY = (
 
 #: Fronts of dotted keys (a front matches a key equal to it or starting with it plus a dot) kept only in files.
 INTERNAL = (
+    "language.bare_confirmation_words",
     "workspace.project",
     "workspace.plugins",
     "workspace.contact_kinds",

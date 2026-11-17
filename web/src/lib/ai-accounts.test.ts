@@ -113,7 +113,7 @@ test("how long ago is said in the sheet's words", () => {
 });
 
 describe("an account is never named by where it lives (X93)", () => {
-  const plain = (key: string, vars: Record<string, string | number> = {}) => (key === "ai_accounts.default_name" ? `${vars.service} account` : "AI account");
+  const plain = (key: string, vars: Record<string, string | number> = {}) => (key === "ai_accounts.default_name" ? `${vars.service} account` : key === "ai_accounts.default_name_own" ? "Your own AI service" : "AI account");
   const labelled = (label: string): Parameters<typeof accountName>[0] => ({ name: "x", kind: "k", label }) as never;
   const kind = { id: "k", name: "Another service" } as never;
 
@@ -122,6 +122,12 @@ describe("an account is never named by where it lives (X93)", () => {
     expect(accountName(labelled("localhost:8080"), kind, plain)).toBe("Another service account");
     expect(accountName(labelled("10.0.0.5"), kind, plain)).toBe("Another service account");
     expect(accountName(labelled("My server"), kind, plain)).toBe("My server");
+  });
+
+  test("the service the person typed an address for is never called by its menu name", () => {
+    const own = { id: "other", name: "Another service" } as never;
+    expect(accountName(labelled("127.0.0.1:9355"), own, plain)).toBe("Your own AI service");
+    expect(accountName(labelled(""), own, plain)).toBe("Your own AI service");
   });
 
   test("a name made from a typed address is the domain, or the service's name for a host and a port", () => {

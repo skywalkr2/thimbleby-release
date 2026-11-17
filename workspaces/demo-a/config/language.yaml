@@ -79,8 +79,6 @@ request_words: [can, could, will, would, please, need to, needs to, should, must
 title_skip: ['(hi|hello|hey|dear|good (morning|afternoon|evening))\b', '(from|to|cc|sent|date|subject)\s*:', '(thanks|best|regards|cheers)\b[ ,!.]*$', '-{2,}|>']
 # The fewest words a title's topic may have; a shorter one gives way to the first meaningful line of what came in, but only when that line fits whole.
 title_min_words: 3
-# Notes under this many words with no link are bare confirmations and stay with the change.
-bare_confirmation_words: 4
 # Words that begin a due date's words without being part of it ("due Oct 22", "on the 3rd"), the endings of a day of the month ("the 25th"), and the words that tie a due to something that happens, so it has no date ("once the keys arrive"); of those, the ones that put a promise on hold from the start, and the ones after which a calendar entry may be named ("before the print sync").
 due_lead_words: [by, "on", due, due on, due by, on or before, no later than, not later than]
 due_ordinal_suffixes: [st, nd, rd, th]

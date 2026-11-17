@@ -5,7 +5,7 @@ trusted.
 
 A note typed on a button of an action or a question (Mark done, They finished it, Followed up, an answer) is an input
 too: `note_as_input` saves it as a trusted source with the item as its context and its author, and queues the usual
-notes work, unless it is a bare confirmation. A note asking for a change to the record it is on is always read.
+notes work, however short it is: the assistant decides whether it holds anything. Only an empty note makes no request.
 """
 
 from __future__ import annotations
@@ -136,9 +136,6 @@ ROUTE_HINTS = {
     ),
 }
 
-#: The buttons whose note is the whole point of pressing them, so it is read however short it is.
-ALWAYS_READ_ROUTES = frozenset({"change_requested", "missed_one"})
-
 #: The buttons whose note is content the person reports, not their own words: what someone else did or said, as the
 #: person tells it. Such a note is authored by that other person, and nothing it says changes how the product behaves
 #: until the person confirms it.
@@ -187,15 +184,6 @@ def repeats_someone(text: str, speech: ReportedSpeech) -> bool:
     return sum(1 for p in chat for _ in p.finditer(text)) >= speech.chat_min_lines
 
 
-_LINK = re.compile(r"(?i)(?:[a-z][a-z0-9+.-]*://|www\.)\S+|\b[\w-]+(?:\.[\w-]+)+/\S*")
-
-
-def is_bare_confirmation(text: str, words: int) -> bool:
-    """Whether a note says too little to be worth the assistant's time: fewer than `words` words and no link."""
-    note = text.strip()
-    return len(note.split()) < words and not _LINK.search(note)
-
-
 def note_as_input(
     ws: Workspace,
     store: Store,
@@ -207,10 +195,11 @@ def note_as_input(
     author: str | None = None,
     now: datetime | None = None,
 ) -> str | None:
-    """Hand in the note typed on a button of `item` (a kind and an id), once the button's own change is saved. A bare
-    confirmation is kept with the change and makes no request. Otherwise the note is saved as a trusted source whose
+    """Hand in the note typed on a button of `item` (a kind and an id), once the button's own change is saved. A note
+    with no words is kept with the change and makes no request. Any other note, however short, is read: the assistant
+    decides whether it holds anything. The note is saved as a trusted source whose
     context is the item and its project, and the usual notes work is queued about the item, under the usual cost rules.
-    Returns the request's id, or None for a bare confirmation. Undoing the button's change never takes the note back:
+    Returns the request's id, or None for an empty note. Undoing the button's change never takes the note back:
     it is kept, and what the assistant makes of it is reviewed and undone on its own.
 
     Whose words it is follows the button. Most buttons record the person's own words, authored by the person running
@@ -222,9 +211,7 @@ def note_as_input(
     if route in REPORTED_ROUTES and not author:
         raise ValueError(f"a note on {route} names the person it is reported about")
     note = text.strip()
-    if not note or (
-        route not in ALWAYS_READ_ROUTES and is_bare_confirmation(note, cfg.language.bare_confirmation_words)
-    ):
+    if not note:
         return None
     record = store.read().get(*item)
     if record is None:

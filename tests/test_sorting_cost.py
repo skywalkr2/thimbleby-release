@@ -2,6 +2,7 @@
 measured size, the price of the account that would sort, a plan's runs, and no account at all."""
 
 import statistics
+from datetime import UTC, datetime, time, timedelta
 
 import pytest
 
@@ -16,10 +17,17 @@ from tests.test_set_aside import NOW
 PER_DAY = (4, 6, 9)  # the fixture days: messages read on each of three days
 
 
+def _hours_back(day: int, n: int) -> float:
+    """How long before NOW a fixture message of `day` (1 = yesterday, and so on) was received: in the morning of that
+    UTC day, so a day's messages never straddle midnight whatever the hour the test runs at."""
+    morning = datetime.combine(NOW.date() - timedelta(days=day), time(9 + n % 3), tzinfo=UTC)
+    return (NOW - morning).total_seconds() / 3600
+
+
 def a_day_of_mail(tmp_path, **watch):
     items = []
     for day, count in enumerate(PER_DAY):
-        items += [unplaced(f"{day}-{n}", hours=24 * day + 1 + n % 3) for n in range(count)]
+        items += [unplaced(f"{day}-{n}", hours=_hours_back(day + 1, n)) for n in range(count)]
     ws, cfg, store = make(tmp_path, items, **watch)
     read(ws, store)
     return ws, cfg, store
@@ -51,15 +59,15 @@ def test_a_priced_accounts_day_is_the_median_count_times_the_measured_packet_at_
 
 
 def test_a_day_over_one_batch_is_priced_run_by_run(tmp_path):
-    ws, cfg, store = a_day_of_mail(tmp_path, sorting_batch=4)
+    """A day of 6 messages is one run in batches of 6 and two in batches of 3; the second run pays the fixed part
+    again, so it costs more."""
+    ws, cfg, store = a_day_of_mail(tmp_path, sorting_batch=6)
     priced(cfg)
     one = cost(ws, store, cfg)
     cfg.watch.sorting_batch = 3
     two = cost(ws, store, cfg)
-    assert (one.runs, two.runs) == (
-        2,
-        2,
-    ) and two.estimate_usd > one.estimate_usd  # a second run pays the fixed part again
+    assert (one.messages, one.runs, two.runs) == (6, 1, 2)
+    assert two.estimate_usd > one.estimate_usd
 
 
 def test_a_plan_shows_runs_a_day_and_no_money(tmp_path):

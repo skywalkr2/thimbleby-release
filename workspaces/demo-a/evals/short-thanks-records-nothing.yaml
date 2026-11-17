@@ -1,0 +1,34 @@
+id: short-thanks-records-nothing
+title: A short thanks is read like any note and the assistant records nothing from it
+skills: [evidence]
+received: '2026-10-14'
+given:
+- kind: action
+  id: ACT-91
+  fields:
+    text: Walk the vendor through the server room
+    project: PRJ-1
+    owners:
+    - person: PER-1
+    due: '2026-10-21'
+- kind: question
+  id: Q-91
+  fields:
+    kind: decision
+    projects: [PRJ-1]
+    title: Is the vendor visit still on for Wednesday?
+    text: The visit is booked for Wednesday, October 21.
+    to: PER-1
+typed_on:
+  route: answered
+  kind: question
+  id: Q-91
+note: Done, thanks
+forbid:
+- op: record.set
+- op: action.add
+- op: question.add
+- new_person: true
+stub_answer:
+  summary: Nothing in the note to record.
+  ops: []

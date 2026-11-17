@@ -1341,7 +1341,7 @@ const ACCOUNT_ROW = {
 test("no model's name is on the setup step for any service, once it is chosen and checked", async () => {
   for (const kind of KINDS) {
     const user = userEvent.setup();
-    api({ "GET ai/accounts": () => [ACCOUNT_ROW], "GET ai/local": () => [] });
+    api({ "GET ai/accounts": () => [], "GET ai/local": () => [] });
     const { unmount } = open();
     if (kind.id === "service-a" || kind.id === "service-b") await pick(user, kind.name);
     else await pickElse(user, kind.name);
@@ -1439,4 +1439,61 @@ test("every Open link on the step is one style: a quiet small link with the page
     expect(link).toHaveAttribute("data-variant", "quiet");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
   }
+});
+
+// ---- the step leads with the accounts once there is one ----
+
+const SECOND_ROW = { ...ACCOUNT_ROW, name: "service-b", kind: "service-b", label: "Backup service", used_for: [], backup_for: ["routine", "deep"] } as unknown as S["AiAccountView"];
+const THIRD_ROW = { ...ACCOUNT_ROW, name: "other", kind: "other", label: "", used_for: [], backup_for: [] } as unknown as S["AiAccountView"];
+
+test("with no account the three provider cards lead and no account list or add button is on the step", async () => {
+  api({ "GET ai/accounts": () => [] });
+  open();
+  expect(await screen.findByRole("group", { name: /Which AI should/ })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Add another AI account" })).toBeNull();
+  expect(document.querySelector("[data-ai-accounts-lead]")).toBeNull();
+});
+
+const leadsWith = async (n: number) => {
+  const rows = [ACCOUNT_ROW, SECOND_ROW, THIRD_ROW].slice(0, n);
+  api({ "GET ai/accounts": () => rows });
+  open({ done: true });
+  await screen.findByRole("heading", { name: /AI accounts/ });
+  const lead = document.querySelector("[data-ai-accounts-lead]") as HTMLElement;
+  expect(lead).not.toBeNull();
+  expect(screen.queryByRole("group", { name: /Which AI should/ })).toBeNull();
+  expect(screen.queryByRole("radio")).toBeNull();
+  expect(lead.querySelectorAll("li[data-row]")).toHaveLength(n);
+  const add = screen.getByRole("button", { name: "Add another AI account" });
+  const order = [lead.querySelector("ul")!, add, lead.querySelector("[data-spend-line]")].filter(Boolean) as Element[];
+  expect(order).toHaveLength(3);
+  for (let i = 1; i < order.length; i += 1) expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // Each row says in plain words what it does for the assistant and whether it works, with none of the internal words.
+  const text = visibleText(lead);
+  for (const word of [/Does the work/, /Another service/, /everyday and harder work/, /Checked for every kind of work/]) expect(text).not.toMatch(word);
+  expect(text).toMatch(/Does all of your assistant's work/);
+  if (n > 1) expect(text).toMatch(/Takes over if the account doing the work can't answer/);
+};
+
+test("with one account the accounts lead, one row, then Add another AI account, then the spending limits, and no provider card", () => leadsWith(1));
+test("with three accounts the accounts lead, one row each, then Add another AI account, then the spending limits, and no provider card", () => leadsWith(3));
+
+test("Add another AI account opens the provider choice in a panel and closes back to the accounts", async () => {
+  const user = userEvent.setup();
+  api({ "GET ai/accounts": () => [ACCOUNT_ROW] });
+  open({ done: true });
+  await user.click(await screen.findByRole("button", { name: "Add another AI account" }));
+  const panel = await screen.findByRole("dialog", { name: "Add an account" });
+  expect(within(panel).getAllByRole("radio").length).toBeGreaterThan(0);
+  await user.click(within(panel).getByRole("button", { name: "Close" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add an account" })).toBeNull());
+  expect(screen.getByRole("button", { name: "Add another AI account" })).toBeInTheDocument();
+});
+
+test("an account the person addressed themselves is never called by the menu's own name", async () => {
+  api({ "GET ai/accounts": () => [THIRD_ROW] });
+  open({ done: true });
+  await screen.findByRole("heading", { name: /AI accounts/ });
+  expect(visibleText(document.body)).toContain("Your own AI service");
+  expect(visibleText(document.body)).not.toContain("Another service account");
 });

@@ -18,9 +18,10 @@ import { freshSettings, useAfterSave, useFreshFingerprint } from "../lib/setting
 import { useSignInWindow } from "../lib/sign-in-window";
 import { useWords } from "../lib/wording";
 import { Button } from "../ui/Button";
+import { Drawer } from "../ui/Drawer";
 import { EmptyState } from "../ui/EmptyState";
 import { Skeleton } from "../ui/Skeleton";
-import { useAct } from "../lib/act";
+import { SIGNED_OUT_READS, useAct } from "../lib/act";
 import { addonOfSignIn, SignOutConfirm } from "./SignIns";
 import { Icon } from "../ui/Icon";
 import { SetupAccountRow } from "./SetupAccountRow";
@@ -190,16 +191,25 @@ function SignInSides(props: { sources: Source[]; what: string; account?: string;
   );
 }
 
-/** One line saying whether newsletters, sales and mailing lists are set aside, with Change opening the switch in place. */
+/** One line saying how the mail is sorted: the assistant looks at each message and the rules only give it hints, with a typical
+ *  day's cost where the switch is, and Change opening the switch in place. */
 function SetAsideLine() {
   const { t } = useWords();
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
+  const cost = useSortingCostWords();
   const [open, setOpen] = useState(false);
   const on = settings.data?.items.find((i) => i.key === SORTING)?.value !== "rules";
   return (
     <FormBlock data-set-aside-line="">
       <p className="hint">
-        {t(on ? "walkthrough.mail.aside.on" : "walkthrough.mail.aside.off")} <span aria-hidden="true">·</span>{" "}
+        {t(on ? "walkthrough.mail.aside.on" : "walkthrough.mail.aside.off")}
+        {on && cost && !open && (
+          <>
+            {" "}
+            <span data-sorting-cost="">{cost}</span>
+          </>
+        )}{" "}
+        <span aria-hidden="true">·</span>{" "}
         <Button variant="quiet" className={styles.link} aria-expanded={open} onClick={() => setOpen((x) => !x)}>
           {t("walkthrough.mail.aside.change")}
         </Button>
@@ -224,9 +234,11 @@ export function WalkthroughMail(props: {
   const business = useQuery({ queryKey: ["business"], queryFn: api.business });
   const mailServices = useQuery({ queryKey: ["mail-services"], queryFn: api.mailServices });
   const hasMailGuide = (mailServices.data?.length ?? 0) > 0;
-  // The services list is folded behind "Connect another" once a service is connected; pressing it shows the list.
-  const [revealed, setRevealed] = useState(false);
+  // Once an account is connected the ways to add another are in one panel over the step, opened by "Connect another account".
+  const [panel, setPanel] = useState(false);
   const [mailbox, setMailbox] = useState(false);
+  const addButton = useRef<HTMLButtonElement>(null);
+  const known = useRef<number | null>(null);
   const result = useRef<HTMLDivElement>(null);
   const shown = useRef<boolean | null>(null);
 
@@ -267,10 +279,24 @@ export function WalkthroughMail(props: {
   const others = loose.filter((s) => !stopped(s));
   const signedOut = loose.filter(stopped);
   const hasResult = connected.length > 0;
+  // Something is connected: an add-on's account, or a mailbox connected another way. The accounts then lead the step.
+  const any = hasResult || others.length > 0 || signedOut.length > 0;
+  // How many accounts are signed in or read: when it grows while the panel is open, the sign-in worked and the panel closes.
+  const count =
+    (signIns.data ?? []).reduce((n, s) => n + (s.several ? (s.accounts ?? []).filter((a) => a.status === "signed_in").length : s.status === "signed_in" ? 1 : 0), 0) + others.length;
+  useEffect(() => {
+    if (!panel) {
+      known.current = null;
+      return;
+    }
+    // The count can dip while the readings settle after a sign-in: the lowest count seen since the panel opened is the one to beat.
+    if (known.current === null || count < known.current) known.current = count;
+    else if (count > known.current) setPanel(false);
+  }, [panel, count]);
 
   // Continue is the walkthrough's own, in the footer on the column's edge like every other step's: it comes once something is
   // connected (or the step was done or left for later), so this step draws none of its own and only says that it can be pressed.
-  useContinue(hasResult ? { run: async () => true } : null);
+  useContinue(any ? { run: async () => true } : null);
   // A result that appears while the screen is open (the sign-in just finished) takes the cursor to its first field.
   useEffect(() => {
     const was = shown.current;
@@ -286,26 +312,57 @@ export function WalkthroughMail(props: {
   const canRestart = !!status.data?.can_restart;
   // Nothing to sign in to and nothing read: the step says so once, with one button for what can be connected now.
   const nothingYet = services.length === 0 && read.length === 0;
-  const folded = hasResult && !revealed;
-  const firstCard = !folded && !hasResult && services.length > 0;
+  const firstCard = !any && services.length > 0;
   const hasSides = (business.data?.sides ?? []).length > 0;
+
+  const restartNote = waiting && (
+    <div className="restart-step" role="status">
+      <p>{t(canRestart ? "walkthrough.mail.restart_why" : "walkthrough.mail.restart_manual")}</p>
+      {canRestart && (
+        <Actions align="end">
+          <Button variant="primary" disabled={restart.busy || restart.waiting} onClick={() => void restart.now()}>
+            {restart.waiting ? t("walkthrough.mail.restarting") : t("walkthrough.mail.restart")}
+          </Button>
+        </Actions>
+      )}
+      {restart.phase === "refused" && restart.problem && (
+        <p className="problem-note" role="alert">
+          {restart.problem}
+        </p>
+      )}
+      {restart.phase === "stuck" && (
+        <p className="problem-note" role="alert">
+          {t("restart.stuck")}
+        </p>
+      )}
+    </div>
+  );
+  const openOther = () => {
+    setPanel(false);
+    props.onChooseSource(null);
+  };
+  // The services that can still take an account: not yet on, not yet signed in, or able to hold more than one account.
+  const addable = services.filter((service) => {
+    const mine = (signIns.data ?? []).filter((s) => addonOfSignIn(s.name) === service.id);
+    return service.state !== "ready" || mine.length === 0 || mine.some((s) => s.status !== "signed_in" || s.several);
+  });
+  const mailAt = props.onChooseSource;
 
   return (
     <div className="mail-step">
-      {hasResult && (
+      {any && (
         <div ref={result} data-mail-result="">
           {connected.map(({ service, title, reads }) => {
-            const what = listOf(reads.map(labelOf));
-            // With several accounts the question is asked of each account's sources, in the order the accounts first appear.
+            // With several accounts the headline counts them; each account is one row either way, in the order the accounts first appear.
             const several = accountsOf(service.id).length > 1;
-            const groups = several ? [...new Set(reads.map((s) => s.account ?? ""))] : [null];
+            const groups = [...new Set(reads.map((s) => s.account ?? ""))];
             const hintId = `sides-hint-${service.id.replace(/[^A-Za-z0-9_-]/g, "-")}`;
             const needing = several ? groups.filter((account) => accountStates(reads.filter((s) => (s.account ?? "") === account)).some((a) => a.need !== null)).length : 0;
             // With several accounts at one privacy level, the service and the level are said once, above the rows.
             const levels = new Set(reads.map((s) => s.data_level ?? "internal"));
             const grouped = several && levels.size === 1 && levels.has("restricted");
             return (
-              <FormBlock as="section" key={service.id}  data-reading="" data-connected={service.id}>
+              <FormBlock as="section" key={service.id} data-reading="" data-connected={service.id}>
                 <p className="what">
                   {/* Counted from how each account stands, so the headline never says "connected" over a row that needs signing in. */}
                   {needing === 0 ? (
@@ -313,183 +370,213 @@ export function WalkthroughMail(props: {
                   ) : (
                     <strong>{t("walkthrough.mail.result.some", { service: title, ok: groups.length - needing, n: groups.length })}</strong>
                   )}
-                  {reads.length > 0 && needing === 0 && <> {several ? t(grouped ? "walkthrough.mail.result.accounts_private" : "walkthrough.mail.result.accounts", { n: groups.length }) : t("walkthrough.mail.result.reading", { what })}</>}
+                  {reads.length > 0 && needing === 0 && several && <> {t(grouped ? "walkthrough.mail.result.accounts_private" : "walkthrough.mail.result.accounts", { n: groups.length })}</>}
                 </p>
                 {reads.length > 0 && <p className="hint">{t("walkthrough.mail.first_go")}</p>}
-                {reads.length > 0 && hasSides && several && (
+                {reads.length > 0 && hasSides && (
                   <p className="hint" id={hintId}>
                     {t("walkthrough.mail.sides.hint")}
                   </p>
                 )}
-                {several ? (
-                  // One compact row for each account: its address, what is read there, and who it is for.
-                  <ul className="account-rows" aria-label={t("walkthrough.mail.accounts_label")} data-account-rows="">
-                    {groups.map((account) => {
-                      const mine = reads.filter((s) => (s.account ?? "") === account);
-                      // An account the service no longer lets in says since when and offers Sign in again, in the same row.
-                      const need = accountStates(mine).find((a) => a.need !== null);
-                      return (
-                        <SetupAccountRow
-                          key={account ?? ""}
-                          address={account ?? ""}
-                          service={title}
-                          reads={listOf(mine.map(shortOf).map((n, i) => midSentence(n, i)))}
-                          sources={mine}
-                          grouped={grouped}
-                          need={need}
-                          sidesEditor={
-                            hasSides ? (
-                              <SignInSides
-                                sources={mine}
-                                what={listOf(mine.map(labelOf))}
-                                account={account || undefined}
-                                labelOf={labelOf}
-                                personal={business.data?.personal ?? null}
-                                sides={business.data?.sides ?? []}
-                                compact
-                                hintId={hintId}
-                              />
-                            ) : undefined
-                          }
-                        />
-                      );
-                    })}
-                  </ul>
-                ) : (
-                  reads.length > 0 &&
-                  hasSides &&
-                  groups.map((account) => {
-                    const mine = account === null ? reads : reads.filter((s) => (s.account ?? "") === account);
+                {/* One row for each account: its address, what is read there, how it stands and who it is for. */}
+                <ul className="account-rows" aria-label={t("walkthrough.mail.accounts_label")} data-account-rows="">
+                  {groups.map((account) => {
+                    const mine = reads.filter((s) => (s.account ?? "") === account);
+                    // An account the service no longer lets in says since when and offers Sign in again, in the same row.
+                    const need = accountStates(mine).find((a) => a.need !== null);
                     return (
-                      <SignInSides
-                        key={account ?? ""}
+                      <SetupAccountRow
+                        key={account}
+                        address={account}
+                        service={title}
+                        reads={listOf(mine.map(shortOf).map((n, i) => midSentence(n, i)))}
                         sources={mine}
-                        what={account === null ? what : listOf(mine.map(labelOf))}
-                        account={account || undefined}
-                        labelOf={labelOf}
-                        personal={business.data?.personal ?? null}
-                        sides={business.data?.sides ?? []}
+                        grouped={grouped}
+                        need={need}
+                        action={(() => {
+                          const mineIn = (signIns.data ?? []).filter((s) => addonOfSignIn(s.name) === service.id);
+                          const item = mineIn.find((s) => (s.accounts ?? []).some((a) => a.address === account) || s.account === account) ?? (account === "" ? mineIn[0] : undefined);
+                          return item ? <AccountSignOut item={item} address={account} /> : undefined;
+                        })()}
+                        sidesEditor={
+                          hasSides ? (
+                            <SignInSides
+                              sources={mine}
+                              what={listOf(mine.map(labelOf))}
+                              account={account || undefined}
+                              labelOf={labelOf}
+                              personal={business.data?.personal ?? null}
+                              sides={business.data?.sides ?? []}
+                              compact
+                              hintId={hintId}
+                            />
+                          ) : undefined
+                        }
                       />
                     );
-                  })
-                )}
+                  })}
+                </ul>
               </FormBlock>
             );
           })}
-          <SetAsideLine />
+          {others.length > 0 && (
+            // A mailbox connected another way is one row too, with its own Remove.
+            <FormBlock data-reading="">
+              <ul className="account-rows" aria-label={t("walkthrough.mail.accounts_label")} data-account-rows="">
+                {others.map((source) => (
+                  <SetupAccountRow
+                    key={source.id}
+                    address=""
+                    service={labelOf(source)}
+                    reads=""
+                    grouped
+                    sources={[source]}
+                    action={
+                      <Button variant="quiet" onClick={() => void save((fingerprint) => api.removeSource(source.id, fingerprint), t("sources.removed_toast", { label: source.label }))}>
+                        {t("sources.remove")} <span className="sr">{labelOf(source)}</span>
+                      </Button>
+                    }
+                    sidesEditor={
+                      hasSides ? <SourceSides sources={[source]} label={labelOf(source)} personal={business.data?.personal ?? null} sides={business.data?.sides ?? []} compact /> : undefined
+                    }
+                  />
+                ))}
+              </ul>
+              {!hasResult && <p className="hint">{t("walkthrough.mail.first_go")}</p>}
+            </FormBlock>
+          )}
+          {signedOut.length > 0 && (
+            <FormBlock data-signed-out="">
+              <span className="what" id="mail-signed-out">
+                {t("walkthrough.mail.signed_out")}
+              </span>
+              <ul className="plain-list" aria-labelledby="mail-signed-out">
+                {signedOut.map((source) => (
+                  <li key={source.id}>
+                    <span>{labelOf(source)}</span>
+                  </li>
+                ))}
+              </ul>
+              <p className="hint">{t("walkthrough.mail.signed_out_hint")}</p>
+            </FormBlock>
+          )}
         </div>
       )}
-      {folded && (
+      {any && (
         <FormBlock>
           <div>
-            <Button variant="secondary" size="sm" icon="plus" aria-expanded={false} onClick={() => setRevealed(true)}>
+            <Button ref={addButton} variant="secondary" size="sm" icon="plus" aria-haspopup="dialog" onClick={() => setPanel(true)}>
               {t("walkthrough.mail.connect_another")}
             </Button>
           </div>
         </FormBlock>
       )}
+      {any && <SetAsideLine />}
+      {any && (
+        <Drawer open={panel} title={t("walkthrough.mail.panel.title")} onClose={() => setPanel(false)}>
+          {panel && (
+            <div className="mail-panel" data-mail-panel="">
+              {addable.length > 0 && (
+                <>
+                  <p className="what" id="mail-panel-services">
+                    {t("walkthrough.mail.services")}
+                  </p>
+                  <RowList aria-labelledby="mail-panel-services">
+                    {addable.map((service) => (
+                      <ServiceRow
+                        key={service.id}
+                        service={service}
+                        title={displayName(service)}
+                        plain={false}
+                        panel
+                        signIns={(signIns.data ?? []).filter((s) => addonOfSignIn(s.name) === service.id)}
+                        onOpenAddons={props.onOpenAddons}
+                        canRestart={canRestart}
+                        canUseMailbox={hasMailGuide}
+                        onMailbox={() => undefined}
+                      />
+                    ))}
+                  </RowList>
+                </>
+              )}
+              {restartNote}
+              <MailServiceConnect selectId={MAIL_GUIDE_PICK} onConnected={() => setPanel(false)} onPick={(id) => id === OTHER_MAILBOX && openOther()} />
+              <FormBlock>
+                <Actions align="end">
+                  <Button variant="quiet" onClick={openOther}>
+                    {t("walkthrough.mail.other")}
+                  </Button>
+                </Actions>
+              </FormBlock>
+            </div>
+          )}
+        </Drawer>
+      )}
       {/* With no account yet the services, the restart note and the plain mailbox are one centred card: the services as rows to sign in
           with, the mailbox the quieter choice under them. */}
-      <div className={firstCard ? styles.first : styles.plain} data-first-card={firstCard ? "" : undefined}>
-      {!folded && services.length > 0 && (
-        <>
-          {!hasResult ? (
-            <div className={styles.lead} data-first-account="">
-              <h3 className={styles.leadTitle} id="mail-services">
-                {t("walkthrough.mail.none_title")}
-              </h3>
-              <p className="hint">{t("walkthrough.mail.first_account")}</p>
-            </div>
-          ) : (
-            <p className="what" id="mail-services">
-              {t("walkthrough.mail.services")}
-            </p>
+      {!any && (
+        <div className={firstCard ? styles.first : styles.plain} data-first-card={firstCard ? "" : undefined}>
+          {services.length > 0 && (
+            <>
+              <div className={styles.lead} data-first-account="">
+                <h3 className={styles.leadTitle} id="mail-services">
+                  {t("walkthrough.mail.none_title")}
+                </h3>
+                <p className="hint">{t("walkthrough.mail.first_account")}</p>
+              </div>
+              <RowList aria-labelledby="mail-services">
+                {services.map((service) => (
+                  <ServiceRow
+                    key={service.id}
+                    service={service}
+                    title={displayName(service)}
+                    plain
+                    signIns={(signIns.data ?? []).filter((s) => addonOfSignIn(s.name) === service.id)}
+                    onOpenAddons={props.onOpenAddons}
+                    canRestart={canRestart}
+                    canUseMailbox={hasMailGuide}
+                    onMailbox={() => setMailbox(true)}
+                  />
+                ))}
+              </RowList>
+            </>
           )}
-          <RowList aria-labelledby="mail-services">
-            {services.map((service) => (
-              <ServiceRow
-                key={service.id}
-                service={service}
-                title={displayName(service)}
-                plain={!hasResult}
-                signIns={(signIns.data ?? []).filter((s) => addonOfSignIn(s.name) === service.id)}
-                onOpenAddons={props.onOpenAddons}
-                canRestart={canRestart}
-                canUseMailbox={hasMailGuide}
-                onMailbox={() => setMailbox(true)}
-              />
-            ))}
-          </RowList>
-        </>
-      )}
-      {services.length === 0 && (
-        <FormBlock data-mail-none="">
-          <EmptyState
-            title={packs.isError ? undefined : t("walkthrough.mail.none_title")}
-            text={
-              <span className={packs.isError ? "problem-note" : undefined} id="mail-none">
-                {t(packs.isError ? "walkthrough.mail.load_failed" : "walkthrough.mail.none")}
-              </span>
-            }
-          >
-            <Button icon="plus" aria-describedby="mail-none" onClick={() => props.onChooseSource(null)}>
-              {t("walkthrough.mail.connect_one")}
-            </Button>
-          </EmptyState>
-        </FormBlock>
-      )}
-      {waiting && (
-        <div className="restart-step" role="status">
-          <p>{t(canRestart ? "walkthrough.mail.restart_why" : "walkthrough.mail.restart_manual")}</p>
-          {canRestart && (
-            <Actions align="end">
-              <Button variant="primary"
-                disabled={restart.busy || restart.waiting}
-                onClick={() => void restart.now()}
+          {services.length === 0 && (
+            <FormBlock data-mail-none="">
+              <EmptyState
+                title={packs.isError ? undefined : t("walkthrough.mail.none_title")}
+                text={
+                  <span className={packs.isError ? "problem-note" : undefined} id="mail-none">
+                    {t(packs.isError ? "walkthrough.mail.load_failed" : "walkthrough.mail.none")}
+                  </span>
+                }
               >
-                {restart.waiting ? t("walkthrough.mail.restarting") : t("walkthrough.mail.restart")}
-              </Button>
-            </Actions>
+                <Button icon="plus" aria-describedby="mail-none" onClick={() => mailAt(null)}>
+                  {t("walkthrough.mail.connect_one")}
+                </Button>
+              </EmptyState>
+            </FormBlock>
           )}
-          {restart.phase === "refused" && restart.problem && (
-            <p className="problem-note" role="alert">
-              {restart.problem}
-            </p>
-          )}
-          {restart.phase === "stuck" && (
-            <p className="problem-note" role="alert">
-              {t("restart.stuck")}
-            </p>
+          {restartNote}
+          {/* The common mail services by name: the steps for an app password, then only an address and that password. With no
+              account yet this is the quieter second choice inside the first-account card, folded. */}
+          {services.length > 0 && (
+            <details className="more-options" data-mailbox-choice="" open={mailbox} onToggle={(e) => setMailbox(e.currentTarget.open)}>
+              <summary>{t("walkthrough.mail.mailbox_instead")}</summary>
+              <MailServiceConnect selectId={MAIL_GUIDE_PICK} onPick={(id) => id === OTHER_MAILBOX && mailAt(null, "mailbox")} />
+              <FormBlock>
+                <Actions align="end">
+                  <Button variant="quiet" onClick={() => mailAt(null)}>
+                    {t("walkthrough.mail.other")}
+                  </Button>
+                </Actions>
+              </FormBlock>
+            </details>
           )}
         </div>
       )}
-      {/* The common mail services by name: the steps for an app password, then only an address and that password. With no
-          account yet this is the quieter second choice inside the first-account card, folded. */}
-      {!folded && !hasResult && services.length > 0 && (
-        <details className="more-options" data-mailbox-choice="" open={mailbox} onToggle={(e) => setMailbox(e.currentTarget.open)}>
-          <summary>{t("walkthrough.mail.mailbox_instead")}</summary>
-          <MailServiceConnect selectId={MAIL_GUIDE_PICK} onPick={(id) => id === OTHER_MAILBOX && props.onChooseSource(null, "mailbox")} />
-          <FormBlock>
-            <Actions align="end">
-              <Button variant="quiet" onClick={() => props.onChooseSource(null)}>
-                {t("walkthrough.mail.other")}
-              </Button>
-            </Actions>
-          </FormBlock>
-        </details>
-      )}
-      </div>
-      {!folded && (hasResult || services.length === 0) && <MailServiceConnect selectId={MAIL_GUIDE_PICK} onPick={(id) => id === OTHER_MAILBOX && props.onChooseSource(null, "mailbox")} />}
-      {!folded && hasResult && services.length > 0 && (
-        <FormBlock>
-          <Actions align="end">
-            <Button onClick={() => props.onChooseSource(null)}>
-              {t("walkthrough.mail.other")}
-            </Button>
-          </Actions>
-        </FormBlock>
-      )}
-      {!nothingYet && !hasResult && (
+      {!any && services.length === 0 && <MailServiceConnect selectId={MAIL_GUIDE_PICK} onPick={(id) => id === OTHER_MAILBOX && mailAt(null, "mailbox")} />}
+      {!any && !nothingYet && (
         <>
           <p className="hint" data-set-aside="">
             {t("walkthrough.mail.set_aside")}
@@ -497,46 +584,41 @@ export function WalkthroughMail(props: {
           <SortingSwitch />
         </>
       )}
-      {others.length > 0 && (
-        <FormBlock data-reading="">
-          <span className="what" id="mail-read">
-            {t(hasResult ? "walkthrough.mail.reading_also" : "walkthrough.mail.reading")}
-          </span>
-          <ul className="plain-list" aria-labelledby="mail-read">
-            {others.map((source) => (
-              <li key={source.id}>
-                <span>{labelOf(source)}</span>
-                <Button variant="quiet"
-                  onClick={() => void save((fingerprint) => api.removeSource(source.id, fingerprint), t("sources.removed_toast", { label: source.label }))}
-                >
-                  {t("sources.remove")} <span className="sr">{labelOf(source)}</span>
-                </Button>
-              </li>
-            ))}
-          </ul>
-          {!hasResult && <p className="hint">{t("walkthrough.mail.first_go")}</p>}
-        </FormBlock>
-      )}
-      {signedOut.length > 0 && (
-        <FormBlock data-signed-out="">
-          <span className="what" id="mail-signed-out">
-            {t("walkthrough.mail.signed_out")}
-          </span>
-          <ul className="plain-list" aria-labelledby="mail-signed-out">
-            {signedOut.map((source) => (
-              <li key={source.id}>
-                <span>{labelOf(source)}</span>
-              </li>
-            ))}
-          </ul>
-          <p className="hint">{t("walkthrough.mail.signed_out_hint")}</p>
-        </FormBlock>
-      )}
-      {others.length > 0 && hasSides &&
-        others.map((source) => (
-          <SourceSides key={source.id} sources={[source]} label={labelOf(source)} personal={business.data?.personal ?? null} sides={business.data?.sides ?? []} />
-        ))}
     </div>
+  );
+}
+
+/** Sign out of one account, on its row: asked about first, and the call is for that account only. */
+function AccountSignOut(props: { item: SignIn; address: string }) {
+  const { t } = useWords();
+  const act = useAct();
+  const [leaving, setLeaving] = useState(false);
+  const { item } = props;
+  const key = item.several ? ((item.accounts ?? []).find((a) => a.address === props.address)?.key ?? null) : null;
+  const who = props.address || item.account || t("sign_in.account_unnamed");
+  return (
+    <>
+      <Button variant="quiet" size="sm" aria-label={t("sign_in.sign_out_account", { account: who })} onClick={() => setLeaving(true)}>
+        {t("sign_in.sign_out")}
+      </Button>
+      {leaving && (
+        <SignOutConfirm
+          label={item.label}
+          account={who}
+          acting={false}
+          onCancel={() => setLeaving(false)}
+          onConfirm={() => {
+            setLeaving(false);
+            void act(
+              () => (key ? api.signOut(item.name, key) : api.signOut(item.name)),
+              () => ({ message: t("sign_in.signed_out_account_toast", { account: who, label: item.label }) }),
+              undefined,
+              SIGNED_OUT_READS,
+            );
+          }}
+        />
+      )}
+    </>
   );
 }
 
@@ -544,7 +626,7 @@ export function WalkthroughMail(props: {
 const MAIL_GUIDE_PICK = "mail-service-pick";
 
 /** One service: what it reads, where it stands and the one button for the next thing to do. */
-function ServiceRow(props: { service: Service; title: string; plain: boolean; onMailbox: () => void; signIns: SignIn[]; onOpenAddons: () => void; canRestart: boolean; canUseMailbox: boolean }) {
+function ServiceRow(props: { service: Service; title: string; plain: boolean; panel?: boolean; onMailbox: () => void; signIns: SignIn[]; onOpenAddons: () => void; canRestart: boolean; canUseMailbox: boolean }) {
   const { t, tn } = useWords();
   const client = useQueryClient();
   const write = useWrite();
@@ -704,6 +786,7 @@ function ServiceRow(props: { service: Service; title: string; plain: boolean; on
                 key={item.name}
                 item={item}
                 resumed={after && i === 0 ? props.title : undefined}
+                hideAccounts={props.panel}
                 onStarted={() => setAfter(false)}
               />
             ))}
@@ -738,7 +821,7 @@ function WaitingBanner(props: { onCancel: () => void; away?: boolean }) {
  *  The screen says it is waiting, then how it went; a refusal shows the service's reason and Try again. Right after the
  *  restart a connection needed (`resumed`, the service's name), the button reads "Sign in to {service}" and holds the cursor:
  *  the window opens from the person's click. */
-function ServiceSignIn(props: { item: SignIn; resumed?: string; onStarted?: () => void }) {
+function ServiceSignIn(props: { item: SignIn; resumed?: string; hideAccounts?: boolean; onStarted?: () => void }) {
   const { t } = useWords();
   const client = useQueryClient();
   const { item } = props;
@@ -765,7 +848,7 @@ function ServiceSignIn(props: { item: SignIn; resumed?: string; onStarted?: () =
         <>
           {/* A service that names its accounts can be signed in to more than once (a personal and a work mail): each
               account is listed, and Add another account opens the service's own page again. */}
-          {(several && signedAccounts.length > 0 ? signedAccounts : [item.account]).map((address, i) => {
+          {(props.hideAccounts ? [] : several && signedAccounts.length > 0 ? signedAccounts : [item.account]).map((address, i) => {
             const key = several ? ((item.accounts ?? []).find((a) => a.address === address)?.key ?? null) : null;
             const who = address ?? t("sign_in.account_unnamed");
             return (
@@ -795,6 +878,8 @@ function ServiceSignIn(props: { item: SignIn; resumed?: string; onStarted?: () =
                 void act(
                   () => (key ? api.signOut(item.name, key) : api.signOut(item.name)),
                   () => ({ message: t("sign_in.signed_out_account_toast", { account: who, label: item.label }) }),
+                  undefined,
+                  SIGNED_OUT_READS,
                 );
               }}
             />

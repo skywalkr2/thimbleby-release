@@ -5,7 +5,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useId, useRef, useState, type ReactNode } from "react";
 import { api, type S } from "../lib/api";
-import { useAct } from "../lib/act";
+import { SIGNED_OUT_READS, useAct } from "../lib/act";
 import type { ConnectionCard } from "../lib/connection-cards";
 import { signInNeed, sourceState, type AccountState } from "../lib/connections";
 import { failureText } from "../lib/sources";
@@ -102,6 +102,8 @@ export function ConnectionCardView(props: {
     await act(
       () => api.signOut(signIn.name, signedIn.key),
       () => ({ message: t("sign_in.signed_out_account_toast", { account: accountName, label: signIn.label }) }),
+      undefined,
+      SIGNED_OUT_READS,
     );
     setSigningOut(false);
   };

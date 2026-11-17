@@ -24,6 +24,7 @@ from engine.intake import MISSED_KIND, source_text
 from engine.knowledge_section import per_input_section, stable_section, with_ancestors
 from engine.learn import is_learning
 from engine.learning import offered_ops, request_learns
+from engine.mail_sorting import PLACE_LINES
 from engine.names import PacketPeople, People
 from engine.ops import reach_choices, reference_for, schema_for
 from engine.origin import from_outside, marked_name, marked_words, name_from_outside
@@ -204,6 +205,9 @@ def build(ws: Workspace, store: Store, cfg: Config, request_id: str, today: date
     request_parts = [f"Today is {today.isoformat()} ({today.strftime('%A')})."]
     if raw or note:
         request_parts.append(_received_line(store, cfg, req))
+    place = PLACE_LINES.get(_place_of(store, saved))
+    if place:
+        request_parts.append(place + ".")
     if about_project is not None:
         # The person said which project this is about; their choice, so it is trusted.
         # The choice is the person's; the project's name may still be outside content.
@@ -580,6 +584,16 @@ def received_on(store: Store, cfg: Config, req: Stored) -> date | None:
         return datetime.fromisoformat(str(when)).astimezone(zone(cfg)).date() if when else None
     except ValueError:
         return None
+
+
+def _place_of(store: Store, source: Stored | None) -> str:
+    """Where a watched mail message was when it was read ("deleted", "archived"), from its snapshot; empty when the
+    input isn't one or the connector didn't say. It is context, never a reason to skip or lower anything."""
+    watched = source.data.get("watched") if source is not None else None
+    if not watched:
+        return ""
+    snapshot = next(iter(store.read().find("snapshot", {"source": watched["source"], "key": watched["key"]})), None)
+    return ((snapshot.data.get("message") or {}).get("where") or "") if snapshot is not None else ""
 
 
 def _received_line(store: Store, cfg: Config, req: Stored) -> str:

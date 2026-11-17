@@ -65,13 +65,13 @@ def missed_one(ws: Workspace, store: Store, cfg: Config, text: str, now: datetim
 
 def answered_assistant(store: Store, cfg: Config, question_id: str, text: str) -> str | None:
     """Record that the person wrote an answer to a question the assistant asked them, so the assistant learns from it at
-    once. The signal names the question, and the changeset and run that made it when there was one. A bare
-    confirmation, which says nothing to learn from, records nothing. Returns the signal's id."""
+    once. The signal names the question, and the changeset and run that made it when there was one. However short the
+    answer, the assistant reads it and decides whether it teaches anything; only an empty answer records nothing.
+    Returns the signal's id."""
     from engine.dispatcher import signal
-    from engine.intake import is_bare_confirmation
 
     words = " ".join(text.split())
-    if not words or is_bare_confirmation(words, cfg.language.bare_confirmation_words):
+    if not words:
         return None
     first: dict[str, Any] | None = next(iter(store.read().ledger(kind="question", record_id=question_id)), None)
     made = first["changeset"] if first is not None else None

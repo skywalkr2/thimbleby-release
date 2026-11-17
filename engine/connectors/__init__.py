@@ -102,6 +102,10 @@ class EventDetails:
         )
 
 
+#: The places a message can have been when it was read (`MessageDetails.where`).
+MESSAGE_PLACES = ("inbox", "archived", "deleted")
+
+
 @dataclass(frozen=True)
 class MessageDetails:
     """What a mail item is, for the day's inbox. `sender`: who it is from, as the service names them, with the address
@@ -116,7 +120,10 @@ class MessageDetails:
     mailbox that holds a copy of it has the same (each mailbox's own id for it differs). `references`: the `Message-ID`s
     of the messages it follows in its thread, as its `References` and `In-Reply-To` headers give them. Two mailboxes
     that hold messages of one thread (they share a `message_id` or a reference) show that thread once. Left out, a
-    message is never taken for the same as another."""
+    message is never taken for the same as another. `where`: where the message was when it was read, `"inbox"`,
+    `"archived"` or `"deleted"` (None when the connector doesn't say). A deleted or archived message is read in full
+    like any other: the core never skips it, sets it aside or lowers it for that reason, and its packets only tell the
+    assistant, as context about the person's habits."""
 
     sender: str | None = None
     received: str | None = None
@@ -126,6 +133,7 @@ class MessageDetails:
     participants: tuple[str, ...] = ()
     message_id: str | None = None
     references: tuple[str, ...] = ()
+    where: str | None = None
 
 
 @dataclass(frozen=True)

@@ -143,8 +143,10 @@ test.describe.serial("journey: a first evening", () => {
     expect(page.url()).toBe(appAddress);
     await popup.waitForEvent("close", { timeout: 60_000 }).catch(() => undefined);
     await expect(main.locator("[data-mail-result]")).toContainText("Example mail is connected.", { timeout: 90_000 });
+    await expect(main.locator("[data-account-row]")).toHaveCount(1);
     await main.getByRole("button", { name: "Connect another" }).click();
-    await expect(main.getByText(/Signed in as .+@example\.com/)).toBeVisible();
+    await expect(main.locator("[data-account-row]")).toContainText(/.+@example\.com/);
+    await page.keyboard.press("Escape");
     expect(page.url()).not.toMatch(/code=|state=|sign_in=/);
     await main.getByRole("button", { name: "Continue" }).click();
 

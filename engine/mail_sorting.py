@@ -74,6 +74,13 @@ SCHEMA: dict[str, Any] = {
 }
 
 
+#: How a message's place when it was read is told to a run: context about the person's habits, never a reason.
+PLACE_LINES = {
+    "deleted": "You had already deleted this when it was read",
+    "archived": "You had already archived this when it was read",
+}
+
+
 @dataclass(frozen=True)
 class Header:
     """What a sorting run sees of one message."""
@@ -84,6 +91,7 @@ class Header:
     categories: tuple[str, ...] = ()
     hint: str | None = None  # what the word lists suggest the kind is (bill, order or delivery); the run decides
     hints: tuple[str, ...] = ()  # what the built-in set-aside rules saw, as plain reasons; the run weighs them
+    where: str | None = None  # "archived" or "deleted" when the person had already done that; context, never a reason
 
 
 class Answer(NamedTuple):
@@ -134,8 +142,15 @@ def header_of(key: str, change: dict[str, Any], kinds: Any = None, cfg: Any = No
     categories = tuple(_clip(c, CATEGORY_CHARS) for c in (message.get("categories") or [])[:MAX_CATEGORIES])
     hint = hint_of_change(kinds, change) if kinds is not None else None
     hints = tuple(_clip(h) for h in built_in_hints(cfg, change)) if cfg is not None else ()
+    where = message.get("where") if message.get("where") in ("archived", "deleted") else None
     return Header(
-        key, _clip(message.get("sender") or change.get("author")), _clip(change.get("title")), categories, hint, hints
+        key,
+        _clip(message.get("sender") or change.get("author")),
+        _clip(change.get("title")),
+        categories,
+        hint,
+        hints,
+        where,
     )
 
 
@@ -164,6 +179,7 @@ def build_task(ws: Any, cfg: Any, headers: list[Header], view: Any = None) -> tu
                 "categories": list(header.categories),
                 **({"hint": f"words suggest: {header.hint}"} if header.hint else {}),
                 **({"hints": list(header.hints)} if header.hints else {}),
+                **({"already": PLACE_LINES[header.where]} if header.where else {}),
             },
             ensure_ascii=False,
         )

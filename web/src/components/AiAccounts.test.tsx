@@ -108,15 +108,16 @@ test("every row says its role in words, its own name, what it covers, its state 
   api();
   open();
   const main = await row("Main account");
-  expect(main).toHaveTextContent("Does the work");
-  expect(main).toHaveTextContent("Pay as you go · Service A · everyday and harder work");
+  expect(main).toHaveTextContent("In use");
+  expect(main).toHaveTextContent("Does all of your assistant's work, the quick jobs and the harder ones · Service A · Pay as you go");
   expect(main).toHaveTextContent("Ready · answered 2 hours ago · $1.20 today");
   const second = await row("Second account");
   expect(second).toHaveTextContent("Backup");
-  expect(second).toHaveTextContent("Signed-in app · App A · backup for everyday and harder work");
-  expect(second).toHaveTextContent("Checked for every kind of work · Oct 14");
+  expect(second).toHaveTextContent("Takes over if the account doing the work can't answer · App A · Signed-in app");
+  expect(second).toHaveTextContent("Works · checked Oct 14");
   const trial = await row("Trial account");
-  expect(trial).toHaveTextContent("Not used");
+  expect(trial).toHaveTextContent("Not in use");
+  expect(trial).toHaveTextContent("Not doing any of your assistant's work yet");
   expect(trial).toHaveTextContent("Access key not found on this computer");
   // A state that needs attention has an icon as well as words, and no id of the settings is on screen.
   expect(trial.querySelector('[data-icon="alert"]')).not.toBeNull();

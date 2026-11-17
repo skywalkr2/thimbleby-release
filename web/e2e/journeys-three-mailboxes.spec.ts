@@ -46,14 +46,31 @@ test.describe.serial("journey: one sent message in three mailboxes", () => {
     // Three accounts, one after the other through the service's own page.
     const row = main.locator('[data-service="journey-mail"]');
     for (const [n, address] of addresses.entries()) {
-      const button = n === 0 ? row.getByRole("button", { name: "Sign in to Example mail", exact: true }) : row.getByRole("button", { name: "Add another account to Example mail", exact: true });
-      // The list of services is folded behind "Connect another account" once an account is in.
-      if (n > 0 && !(await button.isVisible())) await main.getByRole("button", { name: /^Connect another/ }).click();
+      // Once an account is in, the ways to add another are in the panel that "Connect another account" opens.
+      if (n > 0) await main.getByRole("button", { name: /^Connect another account/ }).click();
+      const button = n === 0 ? row.getByRole("button", { name: "Sign in to Example mail", exact: true }) : page.getByRole("dialog").getByRole("button", { name: "Add another account to Example mail", exact: true });
       const [popup] = await Promise.all([page.waitForEvent("popup"), button.click()]);
       await popup.getByRole("link", { name: address, exact: true }).click();
       await popup.waitForEvent("close", { timeout: 30_000 }).catch(() => undefined);
       await expect(main.locator("[data-mail-result]")).toContainText("Example mail is connected.", LOADED);
+      // The panel closes by itself when the account is in, and the account is one row more.
+      await expect(page.getByRole("dialog")).toHaveCount(0, LOADED);
+      await expect(main.locator("[data-account-row]")).toHaveCount(n + 1, LOADED);
     }
+    // Three accounts are three rows, the ways to add are not on the page, and the Back and Continue bar is the footer at the
+    // window's foot with the step ending above it (S-0557: it was reported mid-page with the step continuing under it).
+    await expect(main.locator("[data-account-row]")).toHaveCount(3);
+    await expect(main.locator("[data-service], [data-mailbox-choice]")).toHaveCount(0);
+    const bar = page.locator("[data-step-footer]");
+    // Scrolled to the end, the step's last line is above the bar and not under it; the bar stands at the window's foot.
+    await page.evaluate(() => {
+      const end = document.scrollingElement ?? document.documentElement;
+      end.scrollTop = end.scrollHeight;
+    });
+    const barBox = (await bar.boundingBox())!;
+    const lineBox = (await main.locator("[data-set-aside-line]").boundingBox())!;
+    expect(Math.round(barBox.y + barBox.height)).toBe(page.viewportSize()!.height);
+    expect(lineBox.y + lineBox.height).toBeLessThanOrEqual(barBox.y + 1);
     // The assistant's answer to the sent message is one to-do.
     const sentLine = `${info.people[0]} will send the revised budget by 2026-11-05.`;
     const scripted = await fetch(`${FAKE}/__e2e/script`, {

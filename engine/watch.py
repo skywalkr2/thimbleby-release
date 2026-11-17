@@ -1046,11 +1046,14 @@ def _message_dict(message: Any) -> dict[str, Any] | None:
 
     if message is None:
         return None
+    from engine.connectors import MESSAGE_PLACES
+
     return {
         **asdict(message),
         "categories": list(message.categories),
         "participants": list(message.participants),
         "references": list(message.references),
+        "where": message.where if message.where in MESSAGE_PLACES else None,
     }
 
 

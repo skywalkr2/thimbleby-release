@@ -1171,6 +1171,7 @@ class SnapshotMessage(BaseModel):
     participants: list[str] = Field(default_factory=list)
     message_id: str | None = None
     references: list[str] = Field(default_factory=list)
+    where: str | None = None
 
 
 class Snapshot(Record):

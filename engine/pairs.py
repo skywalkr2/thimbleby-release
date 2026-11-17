@@ -515,7 +515,7 @@ class _Play:
                 decline_held(self.store, cs, held, now=when)
             elif kind == "answered":
                 if answered_assistant(self.store, cfg, ref("id"), note) is None:
-                    raise _Stop("the answer was a bare confirmation, so nothing is recorded")
+                    raise _Stop("the answer was empty, so nothing is recorded")
             elif kind == "moved":
                 apply_as_person(
                     self.store,

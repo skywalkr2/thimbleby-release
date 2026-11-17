@@ -137,23 +137,29 @@ test.describe.serial("journey: new start", () => {
     await expect(main.getByRole("heading", { level: 2, name: "Mail and calendar" })).toBeVisible();
     // The service sends that window back to the app, which tells this screen how it went and closes the window.
     await popup.waitForEvent("close", { timeout: 60_000 }).catch(() => undefined);
-    // The step now leads with the result, and the services list is folded behind "Connect another".
+    // The step now leads with the result: the account is one row, and every way to add another is in the panel.
     await expect(main.locator("[data-mail-result]")).toContainText("Example mail is connected.", { timeout: 90_000 });
+    await expect(main.locator("[data-account-row]")).toHaveCount(1);
     await expect(main.getByText(/Restart to finish connecting/)).toHaveCount(0);
+    await expect(main.locator("[data-service]")).toHaveCount(0);
     await main.getByRole("button", { name: "Connect another account" }).click();
-    await expect(row).toHaveAttribute("data-state", "ready");
-    await expect(main.getByText(/Signed in as .+@example\.com/)).toBeVisible();
+    const panelRow = page.getByRole("dialog").locator('[data-service="journey-mail"]');
+    await expect(panelRow).toHaveAttribute("data-state", "ready");
+    await expect(main.locator("[data-account-row]")).toContainText(/.+@example\.com/);
+    await page.keyboard.press("Escape");
     // A page opened fresh after the restart resumes at this screen.
     await page.reload();
     await expect(page.getByRole("heading", { level: 1, name: "Getting started" })).toBeVisible(FIRST_SCREEN);
     await expect(main.getByRole("heading", { level: 2, name: "Mail and calendar" })).toBeVisible();
     await visit(page);
-    // Signed in once, nothing was asked of the assistant. A page opened fresh folds the list again.
+    // Signed in once, nothing was asked of the assistant. A page opened fresh has the ways to add behind the one button.
     await main.getByRole("button", { name: "Connect another account" }).click();
-    await expect(row).toHaveAttribute("data-signed-in", "");
-    await expect(row).toContainText("Reading your mail and calendar.");
-    await expect(row).not.toContainText("Sign in to start reading");
-    await expect(row.getByRole("button", { name: /^Sign in/ })).toHaveCount(0);
+    const again = page.getByRole("dialog").locator('[data-service="journey-mail"]');
+    await expect(again).toHaveAttribute("data-signed-in", "");
+    await expect(again).toContainText("Reading your mail and calendar.");
+    await expect(again).not.toContainText("Sign in to start reading");
+    await expect(again.getByRole("button", { name: /^Sign in/ })).toHaveCount(0);
+    await page.keyboard.press("Escape");
     // The sign-in toast doesn't cover Back or Next either.
     await main.getByRole("button", { name: "Back" }).click({ trial: true });
     await main.getByRole("button", { name: "Continue" }).click({ trial: true });

@@ -77,7 +77,6 @@ LIVE_KEYS = (
     "steward.",
     "workspace.plugins.catalog.",
     "workspace.plugins.preview_seconds",
-    "language.bare_confirmation_words",
     "language.known_terms",
     "language.known_terms_shipped",
     "workspace.project.side_words",

@@ -14,12 +14,14 @@ import { api, ApiError, type S } from "../lib/api";
 import {
   accountName,
   ago,
+  isOwnService,
   knownTiers,
   nextStep,
   orderAccounts,
   roleOf,
   stateOf,
   summarize,
+  workShape,
   workWords,
   type Account,
   type Kind,
@@ -611,7 +613,7 @@ function AccountRow(props: {
       case "no_key":
         return t("ai_accounts.state.no_key");
       case "failed":
-        return t("ai_accounts.state.failed", { work: workWords(state.tiers, t) });
+        return workShape(state.tiers) === "both" ? t("ai_accounts.state.failed_all") : t("ai_accounts.state.failed", { work: workWords(state.tiers, t) });
       case "paused":
         if (noReset(account.paused_until)) return t("ai_accounts.state.paused_credit");
         return t("ai_accounts.state.paused", { time: account.paused_until ? wallWhen(account.paused_until) : "" });
@@ -624,10 +626,9 @@ function AccountRow(props: {
           : t("ai_accounts.state.ready", { ago: when });
       }
       case "checked":
-        return t("ai_accounts.state.checked", {
-          work: state.tiers.length ? workWords(state.tiers, t) : t("ai_accounts.work.every"),
-          date: monthDay(account.checked_at),
-        });
+        return state.tiers.length
+          ? t("ai_accounts.state.checked", { work: workWords(state.tiers, t), date: monthDay(account.checked_at) })
+          : t("ai_accounts.state.checked_all", { date: monthDay(account.checked_at) });
       default:
         return t("ai_accounts.state.untested");
     }
@@ -645,9 +646,10 @@ function AccountRow(props: {
   const stateTone: StateTone = !worry ? (state.kind === "untested" ? "neutral" : "ok") : ["missing", "no_key", "failed"].includes(state.kind) ? "danger" : "warn";
 
   const kindWords = !kind ? "" : kind.local ? t("ai_accounts.kind.local") : kind.needs_key ? t("ai_accounts.kind.paid") : kind.program ? t("ai_accounts.kind.app") : "";
-  const covers = role === "work" ? t("ai_accounts.covers.work", { work: workWords(account.used_for, t) }) : role === "backup" ? t("ai_accounts.covers.backup", { work: workWords(backupFor, t) }) : "";
+  // What it does for the assistant, in a sentence: from its role and the kinds of work it takes.
+  const covers = role === "work" ? t(`ai_accounts.does.${workShape(account.used_for)}`) : role === "backup" ? t(`ai_accounts.backs.${workShape(backupFor)}`) : t("ai_accounts.does.none");
   const keyEnds = account.credential_expires && !account.key_ending ? t("ai_accounts.key_ends_quiet", { date: monthDay(account.credential_expires) }) : "";
-  const metaLine = [kindWords, kind?.name, covers, keyEnds].filter(Boolean).join(" · ");
+  const metaLine = [covers, isOwnService(kind) ? "" : kind?.name, kindWords, keyEnds].filter(Boolean).join(" · ");
   const pillTone: PillTone = role === "work" ? "need" : "neutral";
 
   const counts = props.skills ? skillCounts(props.skills.models) : null;

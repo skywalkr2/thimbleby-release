@@ -440,9 +440,18 @@ def test_an_answer_to_the_assistants_question_records_a_signal_and_queues_learni
     assert "answered a question the assistant asked them" in packet.task.request
 
 
-def test_a_bare_yes_and_an_answer_for_someone_else_record_no_such_signal(api):
+def test_a_three_word_answer_to_a_question_queues_a_learning_request(api):
     client, store, _, _ = api
-    assert client.post(f"/api/questions/{DECISION['id']}/answer", json={"text": "Yes"}).status_code == 200
+    answer = "Tuesday works, not Wednesday"
+    assert client.post(f"/api/questions/{DECISION['id']}/answer", json={"text": answer}).status_code == 200
+    (signal,) = [s for s in entries(store, "signal") if s.data["kind"] == "answered_assistant"]
+    assert signal.data["note"] == answer
+    (queued,) = [r for r in entries(store, "request") if r.data["task"] == learn.TASK]
+    assert queued.data["about"] == {"kind": "signal", "id": signal.id}
+
+
+def test_an_answer_for_someone_else_records_no_such_signal(api):
+    client, store, _, _ = api
     other = OPEN_QUESTION["id"]
     said = "She said the page is final and no more names are coming."
     assert client.post(f"/api/questions/{other}/answer", json={"text": said}).status_code == 200

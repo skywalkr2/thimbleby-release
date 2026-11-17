@@ -706,7 +706,7 @@ def _hand_in_case(ws: Workspace, store: Store, cfg: Config, case: dict[str, Any]
         ws, store, cfg, item=item, text=case["note"], route=on["route"], author=on.get("person"), now=now
     )
     if request is None:
-        raise ValueError(f"case {case['id']}: its note is a bare confirmation, so nothing reaches the assistant")
+        raise ValueError(f"case {case['id']}: its note is empty, so nothing reaches the assistant")
     return request
 
 

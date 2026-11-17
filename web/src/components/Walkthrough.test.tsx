@@ -2062,6 +2062,16 @@ describe("Mail and calendar", () => {
   });
 
   const row = async () => (await screen.findByText("Service mail-addon")).closest("li") as HTMLElement;
+  /** The side question of each account row is closed until its Pick (or Change) is pressed: opens every row's. */
+  const openSides = async (user: ReturnType<typeof userEvent.setup>) => {
+    for (const button of await screen.findAllByRole("button", { name: /^Change the sides / })) await user.click(button);
+  };
+
+  /** Opens the panel that holds the ways to add an account, and returns it. */
+  const panel = async (user: ReturnType<typeof userEvent.setup>) => {
+    await user.click(await screen.findByRole("button", { name: "Connect another account" }));
+    return await screen.findByRole("dialog", { name: "Connect another account" });
+  };
   const oneButton = "Connect Service mail-addon";
 
   test("a service that is not installed: the row is one line and one button; one click installs, turns on, restarts, then waits for the person's own click to open the sign-in window", async () => {
@@ -2259,18 +2269,18 @@ describe("Mail and calendar", () => {
     expect(within(await row()).queryByText(/^Made by/)).toBeNull();
   });
 
-  test("once signed in the row says who and what is read, offers no Sign in, and no longer says to sign in", async () => {
-    const user = userEvent.setup();
+  test("once signed in the account is a row that says what is read there and how it stands, and the service offers no Sign in", async () => {
     service("on", { signed: true });
     open();
-    // The services list is folded to one line once something is connected.
-    await user.click(await screen.findByRole("button", { name: "Connect another account" }));
-    const mine = await row();
-    expect(await within(mine).findByText("Signed in as me@example.com")).toBeInTheDocument();
-    expect(within(mine).getByText("Reading your mail and calendar.")).toBeInTheDocument();
-    expect(within(mine).queryByText(/Sign in to start reading/)).toBeNull();
-    expect(within(mine).queryByRole("button", { name: /^Sign in/ })).toBeNull();
-    expect(mine).toHaveAttribute("data-signed-in");
+    const rows = await screen.findByRole("list", { name: "The accounts being read" });
+    const mine = within(rows).getAllByRole("listitem");
+    expect(mine).toHaveLength(1);
+    expect(within(mine[0]).getByText("Your inbox and your calendar")).toBeInTheDocument();
+    expect(within(mine[0]).getByText("Connected")).toBeInTheDocument();
+    // The service's own card, with its sign-in, is not on the page once an account is connected: adding is in the panel.
+    expect(document.querySelector("[data-service]")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Sign in/ })).toBeNull();
+    expect(screen.queryByText("Services you can connect")).toBeNull();
   });
 
   test("a service that names its accounts lists each one signed in and offers Add another account, which opens the sign-in again", async () => {
@@ -2295,11 +2305,10 @@ describe("Mail and calendar", () => {
       "POST sign-ins/mail-addon/account/start": () => ({ url: "http://localhost:9090/login?another=1" }),
     });
     open();
-    await user.click(await screen.findByRole("button", { name: "Connect another account" }));
-    const mine = await row();
-    expect(await within(mine).findByText("Signed in as me@example.com")).toBeInTheDocument();
-    expect(within(mine).getByText("Signed in as work@example.com")).toBeInTheDocument();
-    await user.click(within(mine).getByRole("button", { name: "Add another account to The account" }));
+    const mine = within(await panel(user));
+    // The accounts are the rows on the page, not lines in the panel: the panel only offers to add another.
+    expect(mine.queryByText(/^Signed in as /)).toBeNull();
+    await user.click(mine.getByRole("button", { name: "Add another account to The account" }));
     await waitFor(() => expect(popup.location.href).toBe("http://localhost:9090/login?another=1"));
   });
 
@@ -2307,10 +2316,8 @@ describe("Mail and calendar", () => {
     const user = userEvent.setup();
     const { state } = service("on");
     state.signed = false;
-    const accounts = [
-      { key: "k1", address: "me@example.com", status: "signed_in" as const, missing: [] as string[], acting: false },
-      { key: "k2", address: "work@example.com", status: "signed_in" as const, missing: [] as string[], acting: false },
-    ];
+    let out = false;
+    const account = (key: string, address: string) => ({ key, address, status: out && key === "k2" ? ("expired" as const) : ("signed_in" as const), missing: [] as string[], acting: false });
     const calls = fakeApi({
       ...routes({}, CORE.map((c) => step(c)), { step: "mail" }),
       "GET packs": () => ({
@@ -2319,18 +2326,67 @@ describe("Mail and calendar", () => {
         available: [available("mail-addon", { installed_version: "1.0.0", enabled: true })],
         installed: [installedPack("mail-addon", { enabled: true, state: "enabled" })],
       }),
-      "GET sign-ins": () => [signIn("mail-addon/account", { status: "signed_in", several: true, account: "me@example.com", accounts })],
-      "DELETE sign-ins/mail-addon/account?account=k2": () => ({ ok: "signed_out" }),
+      "GET sign-ins": () => [signIn("mail-addon/account", { status: "signed_in", several: true, account: "me@example.com", accounts: [account("k1", "me@example.com"), account("k2", "work@example.com")] })],
+      "GET watch": () =>
+        [["me@example.com", "k1"], ["work@example.com", "k2"]].flatMap(([address, key], i) => [
+          source(`i${i}`, "Your inbox", { account: address, ...(out && key === "k2" ? { account_state: "signed_out" } : {}) }),
+          source(`c${i}`, "Your calendar", { reads: ["calendar"], account: address, ...(out && key === "k2" ? { account_state: "signed_out" } : {}) }),
+        ]),
+      "DELETE sign-ins/mail-addon/account?account=k2": () => {
+        out = true;
+        return { ok: "signed_out" };
+      },
     });
     open();
-    await user.click(await screen.findByRole("button", { name: "Connect another account" }));
-    const mine = await row();
-    await user.click(await within(mine).findByRole("button", { name: "Sign out work@example.com" }));
+    // Each account's row has its own Sign out.
+    await user.click(await screen.findByRole("button", { name: "Sign out work@example.com" }));
     // Nothing is signed out until the question is answered.
     expect(calls.some((c) => c.route.startsWith("DELETE"))).toBe(false);
     await user.click(await screen.findByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(calls.some((c) => c.route === "DELETE sign-ins/mail-addon/account?account=k2")).toBe(true));
     expect(calls.filter((c) => c.route.startsWith("DELETE"))).toHaveLength(1);
+    // The step then says that account is signed out, and the other is still a connected row.
+    expect(await screen.findByText(/1 of 2 accounts are connected\./)).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /^Sign in again/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign out me@example.com" })).toBeInTheDocument();
+  });
+
+  test("signing out the only account leaves the step saying so, with the account listed as signed out", async () => {
+    const user = userEvent.setup();
+    const { state } = service("on");
+    state.signed = false;
+    let out = false;
+    fakeApi({
+      ...routes({}, CORE.map((c) => step(c)), { step: "mail" }),
+      "GET packs": () => ({
+        enabled: true,
+        feeds: [],
+        available: [available("mail-addon", { installed_version: "1.0.0", enabled: true })],
+        installed: [installedPack("mail-addon", { enabled: true, state: "enabled" })],
+      }),
+      "GET sign-ins": () => [
+        out
+          ? signIn("mail-addon/account", { status: "signed_out", several: true, account: null, accounts: [] })
+          : signIn("mail-addon/account", { status: "signed_in", several: true, account: "me@example.com", accounts: [{ key: "k1", address: "me@example.com", status: "signed_in" as const, missing: [] as string[], acting: false }] }),
+      ],
+      "GET watch": () => [
+        source("i0", "Your inbox", { account: "me@example.com", ...(out ? { account_state: "signed_out" } : {}) }),
+        source("c0", "Your calendar", { reads: ["calendar"], account: "me@example.com", ...(out ? { account_state: "signed_out" } : {}) }),
+      ],
+      "DELETE sign-ins/mail-addon/account?account=k1": () => {
+        out = true;
+        return { ok: "signed_out" };
+      },
+      "DELETE sign-ins/mail-addon/account": () => {
+        out = true;
+        return { ok: "signed_out" };
+      },
+    });
+    open();
+    await user.click(await screen.findByRole("button", { name: "Sign out me@example.com" }));
+    await user.click(await screen.findByRole("button", { name: "Sign out" }));
+    expect(await screen.findByText(/until you sign in again/)).toBeInTheDocument();
+    expect(screen.queryByText(/is connected\./)).toBeNull();
   });
 
   test("a sign-in that comes back as an account already signed in says it refreshed it, in the one wording every screen uses", async () => {
@@ -2387,7 +2443,9 @@ describe("Mail and calendar", () => {
     // The result is the first thing in the step's body, ahead of the services list.
     const step = block.closest(".mail-step") as HTMLElement;
     expect(step.firstElementChild).toBe(block);
-    expect(within(block).getByText(/Helper is reading: Your inbox and Your calendar\./)).toBeInTheDocument();
+    // The account is one row that says what is read there; the headline does not say it again.
+    expect(within(block).getByRole("list", { name: "The accounts being read" })).toBeInTheDocument();
+    expect(within(block).getByText("Your inbox and your calendar")).toBeInTheDocument();
     expect(within(block).getByText(/Your mail and calendar are fetched when you sign in\. The assistant does not use the AI, and nothing is spent, until you start it on the next screen/)).toBeInTheDocument();
     // That the reading waits for the first Go is said once on the screen, not again in the step's own lead line.
     expect(screen.getAllByText(/Your mail and calendar are fetched when you sign in/)).toHaveLength(1);
@@ -2397,11 +2455,15 @@ describe("Mail and calendar", () => {
     expect(block.contains(screen.getByRole("button", { name: "Continue" }))).toBe(false);
     expect((document.querySelector("[data-step-footer]") as HTMLElement).contains(screen.getByRole("button", { name: "Continue" }))).toBe(true);
     expect(screen.queryByText("Services you can connect")).toBeNull();
-    expect(screen.queryByText("Service mail-addon", { selector: "strong" })).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Connect another account" }));
-    expect(await screen.findByText("Services you can connect")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Add mail, calendar or folder" })).toBeInTheDocument();
+    expect(document.querySelector("[data-service]")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add mail, calendar or folder" })).toBeNull();
+    // Nothing about adding is laid out on the page: the panel opens over it, holds every way to add, and closes back.
+    const open_ = await panel(user);
+    expect(within(open_).getByRole("button", { name: "Add mail, calendar or folder" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Connect another account" })).toBeNull());
     expect(screen.getAllByRole("button", { name: "Continue" })).toHaveLength(1);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Connect another account" })).toHaveFocus());
   });
 
   test("with nothing connected yet it is one first-account card: the services to sign in with, the plain mailbox folded inside it", async () => {
@@ -2426,7 +2488,7 @@ describe("Mail and calendar", () => {
     const user = userEvent.setup();
     service("on", { signed: true });
     open();
-    const line = (await screen.findByText(/Newsletters, sales and mailing lists are set aside/)).closest("[data-set-aside-line]") as HTMLElement;
+    const line = (await screen.findByText(/The assistant looks at each message and sorts it itself; your rules only give it hints\./)).closest("[data-set-aside-line]") as HTMLElement;
     expect(screen.queryByRole("checkbox", { name: "Set aside newsletters, sales and mailing lists" })).toBeNull();
     // "Change" is a link in the accent colour, underlined, never plain grey text (Y01, G5c).
     expect(within(line).getByRole("button", { name: "Change" }).className).toMatch(/link/);
@@ -2470,6 +2532,7 @@ describe("Mail and calendar", () => {
       },
     });
     open();
+    await openSides(user);
     const inbox = await screen.findByRole("group", { name: "Your inbox: who is it for?" });
     const calendar = screen.getByRole("group", { name: "Your calendar: who is it for?" });
     expect(within(inbox).getAllByRole("checkbox").map((b) => (b.closest("label") as HTMLElement).textContent)).toEqual(["Personal", EMPLOYER, SHOP]);
@@ -2546,6 +2609,7 @@ describe("Mail and calendar", () => {
       }
     });
     open();
+    await openSides(user);
     expect((await screen.findByRole("button", { name: "Set them separately" })).className).toMatch(/link/);
     expect(screen.getByRole("button", { name: "Set them separately" }).querySelector("svg")).not.toBeNull();
     await user.click(await screen.findByRole("button", { name: "Set them separately" }));
@@ -2604,6 +2668,7 @@ describe("Mail and calendar", () => {
       },
     });
     const app = open();
+    await openSides(user);
     // The app's live stream asks for everything again whenever the server says something changed, at any moment.
     const stream = setInterval(() => void app.client.invalidateQueries(), 9);
     await user.click(await screen.findByRole("button", { name: "Set them separately" }));
@@ -2637,6 +2702,7 @@ describe("Mail and calendar", () => {
       }
     });
     open();
+    await openSides(user);
     await user.click(await screen.findByRole("button", { name: "Set them separately" }));
     const inbox = await screen.findByRole("group", { name: "Your inbox: who is it for?" });
     const personal = within(inbox).getByRole("checkbox", { name: "Personal" });
@@ -2653,6 +2719,7 @@ describe("Mail and calendar", () => {
     let fail = true;
     const { state } = ticks(async () => (fail ? new Refuse(500, "") : undefined));
     open();
+    await openSides(user);
     await user.click(await screen.findByRole("button", { name: "Set them separately" }));
     const inbox = await screen.findByRole("group", { name: "Your inbox: who is it for?" });
     await user.click(within(inbox).getByRole("checkbox", { name: EMPLOYER }));
@@ -2686,6 +2753,7 @@ describe("Mail and calendar", () => {
     const saved: Array<Array<{ id: string; sides?: string[] }>> = [];
     ticks(async (body) => void saved.push(body.changes["watch.sources"] as Array<{ id: string; sides?: string[] }>));
     open();
+    await openSides(user);
     const group = await screen.findByRole("group", { name: "Who are they for?" });
     // One question for the whole sign-in, in the result block, with Personal and each side.
     expect((group.closest("[data-mail-result]") as HTMLElement).firstElementChild).toBe(group.closest("section"));
@@ -2756,6 +2824,7 @@ describe("Mail and calendar", () => {
     const user = userEvent.setup();
     const { calls, state } = twoAccounts();
     open();
+    await openSides(user);
     const sam = await screen.findByRole("group", { name: "Who is mail and calendar at sam@example.com for?" });
     const pat = screen.getByRole("group", { name: "Who is mail and calendar at pat@example.com for?" });
     // Two questions, not one per source.
@@ -2778,6 +2847,7 @@ describe("Mail and calendar", () => {
     const user = userEvent.setup();
     twoAccounts();
     open();
+    await openSides(user);
     const sam = await screen.findByRole("group", { name: "Who is mail and calendar at sam@example.com for?" });
     // One quiet button per account, each after its own question; the first account's follows its question.
     const buttons = screen.getAllByRole("button", { name: "Set them separately" });
@@ -2793,8 +2863,10 @@ describe("Mail and calendar", () => {
   });
 
   test("two accounts: the reading is one compact row per account, with its address, what is read there and who it is for, not one run-on of every source", async () => {
+    const user = userEvent.setup();
     twoAccounts();
     open();
+    await openSides(user);
     const rows = await screen.findByRole("list", { name: "The accounts being read" });
     expect(screen.getByText("Helper is reading 2 accounts.")).toBeInTheDocument();
     expect(screen.queryByText(/Helper is reading: /)).toBeNull();
@@ -2838,8 +2910,10 @@ describe("Mail and calendar", () => {
   });
 
   test("three accounts are three rows, each address cut with the full address on hover, and the sides are ticked in the row", async () => {
+    const user = userEvent.setup();
     twoAccounts(["avery.lane@example.com", "avery.lane.home@example.com", "avery.lane.studio@example.com"]);
     open();
+    await openSides(user);
     const rows = await screen.findByRole("list", { name: "The accounts being read" });
     const items = within(rows).getAllByRole("listitem");
     expect(items).toHaveLength(3);
@@ -2852,6 +2926,7 @@ describe("Mail and calendar", () => {
   });
 
   test("each account row is a card: its mark, its address, what is read, that it is connected in words and a check, then For and the sides as chips", async () => {
+    const user = userEvent.setup();
     twoAccounts(["avery.lane@example.com", "avery.lane.home@example.com", "avery.lane.studio@example.com"]);
     open();
     const rows = await screen.findByRole("list", { name: "The accounts being read" });
@@ -2860,14 +2935,21 @@ describe("Mail and calendar", () => {
       const state = item.querySelector<HTMLElement>(".account-state")!;
       expect(within(state).getByText("Connected")).toBeInTheDocument();
       expect(state.querySelector(".account-ok svg")).not.toBeNull();
-      // "For" and the sides said so far as chips (none yet: "No side picked"), with Change; while none is said the boxes are open
-      // in the row, so the first ticks are made there.
+      // "For" and the sides said so far as chips (none yet: "no side yet"), with Pick; the boxes stay closed until it is pressed,
+      // so three accounts are three short rows.
       const line = item.querySelector<HTMLElement>("[data-account-sides]")!;
       expect(within(line).getByText("For")).toBeInTheDocument();
-      expect(within(line).getByText("No side picked")).toBeInTheDocument();
-      expect(within(line).getByRole("button", { name: /^Change the sides/ })).toHaveAttribute("aria-expanded", "true");
-      expect(item.querySelectorAll("[data-account-sides-editor] .side-chip input[type=checkbox]").length).toBeGreaterThan(0);
+      expect(within(line).getByText("no side yet")).toBeInTheDocument();
+      expect(within(line).getByRole("button", { name: /^Change the sides/ })).toHaveAttribute("aria-expanded", "false");
+      expect(within(line).getByRole("button", { name: /^Change the sides/ })).toHaveTextContent("Pick");
+      expect(item.querySelectorAll("[data-account-sides-editor], .side-chip input[type=checkbox]")).toHaveLength(0);
     }
+    expect(screen.queryByRole("button", { name: "Set them separately" })).toBeNull();
+    // Pressing Pick in one row opens the ticks in that row only.
+    await user.click(within(within(rows).getAllByRole("listitem")[1]).getByRole("button", { name: /^Change the sides/ }));
+    expect(within(rows).getAllByRole("listitem")[1].querySelectorAll(".side-chip input[type=checkbox]").length).toBeGreaterThan(0);
+    expect(within(rows).getAllByRole("listitem")[0].querySelectorAll(".side-chip input[type=checkbox]")).toHaveLength(0);
+    expect(screen.getAllByRole("button", { name: "Set them separately" })).toHaveLength(1);
   });
 
   test("while the service's window is open the step says to finish there and that this page carries on by itself, with a way to cancel", async () => {
@@ -2888,12 +2970,74 @@ describe("Mail and calendar", () => {
     expect(screen.getByRole("button", { name: "Sign in to The account" })).toBeEnabled();
   });
 
-  test("one account: the reading line and the sides question stay as they were, with no address added", async () => {
+  test("connecting another account: the panel opens over the step, the sign-in runs in it, and it closes back to one row more, with the page no longer", async () => {
+    const user = userEvent.setup();
+    service("on");
+    const accounts = ["sam@example.com"];
+    fakeApi({
+      ...routes({}, CORE.map((c) => step(c)), { step: "mail" }),
+      "GET packs": () => ({
+        enabled: true,
+        feeds: [],
+        available: [available("mail-addon", { installed_version: "1.0.0", enabled: true })],
+        installed: [installedPack("mail-addon", { enabled: true, state: "enabled" })],
+      }),
+      "GET sign-ins": () => [
+        signIn("mail-addon/account", {
+          status: "signed_in",
+          several: true,
+          account: accounts[0],
+          accounts: accounts.map((address, i) => ({ key: `k${i}`, address, status: "signed_in" as const, missing: [] as string[], acting: false })),
+        }),
+      ],
+      "POST sign-ins/mail-addon/account/start": () => ({ url: "http://localhost:9090/login?another=1" }),
+      "GET watch": () =>
+        accounts.flatMap((address, i) => [
+          source(`i${i}`, "Your inbox", { account: address }),
+          source(`c${i}`, "Your calendar", { reads: ["calendar"], account: address }),
+        ]),
+    });
+    open();
+    const rows = () => within(screen.getByRole("list", { name: "The accounts being read" })).getAllByRole("listitem");
+    await screen.findByRole("list", { name: "The accounts being read" });
+    expect(rows()).toHaveLength(1);
+    const before = document.body.textContent?.length ?? 0;
+    // Nothing about adding is on the page before the button is pressed.
+    expect(document.querySelector("[data-service], [data-mailbox-choice]")).toBeNull();
+    const inPanel = within(await panel(user));
+    await user.click(inPanel.getByRole("button", { name: "Add another account to The account" }));
+    await waitFor(() => expect(popup.location.href).toBe("http://localhost:9090/login?another=1"));
+    // The service's page signs the second account in.
+    accounts.push("pat@example.com");
+    act(() => announceSignIn({ outcome: "done", name: "mail-addon/account", error: "", detail: "", again: "" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Connect another account" })).toBeNull());
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    // The page is no longer than two rows make it, and the bar is the step's own footer, not part of the body.
+    expect(document.querySelector("[data-service], [data-mailbox-choice]")).toBeNull();
+    expect(document.body.textContent?.length ?? 0).toBeLessThan(before + 400);
+    expect((document.querySelector("[data-step-footer]") as HTMLElement).contains(screen.getByRole("button", { name: "Continue" }))).toBe(true);
+  });
+
+  test("the sorting line says what sorts the mail now, with the day's cost, and keeps no word of the old rule", async () => {
+    service("on", { signed: true });
+    open();
+    const line = (await screen.findByText(/looks at each message and sorts it itself/)).closest("[data-set-aside-line]") as HTMLElement;
+    expect(line).toHaveTextContent(/your rules only give it hints/);
+    expect(screen.queryByText(/Newsletters, sales and mailing lists are set aside/)).toBeNull();
+  });
+
+  test("one account is one row that says what is read there and carries its own question about who it is for", async () => {
     twoAccounts(["sam@example.com"]);
     open();
-    expect(await screen.findByText("Helper is reading: Your inbox and Your calendar.")).toBeInTheDocument();
-    expect(screen.getByRole("group", { name: "Who are they for?" })).toBeInTheDocument();
-    expect(screen.queryByText(/sam@example.com\)/)).toBeNull();
+    const rows = await screen.findByRole("list", { name: "The accounts being read" });
+    const mine = within(rows).getAllByRole("listitem");
+    expect(mine).toHaveLength(1);
+    expect(within(mine[0]).getByText("Your inbox and your calendar")).toBeInTheDocument();
+    // The question is closed on the row until Pick is pressed, then asked there once.
+    expect(within(mine[0]).queryByRole("group")).toBeNull();
+    await userEvent.setup().click(within(mine[0]).getByRole("button", { name: /^Change the sides/ }));
+    expect(within(mine[0]).getByRole("group", { name: /^Who is .* for\?$/ })).toBeInTheDocument();
+    expect(screen.getAllByRole("group")).toHaveLength(1);
   });
 
   test("with no side of work, the mailboxes are not asked which they serve", async () => {

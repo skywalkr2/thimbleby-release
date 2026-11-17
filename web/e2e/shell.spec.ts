@@ -304,7 +304,9 @@ test.describe("screen use and the shell", () => {
       // The screen's rows come from several requests, and its height changes as each arrives; the buttons are at its end, so
       // it is scrolled there, and the toast made, only once it has its content and has stopped changing height.
       await screenReady(page);
-      await expect(main.getByRole("group", { name: /^Which AI should/ })).toBeVisible();
+      // The step has its content: the provider choice with no account yet, or the accounts once one exists (the owner's
+      // layout, S-0558).
+      await expect(main.getByRole("group", { name: /^Which AI should/ }).or(main.getByText(/^AI accounts/)).first()).toBeVisible();
       await expect(main.locator("[data-skeleton]")).toHaveCount(0);
       await layoutSettled(page);
       // At the end of the screen, where its buttons are, pressing the undo key with nothing to undo says so in a toast.
@@ -710,10 +712,10 @@ test.describe("AI accounts as one place, what each can do, and the follow-ups ta
     await expect(section.getByRole("group", { name: "Who does the work" })).toContainText("Second account takes over");
     const rows = section.locator("li[data-row]");
     await expect(rows).toHaveCount(3);
-    await expect(rows.nth(0)).toContainText("Does the work");
+    await expect(rows.nth(0)).toContainText("In use");
     await expect(rows.nth(0)).toContainText("Ready · answered 2 hours ago · $1.20 today");
     await expect(rows.nth(1)).toContainText("Backup");
-    await expect(rows.nth(1)).toContainText("Checked for every kind of work · Oct 14");
+    await expect(rows.nth(1)).toContainText("Works · checked Oct 14");
     await expect(rows.nth(2)).toContainText("Access key not found on this computer");
     await expect(rows.nth(2).getByRole("button", { name: "Add the access key for Trial account" })).toBeVisible();
     await section.scrollIntoViewIfNeeded();

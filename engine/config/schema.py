@@ -2486,13 +2486,10 @@ class LanguageFile(FileModel):
         "check that names are spelled as the workspace has them ignores them at the edges of a capitalized phrase. "
         "Case is ignored."
     )
-    bare_confirmation_words: int = Field(
-        4,
-        ge=1,
-        le=20,
-        description="A note typed on a button (Mark done, They finished it, Followed up, an answer) with fewer words "
-        "than this and no link is a bare confirmation: it is kept with the change and not sent to the assistant. A "
-        "longer note, or one with a link, is handed in as the person's own words.",
+    bare_confirmation_words: int | None = Field(
+        None,
+        description="No longer used: every note and answer the person writes is read by the assistant. Kept so a "
+        "workspace that still sets it starts as before.",
     )
 
     @field_validator(

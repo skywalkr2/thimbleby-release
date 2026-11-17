@@ -11,7 +11,7 @@ import { MarkDot } from "../ui/MarkDot";
 import { restoreFocus } from "./ModalPanel";
 import styles from "./SetupAccountRow.module.css";
 
-export function AccountSidesLine(props: { sources: S["WatchSourceView"][]; account: string; editor: ReactNode }) {
+export function AccountSidesLine(props: { sources: S["WatchSourceView"][]; account: string; editor: ReactNode; /** The picker starts closed, behind "Pick" or Change, even with no side said (a list of several accounts stays short). */ closed?: boolean }) {
   const { t } = useWords();
   const filter = useSideFilter();
   const slotOf = useSideSlot();
@@ -20,14 +20,14 @@ export function AccountSidesLine(props: { sources: S["WatchSourceView"][]; accou
     const option = filter.options.find((o) => o.id === id);
     return option ? [{ id, name: option.name, slot: slotOf(id) }] : [];
   });
-  const [editing, setEditing] = useState(said.length === 0);
+  const [editing, setEditing] = useState(!props.closed && said.length === 0);
   const editorId = useId();
   const changeRef = useRef<HTMLButtonElement>(null);
   return (
     <>
       <div className={styles.sides} data-account-sides="">
         <span>{t("connection.for")}</span>
-        {chips.length === 0 && <span>{t("connection.for_none")}</span>}
+        {chips.length === 0 && <span>{t(props.closed ? "connection.for_none_closed" : "connection.for_none")}</span>}
         {chips.map((chip) => (
           <span key={chip.id} className={styles.chip} data-side-chip="" title={chip.name}>
             {chip.slot !== null && <MarkDot kind="side" slot={chip.slot} />}
@@ -43,7 +43,7 @@ export function AccountSidesLine(props: { sources: S["WatchSourceView"][]; accou
           aria-label={t("connection.change_named", { account: props.account })}
           onClick={() => setEditing((on) => !on)}
         >
-          {t("connection.change")}
+          {t(props.closed && chips.length === 0 ? "connection.pick" : "connection.change")}
         </Button>
       </div>
       {editing && (

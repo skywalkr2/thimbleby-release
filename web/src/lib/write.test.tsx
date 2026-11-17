@@ -372,3 +372,35 @@ test("a refusal of 'changed since you looked' for the person's own second press 
   await user.click(screen.getByRole("button", { name: "Press" }));
   expect(await within(screen.getByRole("region", { name: "Notifications" })).findByText(/Pick a person first/)).toBeInTheDocument();
 });
+
+test("an act that changes no record reads the screens it names, even when its answer carries kinds another writer changed meanwhile", async () => {
+  const fetches: Record<string, number> = {};
+  function Screens() {
+    useQuery({ queryKey: ["sign-ins"], queryFn: () => Promise.resolve((fetches.signIns = (fetches.signIns ?? 0) + 1)) });
+    return null;
+  }
+  let act: ReturnType<typeof useAct> = (() => Promise.resolve(undefined)) as unknown as ReturnType<typeof useAct>;
+  function Grab() {
+    act = useAct();
+    return null;
+  }
+  const view = renderApp(
+    <>
+      <Screens />
+      <Grab />
+    </>,
+  );
+  await waitFor(() => expect(fetches.signIns).toBe(1));
+  await act(
+    () => {
+      answeredWrites.seq += 1;
+      answeredWrites.entries.push({ seq: answeredWrites.seq, kinds: ["request"], position: 1474 });
+      return Promise.resolve(1);
+    },
+    undefined,
+    undefined,
+    { also: ["sign-ins"] },
+  );
+  await waitFor(() => expect(fetches.signIns).toBe(2));
+  await waitFor(() => expect(view.client.isFetching()).toBe(0));
+});

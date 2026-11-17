@@ -8,13 +8,17 @@ import { alreadyOut, justAnswered, justDone, runWrite, type WriteOptions } from 
 import { useWords } from "./wording";
 
 /** What an action names about its write: the order key and the families to read again (none named reads everything). */
-export type ActWrites = Pick<WriteOptions<unknown>, "key" | "touches" | "kinds" | "once"> & {
+export type ActWrites = Pick<WriteOptions<unknown>, "key" | "touches" | "kinds" | "once" | "also"> & {
   /** With `once`: a press asked again within a double press's time after the first answered is ignored too, for an act that records
    * something each time it is done (a chase), so a double press never records it twice. */
   settle?: boolean;
   /** Where a failure is shown: the thing's key (the row's) and its name in the person's words. A failed save is then named beside that row, with Try again, instead of a toast. */
   fail?: { id: string; what: string };
 };
+
+/** Signing out changes no record, so an answer that names kinds (another writer's, at the same moment) must not leave the
+ * sign-in and source screens unread: they are read again whatever the answer names. */
+export const SIGNED_OUT_READS: ActWrites = { also: ["sign-ins", "watch", "status", "today"] };
 
 /** A part of a screen whose actions are one at a time (a row on Today): inside it, an action pressed while another of the same part is
  * still out is ignored, so a second press never sends a change twice. The value names the part. */
@@ -41,6 +45,7 @@ export function useAct() {
         const result = await runWrite(client, run, {
           key: writes.key,
           touches: writes.touches,
+          also: writes.also,
           kinds: writes.kinds,
           once: writes.once,
           // What was done is said when the server answers, before the screens read again.

@@ -109,13 +109,16 @@ test.describe.serial("journey: mail", () => {
     // and the app proves the sign-in is its own. The answer's code and state are not left in the address.
     await expect(main.getByRole("heading", { level: 2, name: "Mail and calendar" })).toBeVisible();
     await expect(main.locator("[data-mail-result]")).toContainText("Example mail is connected.");
+    await expect(main.locator("[data-account-row]")).toHaveCount(1);
     await main.getByRole("button", { name: "Connect another" }).click();
-    await expect(main.getByText(/Signed in as .+@example\.com/)).toBeVisible();
-    // The row no longer says to sign in: it says who is signed in and what is read, and offers no Sign in.
-    await expect(row).toHaveAttribute("data-signed-in", "");
-    await expect(row).toContainText("Reading your mail and calendar.");
-    await expect(row).not.toContainText("Sign in to start reading");
-    await expect(row.getByRole("button", { name: /^Sign in/ })).toHaveCount(0);
+    const panelRow = page.getByRole("dialog").locator('[data-service="journey-mail"]');
+    await expect(main.locator("[data-account-row]")).toContainText(/.+@example\.com/);
+    // The service no longer says to sign in: it says who is signed in and what is read, and offers no Sign in.
+    await expect(panelRow).toHaveAttribute("data-signed-in", "");
+    await expect(panelRow).toContainText("Reading your mail and calendar.");
+    await expect(panelRow).not.toContainText("Sign in to start reading");
+    await expect(panelRow.getByRole("button", { name: /^Sign in/ })).toHaveCount(0);
+    await page.keyboard.press("Escape");
     let seen = await service();
     expect(seen).toMatchObject({ authorizations: 1, exchanges: 1, refused: 0 });
     expect(page.url()).not.toMatch(/code=|state=|sign_in=/);

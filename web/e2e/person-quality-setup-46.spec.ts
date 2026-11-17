@@ -56,6 +56,14 @@ async function openAiStep(page: Page) {
   await expect(page.getByRole("heading", { level: 2, name: "Your AI account" })).toBeVisible(LOADED);
 }
 
+/** The AI step in the state before any account: its provider choice, "Something else" and the key's check are the guide's own form.
+ * With an account the accounts lead and "Add another AI account" opens a different panel, so these states are reached with the account list empty. */
+async function openAiStepWithNoAccount(page: Page) {
+  await page.route("**/ai/accounts", (route) => (route.request().method() === "GET" ? route.fulfill({ json: [] }) : route.fallback()));
+  await openAiStep(page);
+  return page.locator("main#main");
+}
+
 let id = "";
 const NAME = "Odette Marsh";
 
@@ -141,8 +149,7 @@ test.describe("A person's page, Quality and setup to the 4.6 mockups", () => {
   test("a rejected key says the reason the check gave, plainly, with its mark, and names the service only by the label the account gives", async ({ page }) => {
     test.setTimeout(120_000);
     await page.setViewportSize({ width: 1440, height: 900 });
-    await openAiStep(page);
-    const main = page.locator("main#main");
+    const main = await openAiStepWithNoAccount(page);
     const card = main.locator("[data-radio-card]").first();
     await expect(card).toBeVisible(LOADED);
     // The label is what the account's own kind gives; the app types none.
@@ -171,17 +178,21 @@ test.describe("A person's page, Quality and setup to the 4.6 mockups", () => {
     const back = (await footer.getByRole("button", { name: "Back" }).boundingBox())!;
     // The last thing in the row is the primary button; its reason, while it waits, is a line of its own above the buttons (G5c).
     const last = (await footer.getByRole("button").last().boundingBox())!;
-    const reason = footer.locator("p").first();
-    await expect(reason).toBeVisible();
-    const said = (await reason.boundingBox())!;
-    expect(said.y + said.height).toBeLessThanOrEqual(last.y + 1);
     expect(Math.abs(back.x - column.x)).toBeLessThanOrEqual(2);
     expect(Math.abs(last.x + last.width - (column.x + column.width))).toBeLessThanOrEqual(2);
+    // With no account yet the step shows its reason: a line of its own above the buttons.
+    await openAiStepWithNoAccount(page);
+    const waiting = page.locator("[data-step-footer]");
+    const reason = waiting.locator("p").first();
+    await expect(reason).toBeVisible(LOADED);
+    const said = (await reason.boundingBox())!;
+    const primary = (await waiting.getByRole("button").last().boundingBox())!;
+    expect(said.y + said.height).toBeLessThanOrEqual(primary.y + 1);
   });
 
   test("the guide's header stands on the rail's and the column's edges, its way out is a link that underlines when pointed at, and the choices under Something else have no rule (G5c)", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
-    await openAiStep(page);
+    await openAiStepWithNoAccount(page);
     const title = (await page.getByRole("heading", { level: 1, name: "Getting started" }).boundingBox())!;
     const rail = (await page.getByRole("navigation", { name: /steps/i }).boundingBox())!;
     const column = (await page.locator("main#main").boundingBox())!;
@@ -200,7 +211,7 @@ test.describe("A person's page, Quality and setup to the 4.6 mockups", () => {
 
   test("on a phone the last choice under Something else is clear of the footer bar, and the bar is two rows (G5c)", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await openAiStep(page);
+    await openAiStepWithNoAccount(page);
     await page.locator("main").getByRole("radio", { name: /Something else/ }).check();
     await page.getByRole("button", { name: /^One on this computer/ }).waitFor(LOADED);
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));

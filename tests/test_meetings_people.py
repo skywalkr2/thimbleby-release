@@ -326,7 +326,7 @@ def test_saying_there_is_nothing_to_note_ends_the_line_and_makes_no_run(env):
     assert meeting_prep.capture(ws, store, cfg, ended, "   ", NOW).request is None
     assert len(store.read().list("request")) == before and meeting_prep.capture_lines(store, cfg, NOW) == []
     again = entry(store, "Second", start=at(hours=-3), end=at(hours=-2), guests=[(ana, "accepted")])
-    assert meeting_prep.capture(ws, store, cfg, again, "ok", NOW).request is None  # a bare confirmation reads nothing
+    assert meeting_prep.capture(ws, store, cfg, again, "ok", NOW).request  # a short word is still read
     assert store.read().get("event", again).data["captured_at"]
 
 

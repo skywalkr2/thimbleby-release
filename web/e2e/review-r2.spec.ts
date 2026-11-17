@@ -132,9 +132,8 @@ test.describe.serial("review R2: setup and Settings", () => {
     await popup.getByRole("link", { name: addresses[0], exact: true }).click();
     await popup.waitForEvent("close", { timeout: 30_000 }).catch(() => undefined);
     await expect(main.locator("[data-mail-result]")).toContainText("Example mail is connected.", LOADED);
-    await main.getByRole("button", { name: "Connect another" }).click();
     await main.getByRole("button", { name: `Sign out ${addresses[0]}` }).click();
-    await page.getByRole("dialog").getByRole("button", { name: /^Sign out/ }).click();
+    await page.getByRole("button", { name: "Sign out", exact: true }).click();
     await expect(main.getByText(/Signed out since|Signed out/).first()).toBeVisible(LOADED);
     await expect(main.locator("[data-signed-out]")).toContainText("Signed out");
     await expect(main.locator("[data-signed-out]")).toContainText("Your inbox");
@@ -155,8 +154,9 @@ test.describe.serial("review R2: setup and Settings", () => {
       await page.request.post(`api/watch/${calendar.id}/read`, { headers: auth() });
       expect((await mine())[0].last?.outcome).toBe("failed");
     }).toPass({ timeout: 30_000 });
-    // Signing in again goes back to reading.
-    const [again] = await Promise.all([page.waitForEvent("popup"), row.getByRole("button", { name: /^Sign in/ }).first().click()]);
+    // Signing in again goes back to reading: the ways to sign in are in the panel "Connect another account" opens.
+    await main.getByRole("button", { name: "Connect another account" }).click();
+    const [again] = await Promise.all([page.waitForEvent("popup"), page.getByRole("dialog").locator('[data-service="journey-mail"]').getByRole("button", { name: /^Sign in/ }).first().click()]);
     await again.getByRole("link", { name: addresses[0], exact: true }).click();
     await again.waitForEvent("close", { timeout: 30_000 }).catch(() => undefined);
     await expect(main.locator("[data-mail-result]")).toContainText("Example mail is connected.", LOADED);

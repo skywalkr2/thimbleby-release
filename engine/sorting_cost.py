@@ -57,6 +57,9 @@ def read_mail(ws: Any, store: Any, cfg: Any, now: datetime) -> tuple[list[int], 
     from engine import watch
 
     sources = {s.id: s for s in cfg.watch.sources}
+    from engine.today import zone
+
+    local = zone(cfg)
     since = now - timedelta(days=DAYS)
     per_day: dict[Any, int] = {}
     found: list[tuple[datetime, Any]] = []
@@ -67,7 +70,8 @@ def read_mail(ws: Any, store: Any, cfg: Any, now: datetime) -> tuple[list[int], 
         at = _when(sd["message"], sd.get("seen_at"))
         if at is None or at < since or at > now + timedelta(days=1):
             continue
-        per_day[at.date()] = per_day.get(at.date(), 0) + 1
+        day = at.astimezone(local).date()  # the person's own day, not UTC's
+        per_day[day] = per_day.get(day, 0) + 1
         found.append((at, sd))
     headers: list[mail_sorting.Header] = []
     for _at, sd in sorted(found, key=lambda x: x[0], reverse=True)[:SAMPLE]:

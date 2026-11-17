@@ -1247,7 +1247,8 @@ test("the AI section lists the accounts that are set up, one row each, with its 
   open("ai");
   expect(await screen.findByRole("heading", { name: /AI accounts/ })).toBeInTheDocument();
   const row = screen.getByText("Main account", { selector: "li[data-row] span[id$=title]" }).closest("li") as HTMLElement;
-  expect(row).toHaveTextContent("Does the work");
+  expect(row).toHaveTextContent("In use");
+  expect(row).toHaveTextContent("Does your assistant's quick, everyday jobs");
   expect(row).toHaveTextContent("A service");
   expect(within(row).queryByRole("button", { name: "Test Main account" })).toBeNull();
   expect(within(row).getByRole("button", { name: "More actions for Main account" })).toBeInTheDocument();

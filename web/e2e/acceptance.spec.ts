@@ -480,12 +480,25 @@ test.describe.serial("acceptance scenario", () => {
     await screens.getByRole("button", { name: /^Your AI account/ }).click();
     await expect(page.getByRole("heading", { level: 2, name: "Your AI account" })).toBeVisible();
     await expect(page.getByText(/It asks you before anything over/)).toBeVisible();
+    // The workspace has an account, so the accounts lead and the provider choice opens from "Add another AI account".
+    await page.getByRole("button", { name: "Add another AI account" }).click();
+    const panel = page.getByRole("dialog", { name: "Add an account" });
+    await panel.getByRole("radio").first().check();
+    await expect(panel.getByLabel("Access key", { exact: true })).toBeVisible();
+    await expect(panel.getByLabel("Name it")).toBeVisible();
+    await checkAccessibility(page);
+    await panel.getByRole("button", { name: "Close" }).click();
+    // With no account yet the step is the guide's own form: the service's steps, its key and the account's name under Advanced.
+    await page.route("**/ai/accounts", (route) => (route.request().method() === "GET" ? route.fulfill({ json: [] }) : route.fallback()));
+    await page.reload();
+    await screens.getByRole("button", { name: /^Your AI account/ }).click();
     await page.getByRole("radio").first().check();
     await expect(page.getByRole("heading", { name: /^Connect / })).toBeVisible();
     await expect(page.getByLabel("Access key", { exact: true })).toBeVisible();
     await page.getByText("Advanced", { exact: true }).click();
     await expect(page.getByLabel("Account name")).toBeVisible();
     await checkAccessibility(page);
+    await page.unroute("**/ai/accounts");
     await screens.getByRole("button", { name: /^Mail and calendar/ }).click();
     await expect(page.getByRole("heading", { level: 2, name: "Mail and calendar" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Connect one" })).toBeVisible();

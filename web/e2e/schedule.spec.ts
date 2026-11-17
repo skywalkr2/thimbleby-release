@@ -5,6 +5,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page } from "@playwright/test";
 import { momentAt } from "./clock";
+import { openScreen } from "./open-screen";
 import { test } from "./test";
 
 // The work week is the working days, and today too when the run's day is a day off (a weekend), so the default view always
@@ -44,11 +45,7 @@ async function seed(page: Page): Promise<string> {
 }
 
 async function open(page: Page) {
-  await page.goto("?token=e2e-token");
-  await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
-  await page.evaluate(() => {
-    window.location.hash = "schedule";
-  });
+  await openScreen(page, "schedule");
   await expect(page.getByRole("main").getByRole("heading", { level: 1, name: "Schedule" })).toBeVisible(LOADED);
   await expect(page.locator("main [data-skeleton]")).toHaveCount(0, { timeout: 15_000 });
   // The calendar's grid, or on a phone its list by day.

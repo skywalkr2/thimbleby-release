@@ -473,8 +473,8 @@ def capture_lines(store: Any, cfg: Any, now: datetime) -> list[Line]:
 
 @dataclass(frozen=True)
 class Captured:
-    """What capturing did: the `request` queued to read the person's words (none when they said nothing to note, or
-    only a bare confirmation, which makes no run) and when the entry was marked."""
+    """What capturing did: the `request` queued to read the person's words (none when they said nothing to note) and
+    when the entry was marked."""
 
     request: str | None
     captured_at: datetime

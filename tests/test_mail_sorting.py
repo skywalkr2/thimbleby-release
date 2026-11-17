@@ -1012,3 +1012,93 @@ def test_the_stand_ins_sorting_weighs_the_hints_as_the_prompt_asks_a_real_model_
     )
     said = {a["id"]: a["answer"] for a in sort_mail(request)["answers"]}
     assert said == {"m1": "sales", "m2": "sales", "m3": "notice", "m4": "work", "m5": "work"}
+
+
+# ---- a message the person already deleted or archived is read like any other (S-0578) ------------------------------
+
+
+def shipment(**kw):
+    """A shipping notice from an address no rule places, with the parcel's own words in the body."""
+    return mail(
+        "ship-0",
+        f"orders@{CLUB}",
+        subject="Your parcel has shipped",
+        body="Shipped, tracking TRK000123456, arriving by 2026-11-19.",
+        **kw,
+    )
+
+
+@pytest.mark.parametrize("where", ["deleted", "archived"])
+def test_a_shipping_notice_the_person_already_deleted_or_archived_still_makes_its_delivery(tmp_path, account, where):
+    from engine.ai.router import Router
+    from engine.dispatcher import process
+    from engine.mail_sorting import PLACE_LINES
+
+    item = shipment()
+    item["message"]["where"] = where
+    account.kinds = {"Your parcel has shipped": "delivery"}
+    ws, cfg, store = make(tmp_path, [item])
+    try:
+        read(ws, store)
+        (row,) = account.headers
+        assert row["already"] == PLACE_LINES[where], "the sorting packet says where it was"
+        snap = snapshots(store)["ship-0"]
+        assert snap["set_aside"] is None, "no set-aside because of where it was"
+        assert snap["message"]["where"] == where
+        (request,) = requests_in(store, "queued")
+        assert request.data["mail_kind"] == "delivery"
+        asked = []
+
+        def notes(task):
+            asked.append(task)
+            return json.dumps(
+                {
+                    "summary": "A parcel is on its way.",
+                    "ops": [
+                        {
+                            "op": "event.add",
+                            "title": "Parcel",
+                            "start": "2026-11-19",
+                            "delivery": {"tracking": "TRK000123456", "status": "on_its_way"},
+                            "evidence": {"quote": "arriving by 2026-11-19"},
+                        }
+                    ],
+                }
+            )
+
+        set_responder(notes)
+        process(ws, store, cfg, Router(cfg, store, env={}), request.id, now=NOW)
+        (packet,) = [t for t in asked if t.kind == "notes"]
+        assert PLACE_LINES[where] + "." in packet.request
+        assert PLACE_LINES[where] not in packet.stable
+        (entry,) = store.read().list("event")
+        assert entry.data["delivery"]["tracking"] == "TRK000123456"
+    finally:
+        set_responder(None)
+        store.close()
+
+
+def test_the_place_is_context_only_the_rules_and_the_hints_treat_a_deleted_message_like_an_inbox_one(tmp_path, account):
+    from engine.triage import built_in_hints
+
+    inbox, deleted = shipment(), shipment()
+    inbox["message"]["where"], deleted["message"]["where"] = "inbox", "deleted"
+    ws, cfg, store = make(tmp_path, [inbox])
+    try:
+        change = {"source": "m", "title": "t", "message": inbox["message"]}
+        assert built_in_hints(cfg, change) == built_in_hints(cfg, {**change, "message": deleted["message"]})
+    finally:
+        store.close()
+
+
+def test_a_place_the_add_on_invents_is_dropped_and_none_is_kept_as_none(tmp_path, account):
+    odd, plain = shipment(), mail("plain-0", f"person@{CLUB}", subject="Subject plain")
+    odd["message"]["where"] = "spam"
+    ws, cfg, store = make(tmp_path, [odd, plain])
+    try:
+        read(ws, store)
+        snaps = snapshots(store)
+        assert snaps["ship-0"]["message"]["where"] is None and snaps["plain-0"]["message"]["where"] is None
+        assert all("already" not in row for row in account.headers)
+    finally:
+        store.close()

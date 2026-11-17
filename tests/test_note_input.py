@@ -1,5 +1,5 @@
 """A note typed on a button of an action or a question is an input (design 6.5, 6.9): saved as the person's own words
-with the item as its context, and sent to the assistant unless it is a bare confirmation.
+with the item as its context, and sent to the assistant however short; only an empty note is kept with the change.
 
 Names, ids and texts come from the fixtures and the golden case.
 """
@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from api.app import create_app
 from engine.ai.adapters.stub import set_responder
 from engine.evaluate import load_cases
-from engine.intake import NOTE_ROUTES, REPORTED_ROUTES, is_bare_confirmation, is_reported_note, note_as_input
+from engine.intake import NOTE_ROUTES, REPORTED_ROUTES, is_reported_note, note_as_input
 from engine.names import People
 from engine.packet import build
 from engine.storage import WriteContext
@@ -59,33 +59,6 @@ HOST = LINK.split("//")[1].split("/")[0]
 LONG = "The reviewer list is final and the printer proof is expected on a later day than planned."
 
 
-# ---- the rule --------------------------------------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("text", "bare"),
-    [
-        ("", True),
-        ("   ", True),
-        ("Done, thanks.", True),
-        ("ok sent it", True),
-        ("Done, sent it today", False),  # four words
-        (f"see {LINK}", False),  # a link makes it count
-        (f"see www.{HOST}", False),
-        (f"see {HOST}/page", False),
-        (f"mail me@{HOST}", True),  # an address is not a link
-    ],
-)
-def test_a_note_under_four_words_with_no_link_is_a_bare_confirmation(text, bare):
-    assert is_bare_confirmation(text, 4) is bare
-
-
-def test_the_word_count_comes_from_the_setting(tmp_path):
-    ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
-    assert ws.config(env={}).language.bare_confirmation_words == 4
-    assert ws.config(env={}, flags={"language.bare_confirmation_words": 2}).language.bare_confirmation_words == 2
-
-
 # ---- the helper ------------------------------------------------------------------------------------------------------
 
 
@@ -105,11 +78,11 @@ def test_a_note_is_saved_as_the_persons_own_words_with_the_item_as_its_context(a
     assert (worker.ws.sources_dir / f"{source['content_hash']}.txt").read_text(encoding="utf-8") == LONG
 
 
-def test_a_bare_confirmation_makes_no_request_and_an_unknown_route_is_refused(api):
+def test_an_empty_note_makes_no_request_and_an_unknown_route_is_refused(api):
     client, _, worker = api
     store = client.app.state.store
     item = ("action", fixture_records(DEMO_B, "action")[0]["id"])
-    assert note_as_input(worker.ws, store, worker.cfg, item=item, text="Done.", route="mark_done") is None
+    assert note_as_input(worker.ws, store, worker.cfg, item=item, text="  ", route="mark_done") is None
     assert noted(store) == [] and store.read().list("source") == []
     with pytest.raises(ValueError):
         note_as_input(worker.ws, store, worker.cfg, item=item, text=LONG, route="nowhere")
@@ -118,13 +91,14 @@ def test_a_bare_confirmation_makes_no_request_and_an_unknown_route_is_refused(ap
 # ---- the routes ------------------------------------------------------------------------------------------------------
 
 
-def test_a_note_under_four_words_with_no_link_makes_no_request(api):
+def test_a_short_note_with_no_link_is_handed_in_for_the_assistant_to_judge(api):
     client, base, _ = api
     action = fixture_records(DEMO_B, "action")[0]["id"]
     r = client.post(f"{base}/actions/{action}/status", json={"status": "done", "note": "Done, thanks."})
-    assert r.status_code == 200 and r.json()["request"] is None
+    assert r.status_code == 200 and r.json()["request"]
     assert client.app.state.store.read().get("action", action).data["status"] == "done"
-    assert noted(client.app.state.store) == []
+    (request,) = noted(client.app.state.store)
+    assert request.data["task"] == "notes" and request.data["about"] == {"kind": "action", "id": action}
 
 
 def test_a_short_note_with_a_link_makes_a_request(api):
@@ -203,10 +177,10 @@ def test_adding_to_an_actions_notes_hands_in_only_what_was_added(api):
             json={"kind": "action", "id": action, "fields": {"notes": notes}, "read_version": version},
         )
 
-    assert edit("First line.").status_code == 200  # short and bare: kept on the record only
-    assert noted(store) == []
+    assert edit("First line.").status_code == 200  # a short line is read too
+    assert len(noted(store)) == 1
     assert edit(f"First line. {LONG}").status_code == 200
-    (request,) = noted(store)
+    request = noted(store)[-1]
     text = (
         client.app.state.worker.ws.sources_dir
         / f"{store.read().get('source', request.data['source']).data['content_hash']}.txt"
@@ -216,17 +190,18 @@ def test_adding_to_an_actions_notes_hands_in_only_what_was_added(api):
         f"{base}/records/edit",
         json={"kind": "action", "id": action, "fields": {"notes": LONG + " More."}, "read_version": 1},
     )
-    assert stale.status_code == 409 and len(noted(store)) == 1  # a refused edit hands nothing in
+    assert stale.status_code == 409 and len(noted(store)) == 2  # a refused edit hands nothing in
 
 
 def test_answering_a_question_in_words_makes_one_request_about_the_question(api):
     client, base, _ = api
     store = client.app.state.store
     short, long = fixture_records(DEMO_B, "question")[:2]
-    assert client.post(f"{base}/questions/{short['id']}/answer", json={"text": "Yes."}).json()["request"] is None
+    first = client.post(f"{base}/questions/{short['id']}/answer", json={"text": "Yes."}).json()["request"]
     r = client.post(f"{base}/questions/{long['id']}/answer", json={"text": LONG})
-    (request,) = noted(store)
-    assert r.json()["request"] == request.id and request.data["about"] == {"kind": "question", "id": long["id"]}
+    assert first and r.json()["request"] and first != r.json()["request"] and len(noted(store)) == 2
+    request = store.read().get("request", r.json()["request"])
+    assert request.data["about"] == {"kind": "question", "id": long["id"]}
     assert store.read().get("question", long["id"]).data["answer"] == LONG
 
 
@@ -548,3 +523,14 @@ def test_a_rule_from_someone_else_repeated_in_a_mark_done_note_waits_for_the_per
     request = store.read().get("request", r.json()["request"]).data
     (outcome,) = store.read().get("changeset", request["changeset"]).data["ops"]
     assert outcome["status"] == "held" and "someone else reported" in outcome["reason"]
+
+
+def test_a_workspace_that_still_sets_the_old_short_note_setting_starts_as_before(tmp_path):
+    """The setting that let short notes skip the assistant is gone; a language file that still sets it loads."""
+    from engine.config import load_config
+    from engine.workspace import init_workspace
+
+    ws = init_workspace(tmp_path / "ws", git=False, you="Sam Example")
+    path = ws.config_dir / "language.yaml"
+    path.write_text((path.read_text() if path.exists() else "") + "\nbare_confirmation_words: 4\n")
+    assert load_config(ws.config_dir, env={}) is not None

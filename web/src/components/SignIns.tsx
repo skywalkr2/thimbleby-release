@@ -6,7 +6,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Heading } from "react-aria-components";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { api, type S } from "../lib/api";
-import { useAct } from "../lib/act";
+import { SIGNED_OUT_READS, useAct } from "../lib/act";
 import { problemText } from "../lib/problem";
 import { useSignInWindow } from "../lib/sign-in-window";
 import { useToasts } from "../lib/toasts";
@@ -115,6 +115,8 @@ export function SignInRow(props: { item: SignIn; accountsIn?: "row" | "cards"; o
     await act(
       () => api.signOut(item.name),
       () => ({ message: t("sign_in.signed_out_toast", { label: item.label }) }),
+      undefined,
+      SIGNED_OUT_READS,
     );
     setSigningOut(false);
   };
@@ -129,6 +131,8 @@ export function SignInRow(props: { item: SignIn; accountsIn?: "row" | "cards"; o
     await act(
       () => api.signOut(item.name, a.key),
       () => ({ message: t("sign_in.signed_out_account_toast", { account: who, label: item.label }) }),
+      undefined,
+      SIGNED_OUT_READS,
     );
     setSigningOut(false);
   };

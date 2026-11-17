@@ -39,6 +39,8 @@ export function SetupAccountRow(props: {
   sidesEditor?: ReactNode;
   /** The service and how private it is are said once above the rows (several accounts of one service, all at one level), so a row says only its own. */
   grouped?: boolean;
+  /** A button of the row's own (Remove, for a mailbox connected another way). */
+  action?: ReactNode;
 }) {
   const { t } = useWords();
   const words = useAccountWords();
@@ -50,6 +52,7 @@ export function SetupAccountRow(props: {
       className={`account-row ${styles.row}`}
       data-account-row={props.address}
       data-need={props.need?.need ?? undefined}
+      data-action={props.action ? "" : undefined}
       data-account={props.need?.key}
       data-sign-in-need={props.need ? props.need.key : undefined}
     >
@@ -79,11 +82,12 @@ export function SetupAccountRow(props: {
             )}
           </span>
         </span>
-        {props.sidesEditor && <AccountSidesLine sources={props.sources} account={name} editor={props.sidesEditor} />}
+        {props.sidesEditor && <AccountSidesLine sources={props.sources} account={name} editor={props.sidesEditor} closed />}
       </div>
-      {props.need && (
+      {(props.need || props.action) && (
         <div className={styles.acts}>
-          <SignInAgain account={props.need} />
+          {props.need && <SignInAgain account={props.need} />}
+          {props.action}
         </div>
       )}
     </li>
