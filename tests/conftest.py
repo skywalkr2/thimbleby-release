@@ -161,7 +161,9 @@ def _no_product_feed(monkeypatch: pytest.MonkeyPatch) -> None:
 
     real_worker = worker_module.shipped_product
     monkeypatch.setattr(
-        worker_module, "shipped_product", lambda *a, **k: {**real_worker(*a, **k), "pack_catalog": None}
+        worker_module,
+        "shipped_product",
+        lambda *a, **k: {**real_worker(*a, **k), "pack_catalog": None, "release_feed": None},
     )
 
 

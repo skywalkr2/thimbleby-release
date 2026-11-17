@@ -19,7 +19,8 @@ import { useRestart, useRestartText } from "../lib/restart";
 import { inOrder, useActSaved, useAfterSave, useFreshFingerprint } from "../lib/settings-save";
 import { useSignInWindow } from "../lib/sign-in-window";
 import { useWords } from "../lib/wording";
-import { Button } from "../ui/Button";
+import { Button, ButtonLink } from "../ui/Button";
+import { domainOf } from "../components/SafeText";
 import { IconButton } from "../ui/IconButton";
 import { MenuButton } from "../ui/MenuButton";
 import { Pill, type PillTone } from "../ui/Pill";
@@ -45,6 +46,7 @@ const HELD_ICON: Record<string, IconName> = {
   work_access: "alert",
   sent_folder: "folder",
   folder_rename: "folder",
+  update: "refresh",
   extractor: "alert",
   source_unread: "inbox",
   slow_screen: "alert",
@@ -67,7 +69,7 @@ function HeldRow(props: RowProps & { "data-queue-line": string }) {
 type Line = S["QueueLineView"];
 
 /** The kinds of queue line that are a stop or a check on the assistant's own work, each drawn here with its one button. */
-export const HELD_KINDS: Line["kind"][] = ["restart", "stuck", "paused", "borrow", "credential", "no_account", "pack_tier", "offline", "handover", "account_check", "switch_failed", "account_move", "sent_folder", "folder_rename", "model_watch", "model_moved", "identity", "work_access", "extractor", "source_unread", "slow_screen", "rule_review", "catch_up_go", "intake_go"];
+export const HELD_KINDS: Line["kind"][] = ["restart", "stuck", "paused", "borrow", "credential", "no_account", "pack_tier", "offline", "handover", "account_check", "switch_failed", "account_move", "sent_folder", "folder_rename", "update", "model_watch", "model_moved", "identity", "work_access", "extractor", "source_unread", "slow_screen", "rule_review", "catch_up_go", "intake_go"];
 
 export function isHeld(line: Line): boolean {
   return HELD_KINDS.includes(line.kind);
@@ -107,6 +109,8 @@ export function HeldLine(props: {
       return <SentFolderLine line={line} onOpen={props.onOpenSources} />;
     case "folder_rename":
       return <FolderRenameLine line={line} />;
+    case "update":
+      return <UpdateLine line={line} />;
     case "model_watch":
       return <ModelWatchLine line={line} />;
     case "model_moved":
@@ -671,6 +675,59 @@ function FolderRenameLine(props: { line: Line }) {
           <Button size="sm" variant="secondary" disabled={busy} aria-label={t("queue.folder_rename.keep_named", { old })} onClick={keep}>
             {t("queue.folder_rename.keep")}
           </Button>
+        </>
+      }
+    />
+  );
+}
+
+/** A newer version of the app is ready: its date, up to five lines of what changed, and three choices (Update and restart,
+ * Later, and Everything that changed, which opens the release's page in the person's own browser). Later hides that
+ * version until a newer one comes. */
+function UpdateLine(props: { line: Line }) {
+  const { t } = useWords();
+  const act = useAct();
+  const [busy, setBusy] = useState<"install" | "later" | null>(null);
+  const { line } = props;
+  const version = line.subject ?? "";
+  const app = t("app.name");
+  const page = line.text ?? "";
+  const domain = page ? domainOf(page) : null;
+  const when = line.at ? day(line.at) : "";
+  const install = async () => {
+    setBusy("install");
+    await act(() => api.updateInstall(version));
+    setBusy(null);
+  };
+  const later = async () => {
+    setBusy("later");
+    await act(
+      () => api.updateLater(version),
+      () => ({ message: t("queue.update.later_toast", { version }), undo: () => api.updateLaterUndo(version) }),
+    );
+    setBusy(null);
+  };
+  return (
+    <HeldRow
+      as="section"
+      aria-label={t("queue.update.label")}
+      data-queue-line="update"
+      pill={<Pill tone="neutral">{t("queue.update.label")}</Pill>}
+      title={t("queue.update", { app, version })}
+      metaLines={[when ? t("queue.update.sub", { when }) : null, ...(line.names ?? []).slice(0, 5)]}
+      primary={
+        <>
+          <Button size="sm" variant="primary" data-key="primary" loading={busy === "install"} disabled={busy !== null} aria-label={t("queue.update.install_named", { app, version })} onClick={() => void install()}>
+            {t("queue.update.install")}
+          </Button>
+          <Button size="sm" variant="secondary" loading={busy === "later"} disabled={busy !== null} aria-label={t("queue.update.later_named", { version })} onClick={() => void later()}>
+            {t("queue.update.later")}
+          </Button>
+          {domain ? (
+            <ButtonLink size="sm" variant="quiet" href={page} target="_blank" rel="noopener noreferrer" aria-label={`${t("queue.update.changes_named", { version })}, ${t("queue.update.opens", { domain })}`}>
+              {t("queue.update.changes")} <Icon name="external" size={14} />
+            </ButtonLink>
+          ) : null}
         </>
       }
     />

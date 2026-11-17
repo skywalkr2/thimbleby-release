@@ -4741,6 +4741,29 @@ class StewardFile(FileModel):
     )
 
 
+# ---- config/updates.yaml ---------------------------------------------------------------------------------------------
+
+
+class UpdatesFile(FileModel):
+    check: bool = Field(
+        True,
+        description="Once a day, look at the product's release feed for a newer version and offer it on Today. The "
+        "request carries nothing about you or your work, and the versions are compared on this computer.",
+    )
+    include_prereleases: bool = Field(
+        True,
+        description="Offer test releases (alpha and beta versions) as well as finished ones. Turn it off to be offered "
+        "finished releases only.",
+    )
+    check_every_hours: int = Field(
+        24,
+        ge=1,
+        le=720,
+        description="How many hours apart the look at the release feed is made. The menu's Check for a new version "
+        "looks at once, whatever this says.",
+    )
+
+
 FILES: dict[str, type[FileModel]] = {
     "workspace": WorkspaceFile,
     "server": ServerFile,
@@ -4754,6 +4777,7 @@ FILES: dict[str, type[FileModel]] = {
     "rules": RulesFile,
     "watch": WatchFile,
     "steward": StewardFile,
+    "updates": UpdatesFile,
 }
 
 from engine.config import levels as _levels  # noqa: E402

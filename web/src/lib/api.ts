@@ -229,6 +229,11 @@ export const api = {
   /** Keeps the earlier name: the offer never comes back. */
   keepFolderName: (which: string) => call<S["Ok"]>("POST", `folder-offers/${id(which)}/keep`),
   keepFolderNameUndo: (which: string) => call<S["Ok"]>("POST", `folder-offers/${id(which)}/keep/undo`),
+  /** Hides the offer of a newer version until an even newer one comes. */
+  updateLater: (version: string) => call<S["Ok"]>("POST", `update/${id(version)}/later`),
+  updateLaterUndo: (version: string) => call<S["Ok"]>("POST", `update/${id(version)}/later/undo`),
+  /** Updates to the version and restarts; refused in words while the install is not built. */
+  updateInstall: (version: string) => call<S["Ok"]>("POST", `update/${id(version)}/install`),
   readSource: (src: string) => call<S["WatchSourceView"]>("POST", `watch/${id(src)}/read`),
   handInRecent: (src: string) => call<S["WatchSourceView"]>("POST", `watch/${id(src)}/recent`),
   autoClosed: () => call<S["AutoClosedView"][]>("GET", "auto-closed"),

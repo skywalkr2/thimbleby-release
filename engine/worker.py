@@ -332,6 +332,7 @@ class Worker:
         self._jobs: threading.Thread | None = None
         self._model_watch: threading.Thread | None = None
         self._catalog_read: threading.Thread | None = None
+        self._update_look: threading.Thread | None = None
         self._switching: threading.Thread | None = None
         self._measuring: threading.Thread | None = None
         self._swept_on: date | None = None
@@ -1237,6 +1238,44 @@ class Worker:
         self._catalog_read.start()
         return self._catalog_read
 
+    def look_for_update_if_due(self) -> threading.Thread | None:
+        """Every `updates.check_every_hours`, read the release feed on a thread of its own and keep the newest release
+        it lists, so Today can offer it (`engine.update_offer`). Nothing is sent but the request, and a look that fails
+        changes nothing on screen. Returns the thread, or None when nothing is due, the check is off, the build names
+        no feed or one is running."""
+        from engine import update_offer
+        from engine.config import ConfigError, load_config
+
+        if self._update_look is not None and self._update_look.is_alive():
+            return None
+        try:
+            fresh = load_config(self.ws.config_dir, env=dict(os.environ))
+        except ConfigError:
+            fresh = self.cfg
+        address = update_offer.feed_address(shipped_product())
+        settings = fresh.updates
+        now = self.now()
+        if (
+            not settings.check
+            or address is None
+            or fresh.server.mode == "hosted"
+            or not update_offer.due(self.ws.private_dir, now, settings.check_every_hours)
+        ):
+            return None
+
+        def run() -> None:
+            try:
+                update_offer.look(
+                    self.ws.private_dir, address, include_prereleases=settings.include_prereleases, now=now
+                )
+            except Exception:  # the look is made again the next time it is due; nothing here may stop the app
+                log.exception("looking for a newer version failed")
+            self.events.changed()
+
+        self._update_look = threading.Thread(target=run, name="cockpit-update-look", daemon=True)
+        self._update_look.start()
+        return self._update_look
+
     def sync_if_changed(self) -> bool:
         """Write the synced folder when anything changed since it was last written, and keep this install's lease
         fresh. Stops for good if another computer has taken the workspace over. Returns whether it wrote. One pass
@@ -1439,6 +1478,10 @@ class Worker:
         except (Exception, SystemExit):  # the look is made again the next time round; nothing here may stop the thread
             log.exception("starting the look at newer models failed")
             self._problem("starting the look at newer models failed")
+        try:
+            self.look_for_update_if_due()
+        except (Exception, SystemExit):  # the look is made again the next time round; nothing here may stop the thread
+            log.exception("starting the look for a newer version failed")
         try:
             self.export_if_due()
         except (Exception, SystemExit):  # a failed export is logged by the export; nothing here may stop the thread

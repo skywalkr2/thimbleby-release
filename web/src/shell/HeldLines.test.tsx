@@ -2,7 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { useQuery } from "@tanstack/react-query";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { api, type S } from "../lib/api";
+import { api, ApiError, type S } from "../lib/api";
 import { addDays, localDate } from "../lib/dates";
 import { RestartProvider } from "../lib/restart";
 import { fakeApi, renderApp, statusFixture } from "../test-utils";
@@ -1051,6 +1051,56 @@ test("Keep the old name ends the offer for good, with Undo, and the workspace fo
   await user.click(within(row).getByRole("button", { name: "Keep the name 'Cockpit'" }));
   await waitFor(() => expect(calls.some((c) => c.route === "POST folder-offers/workspace/keep")).toBe(true));
   expect(await screen.findByText("Okay. The folder keeps the name 'Cockpit', and you won't be asked again.")).toBeInTheDocument();
+});
+
+const PAGE = "https" + "://releases.example.com/tag/v0.2.0";
+const update = (over: Partial<S["QueueLineView"]> = {}) =>
+  line("update", {
+    key: "update:0.2.0",
+    group: "decide",
+    subject: "0.2.0",
+    at: "2026-11-16T10:00:00Z",
+    names: ["Faster start", "Fewer prompts"],
+    text: PAGE,
+    ...over,
+  });
+
+test("a new version is one row with what changed and three choices, Later hides it with Undo, and the page opens in the person's browser", async () => {
+  const user = userEvent.setup();
+  let lines = [update()];
+  const { calls } = show(lines, {
+    "GET today/queue": () => lines,
+    "POST update/0.2.0/later": () => {
+      lines = [];
+      return { ok: "0.2.0" };
+    },
+    "POST update/0.2.0/later/undo": () => ({ ok: "0.2.0" }),
+  });
+  const row = await screen.findByRole("region", { name: "New version" });
+  expect(row).toHaveTextContent("Thimbleby 0.2.0 is ready");
+  expect(row).toHaveTextContent("Faster start");
+  expect(row).toHaveTextContent("Fewer prompts");
+  expect(within(row).getByRole("button", { name: "Update Thimbleby to 0.2.0 and restart" })).toBeInTheDocument();
+  const link = within(row).getByRole("link", { name: /Everything that changed in 0.2.0/ });
+  expect(link).toHaveAttribute("href", PAGE);
+  expect(link).toHaveAttribute("target", "_blank");
+  expect(link).toHaveAccessibleName(/releases\.example\.com/);
+  await user.click(within(row).getByRole("button", { name: "Put off 0.2.0 until a newer version" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST update/0.2.0/later")).toBe(true));
+  expect(await screen.findByText(/won't be offered again/)).toBeInTheDocument();
+});
+
+test("a new version whose release has no page offers no link, and a refused update says why in words", async () => {
+  const user = userEvent.setup();
+  show([update({ text: undefined })], {
+    "POST update/0.2.0/install": () => {
+      throw new ApiError(409, "Updating from here isn't ready yet.");
+    },
+  });
+  const row = await screen.findByRole("region", { name: "New version" });
+  expect(within(row).queryByRole("link")).toBeNull();
+  await user.click(within(row).getByRole("button", { name: "Update Thimbleby to 0.2.0 and restart" }));
+  expect(await screen.findByText(/isn't ready yet/)).toBeInTheDocument();
 });
 
 test("every held line has the icon of its kind in its leading slot, so none leaves the slot empty beside the others", async () => {

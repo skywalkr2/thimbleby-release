@@ -9,6 +9,7 @@ item, the one-instance lock and the folder."""
 
 from __future__ import annotations
 
+import contextlib
 import os
 import platform
 import sys
@@ -228,5 +229,17 @@ def main(
         login_item.toggle(system)
         shell.set_state(shell.state)  # the item shows the new choice
 
+    def check_for_update() -> None:
+        """The menu's Check for a new version: look at the release feed now; a newer version brings the window forward
+        to Today, where it is offered. A look that can't be made says nothing."""
+        from engine import update_offer
+        from engine.workspace import resolve as workspace
+
+        with contextlib.suppress(Exception):
+            ws = workspace(root)
+            if update_offer.check_now(ws, ws.config(env=dict(environ) if environ is not None else None)) is not None:
+                shell.bring_forward()
+
     shell.on("login", toggle_login)
+    shell.on("update", check_for_update)
     return shell.run(lambda: run(root, logs, shell, environ=environ))

@@ -7,3 +7,6 @@ pack_catalog_former:
 # The public key (base64 text) that signs the product's own catalog feed; empty here and in the demos, filled in by the
 # release build. With it empty, the product's own feed is refused as unsigned.
 pack_catalog_key: ""
+# Where the app looks for a newer version of itself (the public release repository's list of releases, as the release
+# host's API serves it); the release build may replace it. Read once a day, with nothing in the request but the address.
+release_feed: "https://api.github.com/repos/skywalkr2/thimbleby-release/releases"

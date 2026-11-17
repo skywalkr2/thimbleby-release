@@ -768,6 +768,7 @@ const KIND_ICONS: Record<QueueLine["kind"], IconName> = {
   restore: "archive",
   sent_folder: "folder",
   folder_rename: "folder",
+  update: "refresh",
   area: "folder",
   moved: "folder",
   project_ending: "folder",

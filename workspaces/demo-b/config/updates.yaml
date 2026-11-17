@@ -1,0 +1,4 @@
+version: 1
+check: true   # once a day, look at the release feed for a newer version and offer it on Today
+include_prereleases: true   # offer test releases (alpha and beta) as well as finished ones
+check_every_hours: 24   # how many hours apart the look is made

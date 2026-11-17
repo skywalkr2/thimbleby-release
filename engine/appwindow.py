@@ -138,11 +138,13 @@ class MainThread:
 def menu_lines(
     words: Mapping[str, str], system: str, state: str, *, restart_on: bool, login_on: bool
 ) -> list[MenuLine]:
-    """The menu as the person sees it now: the state, then Open, Restart, the login choice, Help and Quit."""
+    """The menu as the person sees it now: the state, then Open, Check for a new version, Restart, the login choice,
+    Help and Quit."""
     login = words["desktop.login.mac" if system == "Darwin" else "desktop.login.windows"]
     return [
         MenuLine("state", words[f"desktop.state.{state}"], enabled=False),
         MenuLine("open", words["desktop.open"], default=True, separator_before=True),
+        MenuLine("update", words["desktop.update"]),
         MenuLine("restart", words["desktop.restart"], enabled=restart_on),
         MenuLine("login", login, checked=login_on, separator_before=True),
         MenuLine("help", words["desktop.help"]),

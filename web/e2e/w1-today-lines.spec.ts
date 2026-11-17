@@ -224,3 +224,53 @@ test("the note box opens tall enough for its example with no scroll bar and grow
 test("the note box opens tall enough for its example with no scroll bar and grows as you type, at 390px", async ({ page }) => {
   await check4(page, WIDTHS[1]);
 });
+
+// A new version of the app (S-0152, the check): one row with what changed and its three choices, never wider than the window.
+const RELEASE_PAGE = "https" + "://releases.example.com/tag/v0.2.0";
+
+async function check5(page: Page, size: { width: number; height: number }) {
+  await page.setViewportSize(size);
+  let offered = true;
+  let later = 0;
+  await page.route("**/api/today/queue", (route) =>
+    route.fulfill({
+      json: offered
+        ? [
+            line({
+              key: "update:0.2.0",
+              kind: "update",
+              subject: "0.2.0",
+              at: "2026-11-16T10:00:00Z",
+              names: ["Faster start", "Fewer prompts", "A calmer Today", "Mail reads sooner", "Fixes for the menu"],
+              text: RELEASE_PAGE,
+            }),
+          ]
+        : [],
+    }),
+  );
+  await page.route("**/api/update/0.2.0/later", (route) => {
+    later += 1;
+    offered = false;
+    return route.fulfill({ json: { ok: "0.2.0" } });
+  });
+  await openScreen(page);
+  const row = page.getByRole("region", { name: "New version" });
+  await expect(row).toBeVisible(LOADED);
+  await expect(row).toContainText("Thimbleby 0.2.0 is ready");
+  await expect(row).toContainText("Fixes for the menu");
+  await expect(row.getByRole("button", { name: /^Update Thimbleby to 0.2.0 and restart/ })).toBeVisible();
+  const link = row.getByRole("link", { name: /Everything that changed in 0.2.0/ });
+  await expect(link).toHaveAttribute("href", RELEASE_PAGE);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0);
+  await row.getByRole("button", { name: /^Put off 0.2.0/ }).click();
+  await expect(row).toHaveCount(0, LOADED);
+  expect(later).toBe(1);
+}
+
+test("a new version is one row with what changed, Update and restart, Later and Everything that changed, at 1440px", async ({ page }) => {
+  await check5(page, WIDTHS[0]);
+});
+
+test("a new version is one row with what changed, Update and restart, Later and Everything that changed, at 390px", async ({ page }) => {
+  await check5(page, WIDTHS[1]);
+});

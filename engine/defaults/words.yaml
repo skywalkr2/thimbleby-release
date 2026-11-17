@@ -97,6 +97,7 @@ run.changed_meanwhile.unnamed: "You changed this while your assistant was workin
 # The tray or menu-bar item of the installed app: its hover title and its three lines.
 desktop.title: Thimbleby
 desktop.open: Open Thimbleby
+desktop.update: Check for a new version
 desktop.restart: Restart
 desktop.quit: Quit
 desktop.help: Help

@@ -202,7 +202,8 @@ def test_the_entry_opens_quietly_at_login_and_runs_the_start_in_the_shell(tmp_pa
             return 7
 
     assert desktop.main(env_for(tmp_path), tmp_path / "home", argv=["--at-login"], make_shell=Entry) == 7
-    assert made["quiet"] is True and made["keys"] == ["login"] and made["words"]["desktop.title"] == "Thimbleby"
+    assert made["quiet"] is True and made["keys"] == ["login", "update"]
+    assert made["words"]["desktop.title"] == "Thimbleby"
     made.clear()
     desktop.main(env_for(tmp_path), tmp_path / "home", argv=[], make_shell=Entry)
     assert made["quiet"] is False

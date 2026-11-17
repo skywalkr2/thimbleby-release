@@ -150,6 +150,9 @@ class Line:
     folder_rename (a folder made under the product's earlier name, found where the new default would be: `state` is
     backups or workspace, `subject` the folder as it is named now and `text` as it would be named; Rename is the
     person's own change and Keep stops the offer for good),
+    update (a newer version of the app is ready: `subject` its version, `names` up to five lines of what changed,
+    `at` its date and `text` the page of everything that changed, none when the release has none; Later is
+    POST /api/update/later with Undo at POST /api/update/later/undo, and nothing here installs it),
     restore (a restore of a backup copy over the workspace: `state` pending while it waits for the restart that swaps it
     in, restored for the first look after it was (`text` the folder that holds what was there before), or not_restored
     when the swap didn't happen and the workspace is as it was (`text` says why); `at` is the moment the workspace
@@ -459,6 +462,28 @@ def _restore_lines(ws: Any, cfg: Any) -> list[Line]:
             )
         )
     return lines
+
+
+def _update_lines(ws: Any, cfg: Any) -> list[Line]:
+    """The one line that offers a newer version of the app, from what the last look at the release feed kept."""
+    from engine import update_offer
+
+    if not cfg.updates.check or cfg.server.mode == "hosted":
+        return []
+    found = update_offer.offer(ws.private_dir)
+    if found is None:
+        return []
+    return [
+        Line(
+            key=f"update:{found.version}",
+            group="decide",
+            kind="update",
+            subject=found.version,
+            names=found.notes,
+            at=found.date or None,
+            text=found.page,
+        )
+    ]
 
 
 def _model_lines(store: Any, cfg: Any) -> list[Line]:
@@ -1076,6 +1101,7 @@ def _everything(
     lines.extend(_model_lines(store, cfg))
     lines.extend(_folder_lines(ws, store, cfg))
     lines.extend(_restore_lines(ws, cfg))
+    lines.extend(_update_lines(ws, cfg))
 
     # Decide: an account the person said "Not now" about reading their work mail and notes, until they allow it (the
     # line goes the moment the account may see the internal level, however that came about).
@@ -2285,6 +2311,7 @@ _KIND_ORDER = {
     "sent_folder": 2,
     "folder_rename": 3,
     "restore": -1.5,
+    "update": 3.2,
     "model_watch": 2,
     "model_moved": 2,
     "identity": 0,

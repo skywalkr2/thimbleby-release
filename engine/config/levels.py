@@ -429,6 +429,7 @@ GROUPS_IN_FILES = (
     "ai.roles",
     "ai.budgets",
     "stages",
+    "updates",
 )
 
 

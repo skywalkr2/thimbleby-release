@@ -3577,6 +3577,9 @@ class QueueLineView(BaseModel):
     workspace, `subject` the folder as it is named now, `text` as it would be named; Rename is POST
     /api/folder-offers/{state}/rename and Keep POST /api/folder-offers/{state}/keep; nothing moves without the
     person's yes, and the workspace folder is renamed the next time the app starts);
+    `update` offers a newer version of the app (`subject` its version, `names` up to five lines of what changed, `at`
+    its date, `text` the page of everything that changed, none when there is none); Later is POST
+    /api/update/{subject}/later with Undo at /api/update/{subject}/later/undo, and the install is not built yet;
     `restore` is a restore of a backup copy over the workspace (`state` pending, restored or not_restored, `at` the
     moment the workspace goes back to or went back to, `text` the folder holding what was there before, or why the swap
     didn't happen); Restart now is POST /api/restart, Cancel is POST /api/backups/restore/cancel, Put back what was
@@ -3761,6 +3764,7 @@ class QueueLineView(BaseModel):
         "terms",
         "project_ending",
         "restore",
+        "update",
     ]
     count: int
     fact: str | None = Field(

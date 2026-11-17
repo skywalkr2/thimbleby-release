@@ -112,22 +112,30 @@ def test_no_window_or_menu_call_leaves_the_main_thread():
 
 def test_menu_lines_state_choices_and_login_wording_per_system():
     mac = menu_lines(WORDS, "Darwin", "live", restart_on=False, login_on=True)
-    assert [line.key for line in mac] == ["state", "open", "restart", "login", "help", "quit"]
-    assert [line.text for line in mac] == ["All good", "Open Thimbleby", "Restart", "Open at login", "Help", "Quit"]
-    assert not mac[0].enabled and not mac[2].enabled and mac[3].checked is True and mac[1].default
+    assert [line.key for line in mac] == ["state", "open", "update", "restart", "login", "help", "quit"]
+    assert [line.text for line in mac] == [
+        "All good",
+        "Open Thimbleby",
+        "Check for a new version",
+        "Restart",
+        "Open at login",
+        "Help",
+        "Quit",
+    ]
+    assert not mac[0].enabled and not mac[3].enabled and mac[4].checked is True and mac[1].default
     windows = menu_lines(WORDS, "Windows", "restart", restart_on=True, login_on=False)
-    assert windows[0].text == "Restart to finish" and windows[2].enabled
-    assert windows[3] == MenuLine("login", "Start when I sign in", checked=False, separator_before=True)
+    assert windows[0].text == "Restart to finish" and windows[3].enabled
+    assert windows[4] == MenuLine("login", "Start when I sign in", checked=False, separator_before=True)
     assert menu_lines(WORDS, "Darwin", "starting", restart_on=False, login_on=False)[0].text == "Starting"
 
 
 def test_the_menu_reads_the_current_state_each_time_it_is_asked():
     shell, _, _ = make()
     shell.restart_enabled = lambda: False
-    assert shell.lines()[2].enabled is False
+    assert shell.lines()[3].enabled is False
     shell.restart_enabled = lambda: True
     shell.set_state("restart")
-    assert shell.lines()[0].text == "Restart to finish" and shell.lines()[2].enabled
+    assert shell.lines()[0].text == "Restart to finish" and shell.lines()[3].enabled
     with pytest.raises(ValueError):
         shell.set_state("unknown")
 

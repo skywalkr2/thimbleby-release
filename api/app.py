@@ -66,6 +66,7 @@ from api.since_routes import build_since_router
 from api.tie_routes import build_tie_router
 from api.today_routes import build_today_router
 from api.todo_routes import build_todo_router
+from api.update_routes import build_update_router
 from api.view_routes import build_view_router
 from api.waiting_routes import build_waiting_router
 from api.watch_routes import build_watch_router
@@ -522,6 +523,7 @@ def create_app(
     inner.include_router(build_records_router(ws, cfg, store, events, worker))
     inner.include_router(build_erase_router(ws, cfg, store, worker, on_erased))
     inner.include_router(build_desktop_router(ws, cfg))
+    inner.include_router(build_update_router(ws, events))
     inner.state.worker = worker
     inner.state.store = store
     inner.state.events = events
