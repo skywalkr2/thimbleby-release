@@ -421,7 +421,7 @@ def test_start_fresh_answers_false_and_quitting_while_it_waits_answers_none():
 
 
 class StuckWindow(FakeWindow):
-    """A window loop that doesn't return when its window is destroyed, as the Mac's does when no event follows a Quit."""
+    """A window loop that doesn't return when its window is destroyed, as a Mac's does when no event follows a Quit."""
 
     def destroy(self):
         self._note("destroy")
