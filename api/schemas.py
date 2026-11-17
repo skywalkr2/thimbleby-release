@@ -3579,7 +3579,10 @@ class QueueLineView(BaseModel):
     person's yes, and the workspace folder is renamed the next time the app starts);
     `update` offers a newer version of the app (`subject` its version, `names` up to five lines of what changed, `at`
     its date, `text` the page of everything that changed, none when there is none); Later is POST
-    /api/update/{subject}/later with Undo at /api/update/{subject}/later/undo, and the install is not built yet;
+    /api/update/{subject}/later with Undo at /api/update/{subject}/later/undo, and Update and restart is POST
+    /api/update/{subject}/install (`state` manual when this copy isn't the installed app: the line then has no
+    install, only the page); `updated` says the app was updated (`subject` its version, `names` what changed, `text`
+    the page of everything that changed, `at` when), shown once: Got it is POST /api/update/updated/seen;
     `restore` is a restore of a backup copy over the workspace (`state` pending, restored or not_restored, `at` the
     moment the workspace goes back to or went back to, `text` the folder holding what was there before, or why the swap
     didn't happen); Restart now is POST /api/restart, Cancel is POST /api/backups/restore/cancel, Put back what was
@@ -3765,6 +3768,7 @@ class QueueLineView(BaseModel):
         "project_ending",
         "restore",
         "update",
+        "updated",
     ]
     count: int
     fact: str | None = Field(
@@ -4012,6 +4016,7 @@ class QueueLineView(BaseModel):
             "own",
             "connected",
             "no_agenda",
+            "manual",
         ]
         | None
     ) = Field(

@@ -1,17 +1,23 @@
-"""The row on Today that offers a newer version of the app (`engine.update_offer`): Later hides that version until a
-newer one comes, with Undo. Installing the version is not here yet; the route for it says so in words."""
+"""The rows on Today about the app's own version (`engine.update_offer`, `engine.app_update`): the offer of a newer one
+(Update and restart, Later with Undo) and the note that an update finished. The install starts the update from the
+installed app's window; a copy that isn't the installed app has no install."""
 
 from __future__ import annotations
+
+from collections.abc import Callable
 
 from fastapi import APIRouter, HTTPException
 
 from api.schemas import Ok
-from engine import update_offer
+from engine import app_update, update_offer
+from engine.sides import word
 from engine.worker import Events
 from engine.workspace import Workspace
 
 
-def build_update_router(ws: Workspace, events: Events) -> APIRouter:
+def build_update_router(
+    ws: Workspace, events: Events, cfg, on_update: Callable[[str], None] | None = None
+) -> APIRouter:
     r = APIRouter(prefix="/api/update")
 
     def known(version: str) -> None:
@@ -36,11 +42,19 @@ def build_update_router(ws: Workspace, events: Events) -> APIRouter:
 
     @r.post("/{version}/install")
     def install(version: str) -> Ok:
-        """Update to this version and restart. The install is not built yet, so it says so and changes nothing."""
+        """Update to this version and restart: the app's window shows the steps and the app ends when the new version
+        takes over. Answers at once; the steps run on their own thread. Only the installed app can update itself."""
         known(version)
-        raise HTTPException(
-            status_code=409,
-            detail="Updating from here isn't ready yet. Download the new version from Everything that changed.",
-        )
+        if on_update is None:
+            raise HTTPException(status_code=400, detail=word(cfg, "desktop.update.reason.not_installed"))
+        on_update(version)
+        return Ok(ok=version)
+
+    @r.post("/updated/seen")
+    def seen() -> Ok:
+        """The person has seen that the app was updated: its line leaves Today."""
+        app_update.mark_seen(ws)
+        events.changed()
+        return Ok(ok="updated")
 
     return r

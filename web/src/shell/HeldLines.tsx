@@ -47,6 +47,7 @@ const HELD_ICON: Record<string, IconName> = {
   sent_folder: "folder",
   folder_rename: "folder",
   update: "refresh",
+  updated: "check",
   extractor: "alert",
   source_unread: "inbox",
   slow_screen: "alert",
@@ -69,7 +70,7 @@ function HeldRow(props: RowProps & { "data-queue-line": string }) {
 type Line = S["QueueLineView"];
 
 /** The kinds of queue line that are a stop or a check on the assistant's own work, each drawn here with its one button. */
-export const HELD_KINDS: Line["kind"][] = ["restart", "stuck", "paused", "borrow", "credential", "no_account", "pack_tier", "offline", "handover", "account_check", "switch_failed", "account_move", "sent_folder", "folder_rename", "update", "model_watch", "model_moved", "identity", "work_access", "extractor", "source_unread", "slow_screen", "rule_review", "catch_up_go", "intake_go"];
+export const HELD_KINDS: Line["kind"][] = ["restart", "stuck", "paused", "borrow", "credential", "no_account", "pack_tier", "offline", "handover", "account_check", "switch_failed", "account_move", "sent_folder", "folder_rename", "update", "updated", "model_watch", "model_moved", "identity", "work_access", "extractor", "source_unread", "slow_screen", "rule_review", "catch_up_go", "intake_go"];
 
 export function isHeld(line: Line): boolean {
   return HELD_KINDS.includes(line.kind);
@@ -111,6 +112,8 @@ export function HeldLine(props: {
       return <FolderRenameLine line={line} />;
     case "update":
       return <UpdateLine line={line} />;
+    case "updated":
+      return <UpdatedLine line={line} />;
     case "model_watch":
       return <ModelWatchLine line={line} />;
     case "model_moved":
@@ -694,6 +697,8 @@ function UpdateLine(props: { line: Line }) {
   const page = line.text ?? "";
   const domain = page ? domainOf(page) : null;
   const when = line.at ? day(line.at) : "";
+  // A copy that isn't the installed app can't update itself: it points to the page and offers Later.
+  const canInstall = line.state !== "manual";
   const install = async () => {
     setBusy("install");
     await act(() => api.updateInstall(version));
@@ -717,15 +722,56 @@ function UpdateLine(props: { line: Line }) {
       metaLines={[when ? t("queue.update.sub", { when }) : null, ...(line.names ?? []).slice(0, 5)]}
       primary={
         <>
-          <Button size="sm" variant="primary" data-key="primary" loading={busy === "install"} disabled={busy !== null} aria-label={t("queue.update.install_named", { app, version })} onClick={() => void install()}>
-            {t("queue.update.install")}
-          </Button>
-          <Button size="sm" variant="secondary" loading={busy === "later"} disabled={busy !== null} aria-label={t("queue.update.later_named", { version })} onClick={() => void later()}>
+          {canInstall ? (
+            <Button size="sm" variant="primary" data-key="primary" loading={busy === "install"} disabled={busy !== null} aria-label={t("queue.update.install_named", { app, version })} onClick={() => void install()}>
+              {t("queue.update.install")}
+            </Button>
+          ) : null}
+          <Button size="sm" variant={canInstall ? "secondary" : "primary"} loading={busy === "later"} disabled={busy !== null} aria-label={t("queue.update.later_named", { version })} onClick={() => void later()}>
             {t("queue.update.later")}
           </Button>
           {domain ? (
             <ButtonLink size="sm" variant="quiet" href={page} target="_blank" rel="noopener noreferrer" aria-label={`${t("queue.update.changes_named", { version })}, ${t("queue.update.opens", { domain })}`}>
               {t("queue.update.changes")} <Icon name="external" size={14} />
+            </ButtonLink>
+          ) : null}
+        </>
+      }
+    />
+  );
+}
+
+/** The app was updated: the version it is now, up to five lines of what changed and a link to everything that changed,
+ * shown until the person has seen it (Got it). */
+function UpdatedLine(props: { line: Line }) {
+  const { t } = useWords();
+  const act = useAct();
+  const [busy, setBusy] = useState(false);
+  const { line } = props;
+  const version = line.subject ?? "";
+  const page = line.text ?? "";
+  const domain = page ? domainOf(page) : null;
+  const seen = async () => {
+    setBusy(true);
+    await act(() => api.updateSeen());
+    setBusy(false);
+  };
+  return (
+    <HeldRow
+      as="section"
+      aria-label={t("queue.updated.label")}
+      data-queue-line="updated"
+      pill={<Pill tone="neutral">{t("queue.updated.label")}</Pill>}
+      title={t("queue.updated", { version })}
+      metaLines={(line.names ?? []).slice(0, 5)}
+      primary={
+        <>
+          <Button size="sm" variant="primary" data-key="primary" loading={busy} disabled={busy} aria-label={t("queue.updated.seen_named", { version })} onClick={() => void seen()}>
+            {t("queue.updated.seen")}
+          </Button>
+          {domain ? (
+            <ButtonLink size="sm" variant="quiet" href={page} target="_blank" rel="noopener noreferrer" aria-label={`${t("queue.updated.changes_named", { version })}, ${t("queue.update.opens", { domain })}`}>
+              {t("queue.updated.changes")} <Icon name="external" size={14} />
             </ButtonLink>
           ) : null}
         </>

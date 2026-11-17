@@ -2,7 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { useQuery } from "@tanstack/react-query";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { api, ApiError, type S } from "../lib/api";
+import { api, type S } from "../lib/api";
 import { addDays, localDate } from "../lib/dates";
 import { RestartProvider } from "../lib/restart";
 import { fakeApi, renderApp, statusFixture } from "../test-utils";
@@ -1090,17 +1090,39 @@ test("a new version is one row with what changed and three choices, Later hides 
   expect(await screen.findByText(/won't be offered again/)).toBeInTheDocument();
 });
 
-test("a new version whose release has no page offers no link, and a refused update says why in words", async () => {
+test("a new version whose release has no page offers no link, and Update and restart asks the app to update", async () => {
   const user = userEvent.setup();
-  show([update({ text: undefined })], {
-    "POST update/0.2.0/install": () => {
-      throw new ApiError(409, "Updating from here isn't ready yet.");
-    },
-  });
+  const { calls } = show([update({ text: undefined })], { "POST update/0.2.0/install": () => ({ ok: "0.2.0" }) });
   const row = await screen.findByRole("region", { name: "New version" });
   expect(within(row).queryByRole("link")).toBeNull();
   await user.click(within(row).getByRole("button", { name: "Update Thimbleby to 0.2.0 and restart" }));
-  expect(await screen.findByText(/isn't ready yet/)).toBeInTheDocument();
+  await waitFor(() => expect(calls.some((c) => c.route === "POST update/0.2.0/install")).toBe(true));
+});
+
+test("an update the app cannot make itself offers no install, only Later and the page", async () => {
+  show([update({ state: "manual" })]);
+  const row = await screen.findByRole("region", { name: "New version" });
+  expect(within(row).queryByRole("button", { name: /and restart/ })).toBeNull();
+  expect(within(row).getByRole("button", { name: "Put off 0.2.0 until a newer version" })).toBeInTheDocument();
+  expect(within(row).getByRole("link", { name: /Everything that changed in 0.2.0/ })).toHaveAttribute("href", PAGE);
+});
+
+test("a finished update is one row that says the version, what changed and links the page, and Got it removes it", async () => {
+  const user = userEvent.setup();
+  let lines = [line("updated", { key: "updated:0.2.0", group: "review", subject: "0.2.0", names: ["Faster start"], text: PAGE })];
+  const { calls } = show(lines, {
+    "GET today/queue": () => lines,
+    "POST update/updated/seen": () => {
+      lines = [];
+      return { ok: "updated" };
+    },
+  });
+  const row = await screen.findByRole("region", { name: "Updated" });
+  expect(row).toHaveTextContent("Updated to 0.2.0");
+  expect(row).toHaveTextContent("Faster start");
+  expect(within(row).getByRole("link", { name: /What's new in 0.2.0/ })).toHaveAttribute("href", PAGE);
+  await user.click(within(row).getByRole("button", { name: "Got it: updated to 0.2.0" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST update/updated/seen")).toBe(true));
 });
 
 test("every held line has the icon of its kind in its leading slot, so none leaves the slot empty beside the others", async () => {

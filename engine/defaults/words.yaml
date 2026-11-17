@@ -133,6 +133,30 @@ desktop.earlier.text: Using it brings it into this app. The original stays where
 desktop.earlier.use: Use it
 desktop.earlier.fresh: Start fresh
 desktop.copy_details: Copy details
+# The window while the app updates itself, and the screen when the update didn't finish.
+desktop.update.title: Updating Thimbleby
+desktop.update.subtitle: Your work is copied first. Thimbleby opens again by itself.
+desktop.update.step.copy: Copying your work
+desktop.update.step.download: Downloading the update
+desktop.update.step.check: Checking the file
+desktop.update.step.install: Installing
+desktop.update.step.open: Opening the new version
+desktop.update.progress: "{done} of {total} MB"
+desktop.update.failed.title: "Still on {version}"
+desktop.update.failed.text: The update didn't finish, so nothing changed.
+desktop.update.menu: "Update to {version} and restart"
+desktop.update.reason.not_installed: This copy of Thimbleby isn't the installed app, so it can't update itself. Download the new version instead.
+desktop.update.reason.copy: Your work couldn't be copied first, so the update was stopped before it changed anything.
+desktop.update.reason.offline: The update couldn't be downloaded because this computer isn't connected to the internet.
+desktop.update.reason.download: The download stopped before it finished. Check the connection and try again.
+desktop.update.reason.disk_full: There isn't enough room on this computer to update. Free up some space and try again.
+desktop.update.reason.mismatch: The downloaded file isn't the one that was published, so it wasn't installed.
+desktop.update.reason.unreadable: The downloaded file couldn't be opened.
+desktop.update.reason.folder: Thimbleby's folder can't be changed by this account, so the update couldn't be put in place.
+desktop.update.reason.install: The new version couldn't be installed, so the old one was put back.
+desktop.update.reason.close: Thimbleby didn't close in time, so the update was stopped before it changed anything.
+desktop.update.reason.no_answer: The new version didn't open in time, so the old one was put back with your work as it was.
+desktop.update.reason.other: Something stopped the update, and nothing changed.
 desktop.copied: Copied
 
 # The page the person's own browser shows after a sign-in started from the installed app's window.

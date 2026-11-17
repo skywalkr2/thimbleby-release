@@ -1,8 +1,9 @@
 """The app notices a newer version of itself and offers it on Today (S-0152, the check; the install is separate).
 
 Once a day (`updates.check_every_hours`), and when the person asks from the menu, the app reads the release feed named
-in the build's facts (`release_feed`). The request is the address and an Accept header: it carries no identifier, no
-version and nothing about the person or their work; the versions are compared here. The newest eligible release is kept
+in the settings (`updates.feed_address`) or else in the build's facts (`release_feed`). The request is the address and
+an Accept header: it carries no identifier, no version and nothing about the person or their work; the versions are
+compared here. The newest eligible release is kept
 in the private folder with the moment of the look. Today shows one row for a release newer than the one running, until
 the person chooses Later, which hides that version and no newer one. A look that fails, or a feed that doesn't read,
 leaves no row and no message on screen; the first failure of a run of them goes in the log once.
@@ -20,7 +21,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from engine.release_check import Release, newer_release
+from engine.release_check import LOOPBACK, Release, newer_release
 from engine.state_file import changing, write_whole
 
 log = logging.getLogger(__name__)
@@ -42,6 +43,9 @@ class Offer:
     date: str
     notes: list[str]
     page: str | None
+    #: The installer for this system and its SHA-256, as the feed gives them; the install checks both again.
+    download_url: str | None = None
+    sha256: str | None = None
 
 
 def _system() -> str:
@@ -54,14 +58,18 @@ def current_version() -> str:
     return __version__
 
 
-def feed_address(facts: dict[str, Any] | None = None) -> str | None:
-    """The release feed's address from the build's facts; none when the build names none or it isn't https."""
+def feed_address(facts: dict[str, Any] | None = None, chosen: str = "") -> str | None:
+    """The release feed's address: the one the settings name (`updates.feed_address`), else the build's facts. None
+    when there is none, or it is neither https nor on this computer."""
     if facts is None:
         from engine.shipped import product
 
         facts = product()
-    address = facts.get("release_feed")
-    if isinstance(address, str) and address.startswith("https://") and urlsplit(address).hostname:
+    address = chosen.strip() or facts.get("release_feed")
+    if not isinstance(address, str):
+        return None
+    parts = urlsplit(address)
+    if parts.hostname and (parts.scheme == "https" or (parts.scheme == "http" and parts.hostname in LOOPBACK)):
         return address
     return None
 
@@ -198,6 +206,8 @@ def look(
                     "date": release.date,
                     "notes": _lines(release.notes),
                     "page": page,
+                    "download_url": release.download_url,
+                    "sha256": release.sha256,
                 }
         except (ConnectorError, ValueError, TypeError, AttributeError) as err:
             failed = True
@@ -245,11 +255,14 @@ def offer(private_dir: Path, current: str | None = None) -> Offer | None:
         return None
     notes = [n for n in found.get("notes") or [] if isinstance(n, str)][:NOTE_LINES]
     page = found.get("page")
+    url, sha = found.get("download_url"), found.get("sha256")
     return Offer(
         found["version"],
         str(found.get("date") or ""),
         notes,
         page if isinstance(page, str) and page.startswith("https://") else None,
+        url if isinstance(url, str) else None,
+        sha if isinstance(sha, str) else None,
     )
 
 
@@ -266,4 +279,5 @@ def later(private_dir: Path, version: str, on: bool = True) -> None:
 
 def check_now(ws: Any, cfg: Any, **more: Any) -> Offer | None:
     """The look the menu asks for, whatever the hour: the build's feed, this workspace's settings."""
-    return look(ws.private_dir, feed_address(), include_prereleases=cfg.updates.include_prereleases, **more)
+    address = feed_address(None, cfg.updates.feed_address)
+    return look(ws.private_dir, address, include_prereleases=cfg.updates.include_prereleases, **more)

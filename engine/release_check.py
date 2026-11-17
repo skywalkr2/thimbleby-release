@@ -8,6 +8,9 @@ from urllib.parse import urlsplit
 
 from packaging.version import InvalidVersion, Version
 
+#: Addresses that mean this computer.
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
 
 @dataclass(frozen=True)
 class Release:
@@ -73,8 +76,12 @@ def newer_release(
             if any(character.isspace() or ord(character) < 32 for character in address):
                 continue
             parsed = urlsplit(address)
-            # Only an encrypted download: over plain HTTP the file and its checksum could both be swapped.
-            if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            # Only an encrypted download, or one from this computer: over plain HTTP across a network the file and its
+            # checksum could both be swapped.
+            on_this_computer = parsed.scheme == "http" and parsed.hostname in LOOPBACK
+            if (parsed.scheme != "https" and not on_this_computer) or not parsed.hostname:
+                continue
+            if parsed.username or parsed.password:
                 continue
             if parsed.port is not None and not 1 <= parsed.port <= 65535:
                 continue

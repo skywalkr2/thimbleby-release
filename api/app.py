@@ -153,6 +153,7 @@ def create_app(
     on_restart: Callable[[], None] | None = None,
     sync_held: bool = False,
     on_erased: Callable[[], None] | None = None,
+    on_update: Callable[[str], None] | None = None,
 ) -> ASGIApp:
     """Build the app for a workspace. The returned app serves the base path from the config.
 
@@ -162,7 +163,8 @@ def create_app(
     settings or new code need the process to start again; without it, waiting work says a restart is needed.
     `sync_held`: the app started while this computer and the synced folder had diverged, so it writes nothing to the
     folder until the person chooses which copy to keep. `on_erased` is called once the person has deleted the workspace
-    and the answer is sent, to stop the server."""
+    and the answer is sent, to stop the server. `on_update` starts the update to a version the person chose (the
+    installed app's own window runs its steps); without it the app can't update itself."""
     from engine.sync import placement_problem
 
     base_path = cfg.server.base_path
@@ -523,7 +525,7 @@ def create_app(
     inner.include_router(build_records_router(ws, cfg, store, events, worker))
     inner.include_router(build_erase_router(ws, cfg, store, worker, on_erased))
     inner.include_router(build_desktop_router(ws, cfg))
-    inner.include_router(build_update_router(ws, events))
+    inner.include_router(build_update_router(ws, events, cfg, on_update))
     inner.state.worker = worker
     inner.state.store = store
     inner.state.events = events

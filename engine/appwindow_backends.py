@@ -242,14 +242,7 @@ class MacStatusItem:
         self.delegate = Delegate.alloc().init()
         self.bar = AppKit.NSStatusBar.systemStatusBar()
         self.item = self.bar.statusItemWithLength_(AppKit.NSVariableStatusItemLength)
-        picture = brandmark.render(brandmark.mark_svg(), MAC_ICON_PIXELS, template=True)
-        buffer = io.BytesIO()
-        picture.save(buffer, "PNG")
-        data = Foundation.NSData.dataWithBytes_length_(buffer.getvalue(), len(buffer.getvalue()))
-        image = AppKit.NSImage.alloc().initWithData_(data)
-        image.setSize_((MAC_ICON_PIXELS / 2, MAC_ICON_PIXELS / 2))
-        image.setTemplate_(True)
-        self.item.button().setImage_(image)
+        self.item.button().setImage_(self._image(False))
         self.item.button().setToolTip_(title)
         menu = AppKit.NSMenu.alloc().initWithTitle_(title)
         menu.setAutoenablesItems_(False)
@@ -257,6 +250,26 @@ class MacStatusItem:
         self.item.setMenu_(menu)
         self.fill(menu)
         self.dock(False)
+
+    def _image(self, dotted: bool) -> Any:
+        """The menu-bar picture: the one-colour template mark, with a dot when something waits for the person."""
+        import AppKit
+        import Foundation
+
+        picture = brandmark.render(brandmark.mark_svg(), MAC_ICON_PIXELS, template=True)
+        if dotted:
+            picture = brandmark.with_dot(picture, template=True)
+        buffer = io.BytesIO()
+        picture.save(buffer, "PNG")
+        data = Foundation.NSData.dataWithBytes_length_(buffer.getvalue(), len(buffer.getvalue()))
+        image = AppKit.NSImage.alloc().initWithData_(data)
+        image.setSize_((MAC_ICON_PIXELS / 2, MAC_ICON_PIXELS / 2))
+        image.setTemplate_(True)
+        return image
+
+    def badge(self, on: bool) -> None:
+        if self.item is not None:
+            self.item.button().setImage_(self._image(on))
 
     def fill(self, menu: Any) -> None:
         import AppKit
@@ -320,6 +333,7 @@ class PystrayTray:
 
     def __init__(self) -> None:
         self.icon: Any = None
+        self.plain: Any = None
 
     def start(self, lines: Callable[[], list[MenuLine]], act: Callable[[str], None], title: str) -> None:
         import pystray
@@ -328,8 +342,13 @@ class PystrayTray:
             yield from tray_items(pystray, lines(), act)
 
         picture = brandmark.render(brandmark.mark_svg(), TRAY_ICON_PIXELS, template=False)
+        self.plain = picture
         self.icon = pystray.Icon(title, picture, title, menu=pystray.Menu(items))
         self.icon.run_detached()
+
+    def badge(self, on: bool) -> None:
+        if self.icon is not None:
+            self.icon.icon = brandmark.with_dot(self.plain, template=False) if on else self.plain
 
     def refresh(self) -> None:
         if self.icon is not None:

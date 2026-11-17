@@ -4747,8 +4747,8 @@ class StewardFile(FileModel):
 class UpdatesFile(FileModel):
     check: bool = Field(
         True,
-        description="Once a day, look at the product's release feed for a newer version and offer it on Today. The "
-        "request carries nothing about you or your work, and the versions are compared on this computer.",
+        description="Once a day, look for a newer version of the app and offer it on Today. The request carries "
+        "nothing about you or what you do, and the versions are compared on this computer.",
     )
     include_prereleases: bool = Field(
         True,
@@ -4761,6 +4761,31 @@ class UpdatesFile(FileModel):
         le=720,
         description="How many hours apart the look at the release feed is made. The menu's Check for a new version "
         "looks at once, whatever this says.",
+    )
+    feed_address: str = Field(
+        "",
+        description="Where to look for a newer version, when it isn't the address built into the app. An address that "
+        "starts with https, or one on this computer. Leave it empty to use the built-in one.",
+    )
+    close_wait_seconds: int = Field(
+        180,
+        ge=10,
+        le=3600,
+        description="How many seconds an update waits for the app to close before it gives up and changes nothing. A "
+        "slow disk needs longer.",
+    )
+    install_wait_seconds: int = Field(
+        1800,
+        ge=60,
+        le=14400,
+        description="How many seconds the installer of an update has to finish before the old version is put back.",
+    )
+    answer_wait_seconds: int = Field(
+        300,
+        ge=30,
+        le=3600,
+        description="How many seconds the new version has to open after an update before the old version is put back. "
+        "A slow disk needs longer.",
     )
 
 

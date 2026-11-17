@@ -465,25 +465,44 @@ def _restore_lines(ws: Any, cfg: Any) -> list[Line]:
 
 
 def _update_lines(ws: Any, cfg: Any) -> list[Line]:
-    """The one line that offers a newer version of the app, from what the last look at the release feed kept."""
-    from engine import update_offer
+    """The line that offers a newer version of the app, from what the last look at the release feed kept (with `state`
+    manual when this copy isn't the installed app and can only point to the download), and the line that says the app
+    was updated, until the person has seen it."""
+    from engine import app_update, update_offer
 
-    if not cfg.updates.check or cfg.server.mode == "hosted":
+    if cfg.server.mode == "hosted":
         return []
-    found = update_offer.offer(ws.private_dir)
-    if found is None:
-        return []
-    return [
-        Line(
-            key=f"update:{found.version}",
-            group="decide",
-            kind="update",
-            subject=found.version,
-            names=found.notes,
-            at=found.date or None,
-            text=found.page,
+    lines: list[Line] = []
+    found = update_offer.offer(ws.private_dir) if cfg.updates.check else None
+    if found is not None:
+        lines.append(
+            Line(
+                key=f"update:{found.version}",
+                group="decide",
+                kind="update",
+                subject=found.version,
+                names=found.notes,
+                at=found.date or None,
+                text=found.page,
+                state=None if app_update.own_install() is not None else "manual",
+            )
         )
-    ]
+    done = app_update.updated(ws)
+    if done is not None and isinstance(done.get("version"), str):
+        notes = [n for n in done.get("notes") or [] if isinstance(n, str)]
+        page = done.get("page")
+        lines.append(
+            Line(
+                key=f"updated:{done['version']}",
+                group="review",
+                kind="updated",
+                subject=done["version"],
+                names=notes,
+                at=str(done.get("at") or "") or None,
+                text=page if isinstance(page, str) and page.startswith("https://") else None,
+            )
+        )
+    return lines
 
 
 def _model_lines(store: Any, cfg: Any) -> list[Line]:
@@ -2312,6 +2331,7 @@ _KIND_ORDER = {
     "folder_rename": 3,
     "restore": -1.5,
     "update": 3.2,
+    "updated": -1.5,
     "model_watch": 2,
     "model_moved": 2,
     "identity": 0,

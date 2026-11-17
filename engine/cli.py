@@ -753,6 +753,7 @@ def make_app(
     on_restart: Callable[[], None],
     on_erased: Callable[[], None],
     on_lost: Callable[[], None] | None = None,
+    on_update: Callable[[str], None] | None = None,
 ) -> tuple[Any, Callable[[], None]]:
     """The running app for a workspace, and the function that gives back what it holds: its database opened, its lease
     taken and kept, its log attached. The app calls that function when it shuts down; calling it again does nothing.
@@ -794,6 +795,7 @@ def make_app(
         on_restart=on_restart,
         sync_held=opened.action == "held",
         on_erased=erased,
+        on_update=on_update,
     )
     return app, shut_down
 

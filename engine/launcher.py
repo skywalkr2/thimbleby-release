@@ -568,6 +568,14 @@ def show_running(data_folder: str | Path, token: str, *, timeout: float = 15) ->
         raise RuntimeError("The existing instance did not show its window")
 
 
+def _quietly(call: Callable[[], None], what: str) -> None:
+    """A side call of the loop that must never stop the app: a failure is noted and the loop goes on."""
+    try:
+        call()
+    except Exception as error:
+        note(f"{what} failed: {error.__class__.__name__}")
+
+
 def launch(
     app_factory: Callable[[], Any],
     port: int,
@@ -582,6 +590,8 @@ def launch(
     restart_requested: threading.Event | None = None,
     quit_requested: threading.Event | None = None,
     token: Callable[[], str] = lambda: "",
+    ready: Callable[[], None] = lambda: None,
+    poll: Callable[[], None] = lambda: None,
 ) -> None:
     """Run the app until the person quits: the server, the window's address and the loop that reacts to the menu.
 
@@ -591,7 +601,8 @@ def launch(
     A second launch asks the running instance to show its window and returns. restart_requested, when given, is set
     by the app itself when the person chose Restart in it: the restart then runs as the menu's would. quit_requested,
     when given, is set by the app when it has nothing left to run (the person deleted the workspace): the loop then
-    ends as Quit would.
+    ends as Quit would. ready is called once the server answers (a new version after an update says so there), and poll
+    about twice a second while the app runs (a cheap look at something the item shows); neither may stop the app.
 
     Restart replaces the ASGI app in this process, behind the same listening server (`SwappableApp`); it does not
     replace Python modules, install updates, or restart the interpreter.
@@ -627,6 +638,7 @@ def launch(
         if not wait_ready(health, timeout=startup_timeout, alive=controller.alive):
             raise RuntimeError("The local server failed readiness") from controller.error
         shell.step(2)
+        _quietly(ready, "ready")
         busy = threading.Lock()
         shell.on("open", shell.bring_forward)
         shell.on("help", lambda: shell.bring_forward("#setup"))
@@ -666,6 +678,7 @@ def launch(
                 shell.set_state("restart")
                 if restart_waiting():
                     restart()
+            _quietly(poll, "poll")
             shell.quit_event.wait(0.5)
         if failures:
             raise RuntimeError("The server could not restart") from failures[0]

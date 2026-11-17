@@ -14,6 +14,7 @@ import os
 import platform
 import sys
 import threading
+import time
 import traceback
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -98,7 +99,7 @@ def start(
     """Make the workspace when it isn't there, then run the app on it in the shell's window until the person quits.
 
     A second open of the app, while the first runs, only asks the first to bring its window forward."""
-    from engine import cli, launcher
+    from engine import cli, launcher, update_flow
     from engine.handover import open_or_hold
     from engine.legacy_names import private_dir
     from engine.local_guards import local_address_problem
@@ -124,6 +125,10 @@ def start(
         raise WorkspaceError(problem)
     cli.remember_workspace(ws.root)
     shell.words = {**shell.words, **{k: word(cfg, k) for k in shell.words if k.startswith("desktop.")}}
+    # What the last update left: a failed one shows its screen (and puts the copy of the work back when it was needed);
+    # trying again starts the update here, before the workspace is opened.
+    if not update_flow.settle(ws, cfg, shell, environ=env):
+        return
     prefix = "" if cfg.server.base_path == "/" else cfg.server.base_path
     waiting = threading.Event()  # set when the app asked to restart, so the menu's Restart is on
     asked = threading.Event()
@@ -133,12 +138,47 @@ def start(
         waiting.set()
         asked.set()
 
+    updating_now = threading.Lock()
+
+    def ask_update(version: str) -> None:
+        """The person chose Update and restart: run the update's steps in the window on their own thread. When the
+        hand-over has started the app ends; when it didn't finish, or the person chose to go on, the app comes back."""
+
+        def work() -> None:
+            if not updating_now.acquire(blocking=False):
+                return
+            try:
+                if update_flow.install(ws, ws.config(env=env), shell, version, environ=env):
+                    shell.quit()
+                elif not shell.quit_event.is_set():
+                    shell.show_app(f"http://127.0.0.1:{cfg.server.port}{prefix}/?token={ws.install_token()}")
+            finally:
+                updating_now.release()
+
+        threading.Thread(target=work, name="update", daemon=True).start()
+
+    def look_at_update() -> None:
+        """The item's dot and its Update line follow what the last look at the release feed kept, looked at every half
+        minute (a read of one small file)."""
+        from engine import update_offer
+
+        if time.monotonic() < next_look[0]:
+            return
+        next_look[0] = time.monotonic() + 30
+        found = update_offer.offer(ws.private_dir) if ws.config(env=env).updates.check else None
+        shell.set_update(found.version if found is not None else None)
+
+    next_look = [0.0]
+    shell.on("install", lambda: shell.update_offered and ask_update(shell.update_offered))
+
     def build() -> Any:
         """A new app on the workspace, each time the server starts, with a new sign-in token for it."""
         fresh = ws.config(env=env)
         opened = open_or_hold(ws, fresh)
         token = ws.new_install_token()
-        app, _ = cli.make_app(ws, fresh, token, opened, on_restart=ask_restart, on_erased=finished.set)
+        app, _ = cli.make_app(
+            ws, fresh, token, opened, on_restart=ask_restart, on_erased=finished.set, on_update=ask_update
+        )
         return app
 
     shell.step(1)
@@ -154,6 +194,8 @@ def start(
         restart_requested=asked,
         quit_requested=finished,
         token=ws.install_token,
+        ready=lambda: update_flow.started(ws),
+        poll=look_at_update,
     )
 
 

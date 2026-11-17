@@ -31,6 +31,7 @@ BASIC: dict[str, str] = {
     "workspace.language": "you",
     "workspace.assistant_name": "you",
     "workspace.name": "you",
+    "updates.check": "you",
     "ai.budgets.confirm_above_usd": "ai",
     "ai.budgets.per_day_usd": "ai",
     "ai.budgets.per_month_usd": "ai",

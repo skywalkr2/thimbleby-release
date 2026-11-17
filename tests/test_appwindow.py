@@ -471,3 +471,54 @@ def test_a_quit_whose_window_loop_returns_never_ends_the_process():
     for guard in [t for t in threading.enumerate() if t.name == "end-guard"]:
         guard.join(5)
     assert exits == []
+
+
+def test_the_menu_offers_the_update_only_while_a_newer_version_is_on_offer():
+    plain = menu_lines(WORDS, "Darwin", "live", restart_on=False, login_on=False)
+    assert "install" not in [line.key for line in plain]
+    offered = menu_lines(WORDS, "Darwin", "live", restart_on=False, login_on=False, update="0.2.0")
+    assert [line.key for line in offered][:4] == ["state", "open", "install", "update"]
+    assert offered[2].text == "Update to 0.2.0 and restart" and offered[2].enabled
+
+
+def test_the_dot_and_the_update_line_follow_the_offer_and_nothing_is_redrawn_when_it_is_unchanged():
+    shell, window, tray = make()
+    tray.badge = lambda on: window._note("tray.badge", on)
+
+    def work():
+        shell.set_update("0.2.0")
+        shell.set_update("0.2.0")
+        shell.set_update(None)
+        shell.quit()
+        return 0
+
+    shell.run(work)
+    assert [args for name, args, _ in window.calls if name == "tray.badge"] == [(True,), (False,)]
+    assert shell.update_offered is None
+
+
+def test_the_update_window_shows_its_steps_and_the_failed_screen_waits_for_the_persons_choice():
+    shell, window, _ = make(version="0.1.0")
+    result = []
+
+    def work():
+        shell.show_update("0.1.0")
+        shell.update_step("download", 0.5, "12/40")
+        threading.Timer(0.1, lambda: PageApi(shell).choose("again")).start()
+        result.append(shell.update_failed("0.1.0", "It stopped.", "details"))
+        threading.Timer(0.1, lambda: PageApi(shell).choose("open")).start()
+        result.append(shell.update_failed("0.1.0", "It stopped.", "details"))
+        shell.quit()
+        return 0
+
+    shell.run(work)
+    assert result == ["again", "open"] and shell.details == "details"
+    script = [args[0] for name, args, _ in window.calls if name == "script"]
+    assert script == ['update_tick(1, 0.5, "12 of 40 MB")']
+    assert [name for name, _, _ in window.calls].count("load_html") == 3  # the update view, then the screen twice
+
+
+def test_a_choice_the_page_does_not_offer_is_ignored():
+    shell, _, _ = make()
+    PageApi(shell).choose("delete everything")
+    assert not shell.answer_event.is_set()

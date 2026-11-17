@@ -62,6 +62,9 @@ class TrayBackend(Protocol):
     def start(self, lines: Callable[[], list[MenuLine]], act: Callable[[str], None], title: str) -> None: ...
     def refresh(self) -> None: ...
     def dock(self, shown: bool) -> None: ...
+    def badge(self, on: bool) -> None:
+        """Show or take off the dot on the item's mark, which says something waits for the person."""
+
     def stop(self) -> None: ...
 
 
@@ -136,14 +139,22 @@ class MainThread:
 
 
 def menu_lines(
-    words: Mapping[str, str], system: str, state: str, *, restart_on: bool, login_on: bool
+    words: Mapping[str, str],
+    system: str,
+    state: str,
+    *,
+    restart_on: bool,
+    login_on: bool,
+    update: str | None = None,
 ) -> list[MenuLine]:
-    """The menu as the person sees it now: the state, then Open, Check for a new version, Restart, the login choice,
-    Help and Quit."""
+    """The menu as the person sees it now: the state, then Open, (when a newer version is on offer) Update to it, Check
+    for a new version, Restart, the login choice, Help and Quit."""
     login = words["desktop.login.mac" if system == "Darwin" else "desktop.login.windows"]
+    offered = [MenuLine("install", words["desktop.update.menu"].format(version=update))] if update is not None else []
     return [
         MenuLine("state", words[f"desktop.state.{state}"], enabled=False),
         MenuLine("open", words["desktop.open"], default=True, separator_before=True),
+        *offered,
         MenuLine("update", words["desktop.update"]),
         MenuLine("restart", words["desktop.restart"], enabled=restart_on),
         MenuLine("login", login, checked=login_on, separator_before=True),
@@ -182,8 +193,9 @@ class PageApi:
         self._shell.copy(self._shell.details)
 
     def choose(self, answer: str) -> None:
-        """The person's answer to the question the starting window asks: "use" or "fresh"."""
-        if answer in ("use", "fresh"):
+        """The person's answer to the question the starting window asks: "use" or "fresh", or on the failed-update
+        screen "again" or "open"."""
+        if answer in ("use", "fresh", "again", "open"):
             self._shell.answer = answer
             self._shell.answer_event.set()
 
@@ -223,6 +235,8 @@ class AppShell:
         self.state = "starting"
         self.details = ""
         self.restart_enabled: Callable[[], bool] = lambda: False
+        #: The version on offer, when a newer one is: the item's dot and its Update line.
+        self.update_offered: str | None = None
         self.quit_event = threading.Event()
         self.retry_event = threading.Event()
         self.answer = ""
@@ -303,7 +317,12 @@ class AppShell:
 
     def lines(self) -> list[MenuLine]:
         return menu_lines(
-            self.words, self.system, self.state, restart_on=self.restart_enabled(), login_on=self.login_on()
+            self.words,
+            self.system,
+            self.state,
+            restart_on=self.restart_enabled(),
+            login_on=self.login_on(),
+            update=self.update_offered,
         )
 
     def on(self, key: str, action: Callable[[], None]) -> None:
@@ -327,6 +346,15 @@ class AppShell:
             raise ValueError(f"unknown state {state!r}")
         self.state = state
         if self.tray is not None:
+            self.main.call(self.tray.refresh)
+
+    def set_update(self, version: str | None) -> None:
+        """A newer version is on offer (or no longer): the item's dot and its Update line follow."""
+        if version == self.update_offered:
+            return
+        self.update_offered = version
+        if self.tray is not None:
+            self.main.call(self.tray.badge, version is not None)
             self.main.call(self.tray.refresh)
 
     def quit(self) -> None:
@@ -365,6 +393,40 @@ class AppShell:
         self.main.call(self.window.load_url, url)
         if not self.quiet:
             self.main.call(self._show)
+
+    def show_update(self, version: str = "") -> None:
+        """Turn the window into the update's progress, shown now (an update starts only from the person's click)."""
+        self.quiet = False
+        self.main.call(self.window.load_html, startpage.page(self.words, version, view="update"))
+        self.main.call(self._show)
+
+    def update_step(self, step: str, fraction: float | None = None, detail: str = "") -> None:
+        """Show how far the update is: the step it is on (a name from `app_update.STEPS`), how far along that step is
+        and a short detail such as the megabytes so far."""
+        names = [k.rsplit(".", 1)[-1] for k in startpage.UPDATE_STEPS]
+        index = names.index(step) if step in names else 0
+        shown = detail
+        if step == "download" and "/" in detail:
+            done, _, total = detail.partition("/")
+            shown = self.words["desktop.update.progress"].format(done=done, total=total)
+        self.main.call(self.window.script, startpage.script_update_tick(index, fraction, shown))
+
+    def update_failed(self, version: str, reason: str, details: str) -> str:
+        """Turn the window into the failed-update screen and wait for the person: "again", "open", or "" when they
+        quit instead. Nothing has changed: `version` is the one still running."""
+        self.details = details
+        self.answer, _ = "", self.answer_event.clear()
+        self.quiet = False
+        self.main.call(self.window.load_html, startpage.page(self.words, version, view="failed", reason=reason))
+        self.main.call(self._show)
+        self.answer_event.wait()
+        if self.quit_event.is_set() or self.answer not in ("again", "open"):
+            return ""
+        return self.answer
+
+    def resume_starting(self) -> None:
+        """Back to the starting page, after the failed-update screen."""
+        self.main.call(self.window.load_html, startpage.page(self.words, self.version))
 
     def window_state(self) -> dict[str, Any]:
         """What the control listener's state answer reports: the menu's state, whether the window is showing, the

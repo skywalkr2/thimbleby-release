@@ -1252,8 +1252,8 @@ class Worker:
             fresh = load_config(self.ws.config_dir, env=dict(os.environ))
         except ConfigError:
             fresh = self.cfg
-        address = update_offer.feed_address(shipped_product())
         settings = fresh.updates
+        address = update_offer.feed_address(shipped_product(), settings.feed_address)
         now = self.now()
         if (
             not settings.check

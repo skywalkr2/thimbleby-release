@@ -17,6 +17,10 @@ from engine import brandmark
 PAGE = Path(__file__).resolve().parent / "defaults" / "starting.html"
 #: The steps the starting window lists, in order, by wording key.
 STEPS = ("desktop.step.workspace", "desktop.step.app", "desktop.step.screens")
+#: The steps the window lists while the app updates itself, in order, by wording key (`engine.app_update.STEPS`).
+UPDATE_STEPS = tuple(f"desktop.update.step.{name}" for name in ("copy", "download", "check", "install", "open"))
+#: What the window can show: the starting steps, an update's steps, or the failed-update screen.
+VIEWS = ("start", "update", "failed")
 #: Error numbers that mean the disk has no room, and that something else holds the address the app needs.
 _FULL = {errno.ENOSPC, errno.EDQUOT}
 _HELD = {errno.EADDRINUSE, errno.EACCES, 10048, 10013}
@@ -47,20 +51,48 @@ def message(words: Mapping[str, str], kind: str) -> tuple[str, str]:
     return words[f"desktop.problem.{kind}.title"], words[f"desktop.problem.{kind}.text"]
 
 
-def page(words: Mapping[str, str], version: str = "", brand: Path = brandmark.BRAND_FOLDER) -> str:
-    """The starting window's page, in the person's words."""
+def page(
+    words: Mapping[str, str],
+    version: str = "",
+    brand: Path = brandmark.BRAND_FOLDER,
+    *,
+    view: str = "start",
+    reason: str = "",
+) -> str:
+    """The starting window's page, in the person's words. `view` is what it shows from the first moment, with no script
+    needed: the starting steps, an update's steps (`version` is the one running), or the failed-update screen
+    (`version` is the one still running, `reason` why the update didn't finish)."""
+    if view not in VIEWS:
+        raise ValueError(f"unknown view {view!r}")
     steps = "".join(f'<li><span class="m" aria-hidden="true"></span>{html.escape(words[k])}</li>' for k in STEPS)
+    update_steps = "".join(
+        f'<li><span class="m" aria-hidden="true"></span>{html.escape(words[k])}<span class="d"></span></li>'
+        for k in UPDATE_STEPS
+    )
+    heading, subtitle = words["desktop.starting.title"], words["desktop.starting.subtitle"]
+    if view == "update":
+        heading, subtitle = words["desktop.update.title"], words["desktop.update.subtitle"]
+    elif view == "failed":
+        heading, subtitle = (
+            words["desktop.update.failed.title"].format(version=version),
+            words["desktop.update.failed.text"],
+        )
     marks = {
         "mark_day": _inline(brand / "mark-day.svg", "d"),
         "mark_night": _inline(brand / "mark-night.svg", "n"),
     }
     values = {
         "title": html.escape(words["desktop.title"]),
-        "heading": html.escape(words["desktop.starting.title"]),
-        "subtitle": html.escape(words["desktop.starting.subtitle"]),
+        "heading": html.escape(heading),
+        "subtitle": html.escape(subtitle),
         "version": html.escape(words["desktop.starting.version"].format(version=version)) if version else "",
         "steps": steps,
         "step_count": str(len(STEPS)),
+        "view": view,
+        "update_steps": update_steps,
+        "update_count": str(len(UPDATE_STEPS)),
+        "failed_reason": html.escape(reason),
+        "open_app": html.escape(words.get("desktop.open", "")),
         "copy_details": html.escape(words["desktop.copy_details"]),
         "try_again": html.escape(words["desktop.try_again"]),
         "earlier_use": html.escape(words.get("desktop.earlier.use", "")),
@@ -94,6 +126,10 @@ def script_problem(title: str, text: str) -> str:
 
 def script_choice(title: str, found: str, facts: str, text: str) -> str:
     return f"choice({json.dumps(title)}, {json.dumps(found)}, {json.dumps(facts)}, {json.dumps(text)})"
+
+
+def script_update_tick(done: int, fraction: float | None, detail: str) -> str:
+    return f"update_tick({int(done)}, {json.dumps(fraction)}, {json.dumps(detail)})"
 
 
 def script_resume(title: str, sub: str) -> str:

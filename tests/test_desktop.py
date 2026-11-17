@@ -23,6 +23,12 @@ class Shell:
     def show_starting(self):
         self.calls.append("starting")
 
+    def on(self, key, action):
+        pass
+
+    def set_update(self, version):
+        pass
+
     def step(self, done):
         self.calls.append(("step", done))
 

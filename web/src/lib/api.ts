@@ -232,8 +232,10 @@ export const api = {
   /** Hides the offer of a newer version until an even newer one comes. */
   updateLater: (version: string) => call<S["Ok"]>("POST", `update/${id(version)}/later`),
   updateLaterUndo: (version: string) => call<S["Ok"]>("POST", `update/${id(version)}/later/undo`),
-  /** Updates to the version and restarts; refused in words while the install is not built. */
+  /** Updates to the version and restarts: the app's window shows the steps and the app opens again by itself. */
   updateInstall: (version: string) => call<S["Ok"]>("POST", `update/${id(version)}/install`),
+  /** The note that the app was updated has been seen: it leaves Today. */
+  updateSeen: () => call<S["Ok"]>("POST", "update/updated/seen"),
   readSource: (src: string) => call<S["WatchSourceView"]>("POST", `watch/${id(src)}/read`),
   handInRecent: (src: string) => call<S["WatchSourceView"]>("POST", `watch/${id(src)}/recent`),
   autoClosed: () => call<S["AutoClosedView"][]>("GET", "auto-closed"),

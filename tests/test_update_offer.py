@@ -194,11 +194,12 @@ def test_a_newer_version_is_one_row_on_today_and_later_removes_it_and_undo_bring
     assert client.post("/api/update/9.9.9/later").status_code == 404
 
 
-def test_turning_the_check_off_removes_the_row_and_installing_says_it_is_not_ready_and_changes_nothing(running):
+def test_a_copy_that_is_not_the_installed_app_has_no_install_and_the_check_off_removes_the_row(running):
     ws, client = running
     look(ws.private_dir, Feed([release("v0.2.0")]))
+    assert [r.state for r in rows(ws)] == ["manual"]  # the line points to the page only
     answer = client.post("/api/update/0.2.0/install")
-    assert answer.status_code == 409 and "isn't ready" in answer.json()["detail"]
+    assert answer.status_code == 400 and "isn't the installed app" in answer.json()["detail"]
     assert len(rows(ws)) == 1
     (ws.config_dir / "updates.yaml").write_text("version: 1\ncheck: false\n")
     assert rows(ws) == []
@@ -215,3 +216,41 @@ def test_the_worker_looks_once_when_due_and_never_when_the_check_is_off_or_no_fe
     monkeypatch.setattr(worker_module, "shipped_product", lambda *a, **k: {"release_feed": ADDRESS})
     worker.look_for_update_if_due().join()
     assert len(seen) == 1 and seen[0][0][1] == ADDRESS
+
+
+def test_the_installed_app_starts_the_update_from_the_click_and_its_row_offers_the_install(tmp_path, monkeypatch):
+    from engine import app_update
+
+    monkeypatch.setattr(update_offer, "current_version", lambda: "0.1.0")
+    monkeypatch.setattr(app_update, "own_install", lambda: app_update.Install("Darwin", tmp_path, tmp_path))
+    ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
+    cfg = ws.config(env={})
+    Store(ws.db_path, cfg=cfg).close()
+    asked = []
+    client = TestClient(create_app(ws, cfg, "t", start_worker=False, on_update=asked.append))
+    client.headers["Authorization"] = "Bearer t"
+    look(ws.private_dir, Feed([release("v0.2.0")]))
+    assert [r.state for r in rows(ws)] == [None]
+    assert client.post("/api/update/0.2.0/install").json() == {"ok": "0.2.0"} and asked == ["0.2.0"]
+    assert client.post("/api/update/9.9.9/install").status_code == 404 and asked == ["0.2.0"]
+
+
+def test_a_finished_update_is_one_row_until_it_is_seen_and_the_setting_names_another_feed(tmp_path, monkeypatch):
+    from engine import app_update
+
+    ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
+    ws.private_dir.mkdir(exist_ok=True)
+    cfg = ws.config(env={})
+    Store(ws.db_path, cfg=cfg).close()
+    client = TestClient(create_app(ws, cfg, "t", start_worker=False))
+    client.headers["Authorization"] = "Bearer t"
+    (ws.private_dir / app_update.RESULT_FILE).write_text(
+        json.dumps({"status": "ok", "version": "0.2.0", "page": f"{HOST}/tag/v0.2.0", "notes": ["Faster start"]})
+    )
+    [row] = [x for x in client.get("/api/today/queue").json() if x["kind"] == "updated"]
+    assert (row["subject"], row["names"], row["text"]) == ("0.2.0", ["Faster start"], f"{HOST}/tag/v0.2.0")
+    assert client.post("/api/update/updated/seen").json() == {"ok": "updated"}
+    assert [x for x in client.get("/api/today/queue").json() if x["kind"] == "updated"] == []
+    local = "http" + "://127.0.0.1:9/list"
+    assert update_offer.feed_address({}, local) == local
+    assert update_offer.feed_address({"release_feed": ADDRESS}, "http" + "://example.com/x") is None

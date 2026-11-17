@@ -531,3 +531,16 @@ def test_quitting_never_waits_long_on_the_control_listener():
     stopped = not stopping.is_alive()
     never.set()
     assert stopped and control.server is None
+
+
+def test_ready_is_called_once_the_server_answers_and_a_failing_side_call_never_stops_the_app(environment, tmp_path):
+    said = []
+    shell = FakeShell()
+    launch(tmp_path, shell, ready=lambda: said.append("ready"))
+    assert said == ["ready"] and ("step", 3) in shell.calls
+
+    def broken():
+        raise RuntimeError("no")
+
+    launch(tmp_path, FakeShell(), ready=broken, poll=broken)  # noted, and the app still starts and ends
+    assert launcher._quietly(broken, "poll") is None

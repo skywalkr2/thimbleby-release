@@ -605,3 +605,46 @@ def test_the_mac_session_check_closes_the_window_then_quits_by_the_systems_quit(
         lambda c: cancelled.append(c[-1]) or 1, lambda: [], lambda: True, lambda s: None
     )
     assert cancelled == [session_check.QUIT_EVENT] and told is None
+
+
+def test_each_runner_updates_the_installed_app_to_the_built_installer_through_a_local_feed_after_the_fresh_install():
+    """S-0625: one real update on each system, run by the code a person's click runs, with the feed on this computer
+    and the app told where it is by the setting, never by a check for a test."""
+    steps = workflow()["jobs"]["desktop"]["steps"]
+    names = [step.get("name") for step in steps]
+    fresh = next(i for i, step in enumerate(steps) if "fresh_install_check.py" in step.get("run", ""))
+    update = next(i for i, step in enumerate(steps) if "update_check.py" in step.get("run", ""))
+    assert update > fresh and steps[update + 1]["if"] == "always()" and "update" in steps[update + 1]["with"]["name"]
+    assert "Update the installed app" in names[update]
+    script = (BUILD / "update_check.py").read_text()
+    assert "THIMBLEBY__UPDATES__FEED_ADDRESS" in script and "/api/update/" in script and "/install" in script
+    for proof in (
+        "Today did not say the app was updated",
+        "The workspace lost its work",
+        "The running program did not change",
+    ):
+        assert proof in script
+    assert "frozen" not in script and "pretend" not in script.lower()  # nothing special-cased for the check
+
+
+def test_the_update_checks_local_feed_is_read_as_a_newer_release_whose_installer_downloads_and_checks(tmp_path):
+    import update_check
+
+    from engine import app_update, update_offer
+
+    installer = tmp_path / "Thimbleby-setup.exe"
+    installer.write_bytes(b"installer bytes" * 1000)
+    server, feed = update_check.serve_feed(installer, "Windows", 0)
+    try:
+        import urllib.request
+
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        feed_text = opener.open(feed).read()
+        chosen = update_offer.choose(feed_text, "0.1.0", True, "Windows")
+        assert chosen is not None
+        release, _ = chosen
+        assert release.version == update_check.FEED_VERSION
+        got = app_update.download(release.download_url, release.sha256, tmp_path / "dl", "Windows")
+        assert got.read_bytes() == installer.read_bytes()
+    finally:
+        server.shutdown()

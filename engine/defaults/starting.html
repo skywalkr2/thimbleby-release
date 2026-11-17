@@ -33,9 +33,16 @@ button.primary { background:var(--accent); border-color:var(--accent); color:#ff
 button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .msg { margin:0 0 4px; }
 [hidden] { display:none !important; }
+#updating, #failed { display:none; }
+body[data-view="update"] #progress { display:none; }
+body[data-view="update"] #updating { display:block; }
+body[data-view="failed"] #progress { display:none; }
+body[data-view="failed"] #failed { display:block; }
+li.now { color:var(--text); }
+li .d { margin-left:auto; color:var(--muted); font-size:13px; }
 </style>
 </head>
-<body>
+<body data-view="{{view}}">
 <main>
   <div class="head">
     <div class="mark" aria-hidden="true"><div class="day">{{mark_day}}</div><div class="night">{{mark_night}}</div></div>
@@ -45,6 +52,19 @@ button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
     <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="{{step_count}}" aria-valuenow="0" id="bar"><i id="fill"></i></div>
     <ul id="steps">{{steps}}</ul>
     <div class="foot"><span id="version">{{version}}</span></div>
+  </section>
+  <section id="updating">
+    <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="{{update_count}}" aria-valuenow="0" id="update-bar"><i id="update-fill"></i></div>
+    <ul id="update-steps">{{update_steps}}</ul>
+    <div class="foot"><span>{{version}}</span></div>
+  </section>
+  <section id="failed">
+    <p class="msg" id="failed-reason">{{failed_reason}}</p>
+    <div class="foot">
+      <button type="button" id="failed-copy">{{copy_details}}</button><span class="spacer"></span>
+      <button type="button" id="failed-open">{{open_app}}</button>
+      <button type="button" class="primary" id="failed-again">{{try_again}}</button>
+    </div>
   </section>
   <section id="problem" hidden>
     <p class="msg" id="text"></p>
@@ -77,6 +97,19 @@ function tick(done) {
   document.getElementById("fill").style.width = Math.round(100 * done / total) + "%";
   document.getElementById("bar").setAttribute("aria-valuenow", String(done));
 }
+function update_tick(done, fraction, detail) {
+  var items = document.querySelectorAll("#update-steps li");
+  var count = items.length;
+  for (var i = 0; i < count; i++) {
+    var on = i < done;
+    items[i].className = on ? "done" : (i === done ? "now" : "");
+    items[i].querySelector(".m").textContent = on ? "✓" : "";
+    items[i].querySelector(".d").textContent = i === done && detail ? detail : "";
+  }
+  var part = fraction === null || fraction === undefined ? 0 : fraction;
+  document.getElementById("update-fill").style.width = Math.min(100, Math.round(100 * (done + part) / count)) + "%";
+  document.getElementById("update-bar").setAttribute("aria-valuenow", String(done));
+}
 function problem(title, text, details) {
   document.getElementById("heading").textContent = title;
   document.getElementById("sub").hidden = true;
@@ -100,6 +133,9 @@ function resume(title, sub) {
   document.getElementById("choice").hidden = true;
   document.getElementById("progress").hidden = false;
 }
+document.getElementById("failed-again").onclick = function () { if (api()) api().choose("again"); };
+document.getElementById("failed-open").onclick = function () { if (api()) api().choose("open"); };
+document.getElementById("failed-copy").onclick = function () { if (api()) api().copy_details(); };
 document.getElementById("use").onclick = function () { if (api()) api().choose("use"); };
 document.getElementById("fresh").onclick = function () { if (api()) api().choose("fresh"); };
 document.getElementById("again").onclick = function () { if (api()) api().retry(); };

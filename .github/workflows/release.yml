@@ -290,6 +290,26 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      - name: Update the installed app to the built installer, as a person's click does
+        # The built installer is installed on an empty home, and a release feed on this computer lists it as a much newer
+        # version. The app finds it, and the request the row's button makes starts the update: the work is copied, the
+        # installer downloaded and checked against its SHA-256, the app ends, the script outside it swaps the programs,
+        # and the new version must say it runs. The check prints each step's time and confirms the work is kept and the
+        # old copy is gone. It runs after the installer is kept, so a red run still has its download.
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then INSTALLER="$(ls "$PWD"/dist/*.dmg | head -n 1)"; else INSTALLER="$(cygpath -w "$(ls "$PWD"/dist/*-setup.exe | head -n 1)")"; fi
+          python deploy/desktop/build_support/update_check.py "$INSTALLER" "$RUNNER_TEMP/update-pictures"
+
+      - name: Keep the picture and the log of the update
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Thimbleby-update-pictures-${{ matrix.target }}
+          path: ${{ runner.temp }}/update-pictures
+          if-no-files-found: warn
+          retention-days: 14
+
   # For a tag: the installers and their checksums join the draft release, so its downloads live with the release.
   attach:
     needs: [package, desktop]

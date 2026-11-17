@@ -60,7 +60,11 @@ def test_a_cause_further_down_decides_the_message():
 
 def test_the_starting_page_has_the_mark_the_heading_three_steps_and_both_actions():
     page = startpage.page(WORDS, "0.1.0")
-    assert "Starting Thimbleby" in page and "Version 0.1.0" in page and page.count("<li>") == 3
+    assert (
+        "Starting Thimbleby" in page
+        and "Version 0.1.0" in page
+        and page.split('id="steps"')[1].split("</ul>")[0].count("<li>") == 3
+    )
     assert "Your workspace is ready" in page and "Opening the screens" in page
     assert "<svg" in page and "Try again" in page and "Copy details" in page
     assert "You're offline" not in page and "{{" not in page

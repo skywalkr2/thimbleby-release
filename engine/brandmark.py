@@ -176,6 +176,35 @@ def render(svg: str, size: int, *, template: bool) -> Any:
     return canvas.resize((size, size), Image.LANCZOS)
 
 
+def with_dot(picture: Any, *, template: bool) -> Any:
+    """The mark with a dot in its top right corner, which says something waits for the person. A template picture (the
+    Mac menu bar tints it) gets a solid dot with a clear ring round it so it reads in both bar colours; a full-colour
+    picture gets the brand's accent dot with a light ring."""
+    from PIL import Image, ImageDraw
+
+    size = picture.size[0]
+    scale = 4
+    layer = Image.new("RGBA", (size * scale, size * scale), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    radius = size * scale * 0.2
+    cx, cy = size * scale - radius * 1.15, radius * 1.15
+    ring = radius * 1.35
+    box = lambda r: (cx - r, cy - r, cx + r, cy + r)  # noqa: E731
+    out = picture.copy()
+    if template:
+        clear = Image.new("L", layer.size, 0)
+        ImageDraw.Draw(clear).ellipse(box(ring), fill=255)
+        mask = clear.resize(out.size, Image.LANCZOS)
+        alpha = out.getchannel("A").point(lambda v: v)
+        alpha.paste(0, (0, 0), mask)
+        out.putalpha(alpha)
+        draw.ellipse(box(radius), fill=(0, 0, 0, 255))
+    else:
+        draw.ellipse(box(ring), fill=(255, 255, 255, 255))
+        draw.ellipse(box(radius), fill=(192, 57, 43, 255))
+    return Image.alpha_composite(out, layer.resize(out.size, Image.LANCZOS))
+
+
 #: The sizes (in pixels) the Windows icon file carries, and the one the Mac's icon file is drawn from.
 ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
 ICNS_PIXELS = 1024
