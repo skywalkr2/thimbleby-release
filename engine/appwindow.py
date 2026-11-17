@@ -11,6 +11,7 @@ The toolkits themselves are behind two small interfaces (`WindowBackend`, `TrayB
 from __future__ import annotations
 
 import contextlib
+import os
 import subprocess
 import sys
 import threading
@@ -106,6 +107,10 @@ def fit_window(
         max(0, (screen[0] - width) // 2),
         max(0, (screen[1] - height) // 2),
     )
+
+
+#: Seconds the window loop has to end after quitting before the process ends itself.
+END_GRACE_SECONDS = 10.0
 
 
 class MainThread:
@@ -215,6 +220,11 @@ class AppShell:
         self.main = MainThread(window.post)
         self._actions: dict[str, Callable[[], None]] = {}
         self._quitting = False
+        #: Set when the window loop has returned; the end guard waits for it after the work is done.
+        self._ended = threading.Event()
+        #: How long the loop has to end once the work is done and the window destroyed, before the process ends itself.
+        self.end_grace_seconds = END_GRACE_SECONDS
+        self._exit: Callable[[int], None] = os._exit
         self._shown = False
         self._app_loaded = False
         self.page_drawn = False  # set by the app's page itself, through the window's bridge
@@ -241,7 +251,10 @@ class AppShell:
             self._closing,
             self._quit_requested,
         )
-        self.window.run(worker)
+        try:
+            self.window.run(worker)
+        finally:
+            self._ended.set()
         return result[0]
 
     def _start_item(self) -> None:
@@ -253,6 +266,18 @@ class AppShell:
         if self.tray is not None:
             self.tray.stop()
         self.window.destroy()
+        threading.Thread(target=self._end_guard, name="end-guard", daemon=True).start()
+
+    def _end_guard(self) -> None:
+        """Every Quit ends the app: the work is done by now (the server stopped and the workspace unlocked), so a window
+        loop that still hasn't returned after the grace period is ended with the process."""
+        if self._ended.wait(self.end_grace_seconds):
+            return
+        with contextlib.suppress(Exception):
+            from engine.launcher import note
+
+            note(f"the window loop was still running {self.end_grace_seconds} seconds after quitting; ending the app")
+        self._exit(0)
 
     def _closing(self) -> bool:
         """Closing the window leaves the app running in the menu bar or tray: it only hides."""

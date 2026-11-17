@@ -58,8 +58,8 @@ test("a fresh install opens on the walkthrough and skipping it reaches Today, an
       await main.getByRole("button", { name: "Continue" }).click();
       await expect.poll(heading, { timeout: 60_000 }).not.toBe(before);
     }
-    // Each step's own way on: "I'll do this later" where a step offers it, else its Continue, and on the last step
-    // "Go to Today". Never the header's "Finish later", which leaves setup unfinished. A button is pressed only once it is
+    // Each step's own way on: "I'll do this later" where a step offers it (confirmed with "Leave it out"), else its
+    // Continue, and on the last step "Go to Today". Setup has no way out as a whole. A button is pressed only once it is
     // enabled and the step is still the one it was found on, and each press waits for the next step's heading rather than
     // a fixed time, so a slow computer takes longer and presses nothing early.
     for (let step = 0; step < 30 && !(await today(page).isVisible()); step++) {
@@ -70,7 +70,12 @@ test("a fresh install opens on the walkthrough and skipping it reaches Today, an
       await expect(button).toBeEnabled({ timeout: 60_000 });
       if ((await today(page).isVisible()) || (await heading()) !== here) continue;
       await button.click({ timeout: 30_000 });
-      await expect.poll(async () => (await today(page).isVisible()) || (await heading()) !== here, { timeout: 60_000 }).toBe(true);
+      // A step left out asks first, saying what is given up; the walk answers "Leave it out" and goes on.
+      const leaveOut = page.getByRole("dialog").getByRole("button", { name: "Leave it out", exact: true });
+      const moved = async () => (await today(page).isVisible()) || (await heading()) !== here;
+      await expect.poll(async () => (await moved()) || (await leaveOut.isVisible()), { timeout: 60_000 }).toBe(true);
+      if (await leaveOut.isVisible()) await leaveOut.click({ timeout: 30_000 });
+      await expect.poll(moved, { timeout: 60_000 }).toBe(true);
     }
     await expect(today(page)).toBeVisible({ timeout: 30_000 });
   }

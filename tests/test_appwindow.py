@@ -418,3 +418,48 @@ def test_start_fresh_answers_false_and_quitting_while_it_waits_answers_none():
 
     shell.run(work)
     assert outcome == [False, None]
+
+
+class StuckWindow(FakeWindow):
+    """A window loop that doesn't return when its window is destroyed, as the Mac's does when no event follows a Quit."""
+
+    def destroy(self):
+        self._note("destroy")
+
+
+def test_a_quit_whose_window_loop_never_returns_still_ends_the_app_once_the_work_is_done():
+    window = StuckWindow()
+    shell = AppShell(window, FakeTray(window), dict(WORDS), system="Darwin")
+    shell.end_grace_seconds = 0.05
+    exits = []
+
+    def exit_now(code):
+        exits.append(code)
+        window.done.set()  # the process ending is what ends a stuck loop
+
+    shell._exit = exit_now
+
+    def work():
+        shell.show_app("http://127.0.0.1:1/")
+        shell.quit()
+        return 0
+
+    assert shell.run(work) == 0
+    assert exits == [0]
+
+
+def test_a_quit_whose_window_loop_returns_never_ends_the_process():
+    shell, window, _ = make()
+    shell.end_grace_seconds = 0.05
+    exits = []
+    shell._exit = exits.append
+
+    def work():
+        shell.show_app("http://127.0.0.1:1/")
+        shell.quit()
+        return 0
+
+    assert shell.run(work) == 0
+    for guard in [t for t in threading.enumerate() if t.name == "end-guard"]:
+        guard.join(5)
+    assert exits == []

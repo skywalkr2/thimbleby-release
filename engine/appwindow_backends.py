@@ -63,6 +63,18 @@ def asked_by_quit(frame: Any = None) -> bool:
     return False
 
 
+def wake_mac_loop() -> None:
+    """Post an empty application event, so a stop the app was asked for takes effect now, not at the next input."""
+    import AppKit
+
+    event = (
+        AppKit.NSEvent.otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2_(
+            AppKit.NSEventTypeApplicationDefined, (0, 0), 0, 0, 0, None, 0, 0, 0
+        )
+    )
+    AppKit.NSApp.postEvent_atStart_(event, True)
+
+
 def closing_handler(
     on_closing: Callable[[], bool], on_quit: Callable[[], None], asked: Callable[[], bool] = asked_by_quit
 ) -> Callable[[], bool]:
@@ -186,6 +198,12 @@ class WebviewWindow:
 
     def destroy(self) -> None:
         self.window.destroy()
+        if platform.system() == "Darwin":
+            from PyObjCTools import AppHelper
+
+            # Queued after the library's own close, which stops the app when the last window goes; a Mac app stops
+            # only on its next event, and a close asked off an event (a Quit) has none to follow it.
+            AppHelper.callAfter(wake_mac_loop)
 
 
 class MacStatusItem:
