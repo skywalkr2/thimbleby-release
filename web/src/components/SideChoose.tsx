@@ -32,10 +32,21 @@ function SideQuestion(props: { question: Question }) {
   const [picked, setPicked] = useState(q.side);
   const to = q.sides.find((s) => s.side === picked) ?? q.sides[0] ?? { side: q.side, name: q.name };
   const several = q.sides.length > 1;
-  const refs = q.items.map((i) => ({ kind: i.kind, id: i.id, read_version: i.version }));
-  const n = q.items.length;
+  // One tick for each item, all ticked to start: Move moves the ticked ones and keeps the rest where they are. What was
+  // unticked is remembered, so an item that arrives while the question is open starts ticked like the others.
+  const [unticked, setUnticked] = useState<ReadonlySet<string>>(new Set());
+  const keyOf = (i: { kind: string; id: string }) => `${i.kind}:${i.id}`;
+  const ref = (i: Question["items"][number]) => ({ kind: i.kind, id: i.id, read_version: i.version });
+  const ticked = q.items.filter((i) => !unticked.has(keyOf(i)));
+  const rest = q.items.filter((i) => unticked.has(keyOf(i)));
+  const refs = ticked.map(ref);
+  const all = q.items.map(ref);
+  const n = ticked.length;
+  const total = q.items.length;
   // Items the rules filed beside a side on a guess name the side they sit on; Keep leaves them there.
   const under = q.kept_under?.name;
+  // Where the items that stay are: the side the rules filed them beside, else Personal.
+  const stays = under ?? t("nav.personal");
   const asked = under
     ? several
       ? tn("filing.question.beside_pick", n, { kept: under })
@@ -45,9 +56,12 @@ function SideQuestion(props: { question: Question }) {
       : tn("filing.question", n, { side: q.name });
   const move = () =>
     act(
-      () => api.filingMove({ side: to.side, items: refs }),
+      () => api.filingMove({ side: to.side, items: refs, keep: rest.map(ref) }),
       (done) => ({
-        message: tn("filing.moved", done.count, { side: to.name }) + (done.rule ? ` ${t("filing.rule_proposed")}` : ""),
+        message:
+          tn("filing.moved", done.count, { side: to.name }) +
+          ((done.kept ?? 0) > 0 ? ` ${tn("filing.stay_done", done.kept ?? 0, { where: stays })}` : "") +
+          (done.rule ? ` ${t("filing.rule_proposed")}` : ""),
         undo: async () => {
           const report = await api.undo(done.changeset);
           if (!report.restored.length) throw new Error("not undone");
@@ -55,13 +69,29 @@ function SideQuestion(props: { question: Question }) {
       }),
     );
   const keep = () =>
-    act(() => api.filingKeep({ side: q.side, items: refs }), () => ({ message: under ? t("filing.kept_under", { side: under }) : t("filing.kept") }));
+    act(() => api.filingKeep({ side: q.side, items: all }), () => ({ message: under ? t("filing.kept_under", { side: under }) : t("filing.kept") }));
   return (
     <section className="filing-question" data-filing-question={q.side} aria-label={asked}>
       <p>{asked}</p>
-      <ul className="plain-list" aria-label={under ? t("filing.items_label.beside", { kept: under }) : several ? t("filing.items_label.pick") : t("filing.items_label", { side: q.name })}>
+      <ul className="plain-list tick-list" aria-label={under ? t("filing.items_label.beside", { kept: under }) : several ? t("filing.items_label.pick") : t("filing.items_label", { side: q.name })}>
         {q.items.map((i) => (
-          <li key={`${i.kind}:${i.id}`}>{shortTitle(i.text)}</li>
+          <li key={keyOf(i)}>
+            <label className="check-line">
+              <input
+                type="checkbox"
+                checked={!unticked.has(keyOf(i))}
+                onChange={(e) =>
+                  setUnticked((now) => {
+                    const next = new Set(now);
+                    if (e.target.checked) next.delete(keyOf(i));
+                    else next.add(keyOf(i));
+                    return next;
+                  })
+                }
+              />
+              <span>{shortTitle(i.text)}</span>
+            </label>
+          </li>
         ))}
       </ul>
       {several && (
@@ -75,10 +105,13 @@ function SideQuestion(props: { question: Question }) {
           </Select>
         </FormField>
       )}
-      <p className="hint">{tn("filing.visible", n, { side: to.name })}</p>
+      <p className="hint">
+        {n === 0 ? t("filing.none_ticked") : tn("filing.visible", n, { side: to.name })}
+        {n > 0 && rest.length > 0 && ` ${tn("filing.stay", rest.length, { where: stays })}`}
+      </p>
       <Actions align="end">
-        <Button variant="primary" onClick={() => void move()}>
-          {t("filing.move")}
+        <Button variant="primary" disabled={n === 0} onClick={() => void move()}>
+          {n < total ? t("filing.move_some", { n }) : t("filing.move")}
         </Button>
         <Button onClick={() => void keep()}>{under ? t("filing.keep_under", { side: under }) : t("filing.keep")}</Button>
       </Actions>

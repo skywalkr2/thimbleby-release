@@ -93,23 +93,28 @@ def test_item_3_a_model_with_no_known_price_is_tried_by_the_check_and_not_held_f
 
 
 @pytest.mark.parametrize("machine_id", ["h7Kq2LmN9xPz4RtVwQ", "x9fK2mQ7vL3nB8tR5w", "Qp3Zk8Wm1Xv6Lt9Rb2"])
-def test_item_10_a_reply_address_that_is_a_long_machine_id_is_never_listed_as_a_person_you_write_to(
+def test_item_10_a_reply_address_that_is_a_long_machine_id_reaches_the_run_with_a_code_hint_beside_the_real_one(
     tmp_path, machine_id
 ):
-    from tests.test_people_suggestions import message, names, setup, who
-    from tests.test_people_suggestions import people_suggestions as suggestions
+    """Who is a person is the assistant's reading (S-0590): the address is in the tally with the mark a code gives it,
+    for the run to weigh, and the real correspondent is there untouched."""
+    from engine import contact_tally
+    from tests.test_people_suggestions import message, setup, who
 
     items = [message("sent1", "me@example.com", [who(0), f"<{machine_id}@mail.example.com>"])]
     _ws, cfg, store = setup(tmp_path, items, sent=True)
-    found = suggestions.suggest(store, cfg, 20)
+    found = {c.address: c for c in contact_tally.tally(store, cfg)}
     store.close()
-    assert names(found) == ["Correspondent A"], f"listed as people: {names(found)}"
+    assert found["c0@example.com"].hints == ()
+    assert found[f"{machine_id.lower()}@mail.example.com"].hints == (contact_tally.CODE,)
 
 
 @pytest.mark.parametrize("sent", [True, False])
-def test_item_11_one_machine_address_among_several_real_correspondents_does_not_stop_the_search(tmp_path, sent):
-    from tests.test_people_suggestions import message, names, setup, who
-    from tests.test_people_suggestions import people_suggestions as suggestions
+def test_item_11_one_machine_address_among_several_real_correspondents_does_not_hide_the_others_from_the_run(
+    tmp_path, sent
+):
+    from engine import contact_tally
+    from tests.test_people_suggestions import message, setup, who
 
     machine = "<reply-7f3a9c2e4b1d@mail.example.com>"
     if sent:
@@ -122,10 +127,10 @@ def test_item_11_one_machine_address_among_several_real_correspondents_does_not_
             message(f"m{n}", who(n)) for n in range(1, 5)
         ]
     _ws, cfg, store = setup(tmp_path, items, sent=sent)
-    found = suggestions.suggest(store, cfg, 20)
+    found = contact_tally.tally(store, cfg)
     store.close()
-    real = 4
-    assert len(found) == real, f"found only {names(found)}"
+    real = [c for c in found if c.hints == ()]
+    assert len(real) == 4, f"found only {[c.address for c in real]}"
 
 
 # ---- item 15: out of credit with no reset time ----------

@@ -52,7 +52,7 @@ from engine.tasks import TaskKind
 from engine.texts import LongText, Unit
 from engine.tools import ToolBox, ToolError, ToolResult
 
-PLUGIN_API_VERSION = "0.3.99"
+PLUGIN_API_VERSION = "0.3.100"
 
 #: The earlier minor version this core still serves (one minor back). A pack whose range reaches the end of that minor
 #: stays on, marked "Built for an earlier version"; the window ends with the next minor release. Every name the core
@@ -2264,6 +2264,7 @@ class Registrar:
         reads: Literal["mail", "calendar"] | None = None,
         older: Callable | None = None,
         older_count: Callable | None = None,
+        headers: Callable | None = None,
     ) -> None:
         """A place the assistant can keep reading (listed in `provides.connectors`). A workspace watches it by naming
         it in `watch.yaml` with its settings, which `settings` (a pydantic model) checks. `poll(settings, state,
@@ -2310,12 +2311,27 @@ class Registrar:
         function runs with the source's own settings and account, reads only, and a failure is contained like a
         poll's (`ConnectorError` kinds pass through). `older_count=fn`, with the same arguments, returns how many
         items there are (at most `max_items`) without reading them, so the estimate costs no more than a count; left
-        out, the estimate calls `older` and counts what comes back."""
+        out, the estimate calls `older` and counts what comes back.
+
+        **Headers (a year of who writes to whom):** a mail connector that can list message headers alone passes
+        `headers=fn`, with `fn(settings, since, before, max_items, context) -> list[SourceItem]` and the same arguments
+        and rules as `older`: the newest `max_items` messages dated from the day `since` up to, not including, the day
+        `before`, with the same keys as a poll's. Each item carries its `MessageDetails` (sender, received,
+        participants, unread, bulk, categories and `where`) and a title (the subject), and no text and no files; any
+        text or files it carries are dropped. It is optional and additive: a connector without it works as before. Once,
+        after a mail source's first read, the core asks for the headers from `watch.first_headers_days` back (365) to
+        the day that read began, at most `watch.first_headers_max_items` (5000), in the background, holding nothing and
+        costing no AI work. Each header is kept as a record of its own that the contact tally and the first look at the
+        person's habits read; it never becomes an input, a request or anything the assistant sorts, and forgetting a
+        person and retention reach it. A `ConnectorError` is recorded and told once like a failed read, and is not
+        tried again."""
         self._name(name)
         if name in self.connectors or not callable(poll):
             raise RegistrationRefused("connector", "duplicate connector or invalid poll function")
         if (older is not None and not callable(older)) or (older_count is not None and not callable(older_count)):
             raise RegistrationRefused("connector", "older and older_count are functions")
+        if headers is not None and not callable(headers):
+            raise RegistrationRefused("connector", "headers is a function")
         if older_count is not None and older is None:
             raise RegistrationRefused("connector", "older_count goes with older")
         if reads not in (None, "mail", "calendar"):
@@ -2332,6 +2348,7 @@ class Registrar:
             reads=reads,
             older=older,
             older_count=older_count,
+            headers=headers,
         )
 
     def channel(

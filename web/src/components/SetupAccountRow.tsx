@@ -41,6 +41,8 @@ export function SetupAccountRow(props: {
   grouped?: boolean;
   /** A button of the row's own (Remove, for a mailbox connected another way). */
   action?: ReactNode;
+  /** A line of the row's own under what it says (the full-read choice). */
+  below?: ReactNode;
 }) {
   const { t } = useWords();
   const words = useAccountWords();
@@ -83,6 +85,7 @@ export function SetupAccountRow(props: {
           </span>
         </span>
         {props.sidesEditor && <AccountSidesLine sources={props.sources} account={name} editor={props.sidesEditor} closed />}
+        {props.below}
       </div>
       {(props.need || props.action) && (
         <div className={styles.acts}>

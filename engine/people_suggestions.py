@@ -1,9 +1,9 @@
-"""People the person writes to, suggested in the walkthrough's people step (design 7.8): taken from the mail the
-sources already read, never asked of a service. When the person's own sent mail is read, the people it was sent to
-count; otherwise the people the mail came from, and only senders who look like people. Anyone already on file, the
-person themselves, automated, role and company senders, addresses whose local part or +tag is a code (unsubscribe and
-bounce addresses), addresses at a domain that names automated replying, bulk mail, set-aside senders and the mail
-kinds the app tracks are left out. Reads only: adding someone is the People route's own add.
+"""What the walkthrough's people step needs from the mail the sources already read, and its typed and pasted lists
+(design 7.8). Who the person writes to is read from the contact tally (`engine.contact_tally`) and who is a person to
+them is the assistant's reading (`engine.person_look`, offers the step shows); nothing here decides it. This module
+holds what the tally and the step share: the mail sources, the person's own addresses, the people already on file, and
+the senders the person set aside, and reads a typed or pasted list of names. Reads only: adding someone is the People
+route's own add.
 """
 
 from __future__ import annotations
@@ -15,17 +15,6 @@ from typing import Any
 
 from engine.connectors import CORE, declared_reads, reads
 from engine.contacts import all_values
-
-
-@dataclass(frozen=True)
-class Suggestion:
-    """One person worth adding: `name` as the mail shows it (made from the address when it shows none), their
-    `address`, and in how many messages they appear (`count`)."""
-
-    name: str
-    address: str
-    count: int
-    from_sent: bool
 
 
 def _name_of(display: str, address: str) -> str:
@@ -64,7 +53,6 @@ def _known(store: Any) -> tuple[set[str], set[str]]:
     return addresses, names
 
 
-_WORD = re.compile(r"[a-z]+")
 _PERSON_WORD = re.compile(r"^[^\W\d_][^\W\d_'\u2019.-]*(?:['\u2019.-][^\W\d_]+)*\.?$")
 
 
@@ -76,11 +64,9 @@ def _parsed(entry: str) -> tuple[str, str]:
     return display, address if "@" in address else ""
 
 
-def _blocked(store: Any, cfg: Any, sources: list[Any]) -> tuple[set[str], set[str]]:
-    """The addresses and domains that are never someone to add: senders whose mail is bulk, set aside or of a tracked
-    kind (a bill, an order, a delivery), and the senders and domains of the person's own set-aside rules."""
-    from engine.mail_kinds import kind_of
-
+def _set_aside(store: Any, cfg: Any, sources: list[Any]) -> tuple[set[str], set[str]]:
+    """The addresses and domains the person set aside: the senders and domains of their own set-aside rules, and the
+    senders of mail they set aside or deleted. Nothing else is left out of the tally for its kind."""
     addresses: set[str] = set()
     domains: set[str] = set()
     for rule in cfg.watch.triage:
@@ -92,88 +78,30 @@ def _blocked(store: Any, cfg: Any, sources: list[Any]) -> tuple[set[str], set[st
         for snap in view.find("snapshot", {"source": s.id}):
             message = snap.data.get("message") or {}
             _, sender = _parsed(str(message.get("sender") or ""))
-            if not sender:
-                continue
-            kept_apart = snap.data.get("set_aside") or snap.data.get("deleted") or message.get("bulk")
-            if kept_apart or kind_of(cfg.watch.mail_kinds, sender, str(snap.data.get("title") or ""), ""):
+            if sender and (snap.data.get("set_aside") or snap.data.get("deleted")):
                 addresses.add(sender)
     return addresses, domains
 
 
-#: The marks that split an address's local part into words.
-_LOCAL_MARKS = re.compile(r"[._+=-]+")
-#: Letters a hexadecimal code is written in.
-_HEX = re.compile(r"[0-9a-f]+")
-#: The shortest run of letters and digits that can be a code rather than a word or a name.
-_CODE_LENGTH = 8
-#: A longer run of letters and digits with digits scattered through it in at least this many separate places is an
-#: identifier, whatever its letters and however sparse its digits (no name is spelled that way).
-_SCATTERED_LENGTH = 12
-_SCATTERED_RUNS = 3
-_DIGIT_RUNS = re.compile(r"\d+")
+def _mail_marks(store: Any, cfg: Any, sources: list[Any]) -> tuple[set[str], set[str]]:
+    """The addresses whose mail the service marks bulk and those whose mail is of a kind the app tracks (a bill, an
+    order, a delivery): hints for the assistant's reading, never reasons to leave anyone out."""
+    from engine.mail_kinds import kind_of
 
-
-def local_is_code(local: str) -> bool:
-    """Whether an address's local part (before the @ sign) holds a code, which no person's address does: a run of at
-    least `_CODE_LENGTH` letters and digits, with a digit, that is hexadecimal or at least half digits (the identifier
-    in a mailing list's unsubscribe or bounce address), or a run of at least `_SCATTERED_LENGTH` with digits in
-    `_SCATTERED_RUNS` or more separate places (a mixed-case identifier). A name with digits in it (`sam.kin1985`)
-    is not a code. A short `+tag` after the name is fine, since a person's own address may carry one, but a tag that is
-    itself a code makes the address machine-made (a service's per-message reply address)."""
-    for word in _LOCAL_MARKS.split(local.lower()):
-        digits = sum(c.isdigit() for c in word)
-        if len(word) >= _CODE_LENGTH and digits and (_HEX.fullmatch(word) or digits * 2 >= len(word)):
-            return True
-        if len(word) >= _SCATTERED_LENGTH and len(_DIGIT_RUNS.findall(word)) >= _SCATTERED_RUNS:
-            return True
-    return False
-
-
-def domain_is_automated(domain: str, words: set[str]) -> bool:
-    """Whether the first part of an address's domain names automated replying or bouncing, one of `words` being a
-    whole word of it (`replies` in `replies.example.com`, `bounce` in `bounce-mail.example.com`)."""
-    return any(w in words for w in _LOCAL_MARKS.split(domain.lower().partition(".")[0]))
-
-
-def _first_word(local: str) -> str:
-    found = _WORD.match(local.lower())
-    return found.group(0) if found else ""
-
-
-def _names_a_company(display: str, words: set[str]) -> bool:
-    return any(w in words for w in _WORD.findall(display.lower()))
-
-
-def _looks_like_a_person(display: str) -> bool:
-    """A shown name of a person's form: two to four words that are names (letters, with a hyphen, apostrophe or full
-    stop inside), each starting with a capital, none written in capitals only."""
-    parts = display.split()
-    return 2 <= len(parts) <= 4 and all(
-        _PERSON_WORD.match(w) and w[0].isupper() and not (len(w) > 3 and w.isupper()) for w in parts
-    )
-
-
-def suggest(store: Any, cfg: Any, limit: int) -> list[Suggestion]:
-    """The real people the person writes to, the ones they wrote to most first, at most `limit`, read from the contact
-    tally (`engine.contact_tally`). Sent mail is read first (who it went to). When none is read, who wrote to the person
-    counts, but only a sender whose shown name is a person's. Left out always: the person themselves, anyone on file,
-    automated and role addresses, senders whose names say a company or a service, bulk mail, mail the person set aside
-    and the kinds of mail the app tracks (the tally keeps those apart). Reads only."""
-    from engine.contact_tally import tally
-
-    known_addresses, known_names = _known(store)
-    contacts = [
-        c
-        for c in tally(store, cfg)
-        if c.apart is None and c.address not in known_addresses and c.name.lower() not in known_names
-    ]
-    wrote_to = [c for c in contacts if c.to_them]
-    if wrote_to:
-        ranked = sorted(wrote_to, key=lambda c: (-c.to_them, c.name.lower(), c.address))
-        return [Suggestion(c.name, c.address, c.to_them, True) for c in ranked[: max(0, limit)]]
-    named = [c for c in contacts if c.from_them_named]
-    ranked = sorted(named, key=lambda c: (-c.from_them_named, c.name.lower(), c.address))
-    return [Suggestion(c.name, c.address, c.from_them_named, False) for c in ranked[: max(0, limit)]]
+    bulk: set[str] = set()
+    tracked: set[str] = set()
+    view = store.read()
+    for s in sources:
+        for snap in view.find("snapshot", {"source": s.id}):
+            message = snap.data.get("message") or {}
+            _, sender = _parsed(str(message.get("sender") or ""))
+            if not sender:
+                continue
+            if message.get("bulk"):
+                bulk.add(sender)
+            if kind_of(cfg.watch.mail_kinds, sender, str(snap.data.get("title") or ""), ""):
+                tracked.add(sender)
+    return bulk, tracked
 
 
 #: The most names one pasted list adds.

@@ -641,22 +641,19 @@ describe("an empty calendar and the details pane", () => {
     bare();
   });
 
-  test("the details cover the edge of the calendar instead of squeezing the week when it would be left too narrow", async () => {
+  test("the details are a card beside the entry that leaves the week its whole width, however narrow the room", async () => {
     const user = userEvent.setup();
-    const split = (width: number) => {
-      vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) {
-        return this.hasAttribute("data-split") ? width : 0;
-      });
-      vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
-        return this.hasAttribute("data-detail-pane") ? 420 : 0;
-      });
-    };
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute("data-split") ? 900 : 0;
+    });
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute("data-detail-pane") ? 420 : 0;
+    });
     vi.stubGlobal("matchMedia", (query: string) => ({ matches: /min-width:\s*1024px/.test(query), addEventListener: () => undefined, removeEventListener: () => undefined }));
-    split(900);
     await open();
     await user.click(screen.getByRole("button", { name: /Standup/ }));
     await screen.findByRole("complementary", { name: "Standup" });
-    expect(document.querySelector("[data-split]")).toHaveAttribute("data-pane", "overlay");
+    expect(document.querySelector("[data-split]")).toHaveAttribute("data-pane", "floating");
     vi.restoreAllMocks();
   });
 });

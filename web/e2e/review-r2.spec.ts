@@ -5,7 +5,7 @@
 // S-0373 search · S-0374 a folder connection · S-0362 money fields · S-0375 the accent.
 import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
-import { collectProblems, fakeAddress, pressStart, type Info, pickFolder } from "./journey-helpers";
+import { collectProblems, fakeAddress, pressStart, type Info, pickFolder, turnOnAndGoOn } from "./journey-helpers";
 
 const FAKE = fakeAddress("JOURNEY_R2_FAKE_PORT", 8735);
 const LOADED = { timeout: 30_000 };
@@ -114,6 +114,7 @@ test.describe.serial("review R2: setup and Settings", () => {
     await expect(main.getByText("That app doesn't say which account it is signed in to.")).toHaveCount(0);
     await main.getByRole("radio", { name: /^Yes/ }).check();
     await main.getByRole("button", { name: "Continue" }).click();
+    await turnOnAndGoOn(main);
     await expect(main.getByRole("heading", { level: 2, name: "Mail and calendar" })).toBeVisible(LOADED);
 
     // S-0371 and S-1-N4: back on the done step, choosing another service's card takes neither Continue nor the way on away.
@@ -164,12 +165,8 @@ test.describe.serial("review R2: setup and Settings", () => {
     await expect.poll(async () => (await mine())[0], { timeout: 20_000 }).toMatchObject({ last: { outcome: expect.stringMatching(/^(ok|baseline)$/) }, failures: 0 });
     await main.getByRole("button", { name: "Continue" }).click();
 
-    // S-0339: Backups, one Continue; the copies listed afterwards are one, and no file name shows.
-    await expect(main.getByRole("heading", { level: 2, name: "Backups" })).toBeVisible(LOADED);
-    await pickFolder(page, main, ["offsite"]);
-    await expect(main.getByText(/That folder works/)).toBeVisible(LOADED);
-    await main.getByRole("button", { name: "Continue" }).click();
-    await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible(LOADED);
+    // After Mail and calendar the first reading is waited for, then People follows by itself.
+    await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible({ timeout: 120_000 });
 
     // S-0370: a full name is asked for. One word, and a company's name in capitals, are refused in words and not added.
     const name = main.getByRole("textbox", { name: "Name", exact: true });
@@ -201,6 +198,13 @@ test.describe.serial("review R2: setup and Settings", () => {
     await expect(preview).toContainText("Maria Fernanda Gonzalez de la Cruz Alvarez Pereira");
     await expect(preview).toContainText("THE BIG COMPANY LTD");
     await expect(preview.locator("li", { hasText: "THE BIG COMPANY LTD" })).toHaveCount(0);
+
+    // S-0339: Backups (after People), one Continue; the copies listed afterwards are one, and no file name shows.
+    await page.getByRole("navigation", { name: "Setup steps" }).getByRole("button", { name: /^Backups/ }).click();
+    await expect(main.getByRole("heading", { level: 2, name: "Backups" })).toBeVisible(LOADED);
+    await pickFolder(page, main, ["offsite"]);
+    await expect(main.getByText(/That folder works/)).toBeVisible(LOADED);
+    await main.getByRole("button", { name: "Continue" }).click();
 
     // The copies the app made: one, however the first backup was started.
     const copies = await page.request.get("api/backups", { headers: auth() });

@@ -184,7 +184,9 @@ export function reachWords(
   else if ((scope.except ?? []).length) parts.push(t("knowledge.reach.except", { names: list((scope.except ?? []).map(project)) }));
   else parts.push(t("knowledge.reach.all"));
   if ((scope.task_kinds ?? []).length) {
-    const work = (scope.task_kinds ?? []).map((k) => (has(`task.${k}`) ? t(`task.${k}`) : t("task.other")));
+    const work = (scope.task_kinds ?? []).map((k) =>
+      has(`reach.kind.${k}`) ? t(`reach.kind.${k}`) : has(`task.${k}`) ? t(`task.${k}`) : t("task.other"),
+    );
     parts.push(t("knowledge.reach.work", { names: list([...new Set(work)]) }));
   }
   if ((scope.people ?? []).length) {

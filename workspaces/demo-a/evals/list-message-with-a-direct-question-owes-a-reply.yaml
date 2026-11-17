@@ -1,0 +1,36 @@
+id: list-message-with-a-direct-question-owes-a-reply
+title: A message the service marks as sent to a list, which asks the person a direct question, is a reply owed
+skills: [evidence, recording-only-what-matters]
+received: '2026-10-14'
+# The list mark is a hint in the packet, never a verdict: the message asks the person, by name, to confirm the date, so
+# the assistant adds the reply owed.
+given_file: busy-portfolio.yaml
+watched:
+  title: Depot schedule thread
+  source: depot-list
+  key: depot-1
+  change: new
+  author: Tobias Wren
+  sent_to_a_list: true
+pasted: |-
+  From: Tobias Wren <tobias.wren@example.com>
+  To: Depot list <depot-list@example.com>
+  Subject: Depot schedule thread
+
+  Hello all. The depot visits are planned for the 14th. Sam, can you confirm the 14th works for you?
+expect:
+- op: action.add
+  reply_owed: true
+  owners:
+  - PER-1
+stub_answer:
+  summary: Tobias asked you on the depot list to confirm the 14th; a reply is owed.
+  ops:
+  - op: action.add
+    project: PRJ-4
+    text: Tell Tobias Wren whether the 14th works for the depot visits
+    owners:
+    - PER-1
+    reply_owed: true
+    evidence:
+      quote: can you confirm the 14th works for you?

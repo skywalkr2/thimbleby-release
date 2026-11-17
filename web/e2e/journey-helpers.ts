@@ -43,6 +43,8 @@ export interface Requests {
   learning: number;
   /** Readings of the week ahead: made at most once a week, after the Start, never counted as work. */
   week: number;
+  /** Readings of what the items are about (areas of the person's life) and of the week's goals, counted apart from the work. */
+  readings?: number;
   /** What each reading of the week was asked (when, its "Today is" line, whether a return round), shown when the count is wrong. */
   week_runs: unknown[];
   /** Runs that read an item handed in (not account tests, not sorting, not the look). */
@@ -141,7 +143,10 @@ export async function pressStart(page: Page) {
  * its cost shown on the line. Presses every such line until none is left. */
 export async function startOnToday(page: Page) {
   const lines = page.locator('[data-queue-line="first_go"], [data-queue-line="intake_go"]');
-  await expect(lines.first()).toBeVisible({ timeout: 60_000 });
+  // The first go is given in setup, so only a source's own go (an intake above the amount to confirm) is a line here; a read
+  // under it starts by itself and there is nothing to press.
+  const appeared = await lines.first().waitFor({ state: "visible", timeout: 30_000 }).then(() => true, () => false);
+  if (!appeared) return;
   for (let round = 0; round < 6 && (await lines.count()) > 0; round++) {
     const before = await lines.count();
     await lines.first().getByRole("button", { name: "Start", exact: true }).click();
@@ -358,4 +363,25 @@ export async function pickFolder(page: Page, scope: Locator, way: string[]) {
   for (const name of way) await dialog.getByRole("button", { name, exact: true }).click();
   await dialog.getByRole("button", { name: "Use this folder" }).click();
   await expect(dialog).toHaveCount(0);
+}
+
+/** Leaves the screen's step out the way a person does: the button, then the confirmation that says what that gives up. */
+export async function leaveOut(page: Page, main: Locator) {
+  await main.getByRole("button", { name: "I'll do this later" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Leave it out" }).click();
+}
+
+/** Leaves the setup walkthrough for Today by the address that names Today: setup has no Finish later, and no way out as a whole. */
+export async function toToday(page: Page) {
+  await page.evaluate(() => {
+    window.location.hash = "#today";
+  });
+}
+
+/** After an account is added and checked, Continue saves it and stays on the AI step, where the assistant is turned on (the
+ * first go); this turns it on, then Continue goes on to the next screen. */
+export async function turnOnAndGoOn(main: Locator) {
+  await main.getByRole("button", { name: "Turn on" }).click();
+  await expect(main.getByText(/ is on\.$/)).toBeVisible();
+  await main.getByRole("button", { name: "Continue" }).click();
 }

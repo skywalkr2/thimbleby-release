@@ -1,0 +1,57 @@
+id: alert-marked-as-work
+title: A website alert the person marked as work teaches that such alerts are work to make into to-dos, not the reverse
+skills: [use-lesson, no-repeat-question]
+first:
+  received: '2026-10-12'
+  project: PRJ-1
+  pasted: |-
+    From: Site Alerts <alerts@example.com>
+
+    New crawl errors found on the Salt Orchard website: 12 pages now return an error when a search service visits them.
+  wrong:
+    summary: An automated website alert, noted without a to-do.
+    ops:
+    - op: note
+      text: Automated alert, 12 pages on the website return an error to a search service.
+      project: PRJ-1
+  correction:
+    kind: brought_in
+    side: PRJ-1
+  expect_proposal:
+  - op: lesson.add
+    text_has: [alert, to-do|todo]
+    projects: [PRJ-1]
+  keep: true
+later:
+  received: '2026-10-19'
+  project: PRJ-1
+  pasted: |-
+    From: Site Alerts <alerts@example.com>
+
+    New crawl errors found on the Salt Orchard website: the new catalog pages return an error when a search service visits them.
+  expect:
+  - op: action.add
+    text_has: [error|alert]
+    owners: [PER-1]
+  packet_has: ["# Lessons"]
+ideal:
+  learn:
+    summary: Alerts like this about the website are work, so each becomes a to-do.
+    topic: website alerts
+    ops:
+    - op: lesson.add
+      text: Alerts like this about the website are work for this project, so make each one a to-do.
+      guard: Make a to-do of a website alert that names pages returning an error.
+      applies_to: {scope: projects, projects: [PRJ-1]}
+      evidence:
+        quote: 12 pages now return an error when a search service visits them
+  later:
+    summary: The new catalog pages return an error to a search service.
+    topic: website alert
+    ops:
+    - op: action.add
+      text: Fix the error the new catalog pages return to a search service
+      owners: [Avery Lane]
+      project: PRJ-1
+      evidence:
+        quote: the new catalog pages return an error when a search service visits them

@@ -161,14 +161,16 @@ function ProposalRow(props: { p: Proposal }) {
     { id: "edit", label: t("learned.edit"), run: () => state.setEditing(true) },
     { id: "discard", label: t("learned.discard"), run: () => state.setDiscarding(true) },
   ];
-  const meta = [state.reachNow, p.expires_at ? t("learned.expires", { date: day(p.expires_at) }) : ""].filter(Boolean).join(" · ");
+  const where = state.reachNow.charAt(0).toLowerCase() + state.reachNow.slice(1);
+  const meta = [t("learned.applies", { where }), p.expires_at ? t("learned.expires", { date: day(p.expires_at) }) : ""]
+    .filter(Boolean)
+    .join(" · ");
   return (
     <Row
       data-learned={p.id}
-      pill={<Pill>{t(`learned.from.${p.came_from}`)}</Pill>}
+      pill={<Pill>{t(p.learned_from === "person" ? "learned.from.person" : `learned.from.${p.came_from}`)}</Pill>}
       title={readable(p.text)}
       meta={meta}
-      oneLine
       primary={
         <Button size="sm" variant="primary" onClick={() => void state.keep()}>
           {t("learned.keep")}

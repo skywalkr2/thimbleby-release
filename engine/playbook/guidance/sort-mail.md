@@ -4,8 +4,9 @@ Practice for sorting mail from its headers (core playbook):
 - Sales: a newsletter or a sender that is a shop or a service writing to sell; subjects with offers, discounts,
   "newsletter" or "digest".
 - Notice: an automatic message with nothing to do or track: a one-time or verification code, a sign-in alert, a
-  security notice.
-- Bills, orders and deliveries are work, never sales and never notices: a statement, an invoice or a bill that is due,
+  security notice, or a message that only says a statement or a document is available to view, with no amount or
+  date in its header.
+- Bills, orders and deliveries are work, never sales and never notices: a statement with an amount or a date, an invoice or a bill that is due,
   an order confirmation or a receipt for something bought, and "has shipped", "out for delivery" or "delivered" notices
   are all tracked for the user, even from a "do not reply" address.
 - Personal: a sender who looks like a private person writing about private matters (family, friends, a hobby, a

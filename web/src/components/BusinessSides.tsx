@@ -10,7 +10,7 @@ import { useToasts } from "../lib/toasts";
 import { insideLines } from "../lib/work-lines";
 import { useWords } from "../lib/wording";
 import { SavedSide } from "./WalkthroughWork";
-import { SideServedBy, useReadingSources } from "./SideServedBy";
+import { SideServedBy } from "./SideServedBy";
 import { Actions } from "../ui/Actions";
 import { Button } from "../ui/Button";
 import { Drawer } from "../ui/Drawer";
@@ -94,7 +94,7 @@ function AddSide(props: { kind: Kind; onClose: () => void }) {
   const [problem, setProblem] = useState("");
   // Once added, the mailboxes and calendars already connected are asked about: which of them serve it.
   const [added, setAdded] = useState<{ id: string; name: string } | null>(null);
-  const reading = useReadingSources();
+  const client = useQueryClient();
   const business = props.kind === "business";
   const save = async () => {
     const wanted = name.trim();
@@ -116,7 +116,9 @@ function AddSide(props: { kind: Kind; onClose: () => void }) {
           await write(() => api.undo(changeset));
         },
       });
-      if (reading.length > 0) {
+      // The sources as they are now: a list that is still loading is waited for, so the question is never skipped by being early.
+      const sources = await client.fetchQuery({ queryKey: ["watch"], queryFn: api.watchSources, staleTime: 5000 }).catch(() => []);
+      if (sources.some((s) => s.enabled && (s.reads ?? []).length > 0)) {
         setAdded({ id: made.project, name: wanted });
         setBusy(false);
         return;

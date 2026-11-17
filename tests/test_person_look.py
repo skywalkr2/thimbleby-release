@@ -1,8 +1,9 @@
 """The weekly look at the person (S-0529, design 6.22): a run of the `knowledge-person` kind that is given the contact
 tally's top entries (counts and names, never message text), the calendar's repeating entries and the people on file, and
-proposes through the ordinary knowledge proposals. Nothing it proposes is active before Keep, a discard is never offered
-again, the run waits for the person's go above the configured amount and has its own budget. Addresses are generated;
-names and ids come from the fixtures."""
+proposes through the ordinary knowledge proposals and offers people to add (`person.offer`, each with its reason; who is
+a person is the run's reading, a role address or a company-like name decides nothing). Nothing it proposes is active
+before Keep, a discard is never offered again, the run waits for the person's go above the configured amount and has
+its own budget. Addresses are generated; names and ids come from the fixtures."""
 
 from __future__ import annotations
 
@@ -34,7 +35,11 @@ def busy(extra=()):
     """Mail from one correspondent often, from another twice, from a third once, and a no-reply sender."""
     items = [message(f"a{i}", who(0)) for i in range(5)]
     items += [message(f"b{i}", who(1)) for i in range(3)]
-    items += [message("c0", who(2)), message("n0", "No Reply <no-reply@example.com>")]
+    items += [
+        message("c0", who(2)),
+        message("n0", "No Reply <no-reply@example.com>"),
+        message("n1", "No Reply <no-reply@example.com>"),
+    ]
     return items + list(extra)
 
 
@@ -85,10 +90,10 @@ def add_series(store, title="Weekly sync", start="2026-10-12T09:00:00+00:00", en
 # ---- the task kind ---------------------------------------------------------------------------------------------------
 
 
-def test_the_kind_is_a_core_kind_on_the_low_cost_tier_with_two_knowledge_ops_and_its_own_budget(env):
+def test_the_kind_is_a_core_kind_on_the_low_cost_tier_with_its_knowledge_ops_and_its_own_budget(env):
     _, cfg, store, _ = env
     kind = TASKS["knowledge-person"]
-    assert set(kind.ops) == {"glossary.add", "routing.add"}
+    assert set(kind.ops) == {"glossary.add", "routing.add", "person.offer"}
     assert settings(cfg, kind).tier == "routine"
     assert cfg.ai.budgets.per_task["knowledge-person"].per_day_usd is not None
 
@@ -106,7 +111,9 @@ def test_the_packet_holds_counts_and_names_as_outside_data_and_no_message_text(e
     first, last = (datetime(2026, 10, 12, h, m, tzinfo=UTC).astimezone(zone(cfg)) for h, m in ((9, 0), (9, 30)))
     assert f"Weekly sync | {first:%A %H:%M}-{last:%H:%M} | repeats: FREQ=WEEKLY;BYDAY=MO" in text
     assert "Words about" not in text and "Subject of" not in text  # headers' counts only, never message text
-    assert "no-reply@example.com" not in text and "Correspondent C" not in text  # kept apart, and under the minimum
+    assert "Correspondent C" not in text  # under the minimum
+    # A machine's address is shown with its mark as a hint, never dropped by it.
+    assert "no-reply@example.com | " in text and "hints: automated sender" in text
     assert text.count("<untrusted") == 2 and packet.untrusted_material
     assert packet.knowledge is not None and packet.task.knowledge is not None  # the knowledge section and its log
 
@@ -131,28 +138,129 @@ def test_someone_on_file_is_shown_with_their_id_and_never_proposed_as_new(env):
     text = build(ws, store, cfg, request, NOW.date()).task.request
     assert f"on file: {on_file.id}" in text
     process(ws, store, cfg, Router(cfg, store, env={}), request, now=NOW)
-    assert {e.data["term"] for e in entries(store)} == {"Correspondent B"}
+    assert {o.data["address"] for o in entries(store, "person_offer")} == {"c1@example.com"}
 
 
 # ---- what it proposes ------------------------------------------------------------------------------------------------
 
 
-def test_the_stand_in_proposes_the_people_dealt_with_most_and_nothing_is_active_before_keep(env):
+def organization_answer(env, term="Example Press"):
+    """An answer that proposes an organization the way a model does, resting on the first correspondent's tally line."""
+    ws, cfg, store, _ = env
+    request = person_look.queue(store, cfg, NOW)
+    line = next(r for r in build(ws, store, cfg, request, NOW.date()).task.request.splitlines() if "c0@example" in r)
+    body = {
+        "op": "glossary.add",
+        "text": f"{term}: a publisher.",
+        "term": term,
+        "meaning": "A publisher.",
+        "evidence": {"quote": line},
+    }
+    set_responder(lambda task: json.dumps({"summary": "An organization.", "ops": [body]}))
+    process(ws, store, cfg, Router(cfg, store, env={}), request, now=NOW)
+    return request
+
+
+def test_the_stand_in_offers_the_people_dealt_with_most_each_with_its_reason_and_adds_no_one(env):
     _, cfg, store, client = env
+    people_before = len(store.read().list("person"))
     look(env)
-    found = entries(store)
-    assert {e.data["term"] for e in found} == {"Correspondent A", "Correspondent B"}
-    for e in found:
-        assert e.data["status"] == "proposed" and e.data["trust"] == "untrusted" and e.data["kept_by"] is None
-        assert "from them" in e.data["evidence"]["quote"]  # the counts it rests on
-    assert {p["id"] for p in client.get("/api/knowledge/proposals").json()["proposals"]} == {e.id for e in found}
-    # Proposed entries guide no run until kept.
-    assert not [e for e in found if e.data["status"] == "active"]
+    found = entries(store, "person_offer")
+    assert {o.data["address"] for o in found} == {"c0@example.com", "c1@example.com"}  # not the no-reply sender
+    for o in found:
+        assert o.data["status"] == "offered" and o.data["why"] and o.data["person"] is None
+    by_address = {o.data["address"]: o.data for o in found}
+    assert (by_address["c0@example.com"]["from_them"], by_address["c0@example.com"]["to_them"]) == (5, 0)
+    assert len(store.read().list("person")) == people_before  # nobody is added until the person keeps an offer
+    body = client.get("/api/setup/people-suggestions").json()
+    assert [(p["address"], p["count"]) for p in body["people"]] == [("c0@example.com", 5), ("c1@example.com", 3)]
+    assert entries(store) == []  # a person is an offer, not a glossary entry
+
+
+def test_an_offer_for_an_address_the_list_did_not_hold_or_one_on_file_or_a_repeat_is_refused(env):
+    ws, cfg, store, _ = env
+    with store.transaction() as tx:
+        tx.create("person", {"full_name": "Correspondent B", "how_to_reach": {"email": ["c1@example.com"]}}, _W)
+    request = person_look.queue(store, cfg, NOW)
+    offers = [
+        {"address": "made.up@example.com", "name": "Made Up", "why": "Not on the list."},
+        {"address": "c1@example.com", "name": "Correspondent B", "why": "On file."},
+        {"address": "c0@example.com", "name": "Correspondent A", "why": "Writes every week."},
+        {"address": "C0@example.com", "name": "Correspondent A", "why": "Again."},
+    ]
+    set_responder(lambda task: json.dumps({"summary": "x", "ops": [{"op": "person.offer", "people": offers}]}))
+    process(ws, store, cfg, Router(cfg, store, env={}), request, now=NOW)
+    assert entries(store, "person_offer") == []  # one bad address refuses the offer whole, so none is half made
+
+
+def test_a_role_address_a_company_like_name_capitals_and_a_tag_reach_the_run_as_hints_and_can_be_offered(env):
+    """The reported shapes: each is a person to the user, and no rule drops them before the run reads them."""
+    ws, cfg, store, _ = env
+    mixed = [
+        ("Dana Ortiz", "info@example.com"),
+        ("Hollis Plumbing", "hollis@example.com"),
+        ("PAT LEE", "pat.lee@example.com"),
+        ("Sam Kin", "sam.k+4f9a1c7e@example.com"),
+    ]
+    cfg.watch.sources[0].settings["items"] = busy(
+        [message(f"x{n}{i}", f"{name} <{a}>") for n, (name, a) in enumerate(mixed) for i in range(2)]
+    )
+    cfg.ui.walkthrough.not_people_names = [*cfg.ui.walkthrough.not_people_names, "plumbing"]
+    refresh(ws, store, cfg, "m", NOW + timedelta(hours=1))
+    request = person_look.queue(store, cfg, NOW)
+    text = build(ws, store, cfg, request, NOW.date()).task.request
+    for _name, address in mixed:
+        assert address in text
+    assert (
+        "hints: role address" in text
+        and "hints: name has a company word" in text
+        and "hints: code in the address" in text
+    )
+    offers = [{"address": a, "name": n, "why": "Writes to you every week."} for n, a in mixed]
+    set_responder(lambda task: json.dumps({"summary": "People.", "ops": [{"op": "person.offer", "people": offers}]}))
+    process(ws, store, cfg, Router(cfg, store, env={}), request, now=NOW)
+    assert {o.data["address"] for o in entries(store, "person_offer")} == {a for _n, a in mixed}
+
+
+def test_an_address_an_earlier_look_read_or_an_offer_left_out_is_not_shown_again(env):
+    ws, cfg, store, client = env
+    look(env)
+    # Every address was read, offered or not (the no-reply sender was read and not offered): nothing is left to show.
+    assert person_look.shown_contacts(store, cfg) == []
+    left = next(o for o in entries(store, "person_offer") if o.data["address"] == "c0@example.com")
+    assert (
+        client.post("/api/setup/people-suggestions/leave-out", json={"addresses": [left.data["address"]]}).status_code
+        == 200
+    )
+    cfg.watch.sources[0].settings["items"] = busy([message(f"d{i}", who(3)) for i in range(4)])
+    refresh(ws, store, cfg, "m", NOW + timedelta(days=1))
+    request = person_look.queue(store, cfg, NOW + timedelta(days=8))
+    text = build(ws, store, cfg, request, (NOW + timedelta(days=8)).date()).task.request
+    assert "c3@example.com" in text and "c0@example.com" not in text and "no-reply@example.com" not in text
+
+
+def test_a_look_closed_without_a_call_asks_about_nothing_so_its_addresses_stay_to_be_read(env):
+    ws, cfg, store, _ = env
+    request = person_look.queue(store, cfg, NOW)
+    person_look.close(store, request, "Nothing to look at.")
+    assert store.read().get("request", request).data["asked_about"] is None
+    assert person_look.shown_contacts(store, cfg)
+
+
+def test_where_the_look_stands_is_said_when_there_is_no_offer(env):
+    ws, cfg, store, _ = env
+    assert person_look.look_state(ws, store, cfg) in ("no_account", "not_yet")
+    request = person_look.queue(store, cfg, NOW)
+    assert person_look.look_state(ws, store, cfg) == "working"
+    with store.transaction() as tx:
+        current = tx.get("request", request)
+        tx.update("request", request, {"state": "needs_you"}, _W, read_version=current.version)
+    assert person_look.look_state(ws, store, cfg) == "waiting"
 
 
 def test_keeping_makes_the_person_the_author_and_the_entry_active(env):
     _, cfg, store, client = env
-    look(env)
+    organization_answer(env)
     first = entries(store)[0]
     done = client.post(f"/api/knowledge/{first.id}/keep", json={"read_version": first.version})
     assert done.status_code == 200, done.text
@@ -160,36 +268,20 @@ def test_keeping_makes_the_person_the_author_and_the_entry_active(env):
     assert kept["status"] == "active" and kept["kept_by"] and kept["trust"] == "trusted"
 
 
-def test_what_already_waits_or_is_kept_is_left_out_of_the_next_packet_so_nothing_is_proposed_twice(env):
-    ws, cfg, store, _ = env
-    look(env)
-    before = {e.data["term"]: e.id for e in entries(store)}
-    assert person_look.shown_contacts(store, cfg) == []
-    assert {e.data["term"]: e.id for e in entries(store)} == before
-
-
 def test_a_discarded_proposal_is_never_made_again_however_long_after(env):
     ws, cfg, store, client = env
-    look(env)
-    discarded = next(e for e in entries(store) if e.data["term"] == "Correspondent A")
-    kept = next(e for e in entries(store) if e.data["term"] == "Correspondent B")
-    body = {"read_version": discarded.version}
-    assert client.post(f"/api/knowledge/{discarded.id}/discard", json=body).status_code == 200
-    assert client.post(f"/api/knowledge/{kept.id}/keep", json={"read_version": kept.version}).status_code == 200
-    # A new correspondent turns up, long after the hold on discards has run out.
-    cfg.watch.sources[0].settings["items"] = busy([message(f"d{i}", who(3)) for i in range(4)])
-    refresh(ws, store, cfg, "m", NOW + timedelta(days=1))
-    long_after = NOW + timedelta(days=cfg.dispatch.knowledge.discards_hold_days + 400)
-    request = person_look.queue(store, cfg, long_after)
-    assert request is not None
-    text = build(ws, store, cfg, request, long_after.date()).task.request
-    assert "Correspondent D" in text
-    assert "Correspondent A" not in text and "Correspondent B" not in text
+    organization_answer(env)
+    discarded = entries(store)[0]
+    assert (
+        client.post(f"/api/knowledge/{discarded.id}/discard", json={"read_version": discarded.version}).status_code
+        == 200
+    )
+    assert "example press" in person_look._already_decided(store.read())
 
 
 def test_the_proposals_expire_unreviewed_like_proposals_from_inputs(env):
     ws, cfg, store, _ = env
-    look(env)
+    organization_answer(env)
     ids = {e.id for e in entries(store)}
     assert all(p.came_from == proposals.FROM_INPUT for p in proposals.proposals(store.read()))
     later = datetime.fromisoformat(store.clock()) + timedelta(days=cfg.dispatch.knowledge.proposals_expire_days + 1)
@@ -278,7 +370,7 @@ def test_a_week_later_it_looks_again_when_there_is_something_new(env):
     again = person_look.queue(store, cfg, NOW + timedelta(days=7))
     assert again is not None
     process(ws, store, cfg, Router(cfg, store, env={}), again, now=NOW + timedelta(days=7))
-    assert "Correspondent D" in {e.data["term"] for e in entries(store)}
+    assert "Correspondent D" in {o.data["name"] for o in entries(store, "person_offer")}
 
 
 def test_it_is_off_when_the_setting_is_off_and_a_queued_look_is_closed_without_a_call(env):
@@ -353,7 +445,7 @@ def test_the_worker_queues_the_look_once_and_a_pass_of_requests_runs_it(env):
     first = worker.look_at_the_person_if_due()
     assert first is not None and worker.look_at_the_person_if_due() is None
     assert worker.run_pending() == 1
-    assert store.read().get("request", first).data["state"] == "done" and entries(store)
+    assert store.read().get("request", first).data["state"] == "done" and entries(store, "person_offer")
 
 
 # ---- routines (S-0530) -----------------------------------------------------------------------------------------------
@@ -475,6 +567,7 @@ def test_an_entry_called_off_or_gone_is_no_routine(env):
 
 CASES = (
     "weekly-look-proposes-people-from-the-tally",
+    "weekly-look-offers-people-whatever-their-address-and-name-look-like",
     "hostile-weekly-look-name-is-data",
     "weekly-look-proposes-a-routine-from-a-repeating-entry",
 )
@@ -490,21 +583,32 @@ def test_the_look_cases_pass_with_their_ideal_answer(monkeypatch, template, case
     assert result.passed, (result.missing, result.forbidden)
 
 
-def test_a_look_that_proposes_someone_seen_once_or_quotes_nothing_real_fails_its_case(monkeypatch):
+def test_a_look_that_offers_the_newsletter_or_someone_seen_once_or_no_reason_fails_its_case(monkeypatch):
     from tests.conftest import DEMO_B
     from tests.test_evaluate_harness import case_of, run_edited
 
-    case = case_of(DEMO_B, CASES[0])
-    once = {
-        "op": "glossary.add",
-        "text": "Cy Moss: a client.",
-        "term": "Cy Moss",
-        "meaning": "a client",
-        "evidence": {"quote": "cy.moss@example.com | Cy Moss | 1 from them, 0 to them"},
-    }
-    answer = {**case["stub_answer"], "ops": [*case["stub_answer"]["ops"], once]}
+    case = case_of(DEMO_B, CASES[1])
+    ops = case["stub_answer"]["ops"][0]["people"]
+    letter = {"address": "digest@example.com", "name": "The Weekly Digest", "why": "Writes every week."}
+    answer = {**case["stub_answer"], "ops": [{"op": "person.offer", "people": [*ops, letter]}]}
     result = run_edited(monkeypatch, DEMO_B, case["id"], stub_answer=answer)
     assert not result.passed and result.forbidden
-    invented = json.loads(json.dumps(case["stub_answer"]))
-    invented["ops"][0]["evidence"]["quote"] = "9 from them, 99 to them"
-    assert not run_edited(monkeypatch, DEMO_B, case["id"], stub_answer=invented).passed
+    fewer = {**case["stub_answer"], "ops": [{"op": "person.offer", "people": ops[:3]}]}
+    assert not run_edited(monkeypatch, DEMO_B, case["id"], stub_answer=fewer).passed
+
+
+def test_the_stand_in_answers_the_story_tally_with_the_four_people_and_not_the_newsletter(monkeypatch):
+    """The stand-in has no judgment of a name or an address; it leaves out only what the hints say is a machine."""
+    import yaml
+
+    from engine.ai.adapters import stand_in
+    from tests.conftest import DEMO_B
+
+    case = yaml.safe_load(
+        (DEMO_B / "evals" / "weekly-look-offers-people-whatever-their-address-and-name-look-like.yaml").read_text()
+    )
+    lines = "\n".join(case["person_look"]["tally"])
+    answer = stand_in.knowledge_person(f'<untrusted source="contact-tally">\n{lines}\n</untrusted>')
+    (offer,) = answer["ops"]
+    assert {p["address"] for p in offer["people"]} == set(case["expect"][0]["addresses"])
+    assert all(p["why"] for p in offer["people"])

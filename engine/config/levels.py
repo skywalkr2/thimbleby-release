@@ -261,6 +261,8 @@ FILES_ONLY = (
     "watch.propose_slots",
     "watch.propose_round_minutes",
     "watch.look_back_max_items",
+    "watch.first_headers_days",
+    "watch.first_headers_max_items",
     "watch.burst_items",
     "watch.stale_after_hours",
     "watch.default_data_level",

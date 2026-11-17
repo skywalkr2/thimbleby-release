@@ -1,0 +1,15 @@
+id: monday-goals-nothing-due-offers-none
+title: A week with nothing due is offered no goals, and nothing is asked of the assistant
+skills: [dates, stay-in-scope]
+received: '2026-11-16T15:00:00+00:00'
+# A fictional Monday. The only to-do is due two weeks on, and no promise falls in the week, so there is nothing to read:
+# the request closes before any packet, estimate or call, and no goals are offered.
+monday_goals: true
+quiet: true
+given:
+- {kind: action, id: ACT-90, fields: {project: PRJ-1, text: Plan the December offsite, due: '2026-12-04', owners: [{person: PER-1}]}}
+stub_answer:
+  summary: Nothing is due.
+  ops:
+  - op: week.goals
+    goals: []

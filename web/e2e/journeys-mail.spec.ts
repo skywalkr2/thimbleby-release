@@ -8,24 +8,7 @@
 import { expect } from "@playwright/test";
 import { test } from "./test";
 import { choicesOf, choose } from "./choose";
-import {
-  checkAccessibility,
-  collectProblems,
-  dismissToasts,
-  expectFoundLine,
-  fakeAddress,
-  openView,
-  pressStart,
-  revealNewLines,
-  startOnToday,
-  visit,
-  widerThanWindow,
-  type Info,
-  type MailActsSeen,
-  type Requests,
-  type SignInSeen,
-  FIRST_SCREEN,
-} from "./journey-helpers";
+import { checkAccessibility, collectProblems, dismissToasts, expectFoundLine, fakeAddress, openView, pressStart, revealNewLines, startOnToday, visit, widerThanWindow, type Info, type MailActsSeen, type Requests, type SignInSeen, FIRST_SCREEN, leaveOut, turnOnAndGoOn } from "./journey-helpers";
 
 const FAKE = fakeAddress("JOURNEY_MAIL_FAKE_PORT", 8792);
 
@@ -78,6 +61,7 @@ test.describe.serial("journey: mail", () => {
     // One explicit yes lets this account read my mail and notes (the usual hand-in is internal material).
     await main.getByRole("radio", { name: /^Yes/ }).check();
     await main.getByRole("button", { name: "Continue" }).click();
+    await turnOnAndGoOn(main);
     await expect(main.getByRole("heading", { level: 2, name: "Mail and calendar" })).toBeVisible({ timeout: 30_000 });
     await visit(page);
 
@@ -141,16 +125,15 @@ test.describe.serial("journey: mail", () => {
     expect(handedIn).toBeGreaterThan(recentMail.length + recentEvents.length);
     expect(noted).toHaveLength(0);
 
-    // There is no screen of its own for the first look at the mail: after Mail and calendar comes Backups, and the assistant
-    // has been asked nothing; the Start is on Today.
-    expect((await requests()).work).toBe(0);
+    // The go was given in the AI step, so after Mail and calendar the first reading runs by itself and is waited for on the
+    // next screen; there is no Start on Today for it.
 
     // Backups and People are left for later, and Done names what was skipped.
     await main.getByRole("button", { name: "Continue" }).click();
+    await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible({ timeout: 120_000 });
+    await leaveOut(page, main);
     await expect(main.getByRole("heading", { level: 2, name: "Backups" })).toBeVisible();
-    await main.getByRole("button", { name: "I'll do this later" }).click();
-    await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible();
-    await main.getByRole("button", { name: "I'll do this later" }).click();
+    await leaveOut(page, main);
     // Something was passed by, so the last screen says where things stand and is not headed Done.
     await expect(main.getByRole("heading", { level: 2, name: "Where things stand" })).toBeVisible();
     const recap = main.getByRole("list", { name: "What was set up" });

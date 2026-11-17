@@ -29,6 +29,17 @@ export function RailFolds(props: { children: ReactNode }) {
   return <FoldContext.Provider value={folds}>{props.children}</FoldContext.Provider>;
 }
 
+/** Opens a panel that is folded on the phone, for something that points the person to it (and stays open, as if they had pressed it). */
+export function useOpenPanel(): (id: string) => void {
+  const folds = useContext(FoldContext);
+  return useCallback(
+    (id: string) => {
+      if (folds && !folds.open.has(id)) folds.toggle(id);
+    },
+    [folds],
+  );
+}
+
 /** A rail panel: a visible heading with its count (said in words for a screen reader) and a body sized to its content. */
 export function RailPanel(props: {
   id: string;

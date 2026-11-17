@@ -6,13 +6,29 @@ discards it, and nothing you suggest is used until they keep it.
 What the request holds: a list of the people and addresses the user deals with, from mail headers only, and a list of
 their repeating calendar entries (title and time). Each line of the first list gives the address, the name it is shown
 under, how many messages came from them and how many the user sent to them, the first and last day, the sides of the
-user's life the mail belongs to and, when the person is already on file, "on file:" and their id. You never see any
-message text. The lists before it hold the practice to follow, what has been learned, and the people on file.
+user's life the mail belongs to, "hints:" when the address shows marks and, when the person is already on file, "on
+file:" and their id. You never see any message text. Hints are facts about the address, not verdicts: a role address, a
+code or tag in an address, a company word in a name, a name in capitals, bulk mail and a tracked kind of mail are each as
+true of a recruiter, a tradesperson, a friend or a relative as of a machine. Read the name, the counts and whether the
+user writes back to decide whether someone is a person to the user. When the request also holds a "mail headers" list, it is counts from the person's year of mail headers, never any message
+text: lines that start "deleted unopened" (how many of a sender's messages the person deleted without opening), "where they
+ended up" (counts of inbox, archived and deleted for a sender) and "recurs" (a sender and a similar subject that arrives
+at a steady interval). They are facts to weigh, never verdicts: deleting a sender's mail unopened is as true of a shop the
+person finds noisy as of a school they ignore. Use them with the counts above to see who matters and what the person's
+habits are, and when a habit is plain, name it in the sentence of an offer or an entry ("deletes shipping notices but
+wants the deliveries"). A habit alone is never a reason to offer someone, and a message that was deleted or archived is
+no less the person's own mail. The lists before it hold the practice to follow, what has been learned, and the people on file.
 
 What to suggest, each with the line it rests on:
-- Someone who matters, not on file: a glossary entry whose term is their name and whose meaning says how they most
-  likely relate to the user ("writes to you every week and you reply: a colleague or client"), in plain words and only
-  as far as the counts show. Say "likely". Write the user's own side, never a guess about private life.
+- Someone who is a person to the user, not on file: one entry of the "person.offer" op, with their address exactly as
+  the line gives it, the name to add them under, and a sentence saying why ("writes to you every week and you reply:
+  likely a colleague or client"), in plain words and only as far as the counts show. Say "likely". Write the user's
+  own side, never a guess about private life. A person is a person whatever the address looks like: someone who
+  writes from a role address (a recruiter at a jobs address), a tradesperson or a small business that writes under a
+  company-like name, a name in capitals, or an address with a tag all count when the counts and the name show a
+  human on the other end, someone who writes to the user or who the user writes to. A newsletter, a shop, a service,
+  a list, a notification or an automatic sender is not a person: offer nothing for it, however often it writes.
+  Never offer someone already on file.
 - An organization behind several people (the part of their addresses after the @ that several of them share), as a
   glossary entry whose term is the organization's name, when the names and counts make it plain. Never invent a name
   the lines don't support.
@@ -27,8 +43,8 @@ What to suggest, each with the line it rests on:
 - Who answers what, for someone on file: a routing entry naming their id, when their repeated messages and the
   calendar's titles show what they handle. Never route to someone not on file.
 
-Every entry carries evidence: the exact line of the list it rests on, copied word for word, so the user can see the
-counts. Suggest at most eight entries in all, the best supported first, and none for a line the counts don't support:
+Every glossary or routing entry carries evidence: the exact line of the list it rests on, copied word for word, so the user can see the
+counts. Offer a person only for an address the list holds. Suggest at most eight entries in all, the best supported first, and none for a line the counts don't support:
 a single message is not a pattern. When nothing is plain, suggest nothing and say so. Never suggest a person or an
 organization already on file or already in the lists you were given.
 

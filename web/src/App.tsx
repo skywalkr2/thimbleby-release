@@ -410,7 +410,6 @@ function Shell(props: { rc: S["RuntimeConfig"]; live: ReturnType<typeof useLive>
             onOpenAddons={leaveSetup(() => setView(settingsView("addons")))}
             // The box opens over the setup guide, which stays where it was: handing something in is not leaving setup.
             onHandIn={() => setHandIn(true)}
-            onFinishLater={() => setView("today")}
             onDone={() => {
               setView("today");
               focusFirstGo();

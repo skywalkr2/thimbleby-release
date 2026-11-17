@@ -40,10 +40,11 @@ from engine.yaml_load import load_yaml
 STATE_FILE = "setup.json"
 CORE_STEPS = ("workspace", "work", "ai", "mail", "backup", "people", "template", "first_note", "addons")
 #: The walkthrough's screens, in order. "welcome" opens a new start and is not a step: nothing about it is counted.
+#: "reading" is the wait after Mail and calendar, while Reginald makes its first reading; it is no step either.
 #: "work" asks whether the person's work is part of this (Just me, or Me and my work). The first look at the mail is no
 #: screen: it is Today's Start line, with its cost. The last screen lists what was set up and what was skipped, and what
 #: is optional. A screen id kept from an earlier version that is no longer listed is read as no screen kept.
-WALKTHROUGH_STEPS = ("welcome", "you", "work", "ai", "mail", "backup", "people", "done")
+WALKTHROUGH_STEPS = ("welcome", "you", "work", "ai", "mail", "reading", "people", "backup", "done")
 #: The walkthrough screen a core step belongs to; a core step not listed is an optional extra, on the last screen.
 CORE_GROUPS = {
     "workspace": "you",
@@ -177,20 +178,13 @@ def steps(ws: Any, cfg: Any, store: Any) -> list[Step]:
         # Done only once the person chose about the add-ons they installed: with nothing installed it isn't offered.
         "addons": bool(state.get("addons_decided")) and not set(addons_off(ws, cfg)) - set(state["addons_decided"]),
     }
-    mine = _walkthrough_state(state)
-    # Moving on from People with nobody added passes it: the walkthrough keeps that, or (kept before it did) the screen
-    # the person reached past it.
-    kept = mine.get("step")
-    past_people = bool(mine.get("people_done")) or (
-        kept in WALKTHROUGH_STEPS and WALKTHROUGH_STEPS.index(kept) > WALKTHROUGH_STEPS.index("people")
-    )
-    passed = {"people": past_people}
-    reasons = {"people": NONE_ADDED if past_people else None}
+    # People is left out only by the confirmed skip (no screen reached passes it), and says why: nobody was added.
+    reasons = {"people": NONE_ADDED}
     found = [
         Step(
             step,
             done[step],
-            (step in skipped or passed.get(step, False)) and not done[step],
+            step in skipped and not done[step],
             group=CORE_GROUPS.get(step, "done"),
             counted=step in COUNTED_STEPS,
             applies=_applies(step, done, ws, cfg, view),
@@ -399,6 +393,92 @@ def clear_work_choice(ws: Any) -> None:
         state.pop("work", None)
 
 
+def first_go_given(ws: Any, cfg: Any) -> bool:
+    """Whether the first go was given (the AI step's "turn Reginald on", or the first go anywhere else), or the
+    workspace asks for none (`ai.budgets.first_go` off). Until then the assistant's first runs are held."""
+    return not cfg.ai.budgets.first_go or bool(_state(ws).get("first_go_given"))
+
+
+def first_go_holds(ws: Any, cfg: Any) -> bool:
+    """Whether the assistant's first runs wait for the first go: the workspace asks for one and it wasn't given."""
+    return not first_go_given(ws, cfg)
+
+
+def give_first_go(ws: Any) -> None:
+    """Keep that the person gave the first go, on this computer, beside the skips."""
+    with _changing(ws) as state:
+        state["first_go_given"] = True
+
+
+@dataclass
+class Reading:
+    """Reginald's first reading after Mail and calendar, for the screen that waits for it. `state` is none (nothing to
+    wait for: `why` says mail was left out or there is no AI account), working (`stage` says what it is doing) or
+    done. `sources` is how many mail and calendar sources are read and `read` how many were read once."""
+
+    state: str
+    why: str | None = None
+    stage: str | None = None
+    sources: int = 0
+    read: int = 0
+    found: int = 0
+
+
+#: The outcomes of a read that settle a source's first reading: it was read, or it couldn't be and says so on Mail.
+_READ_OUTCOMES = ("ok", "baseline", "failed")
+
+
+def reading(ws: Any, cfg: Any, store: Any, found: list[Step], now: Any = None) -> Reading:
+    """Where Reginald's first reading stands. Nothing to wait for when mail was left out (or none is read) or there
+    is no AI account. Otherwise it is working while a source hasn't been read, while the mail it took in is being
+    sorted, and while the look at who the person writes to is queued or running; a go the person must give is waited
+    for on the screen that shows it, never here."""
+    from datetime import UTC, datetime
+
+    from engine import person_look
+    from engine.dispatcher import person_is_set
+
+    by = {s.id: s for s in found}
+    if not (by.get("mail") and by["mail"].done):
+        return Reading("none", why="no_mail")
+    if not (by.get("ai") and by["ai"].done):
+        return Reading("none", why="no_ai")
+    said = declared_reads({**CORE, **store.plugins.connectors()})
+    sources = [s for s in cfg.watch.sources if s.enabled and reads(s.connector, said)]
+    if not sources:
+        return Reading("none", why="no_mail")
+    view = store.read()
+    read = [
+        s for s in sources if any(r.data["outcome"] in _READ_OUTCOMES for r in view.find("watch_run", {"source": s.id}))
+    ]
+    taken = sum(r.data.get("new", 0) for s in read for r in view.find("watch_run", {"source": s.id}))
+    base = {"sources": len(sources), "read": len(read), "found": taken}
+    if len(read) < len(sources):
+        return Reading("working", stage="fetching", **base)
+    ids = {s.id for s in sources}
+    sorting = any(
+        r.data["state"] in ("queued", "running")
+        and not r.data.get("dismissed")
+        and (r.data.get("intake") in ids or (r.data["task"] == "notes" and r.data.get("origin") == "input"))
+        for r in view.list("request")
+    )
+    if sorting:
+        return Reading("working", stage="sorting", **base)
+    looking = any(
+        r.data["task"] == person_look.TASK and r.data["state"] in ("queued", "running") for r in view.list("request")
+    )
+    if looking or (person_is_set(store, cfg) and person_look.due(store, cfg, now or datetime.now(UTC))):
+        return Reading("working", stage="looking", **base)
+    return Reading("done", **base)
+
+
+def people_by_hand(found: list[Step]) -> bool:
+    """Whether the People step offers adding by hand only: with mail left out (or none connected), or no AI account,
+    Reginald has no one to suggest."""
+    by = {s.id: s for s in found}
+    return not (by.get("mail") and by["mail"].done and by.get("ai") and by["ai"].done)
+
+
 def walkthrough_ended(ws: Any) -> bool:
     """Whether the person pressed the walkthrough's last button."""
     return bool(_walkthrough_state(_state(ws)).get("finished"))
@@ -463,8 +543,6 @@ def keep_walkthrough(ws: Any, step: str | None = None, closed: bool | None = Non
         mine = dict(state["walkthrough"]) if isinstance(state.get("walkthrough"), dict) else {}
         if step is not None:
             mine["step"], mine["started"] = step, True
-            if WALKTHROUGH_STEPS.index(step) > WALKTHROUGH_STEPS.index("people"):
-                mine["people_done"] = True
         if closed is not None:
             mine["closed"] = closed
         if ended is not None:

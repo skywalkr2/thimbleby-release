@@ -4,8 +4,9 @@ they report to.
 Both live on one `week_plan` record for the person and the week, named by the week's first working day.
 
 - **Goals** are the person's own words, three to five (`steward.brief.goals_min` and `goals_max`) confirmed at once as
-  theirs, with Undo. Nothing proposes them into the record: the briefing offers a few from what is due and open, and the
-  person confirms, changes or drops them. A week with fewer than the fewest has no confirmed goals.
+  theirs, with Undo. Nothing proposes them into the record: the briefing shows the assistant's offer (the `monday-goals`
+  kind, `engine/week_goals.py`), and the person confirms, changes or drops them. A week with fewer than the fewest has
+  no confirmed goals.
 - **The message** is a draft the assistant writes to the people the person reports to (stance `report_to`, 6.34), from
   what was done, what moved and what needs them. It is offered only to a person with a job (a side of kind job), asks
   who it is for among the people on a job side, and is written from the job's side alone, never from the person's own

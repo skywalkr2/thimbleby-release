@@ -378,6 +378,10 @@ class Connector:
     #: to `before`, and `older_count(...)` optionally says how many there are, reading none of them.
     older: Callable[..., Any] | None = None
     older_count: Callable[..., Any] | None = None
+    #: A plugin's mail connector that can list message headers alone for a first sign-in's year:
+    #: `headers(settings, since, before, max_items, context)` returns the newest `max_items` items (details and title,
+    #: no text) dated from `since` up to `before`.
+    headers: Callable[..., Any] | None = None
 
 
 #: Words in a connector's name (the part after the add-on's name) that say what kind of thing it reads. Used only for a

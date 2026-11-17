@@ -55,20 +55,12 @@ const WEEK_MIN = 736;
 const WORK_WEEK_MIN = 544;
 /** The id the app's own calendar has among the calendars the legend lists (an entry's `data-source` says the same). */
 const OWN_CALENDAR = "own";
-/** The narrowest a Month day can be, in px, for its chips to read (a title wraps by its words, never letter by letter). */
-const MONTH_DAY_MIN = 128;
-/** The room the Month needs beside the details pane before the pane covers its edge instead of squeezing it: seven days of that width. */
-const PANE_FIT = 7 * MONTH_DAY_MIN;
-/** The same for the time grids, whose day headings and entries need about this much to stay on one line each. */
-const GRID_FIT = 820;
 
 type Page = S["ScheduleView"];
 /** What the server says about the person's week and hours, kept from the last answer so the next request can be made at once. */
 const FIRST_MEANS: Pick<Page, "week_starts_on" | "work_days" | "event_minutes"> = { week_starts_on: 0, work_days: [0, 1, 2, 3, 4], event_minutes: 60 };
 /** The keys that pick a view, in the order of the view switch. */
 const VIEW_KEYS: Record<string, CalendarView> = { "1": "day", "2": "work_week", "3": "week", "4": "month", "5": "timeline" };
-/** The room the Timeline needs beside the details pane before the pane covers its edge: enough for the weeks beside the names. */
-const TIMELINE_FIT = 760;
 
 function findEntry(entries: DayEntries[], rest: Entry[], key: string): { entry: Entry; date: string | null } | null {
   for (const d of entries) {
@@ -425,8 +417,8 @@ export function Schedule() {
       <ListDetail
         title={found ? entryTitle(found.entry, t) : grouped ? t(grouped.allDay ? "schedule.group.all_all_day" : "schedule.group.all", { n: grouped.keys.length, time: grouped.time, date: grouped.allDay ? shortDay(grouped.date) : "" }) : ""}
         onClose={close}
+        floating
         anchorTo={picked ? `[data-entry-key="${picked.replace(/["\\]/g, "\\$&")}"]` : grouped ? `[data-group-more="${groupKey(grouped.date, grouped.start)}"]` : undefined}
-        fit={isTimeline ? TIMELINE_FIT : view === "month" ? PANE_FIT : GRID_FIT}
         detail={
           found ? (
             <>

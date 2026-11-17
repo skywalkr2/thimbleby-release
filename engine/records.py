@@ -1213,9 +1213,30 @@ class Snapshot(Record):
     )
 
 
+class MailHeader(Record):
+    """One message's header, kept from the year of headers a mail source's first sign-in reads before anything else
+    (design 6.32): who it was from and to, when, where it ended up and its subject, and never its text. It is not an
+    input and never becomes one, and nothing sorts it; the contact tally and the first look at the person's habits
+    read it, and forgetting a person and retention reach it like a snapshot. A message the source later reads in full
+    has a snapshot, which then stands for it."""
+
+    record_kind: ClassVar[str] = "mail_header"
+    prefix: ClassVar[str] = "MHDR"
+    record_label: ClassVar[str] = "mail header"
+
+    source: str = Field(description="The id of the watched source.")
+    key: str = Field(description="The message's key within the source.")
+    title: str = Field("", description="The subject, as the service gave it.")
+    message: SnapshotMessage = Field(
+        description="From whom, to whom, when, whether it was unread, bulk, its categories and where it was (inbox, "
+        "archived or deleted), as the service gave them."
+    )
+    seen_at: datetime = Field(description="When the header was read.")
+
+
 class WatchRun(Record):
     """One read of a watched source and what came of it. The watcher writes it; only a look further back changes it
-    (`looked_back_to`)."""
+    (`looked_back_to`, `full_read`)."""
 
     record_kind: ClassVar[str] = "watch_run"
     prefix: ClassVar[str] = "WRUN"
@@ -1263,6 +1284,17 @@ class WatchRun(Record):
         description="For a source's first read that took it in quietly: the day before which its mail was not "
         "looked at. A look further back moves it earlier; none for a source with no mail or another kind of first "
         "read.",
+    )
+    full_read: int | None = Field(
+        None,
+        description="For a source's first read that took it in quietly: the answer to how far back to read its mail "
+        'in full, in days back from the day it was answered; 0 for "not now". None while the question is still open.',
+    )
+    asks_full_read: bool = Field(
+        False,
+        description="For a source's first read that took it in quietly: that the full-read question is asked for this "
+        "source. Set when the read was made; a read made before the question existed never has it, so that source is "
+        "never asked.",
     )
 
 
@@ -1392,6 +1424,24 @@ class WeekRow(BaseModel):
     )
 
 
+class AreaItem(BaseModel):
+    """One item an area offer would take: its kind (to-do, question, fact or calendar entry) and its id."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["action", "question", "fact", "event"] = Field(description="What kind of record it is.")
+    id: str = Field(min_length=1, description="Its id.")
+
+
+class GoalOffer(BaseModel):
+    """One goal the assistant offers for the week: its words and the record it comes from, when it comes from one."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    words: str = Field(min_length=1, max_length=200, description="The goal, in a few plain words.")
+    source: str | None = Field(None, description="The id of the to-do, promise or calendar entry it comes from.")
+
+
 class WeekPlan(Record):
     """The person's own plan for one week (design 6.32, the Monday briefing): the goals they confirmed for it and the
     message to whoever they report to. One record for each person and week, made when the first goal is confirmed or
@@ -1444,6 +1494,14 @@ class WeekPlan(Record):
         default_factory=list,
         description="The ids of the records the person set aside for this week with Not this week, so the week "
         "ahead no longer shows a row for them.",
+    )
+    goals_offer: list[GoalOffer] = Field(
+        default_factory=list,
+        description="The goals the assistant offered for the week in its latest reading of what is due, promised and "
+        "on the calendar. They are an offer: nothing is a goal until the person confirms it.",
+    )
+    goals_offered_at: datetime | None = Field(
+        None, description="When the assistant last offered goals for the week; none before. An offer of none is one."
     )
 
     @field_validator("goals")
@@ -1762,6 +1820,12 @@ class Request(Record):
         description="For a reading of the week ahead: the ids of the records Today held a line for when the run's "
         "packet was built. The reading is checked against these, not against lines that reached Today after the "
         "packet was made, so a first answer is never refused for what its packet could not have told it.",
+    )
+    asked_about: list[str] | None = Field(
+        None,
+        description="For a reading of the person's items for areas of their life: the ids of the items its packet "
+        "listed; for a look at who they deal with: the addresses its packet listed. The reading is checked against "
+        "these, and the same items or addresses are not asked about again while they stand.",
     )
     attempts: int = Field(0, description="How many times the assistant has started on it.")
     retries: int = Field(
@@ -3075,6 +3139,49 @@ class StandingYes(Record):
     ended_at: AwareDatetime | None = Field(None, description="When the person ended it; none while it stands.")
 
 
+class AreaOffer(Record):
+    """An area of the person's life the assistant offers to start (design 6.32, "Personal life"), from items filed under
+    the personal project: the `name` it gives the area, the reason it gives (`why`) and the items it would take. Nothing
+    is moved until the person keeps it, and keeping it is the person's own edit."""
+
+    record_kind: ClassVar[str] = "area_offer"
+    prefix: ClassVar[str] = "AREA"
+    record_label: ClassVar[str] = "area offer"
+
+    name: str = Field(min_length=1, max_length=60, description="The area's name, by what it is about.")
+    why: str = Field(min_length=1, max_length=240, description="In a sentence, why these items are one area of life.")
+    items: list[AreaItem] = Field(min_length=1, description="The items it would take, by kind and id.")
+    status: Literal["offered", "kept", "dismissed"] = Field(
+        "offered", description="offered while it waits for the person; kept once the area was started; dismissed."
+    )
+    offered_at: datetime = Field(description="When the assistant offered it.")
+    project: str | None = Field(None, description="The area it became, once kept.")
+
+
+class PersonOffer(Record):
+    """Someone the assistant offers to add to the people on file (design 6.22, "Learning the person from their mail and
+    calendar"), read from the contact tally by the weekly look: the `name` and `address` as the mail shows them, the
+    reason it gives (`why`) and the counts it rested on. Nothing is added until the person keeps it, and keeping it is
+    the person's own add (the People step); an offer they leave out is never made again."""
+
+    record_kind: ClassVar[str] = "person_offer"
+    prefix: ClassVar[str] = "POFR"
+    record_label: ClassVar[str] = "person offer"
+
+    name: str = Field(min_length=1, max_length=80, description="The name as the mail shows it.")
+    address: str = Field(min_length=3, max_length=254, description="The address, in lower case.")
+    why: str = Field(
+        min_length=1, max_length=240, description="In a sentence, why this is someone the person deals with."
+    )
+    from_them: int = Field(0, ge=0, description="How many messages came from them when it was offered.")
+    to_them: int = Field(0, ge=0, description="How many messages the person sent them when it was offered.")
+    status: Literal["offered", "kept", "dismissed"] = Field(
+        "offered", description="offered while it waits for the person; kept once they were added; dismissed."
+    )
+    offered_at: datetime = Field(description="When the assistant offered it.")
+    person: str | None = Field(None, description="The person it became, once kept.")
+
+
 class WorkView(Record):
     """A named list of projects inside one side (design 6.32, "Views: one project under several roles"): the roles the
     person works in within a side. A project can be in any number of views, and its sub-projects come with it. A view
@@ -3136,11 +3243,14 @@ REGISTRY: dict[str, type[Record]] = {
         PromiseCount,
         GateSample,
         WeekPlan,
+        AreaOffer,
+        PersonOffer,
         AuditEntry,
         Answer,
         SettingProposal,
         Report,
         Snapshot,
+        MailHeader,
         WatchRun,
         TextVersion,
         WorkingCopy,
@@ -3188,6 +3298,8 @@ REFERENCES: dict[str, list[tuple[str, str]]] = {
     "promise_count": [("person", "person")],
     "gate_sample": [("person", "person"), ("items[].source", "source")],
     "week_plan": [("person", "person")],
+    "area_offer": [("project", "project")],
+    "person_offer": [("person", "person")],
     "copy": [("person", "person"), ("questions[]", "question"), ("actions[]", "action"), ("sent_source", "source")],
     "act": [
         ("target.recipients[].person", "person"),

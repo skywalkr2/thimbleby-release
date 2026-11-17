@@ -10,6 +10,7 @@ import pytest
 
 from engine import appwindow
 from engine.appwindow import AppShell, MenuLine, PageApi, menu_lines
+from engine.appwindow_backends import closing_handler
 from engine.sides import words_sheet
 
 WORDS = {k: str(v) for k, v in words_sheet().items() if k.startswith("desktop.")}
@@ -30,9 +31,9 @@ class FakeWindow:
     def post(self, call):
         self.queue.put(call)
 
-    def create(self, title, html, api, on_closing):
+    def create(self, title, html, api, on_closing, on_quit):
         self._note("create", title)
-        self.html, self.closing = html, on_closing
+        self.html, self.closing, self.quit_requested = html, on_closing, on_quit
 
     def run(self, worker):
         threading.Thread(target=worker).start()
@@ -144,6 +145,50 @@ def test_closing_the_window_hides_it_and_the_app_keeps_running():
     names = [name for name, _, _ in window.calls]
     assert "hide" in names and names[-1] == "destroy"
     assert shell._quitting  # only the end of the run lets the window close
+
+
+def test_every_quit_path_ends_the_app_through_quit_and_closing_the_window_does_not():
+    """The menu-bar item's Quit, the control listener's quit and the system's own Quit (application menu, its
+    shortcut, the Dock) each set the quit event; the window's close only hides."""
+    paths = {
+        "menu item": lambda shell, tray: tray.act("quit"),
+        "control listener": lambda shell, tray: shell.quit_from_menu(),
+        "system quit": lambda shell, tray: shell.window.quit_requested(),
+    }
+    for name, path in paths.items():
+        shell, window, tray = make()
+        seen = {}
+
+        def work(shell=shell, tray=tray, path=path, seen=seen):
+            assert tray.started.wait(5)
+            shell.show_app("http://127.0.0.1:1/")
+            assert not shell.quit_event.is_set()
+            path(shell, tray)
+            seen["quit"] = shell.quit_event.is_set()
+            return 0
+
+        shell.run(work)
+        assert seen == {"quit": True}, name
+    shell, window, tray = make()
+
+    def close_only():
+        shell.show_app("http://127.0.0.1:1/")
+        assert shell.window.closing() is False
+        assert not shell.quit_event.is_set()
+        return 0
+
+    shell.run(close_only)
+
+
+def test_the_window_librarys_quit_is_told_from_a_close_by_the_call_that_asked():
+    quits, closes = [], []
+    handle = closing_handler(lambda: closes.append(1) or False, lambda: quits.append(1))
+    assert handle() is False and closes == [1] and quits == []
+
+    def applicationShouldTerminate_():  # noqa: N802 (the window library's own name for the Mac's Quit)
+        return handle()
+
+    assert applicationShouldTerminate_() is False and quits == [1] and closes == [1]
 
 
 def test_the_dock_icon_shows_with_the_window_and_not_without_it():

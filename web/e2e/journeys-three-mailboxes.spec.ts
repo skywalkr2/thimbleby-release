@@ -4,7 +4,7 @@
 // first Start is pressed on Today, the assistant's scripted answer to the message is one to-do, and To-dos shows it once.
 import { expect } from "@playwright/test";
 import { test } from "./test";
-import { collectProblems, fakeAddress, pressStart, startOnToday, type Info, pickFolder } from "./journey-helpers";
+import { collectProblems, fakeAddress, pressStart, startOnToday, type Info, pickFolder, leaveOut, turnOnAndGoOn } from "./journey-helpers";
 
 const FAKE = fakeAddress("JOURNEY_THREE_FAKE_PORT", 8721);
 const LOADED = { timeout: 60_000 };
@@ -41,8 +41,23 @@ test.describe.serial("journey: one sent message in three mailboxes", () => {
     await expect(main.getByText("Works. Ready to use.")).toBeVisible(LOADED);
     await main.getByRole("radio", { name: /^Yes/ }).check();
     await main.getByRole("button", { name: "Continue" }).click();
+    await turnOnAndGoOn(main);
     await expect(main.getByRole("heading", { level: 2, name: "Mail and calendar" })).toBeVisible(LOADED);
 
+    // The go was given in the AI step, so the reading starts at the first sign-in: the assistant's answer is scripted first.
+    // The assistant's answer to the sent message is one to-do.
+    const sentLine = `${info.people[0]} will send the revised budget by 2026-11-05.`;
+    const scripted = await fetch(`${FAKE}/__e2e/script`, {
+      method: "POST",
+      body: JSON.stringify({
+        when: "will send the revised budget by 2026-11-05",
+        answer: {
+          summary: "Read by the journey's script.",
+          ops: [{ op: "action.add", text: "Send the revised budget.", owners: ["me"], due: "2026-11-05", basis: "said", evidence: { quote: sentLine } }],
+        },
+      }),
+    });
+    expect(scripted.ok).toBe(true);
     // Three accounts, one after the other through the service's own page.
     const row = main.locator('[data-service="journey-mail"]');
     for (const [n, address] of addresses.entries()) {
@@ -71,27 +86,17 @@ test.describe.serial("journey: one sent message in three mailboxes", () => {
     const lineBox = (await main.locator("[data-set-aside-line]").boundingBox())!;
     expect(Math.round(barBox.y + barBox.height)).toBe(page.viewportSize()!.height);
     expect(lineBox.y + lineBox.height).toBeLessThanOrEqual(barBox.y + 1);
-    // The assistant's answer to the sent message is one to-do.
-    const sentLine = `${info.people[0]} will send the revised budget by 2026-11-05.`;
-    const scripted = await fetch(`${FAKE}/__e2e/script`, {
-      method: "POST",
-      body: JSON.stringify({
-        when: "will send the revised budget by 2026-11-05",
-        answer: {
-          summary: "Read by the journey's script.",
-          ops: [{ op: "action.add", text: "Send the revised budget.", owners: ["me"], due: "2026-11-05", basis: "said", evidence: { quote: sentLine } }],
-        },
-      }),
-    });
-    expect(scripted.ok).toBe(true);
     await main.getByRole("button", { name: "Continue" }).click();
+    // The first reading of the three accounts is waited for on screen, then People follows by itself.
+    await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible({ timeout: 120_000 });
+    await leaveOut(page, main);
     await expect(main.getByRole("heading", { level: 2, name: "Backups" })).toBeVisible(LOADED);
     await pickFolder(page, main, ["offsite"]);
     await expect(main.getByText(/That folder works/)).toBeVisible(LOADED);
     await main.getByRole("button", { name: "Continue" }).click();
     // With three accounts still being read, the settings can change under the step (the app says so); pressing Continue again goes on.
     const stale = main.getByRole("alert").filter({ hasText: "The settings changed since you opened them" });
-    await expect(main.getByRole("heading", { level: 2, name: "People" }).or(stale)).toBeVisible(LOADED);
+    await expect(main.getByRole("heading", { level: 2, name: "Where things stand" }).or(stale)).toBeVisible(LOADED);
     if (await stale.isVisible()) {
       // Looking again, as the message says: the page is read afresh and the step goes on from where it was.
       await page.reload();
@@ -103,8 +108,6 @@ test.describe.serial("journey: one sent message in three mailboxes", () => {
       }
       await main.getByRole("button", { name: "Continue" }).click();
     }
-    await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible(LOADED);
-    await main.getByRole("button", { name: "I'll do this later" }).click();
     await expect(main.getByRole("heading", { level: 2, name: "Where things stand" })).toBeVisible(LOADED);
     await main.getByRole("button", { name: "Go to Today" }).click();
     await expect(page.getByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening)/ })).toBeVisible(LOADED);

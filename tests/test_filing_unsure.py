@@ -90,6 +90,33 @@ def test_move_is_the_persons_own_change_with_undo_and_each_item_is_a_correction(
     assert all(again.get(kind, rid).data["project"] == PERSONAL_ID for kind, rid, _ in items)
 
 
+def test_a_move_of_some_items_keeps_the_rest_each_with_its_own_signal_and_one_undo_takes_all_of_it_back(env):
+    _, cfg, store = env
+    sender = "pat.marsh@example.com"
+    ids = [mail_item(store, sender, f"m{n}", f"Item {n}") for n in range(5)]
+    refs = [("action", i, None) for i in ids]
+    done = filing.move(store, cfg, BUSINESS_ID, refs[:3], NOW, refs[3:])
+    view = store.read()
+    assert (done.count, done.kept) == (3, 2) and done.rule is None  # three items of one sender are one move
+    assert [view.get("action", i).data["project"] for i in ids[:3]] == [BUSINESS_ID] * 3
+    assert [view.get("action", i).data["project"] for i in ids[3:]] == [PERSONAL_ID] * 2
+    noted = {s.data["kind"]: [] for s in view.list("signal")}
+    for s in view.list("signal"):
+        if s.data["kind"] in ("suggestion_chosen", "suggestion_dismissed"):
+            noted[s.data["kind"]].append(s.data["refs"])
+    assert sorted(noted["suggestion_chosen"]) == sorted([i] for i in ids[:3])  # a signal per item, moved or kept
+    assert sorted(noted["suggestion_dismissed"]) == sorted([i] for i in ids[3:])
+    # none of them is asked about again, today or later
+    asked = {i.id for q in filing.questions(view, cfg, NOW + timedelta(days=3)) for i in q.items}
+    assert not asked & set(ids)
+    # one Undo puts the moved ones back and takes the keeps back with it: all five are asked about again
+    undo(store, done.changeset)
+    back = store.read()
+    assert [back.get("action", i).data["project"] for i in ids] == [PERSONAL_ID] * 5
+    asked = {i.id for q in filing.questions(back, cfg, NOW + timedelta(days=3)) for i in q.items}
+    assert set(ids) <= asked
+
+
 def test_a_side_is_asked_once_a_day(env):
     _, cfg, store = env
     run_week(env)

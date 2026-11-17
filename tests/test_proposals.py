@@ -296,7 +296,7 @@ def test_just_this_time_records_its_signal_discards_and_the_repeat_is_marked(app
     assert client.post(f"/api/changesets/{done.json()['changeset']}/undo", json={}).status_code == 200
     assert store.read().get("lesson", first).data["status"] == "proposed"
     marks = {p["id"]: p["just_this_time_before"] for p in waiting(client)["proposals"]}
-    assert marks[again] == 0
+    assert marks[first] == 0 and again not in marks, "two that say the same thing are one card: the older"
     # Only a proposal can be set aside this way.
     assert post(client, person_adds(store, cfg, lesson_saying("Active one.")), "just-this-time").status_code == 409
 

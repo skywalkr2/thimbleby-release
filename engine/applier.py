@@ -84,6 +84,7 @@ from engine.ops import (
     ActionUnholdOp,
     AgendaAddOp,
     AnswerOp,
+    AreaOfferOp,
     AwayReadOp,
     ChangesetIn,
     EventAddOp,
@@ -101,6 +102,7 @@ from engine.ops import (
     PersonAwayOp,
     PersonContactOp,
     PersonForgetOp,
+    PersonOfferOp,
     PersonStanceOp,
     ProjectAddOp,
     ProjectRoleOp,
@@ -130,6 +132,7 @@ from engine.ops import (
     TextDraftOp,
     TextEditOp,
     TextProposeOp,
+    WeekGoalsOp,
     WeekReadOp,
     overwritten_by,
     reach_choices,
@@ -326,6 +329,7 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
     problems += _required_ops(cs, ctx)
     problems += _too_many_ops(cs, ctx)
     problems += _learning_reach(cs, ctx)
+    problems += _learning_evidence(cs, ctx)
     problems += _one_day_generalized(cs, ctx)
     problems += _learning_question(cs, ctx)
     problems += _miss_left_unlearned(cs, ctx)
@@ -517,6 +521,13 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
                 refuse(i, "targets", why)
         if name in KNOWLEDGE_OPS and (why := knowledge.problem(view, op)) is not None:
             refuse(i, "targets", why)
+        if name == "lesson.add" and ctx.actor != "pm" and proposals.single_value(op.text):
+            refuse(
+                i,
+                "single-value",
+                "a number or code from one item is a fact about that item, not a lesson: state what holds for the "
+                "next one, or propose nothing",
+            )
         if (
             ctx.inputs.trust == "untrusted"
             and isinstance(op, RecordSetOp)
@@ -792,6 +803,27 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
             from engine import week_ahead
 
             said = week_ahead.check(ctx, op)
+            if said:
+                refuse(i, "targets", "; ".join(said))
+                continue
+        if isinstance(op, WeekGoalsOp):
+            from engine import week_goals
+
+            said = week_goals.check(ctx, op)
+            if said:
+                refuse(i, "targets", "; ".join(said))
+                continue
+        if isinstance(op, AreaOfferOp):
+            from engine import area_offers
+
+            said = area_offers.check(ctx, op)
+            if said:
+                refuse(i, "targets", "; ".join(said))
+                continue
+        if isinstance(op, PersonOfferOp):
+            from engine import person_look
+
+            said = person_look.check(ctx, op)
             if said:
                 refuse(i, "targets", "; ".join(said))
                 continue
@@ -1720,9 +1752,9 @@ def _looks_like_promise(existing: Any, ctx: Context) -> str:
 
 def _reply_owed_problem(view: Any, ctx: Context, op: ActionAddOp) -> str | None:
     """Why an action marked as a reply owed can't be one, or None: it is the person's own to do, the rules (design 6.35)
-    find no reply owed for the message it answers (automatic mail, mail the person sent; a message whose headers can't
-    be read is the model's reading, and so is a message that says no reply is needed: the `reply-not-needed` lint), and
-    no open reply owed already answers that message."""
+    find no reply owed for the message it answers (automatic mail, mail the person sent; a list or bulk mark is only a
+    hint in the packet; a message whose headers can't be read is the model's reading, and so is a message that says no
+    reply is needed: the `reply-not-needed` lint), and no open reply owed already answers that message."""
     for name in op.owners:
         found = ctx.people.resolve(name)
         if found.status == "ok" and found.person != ctx.people.pm:
@@ -1737,13 +1769,8 @@ def _reply_owed_problem(view: Any, ctx: Context, op: ActionAddOp) -> str | None:
             ):
                 return f"{other.id} is already the reply owed for this message"
     received = (source.data.get("sent_at") or source.data["received_at"]) if source is not None else None
-    bulk = False
-    if source is not None and (source.data.get("watched") or {}).get("source"):
-        watched = source.data["watched"]
-        snap = next(iter(view.find("snapshot", {"source": watched["source"], "key": watched["key"]})), None)
-        bulk = bool(((snap.data.get("message") if snap is not None else None) or {}).get("bulk"))
     when = datetime.fromisoformat(str(received)) if received else None
-    return reply_lines.refusal(view, ctx.cfg, ctx.inputs.raw_input, when, bulk)
+    return reply_lines.refusal(view, ctx.cfg, ctx.inputs.raw_input, when)
 
 
 def _named_records(view: Any, op: OpModel) -> list[dict[str, Any]]:
@@ -2761,6 +2788,23 @@ def _learning_reach(cs: ChangesetIn, ctx: Context) -> list[Problem]:
         Problem("learning-reach", "refuse", i, why)
         for i, op in enumerate(cs.ops)
         if (why := learn.reach_misses_correction(view, request.data, op)) is not None
+    ]
+
+
+def _learning_evidence(cs: ChangesetIn, ctx: Context) -> list[Problem]:
+    """A learning answer whose evidence is the app's own words about the correction (its reason for setting a message
+    aside, its record of what the person did) is refused, so it gets a fix round: a lesson rests on the person's words
+    or the message's, never on what the app itself said (design 6.22)."""
+    if not learn.is_learning(origin_of(ctx).get("task")):
+        return []
+    view = ctx.store.read()
+    request = view.get("request", ctx.inputs.request) if ctx.inputs.request else None
+    if request is None:
+        return []
+    return [
+        Problem("learning-evidence", "refuse", i, why)
+        for i, op in enumerate(cs.ops)
+        if (why := learn.evidence_is_app_words(view, request.data, op)) is not None
     ]
 
 
@@ -4135,7 +4179,7 @@ def _apply_op(
             if op.evidence is not None and w.evidence is not None
             else None
         )
-        return add_rule(tx, ctx.store, op, w, _standing(tx, ctx), evidence=ev), None
+        return add_rule(tx, ctx.store, op, w, _standing(tx, ctx, op), evidence=ev), None
     if isinstance(op, RuleRetireOp):
         from engine.rules import retire_rule
 
@@ -4307,7 +4351,7 @@ def _apply_op(
         }
         return [{"kind": "file", "id": tx.create("file", data, w, record_id=op.id).id}], None
     if op.op in KNOWLEDGE_OPS:
-        return knowledge.apply(tx, op, w, _standing(tx, ctx)), None
+        return knowledge.apply(tx, op, w, _standing(tx, ctx, op)), None
     trust = ctx.inputs.trust
     source = ctx.inputs.source
     touched: list[dict[str, Any]] = []
@@ -4701,6 +4745,21 @@ def _apply_op(
 
         for ref in week_ahead.apply(tx, op, ctx, w):
             made(ref["kind"], ref["id"])
+    elif isinstance(op, WeekGoalsOp):
+        from engine import week_goals
+
+        for ref in week_goals.apply(tx, op, ctx, w):
+            made(ref["kind"], ref["id"])
+    elif isinstance(op, AreaOfferOp):
+        from engine import area_offers
+
+        for ref in area_offers.apply(tx, op, ctx, w):
+            made(ref["kind"], ref["id"])
+    elif isinstance(op, PersonOfferOp):
+        from engine import person_look
+
+        for ref in person_look.apply(tx, op, ctx, w):
+            made(ref["kind"], ref["id"])
     elif isinstance(op, AwayReadOp):
         from engine import absence
 
@@ -5011,7 +5070,16 @@ def _record_dropped(tx: Tx, ctx: Context, kind: str, record_id: str, reason: str
     )
 
 
-def _standing(tx: Tx, ctx: Context) -> knowledge.Standing:
+def _typed_note_evidence(ctx: Context, op: Any) -> bool:
+    """Whether what an op quotes is in the note the person typed and nowhere in the outside content beside it."""
+    quote = getattr(getattr(op, "evidence", None), "quote", None)
+    if not quote or not ctx.inputs.note:
+        return False
+    said = normalize(quote)
+    return bool(said) and said in normalize(ctx.inputs.note) and said not in normalize(ctx.inputs.raw_input)
+
+
+def _standing(tx: Tx, ctx: Context, op: Any = None) -> knowledge.Standing:
     """Who a knowledge op comes from, as the entry it adds records it: the person's own words or act, content they
     report or that came in, or the assistant's own generalization."""
     person = ctx.actor == "pm" or ctx.confirmed_by_pm or _from_pm(tx, ctx)
@@ -5021,6 +5089,26 @@ def _standing(tx: Tx, ctx: Context) -> knowledge.Standing:
         # Learning from a correction restates it in the assistant's own words: a proposal the person reads, and
         # whose wording is theirs once they keep it.
         return knowledge.Standing(False, ctx.people.pm, "assistant", "trusted", None, request.id, ctx.store.clock())
+    if (
+        not person
+        and request is not None
+        and request.data["origin"] == "pm"
+        and not is_reported(_source_data(tx, request))
+        and _typed_note_evidence(ctx, op)
+    ):
+        # The person typed this on an item that came in from outside: their words are theirs, offered for Keep, and
+        # never marked as coming from outside; the content beside the note stays outside.
+        return knowledge.Standing(
+            person=False,
+            pm=ctx.people.pm,
+            origin="person",
+            trust="trusted",
+            source=ctx.inputs.source,
+            request=request.id,
+            now=ctx.store.clock(),
+            hold_days=ctx.cfg.dispatch.knowledge.discards_hold_days,
+            alike=ctx.cfg.dispatch.knowledge.discard_similarity,
+        )
     if person:
         origin = "person"
     elif reported or ctx.inputs.source or ctx.inputs.trust == "untrusted":

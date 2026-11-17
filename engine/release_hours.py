@@ -113,11 +113,13 @@ def keep_hours(
 ) -> list[Any]:
     """The lines whose hours have come, and one `away` row counting those that waited and were released today (the
     person's day, so the row goes with it). A line is held while its cause's release moment is still ahead; when `held`
-    is given, the release moment of each line still held is added to it."""
+    is given, the release moment of each line still held is added to it. The row's `at` is when the first of them came
+    in, so the screen can show what came in from then until the hours began."""
     r = reminder_lines.rules(cfg)
     today = now.astimezone(r.tz).date()
     shown: list[Any] = []
     arrived: list[datetime] = []
+    causes_in: list[datetime] = []
     groups: list[str] = []
     for line in lines:
         cause = caused.get(line.key)
@@ -132,9 +134,19 @@ def keep_hours(
         shown.append(line)
         if released > cause and released.astimezone(r.tz).date() == today:
             arrived.append(released)
+            causes_in.append(cause)
             groups.append(line.group)
     if arrived:
         # The row sits at the top of the first group any of them is in, below only what reports a stop.
         first = min(groups, key=TODAY_GROUPS.index)
-        shown.append(make_row(key=AWAY, group=first, kind=AWAY, count=len(arrived), since=min(arrived).isoformat()))
+        shown.append(
+            make_row(
+                key=AWAY,
+                group=first,
+                kind=AWAY,
+                count=len(arrived),
+                since=min(arrived).isoformat(),
+                at=min(causes_in).isoformat(),
+            )
+        )
     return shown

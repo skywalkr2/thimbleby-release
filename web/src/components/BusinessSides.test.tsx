@@ -230,6 +230,24 @@ test("adding a business with mailboxes and calendars already connected asks whic
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 });
 
+test("a business added before the sources have loaded still asks which connections serve it", async () => {
+  const user = userEvent.setup();
+  const item: S["WatchSourceView"] = { id: "inbox-a", label: "Inbox, alex@example.com", connector: "k", connector_label: "Mail", enabled: true, every_minutes: 15, items: 1, last: null, read_at: null, failures: 0, problem: null, reads: ["mail"] };
+  fakeApi({
+    "GET setup/business": () => ({ business: false, name: "", personal: "PRJ-personal", sides: [], chosen: "me" }),
+    "GET projects": () => [project("PRJ-personal", "Personal")],
+    "GET watch": () => new Promise((resolve) => setTimeout(() => resolve([item]), 300)),
+    "GET settings": () => ({ fingerprint: "fp-1", items: [{ key: "watch.sources", file: "watch", group: "", description: "", type: "other", options: [], value: [{ id: "inbox-a", settings: {}, sides: [] }], default: [], source: "file", locked: false, basic: false, editable: false }] }),
+    "POST setup/business": () => ({ project: "PRJ-new", name: "Quarry Studio", kind: "business", created: true, changeset: "CS-20" }),
+  });
+  renderApp(<BusinessSides />);
+  await user.click(await screen.findByRole("button", { name: "Add a business" }));
+  const dialog = await screen.findByRole("dialog", { name: "Add a business" });
+  await user.type(within(dialog).getByRole("textbox", { name: /^Business name/ }), "Quarry Studio");
+  await user.click(within(dialog).getByRole("button", { name: "Add the business" }));
+  expect(await screen.findByRole("dialog", { name: "Which of your connections serve Quarry Studio?" })).toBeTruthy();
+});
+
 test("two ticks made in a row are both saved, even when a screen is slow to read again after the first, and Done closes with them still going", async () => {
   const user = userEvent.setup();
   const item = (id: string, label: string): S["WatchSourceView"] => ({ id, label, connector: "k", connector_label: "Mail", enabled: true, every_minutes: 15, items: 1, last: null, read_at: null, failures: 0, problem: null, reads: ["mail"] });

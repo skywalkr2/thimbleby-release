@@ -112,7 +112,7 @@ def test_a_screen_not_reached_is_known_only_partway_through_it(tmp_path):
     assert not setup.not_reached(ws, "backup")  # never shown
     c.post("/api/setup/walkthrough", json={"step": "ai"})
     assert setup.not_reached(ws, "backup") and setup.not_reached(ws, "mail") and not setup.not_reached(ws, "ai")
-    c.post("/api/setup/walkthrough", json={"step": "people"})
+    c.post("/api/setup/walkthrough", json={"step": "backup"})
     assert not setup.not_reached(ws, "backup")
     c.post("/api/setup/walkthrough", json={"step": "you"})
     c.post("/api/setup/walkthrough", json={"closed": True})
@@ -258,7 +258,7 @@ def test_the_add_ons_that_come_with_the_app_are_not_listed_to_turn_on_and_not_on
 
 
 def test_the_screens_run_in_the_one_order_the_design_gives():
-    assert setup.WALKTHROUGH_STEPS == ("welcome", "you", "work", "ai", "mail", "backup", "people", "done")
+    assert setup.WALKTHROUGH_STEPS == ("welcome", "you", "work", "ai", "mail", "reading", "people", "backup", "done")
 
 
 def test_the_work_question_is_a_counted_step_that_reads_as_skipped_when_left_for_later(tmp_path):
@@ -671,10 +671,11 @@ def test_every_counted_tick_is_computed_from_its_own_record_and_no_screen_state_
     assert not _steps(c)["first_note"]["done"]
 
 
-def test_moving_on_from_people_with_nobody_added_passes_the_step_and_says_so(tmp_path):
+def test_people_is_left_out_only_by_a_confirmed_skip_never_by_reaching_a_later_screen_and_says_so(tmp_path):
     _, c = _fresh(tmp_path)
-    assert not _steps(c)["people"]["skipped"]
     c.post("/api/setup/walkthrough", json={"step": "done"})
+    assert not _steps(c)["people"]["skipped"], "reaching a later screen leaves nothing out"
+    c.post("/api/setup/people/skip")
     people = _steps(c)["people"]
     assert people["skipped"] and not people["done"] and people["reason"] == "none_added"
     c.post("/api/setup/walkthrough", json={"step": "people"})

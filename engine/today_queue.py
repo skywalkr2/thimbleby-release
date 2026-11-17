@@ -160,8 +160,9 @@ class Line:
     `actions`),
     since_yesterday (what the assistant or a rule did that the person hasn't looked over, one line for all of it:
     `count` entries, counted by act in `outcome`; Look over opens the list), away (one row for the lines that waited for
-    the person's working hours and arrived together with them: `count` is how many, and `since` the moment the hours
-    began; it is at the top of the first group any of them is in, and goes with the day), send or nudge.
+    the person's working hours and arrived together with them: `count` is how many, `since` the moment the hours
+    began and `at` when the first of them came in, so Look over shows what came in between; it is at the top of the
+    first group any of them is in, and goes with the day), send or nudge.
     escalate (the one thing a person still hasn't answered after `ui.followups.escalate_after_chases` follow-ups, as a
     suggestion to ask someone else: its id in `questions` or `actions`, its words in `text`, who hasn't answered in
     `person`, the follow-ups it has had in `count` and the days since the last word in `waiting_days`), stale (the
@@ -1461,7 +1462,9 @@ def _everything(
             and not (changesets.get(entry.changeset) or {}).get("reviewed")
         )
 
-    unseen = [e for e in done.unseen if not in_a_batch(e)]
+    # Mail a rule set aside is not a change to the person's work: it is counted on Handled for you, so with only that
+    # to show there is no line.
+    unseen = [e for e in done.unseen if not in_a_batch(e) and e.act != "set_aside"]
     if unseen:
         counts: dict[str, int] = {}
         for entry in unseen:
@@ -1767,7 +1770,7 @@ def _everything(
 
     state = catch_up.load(store)
     listed = catch_up.proposal_ids(reader, state)
-    waiting = proposals(reader)
+    waiting = proposals(reader, alike=cfg.dispatch.knowledge.discard_similarity)
     daily = [p for p in waiting if p.stored.id not in listed]
     if daily:
         origins: dict[str, int] = {}
@@ -1839,19 +1842,21 @@ def _everything(
             )
         )
 
-    # An area of life offered for items under the personal project that share a word: one line each, a suggestion the
-    # person keeps or puts off.
-    for offer in areas.proposals(reader, cfg):
+    # An area of life the assistant offered for items under the personal project: one line each, a suggestion the person
+    # keeps or puts off. It names the offer (`subject`), says why in `reason` and lists every item it would take in
+    # `names`, one row each.
+    for offer in areas.offers(reader, cfg):
         lines.append(
             Line(
-                key=f"area:{offer.word}",
+                key=f"area:{offer.id}",
                 group="review",
                 kind="area",
                 text=offer.name,
-                subject=offer.word,
+                subject=offer.id,
+                reason=offer.why,
                 count=len(offer.items),
-                names=[text for *_, text in offer.items[:3]],
-                since=offer.word,
+                names=[text for *_, text in offer.items],
+                since=offer.id,
             )
         )
 

@@ -8,7 +8,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
 import { choicesOf, choose } from "./choose";
-import { collectProblems, fakeAddress, pressStart, showSteps, type Info } from "./journey-helpers";
+import { collectProblems, fakeAddress, pressStart, showSteps, type Info, toToday } from "./journey-helpers";
 import { pickSide, sideFilter } from "./side-pick";
 
 const FAKE = `http://127.0.0.1:${process.env.JOURNEY_ACCOUNTS_FAKE_PORT ?? 8769}`;
@@ -59,7 +59,7 @@ test.describe.serial("several accounts", () => {
     collectProblems(page, problems);
     await page.goto(`?token=${info.token}`);
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible(LOADED);
-    if (await page.getByRole("button", { name: "Finish later" }).count()) await page.getByRole("button", { name: "Finish later" }).click();
+    if (await page.locator("[data-walkthrough]").count()) await toToday(page);
     await go(page, "settings/connections");
     await expect(page.getByRole("heading", { level: 2, name: "Connections" })).toBeVisible(LOADED);
     for (const [n, address] of addresses.entries()) await signIn(page, address, n === 0);
@@ -78,7 +78,7 @@ test.describe.serial("several accounts", () => {
     for (const address of addresses) {
       await expect(card(page, address).getByRole("heading", { name: address, exact: true })).toBeVisible();
       await expect(card(page, address).getByRole("listitem")).toHaveCount(2);
-      await expect(card(page, address)).toContainText("Connected");
+      await expect(card(page, address)).toContainText("Connected", LOADED);
     }
     await expect(page.locator("[data-connection-card][data-need]")).toHaveCount(0);
     await expect(page.locator("table")).toHaveCount(0);

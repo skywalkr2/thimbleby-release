@@ -77,10 +77,10 @@ test("the list has a row per thing, tagged by where it came from, with how many 
   const drawer = await screen.findByRole("dialog", { name: "What Helper learned" });
   const rows = await within(drawer).findAllByRole("listitem");
   expect(rows).toHaveLength(2);
-  expect(within(rows[0]).getByText("From incoming material")).toBeInTheDocument();
+  expect(within(rows[0]).getByText("From something that came in")).toBeInTheDocument();
   expect(within(rows[1]).getByText("From your correction")).toBeInTheDocument();
   expect(within(drawer).getByText(/2 from what came in expired before you looked/)).toBeInTheDocument();
-  expect(within(rows[0]).getByText("From outside · not instructions")).toBeInTheDocument();
+  expect(within(rows[0]).getByText("From the message, not from you")).toBeInTheDocument();
 });
 
 test("Keep all is offered only for terms that carry the words they came from, and keeps just those", async () => {
@@ -166,4 +166,94 @@ test("the catch-up line opens its own list with the count of kinds left out", as
   expect(within(drawer).getByText(/Reviewing 1 kind of correction/)).toBeInTheDocument();
   expect(within(drawer).getByText(/3 additional correction types are outside the 10-item review limit/)).toBeInTheDocument();
   expect(within(drawer).getByRole("button", { name: "Keep" })).toBeInTheDocument();
+});
+
+const INTERNAL = /Keep for|Filing notes|filing notes|selected kinds|incoming material|not instructions|Expires|task_kinds|applies_to/;
+
+test("every kind of card says what changes, where it applies, where it came from and when and why it ends, in plain words", async () => {
+  const user = userEvent.setup();
+  show([line("learned", { count: 4, origins: { input: 2, correction: 2 } })], {
+    "GET knowledge/proposals": () => ({
+      proposals: [
+        proposal({
+          id: "LES-1",
+          text: "Alerts like this about the website are work: make each one a to-do.",
+          applies_to: { scope: "projects", projects: ["PRJ-1"], task_kinds: ["notes"] },
+          evidence: { quote: "12 pages now return an error", source: "SRC-1" },
+          came_from: "input",
+          trust: "untrusted",
+          learned_from: "input",
+          expires_at: "2026-10-23T14:00:00Z",
+        }),
+        proposal({
+          id: "GLO-1",
+          kind: "glossary_entry",
+          term: "Proof",
+          text: "Proof means the final proof.",
+          applies_to: { scope: "workspace" },
+          came_from: "input",
+          trust: "untrusted",
+          learned_from: "input",
+        }),
+        proposal({
+          id: "ROU-1",
+          kind: "routing_entry",
+          text: "Photos go to the designer.",
+          applies_to: { scope: "workspace", task_kinds: ["sort-mail"] },
+          came_from: "correction",
+          evidence: null,
+        }),
+        proposal({
+          id: "LES-5",
+          text: "Make each website alert a to-do for a fix.",
+          applies_to: { scope: "workspace", task_kinds: [] },
+          came_from: "correction",
+          learned_from: "person",
+          evidence: { quote: "should be created as to-dos for fixes" },
+        }),
+      ],
+      origins: { input: 2, correction: 2 },
+      expired: 0,
+    }),
+  });
+  await user.click(await screen.findByRole("button", { name: "Review" }));
+  const drawer = await screen.findByRole("dialog", { name: "What Helper learned" });
+  const rows = await within(drawer).findAllByRole("listitem");
+  expect(rows).toHaveLength(4);
+  for (const row of rows) expect(row.textContent).not.toMatch(INTERNAL);
+  // Where it applies is a plain phrase, and where it came from is said.
+  expect(rows[0]).toHaveTextContent("Applies to: things that come in for Spring launch");
+  expect(rows[0]).toHaveTextContent("Goes away on");
+  expect(rows[0]).toHaveTextContent("because it came from a message and not from you");
+  expect(within(rows[0]).getByText("From the message, not from you")).toBeInTheDocument();
+  expect(rows[2]).toHaveTextContent("Applies to: all your mail");
+  expect(within(rows[2]).queryByText(/Goes away/)).toBeNull();
+  expect(rows[1]).toHaveTextContent("Applies to: everything for all your projects");
+});
+
+test("the person's own typed words are theirs: marked as theirs, quoted as theirs, never from outside", async () => {
+  const user = userEvent.setup();
+  show([line("learned", { count: 1, origins: { correction: 1 } })], {
+    "GET knowledge/proposals": () => ({
+      proposals: [
+        proposal({
+          id: "LES-5",
+          text: "Make each website alert a to-do for a fix.",
+          applies_to: { scope: "workspace", task_kinds: [] },
+          came_from: "correction",
+          learned_from: "person",
+          trust: "trusted",
+          evidence: { quote: "should be created as to-dos for fixes" },
+        }),
+      ],
+      origins: { correction: 1 },
+      expired: 0,
+    }),
+  });
+  await user.click(await screen.findByRole("button", { name: "Review" }));
+  const row = (await screen.findByText("Make each website alert a to-do for a fix.")).closest("li")!;
+  expect(within(row).getByText("Your own words")).toBeInTheDocument();
+  expect(row).toHaveTextContent("You said: should be created as to-dos for fixes");
+  expect(row.textContent).not.toMatch(/from outside|not from you|came from a message/i);
+  expect(within(row).getByRole("button", { name: "Keep" })).toBeInTheDocument();
 });

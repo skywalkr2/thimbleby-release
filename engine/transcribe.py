@@ -182,7 +182,14 @@ def process(
     if estimate is None and not granted and pricing.go_needed(cfg, router.price_state(task, data_level=level)):
         _set(store, request_id, state="needs_you", approval="required", waiting=UNPRICED_GO)
         return None
-    if budgets.first_go and not granted and (estimate is None or estimate > 0) and not store.read().has("run"):
+    from engine import setup
+
+    if (
+        setup.first_go_holds(ws, cfg)
+        and not granted
+        and (estimate is None or estimate > 0)
+        and not store.read().has("run")
+    ):
         _set(store, request_id, state="needs_you", approval="required", waiting=FIRST_GO)
         return None
     if estimate is not None and estimate > budgets.confirm_above_usd and not granted:

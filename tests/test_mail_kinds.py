@@ -199,7 +199,7 @@ def test_treat_as_personal_hands_it_in_for_the_personal_project_and_records_a_si
     (request,) = [r for r in requests_in(store, "queued") if r.data["source"]]
     assert request.data["project"] == personal and not request.data.get("set_aside")
     signals = [s.data for s in store.read().list("signal") if s.data["kind"] == "pulled_back"]
-    assert len(signals) == 1 and "treated as personal" in signals[0]["note"]
+    assert len(signals) == 1 and signals[0]["note"] == "The person marked this message as personal."
     assert client.get(f"{base}/set-aside").json()["items"] == []
 
 

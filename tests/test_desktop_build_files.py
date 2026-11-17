@@ -578,3 +578,27 @@ def test_the_fresh_install_walk_presses_a_button_only_when_it_is_enabled_and_che
     spec = (REPO / "web" / "e2e-install" / "fresh-install.spec.ts").read_text()
     assert "toBeEnabled" in spec
     assert "#settings/addons" in spec and "parcels" in spec and '"Add-ons"' in spec
+
+
+def test_the_mac_session_check_closes_the_window_then_quits_by_the_systems_quit():
+    """A close must leave the app running and the system's Quit (command-Q, the Dock's Quit) must end it and free the
+    workspace; the logic is run here with the system calls replaced, and the release run proves it on a real Mac."""
+    import session_check
+
+    sent = []
+
+    def run(command):
+        sent.append(command[-1])
+        return 0
+
+    assert session_check.close_keeps_running(run, lambda: [7], lambda s: None) is True
+    assert session_check.close_keeps_running(run, lambda: [], lambda s: None) is False
+    assert sent[0] == session_check.CLOSE_WINDOW
+    alive = iter([[7], [7], []])
+    assert session_check.system_quit_ends_app(run, lambda: next(alive), lambda: True, lambda s: None) is None
+    assert sent[-1] == session_check.COMMAND_Q
+    assert "locked" in session_check.system_quit_ends_app(run, lambda: [], lambda: False, lambda s: None)
+    assert "still running" in session_check.system_quit_ends_app(run, lambda: [7], lambda: True, lambda s: None, 3)
+    refused = []
+    session_check.system_quit_ends_app(lambda c: refused.append(c[-1]) or 1, lambda: [], lambda: True, lambda s: None)
+    assert refused == [session_check.COMMAND_Q, session_check.QUIT_EVENT]

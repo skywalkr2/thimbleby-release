@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { expect } from "@playwright/test";
 import { test } from "./test";
 import { choose } from "./choose";
-import { collectProblems, fakeAddress, openView, pressStart, startOnToday, visit, widerThanWindow, type Info, type Requests, type SignInSeen, pickFolder } from "./journey-helpers";
+import { collectProblems, fakeAddress, openView, pressStart, startOnToday, visit, widerThanWindow, type Info, type Requests, type SignInSeen, pickFolder, turnOnAndGoOn } from "./journey-helpers";
 import { openScreen, screenReady } from "./open-screen";
 
 const FAKE = fakeAddress("JOURNEY_EVENING_FAKE_PORT", 8761);
@@ -104,6 +104,7 @@ test.describe.serial("journey: a first evening", () => {
     await main.getByRole("radio", { name: /^Yes/ }).check();
     await visit(page);
     await main.getByRole("button", { name: "Continue" }).click();
+    await turnOnAndGoOn(main);
     await screenReady(page);
     await expect(main.getByRole("heading", { level: 2, name: "Mail and calendar" })).toBeVisible();
     const saved = JSON.stringify(await page.evaluate(async () => (await fetch("api/ai/accounts", { credentials: "same-origin" })).json()));
@@ -150,15 +151,10 @@ test.describe.serial("journey: a first evening", () => {
     expect(page.url()).not.toMatch(/code=|state=|sign_in=/);
     await main.getByRole("button", { name: "Continue" }).click();
 
-    // 4. No screen of its own for the first look at the mail: the Start is on Today, and nothing is asked before it.
-    expect((await requests()).work).toBe(0);
-    // Backups, then People.
-    await expect(main.getByRole("heading", { level: 2, name: "Backups" })).toBeVisible();
-    expect(await widerThanWindow(page, "Backups")).toEqual([]);
-    await pickFolder(page, main, ["offsite"]);
-    await main.getByRole("button", { name: "Continue" }).click();
+    // 4. After Mail and calendar the first reading is waited for on screen, then People follows by itself.
+    await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible({ timeout: 120_000 });
 
-    // 5. People by relation.
+    // 4b. People by relation.
     await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible();
     expect(await widerThanWindow(page, "People")).toEqual([]);
     const addRow = main.getByRole("form", { name: "Add someone" });
@@ -168,6 +164,11 @@ test.describe.serial("journey: a first evening", () => {
     // The people added so far are their own list; the suggestions above it may still show the same name for a moment.
     await expect(main.getByRole("region", { name: "The people in your life" }).getByRole("listitem").filter({ hasText: friend })).toContainText("my friend");
     await visit(page);
+    await main.getByRole("button", { name: "Continue" }).click();
+    // 5. Backups.
+    await expect(main.getByRole("heading", { level: 2, name: "Backups" })).toBeVisible();
+    expect(await widerThanWindow(page, "Backups")).toEqual([]);
+    await pickFolder(page, main, ["offsite"]);
     await main.getByRole("button", { name: "Continue" }).click();
     // Headed Done when every counted step is done, else where things stand.
     await expect(main.getByRole("heading", { level: 2, name: /^(Done|Where things stand|You're set\.)$/ })).toBeVisible();

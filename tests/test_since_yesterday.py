@@ -235,6 +235,18 @@ def test_a_set_aside_mail_is_listed_with_the_rules_reason_and_undo_that_puts_it_
         store.close()
 
 
+def test_mail_set_aside_alone_makes_no_line_on_today_because_it_is_not_a_change_to_the_work(tmp_path):
+    ws, _, store = make_mail(tmp_path, [mail(f"by-rule-{n}", f"a@{LISTS}", bulk=True) for n in range(3)])
+    cfg = ws.config(env=ENV)
+    try:
+        refresh(ws, store, cfg, "m", ASIDE_AT)
+        found = since_yesterday.build(ws, store.read(), cfg, People(store, cfg), NOW)
+        assert [e.act for e in found.unseen] == ["set_aside"] * 3  # the list still has them, for its summary row
+        assert next((x for x in queue(ws, store, cfg, NOW) if x.kind == "since_yesterday"), None) is None
+    finally:
+        store.close()
+
+
 def test_a_change_a_rule_closed_before_the_assistant_read_it_is_listed_as_closed_by_a_rule(tmp_path):
     from tests.test_silent_closes import closed_by_a_rule
 

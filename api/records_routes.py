@@ -107,12 +107,17 @@ def build_records_router(ws: Workspace, cfg: Config, store: Store, events: Event
         second move of the same sender's items proposes a rule for it, held for Keep."""
         try:
             done = filing.move(
-                store, cfg, body.side, [(i.kind, i.id, i.read_version) for i in body.items], worker.now()
+                store,
+                cfg,
+                body.side,
+                [(i.kind, i.id, i.read_version) for i in body.items],
+                worker.now(),
+                [(i.kind, i.id, i.read_version) for i in body.keep],
             )
         except (StoreError, ValueError) as err:
             raise HTTPException(status_code=409, detail=str(err)) from None
         events.changed()
-        return FilingMoved(changeset=done.changeset, count=done.count, rule=done.rule)
+        return FilingMoved(changeset=done.changeset, count=done.count, rule=done.rule, kept=done.kept)
 
     @r.post("/filing/keep")
     def filing_keep(body: FilingMove) -> FilingKept:
@@ -128,10 +133,10 @@ def build_records_router(ws: Workspace, cfg: Config, store: Store, events: Event
 
     @r.post("/areas/keep")
     def keep_area(body: AreaKeep) -> AreaKept:
-        """Keep the area offered for a word: start it under the personal project and file the items that share the
-        word under it, as the person's own edits with Undo (two changes, filing first)."""
+        """Keep an area the assistant offered: start it under the personal project and file its items under it, as the
+        person's own edits with Undo (two changes, filing first)."""
         try:
-            kept = areas.keep(store, cfg, body.word, body.name)
+            kept = areas.keep(store, cfg, body.offer, body.name)
         except (StoreError, ValueError) as err:
             raise HTTPException(status_code=409, detail=str(err)) from None
         events.changed()

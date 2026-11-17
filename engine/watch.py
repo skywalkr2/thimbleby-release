@@ -290,25 +290,7 @@ def _refresh(ws: Any, store: Any, cfg: Any, source_id: str, now: datetime | None
             ) from None
         poll = _poll(store, connector, settings, state, ws, cfg, now, source.account)
     except ConnectorError as err:
-        err.advice_key = _sign_in_advice(store, source.connector, err.advice_key)
-        outcome = {"offline": "offline", "throttled": "throttled"}.get(err.kind, "failed")
-        wait = err.retry_after if err.retry_after is not None else source.every_minutes * 60
-        _record(
-            store,
-            source.id,
-            now,
-            clock,
-            outcome,
-            error_kind=err.kind if outcome == "failed" else None,
-            error=err.detail or None,
-            error_own=bool(err.detail) and (source.connector in CORE or isinstance(err, AddonMissing)),
-            error_advice=err.advice_key if outcome == "failed" else None,
-            **({"retry_at": (now + timedelta(seconds=wait)).isoformat()} if outcome == "throttled" else {}),
-        )
-        problem = None
-        if outcome == "failed":
-            problem = _maybe_ask(store, cfg, source, err)
-        return Result(source.id, outcome, problem=problem)
+        return _failed_read(store, cfg, source, err, now, clock)
     if source.holds == "absence":
         return _read_absence(store, cfg, source, poll, settings, now, clock)
     read_before = any(
@@ -362,14 +344,44 @@ def _refresh(ws: Any, store: Any, cfg: Any, source_id: str, now: datetime | None
         unreadable=[{"key": u.key, "reason": u.reason} for u in poll.unreadable],
         state=poll.state,
         looked_back_to=back_to.isoformat() if back_to else None,
+        asks_full_read=bool(back_to),
     )
     if taking_in:
         result.taken_in = source_intake.take_in(ws, store, cfg, source, now, router, back_to)
     _close_question(store, source.id)
     _tell_unreadable(store, cfg, source, poll.unreadable)
+    if baseline:
+        # A mail account's first read is followed once by its year of headers (no assistant work, nothing handed in).
+        from engine import mail_headers
+
+        mail_headers.read_after_first(ws, store, cfg, source, now, clock, back_to)
     _after_mail(ws, store, cfg, now)
     result.outcome = "baseline" if baseline else "ok"
     return result
+
+
+def _failed_read(store: Any, cfg: Any, source: Any, err: ConnectorError, now: datetime, clock: float) -> Result:
+    """Record a read that a connector refused, as the person is told of it: the kind of failure, the wait a throttled
+    read asked for, and the problem in words (one question to the person at the configured count of failures)."""
+    err.advice_key = _sign_in_advice(store, source.connector, err.advice_key)
+    outcome = {"offline": "offline", "throttled": "throttled"}.get(err.kind, "failed")
+    wait = err.retry_after if err.retry_after is not None else source.every_minutes * 60
+    _record(
+        store,
+        source.id,
+        now,
+        clock,
+        outcome,
+        error_kind=err.kind if outcome == "failed" else None,
+        error=err.detail or None,
+        error_own=bool(err.detail) and (source.connector in CORE or isinstance(err, AddonMissing)),
+        error_advice=err.advice_key if outcome == "failed" else None,
+        **({"retry_at": (now + timedelta(seconds=wait)).isoformat()} if outcome == "throttled" else {}),
+    )
+    problem = None
+    if outcome == "failed":
+        problem = _maybe_ask(store, cfg, source, err)
+    return Result(source.id, outcome, problem=problem)
 
 
 def _read_absence(store: Any, cfg: Any, source: Any, poll: Any, settings: Any, now: datetime, clock: float) -> Result:

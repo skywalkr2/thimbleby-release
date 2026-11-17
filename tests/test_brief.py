@@ -802,27 +802,17 @@ def test_the_monday_briefing_builds_no_rule_made_this_week_sections_the_week_ahe
     assert found.goals is not None  # the goals and the message stay; what happens in the week is the week ahead
 
 
-def test_goals_are_proposed_from_what_is_due_until_the_person_confirms_them(env):
+def test_no_rule_proposes_goals_from_what_is_due_the_assistants_offer_does(env):
+    """What matters in a week is the assistant's reading (`tests/test_week_goals.py`): with items due and no offer made
+    yet the briefing proposes nothing, and says an offer can be asked for."""
     ws, cfg, store, clock = env
     for n in range(7):
         own(store, cfg, f"Finish part {n}", due=day(1 + n % 4))
-    found = built(env, "monday")
-    goals = found.goals
-    assert (goals.first, goals.last) == (TODAY, TODAY + timedelta(days=4))
-    assert not goals.confirmed and goals.goals == [] and len(goals.proposed) == cfg.steward.brief.goals_max
-    assert (goals.fewest, goals.most) == (cfg.steward.brief.goals_min, cfg.steward.brief.goals_max)
-
-
-def test_each_proposed_goal_says_which_side_its_to_do_is_on_so_a_side_filter_can_leave_the_others_out(env):
-    from tests.test_many_sides import add_side
-
-    ws, cfg, store, clock = env
-    job = add_side((ws, cfg, store), "Weekday job", kind="job")
-    own(store, cfg, "Finish the job report", due=day(1), project=job)
-    own(store, cfg, "Renew the passport", due=day(2))
     goals = built(env, "monday").goals
-    on = dict(zip(goals.proposed, goals.proposed_sides, strict=True))
-    assert on["Finish the job report"] == job and on["Renew the passport"] is None
+    assert (goals.first, goals.last) == (TODAY, TODAY + timedelta(days=4))
+    assert not goals.confirmed and goals.goals == [] and goals.proposed == []
+    assert (goals.offer, goals.can_offer) == ("none", True)
+    assert (goals.fewest, goals.most) == (cfg.steward.brief.goals_min, cfg.steward.brief.goals_max)
 
 
 def test_confirmed_goals_are_kept_for_the_week_and_read_by_the_morning_brief(env):

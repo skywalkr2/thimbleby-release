@@ -1058,6 +1058,103 @@ class WeekReadOp(OpModel):
         return "Read the week ahead"
 
 
+class GoalIn(BaseModel):
+    """One goal the assistant offers for the week: a few plain words and the record it comes from."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    words: str = Field(min_length=1, max_length=200, description="The goal, in a few plain words.")
+    source: str | None = Field(
+        None,
+        description="The id of the to-do, promise or calendar entry the goal comes from, exactly as the packet lists "
+        "it; leave out for a goal that comes from several.",
+    )
+
+
+class WeekGoalsOp(OpModel):
+    """The assistant's offer of goals for the coming week, kept on the person's record for the week: what matters most
+    in it, read from their open items due in the week, the promises, the calendar and the goals they kept before. Each
+    goal that names a record names one the packet listed; there are at most the configured most goals; none is the
+    right offer for a week with nothing that matters. The offer is never a confirmed goal: the person confirms,
+    changes or drops it. The week is the one the request is for."""
+
+    op: Literal["week.goals"] = "week.goals"
+    goals: list[GoalIn] = Field(default_factory=list, description="The goals offered, the most important first.")
+
+    def describe(self, view: Any = None) -> str | None:
+        return "Offer goals for the week"
+
+
+class AreaItemIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["action", "question", "fact", "event"] = Field(description="What kind of record it is.")
+    id: str = Field(min_length=1, description="Its id, exactly as the packet lists it.")
+
+
+class AreaIn(BaseModel):
+    """One area of the person's life the assistant offers: its name, why, and the items it would take."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(
+        min_length=1,
+        max_length=60,
+        description="The area's name, by what its items are about (a hobby, a household matter, a part of life), "
+        "never a shop, a service or a sender.",
+    )
+    why: str = Field(
+        min_length=1, max_length=240, description="In a sentence, why these items belong together as one area of life."
+    )
+    items: list[AreaItemIn] = Field(min_length=1, description="The items it would take, from the packet's list only.")
+
+
+class AreaOfferOp(OpModel):
+    """The assistant's offer of areas of the person's life, read from items filed under their personal project that
+    share a word: for each, a name by what the items are about, a reason and the items it would take, whichever shop or
+    sender they came from. Every item is one the packet listed and goes in one offer at most, an area is never named for
+    a shop, a service, a sender or a person, and none is the right answer when the items do not make an area. Offers
+    wait for the person's yes; nothing is moved until they keep one."""
+
+    op: Literal["area.offer"] = "area.offer"
+    areas: list[AreaIn] = Field(default_factory=list, description="The areas offered; none when none stands.")
+
+    def describe(self, view: Any = None) -> str | None:
+        return "Offer areas of your life"
+
+
+class PersonOfferIn(BaseModel):
+    """One person the assistant offers to add: who, the address, and why they are someone the person deals with."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    address: str = Field(min_length=3, description="Their address, exactly as the list shows it.")
+    name: str = Field(
+        min_length=1,
+        max_length=80,
+        description="The name to add them under: as the list shows it, or made plain from it when the list gives none.",
+    )
+    why: str = Field(
+        min_length=1,
+        max_length=240,
+        description="In a sentence, why this is someone the person deals with, from the counts and the name.",
+    )
+
+
+class PersonOfferOp(OpModel):
+    """The assistant's offer of people to add, read from the contact tally: each is an address the packet listed that is
+    not on file and was not offered or left out before, with the reason. It is for someone who is a person to the
+    user (a colleague, a client, a tradesperson, a relative, a recruiter), whatever shape their address or the name
+    they write under has; it is never for a list, a service or a machine. Offers wait for the person's yes; nobody is
+    added until they keep one."""
+
+    op: Literal["person.offer"] = "person.offer"
+    people: list[PersonOfferIn] = Field(default_factory=list, description="The people offered; none when none stands.")
+
+    def describe(self, view: Any = None) -> str | None:
+        return "Offer people to add"
+
+
 class PersonStanceOp(OpModel):
     """Who a person is to the person, proposed from a correction such as "not my job to ask them" or "we are not their
     boss". A system op: it changes what the assistant may draft or ask them, so from anyone but the person's own words
@@ -2163,6 +2260,9 @@ Op = Annotated[
     | PersonAwayOp
     | AwayReadOp
     | WeekReadOp
+    | WeekGoalsOp
+    | AreaOfferOp
+    | PersonOfferOp
     | PersonStanceOp
     | StageMoveOp
     | RecordDeleteOp
@@ -2254,6 +2354,9 @@ OP_MODELS: dict[str, type[OpModel]] = {
     "person.away": PersonAwayOp,
     "away.read": AwayReadOp,
     "week.read": WeekReadOp,
+    "week.goals": WeekGoalsOp,
+    "area.offer": AreaOfferOp,
+    "person.offer": PersonOfferOp,
     "person.stance": PersonStanceOp,
     "stage.move": StageMoveOp,
     "record.delete": RecordDeleteOp,
@@ -2355,6 +2458,9 @@ NON_OVERWRITING_OPS: frozenset[str] = frozenset(
         "person.away",
         "away.read",
         "week.read",
+        "week.goals",
+        "area.offer",
+        "person.offer",
         "stage.move",
         "record.delete",
         "file.forget",

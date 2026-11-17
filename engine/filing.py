@@ -92,11 +92,13 @@ class Summary:
 
 @dataclass(frozen=True)
 class Moved:
-    """What a move did: its changeset (for Undo), how many items moved and the rule it proposed, if any."""
+    """What a move did: its changeset (for Undo), how many items moved, the rule it proposed, if any, and how many of
+    the items asked about were kept where they are in the same step."""
 
     changeset: str
     count: int
     rule: str | None = None
+    kept: int = 0
 
 
 def _at(value: Any) -> datetime:
@@ -157,7 +159,7 @@ def _kept(view: Any, personal: str | None = None) -> set[str]:
         said = _noted(signal)
         if said is None:
             continue
-        if said.get("action") == "keep" or (
+        if (said.get("action") == "keep" and not _undone(view, said.get("step"))) or (
             said.get("action") == "move"
             and personal is not None
             and said.get("subject") == personal
@@ -225,7 +227,7 @@ def _answered_today(view: Any, cfg: Any, side: str, now: datetime) -> bool:
     today = now.astimezone(here).date()
     for signal in view.list("signal"):
         said = _noted(signal)
-        if said is None or said.get("subject") != side:
+        if said is None or said.get("subject") != side or _undone(view, said.get("step")):
             continue
         if _at(signal.data["at"]).astimezone(here).date() == today:
             return True
@@ -334,54 +336,70 @@ def _note(action: str, side: str, **more: Any) -> str:
     return json.dumps({"kind": SIGNAL_KIND, "subject": side, "action": action, **more})
 
 
-def move(
-    store: Any, cfg: Any, side: str, items: list[tuple[str, str, int | None]], now: datetime | None = None
-) -> Moved:
-    """Move the items to the side as the person's own change, in one changeset with Undo; each is a correction the
-    assistant learns from. The move is noted (`suggestion_chosen`) so the side isn't asked again today; moving the same
-    sender's items a second time proposes a rule for that sender."""
-    from engine.applier import apply_as_person
-    from engine.dispatcher import signal
-
-    now = now or datetime.now(UTC)
-    view = store.read()
-    ops = move_ops(view, cfg, side, items)
-    senders = sorted({s for kind, rid, _ in items if (s := sender_of(view, view.get(kind, rid).data))})
-    name = sides.side_names(view, cfg).get(side, "")
-    changeset = apply_as_person(store, cfg, ops, sides.word(cfg, "filing.move_summary").format(side=name))
-    signal(
-        store,
-        "suggestion_chosen",
-        [rid for _, rid, _ in items],
-        note=_note("move", side, senders=senders, count=len(items)),
-        now=now,
-        changeset=changeset,
-    )
-    proposed = None
-    for sender in senders:
-        if moves_of(store.read(), side, sender) >= 2:
-            proposed = proposed or propose_rule(store, cfg, side, name, sender, now)
-    return Moved(changeset, len(items), proposed)
-
-
-def keep(store: Any, cfg: Any, side: str, items: list[tuple[str, str, int | None]], now: datetime | None = None) -> str:
-    """Keep the items where they are (under Personal, or the side the rules filed them to): they are never asked about
-    again, and the side isn't asked again today. Nothing about the items changes. Returns the signal's id."""
-    from engine.dispatcher import signal
-
-    view = store.read()
+def _check_kept(view: Any, cfg: Any, side: str, items: list[tuple[str, str, int | None]]) -> None:
     if side not in sides.side_ids(view, cfg):
         raise ValueError("that isn't one of your sides")
     for kind, record_id, _ in items:
         if kind not in KINDS or view.get(kind, record_id) is None:
             raise ValueError(f"there is no {kind} {record_id}")
-    return signal(
-        store,
-        "suggestion_dismissed",
-        [rid for _, rid, _ in items],
-        note=_note("keep", side, change=str(len(items))),
-        now=now or datetime.now(UTC),
-    )
+
+
+def move(
+    store: Any,
+    cfg: Any,
+    side: str,
+    items: list[tuple[str, str, int | None]],
+    now: datetime | None = None,
+    keep_items: list[tuple[str, str, int | None]] | None = None,
+) -> Moved:
+    """Move the items to the side as the person's own change, in one changeset with Undo; each is a correction the
+    assistant learns from. Each moved item is noted (`suggestion_chosen`) so the side isn't asked again today; moving
+    the same sender's items a second time proposes a rule for that sender. `keep_items` are the others the question
+    held, which stay where they are in the same step: each is noted as kept, and Undo of the move takes that note
+    back too, so one Undo covers the whole step."""
+    from engine.applier import apply_as_person
+    from engine.dispatcher import signal
+
+    now = now or datetime.now(UTC)
+    view = store.read()
+    kept_items = keep_items or []
+    _check_kept(view, cfg, side, kept_items)
+    ops = move_ops(view, cfg, side, items)
+    name = sides.side_names(view, cfg).get(side, "")
+    changeset = apply_as_person(store, cfg, ops, sides.word(cfg, "filing.move_summary").format(side=name))
+    view = store.read()
+    for kind, rid, _ in items:
+        senders = [s] if (s := sender_of(view, view.get(kind, rid).data)) else []
+        signal(
+            store,
+            "suggestion_chosen",
+            [rid],
+            note=_note("move", side, senders=senders, count=1, step=changeset),
+            now=now,
+            changeset=changeset,
+        )
+    for _, rid, _ in kept_items:
+        signal(store, "suggestion_dismissed", [rid], note=_note("keep", side, change="1", step=changeset), now=now)
+    proposed = None
+    for sender in sorted({s for kind, rid, _ in items if (s := sender_of(view, view.get(kind, rid).data))}):
+        if moves_of(store.read(), side, sender) >= 2:
+            proposed = proposed or propose_rule(store, cfg, side, name, sender, now)
+    return Moved(changeset, len(items), proposed, len(kept_items))
+
+
+def keep(store: Any, cfg: Any, side: str, items: list[tuple[str, str, int | None]], now: datetime | None = None) -> str:
+    """Keep the items where they are (under Personal, or the side the rules filed them to): they are never asked about
+    again, and the side isn't asked again today. Nothing about the items changes. Each item has its own signal; returns
+    the first one's id."""
+    from engine.dispatcher import signal
+
+    _check_kept(store.read(), cfg, side, items)
+    when = now or datetime.now(UTC)
+    made = [
+        signal(store, "suggestion_dismissed", [rid], note=_note("keep", side, change="1"), now=when)
+        for _, rid, _ in items
+    ]
+    return made[0]
 
 
 # ---- a rule after the second move ------------------------------------------------------------------------------------
@@ -395,7 +413,7 @@ def _undone(view: Any, changeset: str | None) -> bool:
 def moves_of(view: Any, side: str, sender: str) -> int:
     """How many times the person moved items from this sender to the side (each Move is one, and one that was undone
     is none)."""
-    count = 0
+    steps: set[str | None] = set()
     for signal in view.list("signal"):
         said = _noted(signal)
         if (
@@ -406,8 +424,8 @@ def moves_of(view: Any, side: str, sender: str) -> int:
             and sender in (said.get("senders") or [])
             and not _undone(view, signal.data.get("changeset"))
         ):
-            count += 1
-    return count
+            steps.add(signal.data.get("changeset") or signal.id)  # one step moves several items: it is one move
+    return len(steps)
 
 
 def propose_rule(store: Any, cfg: Any, side: str, name: str, sender: str, now: datetime) -> str | None:

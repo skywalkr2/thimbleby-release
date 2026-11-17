@@ -9,6 +9,7 @@ serve any port.
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 
 from pydantic import BaseModel, Field
 
@@ -77,9 +78,9 @@ def _get(context, path: str, params: dict[str, str] | None = None) -> dict:
     return body
 
 
-def poll_inbox(settings: InboxSettings, state: dict, context) -> Poll:
+def _inbox_items(messages: list[dict]) -> list[SourceItem]:
     items = []
-    for message in _get(context, "/mail/v1/messages", {"folder": settings.folder}).get("messages", []):
+    for message in messages:
         sender = message["from"]
         who = f"{sender['name']} <{sender['address']}>"
         text = f"From: {who}\nReceived: {message['received']}\n\n{message['body']}"
@@ -102,7 +103,30 @@ def poll_inbox(settings: InboxSettings, state: dict, context) -> Poll:
                 ),
             )
         )
-    return Poll(items, {})
+    return items
+
+
+def poll_inbox(settings: InboxSettings, state: dict, context) -> Poll:
+    return Poll(_inbox_items(_get(context, "/mail/v1/messages", {"folder": settings.folder}).get("messages", [])), {})
+
+
+def _older(settings: InboxSettings, since, before, context) -> list[dict]:
+    params = {"folder": settings.folder, "since": since.isoformat(), "before": before.isoformat()}
+    return _get(context, "/mail/v1/older", params).get("messages", [])
+
+
+def older_inbox(settings: InboxSettings, since, before, max_items: int, context) -> list[SourceItem]:
+    return _inbox_items(_older(settings, since, before, context))[-max_items:]
+
+
+def headers_inbox(settings: InboxSettings, since, before, max_items: int, context) -> list[SourceItem]:
+    params = {"folder": settings.folder, "since": since.isoformat(), "before": before.isoformat()}
+    found = _get(context, "/mail/v1/headers", params).get("messages", [])
+    return [replace(item, text="") for item in _inbox_items([{**m, "body": ""} for m in found])][-max_items:]
+
+
+def older_count_inbox(settings: InboxSettings, since, before, max_items: int, context) -> int:
+    return min(len(_older(settings, since, before, context)), max_items)
 
 
 def poll_calendar(settings: CalendarSettings, state: dict, context) -> Poll:
@@ -187,7 +211,14 @@ def undo(act, service_id: str, context):
 
 def register(registrar) -> None:
     registrar.connector(
-        "journey-mail/mail", label="Example mail", settings=InboxSettings, poll=poll_inbox, reads="mail"
+        "journey-mail/mail",
+        label="Example mail",
+        settings=InboxSettings,
+        poll=poll_inbox,
+        reads="mail",
+        older=older_inbox,
+        older_count=older_count_inbox,
+        headers=headers_inbox,
     )
     registrar.connector(
         "journey-mail/calendar",

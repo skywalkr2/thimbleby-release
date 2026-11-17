@@ -8,14 +8,17 @@ Answer with one JSON object and nothing else, with one entry for each message in
 
 The answer is one of four words:
 - "work": mail the user may need to act on or know about, for their work or their life. This includes a bill or a
-  statement, an order or a receipt, and a shipping or delivery notice: these are tracked for the user, never hidden.
+  statement with something owed or to keep (an amount, a due date), an order or a receipt, and a shipping or delivery
+  notice: these are tracked for the user, never hidden.
 - "personal": mail from someone the user knows personally, or about their private life. It is filed under the user's
   Personal project and handed in like any other mail; it is never hidden.
 - "sales": a newsletter, a promotion or an advertisement.
-- "notice": an automatic notice with nothing to do or track: a one-time code, a sign-in alert or a security notice.
+- "notice": an automatic notice with nothing to do or track: a one-time code, a sign-in alert, a security notice, or
+  a message that only says a statement or a document is ready to view, with no amount or date in its header.
 
 The kind is one of four words, and it is yours to decide:
-- "bill": a bill, an invoice or a statement the user may have to pay or keep.
+- "bill": a bill, an invoice or a statement the user may have to pay or keep. A message that only says a statement
+  is available to view is a "notice" with the kind "none".
 - "order": an order confirmation or a receipt for something the user bought.
 - "delivery": a shipping, tracking or delivery notice.
 - "none": anything else.

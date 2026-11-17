@@ -12,21 +12,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect } from "@playwright/test";
 import { test } from "./test";
-import {
-  collectProblems,
-  expectFoundLine,
-  fakeAddress,
-  pressStart,
-  revealNewLines,
-  startOnToday,
-  visit,
-  type Info,
-  type Requests,
-  type SignInSeen,
-  FIRST_SCREEN,
-  openView,
-  pickFolder,
-} from "./journey-helpers";
+import { choicesOf, choose } from "./choose";
+import { collectProblems, expectFoundLine, fakeAddress, pressStart, revealNewLines, startOnToday, visit, type Info, type Requests, type SignInSeen, FIRST_SCREEN, openView, pickFolder, leaveOut, turnOnAndGoOn } from "./journey-helpers";
 
 const FAKE = fakeAddress("JOURNEY_NEW_START_FAKE_PORT", 8794);
 
@@ -94,6 +81,7 @@ test.describe.serial("journey: new start", () => {
     // One explicit yes lets this account read my mail and notes (the usual hand-in is internal material).
     await main.getByRole("radio", { name: /^Yes/ }).check();
     await main.getByRole("button", { name: "Continue" }).click();
+    await turnOnAndGoOn(main);
     await expect(main.getByRole("heading", { level: 2, name: "Mail and calendar" })).toBeVisible({ timeout: 30_000 });
     await expect(page.locator('[data-screen="ai"][data-state]')).toContainText("Done");
     await visit(page);
@@ -140,6 +128,19 @@ test.describe.serial("journey: new start", () => {
     // The step now leads with the result: the account is one row, and every way to add another is in the panel.
     await expect(main.locator("[data-mail-result]")).toContainText("Example mail is connected.", { timeout: 90_000 });
     await expect(main.locator("[data-account-row]")).toHaveCount(1);
+    // S-0585: after the sign-in the step asks how far back to read mail in full: each reach with its estimate, none chosen, and
+    // "Not now" among the choices. Nothing is read until one is picked.
+    const fullRead = main.locator("[data-full-read]");
+    await expect(fullRead).toHaveCount(1);
+    const pick = fullRead.getByRole("combobox");
+    await expect(pick).toBeVisible({ timeout: 60_000 });
+    await expect(pick).toContainText("Choose…");
+    await expect(fullRead.getByRole("button", { name: "Read it" })).toBeDisabled();
+    const labels = (await choicesOf(pick)).map((c) => c.label);
+    expect(labels).toHaveLength(5);
+    for (const reach of ["2 weeks", "1 month", "3 months", "Not now"]) expect(labels.join("|")).toContain(reach);
+    await choose(pick, "Not now");
+    await expect(fullRead.getByRole("button", { name: "Skip for now" })).toBeEnabled();
     await expect(main.getByText(/Restart to finish connecting/)).toHaveCount(0);
     await expect(main.locator("[data-service]")).toHaveCount(0);
     await main.getByRole("button", { name: "Connect another account" }).click();
@@ -173,7 +174,8 @@ test.describe.serial("journey: new start", () => {
     await expect(reading.getByText(/Your mail and calendar are fetched when you sign in/)).toBeVisible();
     await expect(page.locator('[data-screen="mail"][data-state]')).toContainText("Done");
     await visit(page);
-    expect((await requests()).work).toBe(0);
+    // The go was given in the AI step (and nothing ran before it: the count was 0 there), so the first reading may already be
+    // handing items in; what is checked is that each item is handed in once, below.
     const { mail: recentMail, events: recentEvents, noted: recentNoted } = seen.recent_items;
     // S-0519: the inbox holds a bulk notice filed under updates and written to me alone (no one else listed on it), and a mailing
     // of the same kind to many. The notice is handed in as work; the mailing is set aside.
@@ -237,41 +239,32 @@ test.describe.serial("journey: new start", () => {
     expect(scriptedSent.ok).toBe(true);
     await main.getByRole("button", { name: "Continue" }).click();
 
-    // 5. No screen of its own for the first look at the mail: it waits for the Start on Today, so nothing has been asked yet.
-    await expect(main.getByRole("heading", { level: 2, name: "Backups" })).toBeVisible();
+    // 5. After Mail and calendar the first reading is waited for on screen, and People follows it by itself, with the assistant's
+    // offers. The assistant was turned on in the AI step, so its first reading is not held for a go on Today.
+    await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible({ timeout: 120_000 });
     await expect(main.getByText("Optional extras")).toHaveCount(0);
     await visit(page);
-    expect((await requests()).work).toBe(0);
-    expect((await requests()).week).toBe(0);
     seen = await service();
     // The inbox and the sent folder are each read once; nobody chose a folder.
     expect(seen).toMatchObject({ mail_reads: 2, calendar_reads: 1, unauthorized: 0 });
 
-    // 6. Backups: a folder outside the workspace, checked before it is saved.
+    // 6. People: skipping is fine, after the confirmation. Who the person deals with is the assistant's reading, so the step
+    // offers no one by the shape of a name or an address (the sent mail names several people and a newsletter's reply
+    // address), and still lets the person add by hand. The reading has run, so the assistant's own offers may be listed, but
+    // none of the machine-made addresses (a newsletter's reply address, an automatic sender).
+    const suggested = main.locator("[data-people-suggestions]");
+    await expect(suggested).toBeVisible();
+    await expect(suggested).not.toContainText(/responses|8c4261ed|replies\./i);
+    await visit(page);
+    await leaveOut(page, main);
+
+    // 7. Backups: a folder outside the workspace, checked before it is saved.
     await expect(main.getByRole("heading", { level: 2, name: "Backups" })).toBeVisible();
     await pickFolder(page, main, ["offsite"]);
     await main.getByRole("button", { name: "Continue" }).click();
     await expect(page.locator('[data-screen="backup"][data-state]')).toContainText("Done");
-    // Choosing the folder makes the first backup at once, and Continue goes on to People.
-    await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible();
+    // Choosing the folder makes the first backup at once, and Continue goes on to the last screen.
     await visit(page);
-
-    // 7. People: skipping is fine.
-    await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible();
-    // Signing in read the person's sent mail, so the people it went to are offered, with no extra step. The reply
-    // address a newsletter service made for one message is not a person and is not offered, by name or by address.
-    const suggested = main.locator("[data-people-suggestions]");
-    await expect(suggested).toContainText("Taylor Brandt", { timeout: 60_000 });
-    await expect(suggested).toContainText("Morgan Voss");
-    await expect(suggested).not.toContainText(/responses|8c4261ed|replies\./i);
-    // S-0520: the sent folder holds several messages to several people, and the one written to most comes first, then the next,
-    // then the one written to once.
-    await expect(suggested).toContainText("Jordan Hale");
-    const listed = await suggested.innerText();
-    expect(listed.indexOf("Taylor Brandt"), "most written to first").toBeLessThan(listed.indexOf("Morgan Voss"));
-    expect(listed.indexOf("Morgan Voss")).toBeLessThan(listed.indexOf("Jordan Hale"));
-    await visit(page);
-    await main.getByRole("button", { name: "I'll do this later" }).click();
 
     // 8. Done: what was set up and what was skipped, then the optional extras. The last button lands on Today.
     // Something was passed by, so the last screen says where things stand and is not headed Done.
@@ -292,7 +285,13 @@ test.describe.serial("journey: new start", () => {
     // The look back waits for the Start on Today, which shows its cost first. One request for each item taken in, each item
     // once, and the promises found arrive below as lines to look over, never in setup.
     await startOnToday(page);
-    await expect.poll(async () => (await requests()).work, { timeout: 60_000 }).toBe(handedIn);
+    await expect
+      .poll(async () => (await requests()).work, { timeout: 60_000 })
+      .toBe(handedIn)
+      .catch(async (err) => {
+        const r = (await requests()) as unknown as { inputs?: string[] };
+        throw new Error(`${err}\ninputs: ${(r.inputs ?? []).map((i) => i.replace(/\s+/g, " ").slice(0, i.startsWith("[ACT") ? 1500 : 110)).join("\n  ")}`);
+      });
     // The weekly look at who the person deals with ran once after the first read, and is not counted as work.
     await expect.poll(async () => (await requests()).learning, { timeout: 60_000 }).toBe(1);
     const asked = await requests();

@@ -1,0 +1,25 @@
+id: area-one-shops-deliveries-for-unrelated-things-are-no-area
+title: Deliveries from one shop that share its name but are about unrelated things offer no area
+skills: [structured-answers, stay-in-scope]
+received: '2026-11-16T15:00:00+00:00'
+# Four items share the name of one shop, so the rule narrows to them. What was bought is a garden hose, birthday candles,
+# a phone charger and a returned lamp: no one matter of the person's life, so the assistant offers none, and a shop is
+# never an area by itself.
+area_read: true
+given:
+- {kind: event, id: EVT-91, fields: {project: PRJ-21, title: Corner Hardware parcel with a garden hose, start: '2026-11-19', delivery: {carrier: Example Courier, status: on_its_way, dated: true}}}
+- {kind: event, id: EVT-92, fields: {project: PRJ-21, title: Corner Hardware parcel with birthday candles, start: '2026-11-20', delivery: {carrier: Example Courier, status: on_its_way, dated: true}}}
+- {kind: event, id: EVT-93, fields: {project: PRJ-21, title: Corner Hardware parcel with a phone charger, start: '2026-11-18', delivery: {carrier: Example Post, status: out_for_delivery, dated: true}}}
+- {kind: action, id: ACT-91, fields: {project: PRJ-21, text: Send the lamp back to Corner Hardware, owners: [{person: PER-1}]}}
+expect:
+- op: area.offer
+  areas: 0
+forbid:
+- op: area.offer
+  named: ['corner|hardware']
+  attempted: true
+stub_answer:
+  summary: Four unrelated purchases from one shop; no area stands out.
+  ops:
+  - op: area.offer
+    areas: []

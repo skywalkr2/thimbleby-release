@@ -152,15 +152,15 @@ def my_addresses(view: Any, cfg: Any) -> list[Address]:
     return list(found.values())
 
 
-def _message(read: Read, bulk: bool, subject: str) -> Message | None:
+def _message(read: Read, subject: str) -> Message | None:
     sender = _address(read.sender)
     if sender is None or read.received is None:
         return None
-    automatic = bulk or classify_automatic({}, subject, "text/plain").kind != "none"
+    automatic = classify_automatic({}, subject, "text/plain").kind != "none"
     return Message(read.new_text, sender, addresses_of(read.to), addresses_of(read.cc), read.received, automatic)
 
 
-def refusal(view: Any, cfg: Any, text: str, received: datetime | None, bulk: bool = False) -> str | None:
+def refusal(view: Any, cfg: Any, text: str, received: datetime | None) -> str | None:
     """Why no reply is owed for the message in `text`, in plain words, when the rules say so for certain: automatic
     mail or mail the person sent. None when a reply may be owed, and when the headers can't be read (the model's
     reading stands)."""
@@ -168,7 +168,7 @@ def refusal(view: Any, cfg: Any, text: str, received: datetime | None, bulk: boo
     mine = my_addresses(view, cfg)
     if read is None or not mine:
         return None
-    message = _message(read, bulk, read.subject)
+    message = _message(read, read.subject)
     if message is None:
         return None
     found = reply_owed(message, mine, (), message.received, 0)

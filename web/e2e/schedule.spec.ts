@@ -369,6 +369,79 @@ test.describe("the calendar page", () => {
     expect(found.edge).not.toBe("none");
   });
 
+  // S-0572: an entry's details are a card beside the entry clicked, never pinned to the right edge over other days. The entries are on
+  // the first and the last day shown, ten weeks ahead where nothing else is, so the only entries the card could cover are the other one.
+  const cardBesideEntry = async (page: Page, width: number) => {
+    {
+      await page.setViewportSize({ width, height: 900 });
+      await seed(page);
+      const ahead = async () => {
+        await open(page);
+        await pick(page, "3");
+        for (let i = 0; i < 10; i++) {
+          await page.locator("body").press("ArrowRight");
+          await expect(page.locator("main [data-skeleton]")).toHaveCount(0, { timeout: 15_000 });
+        }
+        await expect(page.locator("main [data-grid] ul[data-day]").first()).toBeVisible(LOADED);
+      };
+      await ahead();
+      const days = await page.locator("main [data-grid] ul[data-day]").evaluateAll((els) => els.map((el) => el.getAttribute("data-day") as string));
+      expect(days.length).toBeGreaterThanOrEqual(5);
+      const ends = [days[0], days[days.length - 1]];
+      // At different times of day, so a card as wide as three days' columns (a 1024px window) has a place beside each that
+      // covers neither: two entries level with each other across the week leave none.
+      for (const [day, time] of [[ends[0], "09:00"], [ends[1], "15:00"]]) {
+        const made = await page.request.post("api/calendar/meetings", { data: { what: `Meeting on ${day}`, day, time } });
+        expect(made.ok()).toBe(true);
+      }
+      await page.reload();
+      await ahead();
+      for (const day of ends) {
+        const entry = page.getByRole("button", { name: new RegExp(`Meeting on ${day}`) });
+        await entry.scrollIntoViewIfNeeded();
+        await entry.click();
+        const pane = page.locator("[data-detail-pane][data-anchored]");
+        await expect(pane).toBeVisible();
+        await settled(page, false);
+        const found = await page.evaluate(() => {
+          const rect = (el: Element) => {
+            const r = el.getBoundingClientRect();
+            return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+          };
+          const card = rect(document.querySelector("[data-detail-pane]")!);
+          const own = document.querySelector("[data-entry-key][data-selected]")!;
+          const others = Array.from(document.querySelectorAll("main [data-entry-key]")).filter((el) => el !== own && !own.contains(el));
+          const hit = others.filter((el) => {
+            const o = rect(el);
+            return Math.min(card.right, o.right) - Math.max(card.left, o.left) > 0 && Math.min(card.bottom, o.bottom) - Math.max(card.top, o.top) > 0;
+          });
+          const hits = hit.map((el) => ({ text: (el.textContent ?? "").slice(0, 60), ...rect(el) }));
+          return { card, entry: rect(own), hit: hit.length, hits, window: { w: window.innerWidth, h: window.innerHeight }, page: document.documentElement.scrollWidth };
+        });
+        // Inside the window, beside the entry (to a side of it, level with some of its height), covering no other entry.
+        expect(found.card.left).toBeGreaterThanOrEqual(0);
+        expect(found.card.right).toBeLessThanOrEqual(found.window.w);
+        expect(found.card.top).toBeGreaterThanOrEqual(0);
+        expect(found.card.bottom).toBeLessThanOrEqual(found.window.h);
+        expect(found.card.left >= found.entry.right - 1 || found.card.right <= found.entry.left + 1).toBe(true);
+        expect(found.card.top).toBeLessThan(found.entry.bottom);
+        expect(found.card.bottom).toBeGreaterThan(found.entry.top);
+        expect(found.hit, `the card covers: ${JSON.stringify({ card: found.card, hits: found.hits })}`).toBe(0);
+        expect(found.page).toBeLessThanOrEqual(found.window.w);
+        // Escape puts the cursor back on the entry.
+        await page.keyboard.press("Escape");
+        await expect(pane).toHaveCount(0);
+        await expect(entry).toBeFocused();
+      }
+    }
+  };
+  test("at 1440px an entry's details open as a card beside it, inside the window, covering no other entry (S-0572)", async ({ page }) => {
+    await cardBesideEntry(page, 1440);
+  });
+  test("at 1024px an entry's details open as a card beside it, inside the window, covering no other entry (S-0572)", async ({ page }) => {
+    await cardBesideEntry(page, 1024);
+  });
+
   test("on a narrow window the details take the screen and Close returns", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await seed(page);
@@ -380,6 +453,14 @@ test.describe("the calendar page", () => {
     await expect(dialog.getByRole("heading", { name: "Walk through the proofs" })).toBeFocused();
     const box = await dialog.boundingBox();
     expect(box?.width ?? 0).toBeLessThanOrEqual(390);
+    // A bottom sheet (S-0572): it is as wide as the window and rests on its bottom edge.
+    const sheet = await page.locator("[data-overlay]").first().evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      return { left: r.left, right: r.right, bottom: r.bottom, window: window.innerWidth, height: window.innerHeight };
+    });
+    expect(sheet.left).toBeLessThanOrEqual(1);
+    expect(sheet.right).toBeGreaterThanOrEqual(sheet.window - 1);
+    expect(sheet.bottom).toBeGreaterThanOrEqual(sheet.height - 1);
     await dialog.getByRole("button", { name: "Close" }).click();
     await expect(dialog).toHaveCount(0);
     await expect(entry).toBeFocused();

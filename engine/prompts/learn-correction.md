@@ -25,6 +25,11 @@ How to decide:
   the user's, or not a promise): teach relevance or routing. *Dropped* (no longer needed): that is not a mistake of yours;
   answer "Nothing to generalize." unless the user's own words in the <note> give a reason that holds beyond this item, and
   then the lesson is about that reason, never "don't file this".
+- A *pulled back* correction says what the person did: they brought in a message that was set aside or closed, as work
+  (for a side, or none), or as personal. The lesson goes the same way as what they did: "alerts like this about a
+  side's website are that side's work: make each a to-do". Never write the reverse (that such mail needs no note, or
+  should be set aside), and never quote the app's own reason for setting it aside or its line about what the person
+  did: quote the message, or the person's own note.
 - When you can't tell what the correction means (what you got wrong, or what to do instead), ask the user one question
   in place of a proposal: "question.add" to "me", kind "question", saying in a sentence what you understood and what
   you need to know. Ask only when the words leave it open, never when they are clear; and when the request is the

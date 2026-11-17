@@ -72,20 +72,34 @@ export function canLeaveOut(scope: Scope, project: string): boolean {
   return narrowedWithout(scope, project) !== null;
 }
 
-/** The words for a reach, with the projects named. */
-export function useReachWords(names: (id: string) => string): (choice: ReachChoice) => string {
-  const { t } = useWords();
+/** A kind of work in plain words: what it works on ("your mail", "to-dos"), else the way the sheet names the work. */
+export function useKindOfWork(): (kind: string) => string {
+  const { t, has } = useWords();
   const task = useTaskWords();
+  return (kind) => (has(`reach.kind.${kind}`) ? t(`reach.kind.${kind}`) : task(kind));
+}
+
+/** The words for a reach, with the projects named: "Your mail for Spring launch", "All your mail", "Everything for all
+ * your projects". */
+export function useReachWords(names: (id: string) => string): (choice: ReachChoice) => string {
+  const { t, has } = useWords();
+  const kindOfWork = useKindOfWork();
   return (choice) => {
-    const kinds = choice.kinds.length ? choice.kinds.map(task).join(", ") : t("reach.all_work");
+    const plain = choice.kinds.length > 0 && choice.kinds.every((k) => has(`reach.kind.${k}`));
+    const kinds = choice.kinds.length ? choice.kinds.map(kindOfWork).join(", ") : t("reach.all_work");
     const list = choice.where.projects.map(names).join(", ");
-    const where =
-      choice.where.mode === "projects"
-        ? t("reach.on_projects", { names: list })
-        : choice.where.mode === "except"
-          ? t("reach.every_except", { names: list })
-          : t("reach.every_project");
-    const label = t("reach.label", { kinds, where });
+    const label =
+      choice.where.mode === "everywhere" && plain
+        ? t("reach.all_of", { kinds })
+        : t("reach.label", {
+            kinds,
+            where:
+              choice.where.mode === "projects"
+                ? t("reach.on_projects", { names: list })
+                : choice.where.mode === "except"
+                  ? t("reach.every_except", { names: list })
+                  : t("reach.every_project"),
+          });
     return label.charAt(0).toUpperCase() + label.slice(1);
   };
 }

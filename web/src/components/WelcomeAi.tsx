@@ -14,7 +14,7 @@ import { parseAmount, useAmount, useSmallMoney } from "../lib/money";
 import { problemText } from "../lib/problem";
 import { asReference } from "../lib/secret-ref";
 import { setAccountCheck } from "../lib/account-checks";
-import { useAfterSave } from "../lib/settings-save";
+import { freshSettings, inOrder, useAfterSave } from "../lib/settings-save";
 import { useToasts } from "../lib/toasts";
 import { useDraftState, useRestored } from "../lib/draft";
 import { useContinue, useHasContinueSlot } from "../lib/walkthrough-continue";
@@ -597,6 +597,7 @@ export function WelcomeAi(props: {
       endpoint: kind.id,
       models: programPicks ? {} : second ? { everyday: everyday.trim(), harder: second } : { everyday: everyday.trim() },
       allowed_data: levels,
+      // Read on the server's own settings when the add is made (see below).
       fingerprint: settings.data.fingerprint,
     };
     // Not now is kept with the account, so Today offers the yes again until the person gives it.
@@ -624,7 +625,9 @@ export function WelcomeAi(props: {
     setBusy(true);
     setProblem("");
     try {
-      const saved = await api.addAccount(body);
+      // In order with the other saves, on the settings as they are now: an earlier account's checks save their own changes (a backup
+      // kept, a model remembered) and an add made on the settings the form loaded with would be refused as out of date for them.
+      const saved = await inOrder(async () => api.addAccount({ ...body, fingerprint: (await freshSettings(client)).fingerprint }));
       setKey("");
       setKeyRef("");
       setResults(null);
@@ -634,7 +637,8 @@ export function WelcomeAi(props: {
       setLabelTouched(false);
       if (drawer) {
         const shown = body.label ?? accountId;
-        await afterSave(saved, { message: t(asWork ? "ai_add.done_main" : "ai_add.done", { name: shown }) });
+        // The toast is made at once; the screens' reads after it never hold the button or the form.
+        void afterSave(saved, { message: t(asWork ? "ai_add.done_main" : "ai_add.done", { name: shown }) }).catch(() => undefined);
         // The form is done: it closes now, and the checks go on after it. Each kind of work it was added for is checked with
         // the exact settings, so a failure is said; the account's row shows the checks as they run (`lib/account-checks`),
         // and one toast says how they ended.

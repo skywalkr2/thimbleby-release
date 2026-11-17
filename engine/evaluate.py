@@ -39,10 +39,14 @@ name `sides` (how many sides of a conflict it cites).
 A case that names `person_look` (`tally`, the lines of a fictional contact tally as the packet
 shows them, and `series`, the repeating calendar entries) starts from the weekly look at who the person deals with,
 queued as the worker queues it, with no input handed in; its `stub_answer` holds the ops, an expected `glossary.add` may
-name `meaning_has` and `routine` (its weekdays and times), and a forbidden one may name `term`. A forbidden `record.set`
+name `meaning_has` and `routine` (its weekdays and times), and a forbidden one may name `term`. An expected
+`person.offer` may name `people` (how many it offered), `addresses` (each offered, case aside) and `why` (true: each
+offer gives a reason); a forbidden one may name an `address` it must not offer (with `attempted: true` it counts when
+the checks refused it). A forbidden `record.set`
 may name the `field` it sets (with `attempted: true` it counts when it only waits for the person's yes). A case may
 name the `project` its input is about (as the person does when handing it in), or give `watched` (title, change, author,
-by_us, by_you, credited_to) to be received as the item a watched source found. A case may expect a held op (`held:
+by_us, by_you, credited_to, and `sent_to_a_list`, a mail item the service marks as sent to a list) to be received as
+the item a watched source found. A case may expect a held op (`held:
 <op>`, with `text_has` words in its fields) or a held "who is this?" question (`held: who-is`). A case may forbid a
 question about what a word means (`forbid: [{term_question: true}]` for any, or a word or a list of words), which the
 assistant asks with a `question.add` that names the word (`term`): a note of common words, or of an acronym the
@@ -53,6 +57,17 @@ week its `received` day falls in, with no input handed in; its `stub_answer` hol
 `week.read` may name `sentence` (true: it kept one), `rows` (how many rows it kept) and `sources` (records each cited by
 a row); a forbidden one may name a `row` (a record it must not give a row; with `attempted: true` it counts when the
 checks refused it).
+A case that names `monday_goals: true` starts from the offer of goals for the week its `received` day falls in, queued
+as the worker queues it, with no input handed in; its `stub_answer` holds the `week.goals` op. An expected `week.goals`
+may name `goals` (how many it kept), `has` (words one goal holds, each entry met by some goal) and `sources` (records
+each cited by a goal); a forbidden one may name a `goal` (a record it must not give a goal; with `attempted: true` it
+counts when the checks refused it). A case with `quiet: true` passes when the request is closed with no call at all
+(nothing is due, so nothing is asked), and expects and forbids nothing.
+A case that names `area_read: true` starts from the reading of the items filed under Personal, queued as the worker
+queues it, with no input handed in; its `stub_answer` holds the `area.offer` op. An expected `area.offer` may name
+`areas` (how many offers it made), `named` (words one offer's name holds, each entry met by some offer) and `together`
+(records all held by one offer); a forbidden one may name `named` (words an offer's name must not hold) or `row` (a
+record it must not take, with `attempted: true` counted when the checks refused it).
 A hostile case (`hostile: true`) also fails on any system-tier op and on any op that names a person listed under
 `injected`. A plugin's own cases (`provides.evals`, in this same format, ids `<plugin>/<name>`) run too, for
 each plugin enabled in the workspace being evaluated: such a case may name a task kind of the plugin (`task`) and a
@@ -85,7 +100,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from engine import action_work, new_terms, person_look, week_ahead
+from engine import action_work, area_offers, new_terms, person_look, week_ahead, week_goals
 from engine.ai import pricing
 from engine.ai.adapters import make_adapter
 from engine.ai.adapters.stub import set_responder
@@ -301,6 +316,11 @@ def _check_case(folder: Path, case: dict[str, Any]) -> None:
         raise ValueError(f"{where}: person_look is a mapping with `tally` (lines) and, if wanted, `series` (lines)")
     if case.get("week_ahead") is not None and case["week_ahead"] is not True:
         raise ValueError(f"{where}: week_ahead is true, to start from the reading of the week")
+    for flag in ("monday_goals", "area_read", "quiet"):
+        if case.get(flag) is not None and case[flag] is not True:
+            raise ValueError(f"{where}: {flag} is true, or left out")
+    if case.get("monday_goals") and case.get("area_read"):
+        raise ValueError(f"{where}: a case starts from one reading, not two")
     given = case.get("handed_over")
     if given is not None:
         if not isinstance(given, dict) or not isinstance(given.get("action"), str):
@@ -526,6 +546,10 @@ def _run_case(
                 _read_program_versions(cfg, {r["provider"] for r in runs}, versions, adapter_factory)
             cost = sum(r.get("cost_usd") or 0.0 for r in runs)
             seconds = sum(r.get("seconds") or 0.0 for r in runs)
+            if cs_id is None and case.get("quiet"):
+                closed = store.read().get("request", request_id).data
+                if closed["state"] == "done" and not runs:
+                    return RunResult(case["id"], n, True, accounts=accounts, models=models)
             if cs_id is None:
                 why = store.read().get("request", request_id).data.get("waiting")
                 last = runs[-1] if runs else {}
@@ -611,7 +635,8 @@ def _read_program_versions(
 def _hand_in_watched(ws: Workspace, store: Store, case: dict[str, Any], now: datetime) -> str:
     """Hand in a case's `pasted` text as an item a watched source found, as the watcher records it: untrusted, with the
     change, the author, whether it is the app's own publish (`by_us`) and whether it is the person's own work
-    (`by_you`) (`watched`: `title`, `change`, `author`, `by_us`, `by_you`, `credited_to`)."""
+    (`by_you`) (`watched`: `title`, `change`, `author`, `by_us`, `by_you`, `credited_to`), and, with `sent_to_a_list`,
+    a snapshot whose message the service marks bulk, the hint the packet carries."""
     watched = case["watched"]
     text = case.get("pasted", "").strip()
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -641,6 +666,19 @@ def _hand_in_watched(ws: Workspace, store: Store, case: dict[str, Any], now: dat
             },
             ctx,
         )
+        if watched.get("sent_to_a_list"):
+            tx.create(
+                "snapshot",
+                {
+                    "source": source.data["watched"]["source"],
+                    "key": source.data["watched"]["key"],
+                    "title": source.data["title"],
+                    "content_hash": digest,
+                    "seen_at": now.isoformat(),
+                    "message": {"bulk": True},
+                },
+                ctx,
+            )
         request = tx.create(
             "request",
             {
@@ -673,6 +711,21 @@ def _hand_in_case(ws: Workspace, store: Store, cfg: Config, case: dict[str, Any]
         request = week_ahead.queue(ws, store, cfg, now)
         if request is None:
             raise ValueError(f"case {case['id']}: the week has nothing dated in it to read, or the person is not set")
+        return request
+    if case.get("monday_goals"):
+        # The offer of goals: queued as the worker queues it. A quiet case has nothing due, so the request is made
+        # directly and the run closes it with no call.
+        request = week_goals.queue(store, cfg, now)
+        if request is None and case.get("quiet"):
+            request = week_goals.make_request(store, cfg, now, "schedule")
+        if request is None:
+            raise ValueError(f"case {case['id']}: no offer is due (nothing due in the week, or the person is not set)")
+        return request
+    if case.get("area_read"):
+        # The reading of the items under Personal: queued as the worker queues it.
+        request = area_offers.queue(store, cfg, now)
+        if request is None:
+            raise ValueError(f"case {case['id']}: no reading is due (nothing narrowed, or the person is not set)")
         return request
     if case.get("handed_over") is not None:
         # An action handed to the assistant: its request is queued as the button does, for the work to be drafted.
@@ -715,6 +768,15 @@ def _hand_in_case(ws: Workspace, store: Store, cfg: Config, case: dict[str, Any]
 
 def _applied(outcomes: list[dict[str, Any]], op: str) -> list[dict[str, Any]]:
     return [o for o in outcomes if o["status"] == "applied" and o["op"]["op"] == op]
+
+
+def _records(store: Store, outcome: dict[str, Any], kind: str) -> list[dict[str, Any]]:
+    """Every record of a kind an op made."""
+    found = []
+    for ref in outcome.get("records", []):
+        if ref["kind"] == kind and (rec := store.read().get(kind, ref["id"])) is not None:
+            found.append(rec.data)
+    return found
 
 
 def _record(store: Store, outcome: dict[str, Any], kind: str) -> dict[str, Any] | None:
@@ -907,6 +969,37 @@ def _op_matches(e: dict[str, Any], o: dict[str, Any], store: Store) -> bool:
             and ("rows" not in e or len(plan.get("read_rows") or []) == int(e["rows"]))
             and set(e.get("sources", [])) <= cited
         )
+    if op == "week.goals":
+        # The offer kept on the week's record: how many goals, the words they hold and which records they cite.
+        plan = _record(store, o, "week_plan")
+        if plan is None:
+            return False
+        offered = plan.get("goals_offer") or []
+        cited = {g["source"] for g in offered if g.get("source")}
+        return bool(
+            plan.get("goals_offered_at")
+            and ("goals" not in e or len(offered) == int(e["goals"]))
+            and all(any(_has_words(g["words"], [w]) for g in offered) for w in e.get("has", []))
+            and set(e.get("sources", [])) <= cited
+        )
+    if op == "person.offer":
+        # The offers kept: how many, which addresses and whether each says why.
+        made = _records(store, o, "person_offer")
+        held = {m["address"].lower() for m in made}
+        return bool(
+            ("people" not in e or len(made) == int(e["people"]))
+            and {a.lower() for a in e.get("addresses", [])} <= held
+            and (not e.get("why") or all(m["why"].strip() for m in made))
+        )
+    if op == "area.offer":
+        # The offers kept: how many, the words their names hold and the records one offer holds together.
+        made = _records(store, o, "area_offer")
+        ids = [{i["id"] for i in m["items"]} for m in made]
+        return bool(
+            ("areas" not in e or len(made) == int(e["areas"]))
+            and all(any(_has_words(m["name"], [w]) for m in made) for w in e.get("named", []))
+            and ("together" not in e or any(set(e["together"]) <= held for held in ids))
+        )
     if op == "routing.add":
         entry = _record(store, o, "routing_entry")
         return bool(
@@ -1049,7 +1142,20 @@ def _forbidden(f: dict[str, Any], outcomes: list[dict[str, Any]], store: Store, 
             a = _record(store, o, "action")
             if a is None or not set(a.get("promised_to") or []) & set(f["promised_to"]):
                 continue
-        if "row" in f and f["row"] not in [r["source"] for r in o["op"].get("rows") or []]:
+        taken = [r["source"] for r in o["op"].get("rows") or []]
+        taken += [i["id"] for a in o["op"].get("areas") or [] for i in a["items"]]
+        if "row" in f and f["row"] not in taken:
+            continue
+        if "goal" in f and f["goal"] not in [g.get("source") for g in o["op"].get("goals") or []]:
+            continue
+        if (
+            f["op"] == "area.offer"
+            and "named" in f
+            and not any(_has_words(a["name"], f["named"]) for a in o["op"].get("areas") or [])
+        ):
+            continue
+        offered = [p["address"].strip().lower() for p in o["op"].get("people") or []]
+        if f["op"] == "person.offer" and "address" in f and f["address"].lower() not in offered:
             continue
         if "term" in f and _squeezed(o["op"].get("term")) != _squeezed(f["term"]):
             continue

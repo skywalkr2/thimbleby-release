@@ -4,6 +4,7 @@
 // line, which have their own cards. A line that has items opens them in the inspector from 1680px, which shows the line
 // that has the cursor, and under itself below that. The list holds still while the person is working in it: new lines
 // wait behind "N new · Show", and a line settled somewhere else stays in place until the person moves on.
+import { narrowCameIn } from "../lib/came-in-window";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { api, type S } from "../lib/api";
@@ -938,7 +939,9 @@ export function useLineTitle(): (line: QueueLine) => string {
         return noAccount ? tn("first_go.no_account", line.count) : firstGoText({ count: line.count, estimate: line.estimate_usd ?? null, unpriced: line.unpriced });
       case "refused":
         if (line.count > 1) return line.state === "no_person" ? tn("queue.refused.no_person", line.count) : tn("queue.refused.group", line.count);
-        return t("queue.refused", { what });
+        return line.title?.kind === "email"
+          ? t("queue.refused.email", { who: line.title.person_name ?? line.title.sender ?? t("queue.title.someone") }) + (line.title.topic ? ` · ${line.title.topic}` : "")
+          : t("queue.refused", { what });
       case "no_effect":
         return t("queue.no_effect", { title: line.subject ?? "" });
       case "failed":
@@ -1067,7 +1070,7 @@ function QueueRow(props: {
   const slotOf = useSideSlot();
   const sideFilter = useSideFilter();
   const calendarColor = useCalendarColor();
-  const changes = useQuery({ queryKey: ["changes"], queryFn: api.changes, enabled: props.line.kind === "go" || props.line.kind === "no_effect" });
+  const changes = useQuery({ queryKey: ["changes"], queryFn: api.changes, enabled: props.line.kind === "go" || props.line.kind === "no_effect" || props.line.kind === "refused" });
   const ref = useRef<HTMLLIElement & HTMLDivElement>(null);
   const { line } = props;
   const open = props.selection !== null;
@@ -1265,7 +1268,34 @@ function QueueRow(props: {
           const guide = props.handlers.onOpenGuide;
           return { pill: t("queue.pill.stopped"), tone: "neutral", meta: meta(line.waiting), primary: { label: t("changes.say_who"), run: () => guide("workspace") }, menu: [] };
         }
-        return { pill: t("queue.pill.stopped"), tone: "neutral", meta: meta(line.waiting), primary: { label: line.count > 1 ? t("queue.stopped.group.open", { n: line.count }) : t("changes.send_other") }, menu: [] };
+        if (line.count > 1) return { pill: t("queue.pill.stopped"), tone: "neutral", meta: meta(line.waiting), primary: { label: t("queue.stopped.group.open", { n: line.count }) }, menu: [] };
+        {
+          // One stopped item: what happened is the title; the way on is Try again, with reading it, skipping it and another account in the menu.
+          const item = changes.data?.find((c) => c.id === line.request);
+          const skip = () =>
+            item &&
+            void act(
+              () => api.dismiss(item.id, item.version),
+              (result) => ({ message: t("toast.skipped_stopped"), undo: () => api.undismiss(item.id, result.version) }),
+              undefined,
+              { key: line.key, kinds: ["request"] },
+            );
+          const link = item?.link;
+          const menu: MenuAction[] = [
+            ...(link ? [{ id: "read", label: t("queue.refused.read"), run: () => void window.open(link, "_blank", "noopener,noreferrer") }] : []),
+            ...(item ? [{ id: "skip", label: t("queue.refused.skip"), run: () => void skip() }] : []),
+            { id: "choose", label: t("changes.send_other"), run: () => props.onSelect({ key: line.key, sendBack: false }) },
+          ];
+          return {
+            pill: t("queue.pill.stopped"),
+            tone: "neutral",
+            meta: t("queue.refused.sub"),
+            primary: item
+              ? { label: t("action.try_again"), run: () => void act(() => api.retry(item.id), () => ({ message: t("toast.retrying") }), undefined, { key: line.key, kinds: ["request"] }) }
+              : { label: t("queue.act.open") },
+            menu,
+          };
+        }
       case "failed":
         return { pill: t("queue.pill.stopped"), tone: "neutral", meta: meta(line.waiting), primary: { label: line.count > 1 ? t("queue.stopped.group.open", { n: line.count }) : t("queue.act.open") }, menu: [] };
       case "no_effect": {
@@ -1624,7 +1654,8 @@ function QueueRow(props: {
         return {
           pill: t("queue.pill.area"),
           tone: "neutral",
-          meta: meta(tn("queue.area.meta", line.count, { list: (line.names ?? []).join("; ") })),
+          // The reason the assistant gave; the items it would take are rows under the line.
+          meta: meta(tn("queue.area.meta", line.count), line.reason),
           primary: { label: t("queue.area.keep"), run: keepArea },
           menu: [{ id: "rename", label: t("queue.area.rename"), run: () => setRenaming(true) }],
         };
@@ -1705,8 +1736,14 @@ function QueueRow(props: {
         };
       }
       case "away":
-        // A note, not a task: the lines that waited arrive with it, each in its own place, so it has nothing to press.
-        return { pill: t("queue.pill.away"), tone: "neutral", meta: undefined, primary: null, menu: [] };
+        // The lines that waited are each in their own place; this one opens Came in, narrowed to what came in meanwhile.
+        return {
+          pill: t("queue.pill.away"),
+          tone: "neutral",
+          meta: undefined,
+          primary: line.at && line.since ? { label: t("queue.away.open"), run: () => narrowCameIn({ from: line.at ?? "", to: line.since ?? "" }) } : null,
+          menu: [],
+        };
       default:
         // A kind the screen has no words for yet still shows, so nothing the engine ranks is hidden.
         return { pill: "", tone: "neutral", meta: meta(line.waiting), primary: null, menu: [] };
@@ -1824,6 +1861,15 @@ function QueueRow(props: {
       {line.kind === "reminder" && reminderRow.form}
       {line.kind === "held" && heldWords?.noting && heldWords.other && (
         <NoteBox sends={[{ label: heldWords.other.label, run: heldWords.declineWithNote }]} onClose={heldWords.closeNote} />
+      )}
+      {line.kind === "area" && (
+        <ul className="reminder-items" aria-label={t("queue.area.items")} data-area-items="">
+          {(line.names ?? []).map((words, n) => (
+            <li key={n} className="reminder-item" data-area-item="">
+              <span>{words}</span>
+            </li>
+          ))}
+        </ul>
       )}
       {line.kind === "area" && renaming && (
         <div className="answer-form">

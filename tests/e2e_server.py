@@ -46,8 +46,8 @@ from tests.e2e_quality import seed_found_promises
 from tests.e2e_review_r3 import seed_review_r3
 from tests.e2e_review_r4 import seed_review_r4
 from tests.e2e_sides import calendar_sources, seed_sides, seed_views
+from tests.e2e_worst_case import ACCOUNTS, seed_worst_case, sign_in_in_background, start_services
 from tests.e2e_worst_case import seed_sides as seed_worst_sides
-from tests.e2e_worst_case import seed_worst_case, sign_in_in_background, start_services
 from tests.roundtrip import round_trip
 
 TOKEN = "e2e-token"
@@ -55,6 +55,8 @@ TOKEN = "e2e-token"
 STANDIN_ACCOUNT = "standin"
 # The longest a run that was told to hold waits for its release.
 HOLD_LIMIT_SECONDS = 60
+# How long the worst-case server's requests stay unchanged before it says it is ready.
+READY_QUIET_SECONDS = 4
 LAYOUT_FIXTURE = Path(__file__).parents[1] / "web" / "e2e" / "fixtures" / "layout-strings.json"
 
 # The browser tests run with the wording check on, so a message that names a file, a key or a command fails there too.
@@ -700,6 +702,24 @@ def main() -> None:
         """What the worst-case seed made, and how the sign-ins of its stand-in accounts went."""
         return JSONResponse({"enabled": worst_case is not None, **(worst_case or {}), "sign_ins": worst_outcome})
 
+    quiet = {"seen": None, "since": time.monotonic()}
+
+    async def worst_case_ready(_request):
+        """Answers 200 once the seed's background work is over: every stand-in account is signed in, nothing the
+        assistant read from them is queued or running, and the requests have not changed for a few seconds (they are
+        filed a moment after the sign-ins), so a first test never races that work."""
+        if worst_case is None:
+            return JSONResponse({"ready": False}, status_code=404)
+        view = store.read()
+        every = [r for r in view.find("request", {}) if not r.data.get("dismissed")]
+        open_requests = sum(r.data.get("state") in ("queued", "running") for r in every)
+        seen = (len(every), open_requests)
+        if seen != quiet["seen"]:
+            quiet["seen"], quiet["since"] = seen, time.monotonic()
+        signed = worst_outcome.get("error") is not None or len(worst_outcome.get("signed_in") or []) >= ACCOUNTS
+        ready = signed and open_requests == 0 and time.monotonic() - quiet["since"] >= READY_QUIET_SECONDS
+        return JSONResponse({"ready": ready, "open": open_requests}, status_code=200 if ready else 503)
+
     async def with_review_r3(_request):
         """What the batch R3 closing tests' records are."""
         return JSONResponse({"enabled": review_r3 is not None, **(review_r3 or {})})
@@ -735,6 +755,7 @@ def main() -> None:
             Route("/__e2e/sides", with_sides),
             Route("/__e2e/many-sides", with_many_sides),
             Route("/__e2e/worst-case", with_worst_case),
+            Route("/__e2e/worst-case-ready", worst_case_ready),
             Route("/__e2e/review-r3", with_review_r3),
             Route("/__e2e/review-r4", with_review_r4),
             Route("/__e2e/delivered", delivered),

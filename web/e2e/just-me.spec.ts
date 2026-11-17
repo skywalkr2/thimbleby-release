@@ -7,6 +7,7 @@
 // question on Personal, and says what they are called at /__e2e/just-me, so no name is written out here.
 import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
+import { toToday } from "./journey-helpers";
 
 // Work is only its capitalized heading ("Back up your work" is ordinary speech); the rest are work concepts in any case. The
 // words for running work for others: a project, a stage, an organization, an owner, a template, an action (a to-do is the
@@ -132,7 +133,9 @@ test.describe('"Just me" sees no work words', () => {
   });
 
   test.beforeEach(async ({ page }) => {
-    await page.goto("?token=e2e-token");
+    // The address names Today, so the unfinished setup does not open over the screens these tests visit (setup has no way out as a
+    // whole and opens again on a visit that names nothing).
+    await page.goto("?token=e2e-token#today");
     // The side menu has answered: it lists Personal where a person with work has Projects.
     await expect(page.getByRole("navigation", { name: "Views" }).getByRole("link", { name: "Personal", exact: true })).toBeVisible(LOADED);
   });
@@ -226,7 +229,7 @@ test.describe('"Just me" sees no work words', () => {
     expect(found).toEqual([]);
     // Leave setup as a person would: a setup left partway through opens again where it was on the next visit, and the
     // tests after this one start from Today.
-    await page.getByRole("button", { name: "Finish later", exact: true }).click();
+    await toToday(page);
     await expect(page.locator("[data-walkthrough]")).toHaveCount(0, LOADED);
   });
 

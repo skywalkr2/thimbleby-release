@@ -283,7 +283,7 @@ const stopped = (extra: Partial<S["ChangeItem"]> = {}) =>
     ...extra,
   });
 
-test("a stopped hand-in has Try again first in its menu, with Dismiss, and Dismiss has Undo", async () => {
+test("a stopped hand-in has Try again first in its menu, with Choose another account and Skip it, and Skip it has Undo", async () => {
   const user = userEvent.setup();
   const calls = fakeApi({
     "GET changes": () => [stopped()],
@@ -295,8 +295,8 @@ test("a stopped hand-in has Try again first in its menu, with Dismiss, and Dismi
   expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
   // The line's menu: the first in the page, whether or not the chosen change's pane beside it has drawn yet.
   await user.click(screen.getAllByRole("button", { name: /More actions for/ })[0]);
-  expect((await screen.findAllByRole("menuitem")).map((m) => m.textContent)).toEqual(["Try again", "Dismiss"]);
-  await user.click(await screen.findByRole("menuitem", { name: "Dismiss" }));
+  expect((await screen.findAllByRole("menuitem")).map((m) => m.textContent)).toEqual(["Try again", "Choose another account", "Skip it"]);
+  await user.click(await screen.findByRole("menuitem", { name: "Skip it" }));
   await waitFor(() =>
     expect(calls.find((c) => c.route === "POST requests/REQ-9/dismiss")?.body).toEqual({ read_version: 4 }),
   );
@@ -407,7 +407,7 @@ test("the assistant's own summary of a run never shows, in the row or its detail
   expect(document.body.textContent).not.toMatch(/the user|assistant says/i);
 });
 
-test("a refused request offers Send to another account first in its menu, with Try again and Dismiss", async () => {
+test("a refused request offers Try again first, with Choose another account and Skip it in its menu", async () => {
   const user = userEvent.setup();
   const calls = fakeApi({
     "GET changes": () => [stopped({ refused: true })],
@@ -421,8 +421,8 @@ test("a refused request offers Send to another account first in its menu, with T
   expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
   // The line's first choice opens the choice of account in the change's detail.
   const row = await screen.findByRole("listitem", { name: "File the printer's dates" });
-  expect(within(row).queryByRole("button", { name: "Send to another account" })).toBeNull();
-  await choose(user, "Send to another account", row);
+  expect(within(row).queryByRole("button", { name: "Choose another account" })).toBeNull();
+  await choose(user, "Choose another account", row);
   const chooser = await screen.findByRole("group", { name: "Choose an account to try it with." });
   // The accounts are asked for when the chooser opens, so they are listed a moment after it.
   await waitFor(() => expect(within(chooser).getAllByRole("button").map((b) => b.textContent)).toEqual(["Work account", "Second account", "Cancel"]));
@@ -432,7 +432,7 @@ test("a refused request offers Send to another account first in its menu, with T
   expect(calls.find((c) => c.route === "POST requests/REQ-9/retry")?.body).toEqual({ use: "second/model-b" });
   await waitFor(() => expect(screen.queryByRole("group", { name: "Choose an account to try it with." })).toBeNull());
   await user.click(within(row).getByRole("button", { name: /More actions for/ }));
-  expect((await screen.findAllByRole("menuitem")).map((m) => m.textContent)).toEqual(["Send to another account", "Try again", "Dismiss"]);
+  expect((await screen.findAllByRole("menuitem")).map((m) => m.textContent)).toEqual(["Try again", "Choose another account", "Skip it"]);
   await user.click(screen.getByRole("menuitem", { name: "Try again" }));
   await waitFor(() => expect(calls.filter((c) => c.route === "POST requests/REQ-9/retry")).toHaveLength(2));
   expect(calls.filter((c) => c.route === "POST requests/REQ-9/retry")[1].body).toBeUndefined();
@@ -443,7 +443,7 @@ test("with no other account, the chooser says so and points to the AI settings",
   fakeApi({ "GET changes": () => [stopped({ refused: true })], "GET requests/REQ-9/accounts": () => [] });
   renderApp(<WhatChanged />);
   const row = await screen.findByRole("listitem", { name: "File the printer's dates" });
-  await choose(user, "Send to another account", row);
+  await choose(user, "Choose another account", row);
   expect(await screen.findByText("No other account can do this. Add one in AI accounts.")).toBeInTheDocument();
   const chooser = screen.getByRole("group", { name: /No other account/ });
   expect(within(chooser).getAllByRole("button").map((b) => b.textContent)).toEqual(["Cancel"]);
@@ -671,7 +671,7 @@ describe("the history: rows are past tense, have no button, and keep their choic
     renderApp(<WhatChanged onOpenGuide={() => undefined} />);
     await userEvent.setup().click(await screen.findByRole("button", { name: "All" }));
     await screen.findByRole("listitem", { name: "Email REQ-2" });
-    for (const name of ["Looks good", "Try again", "Send to another account", "Say who you are", "Start", "Dismiss", "Send back with a note"]) {
+    for (const name of ["Looks good", "Try again", "Choose another account", "Say who you are", "Start", "Dismiss", "Skip it", "Send back with a note"]) {
       expect(screen.queryByRole("button", { name }), name).toBeNull();
     }
     // Every row has a menu, and nothing else in its line is a button but the title that chooses it.

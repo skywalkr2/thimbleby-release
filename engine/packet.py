@@ -134,6 +134,14 @@ def build(ws: Workspace, store: Store, cfg: Config, request_id: str, today: date
         from engine.week_ahead import build as week_ahead_packet
 
         return week_ahead_packet(ws, store, cfg, req, kind, today)
+    if kind.name == "monday-goals":
+        from engine.week_goals import build as monday_goals_packet
+
+        return monday_goals_packet(ws, store, cfg, req, kind, today)
+    if kind.name == "area-read":
+        from engine.area_offers import build as area_read_packet
+
+        return area_read_packet(ws, store, cfg, req, kind, today)
     if kind.name == "follow-on":
         from engine.follow_on import build as follow_on_packet
 
@@ -287,13 +295,14 @@ def _quoted_attribute(text: Any) -> str:
     return " ".join(cleaned.split())
 
 
-def _watched_marks(store: Store, watched: dict, title: str | None = None, cfg: Config | None = None) -> str:
+def _watched_marks(store: Store | None, watched: dict, title: str | None = None, cfg: Config | None = None) -> str:
     """What the app itself knows about a watched change, as attributes of its outside-content block: the watch that
     found it (`watch`) and the item's own title (`item`), so a question about something unreadable in it can say
     where the reference was found; the person's own work is `author="you"`; a source that names a colleague or a team
     credits it to them by name; and a change the app published itself is `by_us="yes"`. The block stays outside
-    content, whatever the marks say. A source the person only understands says so (`stance="understand"`), so the run
-    records what it says as facts and tracks nothing from it."""
+    content, whatever the marks say. A message the service marks as sent to a list or to many is
+    `sent_to_a_list="yes"`, a hint the run weighs, never a verdict. A source the person only understands says so
+    (`stance="understand"`), so the run records what it says as facts and tracks nothing from it."""
     marks = ""
     if watched.get("source"):
         marks += f' watch="{_quoted_attribute(watched["source"])}"'
@@ -314,6 +323,10 @@ def _watched_marks(store: Store, watched: dict, title: str | None = None, cfg: C
             marks += ' author="{}"'.format(" ".join(str(name).replace('"', "").split()))
     if watched.get("by_us"):
         marks += ' by_us="yes"'
+    if store is not None and watched.get("source") and watched.get("key"):
+        snap = next(iter(store.read().find("snapshot", {"source": watched["source"], "key": watched["key"]})), None)
+        if bool(((snap.data.get("message") if snap is not None else None) or {}).get("bulk")):
+            marks += ' sent_to_a_list="yes"'
     return marks
 
 

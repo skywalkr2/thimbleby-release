@@ -184,9 +184,14 @@ const source = (id: string, label: string, over: Partial<S["WatchSourceView"]> =
 });
 
 /** The routes every screen of the walkthrough reads, answered with nothing set up. */
-function routes(over: Record<string, (body: unknown) => unknown> = {}, steps = CORE.map((id) => step(id)), walk: Partial<S["WalkthroughView"]> = {}) {
+function routes(
+  over: Record<string, (body: unknown) => unknown> = {},
+  steps = CORE.map((id) => step(id)),
+  walk: Partial<S["WalkthroughView"]> = {},
+  view: Omit<NonNullable<Parameters<typeof setupView>[1]>, "walkthrough"> = {},
+) {
   return {
-    "GET setup": () => setupView(steps, { walkthrough: { open: true, ...walk } }),
+    "GET setup": () => setupView(steps, { ...view, walkthrough: { open: true, ...walk } }),
     "GET settings": () => ({ fingerprint: "fp-1", items: SETTINGS }),
     "GET me": () => ({ person: null, full_name: "" }),
     "GET setup/business": () => ({ business: false, name: null, personal: PERSONAL, sides: [], chosen: null }),
@@ -234,7 +239,6 @@ const handlers = () => ({
   onOpenAddons: vi.fn(),
   onHandIn: vi.fn(),
   onOpenSources: vi.fn(),
-  onFinishLater: vi.fn(),
   onDone: vi.fn(),
 });
 
@@ -393,8 +397,8 @@ describe("opening", () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(screen.queryByRole("heading", { name: "Getting started" })).toBeNull();
     expect(window.location.hash).toBe("#today");
-    // What was passed by is the setup line on Today, one click from setup again.
-    expect(await screen.findByRole("region", { name: /^Finish setting up/ })).toHaveTextContent("0 of 6 done");
+    // What was left out, after its confirmation, is settled: Today carries no line that counts it as unfinished.
+    expect(screen.queryByRole("region", { name: /^Finish setting up/ })).toBeNull();
   });
 
   test("going to Today while setup is still being read keeps the person on Today", async () => {
@@ -552,25 +556,20 @@ describe("opening", () => {
 });
 
 describe("closing", () => {
-  test("Finish later is kept on the server and closes it", async () => {
-    const user = userEvent.setup();
-    const calls = fakeApi(routes());
-    const { onFinishLater, onDone } = open();
+  test("there is no way out of setup as a whole: no Finish later, and the steps are left out one at a time", async () => {
+    fakeApi(routes());
+    open();
     await screenTitle();
-    await user.click(screen.getByRole("button", { name: "Finish later" }));
-    await waitFor(() => expect(onFinishLater).toHaveBeenCalledTimes(1));
-    expect(calls.filter((c) => c.route === "POST setup/walkthrough").at(-1)?.body).toEqual({ closed: true });
-    expect(onDone).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Finish later" })).toBeNull();
   });
 
   test("the last button keeps it as finished and closes it", async () => {
     const user = userEvent.setup();
     const calls = fakeApi(routes({}, CORE.map((id) => step(id)), { step: "done" }));
-    const { onDone, onFinishLater } = open();
+    const { onDone } = open();
     await user.click(await screen.findByRole("button", { name: "Go to Today" }));
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
     expect(calls.filter((c) => c.route === "POST setup/walkthrough").at(-1)?.body).toEqual({ finished: true });
-    expect(onFinishLater).not.toHaveBeenCalled();
   });
 
   test("the last button lands on Today with the first-go line in focus, and the walkthrough is finished", async () => {
@@ -1472,6 +1471,7 @@ describe("each screen", () => {
     const calls = fakeApi(routes({ ...WITH_SERVICE, "POST setup/ai/skip": () => ({ ok: "ai" }) }, CORE.map((id) => step(id)), { step: "ai" }));
     open();
     await user.click(await screen.findByRole("button", { name: "I'll do this later" }));
+    await user.click(await screen.findByRole("button", { name: "Leave it out" }));
     await screen.findByRole("heading", { level: 2, name: /mail/i });
     expect(calls.filter((c) => c.route === "GET settings")).toHaveLength(1);
   });
@@ -1485,6 +1485,10 @@ describe("each screen", () => {
     expect(go).toBeDisabled();
     expect(screen.getByText("Choose an AI service to go on.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "I'll do this later" }));
+    // Nothing is left out until the confirmation says what that gives up and is answered.
+    expect(calls.some((c) => c.route === "POST setup/ai/skip")).toBe(false);
+    expect(screen.getByText(/reads nothing and drafts nothing/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Leave it out" }));
     await waitFor(() => expect(calls.some((c) => c.route === "POST setup/ai/skip")).toBe(true));
   });
 
@@ -1518,7 +1522,7 @@ describe("each screen", () => {
     expect(first).toBeChecked();
     await user.click(screen.getByRole("button", { name: "Continue" }));
     await waitFor(() => expect(calls.some((c) => c.route === "POST setup/backup-folder/cloud")).toBe(true));
-    expect(await screen.findByRole("heading", { level: 2, name: "People" }, { timeout: 5000 })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 2, name: "Where things stand" }, { timeout: 5000 })).toBeInTheDocument();
   });
 
   test("People: one add row for the step, saved with the relation and the side picked in it; the people added are listed under their side", async () => {
@@ -1679,8 +1683,8 @@ describe("each screen", () => {
     });
 
     const SUGGESTED = { people: [
-      { name: "Casey Kin", address: "casey@example.com", count: 4, from_sent: true },
-      { name: "Lee Kin", address: "lee@example.com", count: 1, from_sent: true },
+      { name: "Casey Kin", address: "casey@example.com", count: 4, why: "Someone you deal with." },
+      { name: "Lee Kin", address: "lee@example.com", count: 1, why: "Someone you deal with." },
     ] };
 
     test("the people the person writes to are suggested, one row each with a tick box, and Add these adds the ticked rows with no relation", async () => {
@@ -1698,7 +1702,7 @@ describe("each screen", () => {
       expect(within(list).getAllByRole("listitem").map((li) => li.textContent)).toEqual([expect.stringContaining("Casey Kin"), expect.stringContaining("Lee Kin")]);
       expect(list).toHaveTextContent("casey@example.com");
       expect(list).toHaveTextContent("4 messages");
-      expect(list).toHaveTextContent("From the mail you sent.");
+      expect(list).toHaveTextContent("Someone you deal with.");
       // Nothing is ticked, so nothing can be added yet.
       expect(within(list).getByRole("button", { name: "Add these" })).toBeDisabled();
       expect(within(list).getAllByRole("checkbox")).toHaveLength(2);
@@ -1710,6 +1714,55 @@ describe("each screen", () => {
       // The one added leaves the suggestions.
       await waitFor(() => expect(within(screen.getByRole("region", { name: "People you write to" })).queryByText("Casey Kin")).toBeNull());
       expect(screen.getByText("Lee Kin")).toBeInTheDocument();
+    });
+
+    test("Leave these out sends the ticked addresses and they leave the list and nobody is added", async () => {
+      const user = userEvent.setup();
+      let suggested = SUGGESTED;
+      const calls = personalOnly({
+        "GET setup/people-suggestions": () => suggested,
+        "POST setup/people-suggestions/leave-out": () => {
+          suggested = { people: SUGGESTED.people.slice(1) };
+          return { ok: "1" };
+        },
+      });
+      open();
+      const list = await screen.findByRole("region", { name: "People you write to" });
+      await user.click(within(list).getByRole("checkbox", { name: "Casey Kin" }));
+      await user.click(within(list).getByRole("button", { name: "Leave these out" }));
+      await waitFor(() => expect(calls.find((c) => c.route === "POST setup/people-suggestions/leave-out")?.body).toEqual({ addresses: ["casey@example.com"] }));
+      expect(calls.some((c) => c.route === "POST setup/people-add")).toBe(false);
+      await waitFor(() => expect(within(screen.getByRole("region", { name: "People you write to" })).queryByText("Casey Kin")).toBeNull());
+    });
+
+    test.each([
+      ["no_account", "No assistant is chosen yet"],
+      ["not_yet", "Your mail has not been read yet"],
+      ["working", "The assistant is reading who you deal with"],
+      ["waiting", "is waiting for your go"],
+      ["looked", "Nothing in your mail points to someone to add yet"],
+    ])("with no offer and the look at %s the step says so in plain words, with no tick boxes and a way to add by hand", async (state, words) => {
+      personalOnly({ "GET setup/people-suggestions": () => ({ people: [], state }) });
+      open();
+      const list = await screen.findByRole("region", { name: "People you write to" });
+      expect(list).toHaveTextContent(words);
+      expect(list).toHaveTextContent("Add anyone by hand below");
+      expect(within(list).queryAllByRole("checkbox")).toHaveLength(0);
+      expect(screen.getByRole("button", { name: "Paste a list" })).toBeInTheDocument();
+    });
+
+    test("a first look that waits for the go shows its estimate and a button that starts it, with the way to add by hand still there", async () => {
+      const user = userEvent.setup();
+      const calls = personalOnly({
+        "GET setup/people-suggestions": () => ({ people: [], state: "waiting", request: "REQ-4", read_version: 3, estimate_usd: 0.2 }),
+        "POST requests/REQ-4/go": () => ({ ok: "queued" }),
+      });
+      open();
+      const list = await screen.findByRole("region", { name: "People you write to" });
+      expect(list).toHaveTextContent("Nothing is spent until you start it");
+      expect(screen.getByRole("button", { name: "Paste a list" })).toBeInTheDocument();
+      await user.click(within(list).getByRole("button", { name: "Start it" }));
+      await waitFor(() => expect(calls.find((c) => c.route === "POST requests/REQ-4/go")?.body).toEqual({ read_version: 3 }));
     });
 
     test("with a business the place is chosen once for everyone ticked, Personal first, and both people are added there", async () => {
@@ -1766,8 +1819,8 @@ describe("each screen", () => {
     });
 
     test("a long name and a short one are laid out the same way: a tick box and the words in one label, the place choice outside the rows", async () => {
-      const long = { name: "Wilhelmina Featherstonehaugh-Cholmondeley-Throckmorton", address: "wilhelmina.featherstonehaugh@example.com", count: 12, from_sent: true };
-      const short = { name: "Jo Li", address: "jo@example.com", count: 1, from_sent: true };
+      const long = { name: "Wilhelmina Featherstonehaugh-Cholmondeley-Throckmorton", address: "wilhelmina.featherstonehaugh@example.com", count: 12, why: "Someone you deal with." };
+      const short = { name: "Jo Li", address: "jo@example.com", count: 1, why: "Someone you deal with." };
       fakeApi(
         routes(
           { "GET setup/business": () => stateWith([side("PRJ-3", "business", SHOP)]), "GET setup/people-suggestions": () => ({ people: [long, short] }) },
@@ -1986,14 +2039,15 @@ describe("each screen", () => {
     open();
     await screenTitle();
     await user.click(screen.getByRole("button", { name: "I'll do this later" }));
-    expect(await screen.findByRole("heading", { level: 2, name: "Where things stand" }, { timeout: 5000 })).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Leave it out" }));
+    expect(await screen.findByRole("heading", { level: 2, name: "Backups" }, { timeout: 5000 })).toBeInTheDocument();
     expect(calls.some((c) => c.route === "POST setup/people/skip")).toBe(true);
     await user.click(screen.getByRole("button", { name: "Back" }));
     expect(await screen.findByRole("heading", { level: 2, name: "People" }, { timeout: 5000 })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /^Your AI account/ }));
     expect(await screen.findByRole("heading", { level: 2, name: "Your AI account" }, { timeout: 5000 })).toBeInTheDocument();
     const kept = calls.filter((c) => c.route === "POST setup/walkthrough").map((c) => (c.body as S["WalkthroughIn"]).step);
-    expect(kept).toEqual(expect.arrayContaining(["done", "people", "ai"]));
+    expect(kept).toEqual(expect.arrayContaining(["backup", "people", "ai"]));
   });
 
   test("a screen that is done offers Continue, not I'll do this later", async () => {
@@ -2434,7 +2488,7 @@ describe("Mail and calendar", () => {
     expect(mine).not.toHaveAttribute("data-signed-in");
   });
 
-  test("after signing in the step leads with the result: what is connected and read, that it waits for the first Go, one Continue in the footer and the list folded", async () => {
+  test("after signing in the step leads with the result: what is connected and read, what happens to it next, one Continue in the footer and the list folded", async () => {
     const user = userEvent.setup();
     service("on", { signed: true });
     open();
@@ -2446,7 +2500,7 @@ describe("Mail and calendar", () => {
     // The account is one row that says what is read there; the headline does not say it again.
     expect(within(block).getByRole("list", { name: "The accounts being read" })).toBeInTheDocument();
     expect(within(block).getByText("Your inbox and your calendar")).toBeInTheDocument();
-    expect(within(block).getByText(/Your mail and calendar are fetched when you sign in\. The assistant does not use the AI, and nothing is spent, until you start it on the next screen/)).toBeInTheDocument();
+    expect(within(block).getByText(/Your mail and calendar are fetched when you sign in\. Without an AI account nothing in them is read/)).toBeInTheDocument();
     // That the reading waits for the first Go is said once on the screen, not again in the step's own lead line.
     expect(screen.getAllByText(/Your mail and calendar are fetched when you sign in/)).toHaveLength(1);
     // Exactly one Continue, in the footer on the column's edge like every other step's, not in the body; the list is behind
@@ -3538,8 +3592,8 @@ describe("one list of six steps", () => {
     ["work", "What it's for"],
     ["ai", "Your AI account"],
     ["mail", "Mail and calendar"],
-    ["backup", "Backups"],
     ["people", "People"],
+    ["backup", "Backups"],
   ];
 
   test("progress counts the six steps Today's setup line counts, 1 of 6 through 6 of 6, and the ending has no number of its own (X87)", async () => {
@@ -3571,7 +3625,7 @@ describe("one list of six steps", () => {
     await screen.findByRole("navigation", { name: "Setup steps" });
     const list = within(document.getElementById("walkthrough-steps")!);
     expect(list.getAllByRole("button").map((b) => b.getAttribute("data-screen"))).toEqual([
-      "you", "work", "ai", "mail", "backup", "people", "done",
+      "you", "work", "ai", "mail", "people", "backup", "done",
     ]);
     const at = (id: string) => document.querySelector(`#walkthrough-steps [data-screen="${id}"]`);
     expect(at("you")).toHaveAttribute("data-state", "done");
@@ -3596,7 +3650,7 @@ describe("one list of six steps", () => {
       await user.click(within(list).getByRole("button", { name: /^Backups/ }));
       expect(await screenTitle()).toHaveTextContent("Backups");
       expect(screen.getByRole("button", { name: "Steps" })).toHaveAttribute("aria-expanded", "false");
-      expect(screen.getByText("Backups · 5 of 6")).toBeInTheDocument();
+      expect(screen.getByText("Backups · 6 of 6")).toBeInTheDocument();
     } finally {
       document.documentElement.removeAttribute("data-narrow");
     }
@@ -3678,5 +3732,103 @@ describe("names", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(calls.some((c) => c.route === "POST settings")).toBe(true));
     expect((calls.find((c) => c.route === "POST settings")!.body as S["SettingsSave"]).changes).toEqual({ "workspace.name": "Avery's" });
+  });
+});
+
+describe("Reginald is turned on in the AI step, the first reading is waited for, and nothing is skipped without a confirmation", () => {
+  const DONE_AI = CORE.map((id) => (id === "ai" ? step(id, { done: true }) : step(id)));
+  const COST = { "GET watch/sorting-cost": () => ({ kind: "money", messages: 30, runs: 1, estimate_usd: 0.12, measured: false }) };
+
+  test("the AI step offers the first go with what it starts and its estimate, Continue waits for it, and giving it turns Reginald on (S-0595)", async () => {
+    const user = userEvent.setup();
+    let given = false;
+    const calls = fakeApi({
+      ...routes({ ...WITH_SERVICE, ...COST, "POST runs/first-go": () => ((given = true), { started: 0 }) }, DONE_AI, { step: "ai" }),
+      "GET setup": () => setupView(DONE_AI, { first_go_given: given, walkthrough: { open: true, step: "ai" } }),
+    });
+    open();
+    expect(await screen.findByRole("heading", { level: 3, name: "Turn Helper on" })).toBeInTheDocument();
+    expect(screen.getByText(/First it will read your mail and calendar, sort what it finds and see who you write to/)).toBeInTheDocument();
+    expect(await screen.findByText(/30 messages/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+    expect(screen.getByText("Turn Helper on to go on.")).toBeInTheDocument();
+    expect(calls.some((c) => c.route === "POST runs/first-go")).toBe(false); // nothing is started before the person turns it on
+    await user.click(screen.getByRole("button", { name: "Turn on" }));
+    expect(await screen.findByText("Helper is on.")).toBeInTheDocument();
+    expect(calls.filter((c) => c.route === "POST runs/first-go")).toHaveLength(1);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+  });
+
+  test("leaving the AI step out asks first, in words, what that gives up and how the steps after it change, and nothing is kept until it is answered (S-0597)", async () => {
+    const user = userEvent.setup();
+    const calls = fakeApi(routes({ ...WITH_SERVICE, "POST setup/ai/skip": () => ({ ok: "ai" }) }, CORE.map((id) => step(id)), { step: "ai" }));
+    open();
+    await user.click(await screen.findByRole("button", { name: "I'll do this later" }));
+    expect(await screen.findByText(/reads nothing and drafts nothing/)).toBeInTheDocument();
+    expect(screen.getByText(/People will only let you add people by hand/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Keep this step" }));
+    expect(calls.some((c) => c.route === "POST setup/ai/skip")).toBe(false);
+    expect(screen.queryByText(/reads nothing and drafts nothing/)).toBeNull();
+  });
+
+  test("leaving Mail out says nothing is read and People will be by hand, then goes past the wait to People, by hand only, and is never offered as unfinished (S-0596, S-0597)", async () => {
+    const user = userEvent.setup();
+    let left = false;
+    const calls = fakeApi({
+      ...routes({ "POST setup/mail/skip": () => ((left = true), { ok: "mail" }) }, DONE_AI, { step: "mail" }),
+      "GET setup": () =>
+        setupView(
+          left ? DONE_AI.map((st) => (st.id === "mail" ? { ...st, skipped: true } : st)) : DONE_AI,
+          { first_go_given: true, people_by_hand: left, reading: left ? { state: "none", why: "no_mail" } : { state: "working", stage: "fetching", sources: 1, read: 0 }, walkthrough: { open: true, step: "mail" } },
+        ),
+    });
+    open();
+    await user.click(await screen.findByRole("button", { name: "I'll do this later" }));
+    expect(await screen.findByText(/Nothing is read from your mail or your calendar/)).toBeInTheDocument();
+    expect(screen.getByText(/There is no first reading to wait for, and People will only let you add people by hand/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Leave it out" }));
+    expect(await screen.findByRole("heading", { level: 2, name: "People" }, { timeout: 5000 })).toBeInTheDocument();
+    expect(await screen.findByText("Helper has nothing to suggest people from, so you add them by hand here.")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "People we found in your mail" })).toBeNull();
+    expect(calls.some((c) => c.route === "GET setup/people-suggestions")).toBe(false);
+    expect(screen.queryByRole("heading", { level: 2, name: "First reading" })).toBeNull();
+  });
+
+  test("after Mail the person waits on screen while the first reading works, with what it is doing and a way on that leaves it running (S-0596)", async () => {
+    const user = userEvent.setup();
+    fakeApi(routes({}, DONE_AI, { step: "reading" }, { reading: { state: "working", stage: "sorting", sources: 2, read: 2 } }));
+    open();
+    expect(await screenTitle()).toHaveTextContent("First reading");
+    expect(await screen.findByText("Sorting what it found.")).toBeInTheDocument();
+    expect(screen.getByText(/This usually takes a few minutes/)).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Setup steps" })).toHaveTextContent("First reading");
+    await user.click(screen.getByRole("button", { name: "Go on while it works" }));
+    expect(await screen.findByRole("heading", { level: 2, name: "People" })).toBeInTheDocument();
+  });
+
+  test("with the first reading done, going on from Mail passes the wait and lands on People, where Reginald's offers are (S-0596)", async () => {
+    const user = userEvent.setup();
+    const asked: string[] = [];
+    fakeApi({
+      ...routes({ "GET setup/people-suggestions": () => (asked.push("seen"), { people: [], state: "looked" }) }, DONE_AI.map((st) => (st.id === "mail" ? { ...st, done: true } : st)), { step: "mail" }, { reading: { state: "done", sources: 1, read: 1 } }),
+    });
+    open();
+    await user.click(await screen.findByRole("button", { name: "Continue" }));
+    expect(await screen.findByRole("heading", { level: 2, name: "People" }, { timeout: 5000 })).toBeInTheDocument();
+    await waitFor(() => expect(asked.length).toBeGreaterThan(0));
+  });
+
+  test("coming back to the wait by the list shows it done and stays: a finished reading moves on by itself only when the person was going forward", async () => {
+    fakeApi(routes({}, DONE_AI, { step: "reading" }, { reading: { state: "done", sources: 1, read: 1 } }));
+    open();
+    expect(await screen.findByText("The first reading is done.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "First reading" })).toBeInTheDocument();
+  });
+
+  test("there is no way out of setup as a whole: no Finish later in the header", async () => {
+    fakeApi(routes());
+    open();
+    await screenTitle();
+    expect(screen.queryByRole("button", { name: /Finish later/ })).toBeNull();
   });
 });

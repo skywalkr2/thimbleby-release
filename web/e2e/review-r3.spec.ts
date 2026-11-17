@@ -3,7 +3,7 @@
 // data instead of the screen). The workspace is the reviewer's many-sides state with notes, long to-dos, today's entries past and to
 // come, four items that share a word, a person with to-dos of theirs, and a message that came in (tests/e2e_review_r3.py).
 import { daytimeAt } from "./clock";
-import { expect, type Locator, type Page } from "@playwright/test";
+import { expect, type APIRequestContext, type Locator, type Page } from "@playwright/test";
 import { test } from "./test";
 
 const LOADED = { timeout: 20_000 };
@@ -354,5 +354,43 @@ test.describe("S-0361: empty and edge states say what to do next", () => {
   test("Projects: a side with no projects says so beside its name", async ({ page }) => {
     await open(page, "records/projects");
     await expect(page.locator("[data-group-empty]").first()).toContainText("No projects yet");
+  });
+});
+
+test.describe("S-0591: the Monday goals are the assistant's offer, never the soonest-due to-dos", () => {
+  type Goals = { proposed: string[]; offer: string; can_offer: boolean; confirmed: boolean; most: number };
+  const goalsOf = async (request: APIRequestContext) => ((await (await request.get("api/brief?form=monday")).json()) as { goals: Goals }).goals;
+
+  test("with to-dos due this week the briefing proposes none by a rule, and asking has the assistant's run make the offer the briefing shows", async ({ request }) => {
+    const before = await goalsOf(request);
+    expect(before.confirmed).toBe(false);
+    // The seeded to-dos are due, yet no rule offers them: until the assistant's run has answered, nothing is proposed.
+    if (["none", "working", "needs_go"].includes(before.offer)) expect(before.proposed).toEqual([]);
+    // The app may already have asked for this week's reading by itself (something is due); only when it hasn't, and
+    // nothing is under way, does the person ask.
+    if (before.offer === "none") {
+      expect(before.can_offer, "something is due this week, so the person may ask for an offer").toBe(true);
+      const asked = await request.post("api/brief/goals/offer");
+      expect(asked.ok(), await asked.text()).toBe(true);
+    } else {
+      expect(["working", "needs_go", "offered", "empty"]).toContain(before.offer);
+    }
+    // The run is estimated first: it is under way, held for the go, or done with the assistant's goals.
+    await expect.poll(async () => (await goalsOf(request)).offer, LOADED).not.toBe("none");
+    const after = await goalsOf(request);
+    expect(["working", "needs_go", "offered", "empty"]).toContain(after.offer);
+    if (after.offer === "offered") {
+      const open = (await (await request.get("api/open-items")).json()) as { actions: Array<{ text: string }> };
+      const texts = open.actions.map((a) => a.text);
+      expect(after.proposed.length).toBeGreaterThan(0);
+      expect(after.proposed.length).toBeLessThanOrEqual(after.most);
+      // The stand-in assistant words each goal from the to-do it comes from; the goals are its answer, kept on the week's record.
+      for (const goal of after.proposed) expect(texts.some((t) => t.includes(goal) || goal.includes(t))).toBe(true);
+    } else {
+      expect(after.proposed).toEqual([]);
+    }
+    if (after.offer === "working" || after.offer === "needs_go") {
+      expect((await request.post("api/brief/goals/offer")).status(), "one offer in hand at a time").toBe(409);
+    }
   });
 });

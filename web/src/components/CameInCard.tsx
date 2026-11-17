@@ -15,13 +15,14 @@ import { useSetAside } from "../lib/set-aside";
 import { onAnySide, useSideFilter, useSides } from "../lib/sides";
 import { useSideSlot } from "../lib/marks";
 import { SideMark } from "../ui/SideMark";
+import { inCameInWindow, showAllCameIn, useCameInWindow } from "../lib/came-in-window";
 import { useRailRows } from "../lib/today";
 import { anyReading } from "../lib/sources";
 import { recordView, viewHref } from "../lib/views";
 import { Button } from "../ui/Button";
 import { useWords } from "../lib/wording";
 import { Skeleton } from "../ui/Skeleton";
-import { Empty, Failed, RailPanel } from "./RailPanel";
+import { Empty, Failed, RailPanel, useOpenPanel } from "./RailPanel";
 import { SourceProblems, useNow, useSourceNames, useSourceState } from "./RailSources";
 import { FailedSaveLine } from "../ui/NotSaved";
 import { RowMenu, type MenuAction } from "./RowMenu";
@@ -83,6 +84,20 @@ function CheckNow(props: { quiet?: boolean }) {
   );
 }
 
+/** Something has narrowed Came in to what arrived while the person was away: open the card where it is folded (a phone) and put the
+ * cursor on its note. It draws nothing, and sits beside the card so it is inside the rail's folds. */
+function PointedTo() {
+  const narrowed = useCameInWindow();
+  const openPanel = useOpenPanel();
+  useEffect(() => {
+    if (!narrowed) return;
+    openPanel("arrived");
+    const frame = requestAnimationFrame(() => document.querySelector<HTMLElement>("[data-came-in-window]")?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [narrowed, openPanel]);
+  return null;
+}
+
 /** The Came in card and whether to draw it; `settled` is true once what it asks has answered. */
 export function useCameInCard(onAddSource?: () => void): { settled: boolean; drawn: boolean; card: ReactNode } {
   const { t, tn } = useWords();
@@ -95,7 +110,9 @@ export function useCameInCard(onAddSource?: () => void): { settled: boolean; dra
   const today = todayOn(now);
   const filter = useSideFilter();
   // The side filter narrows what came in by the sides its mailbox serves; mail from one that serves none shows under every choice.
-  const items = (arrived.data?.items ?? []).filter((m) => onAnySide(m.sides, filter.picked));
+  const narrowed = useCameInWindow();
+  const items = (arrived.data?.items ?? []).filter((m) => onAnySide(m.sides, filter.picked) && inCameInWindow(m.received, narrowed));
+
   // The card holds a few lines and one line for the rest, so the rail is never longer than the queue beside it.
   const [all, setAll] = useState(false);
   const railRows = useRailRows();
@@ -123,6 +140,8 @@ export function useCameInCard(onAddSource?: () => void): { settled: boolean; dra
   const drawn = arrived.isError || items.length > 0 || sourceState.problems.length > 0 || !!sourceState.button || connected || handledToday > 0;
 
   const card = (
+    <>
+    <PointedTo />
     <RailPanel
       id="arrived"
       title={t("today.arrived.title")}
@@ -146,6 +165,14 @@ export function useCameInCard(onAddSource?: () => void): { settled: boolean; dra
         ) : undefined
       }
     >
+      {narrowed && (
+        <p tabIndex={-1} className="tb-meta" data-came-in-window="">
+          {t("today.arrived.window")} ·{" "}
+          <Button variant="quiet" size="sm" onClick={showAllCameIn}>
+            {t("today.arrived.window.all")}
+          </Button>
+        </p>
+      )}
       {arrived.isPending ? (
         <Skeleton />
       ) : arrived.isError ? (
@@ -229,6 +256,7 @@ export function useCameInCard(onAddSource?: () => void): { settled: boolean; dra
         </ul>
       )}
     </RailPanel>
+    </>
   );
   return { settled, drawn, card };
 }

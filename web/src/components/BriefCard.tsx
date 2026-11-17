@@ -328,6 +328,7 @@ function Goals(props: { goals: NonNullable<Brief["goals"]> }) {
   const { t } = useWords();
   const filter = useSideFilter();
   const act = useAct();
+  const money = useMoney();
   const { goals } = props;
   const [editing, setEditing] = useState(false);
   const [rows, setRows] = useState<string[]>([]);
@@ -422,10 +423,21 @@ function Goals(props: { goals: NonNullable<Brief["goals"]> }) {
                 ))}
               </ol>
             </>
+          ) : goals.confirmed ? null : goals.offer === "working" ? (
+            <p className="hint" data-goals-offer="working">{t("brief.goals.offer.working")}</p>
+          ) : goals.offer === "needs_go" ? (
+            <p className="hint" data-goals-offer="needs_go">
+              {goals.offer_estimate_usd != null ? t("brief.goals.offer.needs_go_cost", { cost: money(goals.offer_estimate_usd) }) : t("brief.goals.offer.needs_go")}
+            </p>
+          ) : goals.offer === "empty" ? (
+            <p className="hint" data-goals-offer="empty">{t("brief.goals.offer.empty")}</p>
           ) : (
-            <p className="hint">{t("brief.goals.none")}</p>
+            <p className="hint" data-goals-offer="none">{t("brief.goals.none")}</p>
           )}
           <div className={styles.actions}>
+            {!goals.confirmed && shown.length === 0 && goals.offer !== "working" && goals.offer !== "needs_go" && goals.can_offer && (
+              <Button onClick={() => void act(() => api.offerGoals(), () => ({ message: t("brief.goals.offer.asked") }))}>{t("brief.goals.offer.ask")}</Button>
+            )}
             {!goals.confirmed && shown.length >= goals.fewest && (
               <Button variant="tonal" onClick={() => void keep(shown)}>
                 {t("brief.goals.use")}

@@ -7,7 +7,7 @@ type Step = S["SetupStepView"];
 
 /** The screens, in the order a person needs them. Welcome opens a new start and is no step; the last one lists what was set
  * up and what was skipped, and what is optional. */
-export const SCREENS: readonly Screen[] = ["welcome", "you", "work", "ai", "mail", "backup", "people", "done"];
+export const SCREENS: readonly Screen[] = ["welcome", "you", "work", "ai", "mail", "reading", "people", "backup", "done"];
 
 /** The core setup step each screen is about; Welcome and the last screen have none. */
 export const STEP_OF: Record<Screen, string | null> = {
@@ -16,8 +16,9 @@ export const STEP_OF: Record<Screen, string | null> = {
   work: "work",
   ai: "ai",
   mail: "mail",
-  backup: "backup",
+  reading: null,
   people: "people",
+  backup: "backup",
   done: null,
 };
 
@@ -40,16 +41,22 @@ export function standing(steps: Step[], screen: Screen): Standing | null {
 /** The steps that count toward finishing, in order: what the last screen reports as set up or left. */
 export const counted = (steps: Step[]): Step[] => steps.filter((s) => s.counted);
 
-/** The screen after this one, or null at the end. */
-export function after(screen: Screen): Screen | null {
+/** The screen that waits for the first reading, which is passed by when there is nothing to wait for (mail left out, or no
+ * AI account). */
+const WAIT: Screen = "reading";
+
+/** The screen after this one, or null at the end. `noWait`: there is nothing to wait for, so that screen is passed by. */
+export function after(screen: Screen, noWait = false): Screen | null {
   const i = SCREENS.indexOf(screen);
-  return i >= 0 && i < SCREENS.length - 1 ? SCREENS[i + 1] : null;
+  const next = i >= 0 && i < SCREENS.length - 1 ? SCREENS[i + 1] : null;
+  return next === WAIT && noWait ? after(next, noWait) : next;
 }
 
 /** The screen before this one, or null at the start. Welcome is shown once, so no screen goes back to it. */
-export function before(screen: Screen): Screen | null {
+export function before(screen: Screen, noWait = false): Screen | null {
   const i = SCREENS.indexOf(screen);
-  return i > 1 ? SCREENS[i - 1] : null;
+  const previous = i > 1 ? SCREENS[i - 1] : null;
+  return previous === WAIT && noWait ? before(previous, noWait) : previous;
 }
 
 /** The screen's own step, when it is one of the counted ones. */

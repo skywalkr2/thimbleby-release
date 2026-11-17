@@ -14,6 +14,9 @@ from api.schemas import (
     CloseKindCountView,
     CloseMeasureView,
     Created,
+    FullReadIn,
+    FullReadOptionView,
+    FullReadView,
     HandledCountsToday,
     HandledDone,
     HandledView,
@@ -165,6 +168,7 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
             look_back_choices=list(current().watch.look_back_choices)
             if back_to and source_intake.can_look_back(source, store)
             else [],
+            full_read_open=source_intake.full_read_pending(store, current(), source) or None,
             secrets=secret_states(connector, source.settings),
         )
 
@@ -264,6 +268,37 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
         if found.taken:
             worker.poke()
             events.changed()
+        return look_back_view(found)
+
+    @r.get("/watch/{source_id}/full-read")
+    def full_read_view(source_id: str) -> FullReadView:
+        """The reaches a first sign-in offers for reading mail in full, each with its count and cost. Nothing is chosen
+        and nothing is written."""
+        need_source(source_id)
+        try:
+            options = source_intake.full_read_options(ws, store, current(), source_id)
+        except StoreError as err:
+            raise HTTPException(status_code=409, detail=str(err)) from None
+        run = source_intake.intake_run(store.read(), source_id)
+        return FullReadView(
+            options=[FullReadOptionView(**vars(o)) for o in options],
+            answered=run.data.get("full_read") if run else None,
+        )
+
+    @r.post("/watch/{source_id}/full-read")
+    def full_read(source_id: str, body: FullReadIn) -> LookBackView:
+        """The person's answer: a reach is read through the look further back (held for the go like any AI work), 0 is
+        "not now". Either way the question is answered."""
+        need_source(source_id)
+        try:
+            found = source_intake.answer_full_read(ws, store, current(), source_id, body.days)
+        except StoreError as err:
+            raise HTTPException(status_code=409, detail=str(err)) from None
+        if found is not None and found.taken:
+            worker.poke()
+        events.changed()
+        if found is None:
+            return LookBackView(days=0, from_date=worker.now().date(), count=0, reaches=True)
         return look_back_view(found)
 
     @r.get("/auto-closed")
@@ -385,8 +420,12 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
                 )
         except StoreError as err:
             raise HTTPException(status_code=409, detail=str(err)) from None
+        # The note names the rule, so the learning run knows which one the person doubted; the packet marks it as the
+        # app's own words, never a source to quote.
         rule = current.data["auto_closed"]["rule"]
-        signal(store, "pulled_back", [request_id], f"Closed by {rule}: {current.data['auto_closed']['reason']}")
+        signal(
+            store, "pulled_back", [request_id], f'The person asked for a closer look at what the rule "{rule}" closed.'
+        )
         _show_again(request_id)
         events.changed()
         worker.poke()
@@ -537,13 +576,8 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
             if (sorting_lessons.set_aside_by_sorting(mark))
             else None
         )
-        signal(
-            store,
-            "pulled_back",
-            [waiting or snapshot_id],
-            f"Set aside: {mark['reason']}",
-            learned=[lesson] if lesson else None,
-        )
+        note = set_aside.bring_in_note(store.read(), personal=False, project=home_of(False, body.side))
+        signal(store, "pulled_back", [waiting or snapshot_id], note, learned=[lesson] if lesson else None)
         events.changed()
         worker.poke()
         return done(snapshot_id, mark["section"], mark)
@@ -555,7 +589,8 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
         from engine.dispatcher import signal
 
         waiting, mark = hand_in_aside(snapshot_id, body.read_version, personal=True)
-        signal(store, "pulled_back", [waiting or snapshot_id], f"Set aside: {mark['reason']}; treated as personal")
+        note = set_aside.bring_in_note(store.read(), personal=True)
+        signal(store, "pulled_back", [waiting or snapshot_id], note)
         events.changed()
         worker.poke()
         return done(snapshot_id, mark["section"], mark)
@@ -609,7 +644,7 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
         snap = mail_snapshot(snapshot_id)
         if snap.data.get("set_aside"):
             waiting, mark = hand_in_aside(snapshot_id, read_version, personal=personal, side=side)
-            note = f"Set aside: {mark['reason']}" + ("; treated as personal" if personal else "")
+            note = set_aside.bring_in_note(store.read(), personal=personal, project=home_of(personal, side))
             signal(store, "pulled_back", [waiting or snapshot_id], note)
             events.changed()
             worker.poke()

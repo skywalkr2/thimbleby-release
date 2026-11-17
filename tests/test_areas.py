@@ -2,8 +2,9 @@
 
 An area has no end day and what a draft about it draws on stops at it: a draft in one area gets no facts, lessons or
 open items from a sibling area. Which accounts read an area, and whether anything leaves the computer, is said on its
-page. When enough items filed under the personal project share a word, one area is offered, and keeping the offer
-starts the area and files the items as the person's own edits. Names and ids come from the fixtures."""
+page. A rule narrows the items filed under the personal project to those that share a word; whether they make an area
+is the assistant's judgment (tests/test_area_offers.py), kept as an offer, and keeping the offer starts the area and
+files the items as the person's own edits. Names and ids come from the fixtures."""
 
 from __future__ import annotations
 
@@ -261,19 +262,36 @@ def _four_dentist_items(store, cfg):
     ]
 
 
-def test_an_area_is_offered_once_enough_items_share_a_word_and_never_for_everyday_words(env):
+def offer_for(store, items, name="Dentist", why="Four items about the one dentist."):
+    """An area the assistant offered for items (kind, id), as the `area.offer` op keeps it."""
+    kinds = {"ACT": "action", "Q": "question", "FACT": "fact", "EVT": "event"}
+    with store.transaction() as tx:
+        return tx.create(
+            "area_offer",
+            {
+                "name": name,
+                "why": why,
+                "items": [{"kind": kinds[i.rpartition("-")[0]], "id": i} for i in items],
+                "status": "offered",
+                "offered_at": NOW.isoformat(),
+            },
+            _TEST,
+        ).id
+
+
+def test_the_rule_narrows_to_items_that_share_a_word_and_never_for_everyday_words(env):
     _, cfg, store = env
-    _four_dentist_items(store, cfg)
+    dentist = _four_dentist_items(store, cfg)
     for text in ("Pick up the grocery order", "Return the library book", "Call about the order"):
         _item(store, cfg, "action", text)
-    found = areas.proposals(store.read(), cfg)
-    assert [p.name for p in found] == ["Dentist"] and len(found[0].items) == 4
-    # The line on Today is a suggestion: the word, the proposed name and how many items it would take.
-    (line,) = [x for x in today_queue.queue(*env[:1], store, cfg, NOW) if x.kind == "area"]
-    assert (line.text, line.subject, line.count) == ("Dentist", "dentist", 4) and len(line.names) == 3
+    found = areas.narrowed(store.read(), cfg)
+    assert sorted(c.id for c in found) == sorted(dentist)
+    assert all("dentist" in c.shared for c in found)
+    # Narrowing offers nothing by itself: no line on Today until the assistant has read the items and offered an area.
+    assert [x for x in today_queue.queue(env[0], store, cfg, NOW) if x.kind == "area"] == []
 
 
-def test_items_waiting_for_an_owner_never_offer_an_area_named_after_the_apps_own_line_title(env):
+def test_items_waiting_for_an_owner_never_narrow_to_a_word_from_the_apps_own_line_title(env):
     _, cfg, store = env
     me = cfg.workspace.user.person
     for text in ("Reserve the venue list", "Confirm the headcount", "Print the programs", "Order the badges"):
@@ -291,20 +309,19 @@ def test_items_waiting_for_an_owner_never_offer_an_area_named_after_the_apps_own
                 },
                 _ASSISTANT,
             )
-    assert areas.proposals(store.read(), cfg) == []
-    assert [x for x in today_queue.queue(env[0], store, cfg, NOW) if x.kind == "area"] == []
+    assert areas.narrowed(store.read(), cfg) == []
 
 
-def test_three_items_are_too_few_and_the_setting_turns_the_offer_off(tmp_path):
+def test_three_items_are_too_few_and_the_setting_turns_the_narrowing_off(tmp_path):
     ws, cfg, store = build(tmp_path, COCKPIT__STEWARD__AREAS__PROPOSE_AFTER="4")
     try:
         for text in ("Book the dentist", "Ask the dentist about the crown", "The dentist is closed on Fridays"):
             _item(store, cfg, "action", text)
-        assert areas.proposals(store.read(), cfg) == []
+        assert areas.narrowed(store.read(), cfg) == []
         _item(store, cfg, "action", "Pay the dentist")
-        assert len(areas.proposals(store.read(), cfg)) == 1
+        assert len(areas.narrowed(store.read(), cfg)) == 4
         off = ws.config(env={**ZONE_UTC, "COCKPIT__STEWARD__AREAS__PROPOSE_AFTER": "0"})
-        assert areas.proposals(store.read(), off) == []
+        assert areas.narrowed(store.read(), off) == []
     finally:
         store.close()
 
@@ -318,30 +335,49 @@ def test_an_item_already_in_an_area_or_finished_is_no_part_of_the_pattern(env):
     with store.transaction() as tx:
         cur = tx.get("action", done)
         tx.update("action", done, {"status": "done"}, _TEST, read_version=cur.version)
-    assert areas.proposals(store.read(), cfg) == []
+    assert areas.narrowed(store.read(), cfg) == []
+
+
+def test_items_an_offer_already_holds_are_not_narrowed_to_again(env):
+    _, cfg, store = env
+    items = _four_dentist_items(store, cfg)
+    offer_for(store, items)
+    assert areas.narrowed(store.read(), cfg) == []
+
+
+def test_an_offer_is_a_line_on_today_with_its_reason_and_every_item_as_a_name(env):
+    ws, cfg, store = env
+    items = _four_dentist_items(store, cfg)
+    offer = offer_for(store, items, why="All four are about looking after your teeth.")
+    (line,) = [x for x in today_queue.queue(ws, store, cfg, NOW) if x.kind == "area"]
+    assert (line.text, line.subject, line.count, line.key) == ("Dentist", offer, 4, f"area:{offer}")
+    assert line.reason == "All four are about looking after your teeth."
+    assert len(line.names) == 4  # one for every item, so the screen shows them as rows
 
 
 def test_the_person_may_name_the_area_and_a_name_already_a_project_is_refused(env):
     _, cfg, store = env
-    _four_dentist_items(store, cfg)
+    offer = offer_for(store, _four_dentist_items(store, cfg))
     taken = store.read().get("project", personal_of(cfg)).data["name"]
     with pytest.raises(StoreError, match="already have something called"):
-        areas.keep(store, cfg, "dentist", f"  {taken.upper()} ")
-    kept = areas.keep(store, cfg, "dentist", "Teeth  and health")
+        areas.keep(store, cfg, offer, f"  {taken.upper()} ")
+    kept = areas.keep(store, cfg, offer, "Teeth  and health")
     assert store.read().get("project", kept.project).data["name"] == "Teeth and health"
 
 
 def test_keeping_the_offer_starts_the_area_files_the_items_and_each_filing_is_a_correction(env):
     _, cfg, store = env
     items = _four_dentist_items(store, cfg)
-    kept = areas.keep(store, cfg, "dentist")
+    offer = offer_for(store, items)
+    kept = areas.keep(store, cfg, offer)
     view = store.read()
     area = view.get("project", kept.project)
     assert area.data["name"] == "Dentist" and area.data["area"] is True and area.data["parent"] == personal_of(cfg)
     for kind, record_id in zip(("action", "action", "fact", "question"), items, strict=True):
         data = view.get(kind, record_id).data
         assert (data.get("projects") or [data.get("project")]) == [kept.project]
-    assert areas.proposals(view, cfg) == []  # the offer is gone: the area exists
+    assert areas.offers(view, cfg) == []  # the offer is gone: the area exists
+    assert view.get("area_offer", offer).data["status"] == "kept"
     corrections = [s for s in view.list("signal") if s.data["kind"] == "edited"]
     assert {r for s in corrections for r in s.data["refs"]} == set(items)  # one correction for each item moved
 
@@ -349,7 +385,24 @@ def test_keeping_the_offer_starts_the_area_files_the_items_and_each_filing_is_a_
 def test_an_offer_that_no_longer_stands_is_refused_in_plain_words(env):
     _, cfg, store = env
     with pytest.raises(StoreError, match="no longer stands"):
-        areas.keep(store, cfg, "dentist")
+        areas.keep(store, cfg, "AREA-99")
+    offer = offer_for(store, _four_dentist_items(store, cfg))
+    areas.keep(store, cfg, offer)
+    with pytest.raises(StoreError, match="no longer stands"):
+        areas.keep(store, cfg, offer)
+
+
+def test_an_offer_with_fewer_than_two_items_left_is_not_shown(env):
+    _, cfg, store = env
+    items = _four_dentist_items(store, cfg)
+    offer_for(store, items)
+    health = tree(store, cfg)["health"]
+    for gone in items[:3]:
+        kind = "action" if gone.startswith("ACT") else "fact"
+        with store.transaction() as tx:
+            cur = tx.get(kind, gone)
+            tx.update(kind, gone, {"project": health}, _TEST, read_version=cur.version)
+    assert areas.offers(store.read(), cfg) == []
 
 
 def test_undoing_both_changes_puts_everything_back(env):
@@ -357,17 +410,19 @@ def test_undoing_both_changes_puts_everything_back(env):
 
     _, cfg, store = env
     items = _four_dentist_items(store, cfg)
-    kept = areas.keep(store, cfg, "dentist")
+    offer = offer_for(store, items)
+    kept = areas.keep(store, cfg, offer)
     undo_changeset(store, kept.filed)
     undo_changeset(store, kept.started)
     view = store.read()
     assert view.get("project", kept.project) is None or view.get("project", kept.project).deleted
     assert view.get("action", items[0]).data["project"] == personal_of(cfg)
+    assert view.get("area_offer", offer).data["status"] == "offered"
 
 
-def test_an_offered_area_is_named_by_a_whole_word_the_items_use_never_by_the_stem_used_to_match_them(env):
-    """A word is matched by its stem ("swatches" and "swatch" meet at "swatche"), but the offer is named with a word
-    the items wrote, so Today never reads "Start the area Swatche" (S-0347)."""
+def test_a_word_is_matched_by_its_stem_but_shown_as_the_whole_word_the_items_wrote(env):
+    """A word is matched by its stem ("swatches" and "swatch" meet at "swatche"), but the words shown are ones the items
+    wrote, so Today never reads "swatche" (S-0347)."""
     _, cfg, store = env
     for text in (
         "Order the swatches for the curtains",
@@ -376,12 +431,9 @@ def test_an_offered_area_is_named_by_a_whole_word_the_items_use_never_by_the_ste
         "Photograph the swatches",
     ):
         _item(store, cfg, "action", text)
-    (found,) = areas.proposals(store.read(), cfg)
-    assert found.name == "Swatches"
-    # Keeping the offer starts the area under that name; a name the person typed still wins.
-    assert areas.find(store.read(), cfg, found.word).name == "Swatches"
+    found = areas.narrowed(store.read(), cfg)
+    assert {w for c in found for w in c.shared} == {"swatches"}
     # The same for a word whose plural changes its ending.
     for text in ("File the copies", "Check the copies", "Send the copies", "Count the copies"):
         _item(store, cfg, "action", text)
-    names = sorted(p.name for p in areas.proposals(store.read(), cfg))
-    assert names == ["Copies", "Swatches"]
+    assert {w for c in areas.narrowed(store.read(), cfg) for w in c.shared} == {"copies", "swatches"}

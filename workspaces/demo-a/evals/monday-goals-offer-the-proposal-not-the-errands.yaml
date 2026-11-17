@@ -1,0 +1,34 @@
+id: monday-goals-offer-the-proposal-not-the-errands
+title: The week's goals offered include the large piece of work due Friday, and at most the most goals, never eight errands
+skills: [dates, structured-answers, stay-in-scope]
+received: '2026-11-16T15:00:00+00:00'
+# A fictional Monday with eight small errands due that day and one board proposal due on Friday. The soonest-due to-dos
+# are the errands; what matters in the week is the proposal. The assistant offers the proposal among the goals (with the
+# errands as at most one goal), never more than the most goals, each citing a record it was shown.
+monday_goals: true
+given:
+- {kind: action, id: ACT-90, fields: {project: PRJ-1, text: Pick up the dry cleaning, due: '2026-11-16', owners: [{person: PER-1}]}}
+- {kind: action, id: ACT-91, fields: {project: PRJ-1, text: Return the library books, due: '2026-11-16', owners: [{person: PER-1}]}}
+- {kind: action, id: ACT-92, fields: {project: PRJ-1, text: Book the car service, due: '2026-11-16', owners: [{person: PER-1}]}}
+- {kind: action, id: ACT-93, fields: {project: PRJ-1, text: Renew the parking permit, due: '2026-11-16', owners: [{person: PER-1}]}}
+- {kind: action, id: ACT-94, fields: {project: PRJ-1, text: Mail the rent check, due: '2026-11-16', owners: [{person: PER-1}]}}
+- {kind: action, id: ACT-95, fields: {project: PRJ-1, text: Buy printer paper, due: '2026-11-16', owners: [{person: PER-1}]}}
+- {kind: action, id: ACT-96, fields: {project: PRJ-1, text: Call the pharmacy about the refill, due: '2026-11-16', owners: [{person: PER-1}]}}
+- {kind: action, id: ACT-97, fields: {project: PRJ-1, text: Drop off the recycling, due: '2026-11-16', owners: [{person: PER-1}]}}
+- {kind: action, id: ACT-99, fields: {project: PRJ-1, text: Finish the board proposal for the new warehouse, due: '2026-11-20', owners: [{person: PER-1}]}}
+expect:
+- op: week.goals
+  goals: 2
+  has: [board proposal]
+  sources: [ACT-99]
+forbid:
+- op: week.goals
+  goal: ACT-91
+  attempted: true
+stub_answer:
+  summary: One large piece of work and the errands as a group.
+  ops:
+  - op: week.goals
+    goals:
+    - {words: Finish the board proposal for the new warehouse, source: ACT-99}
+    - {words: 'Clear the Monday errands: dry cleaning, library books and the rent check'}

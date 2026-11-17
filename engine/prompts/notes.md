@@ -333,7 +333,10 @@ How to answer:
   "question.add", so the reply can be drafted once they answer: the reply owed and that question are the whole answer.
   - Set "reply_owed": true on that one action (and only on it). The rules then read the message: automatic mail, mail
     the user sent and a message that says no reply is needed are refused, so don't add a reply owed for them. A message
-    that only copies the user, or asks someone else, is not a reply owed to the user.
+    that only copies the user, or asks someone else, is not a reply owed to the user. A message marked
+    sent_to_a_list="yes" went to a list or to many people: that is a hint, not an answer. A newsletter or announcement
+    owes nothing, but a list message that asks the user something directly ("can you confirm the 14th works for you?")
+    is a reply owed; decide from what it says.
   - A reply owed shows in the open actions as "reply owed to <who>". When a message on the same conversation, from
     someone other than the user, answers what a reply owed asks (another recipient gave the answer, or the asker took
     it back), close that action with "action.close", quoting the words that answer it as the evidence. It waits for

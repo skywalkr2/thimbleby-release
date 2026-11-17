@@ -126,10 +126,60 @@ test("Move is the person's own change with Undo, and its toast says what it chan
   await user.click(within(await row(`These 3 items might be ${FIRST.name}'s. Move them there?`)).getByRole("button", { name: "Look" }));
   const question = await screen.findByLabelText(`These 3 items might be ${FIRST.name}'s. Move them there?`, { selector: "section" });
   await user.click(within(question).getByRole("button", { name: "Move" }));
-  await waitFor(() => expect(calls.find((c) => c.route === "POST filing/move")?.body).toEqual({ side: FIRST.project, items: items.map((i) => ({ kind: i.kind, id: i.id, read_version: 1 })) }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST filing/move")?.body).toEqual({ side: FIRST.project, items: items.map((i) => ({ kind: i.kind, id: i.id, read_version: 1 })), keep: [] }));
   expect(await screen.findByText(`Moved 3 items to ${FIRST.name}. They are now visible with ${FIRST.name}'s work.`)).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Undo" }));
   await waitFor(() => expect(calls.some((c) => c.route === "POST changesets/CS-2/undo")).toBe(true));
+});
+
+// The side question has one tick for each item, all ticked to start; Move moves the ticked ones and keeps the rest where
+// they are, says first what it changes, and one Undo covers the whole step.
+test("unticking two of five moves three, keeps two under Personal, and the toast and Undo are for the whole step", async () => {
+  const user = userEvent.setup();
+  const five = [...items, unfiledItem("action", "A-2", "Ask about the paper weight"), unfiledItem("note", "N-2", "The printer closes at five")];
+  const question5: S["FilingQuestion"] = { ...waiting(FIRST), items: five.map((i) => ({ kind: i.kind, id: i.id, version: i.version, text: i.text })) };
+  const calls = show(sortLine(5, FIRST.name), [FIRST], {
+    "GET unfiled": () => unfiledView(...five),
+    "GET filing/questions": () => ({ questions: [question5] }),
+    "POST filing/move": () => ({ changeset: "CS-2", count: 3, kept: 2, rule: null }),
+    "POST changesets/CS-2/undo": () => ({ restored: [0, 1, 2], skipped: [] }),
+  });
+  await user.click(within(await row(`These 5 items might be ${FIRST.name}'s. Move them there?`)).getByRole("button", { name: "Look" }));
+  const question = await screen.findByLabelText(`These 5 items might be ${FIRST.name}'s. Move them there?`, { selector: "section" });
+  const ticks = within(question).getAllByRole("checkbox");
+  expect(ticks).toHaveLength(5);
+  expect(ticks.every((t) => (t as HTMLInputElement).checked)).toBe(true);
+  await user.click(within(question).getByRole("checkbox", { name: "Ask about the paper weight" }));
+  await user.click(within(question).getByRole("checkbox", { name: "The printer closes at five" }));
+  // It says what Move changes before anything is pressed.
+  expect(within(question).getByText(`These 3 items will be visible with ${FIRST.name}'s work. The other 2 stay under Personal.`)).toBeInTheDocument();
+  await user.click(within(question).getByRole("button", { name: "Move 3" }));
+  await waitFor(() =>
+    expect(calls.find((c) => c.route === "POST filing/move")?.body).toEqual({
+      side: FIRST.project,
+      items: five.slice(0, 3).map((i) => ({ kind: i.kind, id: i.id, read_version: 1 })),
+      keep: five.slice(3).map((i) => ({ kind: i.kind, id: i.id, read_version: 1 })),
+    }),
+  );
+  expect(await screen.findByText(`Moved 3 items to ${FIRST.name}. They are now visible with ${FIRST.name}'s work. 2 items stay under Personal.`)).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(calls.filter((c) => c.route === "POST changesets/CS-2/undo")).toHaveLength(1));
+});
+
+test("with nothing ticked Move is off and says so, and Keep leaves every item where it is", async () => {
+  const user = userEvent.setup();
+  const calls = show(sortLine(3, FIRST.name), [FIRST], {
+    "GET unfiled": () => unfiledView(),
+    "GET filing/questions": () => ({ questions: [waiting(FIRST)] }),
+    "POST filing/keep": () => ({ signal: "SIG-1" }),
+  });
+  await user.click(within(await row(`These 3 items might be ${FIRST.name}'s. Move them there?`)).getByRole("button", { name: "Look" }));
+  const question = await screen.findByLabelText(`These 3 items might be ${FIRST.name}'s. Move them there?`, { selector: "section" });
+  for (const tick of within(question).getAllByRole("checkbox")) await user.click(tick);
+  expect(within(question).getByRole("button", { name: "Move 0" })).toBeDisabled();
+  expect(within(question).getByText(/Nothing is ticked, so nothing will move/)).toBeInTheDocument();
+  await user.click(within(question).getByRole("button", { name: "Keep under Personal" }));
+  await waitFor(() => expect((calls.find((c) => c.route === "POST filing/keep")?.body as S["FilingMove"]).items).toHaveLength(3));
 });
 
 test("a rule proposed by a second move is said in the toast", async () => {

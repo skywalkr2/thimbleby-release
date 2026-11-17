@@ -136,7 +136,15 @@ export function setupStep(id: string, extra: Partial<S["SetupStepView"]> = {}): 
 /** The setup answer for a list of steps, with the walkthrough closed unless a test says otherwise. */
 export function setupView(
   steps: S["SetupStepView"][],
-  over: { finished?: boolean; local?: boolean; first_go_waiting?: number; walkthrough?: Partial<S["WalkthroughView"]> } = {},
+  over: {
+    finished?: boolean;
+    local?: boolean;
+    first_go_waiting?: number;
+    first_go_given?: boolean;
+    reading?: Partial<S["ReadingView"]>;
+    people_by_hand?: boolean;
+    walkthrough?: Partial<S["WalkthroughView"]>;
+  } = {},
 ): S["SetupView"] {
   // The server numbers the counted steps and counts the settled ones; the fixtures do the same.
   let place = 0;
@@ -149,6 +157,9 @@ export function setupView(
     settled: counted.filter((s) => s.done || s.skipped).length,
     local: over.local ?? true,
     first_go_waiting: over.first_go_waiting ?? 0,
+    first_go_given: over.first_go_given ?? true,
+    reading: { state: "none", why: "no_mail", sources: 0, read: 0, found: 0, ...over.reading },
+    people_by_hand: over.people_by_hand ?? false,
     walkthrough: { open: false, step: "you", closed: false, finished: false, ...over.walkthrough },
   };
 }

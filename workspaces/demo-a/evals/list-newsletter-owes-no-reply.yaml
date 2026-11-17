@@ -1,0 +1,26 @@
+id: list-newsletter-owes-no-reply
+title: A newsletter sent to a list, with a rhetorical question in it, owes no reply
+skills: [evidence, recording-only-what-matters]
+received: '2026-10-14'
+# The list mark is a hint; what the message says decides. A rhetorical question to every reader asks the person nothing.
+given_file: busy-portfolio.yaml
+watched:
+  title: Depot newsletter
+  source: depot-list
+  key: depot-2
+  change: new
+  author: Depot Notes
+  sent_to_a_list: true
+pasted: |-
+  From: Depot Notes <news@example.com>
+  To: Depot list <depot-list@example.com>
+  Subject: Depot newsletter
+
+  This month in the depots: new shelving went in and the loading bays were repainted. Ever wonder how a pallet
+  finds its way to the right shelf? Read on to see how the new labels work.
+forbid:
+- op: action.add
+  attempted: true
+stub_answer:
+  summary: A newsletter to a list; it asks you nothing, so nothing is owed.
+  ops: []

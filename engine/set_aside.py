@@ -110,6 +110,18 @@ def is_set_aside(record: Any) -> bool:
     return bool(record.data.get("set_aside"))
 
 
+def bring_in_note(view: Any, *, personal: bool, project: str | None = None) -> str:
+    """What the person did when they brought a set-aside message in after all, in plain words, for the correction's
+    record: marked as work (for a side, when they named one) or as personal. It states the act and never the reason
+    the message was set aside, which is the app's own wording and no source for what is learned."""
+    if personal:
+        return "The person marked this message as personal."
+    found = view.get("project", project) if project else None
+    if found is not None and found.data.get("name"):
+        return f"The person marked this message as work for {found.data['name']}."
+    return "The person marked this message as work."
+
+
 def learnable(view: Any, kind: str) -> list[Any]:
     """The requests or snapshots learning may read: every one of the kind not marked set aside. Learning reads these
     two kinds only through here, so mail set aside as not work is never taught from."""

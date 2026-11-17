@@ -47,8 +47,9 @@ def sender_name(sender: str, people: Any) -> str:
         return str(people.name(person))
     if shown and "@" not in shown:
         return shown
-    address = parseaddr(sender)[1]
-    return " ".join(w.capitalize() for w in re.split(r"[._+-]+", address.split("@", 1)[0]) if w)
+    from engine.titles import readable_sender
+
+    return readable_sender(parseaddr(sender)[1])
 
 
 def title_of(cfg: Any, people: Any, raw_input: str | None) -> str | None:

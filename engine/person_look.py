@@ -1,21 +1,30 @@
 """The weekly look at the person (design 6.22, "Learning the person from their mail and calendar"): one run, once a
-week and once after the first read, that is given the top entries of the contact tally (counts and names, never message
-text), the calendar's repeating entries (title and time) and the people already on file, and proposes through the
-ordinary knowledge proposals: who the person's people and organizations are and who answers what.
+week and once after each mail account's first read, that is given the top entries of the contact tally (counts, names
+and the marks an address shows, never message text), the calendar's repeating entries (title and time) and the people
+already on file, and proposes: who the person's people and organizations are, who answers what (the ordinary knowledge
+proposals), and the people to add to the people on file (`person.offer`, each with a line saying why).
 
-Nothing it proposes is used until the person keeps it. Proposals join the day's one review card, merge with each other
-and with what is kept, and expire unreviewed like proposals from inputs. What the person discarded is left out of the
-next packet, so it is never offered again. The run is a request of the `knowledge-person` kind: estimated first, held
-for the person's go above the configured amount, with its own budget.
+Who is a person to the user is the run's reading. The tally only counts and drops the person's own addresses and what
+they set aside; this module also leaves out addresses already on file and ones already offered or left out. A role
+address, a code in an address, a company word in a name, bulk mail and the rest reach the run as hints beside the line,
+never as a verdict: a recruiter writes from a role address, a tradesperson's name reads as a company, a person's address
+may carry a tag, and a newsletter's sender is no one to add.
+
+Nothing it proposes is used until the person keeps it. Knowledge proposals join the day's one review card, merge with
+each other and with what is kept, and expire unreviewed like proposals from inputs. People offers wait in the People
+step and are kept there by the person's own add; an offer left out is never made again. What the person discarded is
+left out of the next packet, so it is never offered again. The run is a request of the `knowledge-person` kind:
+estimated first, held for the person's go above the configured amount, with its own budget.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from engine import contact_tally
+from engine import contact_tally, mail_headers
 from engine import people_suggestions as ps
 from engine.contacts import all_values
 from engine.proposals import _decisions, _norm
@@ -34,6 +43,7 @@ NOTHING_TO_LOOK_AT = "There is nothing new about who you deal with to look at."
 #: How the person's mail names the lines of the tally a run is shown, so the stand-in and a model quote them whole.
 TALLY_BLOCK = "contact-tally"
 SERIES_BLOCK = "repeating-entries"
+HABITS_BLOCK = "mail-habits"
 
 
 def _one_line(text: str) -> str:
@@ -60,6 +70,22 @@ def _already_decided(view: Any) -> set[str]:
     return names - {""}
 
 
+def _asked_before(view: Any, own: str | None) -> set[str]:
+    """The addresses an earlier look read and finished with (offered or not): the assistant is not asked about the same
+    address every week. A look closed with no call, or one that failed, asked about nothing; `own` is the look being
+    asked for now, whose own addresses count for nothing here."""
+    found: set[str] = set()
+    for r in view.list("request"):
+        if r.data["task"] == TASK and r.id != own and r.data["state"] in ("done", "review"):
+            found.update(str(a).lower() for a in r.data.get("asked_about") or [])
+    return found
+
+
+def _offered_addresses(view: Any) -> set[str]:
+    """The addresses a person offer was made for, whatever became of it: waiting, kept or left out."""
+    return {str(o.data["address"]).lower() for o in view.list("person_offer")}
+
+
 #: Lines that stand in for the tally and the repeating entries (set by the evaluation harness, which has no mailbox):
 #: `(tally_lines, series_lines)`, or None for the real ones.
 _stand_in_lines: tuple[list[str], list[str]] | None = None
@@ -72,32 +98,33 @@ def use_lines(contacts: list[str] | None, series: list[str] | None = None) -> No
     _stand_in_lines = None if contacts is None else (list(contacts), list(series or []))
 
 
-def shown_contacts(store: Any, cfg: Any) -> list[tuple[contact_tally.Contact, str | None]]:
+def shown_contacts(store: Any, cfg: Any, own: str | None = None) -> list[tuple[contact_tally.Contact, str | None]]:
     """The tally entries a run is shown with the id of the person on file for each, the most dealt with first: not kept
     apart, with at least `person_look_min_messages` messages, at most `person_look_entries`. Someone on file is shown
     (it is who routing may name); someone not on file is left out when a glossary entry already names them or the
-    person discarded one."""
+    person discarded one, or an earlier look already read their address (`own` is the look being made now)."""
     settings = cfg.dispatch.knowledge
     on_file = _on_file(store)
     decided = _already_decided(store.read())
+    offered = _offered_addresses(store.read()) | _asked_before(store.read(), own)
     found: list[tuple[contact_tally.Contact, str | None]] = []
     for c in contact_tally.tally(store, cfg):
         if c.apart is not None or c.total < settings.person_look_min_messages:
             continue
         person = on_file.get(c.address)
-        if person is None and _norm(c.name) in decided:
+        if person is None and (_norm(c.name) in decided or c.address in offered):
             continue
         found.append((c, person))
     return found[: settings.person_look_entries]
 
 
-def tally_lines(store: Any, cfg: Any) -> list[str]:
+def tally_lines(store: Any, cfg: Any, own: str | None = None) -> list[str]:
     """The lines of the tally a run is shown: the address, the name, the counts each way, the first and last day, the
-    sides the sources serve and who it is on file. Headers only: no subject and no text."""
+    sides the sources serve, the hints the address shows and who it is on file. Headers only: no subject and no text."""
     if _stand_in_lines is not None:
         return list(_stand_in_lines[0])
     lines = []
-    for c, person in shown_contacts(store, cfg):
+    for c, person in shown_contacts(store, cfg, own):
         days = f"{c.first} to {c.last}" if c.first and c.last else "no day"
         bits = [
             c.address,
@@ -106,6 +133,8 @@ def tally_lines(store: Any, cfg: Any) -> list[str]:
             days,
             "sides: " + (", ".join(c.sides) or "none"),
         ]
+        if c.hints:
+            bits.append("hints: " + ", ".join(contact_tally.HINT_WORDS[h] for h in c.hints))
         if person:
             bits.append(f"on file: {person}")
         lines.append(" | ".join(bits))
@@ -205,8 +234,8 @@ def series_lines(store: Any, cfg: Any) -> list[str]:
     return lines[: max(0, limit)]
 
 
-def has_something_to_look_at(store: Any, cfg: Any) -> bool:
-    return bool(tally_lines(store, cfg)) or bool(series_lines(store, cfg))
+def has_something_to_look_at(store: Any, cfg: Any, own: str | None = None) -> bool:
+    return bool(tally_lines(store, cfg, own)) or bool(series_lines(store, cfg))
 
 
 def _level(store: Any, cfg: Any) -> str:
@@ -250,8 +279,21 @@ def due(store: Any, cfg: Any, now: datetime) -> bool:
     if last is not None:
         stamp = last if last.tzinfo else last.replace(tzinfo=now.tzinfo)
         if now - stamp < timedelta(days=settings.person_look_every_days):
-            return False
+            # Inside the week only a mail account's first read since the last look brings another, and only for
+            # addresses no look has read yet.
+            return first_read_since(view, stamp) and bool(tally_lines(store, cfg))
     return has_something_to_look_at(store, cfg)
+
+
+def first_read_since(view: Any, moment: datetime) -> bool:
+    """Whether a mail source was taken in (its first read, which noted how far back it looked) after `moment`."""
+    for run in view.list("watch_run"):
+        if not run.data.get("looked_back_to"):
+            continue
+        started = _clock(run.data.get("started_at"), moment.tzinfo or UTC)
+        if started is not None and started > moment:
+            return True
+    return False
 
 
 def queue(store: Any, cfg: Any, now: datetime) -> str | None:
@@ -264,6 +306,16 @@ def queue(store: Any, cfg: Any, now: datetime) -> str | None:
     return _create(store, cfg, now)
 
 
+def addresses_of(lines: list[str]) -> list[str]:
+    """The addresses of the tally lines of people not on file, in lower case: the ones an offer may name."""
+    found = []
+    for line in lines:
+        parts = [p.strip() for p in line.split(" | ")]
+        if parts and "@" in parts[0] and not any(p.startswith("on file:") for p in parts):
+            found.append(parts[0].lower())
+    return found
+
+
 def _create(store: Any, cfg: Any, now: datetime) -> str:
     with store.transaction() as tx:
         made = tx.create(
@@ -274,6 +326,7 @@ def _create(store: Any, cfg: Any, now: datetime) -> str:
                 "state": "queued",
                 "waiting": "With the assistant, starting now",
                 "sensitivity": _level(store, cfg),
+                "asked_about": addresses_of(tally_lines(store, cfg)),
                 "created_at": now.isoformat(),
             },
             _ENGINE,
@@ -281,12 +334,12 @@ def _create(store: Any, cfg: Any, now: datetime) -> str:
     return made.id
 
 
-def skip_reason(store: Any, cfg: Any, request: Any) -> str | None:
+def skip_reason(store: Any, cfg: Any, request: Any, request_id: str | None = None) -> str | None:
     """Why a look has nothing to do any more, in plain words, or None: it was switched off, or there is nothing left to
     look at. Decided before any packet, estimate or call."""
     if not cfg.dispatch.knowledge.person_look:
         return SWITCHED_OFF
-    if not has_something_to_look_at(store, cfg):
+    if not has_something_to_look_at(store, cfg, request_id):
         return NOTHING_TO_LOOK_AT
     return None
 
@@ -298,7 +351,7 @@ def close(store: Any, request_id: str, why: str) -> None:
             tx.update(
                 "request",
                 request_id,
-                {"state": "done", "waiting": why, "cause": None},
+                {"state": "done", "waiting": why, "cause": None, "asked_about": None},
                 _DONE,
                 read_version=current.version,
             )
@@ -316,6 +369,138 @@ def finish(store: Any, request_id: str, changeset_id: str) -> None:
         tx.update("request", request_id, {"state": "done", "waiting": waiting}, _DONE, read_version=current.version)
 
 
+# ---- the offers ------------------------------------------------------------------------------------------------------
+
+
+def check(ctx: Any, op: Any) -> list[str]:
+    """The problems with a `person.offer` op as the applier sees it, in plain words: every address is one the request's
+    packet listed, is not on file and was not offered or left out before, and is named once."""
+    view = ctx.store.read()
+    request = view.get("request", ctx.inputs.request) if ctx.inputs.request else None
+    listed = {str(a).lower() for a in ((request.data.get("asked_about") if request is not None else None) or [])}
+    on_file = set(_on_file(ctx.store))
+    before = _offered_addresses(view)
+    said: list[str] = []
+    seen: set[str] = set()
+    for person in op.people:
+        address = person.address.strip().lower()
+        if address not in listed:
+            said.append(f"{person.address} is not an address the list holds")
+        elif address in on_file:
+            said.append(f"{person.address} is on file already")
+        elif address in before:
+            said.append(f"{person.address} was offered before")
+        elif address in seen:
+            said.append(f"{person.address} is offered twice")
+        seen.add(address)
+    return said
+
+
+def _counts(store: Any, cfg: Any, address: str, own: str | None) -> tuple[int, int]:
+    """The messages from them and to them the tally's line for an address shows, or none."""
+    for line in tally_lines(store, cfg, own):
+        if line.split(" | ")[0].strip().lower() == address:
+            found = re.search(r"(\d+) from them, (\d+) to them", line)
+            if found:
+                return int(found.group(1)), int(found.group(2))
+    return 0, 0
+
+
+def apply(tx: Any, op: Any, ctx: Any, w: Any) -> list[dict[str, Any]]:
+    """Keep each person as an offer that waits for the person: name, address, why and the counts, as of now."""
+    made = []
+    now = ctx.store.clock()
+    for person in op.people:
+        address = person.address.strip().lower()
+        from_them, to_them = _counts(ctx.store, ctx.cfg, address, ctx.inputs.request)
+        offer = tx.create(
+            "person_offer",
+            {
+                "name": " ".join(neutralize(person.name).split())[:80],
+                "address": address,
+                "why": " ".join(neutralize(person.why).split())[:240],
+                "from_them": from_them,
+                "to_them": to_them,
+                "status": "offered",
+                "offered_at": now,
+            },
+            w,
+        )
+        made.append({"kind": "person_offer", "id": offer.id})
+    return made
+
+
+def waiting_offers(store: Any) -> list[Any]:
+    """The offers waiting for the person, the ones from the most messages first, then by name."""
+    addresses, names = ps._known(store)
+    found = [
+        o
+        for o in store.read().list("person_offer")
+        if o.data["status"] == "offered"
+        and o.data["address"].lower() not in addresses
+        and o.data["name"].lower() not in names
+    ]
+    return sorted(found, key=lambda o: (-(o.data["from_them"] + o.data["to_them"]), o.data["name"].lower(), o.id))
+
+
+def settle(store: Any, cfg: Any, address: str, status: str, person: str | None = None) -> bool:
+    """Mark the waiting offer for an address kept (with the person it became) or dismissed, as the person's own edit.
+    Returns whether there was one."""
+    from engine.applier import apply_as_person
+
+    for offer in store.read().list("person_offer"):
+        if offer.data["address"].lower() == address.strip().lower() and offer.data["status"] == "offered":
+            fields: dict[str, Any] = {"status": status}
+            if person:
+                fields["person"] = person
+            apply_as_person(
+                store,
+                cfg,
+                [
+                    {
+                        "op": "record.edit",
+                        "record": {"kind": "person_offer", "id": offer.id},
+                        "fields": fields,
+                        "read_version": offer.version,
+                    }
+                ],
+                "Added someone the assistant offered" if status == "kept" else "Left out someone the assistant offered",
+            )
+            return True
+    return False
+
+
+def held_for_go(store: Any) -> Any | None:
+    """The look that waits for the person's go (its estimate is on it), or None. The People step offers to start it."""
+    for r in store.read().list("request"):
+        if (
+            r.data["task"] == TASK
+            and r.data["state"] == "needs_you"
+            and r.data.get("approval") == "required"
+            and not r.data.get("dismissed")
+        ):
+            return r
+    return None
+
+
+def look_state(ws: Any, store: Any, cfg: Any) -> str:
+    """Where the look stands, for the People step to say when it has no offer to show: `no_account` (no assistant is
+    set up to do it), `waiting` (a look waits for the person's go), `working` (a look is queued or running), `looked`
+    (a look finished and offered no one) or `not_yet` (no look has been made, for want of mail read)."""
+    from engine.ai.smoke import ai_state
+
+    requests = [r for r in store.read().list("request") if r.data["task"] == TASK and not r.data.get("dismissed")]
+    if any(r.data["state"] == "needs_you" for r in requests):
+        return "waiting"
+    if any(r.data["state"] in ("queued", "running") for r in requests):
+        return "working"
+    if ai_state(ws, cfg, store)[0] != "ok":
+        return "no_account"
+    if any(r.data["state"] in ("done", "review") for r in requests):
+        return "looked"
+    return "not_yet"
+
+
 # ---- the packet ------------------------------------------------------------------------------------------------------
 
 
@@ -329,15 +514,28 @@ def build(ws: Any, store: Any, cfg: Any, req: Any, kind: Any, today: date) -> An
     from engine.packet import Packet, PacketRefused, _guidance, _learned, _people, _task
     from engine.prompts import render
 
-    contacts = tally_lines(store, cfg)
+    contacts = tally_lines(store, cfg, req.id)
     series = series_lines(store, cfg)
     if not contacts and not series:
         raise PacketRefused("there is nothing about who the person deals with to look at")
+    habits = (
+        []
+        if _stand_in_lines is not None
+        else mail_headers.habit_lines(store, cfg, {c.address for c, _ in shown_contacts(store, cfg, req.id)})
+    )
     shown_tally = neutralize("\n".join(contacts)) if contacts else "(none)"
     shown_series = neutralize("\n".join(series)) if series else "(none)"
+    shown_habits = neutralize("\n".join(habits)) if habits else "(none)"
     people = PacketPeople(store, cfg)
     learned = _learned(
-        store, cfg, kind, people, projects=[], source=None, text=f"{shown_tally}\n{shown_series}", today=today
+        store,
+        cfg,
+        kind,
+        people,
+        projects=[],
+        source=None,
+        text=f"{shown_tally}\n{shown_series}\n{shown_habits}",
+        today=today,
     )
     instructions = render(kind.prompt, {"assistant_name": cfg.workspace.assistant_name}, ws.root, kind.prompt_file)
     stable = "\n\n".join(
@@ -355,6 +553,9 @@ def build(ws: Any, store: Any, cfg: Any, req: Any, kind: Any, today: date) -> An
         learned.per_input,
         f'# Who the person deals with (counts only)\n<untrusted source="{TALLY_BLOCK}">\n{shown_tally}\n</untrusted>',
         f'# Their repeating calendar entries\n<untrusted source="{SERIES_BLOCK}">\n{shown_series}\n</untrusted>',
+        f'# What the mail headers show (counts)\n<untrusted source="{HABITS_BLOCK}">\n{shown_habits}\n</untrusted>'
+        if habits
+        else "",
     ]
     request = "\n\n".join(p for p in parts if p)
     task = replace(_task(cfg, store, kind, instructions, stable, request), knowledge=learned.log.model_dump())

@@ -9,7 +9,8 @@ import { api, type S } from "../lib/api";
 import { useAct } from "../lib/act";
 import { day, dayAndTime } from "../lib/dates";
 import { useWords } from "../lib/wording";
-import { Button } from "../ui/Button";
+import { Button, ButtonLink } from "../ui/Button";
+import { viewHref } from "../lib/views";
 import { Icon, type IconName } from "../ui/Icon";
 import { GroupLabel } from "../ui/GroupLabel";
 import { LoadFailed } from "../ui/LoadFailed";
@@ -29,7 +30,7 @@ type Entry = S["SinceEntryView"];
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
 /** The acts that close something, whose unseen ones are marked. */
-const CLOSES = new Set<Entry["act"]>(["closed", "dropped", "set_aside"]);
+const CLOSES = new Set<Entry["act"]>(["closed", "dropped"]);
 
 /** The reason in the assistant's voice: who said what it rested on, or the rule that did it. */
 export function whyWords(e: Entry, t: T): string {
@@ -108,7 +109,10 @@ export function SinceYesterday(props: { onOpenRecord: (kind: string, id: string)
   }, [load]);
   // A screen with no field puts the cursor on its heading.
   useEffect(() => heading.current?.focus(), []);
-  const entries = drawn.status === "ready" ? drawn.entries.filter((e) => !gone.has(e.ref)) : [];
+  const everything = drawn.status === "ready" ? drawn.entries.filter((e) => !gone.has(e.ref)) : [];
+  // Mail a rule set aside is not a change to the person's work: it is one summary row that opens Handled for you.
+  const entries = everything.filter((e) => e.act !== "set_aside");
+  const setAside = everything.length - entries.length;
   // The list is grouped by the day each thing was done, newest first; a day shows its first rows and the rest on "Show more".
   const days: Array<{ key: string; label: string; entries: Entry[] }> = [];
   for (const e of entries) {
@@ -146,11 +150,28 @@ export function SinceYesterday(props: { onOpenRecord: (kind: string, id: string)
         </div>
       ) : drawn.status === "failed" ? (
         <LoadFailed message={t("since.load_failed")} onRetry={() => void load()} />
-      ) : entries.length === 0 ? (
+      ) : entries.length === 0 && setAside === 0 ? (
         <EmptyState text={t("since.empty")}>
           <MissedOneLine className="hint" />
         </EmptyState>
       ) : (
+        <>
+          {setAside > 0 && (
+            <RowList>
+              <Row
+                as="li"
+                lead={<Icon name="archive" size={18} />}
+                title={tn("since.set_aside_row", setAside)}
+                data-since-set-aside=""
+                primary={
+                  <ButtonLink size="sm" variant="primary" href={viewHref("work/handled")}>
+                    {t("since.set_aside_open")}
+                  </ButtonLink>
+                }
+              />
+            </RowList>
+          )}
+          {entries.length > 0 && (
         <div className="since-days" aria-label={t("since.list_label")} role="group">
           {days.map((d) => {
             const limit = pageRows + (more[d.key] ?? 0);
@@ -175,6 +196,8 @@ export function SinceYesterday(props: { onOpenRecord: (kind: string, id: string)
             );
           })}
         </div>
+          )}
+        </>
       )}
     </section>
   );

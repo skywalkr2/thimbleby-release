@@ -28,7 +28,7 @@ from api.schemas import (
     OwnerNameView,
     RecordRef,
 )
-from engine import brief, sides, week_plan
+from engine import brief, sides, week_goals, week_plan
 from engine.config import Config
 from engine.names import People
 from engine.storage import Store, StoreError
@@ -105,6 +105,18 @@ def build_brief_router(ws: Workspace, cfg: Config, store: Store, events: Events,
             raise HTTPException(status_code=422, detail=str(err)) from None
         events.changed()
         return BriefGoalsKept(previous=previous)
+
+    @r.post("/brief/goals/offer")
+    def offer_goals() -> HandedOver:
+        """Ask the assistant to offer goals for this week, from what is due, promised and on the calendar and the goals
+        the person kept before. Estimated first and held for the person's go above the configured amount."""
+        try:
+            request = week_goals.ask(store, cfg, worker.now())
+        except StoreError as err:
+            raise HTTPException(status_code=409, detail=str(err)) from None
+        events.changed()
+        worker.poke()
+        return HandedOver(request=request)
 
     @r.post("/brief/weekly/dismiss")
     def dismiss_weekly() -> Ok:

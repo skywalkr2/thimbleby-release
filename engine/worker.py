@@ -18,6 +18,7 @@ from engine import language_words, problems, running
 from engine.ai.router import Router
 from engine.config import Config
 from engine.dispatcher import needs_you, process
+from engine.shipped import product as shipped_product
 from engine.storage import Store, StoreError, WriteContext
 from engine.storage.lease import LeaseLost
 from engine.workspace import Workspace
@@ -330,6 +331,7 @@ class Worker:
         self._sync: threading.Thread | None = None
         self._jobs: threading.Thread | None = None
         self._model_watch: threading.Thread | None = None
+        self._catalog_read: threading.Thread | None = None
         self._switching: threading.Thread | None = None
         self._measuring: threading.Thread | None = None
         self._swept_on: date | None = None
@@ -402,6 +404,9 @@ class Worker:
         # A setting given on the command line stays as it was started with; the files can't change it here.
         given = {k for k, _, layer in self.cfg.flat() if layer == "flag"}
         changed = {k for k in before.keys() | after.keys() if before.get(k) != after.get(k)} - given
+        # A setting given as a whole value (a list or a table) is flattened differently in the files and in the
+        # settings in use; a key that is an ancestor or a descendant of a given one is that same setting.
+        changed = {k for k in changed if not any(k.startswith(g + ".") or g.startswith(k + ".") for g in given)}
         waiting = sorted(k for k in changed if not is_live(k))
         if waiting:
             # A key that needs a restart keeps waiting, with the values it was started with; the live keys saved
@@ -511,6 +516,7 @@ class Worker:
         self._start_watchdog()
         self.check_switch_soon()
         self.measure_soon()
+        self.read_catalogs_soon()
 
     #: How often the watchdog looks at the background loops.
     WATCHDOG_CHECK_SECONDS = 30
@@ -1050,6 +1056,28 @@ class Worker:
             self.events.changed()
         return made
 
+    def offer_goals_if_due(self) -> str | None:
+        """When the Monday briefing is the form to show and something is due in the week, queue the assistant's offer of
+        goals for it (`engine.week_goals`), for the person's go when it costs more than the configured amount. It is
+        never queued again for the same week by itself: the person asks again. Returns the request made."""
+        from engine import week_goals
+
+        made = week_goals.queue(self.store, self.cfg, self.now())
+        if made:
+            self.events.changed()
+        return made
+
+    def read_areas_if_due(self) -> str | None:
+        """When items the assistant has not been asked about have gathered under Personal around a shared word, queue
+        its reading of them (`engine.area_offers`), for the person's go when it costs more than the configured amount.
+        Returns the request made."""
+        from engine import area_offers
+
+        made = area_offers.queue(self.store, self.cfg, self.now())
+        if made:
+            self.events.changed()
+        return made
+
     def ask_about_meetings(self) -> list[str]:
         """Ask about each date of a meeting the person runs that has no agenda or needs someone who is away (design
         6.32); every date once. Returns the ids of the questions made."""
@@ -1174,6 +1202,40 @@ class Worker:
         self._measuring = threading.Thread(target=run, name="cockpit-measure", daemon=True)
         self._measuring.start()
         return self._measuring
+
+    def read_catalogs_soon(self) -> threading.Thread | None:
+        """Read the add-on catalogs once now, on a thread of their own, so the list the screens show is as new as the
+        catalogs are without anyone pressing Refresh; the window and setup never wait for it. A catalog that can't be
+        read leaves the kept copy in place with the reason. Returns the thread, or None when no catalog is listed."""
+        from engine import packs
+        from engine.config import ConfigError, load_config
+
+        if self._catalog_read is not None and self._catalog_read.is_alive():
+            return self._catalog_read
+        try:
+            fresh = load_config(self.ws.config_dir, env=dict(os.environ))
+        except ConfigError:
+            fresh = self.cfg
+        facts = shipped_product()
+        urls = packs.feed_urls(fresh, facts)
+        if not urls:
+            return None
+
+        def run() -> None:
+            try:
+                if packs.refresh_kept(
+                    urls,
+                    self.ws.private_dir,
+                    fresh.workspace.plugins.catalog.refresh_hours,
+                    trust=packs.trust_for(fresh, facts),
+                ):
+                    self.events.changed("packs")
+            except Exception:  # a catalog read that fails must never stop the app
+                log.exception("reading the add-on catalogs failed")
+
+        self._catalog_read = threading.Thread(target=run, name="cockpit-catalog-read", daemon=True)
+        self._catalog_read.start()
+        return self._catalog_read
 
     def sync_if_changed(self) -> bool:
         """Write the synced folder when anything changed since it was last written, and keep this install's lease
@@ -1407,6 +1469,16 @@ class Worker:
         except (Exception, SystemExit):  # asked again the next time round; nothing here may stop the thread
             log.exception("queueing the reading of the week ahead failed")
             self._problem("queueing the reading of the week ahead failed")
+        try:
+            self.offer_goals_if_due()
+        except (Exception, SystemExit):  # asked again the next time round; nothing here may stop the thread
+            log.exception("queueing the offer of goals for the week failed")
+            self._problem("queueing the offer of goals for the week failed")
+        try:
+            self.read_areas_if_due()
+        except (Exception, SystemExit):  # asked again the next time round; nothing here may stop the thread
+            log.exception("queueing the reading of areas of life failed")
+            self._problem("queueing the reading of areas of life failed")
         try:
             self.ask_about_meetings()
         except (Exception, SystemExit):  # asked again the next time round; nothing here may stop the thread

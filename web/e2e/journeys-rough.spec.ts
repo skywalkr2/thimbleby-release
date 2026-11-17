@@ -9,15 +9,7 @@
 // hides another's. Names come from the fictional workspace the fake services serve, never written out here.
 import { expect, type Locator, type Page } from "@playwright/test";
 import { followServer, test } from "./test";
-import {
-  collectProblems,
-  fakeAddress,
-  pressStart,
-  settingsSections,
-  type Info,
-  type Requests,
-  FIRST_SCREEN,
-} from "./journey-helpers";
+import { collectProblems, fakeAddress, pressStart, settingsSections, type Info, type Requests, FIRST_SCREEN, leaveOut, turnOnAndGoOn } from "./journey-helpers";
 
 const FAKE = fakeAddress("JOURNEY_ROUGH_FAKE_PORT", 8741);
 const LOADED = { timeout: 20_000 };
@@ -52,6 +44,8 @@ interface Seen {
   typedInto: string[];
   /** How many presses of the one Start it took before the assistant began (or 0 if it never did). */
   startPresses: number;
+  /** Whether the assistant was asked something after the walk (the go was given in setup, so no press of Start is needed). */
+  began: boolean;
   /** What Today drew while the first read arrived: a "Show N new items" button over another line, and empty cards. */
   overlaps: string[];
   emptyCards: string[];
@@ -68,6 +62,7 @@ const seen: Seen = {
   offline: [],
   typedInto: [],
   startPresses: 0,
+  began: false,
   overlaps: [],
   emptyCards: [],
   foundLines: 0,
@@ -187,6 +182,7 @@ test.describe.serial("rough paths: a fresh install, pressing only Continue and s
     await expect(main.getByText("Works. Ready to use.")).toBeVisible();
     await main.getByRole("radio", { name: /^Yes/ }).check();
     await main.getByRole("button", { name: "Continue" }).click();
+    await turnOnAndGoOn(main);
     // Mail and calendar: one click installs the add-on and restarts the app; the sign-in is in its own window.
     await expect(main.getByRole("heading", { level: 2, name: "Mail and calendar" })).toBeVisible({ timeout: 30_000 });
     const row = main.locator('[data-service="journey-mail"]');
@@ -214,11 +210,11 @@ test.describe.serial("rough paths: a fresh install, pressing only Continue and s
       await main.getByRole("button", { name: "Continue" }).click();
       await expect(heading).not.toHaveText("Your promises", LOADED);
     }
-    // Backups, then People: each is passed by.
-    for (const step of ["Backups", "People"]) {
+    // People, then Backups: each is passed by.
+    for (const step of ["People", "Backups"]) {
       await expect(heading).toHaveText(step, LOADED);
       seen.rail.push(...(await readRail(step)));
-      await main.getByRole("button", { name: "I'll do this later" }).click();
+      await leaveOut(page, main);
     }
     // The last screen.
     await expect(heading).toHaveText(/^(Done|Where things stand|You're set\.?)$/, LOADED);
@@ -235,7 +231,8 @@ test.describe.serial("rough paths: a fresh install, pressing only Continue and s
   test("Today: Start is pressed once, and what arrives is watched", async () => {
     test.setTimeout(240_000);
     const line = page.locator('[data-queue-line="first_go"], [data-queue-line="intake_go"]');
-    await expect(line.first()).toBeVisible({ timeout: 60_000 });
+    // The first go was given in setup, so there may be no line to press: a read under the amount to confirm starts by itself.
+    await line.first().waitFor({ state: "visible", timeout: 30_000 }).catch(() => undefined);
     // From here every change to the page is looked at for a "Show N new items" button drawn over another line, and for a card with nothing in it.
     await page.evaluate(() => {
       const w = window as unknown as { __today: { overlaps: string[]; empty: string[] } };
@@ -288,6 +285,14 @@ test.describe.serial("rough paths: a fresh install, pressing only Continue and s
         );
       if (began) seen.startPresses = press;
     }
+    // The first go is given in setup, so the assistant begins by itself; it is asked something either way.
+    seen.began = await expect
+      .poll(async () => (await requests()).work > 0, { timeout: 60_000 })
+      .toBe(true)
+      .then(
+        () => true,
+        () => false,
+      );
     // The rest of the Starts (one for each source) are pressed as the journeys do, so the look back is read. Only a line that holds a
     // Start button is pressed; one that is working, or one the list keeps in place behind "Show N new items", is left.
     const starts = page.locator('[data-queue-line="first_go"], [data-queue-line="intake_go"]').getByRole("button", { name: "Start", exact: true });
@@ -337,9 +342,10 @@ test.describe.serial("rough paths: a fresh install, pressing only Continue and s
     expect([...new Set(seen.offline)]).toEqual([]);
   });
 
-  // Passes today in this setup (one press began the assistant), so it is kept as a plain test and not marked.
+  // The go is given in setup, so the assistant begins with no press of Start; a Start that does show works with one press.
   test("U4 13: Start works with one press", async () => {
-    expect(seen.startPresses, "presses of Start before the assistant began (0 = it never did)").toBe(1);
+    expect(seen.began, "the assistant never began").toBe(true);
+    expect(seen.startPresses, "presses of Start before the assistant began (the go is given in setup, so none is needed)").toBeLessThanOrEqual(1);
   });
 
   test("U4 14: nothing on Today is drawn over another line, and no card is empty, while the first read arrives", async () => {

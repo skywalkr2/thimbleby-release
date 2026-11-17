@@ -23,11 +23,12 @@ A pair is a file in a workspace's `pairs/` folder. It runs in a fresh copy of th
       then: [{received, <input keys>, answer: {...}, label}]    # more inputs after it, with fixed answers
       correction:             # what the person does, through the same code the screens use
         kind: sent_back | undone | declined | answered | moved | dropped | picked_owner | not_a_project | part_of |
-              new_person | set_aside | asked | changed | sent_version | change_requested
+              new_person | set_aside | brought_in | asked | changed | sent_version | change_requested
         note: ...             # the person's words; of: <label> (default: the first input's change)
         # moved/picked_owner/answered/dropped/asked/changed name a record: id or @action, @question, @event, @fact,
         # @held_question (the first one the input's change made); person / into / form / as the kind needs;
         # changed also gives `fields`, the person's own new values for it (a calendar entry's day, an action's due)
+        # brought_in is marking the input's message as work after all, for the project named by `side` (optional)
         # change_requested is "Change this" on a question or to-do (`id`) with the person's words (`note`); the
         # assistant's fixed answer to it is `answer`, and it may change the other open items the rule covers
         # sent_version names a reply owed (`id`) whose draft the person copied; `note` is the message they actually
@@ -78,7 +79,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from engine import follow_on, knowledge, learn
+from engine import follow_on, knowledge, learn, set_aside
 from engine.ai import pricing
 from engine.ai.adapters import make_adapter
 from engine.ai.adapters.stub import set_responder
@@ -138,13 +139,16 @@ CORRECTIONS = (
     "part_of",
     "new_person",
     "set_aside",
+    "brought_in",
     "asked",
     "changed",
     "sent_version",
     "change_requested",
 )
 #: The corrections that act on an earlier change, so they need one to exist.
-CHANGE_CORRECTIONS = frozenset({"sent_back", "undone", "declined", "not_a_project", "part_of", "set_aside"})
+CHANGE_CORRECTIONS = frozenset(
+    {"sent_back", "undone", "declined", "not_a_project", "part_of", "set_aside", "brought_in"}
+)
 KEEPS = (True, False, "discard")
 INPUT_KEYS = ("received", "pasted", "note", "project", "typed_on", "watched", "attached", "label")
 _PERSON = WriteContext(actor="pm", trust="trusted", op="pair.person")
@@ -563,6 +567,10 @@ class _Play:
                 request = self.store.read().get("changeset", cs).data["request"]
                 self._set_aside(request)
                 signal(self.store, "set_aside", [request], note="Set aside by hand", now=when)
+            elif kind == "brought_in":
+                request = self.store.read().get("changeset", cs).data["request"]
+                said = set_aside.bring_in_note(self.store.read(), personal=False, project=spec.get("side"))
+                signal(self.store, "pulled_back", [request], note=said, now=when)
         except StoreError as err:
             raise _Stop(f"the correction {kind} was refused: {err}") from None
         return [s.id for s in self.store.read().list("signal") if s.id not in before]

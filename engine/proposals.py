@@ -78,6 +78,24 @@ def similarity(a: str, b: str) -> float:
     return len(wa & wb) / len(wa | wb) if wa and wb else 0.0
 
 
+def _same_subject(one: str, two: str, alike: float) -> bool:
+    """Whether two normalized subjects are the same, or at least `alike` of their words are shared."""
+    return one == two or (alike < 1 and similarity(one, two) >= alike)
+
+
+#: The longest a word may be, with this many digits in it, before it reads as an identifier of one item.
+_ID_LENGTH, _ID_DIGITS = 9, 6
+
+
+def single_value(text: Any) -> bool:
+    """Whether a piece of what was learned is a value from one item (a tracking number, an order or account number)
+    rather than something that holds for the next one. Such a value is a fact about that item, never a lesson."""
+    return any(
+        len(word) >= _ID_LENGTH and sum(c.isdigit() for c in word) >= _ID_DIGITS
+        for word in re.findall(r"[A-Za-z0-9]+", str(text or ""))
+    )
+
+
 def scopes_overlap(a: dict[str, Any] | Scope, b: dict[str, Any] | Scope) -> bool:
     """Whether two targets can apply to the same work: their task kinds, people and projects each share something,
     where an empty list of task kinds or people means all of them."""
@@ -100,10 +118,12 @@ def scopes_overlap(a: dict[str, Any] | Scope, b: dict[str, Any] | Scope) -> bool
 # ---- duplicates and near-discards ------------------------------------------------------------------------------------
 
 
-def duplicate_of(view: Any, kind: str, data: dict[str, Any], *, own_id: str | None = None) -> Any | None:
+def duplicate_of(
+    view: Any, kind: str, data: dict[str, Any], *, own_id: str | None = None, alike: float = 1.0
+) -> Any | None:
     """The proposed or active entry of this kind that says the same thing over an overlapping target, if any; an
     active one first, then the oldest. `own_id` names an entry that is not its own duplicate (one asking which other
-    entry it would merge with)."""
+    entry it would merge with). With `alike` below 1, words that are nearly the same count as the same thing."""
     subject = subject_of(kind, data)
     if not subject:
         return None
@@ -112,7 +132,7 @@ def duplicate_of(view: Any, kind: str, data: dict[str, Any], *, own_id: str | No
         for s in view.list(kind)
         if s.id != own_id
         and s.data.get("status") in ("active", "proposed")
-        and subject_of(kind, s.data) == subject
+        and _same_subject(subject, subject_of(kind, s.data), alike)
         and scopes_overlap(s.data.get("applies_to") or {}, data.get("applies_to") or {})
     ]
     found.sort(key=lambda s: (s.data["status"] != "active", id_number(s.id) or 0))
@@ -231,7 +251,7 @@ def tag_of(view: Any, kind: str, stored: Any, creations: dict[str, tuple[str | N
     it was a learning run on a correction) or from an input."""
     data = stored.data
     evidence = data.get("evidence") or {}
-    if evidence.get("signal") or data.get("signal"):
+    if evidence.get("signal") or data.get("signal") or data.get("origin") == "person":
         return FROM_CORRECTION
     request_id = evidence.get("request")
     if request_id is None and creations is not None:
@@ -249,15 +269,31 @@ class Proposal:
     came_from: str  # input or correction
 
 
-def proposals(view: Any) -> list[Proposal]:
-    """Every proposal waiting for the person, oldest first, each with where it came from."""
+def _offered(kind: str, stored: Any) -> bool:
+    """Whether a waiting entry is something to offer: a lesson that is only a value from one item never is."""
+    return not (kind == "lesson" and single_value(stored.data.get("text")))
+
+
+def proposals(view: Any, *, alike: float = 1.0) -> list[Proposal]:
+    """Every proposal waiting for the person, oldest first, each with where it came from. A lesson that is only a value
+    from one item is left out, and proposals of one kind that say nearly the same thing over the same work (at least
+    `alike` of their words shared) are one: the oldest."""
     found: list[Proposal] = []
     for kind in KINDS:
-        waiting = [s for s in view.list(kind) if s.data.get("status") == "proposed"]
+        waiting = [s for s in view.list(kind) if s.data.get("status") == "proposed" and _offered(kind, s)]
         if not waiting:
             continue
         creations = view.creations(kind) if hasattr(view, "creations") else None
-        found += [Proposal(kind, s, tag_of(view, kind, s, creations)) for s in waiting]
+        kept: list[Any] = []
+        for s in sorted(waiting, key=lambda s: id_number(s.id) or 0):
+            subject = subject_of(kind, s.data)
+            if not any(
+                _same_subject(subject, subject_of(kind, k.data), alike)
+                and scopes_overlap(k.data.get("applies_to") or {}, s.data.get("applies_to") or {})
+                for k in kept
+            ):
+                kept.append(s)
+        found += [Proposal(kind, s, tag_of(view, kind, s, creations)) for s in kept]
     found.sort(key=lambda p: (str(p.stored.data.get("learned_at") or ""), p.stored.id))
     return found
 

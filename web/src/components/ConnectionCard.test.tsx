@@ -211,3 +211,15 @@ test("while the connections load the page shows account cards and the accounts b
   expect(region).toHaveAttribute("data-skeleton", "connections");
   expect(region.children).toHaveLength(3);
 });
+
+test("an account added later is asked how far back to read it in full, in the same line as in setup, and one connected before the question is not (S-0598)", async () => {
+  const asked = part("n", "new@example.com", { full_read_open: true, looked_back_to: "2026-11-01" });
+  const before = part("o", "old@example.com");
+  open([asked, before], {
+    "GET watch/n/full-read": () => ({ answered: null, options: [{ days: 14, count: 3, estimate_usd: 0.1, unpriced: 0, reaches: true }] }),
+  });
+  const card = await screen.findByRole("region", { name: /new@example\.com/ });
+  expect(await within(card).findByText("Read in full from:")).toBeInTheDocument();
+  const old = await screen.findByRole("region", { name: /old@example\.com/ });
+  expect(within(old).queryByText("Read in full from:")).toBeNull();
+});

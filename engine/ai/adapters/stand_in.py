@@ -129,6 +129,10 @@ def answer(request: str, stable: str) -> dict[str, Any]:
     }
 
 
+#: A subject that only says something is ready to view, with no figure in it: a notice, whatever its words suggest.
+_READY_TO_VIEW = re.compile(r"\b(?:is|are)\s+(?:now\s+)?(?:available|ready)\b|\bready to (?:view|download)\b", re.I)
+
+
 def sort_mail(request: str) -> dict[str, Any]:
     """Sorting mail headers: the stand-in weighs the built-in rules' `hints` the way the prompt asks a real model to.
     Mail sent to many or filed under promotions, social or forums is sales; an automated notice not written to the
@@ -143,7 +147,13 @@ def sort_mail(request: str) -> dict[str, Any]:
         except ValueError:
             continue
         hints = " ".join(str(h) for h in row.get("hints") or []).lower()
-        if "written to you alone" in hints:
+        if (
+            "automated notice" in hints
+            and _READY_TO_VIEW.search(str(row.get("subject") or ""))
+            and not re.search(r"\d", str(row.get("subject") or ""))
+        ):
+            word = "notice"  # an automated "it is ready to view" with nothing owed in its header
+        elif "written to you alone" in hints:
             word = "work"
         elif any(c in hints for c in ("promotions", "social", "forums")):
             word = "sales"
@@ -165,42 +175,39 @@ def follow_on() -> dict[str, Any]:
 
 _TALLY_LINE = re.compile(
     r"^(?P<address>\S+@\S+) \| (?P<name>[^|]+) \| (?P<from>\d+) from them, (?P<to>\d+) to them \| [^|]+"
-    r"(?: \| sides: [^|]*)?(?P<on_file> \| on file: \S+)?$"
+    r"(?: \| sides: [^|]*)?(?: \| hints: (?P<hints>[^|]*))?(?P<on_file> \| on file: \S+)?$"
 )
-#: The most people the stand-in suggests from one look, and the fewest messages (both ways added) it takes as a pattern.
-_LOOK_MOST, _LOOK_FEWEST = 3, 3
+#: The most people the stand-in offers from one look, and the fewest messages (both ways added) it takes as a pattern.
+_LOOK_MOST, _LOOK_FEWEST = 5, 3
+#: The hints that say a sender is a machine or a list; the stand-in has no judgment, so it leaves these out.
+_MACHINE_HINTS = ("automated sender", "marked bulk mail", "mail of a kind the app tracks")
 
 
 def knowledge_person(request: str) -> dict[str, Any]:
-    """A weekly look's answer: a glossary entry for each of the few people the user deals with most (at least
-    `_LOOK_FEWEST` messages, both ways added, a shown name that is a person's and not on file), said as plainly as the
-    counts say it, with the tally line as its evidence. It also suggests a routine for each weekly entry that isn't a
-    meeting with other people. It suggests no organization and no routing: a plain rule can't judge those."""
+    """A weekly look's answer, for trying the app with no account: an offer of each of the few addresses the user deals
+    with most (at least `_LOOK_FEWEST` messages, both ways added, not on file, and with no hint of a machine or a
+    list), said as plainly as the counts say it. It makes no judgment about a name's shape or a role address: a rule
+    can't tell who is a person, which is the assistant's reading. It suggests no organization and no routing, and a
+    routine for each weekly entry that isn't a meeting with other people."""
     block = re.search(r'<untrusted source="contact-tally">\s*(.*?)\s*</untrusted>', request, re.S)
     found = []
     for line in (block.group(1) if block else "").splitlines():
         row = _TALLY_LINE.match(line.strip())
-        if row is None or row["on_file"]:
+        if row is None or row["on_file"] or any(h in (row["hints"] or "") for h in _MACHINE_HINTS):
             continue
-        name = row["name"].strip()
         count = int(row["from"]) + int(row["to"])
-        parts = name.split()
-        if count >= _LOOK_FEWEST and 2 <= len(parts) <= 4 and all(w[:1].isupper() for w in parts):
-            found.append((count, name, int(row["from"]), int(row["to"]), line.strip()))
+        if count >= _LOOK_FEWEST:
+            found.append((count, row["name"].strip(), row["address"], int(row["from"]), int(row["to"])))
     found.sort(key=lambda f: (-f[0], f[1]))
-    ops = []
-    for _count, name, sent_by, sent_to, line in found[:_LOOK_MOST]:
-        meaning = f"Someone you deal with: {sent_by} messages from them and {sent_to} sent to them."
-        ops.append(
-            {
-                "op": "glossary.add",
-                "text": f"{name}: {meaning}",
-                "term": name,
-                "meaning": meaning,
-                "confidence": "assumed",
-                "evidence": {"quote": line},
-            }
-        )
+    people = [
+        {
+            "address": address,
+            "name": name,
+            "why": f"Someone you deal with: {sent_by} messages from them and {sent_to} sent to them.",
+        }
+        for _count, name, address, sent_by, sent_to in found[:_LOOK_MOST]
+    ]
+    ops: list[dict[str, Any]] = [{"op": "person.offer", "people": people}] if people else []
     ops += _routine_ops(request)
     return {"summary": "People you deal with." if ops else "Nothing plain enough to suggest.", "ops": ops}
 
@@ -231,6 +238,59 @@ def week_ahead(request: str) -> dict[str, Any]:
     count = len(rows)
     sentence = f"{count} {'thing' if count == 1 else 'things'} in the week ahead." if count else "A quiet week."
     return {"summary": "The week ahead.", "ops": [{"op": "week.read", "sentence": sentence, "rows": rows}]}
+
+
+_GOAL_LINE = re.compile(
+    r"^\[(?P<id>[^\]]+)\] (?P<kind>task|promise) \| (?P<day>\d{4}-\d\d-\d\d|no day) \| (?P<text>[^|]+)"
+)
+
+
+def monday_goals(request: str) -> dict[str, Any]:
+    """A goals answer by plain rules: the to-dos and promises the request lists, the soonest due first, as many as it
+    allows, in their own words. A rule can't tell what matters most in a week; this is for trying the app with no
+    account."""
+    block = re.search(r'<untrusted source="week-items">\s*(.*?)\s*</untrusted>', request, re.S)
+    most = re.search(r"Give at most (\d+) goals", request)
+    found = []
+    for line in (block.group(1) if block else "").splitlines():
+        m = _GOAL_LINE.match(line.strip())
+        if m is not None:
+            found.append((m["day"], m["text"].strip()[:200], m["id"]))
+    seen: set[str] = set()
+    goals = []
+    for _day, text, record_id in sorted(found):
+        if text.lower() not in seen:
+            seen.add(text.lower())
+            goals.append({"words": text, "source": record_id})
+    goals = goals[: int(most.group(1)) if most else 5]
+    return {"summary": "Goals for the week.", "ops": [{"op": "week.goals", "goals": goals}]}
+
+
+_AREA_LINE = re.compile(
+    r"^\[(?P<id>[^\]]+)\] (?P<kind>to-do|question|fact|calendar entry) \|.*\| shares: (?P<shared>.*)$"
+)
+_AREA_KINDS = {"to-do": "action", "question": "question", "fact": "fact", "calendar entry": "event"}
+
+
+def area_read(request: str) -> dict[str, Any]:
+    """An areas answer by plain rules: the items the request lists, grouped by the first word they share, a group of two
+    or more named by that word. A rule can't tell what items are about; this is for trying the app with no account."""
+    block = re.search(r'<untrusted source="area-items">\s*(.*?)\s*</untrusted>', request, re.S)
+    groups: dict[str, list[dict[str, str]]] = {}
+    for line in (block.group(1) if block else "").splitlines():
+        m = _AREA_LINE.match(line.strip())
+        if m is not None and m["shared"].strip():
+            word = m["shared"].split(",")[0].strip()
+            groups.setdefault(word, []).append({"kind": _AREA_KINDS[m["kind"]], "id": m["id"]})
+    areas = [
+        {"name": word.capitalize(), "why": f"{len(items)} items are about {word}.", "items": items}
+        for word, items in groups.items()
+        if len(items) >= 2
+    ]
+    return {
+        "summary": "Areas of your life." if areas else "No area stands out.",
+        "ops": [{"op": "area.offer", "areas": areas}],
+    }
 
 
 _SERIES_LINE = re.compile(

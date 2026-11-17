@@ -68,6 +68,7 @@ import { parseAmount, useWriteAmount } from "../lib/money";
 import { Marked } from "./Marked";
 import { useWords } from "../lib/wording";
 import { AiAccounts } from "./AiAccounts";
+import { ReginaldOn } from "./ReginaldOn";
 import { AiChoices } from "./AiRouting";
 import { MergedRow } from "./MergedRow";
 import { AddonPage } from "./AddonPage";
@@ -915,6 +916,7 @@ export function Settings(props: {
             }}
             onCompare={props.onOpenCompare}
           />
+          {setup.data?.steps.some((s) => s.id === "ai" && s.done) && <ReginaldOn hideWhenOn />}
           <AiChoices />
           {form("ai")}
           {moreSettings("ai")}

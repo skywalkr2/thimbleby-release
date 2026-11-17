@@ -147,8 +147,22 @@ def seed_review_r3(ws, store, cfg, side_ids: list[str]) -> dict:
         alone = now.astimezone(here).date().isoformat()
         for _ in range(3):
             tx.create("action", {"text": "Send the revised budget.", "owners": [{"person": me}], "due": alone}, ctx)
-        for text in SWATCH_TEXTS:
-            tx.create("action", {"text": text, "owners": [{"person": me}], "project": personal, "due": due}, ctx)
+        swatches = [
+            tx.create("action", {"text": text, "owners": [{"person": me}], "project": personal, "due": due}, ctx).id
+            for text in SWATCH_TEXTS
+        ]
+        # The area the assistant offered for them (it reads what the items are about; the rule only narrowed them).
+        tx.create(
+            "area_offer",
+            {
+                "name": "Swatches",
+                "why": "All four are about choosing the curtain swatches.",
+                "items": [{"kind": "action", "id": i} for i in swatches],
+                "status": "offered",
+                "offered_at": now.isoformat(),
+            },
+            ctx,
+        )
         # Entries of today: one that ended, one under way, one to come, and one with a title as long as a paragraph,
         # all the
         # person's own, so none depends on a calendar being connected.

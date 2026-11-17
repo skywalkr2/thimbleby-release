@@ -207,6 +207,10 @@ def answer_to(system: str, user: str) -> str:
         return json.dumps(stand_in.answer(user, system))
     if is_week(user):
         return json.dumps(stand_in.week_ahead(user))
+    if '<untrusted source="week-items">' in user:
+        return json.dumps(stand_in.monday_goals(user))
+    if '<untrusted source="area-items">' in user:
+        return json.dumps(stand_in.area_read(user))
     if "<untrusted" in user or "<note>" in user:
         return json.dumps(stand_in.read(user))
     return json.dumps({"summary": "Nothing to do.", "ops": []})
@@ -252,6 +256,7 @@ def ai_routes(state: State) -> list[Route]:
                 "sorting": is_sorting(user),
                 "learning": is_look(user),
                 "week": is_week(user),
+                "readings": '<untrusted source="area-items">' in user or '<untrusted source="week-items">' in user,
                 "input": first[:200],
                 "week_packet": week_packet_facts(system, user, body.get("model")) if is_week(user) else None,
             }
@@ -1006,7 +1011,34 @@ def mail_routes(state: State) -> list[Route]:
             return JSONResponse({"messages": sent_messages(state.moment) if state.sent_mail else []})
         return JSONResponse({"messages": messages(state.moment, state.later_mail, state.evening, state.notice_mail)})
 
-    return [Route("/messages", listed), *change_routes(state)]
+    async def older(request: Request) -> JSONResponse:
+        """The messages of a folder received from the day `since` up to, not including, the day `before`: what the
+        add-on asks for when the person looks further back. It is no read of the mailbox the journeys count."""
+        if not signed_in(state, request):
+            state.seen["unauthorized"] += 1
+            return unauthorized()
+        folder = request.query_params.get("folder") or "inbox"
+        if folder == SENT_FOLDER:
+            held = sent_messages(state.moment) if state.sent_mail else []
+        elif folder != "inbox":
+            held = []
+        elif state.accounts:
+            held = account_messages(state, account_of(state, request))
+        else:
+            held = messages(state.moment, state.later_mail, state.evening, state.notice_mail)
+        since, before = request.query_params.get("since", ""), request.query_params.get("before", "")
+        return JSONResponse({"messages": [m for m in held if since <= m["received"][:10] < before]})
+
+    async def headers(request: Request) -> JSONResponse:
+        """The same days as `older`, as headers alone (no body): what the add-on asks for once after a first sign-in. It
+        is no read of the mailbox the journeys count."""
+        answered = await older(request)
+        if answered.status_code != 200:
+            return answered
+        held = json.loads(answered.body)["messages"]
+        return JSONResponse({"messages": [{k: v for k, v in m.items() if k != "body"} for m in held]})
+
+    return [Route("/messages", listed), Route("/older", older), Route("/headers", headers), *change_routes(state)]
 
 
 #: The scope the made-up service wants before it changes mail, which a sign-in holds only once acting is turned on.
@@ -1187,7 +1219,9 @@ def helper_routes(state: State, base: str) -> list[Route]:
     async def requests(_request: Request) -> JSONResponse:
         asked = [c for c in state.chats if not c["smoke"]]
         learning = [c for c in asked if c["learning"]]
-        work = [c for c in asked if not c["sorting"] and not c["learning"] and not c.get("week")]
+        work = [
+            c for c in asked if not c["sorting"] and not c["learning"] and not c.get("week") and not c.get("readings")
+        ]
         inputs = [c["input"] for c in work]
         return JSONResponse(
             {
@@ -1196,6 +1230,7 @@ def helper_routes(state: State, base: str) -> list[Route]:
                 "sorting": len([c for c in asked if c["sorting"]]),
                 "learning": len(learning),
                 "week": len([c for c in asked if c.get("week")]),
+                "readings": len([c for c in asked if c.get("readings")]),
                 "week_runs": [c["week_packet"] for c in asked if c.get("week")],
                 "work": len(work),
                 "inputs": inputs,

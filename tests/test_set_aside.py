@@ -477,7 +477,7 @@ def test_this_is_work_hands_it_in_records_a_pulled_back_signal_and_shows_it_in_c
     queued = [r for r in requests_in(store, "queued") if r.data["source"]]
     assert len(queued) == 2 and all(not r.data.get("set_aside") for r in queued)
     signals = [s for s in store.read().list("signal") if s.data["kind"] == "pulled_back"]
-    assert len(signals) == 1 and "many people" in signals[0].data["note"]
+    assert len(signals) == 1 and signals[0].data["note"] == "The person marked this message as work."
     assert {i["title"] for i in folder(client, base)["items"]} == {"Subject of social"}
     came_in = client.get(f"{base}/today/arrived").json()
     assert came_in["set_aside"] == 1 and {i["title"] for i in came_in["items"]} == {

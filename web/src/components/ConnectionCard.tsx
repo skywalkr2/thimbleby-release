@@ -22,6 +22,7 @@ import { restoreFocus } from "./ModalPanel";
 import { RowMenu, type MenuAction } from "./RowMenu";
 import { SignOutConfirm, addonOfSignIn } from "./SignIns";
 import { ProblemDetails } from "./ProblemDetails";
+import { FullReadChoice } from "./FullReadChoice";
 import { SourceSides } from "./SourceSides";
 import styles from "./ConnectionCard.module.css";
 
@@ -251,6 +252,7 @@ export function ConnectionCardView(props: {
       ) : (
         <p className={styles.empty}>{t("connection.empty_account")}</p>
       )}
+      {card.kind === "account" && <FullReadChoice sources={card.sources} account={accountName} />}
       {confirming && signIn && signedIn && (
         <SignOutConfirm
           label={signIn.label}

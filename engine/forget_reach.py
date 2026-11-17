@@ -139,10 +139,11 @@ class Plan:
     files: list[str] = field(default_factory=list)
     questions: list[str] = field(default_factory=list)
     only_theirs: list[tuple[str, str]] = field(default_factory=list)
+    headers: list[str] = field(default_factory=list)
 
     def knows(self) -> frozenset[str]:
         """The ids of the records that are their mail's content: a case built from one is built from their mail."""
-        return frozenset([*self.snapshots, *self.sources, *self.requests, *self.files, *self.questions])
+        return frozenset([*self.snapshots, *self.headers, *self.sources, *self.requests, *self.files, *self.questions])
 
 
 def _head(sources_dir: Path, digest: Any) -> str:
@@ -202,8 +203,15 @@ def plan_of(view: Any, person_id: str, root: Path) -> Plan:
         for r in view.list("standing_yes", include_deleted=True)
         if r.data.get("person") == person_id
     ]
+    headers = [
+        h.id
+        for h in view.list("mail_header", include_deleted=True)
+        if ids.from_sender(str((h.data.get("message") or {}).get("sender") or ""))
+        or any(ids.found(str(p)) for p in (h.data.get("message") or {}).get("participants") or [])
+    ]
     return Plan(
         ids=ids,
+        headers=headers,
         snapshots=[s.id for s in snapshots],
         sources=frozenset(sources),
         requests=frozenset(requests),
@@ -277,6 +285,12 @@ def reach(tx: Any, store: Any, person_id: str, plan: Plan, ctx: Any, *, root: Pa
         held = tx.get("snapshot", snapshot_id, include_deleted=True)
         if held is not None and (held.data.get("message") or {}).get("sender"):
             write("snapshot", snapshot_id, {"message": {**held.data["message"], "sender": None}}, all_fields=True)
+    # A kept header (a year of who wrote to whom) that names them goes whole: nothing of it is kept.
+    for header_id in plan.headers:
+        held = tx.get("mail_header", header_id, include_deleted=True)
+        if held is not None:
+            blank = {**held.data["message"], "sender": None, "participants": [], "message_id": None, "references": []}
+            write("mail_header", header_id, {"title": "", "message": blank}, removed=True, all_fields=True)
     for source_id in sorted(plan.sources):
         held = tx.get("source", source_id, include_deleted=True)
         blank = {"title": "", "content_hash": "", "url": None, "watched": None, "author": None}

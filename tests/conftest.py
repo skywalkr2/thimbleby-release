@@ -157,6 +157,12 @@ def _no_product_feed(monkeypatch: pytest.MonkeyPatch) -> None:
 
     real = pack_routes.product
     monkeypatch.setattr(pack_routes, "product", lambda *a, **k: {**real(*a, **k), "pack_catalog": None})
+    import engine.worker as worker_module
+
+    real_worker = worker_module.shipped_product
+    monkeypatch.setattr(
+        worker_module, "shipped_product", lambda *a, **k: {**real_worker(*a, **k), "pack_catalog": None}
+    )
 
 
 @pytest.fixture(autouse=True)

@@ -54,6 +54,10 @@ class StubAdapter:
             body = stand_in.knowledge_person(task.request)
         elif task.kind == "week-ahead":
             body = stand_in.week_ahead(task.request)
+        elif task.kind == "monday-goals":
+            body = stand_in.monday_goals(task.request)
+        elif task.kind == "area-read":
+            body = stand_in.area_read(task.request)
         else:
             body = {"summary": "Filed the input as a note.", "ops": [{"op": "note", "text": first or "(empty input)"}]}
         return AiResult(text=json.dumps(body), model_served="stub", seconds=0.0)

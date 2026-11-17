@@ -1,6 +1,6 @@
-"""Signing in is the whole setup: once a mail add-on's sign-in finishes, the person's sent mail is read and the people
-step suggests the people they write to, with no extra step (S-0520). The add-on is a stand-in whose sent folder holds
-mail to made-up people."""
+"""Signing in is the whole setup: once a mail add-on's sign-in finishes, the person's sent mail is read and counted, so
+the assistant's look can offer the people they write to with no extra step (S-0520, S-0590). The add-on is a stand-in
+whose sent folder holds mail to made-up people."""
 
 from datetime import UTC, datetime
 
@@ -51,7 +51,7 @@ READING = SIGNING.replace(
 )
 
 
-def test_after_signing_in_the_people_step_lists_the_people_the_person_wrote_to_most_first(signing):  # noqa: F811
+def test_after_signing_in_the_sent_mail_is_counted_by_who_it_went_to_and_no_rule_picks_the_people(signing):  # noqa: F811
     from engine.watch import refresh
 
     ws, cfg, store = signing[:3]
@@ -72,6 +72,18 @@ def test_after_signing_in_the_people_step_lists_the_people_the_person_wrote_to_m
                 refresh(ws, store2, cfg2, source.id, datetime.now(UTC))
     finally:
         store2.close()
-    found = c.get(f"{api}/setup/people-suggestions").json()["people"]
-    assert [p["name"] for p in found] == ["Riley Quinn", "Sam Ortega", "Avery Lund", "Jordan Pike"], found
-    assert [p["count"] for p in found] == [3, 2, 1, 1]
+    # The sent mail is counted by who it went to, the most written to first, the reply address of a newsletter service
+    # among them with the mark a code gives it (the assistant weighs the mark).
+    from engine import contact_tally
+
+    cfg3, store3 = _reopen(ws, cfg)
+    try:
+        counted = contact_tally.tally(store3, cfg3)
+    finally:
+        store3.close()
+    people = [(c.name, c.to_them) for c in counted if not c.hints]
+    assert people == [("Riley Quinn", 3), ("Sam Ortega", 2), ("Avery Lund", 1), ("Jordan Pike", 1)], people
+    assert [c.hints for c in counted if "replies." in c.address] == [(contact_tally.AUTOMATED, contact_tally.CODE)]
+    # No one is offered by a rule: the offers are the assistant's, and none has been made.
+    body = c.get(f"{api}/setup/people-suggestions").json()
+    assert body["people"] == []

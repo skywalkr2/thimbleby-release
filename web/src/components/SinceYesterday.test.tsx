@@ -130,23 +130,41 @@ test("a date in a row's words reads as a day, never in its raw form", async () =
 });
 
 test("a close the person has not seen says so in words, and what was seen or isn't a close does not", async () => {
-  open([CLOSED, MOVED, ADDED, SORTED]);
+  open([CLOSED, MOVED, ADDED]);
   await screen.findByRole("group", { name: "What changed since yesterday" });
-  const [closed, moved, added, sorted] = rows();
+  const [closed, moved, added] = rows();
   expect(closed).toHaveTextContent("Closed since you last looked");
-  expect(sorted).toHaveTextContent("Closed since you last looked");
   expect(moved).not.toHaveTextContent("Closed since you last looked");
   expect(added).not.toHaveTextContent("Closed since you last looked");
 });
 
-test("rules and sorting say which kind of rule did it and why", async () => {
-  open([RULED, SORTED]);
+test("a rule says which kind of rule closed it and why", async () => {
+  open([RULED]);
   await screen.findByRole("group", { name: "What changed since yesterday" });
-  const [ruled, sorted] = rows();
+  const [ruled] = rows();
   expect(ruled).toHaveTextContent("Closed “Plan”");
   expect(ruled).toHaveTextContent("A rule closed it (only spacing changed)");
-  expect(sorted).toHaveTextContent("Set aside “Autumn sale”");
-  expect(sorted).toHaveTextContent("A sorting rule set it aside (it is bulk mail)");
+});
+
+// Set-aside mail is not a change to the person's work: with one real change and many messages set aside, the list has
+// one row for the change and one summary row that opens Handled for you, and the count is of real changes.
+test("one change and many set-aside messages are one row for the change and one summary row", async () => {
+  const many = Array.from({ length: 24 }, (_, n) => entry({ ...SORTED, ref: `snapshot:SNAP-${n}`, snapshot: `SNAP-${n}`, title: `Sale ${n}` }));
+  open([CLOSED, ...many]);
+  await screen.findByRole("group", { name: "What changed since yesterday" });
+  expect(rows()).toHaveLength(1);
+  expect(rows()[0]).toHaveTextContent("Send the floor plan");
+  const summary = document.querySelector("[data-since-set-aside]") as HTMLElement;
+  expect(summary).toHaveTextContent("24 messages set aside since yesterday");
+  expect(within(summary).getByRole("link", { name: "Open Handled for you" })).toHaveAttribute("href", expect.stringContaining("work/handled"));
+  expect(document.querySelector("[data-since-count]")).toHaveTextContent("1 change");
+  expect(screen.queryByText(/Autumn sale|Sale 3/)).toBeNull();
+});
+
+test("with only set-aside mail the summary row is there and no change is listed", async () => {
+  open([SORTED]);
+  expect(await screen.findByText("1 message set aside since yesterday")).toBeInTheDocument();
+  expect(screen.queryByRole("group", { name: "What changed since yesterday" })).toBeNull();
 });
 
 test("Undo is the row's one button and Open is in its menu", async () => {
@@ -189,17 +207,14 @@ test("an undo that was skipped because the record changed says so and keeps the 
   expect(rows()).toHaveLength(1);
 });
 
-test("a rule's close offers a closer look and set-aside mail offers This is work, each with the version that was read", async () => {
+test("a rule's close offers a closer look with the version that was read", async () => {
   const user = userEvent.setup();
-  const { calls } = open([RULED, SORTED], {
+  const { calls } = open([RULED], {
     "POST requests/REQ-1/closer-look": () => ({ id: "REQ-1" }),
-    "POST set-aside/SNAP-1/work": () => ({ id: "SNAP-1", version: 5, section: "sales", address: null, domain: null }),
   });
   await screen.findByRole("group", { name: "What changed since yesterday" });
   await user.click(within(rows()[0]).getByRole("button", { name: "Take a closer look: Plan" }));
   await waitFor(() => expect(body(calls, "POST requests/REQ-1/closer-look")).toEqual({ read_version: 2 }));
-  await user.click(within(rows()[0]).getByRole("button", { name: "This is work: Autumn sale" }));
-  await waitFor(() => expect(body(calls, "POST set-aside/SNAP-1/work")).toEqual({ read_version: 4 }));
 });
 
 test("opening the list marks it seen as it was drawn", async () => {
@@ -341,7 +356,7 @@ test("a day shows its first rows and Show more adds the next page", async () => 
 });
 
 test("each kind of act has its own glyph, and the days keep a reading width", async () => {
-  const kinds = (["added", "closed", "moved", "set_aside"] as const).map((act, n) => entry({ ref: `k${n}`, act, seen: true }));
+  const kinds = (["added", "closed", "moved", "news"] as const).map((act, n) => entry({ ref: `k${n}`, act, seen: true }));
   fakeApi({ "GET since-yesterday": () => listBody(kinds) });
   renderApp(<SinceYesterday onOpenRecord={vi.fn()} onBack={vi.fn()} />);
   await screen.findByRole("group", { name: "What changed since yesterday" });

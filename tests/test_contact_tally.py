@@ -8,7 +8,7 @@ from datetime import date
 
 import pytest
 
-from engine import contact_tally, people_suggestions
+from engine import contact_tally
 from engine.people_forget import forget_person
 from engine.storage import WriteContext
 from tests.test_people_suggestions import fake_reads_mail, known_person, message, setup, who  # noqa: F401
@@ -72,24 +72,30 @@ def test_a_message_counts_an_address_once_however_often_the_header_names_it(tmp_
     assert found["c0@example.com"].to_them == 1
 
 
-def test_machine_made_and_bulk_senders_are_kept_apart_not_dropped(tmp_path):
+def test_only_what_the_person_set_aside_is_kept_apart_and_every_other_mark_is_a_hint(tmp_path):
+    """A recruiter at a role address, a tradesperson named like a company, a capitals name and a tagged address are all
+    in the tally, not kept apart: a mark on an address is a fact for the assistant to weigh, never a verdict. Only a
+    sender whose mail was set aside by the sorting or the person's own rule is kept apart."""
     items = [
         message("m1", who(0)),
         message("m2", who(1), bulk=True),
         message("m3", "No Reply <no-reply@example.com>"),
-        message("m4", "Info <info@example.com>"),
-        message("m5", "Pat Kin <9f8e7d6c5b4a@example.com>"),
+        message("m4", "Dana Ortiz <info@example.com>"),
+        message("m5", "Pat Kin <sam.k+4f9a1c7e@example.com>"),
         message("m6", "Hale Support <help@example.com>"),
+        message("m7", "PAT LEE <pat.lee@example.com>"),
     ]
     _ws, cfg, store = setup(tmp_path, items, sent=False)
     found = by_address(contact_tally.tally(store, cfg))
     store.close()
-    assert found["c0@example.com"].apart is None
-    assert found["c1@example.com"].apart == contact_tally.SET_ASIDE
-    assert found["no-reply@example.com"].apart == contact_tally.AUTOMATED
-    assert found["info@example.com"].apart == contact_tally.ROLE
-    assert found["9f8e7d6c5b4a@example.com"].apart == contact_tally.CODE
-    assert found["help@example.com"].apart == contact_tally.COMPANY
+    assert {a for a, c in found.items() if c.apart is not None} == {"c1@example.com"}
+    assert found["c0@example.com"].hints == ()
+    assert found["c1@example.com"].hints == (contact_tally.BULK,)
+    assert found["no-reply@example.com"].hints == (contact_tally.AUTOMATED,)
+    assert found["info@example.com"].hints == (contact_tally.ROLE,)
+    assert found["sam.k+4f9a1c7e@example.com"].hints == (contact_tally.CODE,)
+    assert found["help@example.com"].hints == (contact_tally.COMPANY,)
+    assert found["pat.lee@example.com"].hints == ()
 
 
 def test_the_tally_is_ordered_by_messages_each_way_added_and_holds_no_message_text(tmp_path):
@@ -99,16 +105,6 @@ def test_the_tally_is_ordered_by_messages_each_way_added_and_holds_no_message_te
     store.close()
     assert [c.address for c in found] == ["c0@example.com", "c1@example.com"]
     assert not any("Words about" in repr(c) or "Subject of" in repr(c) for c in found)
-
-
-def test_the_peoples_step_reads_the_tally_so_the_two_never_disagree(tmp_path):
-    items = [message(f"a{i}", who(0)) for i in range(2)] + [message("b", who(1)), message("c", who(2), bulk=True)]
-    _ws, cfg, store = setup(tmp_path, items, sent=False)
-    tallied = [c for c in contact_tally.tally(store, cfg) if c.apart is None and c.from_them_named]
-    suggested = people_suggestions.suggest(store, cfg, 10)
-    store.close()
-    assert [(s.address, s.count) for s in suggested] == [(c.address, c.from_them_named) for c in tallied]
-    assert "c2@example.com" not in {s.address for s in suggested}
 
 
 def test_forgetting_a_person_removes_their_row_from_both_directions(tmp_path):

@@ -69,7 +69,10 @@ propose_days: 14   # days ahead to look for a free time when proposing another t
 propose_slots: 6   # free times offered at most when proposing another time
 propose_round_minutes: 15   # the first free time offered starts at the next multiple of this many minutes
 look_back_choices: [30, 90, 365]   # days a mail source can be asked to look further back, shown as a list
+full_read_choices: [14, 30, 90]   # days back a first sign-in offers to read mail in full, each with its estimate; none is chosen for the person
 look_back_max_items: 100   # the most older messages one look further back asks a mail source for
+first_headers_days: 365   # days back a mail account's headers are read once at first sign-in, with no assistant work (0: not read)
+first_headers_max_items: 5000   # the most headers that first read asks for
 burst_items: 5   # more changed items than this from one read of a page, feed or tracker are filed as one input per project
 failures_before_asking: 3
 unread_gap_factor: 2   # a failing source becomes a line on Today after this many of its own read intervals

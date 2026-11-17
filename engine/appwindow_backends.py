@@ -48,6 +48,35 @@ def primary_screen() -> tuple[int, int] | None:
         return None
 
 
+#: The window library's function that answers the Mac's application-level Quit (the application menu, its shortcut and
+#: the Dock's Quit all reach it) and reports it as a close of each window.
+MAC_TERMINATE_HANDLER = "applicationShouldTerminate_"
+
+
+def asked_by_quit(frame: Any = None) -> bool:
+    """Whether the call being answered is the Mac's application-level Quit rather than the window's own close."""
+    frame = frame or sys._getframe(1)
+    while frame is not None:
+        if frame.f_code.co_name == MAC_TERMINATE_HANDLER:
+            return True
+        frame = frame.f_back
+    return False
+
+
+def closing_handler(
+    on_closing: Callable[[], bool], on_quit: Callable[[], None], asked: Callable[[], bool] = asked_by_quit
+) -> Callable[[], bool]:
+    """The window's closing event: a Quit ends the app and keeps the window until the app ends it; a close hides."""
+
+    def handle() -> bool:
+        if asked():
+            on_quit()
+            return False
+        return on_closing()
+
+    return handle
+
+
 class WebviewWindow:
     """The window, drawn by the system's web view.
 
@@ -87,7 +116,9 @@ class WebviewWindow:
                 self.worker.start()
         self.calls.put(call)
 
-    def create(self, title: str, html: str, api: Any, on_closing: Callable[[], bool]) -> None:
+    def create(
+        self, title: str, html: str, api: Any, on_closing: Callable[[], bool], on_quit: Callable[[], None]
+    ) -> None:
         import webview
 
         with contextlib.suppress(Exception):  # where the bridge's scripts come from, for the build machines' check
@@ -110,7 +141,7 @@ class WebviewWindow:
             min_size=(fit.min_width, fit.min_height),
             text_select=True,
         )
-        self.window.events.closing += on_closing
+        self.window.events.closing += closing_handler(on_closing, on_quit)
 
     def run(self, worker: Callable[[], None]) -> None:
         import webview

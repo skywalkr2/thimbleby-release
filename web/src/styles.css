@@ -47,6 +47,9 @@ main p { max-width: var(--measure); }
 .own-steps { margin: 0; padding-left: var(--space-5); display: grid; gap: var(--space-2); }
 .plain-list .title { font-weight: var(--weight-semibold); overflow-wrap: anywhere; }
 .plain-list .meta { display: block; color: var(--text-muted); font-size: var(--text-sm); }
+.plain-list.tick-list { list-style: none; padding-left: 0; }
+.tick-list .check-line { align-items: flex-start; font-weight: var(--weight-regular); font-size: var(--text-md); overflow-wrap: anywhere; }
+.tick-list .check-line input { margin-top: var(--space-1); flex: none; }
 .name { margin: 0; font-size: var(--text-md); }
 .pill-gap { margin-left: var(--space-2); }
 [data-pill] a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }

@@ -313,7 +313,10 @@ def read_feeds(
         feed.read_at = copy.get("read_at")
         if feed.error:
             return feed
-        return _vet(feed, copy["text"].encode("utf-8"), copy.get("sig"), trusting(url))
+        vetted_feed = _vet(feed, copy["text"].encode("utf-8"), copy.get("sig"), trusting(url))
+        if copy.get("unread"):  # the last read failed: the kept copy is shown with why, until a read succeeds
+            vetted_feed.notes.insert(0, copy["unread"])
+        return vetted_feed
 
     for url in urls:
         copy = kept.get(url)
@@ -343,11 +346,13 @@ def read_feeds(
                 changed = True
             except ConnectorError as err:
                 if copy:
-                    feed = vetted(url, copy)
-                    feed.notes.insert(
-                        0, f"couldn't read it just now ({_why_unread(err.kind)}); showing the copy kept earlier"
-                    )
-                    feeds.append(feed)
+                    copy = {
+                        **copy,
+                        "unread": f"couldn't read it just now ({_why_unread(err.kind)}); showing the copy kept earlier",
+                    }
+                    kept[url] = copy
+                    changed = True
+                    feeds.append(vetted(url, copy))
                 else:
                     feeds.append(Feed(url, error=_unread_line(err.kind)))
                 continue
@@ -358,6 +363,21 @@ def read_feeds(
     if changed:
         write_whole(path, json.dumps({u: kept[u] for u in urls if u in kept}))
     return feeds
+
+
+def refresh_kept(
+    urls: list[str], cache_dir: Any, refresh_hours: int, *, trust: Any = None, web_for: Any = None
+) -> bool:
+    """Read every feed again now and keep what came; true when the kept lists or the reason one couldn't be read
+    changed, so a screen showing them should read them again."""
+    path = cache_dir / CACHE_FILE
+
+    def shown() -> dict[str, Any]:
+        return {u: (c.get("text"), c.get("unread")) for u, c in _read_cache(path).items() if isinstance(c, dict)}
+
+    before = shown()
+    read_feeds(urls, cache_dir, refresh_hours, refresh=True, web_for=web_for, trust=trust)
+    return shown() != before
 
 
 # ---- what a pack adds, reaches and keeps -----------------------------------------------------------------------------

@@ -309,6 +309,18 @@ invariants:
       What is learned from a correction must reach the work that was corrected. Leave applies_to.task_kinds empty
       unless it holds for some kinds of work and not others, and when you name any, include the one the request says
       was corrected.
+  learning-evidence:
+    ops: [lesson.add, lesson.update, glossary.add, routing.add, style.add, rule.add]
+    line: A lesson from a correction never rests on the app's own words about it.
+    seed: >-
+      The words a lesson rests on are the person's own words or the message's, copied exactly. The app's reason for
+      setting a message aside, and its record of what the person did, are never a source: don't quote them.
+  single-value:
+    ops: [lesson.add]
+    line: A number or code from one item is never a lesson.
+    seed: >-
+      A tracking number, an order number or any other value that belongs to one item is a fact about that item, not a
+      lesson. A lesson says what holds for the next item; with nothing like that, propose nothing.
   miss-left-unlearned:
     ops: [lesson.add, lesson.update, glossary.add, routing.add, style.add, rule.add, question.add]
     line: A correction saying something was missed always teaches something or asks.

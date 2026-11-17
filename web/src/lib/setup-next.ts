@@ -13,14 +13,15 @@ export interface NextSetupStep {
   total: number;
 }
 
-/** The step setup asks for next while any counted step is not done (one not yet passed by first, then one passed by), or
- * nothing once they all are, and until the answer has loaded. */
+/** The step setup asks for next while any counted step is neither done nor left out, or nothing once they all are, and
+ * until the answer has loaded. A step the person left out (after the confirmation that says what that gives up) is
+ * settled: it is never counted as unfinished, so no line says "3 of 6" over it. */
 export function useNextSetupStep(): NextSetupStep | null {
   const { t, has } = useWords();
   const setup = useQuery({ queryKey: ["setup"], queryFn: api.setup });
   if (!setup.data) return null;
   const steps = setup.data.steps.filter((s) => s.counted);
-  const next = steps.find((s) => !s.done && !s.skipped) ?? steps.find((s) => !s.done);
+  const next = steps.find((s) => !s.done && !s.skipped);
   if (!next) return null;
   const label = next.label || (has(`setup_step.${next.id}`) ? t(`setup_step.${next.id}`) : next.id);
   return { id: next.id, label, done: steps.filter((s) => s.done).length, total: steps.length };

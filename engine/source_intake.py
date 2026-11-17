@@ -439,13 +439,14 @@ def _source(cfg: Any, source_id: str) -> Any:
     return source
 
 
-def _plan(store: Any, cfg: Any, source_id: str, days: int) -> tuple[date, date, date, date | None]:
+def _plan(store: Any, cfg: Any, source_id: str, days: int, exact: bool = False) -> tuple[date, date, date, date | None]:
     """The day the person asked for, the day the first look stopped at, the day the look will stop at and the oldest
-    mail the source holds (None when it holds none)."""
+    mail the source holds (None when it holds none). `exact` takes `days` as worked out from a reach (the full read's
+    choice), not one of the look further back's choices."""
     old = back_to_of(store.read(), source_id)
     if old is None:
         raise StoreError("this source was not taken in with a look back, so there is nothing further to look at")
-    if days not in cfg.watch.look_back_choices:
+    if days not in cfg.watch.look_back_choices and not (exact and days >= 1):
         raise StoreError(f"{days} days is not one of the choices")
     asked = old - timedelta(days=days)
     oldest = min(
@@ -462,13 +463,13 @@ def _plan(store: Any, cfg: Any, source_id: str, days: int) -> tuple[date, date, 
 
 
 def look_back_preview(
-    ws: Any, store: Any, cfg: Any, source_id: str, days: int, now: datetime | None = None
+    ws: Any, store: Any, cfg: Any, source_id: str, days: int, now: datetime | None = None, exact: bool = False
 ) -> LookBack:
     """What looking `days` further back than the source was looked at would take in: how many items, about what they
     cost (the average of what the source's earlier items were priced at, times the count; none when none has a price),
     and whether the source holds mail that far back. Writes nothing."""
     source = _source(cfg, source_id)
-    asked, old, _new, available = _plan(store, cfg, source_id, days)
+    asked, old, _new, available = _plan(store, cfg, source_id, days, exact)
     now = now or datetime.now(UTC)
     if not can_look_back(source, store):
         raise StoreError("this source can't be asked for older mail")
@@ -493,7 +494,14 @@ def look_back_preview(
 
 
 def look_further_back(
-    ws: Any, store: Any, cfg: Any, source_id: str, days: int, now: datetime | None = None, router: Any = None
+    ws: Any,
+    store: Any,
+    cfg: Any,
+    source_id: str,
+    days: int,
+    now: datetime | None = None,
+    router: Any = None,
+    exact: bool = False,
 ) -> LookBack:
     """Take in the older mail the source already returned, `days` further back than it was looked at, the same quiet
     way: marked as the source's intake, priced as one total with what is still held, held for the go or started by
@@ -504,10 +512,10 @@ def look_further_back(
     if not can_look_back(source, store):
         raise StoreError("this source can't be asked for older mail")
     with watch._read_lock(ws, source_id):
-        asked, old, new, available = _plan(store, cfg, source_id, days)
+        asked, old, new, available = _plan(store, cfg, source_id, days, exact)
         fetched = _fetch_older(ws, store, cfg, source, *_remote_range(store, source_id, asked, old, available), now)
         if fetched:
-            asked, old, new, available = _plan(store, cfg, source_id, days)
+            asked, old, new, available = _plan(store, cfg, source_id, days, exact)
         everything = fetched < cfg.watch.look_back_max_items  # the source gave all it holds of those days
         if everything:
             new = asked
@@ -533,3 +541,86 @@ def look_further_back(
         counted, total, unpriced = total_waiting(ws, store, cfg, source_id, router)
         result.estimate_usd, result.unpriced = total, unpriced
         return result
+
+
+# ---- the full read a first sign-in asks about ----------------------------------------------------------------------
+
+
+@dataclass
+class FullReadOption:
+    """One reach the person can choose for reading mail in full: how many days back from today, what that takes in and
+    about what it costs."""
+
+    days: int
+    count: int = 0
+    estimate_usd: float | None = None
+    unpriced: int = 0
+    reaches: bool = True
+
+
+def full_read_pending(store: Any, cfg: Any, source: Any) -> bool:
+    """Whether a source's first sign-in still has its full-read question open: its first read took mail in, it can be
+    asked for older mail, no answer was given (not even "not now") and the workspace offers reaches. A source whose
+    first read was made before the question existed is never asked."""
+    run = intake_run(store.read(), source.id)
+    return bool(
+        run is not None
+        and run.data.get("asks_full_read")
+        and cfg.watch.full_read_choices
+        and run.data.get("full_read") is None
+        and can_look_back(source, store)
+    )
+
+
+def _days_beyond_first_read(store: Any, source_id: str, reach: int, now: datetime) -> int:
+    """How many days further back than the first read a reach of `reach` days from today goes; 0 or less when the first
+    read already covers it."""
+    old = back_to_of(store.read(), source_id)
+    if old is None:
+        raise StoreError("this source was not taken in with a look back, so there is nothing further to look at")
+    return (old - (now.astimezone(UTC).date() - timedelta(days=reach))).days
+
+
+def full_read_options(
+    ws: Any, store: Any, cfg: Any, source_id: str, now: datetime | None = None
+) -> list[FullReadOption]:
+    """The reaches offered, each with its count and cost through the look further back's own preview. Nothing is
+    chosen and nothing is written."""
+    now = now or datetime.now(UTC)
+    found = []
+    for reach in cfg.watch.full_read_choices:
+        beyond = _days_beyond_first_read(store, source_id, reach, now)
+        if beyond < 1:
+            found.append(FullReadOption(reach))  # the first read already covers it: nothing more to take in
+            continue
+        preview = look_back_preview(ws, store, cfg, source_id, beyond, now, exact=True)
+        found.append(FullReadOption(reach, preview.count, preview.estimate_usd, preview.unpriced, preview.reaches))
+    return found
+
+
+def _record_full_read(store: Any, source_id: str, reach: int) -> None:
+    run = intake_run(store.read(), source_id)
+    if run is None:
+        raise StoreError("this source was not taken in with a look back, so there is nothing further to look at")
+    with store.transaction() as tx:
+        current = tx.get("watch_run", run.id)
+        tx.update("watch_run", run.id, {"full_read": reach}, _MOVED, read_version=current.version)
+
+
+def answer_full_read(
+    ws: Any, store: Any, cfg: Any, source_id: str, reach: int, now: datetime | None = None, router: Any = None
+) -> LookBack | None:
+    """The person's answer to the full-read question: 0 is "not now" (nothing is read, and it isn't asked again for this
+    sign-in); a reach is read through the look further back, which holds the work for the person's go like any other.
+    Returns what the look did, or None for "not now" or a reach the first read already covers."""
+    now = now or datetime.now(UTC)
+    source = _source(cfg, source_id)
+    if reach == 0:
+        _record_full_read(store, source_id, 0)
+        return None
+    if reach not in cfg.watch.full_read_choices:
+        raise StoreError(f"{reach} days is not one of the choices")
+    beyond = _days_beyond_first_read(store, source_id, reach, now)
+    done = look_further_back(ws, store, cfg, source.id, beyond, now, router, exact=True) if beyond >= 1 else None
+    _record_full_read(store, source_id, reach)
+    return done

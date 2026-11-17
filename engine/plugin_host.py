@@ -1212,6 +1212,36 @@ class PluginHost:
             lambda settings, since, before, limit, context: ask(settings, since, before, limit, context, False),
         )
 
+    def header_mail(self, connector: Any, account: str | None = None) -> Any:
+        """How to ask a plugin's connector for message headers alone, as the account a source reads with:
+        `read(settings, since, before, limit, context) -> list[SourceItem]`, or None when the connector doesn't say it
+        can. A call is contained like a poll: its `ConnectorError` passes through, anything else is noted on the plugin
+        and becomes an outage."""
+        from engine.connectors import ConnectorError, Poll, checked_poll
+
+        if getattr(connector, "headers", None) is None:
+            return None
+        plugin = connector.name.split("/", 1)[0]
+        where = f"connector {connector.name} (headers)"
+
+        def read(settings: Any, since: Any, before: Any, limit: int, context: Any) -> list[Any]:
+            context = self.connector_context(plugin, context.workspace_root, account)
+            try:
+                items = list(connector.headers(deepcopy(settings), since, before, limit, context))
+                checked_poll(Poll(items, complete=False))
+            except ConnectorError:
+                raise
+            except Exception as err:
+                self.failed(plugin, where, err)
+                raise ConnectorError("outage", f"the add-on {plugin} failed reading headers: {err}") from None
+            finally:
+                if context.web is not None:
+                    context.web.close()
+            self.succeeded(plugin, where)
+            return items[:limit]
+
+        return read
+
     def setup_steps(self) -> list[tuple[str, Any]]:
         """(plugin, step) for every running plugin's setup steps."""
         found = []

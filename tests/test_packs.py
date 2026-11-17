@@ -258,3 +258,62 @@ def test_an_add_on_that_signs_in_says_whether_it_is_signed_in(signing):
     assert mine()["signed_in"] is True
     # The row says what it signs in to by the label the add-on gave the sign-in, not by the sign-in's id.
     assert mine()["what"]["reaches"]["sign_ins"] == ["The service"]
+
+
+def _worker_with_catalog(tmp_path, monkeypatch, transport):
+    from api.app import create_app
+    from engine.workspace import init_workspace
+
+    monkeypatch.setattr(engine.net, "TRANSPORT", transport)
+    monkeypatch.setattr("engine.worker.shipped_product", lambda *a, **k: {})
+    ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
+    settings = yaml.safe_load((ws.config_dir / "workspace.yaml").read_text())
+    settings["plugins"]["catalog"]["feeds"] = [FEED]
+    settings["plugins"]["catalog"]["own_feeds"] = [FEED]
+    (ws.config_dir / "workspace.yaml").write_text(yaml.safe_dump(settings))
+    cfg = load_config(ws.config_dir, env={})
+    app = create_app(ws, cfg, "t", start_worker=False)
+    return ws, cfg, app.state.worker
+
+
+def test_a_start_reads_the_catalogs_in_the_background_so_a_newer_entry_is_listed_without_refresh(tmp_path, monkeypatch):
+    older = FEED_TEXT.replace("id: harbor", "id: dockside", 1)
+    ws, cfg, worker = _worker_with_catalog(tmp_path, monkeypatch, feed_only(FEED_TEXT))
+    # The kept copy is recent (inside refresh_hours) but older than what the catalog lists now.
+    import json
+    import time
+
+    (ws.private_dir / packs.CACHE_FILE).write_text(
+        json.dumps({FEED: {"text": older, "read_at": time.time(), "sig": None}})
+    )
+    before = worker.events.version
+    thread = worker.read_catalogs_soon()
+    assert thread is not None
+    thread.join(timeout=30)
+    ids = [e.id for f in packs.read_feeds([FEED], ws.private_dir, 24, trust=lambda _u: OWN) for e in f.entries]
+    assert ids == ["harbor"], "the screen's ordinary read, with no Refresh, lists the entry the catalog has now"
+    assert worker.events.touched_since(before) == {"packs"}, "the open screens are told to read the list again"
+
+
+def test_a_start_offline_keeps_the_copy_and_says_why(tmp_path, monkeypatch):
+    import json
+    import time
+
+    ws, cfg, worker = _worker_with_catalog(tmp_path, monkeypatch, httpx.MockTransport(lambda r: httpx.Response(503)))
+    (ws.private_dir / packs.CACHE_FILE).write_text(
+        json.dumps({FEED: {"text": FEED_TEXT, "read_at": time.time(), "sig": None}})
+    )
+    thread = worker.read_catalogs_soon()
+    thread.join(timeout=30)
+    (feed,) = packs.read_feeds([FEED], ws.private_dir, 24, trust=lambda _u: OWN)  # an ordinary read, copy still fresh
+    assert [e.id for e in feed.entries] == ["harbor"]
+    assert "the site isn't answering" in feed.notes[0] and "kept earlier" in feed.notes[0]
+    assert "outage" not in feed.notes[0]
+
+
+def test_a_start_with_no_catalog_listed_reads_nothing(tmp_path, monkeypatch):
+    ws, cfg, worker = _worker_with_catalog(tmp_path, monkeypatch, httpx.MockTransport(lambda r: httpx.Response(500)))
+    settings = yaml.safe_load((ws.config_dir / "workspace.yaml").read_text())
+    settings["plugins"]["catalog"]["enabled"] = False
+    (ws.config_dir / "workspace.yaml").write_text(yaml.safe_dump(settings))
+    assert worker.read_catalogs_soon() is None

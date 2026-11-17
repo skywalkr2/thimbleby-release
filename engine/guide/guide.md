@@ -20,7 +20,7 @@ People say "panel", "page", "screen", "tab" or "view" for the same thing: a scre
 - Follow-ups: To send holds the messages, pages and files that wait for your approval of exactly what will go; Later holds what you put off; Waiting on them holds the replies you are waiting for.
 - To-dos: every open to-do and every open question, with owners and dates.
 - Stages: work that moves through steps, the checks to pass at each step and where each item stands.
-- Personal: your own life: the to-dos, questions, notes and people that aren't work, grouped into areas such as home or health. With a job or a business, each one has its own entry beside it.
+- Personal: your own life: the to-dos, questions, notes and people that aren't work, grouped into areas such as home or health. When items are about one matter of your life, the assistant offers to start an area for it on Today ("Start the area Book collecting"), with its reason and the items it would take listed under it; a shop or a sender is never an area. Nothing moves until you start it, and Undo puts it back. With a job or a business, each one has its own entry beside it.
 - Projects: your projects, each with its to-dos, questions, notes and people. Views, a list of the projects inside one side, are kept here. When you have a job or business, each side is listed in the menu by its own name, and its page holds its projects.
 - People: the people the assistant knows, who they are to you and what they own.
 - Files: the files you added and the ones add-ons made, and the actions they offer.
@@ -53,9 +53,14 @@ seconds), then you sign in on the service's own page and say who each account is
 outside the workspace. People: optional, because names the assistant can't place become questions for you. Done: what
 was set up, what you skipped (each with a Set up button), and optional extras such as a starting template.
 
-Every screen can be skipped and done later. Finish later closes the walkthrough, and it stays closed until you open it
-again from Today's setup line, from Help or from Settings. It resumes where you left it, also after a restart. The
-walkthrough asks for at most one restart, and the app never restarts without you pressing the button.
+Setup can't be skipped as a whole. In the AI step, once your account passes its check, you press Turn on: that is the
+first go, and until you press it nothing is read by the AI. The steps run AI, Mail and calendar, then a short wait on
+screen while the assistant makes its first reading of what you connected (it moves on by itself when that is done, and
+you can go on sooner: it keeps working), then People, then Backups. A step can be left out, and each time a message says
+what that gives up and how the next steps change (with no mail or no AI account there is nothing to wait for and People is
+by hand only). A step you left out is settled, not counted as unfinished, and is still one click away in Settings. It
+resumes where you left it, also after a restart. The walkthrough asks for at most one restart, and the app never restarts
+without you pressing the button.
 The Getting started page that comes with the product covers the same path from the install command. Everything it sets is
 also in Settings later.
 
@@ -204,7 +209,10 @@ bare percentage, and says "Too early to tell" until there is enough to count.
 On Today's side, a card gives a **Morning brief**, an **Afternoon brief**, an **Evening wrap-up** and, on Mondays,
 **This week's briefing**: what is due, what is late, clashes, and what carries over to tomorrow, each pointing to the
 line on Today. **Close for today** puts it away, and the Show link in the card brings it back. The brief only
-summarizes what Today already holds; it sends nothing.
+summarizes what Today already holds; it sends nothing. On Mondays it also offers goals for the week: the assistant reads
+what is due, what others promised you and what is on your calendar, with the goals you kept before, and offers a few. You
+confirm them, change them or drop some; **Offer goals** asks again. Reading costs like any other work, so it waits for your
+go above the amount you set.
 
 ## AI accounts and costs
 

@@ -190,19 +190,13 @@ test.describe("A person's page, Quality and setup to the 4.6 mockups", () => {
     expect(said.y + said.height).toBeLessThanOrEqual(primary.y + 1);
   });
 
-  test("the guide's header stands on the rail's and the column's edges, its way out is a link that underlines when pointed at, and the choices under Something else have no rule (G5c)", async ({ page }) => {
+  test("the guide's header stands on the rail's edge, it has no way out as a whole, and the choices under Something else have no rule (G5c)", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await openAiStepWithNoAccount(page);
     const title = (await page.getByRole("heading", { level: 1, name: "Getting started" }).boundingBox())!;
     const rail = (await page.getByRole("navigation", { name: /steps/i }).boundingBox())!;
-    const column = (await page.locator("main#main").boundingBox())!;
-    const later = page.getByRole("button", { name: "Finish later" });
-    const out = (await later.boundingBox())!;
     expect(Math.abs(title.x - rail.x)).toBeLessThanOrEqual(2);
-    // The button has a little padding of its own inside the column's edge.
-    expect(column.x + column.width - (out.x + out.width)).toBeLessThanOrEqual(16);
-    await later.hover();
-    expect(await later.evaluate((el) => getComputedStyle(el).textDecorationLine)).toContain("underline");
+    await expect(page.getByRole("button", { name: "Finish later" })).toHaveCount(0);
     await page.locator("main").getByRole("radio", { name: /Something else/ }).check();
     const list = page.locator(".else-list");
     await expect(list).toBeVisible(LOADED);

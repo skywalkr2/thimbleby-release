@@ -171,6 +171,70 @@ def test_automatic_mail_and_mail_the_person_sent_are_not_replies_owed(env, what,
     assert quote  # the quote was in the input: the refusal is the rules', not an evidence problem
 
 
+def listed(env, body):
+    """Hand in a message from the asker that the service marked as sent to a list (a snapshot with `bulk`, and the
+    source pointing at it); returns what was handed in."""
+    ws, cfg, store = env
+    text = mail(named(ASKER, address_of(ASKER)), [("The person", MY_ADDRESS)], SUBJECT, body)
+    handed = hand_in(ws, store, pasted=text, now=NOW)
+    with store.transaction() as tx:
+        source = tx.get("source", handed.source)
+        tx.update(
+            "source",
+            handed.source,
+            {"watched": {"source": "lists", "key": "m1", "change": "new"}},
+            _TEST,
+            read_version=source.version,
+        )
+        tx.create(
+            "snapshot",
+            {
+                "source": "lists",
+                "key": "m1",
+                "title": SUBJECT,
+                "content_hash": source.data["content_hash"],
+                "seen_at": NOW,
+                "message": {"bulk": True},
+            },
+            _TEST,
+        )
+    return handed
+
+
+def test_a_list_mark_is_a_hint_in_the_packet_and_never_refuses_a_reply_owed(env):
+    ws, cfg, store = env
+    handed = listed(env, ASK)
+    from engine.packet import build
+
+    packet = build(ws, store, cfg, handed.request, NOW.date())
+    assert 'sent_to_a_list="yes"' in packet.task.request
+    set_responder(
+        lambda task: json.dumps(
+            {
+                "summary": "A reply is owed.",
+                "ops": [{**reply_op(cfg, ASK), "text": "Tell the shop when the interior proofs ship"}],
+            }
+        )
+    )
+    cs_id = process(ws, store, cfg, Router(cfg, store, env={}), handed.request, now=NOW)
+    (outcome,) = store.read().get("changeset", cs_id).data["ops"]
+    assert outcome["status"] == "applied" and len(owed(store)) == 1
+
+
+def test_an_auto_reply_on_a_list_is_still_refused_by_the_rules(env):
+    ws, cfg, store = env
+    text = mail(named(ASKER, address_of(ASKER)), [("The person", MY_ADDRESS)], "Automatic reply: " + SUBJECT, ASK)
+    assert "no reply is owed" in reply_lines.refusal(store.read(), cfg, text, NOW)
+    text = mail(("The person", MY_ADDRESS), [named(ASKER, address_of(ASKER))], SUBJECT, ASK)
+    assert "no reply is owed" in reply_lines.refusal(store.read(), cfg, text, NOW)
+    assert (
+        reply_lines.refusal(
+            store.read(), cfg, mail(named(ASKER, address_of(ASKER)), [("The person", MY_ADDRESS)], SUBJECT, ASK), NOW
+        )
+        is None
+    )
+
+
 WAIVER = "Thanks, that settles it. No need to reply."
 
 
@@ -731,3 +795,17 @@ def test_the_open_list_a_run_reads_marks_a_reply_owed_and_who_asked(env):
         line for line in _open_actions(store, People(store, cfg)).splitlines() if line.startswith(f"- {action}")
     )
     assert f"reply owed to {ASKER['full_name']}" in listed
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    ["list-message-with-a-direct-question-owes-a-reply", "list-newsletter-owes-no-reply"],
+)
+def test_the_list_evaluation_cases_pass_on_the_stand_in_assistant(case_id, monkeypatch):
+    import engine.evaluate as ev
+    from tests.conftest import DEMO_A
+
+    load = ev.load_cases
+    monkeypatch.setattr(ev, "load_cases", lambda t: [c for c in load(t) if c["id"] == case_id])
+    result = ev.evaluate(DEMO_A, stub=True, runs=1, env={}).results[0]
+    assert result.passed, (result.missing, result.forbidden)

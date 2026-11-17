@@ -512,13 +512,18 @@ function useChangeActions(item: S["ChangeItem"], hooks: { onOpenGuide?: (step: s
     primary = { label: t("changes.allow_data", { account: allowing.account, level: levelWord(allowing.level) }), run: () => void allow() };
   else if (naming) primary = { label: t("changes.say_who"), run: () => naming("workspace") };
   else if (item.state === "needs_you" || item.state === "failed")
-    primary = item.refused ? { label: t("changes.send_other"), run: hooks.startChoosing } : { label: t("action.try_again"), run: retry };
+    primary = { label: t("action.try_again"), run: retry };
 
   const menu: MenuAction[] = [];
-  if (item.refused && (item.state === "needs_you" || item.state === "failed"))
-    menu.push({ id: "retry", label: t("action.try_again"), run: retry });
+  const stopped = item.state === "needs_you" || item.state === "failed";
+  // A stopped item: Try again is the one action; reading it, skipping it and another account are in its menu (the words of Today's line).
+  if (stopped && !gated && !allowing && !naming) {
+    const link = item.link;
+    if (link) menu.push({ id: "read", label: t("queue.refused.read"), run: () => void window.open(link, "_blank", "noopener,noreferrer") });
+    menu.push({ id: "choose", label: t("changes.send_other"), run: hooks.startChoosing });
+  }
   if (cs && item.state === "review") menu.push({ id: "sendback", label: t("changes.send_back"), run: hooks.startSendBack });
-  if (item.state === "needs_you" || item.state === "failed") menu.push({ id: "dismiss", label: t("changes.dismiss"), run: dismiss });
+  if (stopped) menu.push({ id: "dismiss", label: t(gated || allowing || naming ? "changes.dismiss" : "queue.refused.skip"), run: dismiss });
   if (cs && item.state === "done") {
     menu.push({
       id: "reopen",
@@ -834,7 +839,8 @@ export function ChangeRow(props: {
   const secondOpinion = cs?.second_opinion ? <span className="second-opinion">{t(`changes.second.${cs.second_opinion}`)}</span> : null;
   const opened = (
     <>
-          {item.waiting && item.state !== "review" && <p data-waiting-reason="">{item.waiting}</p>}
+          {/* The first line of why it stopped is on the row's own line under the title; the card's body holds only what follows it (the detail pane has no such line, so it holds the whole), so no sentence is said twice in one card. */}
+          {item.waiting && item.state !== "review" && (props.pane ? item.waiting : restOf(item.waiting)) && <p data-waiting-reason="">{props.pane ? item.waiting : restOf(item.waiting)}</p>}
           {item.note && (
             <div className="your-note">
               <span className="what">{item.title?.kind === "answer" ? t("queue.title.answer") : t("changes.your_note")}</span>
@@ -914,6 +920,11 @@ export function ChangeRow(props: {
       {open && <RowBody id={`b-${item.id}`}>{opened}</RowBody>}
     </ExpandableRow>
   );
+}
+
+/** What follows the first line of a text, or nothing when it is one line. */
+function restOf(text: string | null): string {
+  return (text ?? "").split("\n").filter((l) => l.trim()).slice(1).join("\n");
 }
 
 function firstLine(text: string | null): string {

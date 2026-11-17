@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, ApiError, type S } from "../lib/api";
 import { useAct } from "../lib/act";
 import { useDraftState } from "../lib/draft";
+import { useEstimate } from "../lib/money";
 import { problemText } from "../lib/problem";
 import { useWords } from "../lib/wording";
 import { Button } from "../ui/Button";
@@ -117,14 +118,17 @@ function placementFor(places: Place[], sided: boolean) {
   return sided && ids.length > 0 ? { sides: ids } : { side: places.some((p) => p.whose.kind !== "personal") ? ("business" as const) : ("personal" as const) };
 }
 
-/** The real people the person writes to, one row each: a tick box with their name, address and message count. Under the
- * list, once, where those ticked belong (Personal unless the person picks a side of work; the choice is left out when
- * there is nowhere else to pick) and one "Add these". The row looks the same whatever the length of a name, and the
- * ticked people are added with no relation, which the lists below then offer to set. With no one to suggest the section
- * says so in one line. */
+/** The people the assistant offers from the person's mail, one row each: a tick box with their name, address, message
+ * count and the reason. Under the list, once, where those ticked belong (Personal unless the person picks a side of work;
+ * the choice is left out when there is nowhere else to pick), "Add these" and "Leave these out" (never offered again).
+ * The row looks the same whatever the length of a name, and the ticked people are added with no relation, which the
+ * lists below then offer to set. With no offer the section says where the assistant's look stands and what happens next;
+ * it never falls back to a rule of a name's or an address's shape. */
 function Suggestions(props: { places: Place[]; sided: boolean }) {
   const { t, tn } = useWords();
   const client = useQueryClient();
+  const act = useAct();
+  const estimate = useEstimate();
   const found = useQuery({ queryKey: ["people-suggestions"], queryFn: api.peopleSuggestions });
   const [ticked, setTicked] = useState<string[]>([]);
   const [target, setTarget] = useState(PERSONAL_KEY);
@@ -134,9 +138,22 @@ function Suggestions(props: { places: Place[]; sided: boolean }) {
   const [allAdded, setAllAdded] = useState(false);
   if (!found.data) return null;
   const list = found.data.people;
+  const state = found.data.state;
   const chosen = list.filter((p) => ticked.includes(p.address));
   const place = props.places.find((p) => p.key === target) ?? props.places[0];
   const toggle = (address: string) => setTicked((was) => (was.includes(address) ? was.filter((a) => a !== address) : [...was, address]));
+  const leaveOut = async () => {
+    setBusy(true);
+    setProblem("");
+    try {
+      await api.leaveOutSuggested({ addresses: chosen.map((p) => p.address) });
+      setTicked([]);
+      await client.invalidateQueries({ queryKey: ["people-suggestions"] });
+    } catch (err) {
+      setProblem(err instanceof ApiError && err.detail ? err.detail : problemText(err, t));
+    }
+    setBusy(false);
+  };
   const addThese = async () => {
     setBusy(true);
     setProblem("");
@@ -156,16 +173,38 @@ function Suggestions(props: { places: Place[]; sided: boolean }) {
     await client.invalidateQueries({ queryKey: ["setup"] });
     setBusy(false);
   };
-  // With no mail to learn from there is nothing to say: a heading over nothing is left out.
-  if (list.length === 0 && !allAdded) return null;
+  // The assistant's look waits for the person's go: the step shows its estimate and starts it, as the line on Today does.
+  const startLook = async (request: string, version: number) => {
+    setBusy(true);
+    await act(() => api.stageGo(request, version), undefined, (err) => setProblem(err instanceof ApiError && err.detail ? err.detail : problemText(err, t)));
+    await client.invalidateQueries({ queryKey: ["people-suggestions"] });
+    setBusy(false);
+  };
+  // With no offer the section says where the assistant's look stands and what happens next, never offering by a rule.
+  if (list.length === 0 && !allAdded && !state) return null;
   return (
     <section aria-labelledby="walkthrough-people-suggest-title" data-people-suggestions="">
       <h3 id="walkthrough-people-suggest-title">{t("walkthrough.people.suggest.title")}</h3>
       {list.length === 0 ? (
-        <p className="hint">{t("walkthrough.people.suggest.all_added")}</p>
+        state === "waiting" && !allAdded && found.data.request && found.data.read_version != null ? (
+          <div data-people-look-state="waiting" data-people-look-go="">
+            <p className="hint">
+              {t("walkthrough.people.suggest.estimate", {
+                cost: found.data.estimate_usd != null ? t("coverage.look_back.cost.priced", { cost: estimate(found.data.estimate_usd) ?? "" }) : t("coverage.look_back.cost.unpriced"),
+              })}
+            </p>
+            <Button size="sm" variant="primary" loading={busy} onClick={() => void startLook(found.data.request as string, found.data.read_version as number)}>
+              {t("walkthrough.people.suggest.start")}
+            </Button>
+          </div>
+        ) : (
+          <p className="hint" data-people-look-state={allAdded ? "added" : state}>
+            {t(allAdded ? "walkthrough.people.suggest.all_added" : `walkthrough.people.suggest.state.${state}`)}
+          </p>
+        )
       ) : (
         <>
-          <p className="hint">{t(list[0].from_sent ? "walkthrough.people.suggest.hint_sent" : "walkthrough.people.suggest.hint_received")}</p>
+          <p className="hint">{t("walkthrough.people.suggest.hint")}</p>
           <ul className={styles.suggested}>
             {list.map((p, n) => (
               <li key={p.address}>
@@ -185,6 +224,7 @@ function Suggestions(props: { places: Place[]; sided: boolean }) {
                     <span className="meta" id={`walkthrough-people-pick-${n}-meta`}>
                       {p.address} · {tn("walkthrough.people.suggest.mails", p.count)}
                     </span>
+                    <span className="meta">{p.why}</span>
                   </span>
                 </label>
               </li>
@@ -204,6 +244,9 @@ function Suggestions(props: { places: Place[]; sided: boolean }) {
             )}
             <Button variant="primary" loading={busy} disabled={chosen.length === 0} reason={t("walkthrough.people.suggest.tick_first")} onClick={() => void addThese()}>
               {t("walkthrough.people.suggest.add_these")}
+            </Button>
+            <Button loading={busy} disabled={chosen.length === 0} reason={t("walkthrough.people.suggest.tick_first")} onClick={() => void leaveOut()}>
+              {t("walkthrough.people.suggest.leave_out")}
             </Button>
           </div>
         </>
@@ -485,7 +528,8 @@ function AddRow(props: { place: Place; places: Place[]; sided: boolean; onPlace:
   );
 }
 
-export function WalkthroughPeople(props: { done?: boolean } = {}) {
+/** `byHand`: mail was left out or there is no AI account, so there is nothing to suggest people from and they are added by hand. */
+export function WalkthroughPeople(props: { done?: boolean; byHand?: boolean } = {}) {
   const { t } = useWords();
   const people = useQuery({ queryKey: ["people"], queryFn: api.people });
   const business = useQuery({ queryKey: ["business"], queryFn: api.business });
@@ -511,7 +555,13 @@ export function WalkthroughPeople(props: { done?: boolean } = {}) {
   const place = places.find((p) => p.key === where) ?? places[0];
   return (
     <>
-      <Suggestions places={places} sided={sided} />
+      {props.byHand ? (
+        <p className="hint" data-people-by-hand="">
+          {t("walkthrough.people.by_hand")}
+        </p>
+      ) : (
+        <Suggestions places={places} sided={sided} />
+      )}
       <Listed whose={{ kind: "personal", id: personal }} title={t("walkthrough.people.personal")} people={mine} />
       {listed.map((side) => (
         <Listed

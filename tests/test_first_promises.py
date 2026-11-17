@@ -75,7 +75,7 @@ def stage(env) -> first_promises.FirstPromises:
 def test_the_walkthrough_has_no_screen_for_the_first_result_it_is_todays_start_line():
     order = list(setup.WALKTHROUGH_STEPS)
     assert "promises" not in order and "promises" not in setup.CORE_STEPS
-    assert order.index("mail") < order.index("backup") < order.index("people")
+    assert order.index("mail") < order.index("reading") < order.index("people") < order.index("backup")
     assert order[-1] == "done"  # the extras (a starting template, add-ons) stay on the last screen
 
 

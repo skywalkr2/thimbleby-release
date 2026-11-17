@@ -73,7 +73,7 @@ const EVENING: Brief = {
     { key: "waiting", more: 0, lines: [line({ key: "waiting:ACT-5", kind: "waiting", text: "the measurements", person_name: "Dev Example", day: "2026-10-22" })] },
   ],
 };
-const GOALS_PROPOSED: S["BriefGoalsView"] = { first: "2026-10-19", last: "2026-10-23", confirmed: false, goals: [], proposed: ["Ship the proof", "Close the print order", "Plan the launch"], proposed_sides: [], fewest: 3, most: 5 };
+const GOALS_PROPOSED: S["BriefGoalsView"] = { first: "2026-10-19", last: "2026-10-23", confirmed: false, goals: [], proposed: ["Ship the proof", "Close the print order", "Plan the launch"], proposed_sides: [], fewest: 3, most: 5, offer: "offered", can_offer: false };
 const WEEK: S["WeekAheadView"] = {
   first: "2026-10-19",
   last: "2026-10-25",
@@ -471,6 +471,27 @@ test("a week with no goals to propose offers to set them, and confirmed goals sa
   await show({ ...MONDAY, goals: { ...GOALS_PROPOSED, confirmed: true, goals: ["One", "Two", "Three"], proposed: [] } });
   expect(await screen.findByText("Kept for the week.")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Confirm these goals" })).toBeNull();
+});
+
+test("the goals offered are the assistant's run: nothing is offered by a rule while the run is under way, held for the go, read as none or not asked yet", async () => {
+  const user = userEvent.setup();
+  const none = { ...GOALS_PROPOSED, proposed: [] };
+  await show({ ...MONDAY, goals: { ...none, offer: "working" } });
+  expect(await screen.findByText("Reading the week to offer goals")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Offer goals" })).toBeNull();
+  cleanup();
+  await show({ ...MONDAY, goals: { ...none, offer: "needs_go", offer_estimate_usd: 0.05 } });
+  expect(await screen.findByText(/Waiting for your go to offer goals \(/)).toBeInTheDocument();
+  cleanup();
+  await show({ ...MONDAY, goals: { ...none, offer: "empty" } });
+  expect(await screen.findByText("Nothing in the week stands out as a goal. Set the ones that matter.")).toBeInTheDocument();
+  cleanup();
+  // With no offer made, the goals are not guessed from what is due; the person may ask the assistant for one.
+  const calls = (await show({ ...MONDAY, goals: { ...none, offer: "none", can_offer: true } }, { "POST brief/goals/offer": () => ({ request: "REQ-1" }) })).calls;
+  const block = (await screen.findByRole("heading", { name: "Goals for the week" })).closest("[data-block]") as HTMLElement;
+  expect(within(block).queryByRole("listitem")).toBeNull();
+  await user.click(within(block).getByRole("button", { name: "Offer goals" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST brief/goals/offer")).toBe(true));
 });
 
 test("a morning brief shows no goals form, and the Monday message is only there when the person reports to someone", async () => {

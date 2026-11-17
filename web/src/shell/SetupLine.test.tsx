@@ -68,46 +68,18 @@ test("once every step is done the group is gone", async () => {
   expect(screen.queryByRole("region", { name: /^Finish setting up/ })).toBeNull();
 });
 
-test("with every step skipped the line stays, counts none as done and names the first one passed by", async () => {
+test("a step left out is settled: with every step skipped there is no line, and one left out beside one to do is never counted as unfinished", async () => {
   const user = userEvent.setup();
   const calls = api(CORE.map((id) => step(id, { skipped: true })), true);
-  const { onOpenGuide } = open();
-  const line = await screen.findByRole("region", { name: /^Finish setting up/ });
-  expect(line).toHaveTextContent("0 of 6 done");
-  expect(calls.filter((c) => c.route === "GET setup").length).toBeGreaterThan(0);
-  await user.click(screen.getByRole("button", { name: "Continue setup" }));
-  expect(onOpenGuide).toHaveBeenLastCalledWith("workspace");
-});
-
-test("a step still to do comes before one skipped", async () => {
-  const user = userEvent.setup();
-  api([step("workspace", { skipped: true }), step("work", { done: true }), step("ai")]);
-  const { onOpenGuide } = open();
-  expect(await screen.findByRole("region", { name: /^Finish setting up/ })).toHaveTextContent("1 of 3 done");
-  await user.click(screen.getByRole("button", { name: "Continue setup" }));
-  expect(onOpenGuide).toHaveBeenLastCalledWith("ai");
-});
-
-test("hiding the line is remembered in this browser", async () => {
-  const user = userEvent.setup();
-  api([step("ai")]);
   open();
-  await user.click(await screen.findByRole("button", { name: "More actions for setup" }));
-  await user.click(screen.getByRole("menuitem", { name: "Hide" }));
-  expect(screen.queryByRole("region", { name: /^Finish setting up/ })).toBeNull();
-  document.body.innerHTML = "";
-  api([step("ai")]);
-  open();
+  await vi.waitFor(() => expect(calls.filter((c) => c.route === "GET setup").length).toBeGreaterThan(0));
   await new Promise((r) => setTimeout(r, 20));
   expect(screen.queryByRole("region", { name: /^Finish setting up/ })).toBeNull();
-});
-
-test("a browser that blocks storage still shows the line", async () => {
-  vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
-    throw new Error("blocked");
-  });
-  api([step("ai")]);
-  open();
-  expect(await screen.findByRole("region", { name: /^Finish setting up/ })).toBeInTheDocument();
-  vi.restoreAllMocks();
+  // With one step still to do, the line asks for that one, never for a step that was left out.
+  calls.length = 0;
+  api(CORE.map((id) => (id === "backup" ? step(id) : step(id, { skipped: true }))));
+  const { onOpenGuide } = open();
+  expect(await screen.findByRole("region", { name: /^Finish setting up/ })).toHaveTextContent("0 of 6 done");
+  await user.click(screen.getByRole("button", { name: "Continue setup" }));
+  expect(onOpenGuide).toHaveBeenLastCalledWith("backup");
 });

@@ -1036,6 +1036,9 @@ class ChangeItem(BaseModel):
     mail_item: str | None = Field(
         None, description="For work on a mail message the app is holding: its id, for 'Set aside' on the row."
     )
+    link: str | None = Field(
+        None, description="For work on a mail message the app is holding: the address that opens the message itself."
+    )
     intake: str | None = Field(
         None,
         description="The id of the newly added source whose first read (or look further back) took this in, so its "
@@ -1443,13 +1446,13 @@ class PersonIn(BaseModel):
 
 
 class PersonSuggestion(BaseModel):
-    """Someone the person's mail shows often and who isn't on file yet: `name` as the mail gives it, `address`, in how
-    many messages they appear (`count`), and whether those were the person's own sent mail."""
+    """Someone the assistant offers to add, read from the person's mail: `name` as the mail gives it, `address`, in how
+    many messages they appear (`count`) and the sentence saying why it offers them (`why`)."""
 
     name: str
     address: str
     count: int
-    from_sent: bool
+    why: str
 
 
 class SetupPersonIn(PersonIn):
@@ -1460,9 +1463,27 @@ class SetupPersonIn(PersonIn):
 
 
 class PeopleSuggestionsView(BaseModel):
-    """The people to suggest in the people step, most mail first, at most `ui.walkthrough.suggested_people`."""
+    """The people the assistant offers in the people step, most mail first. With none, `state` says where its look at
+    who the person deals with stands: no_account (no assistant is set up for it), not_yet (no mail has been read),
+    working (it is reading), waiting (it waits for the person's go) or looked (it read and offered no one)."""
 
     people: list[PersonSuggestion]
+    state: Literal["no_account", "not_yet", "working", "waiting", "looked"]
+    request: str | None = Field(
+        None, description="With state `waiting`: the look that waits for the person's go, to start from the step."
+    )
+    read_version: int | None = Field(None, description="With `request`: the version of that request, sent with the go.")
+    estimate_usd: float | None = Field(
+        None, description="With `request`: about what the look costs; none when no price is known."
+    )
+
+
+class PeopleLeaveOutIn(BaseModel):
+    """Offered people the person leaves out, by address: they are not offered again."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    addresses: list[str] = Field(min_length=1, max_length=200)
 
 
 class PeoplePasteIn(BaseModel):
@@ -1707,6 +1728,11 @@ class FilingQuestions(BaseModel):
 class FilingMove(BaseModel):
     side: str = Field(description="The side's top project, from GET /api/filing/questions.")
     items: list[UnfiledRef] = Field(min_length=1)
+    keep: list[UnfiledRef] = Field(
+        default_factory=list,
+        description="For a move: the other items the question held, which the person unticked. They stay where they "
+        "are and are not asked about again; one Undo of the move takes that back with it.",
+    )
 
 
 class FilingMoved(BaseModel):
@@ -1716,6 +1742,9 @@ class FilingMoved(BaseModel):
     changeset: str
     count: int
     rule: str | None = None
+    kept: int = Field(
+        0, description="How many of the question's other items were kept where they are in the same step."
+    )
 
 
 class FilingKept(BaseModel):
@@ -2204,7 +2233,7 @@ class KnowsUnknown(BaseModel):
 
 
 class AreaKeep(BaseModel):
-    word: str = Field(min_length=1, description="The word the offered area is for (the line's `subject`).")
+    offer: str = Field(min_length=1, description="The id of the offered area (the line's `subject`).")
     name: str | None = Field(
         None, description="The name the person chose for the area; the offered name (the line's `text`) when empty."
     )
@@ -3607,7 +3636,9 @@ class QueueLineView(BaseModel):
     over, one line for all of it (`count` entries, counted by act in `outcome`; Look over opens GET
     /api/since-yesterday, and opening it is POST /api/since-yesterday/seen);
     `away` is one row for the lines that waited for the person's working hours (or
-    for quiet hours to end) and arrived together with them (`count` of them; it has no choices and goes with the day);
+    for quiet hours to end) and arrived together with them (`count` of them, `since` the moment the hours began
+    and `at` when the first of them came in; Look over opens Came in with what arrived between the two; it goes
+    with the day);
     `escalate` suggests asking someone else about one thing (`text` its words, in `questions` or `actions` its id,
     `person` who hasn't answered, `count` the follow-ups it has had, `waiting_days` the days since the last word; Pick
     who is POST /api/questions/{id}/reroute for a question and POST /api/records/edit on the action's owners for an
@@ -4110,7 +4141,14 @@ class QueueLineView(BaseModel):
         "action to fold it into; none when nothing applies.",
     )
     at: datetime | None = Field(
-        None, description="For a reminder line: when it was set for, on the person's own clock (their time zone)."
+        None,
+        description="For a reminder line: when it was set for, on the person's own clock (their time zone). For an "
+        "away line: when the first of the lines that waited came in.",
+    )
+    since: datetime | None = Field(
+        None,
+        description="For an away line: when the working hours began and what waited arrived, on the person's own clock "
+        "(their time zone); `at` is then when the first of them came in.",
     )
     late: bool | None = Field(
         None,
@@ -4287,6 +4325,32 @@ class LookBackIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     days: int = Field(ge=1, description="How many days further back to look, one of the source's choices.")
+
+
+class FullReadOptionView(BaseModel):
+    """One reach offered for reading mail in full, with what it takes in and about what it costs."""
+
+    days: int = Field(description="How many days back from today.")
+    count: int = Field(
+        description="Items it takes in beyond what the first read took; 0 when the first read covers it."
+    )
+    estimate_usd: float | None = Field(None, description="About what they cost; None when no price is known.")
+    unpriced: int = Field(0, description="How many of the items have no price.")
+    reaches: bool = Field(True, description="False when the source holds no mail as far back as asked.")
+
+
+class FullReadView(BaseModel):
+    """The question a first sign-in asks: how far back to read mail in full. Nothing is chosen; `answered` is None
+    until the person answers."""
+
+    options: list[FullReadOptionView]
+    answered: int | None = Field(None, description='The reach the person chose in days; 0 for "not now".')
+
+
+class FullReadIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    days: int = Field(ge=0, description='One of the offered reaches, or 0 for "not now".')
 
 
 class LookBackView(BaseModel):
@@ -4794,7 +4858,7 @@ class SetupStepView(BaseModel):
     )
 
 
-WalkthroughScreen = Literal["welcome", "you", "work", "ai", "mail", "backup", "people", "done"]
+WalkthroughScreen = Literal["welcome", "you", "work", "ai", "mail", "reading", "people", "backup", "done"]
 
 
 class WalkthroughView(BaseModel):
@@ -4814,6 +4878,26 @@ class WalkthroughIn(BaseModel):
     finished: bool | None = None
 
 
+class ReadingView(BaseModel):
+    """Reginald's first reading after Mail and calendar, for the setup screen that waits for it."""
+
+    state: Literal["none", "working", "done"] = Field(
+        description="none: there is nothing to wait for (see why); working: it is reading (see stage); done."
+    )
+    why: Literal["no_mail", "no_ai"] | None = Field(
+        None,
+        description="For none: mail was left out or none is read (no_mail), or there is no AI account (no_ai).",
+    )
+    stage: Literal["fetching", "sorting", "looking"] | None = Field(
+        None,
+        description="For working: reading the mail and calendar (fetching), sorting what it found (sorting), or "
+        "looking at who the person writes to (looking).",
+    )
+    sources: int = Field(0, description="How many mail and calendar sources are read.")
+    read: int = Field(0, description="How many of them were read once.")
+    found: int = Field(0, description="How many items the first reads took in.")
+
+
 class SetupView(BaseModel):
     steps: list[SetupStepView]
     finished: bool = Field(description="Every step that counts is done or skipped; the optional extras never count.")
@@ -4827,6 +4911,21 @@ class SetupView(BaseModel):
         0,
         description="How many runs wait for the person's first go now, which is what Today's Start the assistant line "
         "holds; zero once it was pressed. The last screen says what Today shows from this.",
+    )
+    first_go_given: bool = Field(
+        False,
+        description="The person's first go was given (Turn Reginald on, in the AI step, or Start the "
+        "assistant), or the "
+        "workspace asks for none: no first run is held for it.",
+    )
+    reading: ReadingView = Field(
+        ReadingView(state="none"),
+        description="Reginald's first reading after Mail and calendar: what the waiting screen shows.",
+    )
+    people_by_hand: bool = Field(
+        False,
+        description="The People step offers adding by hand only: mail was left out or there is no AI account, so "
+        "Reginald has no one to suggest.",
     )
 
 
@@ -5850,6 +5949,11 @@ class WatchSourceView(BaseModel):
         default_factory=list,
         description="When `looked_back_to` is set and the source can be asked for older mail: how many more days the "
         "person can ask to look, to pick from. Empty when the source can't be asked, so none is offered.",
+    )
+    full_read_open: bool | None = Field(
+        None,
+        description="True while the source's first sign-in still has its question open: how far back to read its "
+        'mail in full. It stays true until the person answers, "not now" included.',
     )
     secrets: list[SourceSecretView] = Field(
         default_factory=list, description="Where each secret setting it has set is read from."
@@ -8781,7 +8885,7 @@ class BriefSectionView(BaseModel):
 
 class BriefGoalsView(BaseModel):
     """The goals for the week from `first` to `last`: the `confirmed` ones the person gave, else the ones `proposed`
-    from what is due and open. Between `fewest` and `most` are kept when confirmed."""
+    by the assistant's offer (never by a rule over what is due). Between `fewest` and `most` are kept when confirmed."""
 
     first: date
     last: date
@@ -8791,6 +8895,14 @@ class BriefGoalsView(BaseModel):
     fewest: int
     most: int
     proposed_sides: list[str | None] = []
+    offer: Literal["offered", "empty", "working", "needs_go", "none"] = Field(
+        "none",
+        description="Where the assistant's offer of goals stands: `offered` (`proposed` holds it), `empty` (it read "
+        "the week and offered none), `working`, `needs_go` (held for the person's go, about `offer_estimate_usd`) or "
+        "`none`.",
+    )
+    offer_estimate_usd: float | None = None
+    can_offer: bool = Field(False, description="Whether the person may ask the assistant to offer goals now.")
 
 
 class BriefChoiceView(OwnerNameView):

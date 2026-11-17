@@ -34,8 +34,12 @@ class WindowBackend(Protocol):
     def post(self, call: Callable[[], None]) -> None:
         """Run a call on the loop's thread."""
 
-    def create(self, title: str, html: str, api: Any, on_closing: Callable[[], bool]) -> None:
-        """Make the window, hidden, showing a page. on_closing returns False to keep the window (it is hidden)."""
+    def create(
+        self, title: str, html: str, api: Any, on_closing: Callable[[], bool], on_quit: Callable[[], None]
+    ) -> None:
+        """Make the window, hidden, showing a page. on_closing returns False to keep the window (it is hidden).
+        on_quit is called when the system's own Quit reaches the window library (the application menu, its shortcut,
+        the Dock), which the library reports as a close of the window; it ends the app."""
 
     def run(self, worker: Callable[[], None]) -> None:
         """Run the loop on this (the main) thread, with the worker on another thread, until the window is destroyed."""
@@ -231,7 +235,11 @@ class AppShell:
                 self.main.call(self._finish)
 
         self.window.create(
-            self.words["desktop.title"], startpage.page(self.words, self.version), self.api, self._closing
+            self.words["desktop.title"],
+            startpage.page(self.words, self.version),
+            self.api,
+            self._closing,
+            self._quit_requested,
         )
         self.window.run(worker)
         return result[0]
@@ -252,6 +260,11 @@ class AppShell:
             return True
         self.main.call(self._hide)
         return False
+
+    def _quit_requested(self) -> None:
+        """The system's own Quit (application menu, its shortcut, the Dock) ends the app by the same path as the
+        menu-bar item's Quit: the work stops, the server and lock are released, and the loop ends."""
+        self.quit()
 
     # --- what the menu shows and does -----------------------------------------------------------------------------
 

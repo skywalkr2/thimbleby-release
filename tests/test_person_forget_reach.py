@@ -732,3 +732,34 @@ def test_identifiers_replace_each_form_a_person_is_named_in():
         "source": "SRC-1",
     }
     assert scrub({"quote": "x", "source": "SRC-2"}, ids, sources=frozenset({"SRC-1"}))["quote"] == "x"
+
+
+def test_a_kept_header_that_names_them_is_erased_with_their_mail_and_one_that_does_not_stays(env):
+    """A year of headers kept at a first sign-in (`mail_header`) is reached like a snapshot: one from them or sent to
+    them goes whole, with its earlier values given up; one between other people stays."""
+    ws, cfg, store = env
+    ids = _seed(ws, cfg, store)
+    with store.transaction() as tx:
+        base = {"source": "inbox", "title": "", "seen_at": _NOW.isoformat()}
+        mine = tx.create(
+            "mail_header",
+            {**base, "key": "h1", "title": f"Note for {NAME}", "message": {"sender": f"{NAME} <{EMAIL}>"}},
+            _W,
+        )
+        to_me = tx.create(
+            "mail_header",
+            {**base, "key": "h2", "message": {"sender": f"Other <{OTHER_ADDRESS}>", "participants": [EMAIL]}},
+            _W,
+        )
+        other = tx.create(
+            "mail_header",
+            {**base, "key": "h3", "message": {"sender": f"Other <{OTHER_ADDRESS}>", "participants": [OTHER_ADDRESS]}},
+            _W,
+        )
+    assert {mine.id, to_me.id} <= set(plan_of(store.read(), ids["person"], ws.root).headers)
+    assert other.id not in plan_of(store.read(), ids["person"], ws.root).headers
+    _forget(ws, cfg, store, ids)
+    view = store.read()
+    assert view.get("mail_header", mine.id) is None and view.get("mail_header", to_me.id) is None
+    assert view.get("mail_header", other.id) is not None
+    assert not any(NAME in json.dumps(r) or EMAIL in json.dumps(r) for r in view.ledger(kind="mail_header"))

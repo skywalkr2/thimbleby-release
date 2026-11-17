@@ -160,6 +160,12 @@ def _evidence(tx: Any, op: Any, w: WriteContext, st: Standing) -> dict[str, Any]
     return found if any(found.values()) else None
 
 
+def _single_value(text: str) -> bool:
+    from engine.proposals import single_value
+
+    return single_value(text)
+
+
 def apply(tx: Any, op: Any, w: WriteContext, st: Standing) -> list[dict[str, Any]]:
     """Apply a knowledge op. Returns the records touched."""
     if (why := problem(tx, op)) is not None:
@@ -177,6 +183,11 @@ def apply(tx: Any, op: Any, w: WriteContext, st: Standing) -> list[dict[str, Any
         return [{"kind": current.kind, "id": op.id}]
     kind = OP_KIND[op.op]
     kept = st.person and st.pm is not None
+    if kind == "lesson" and not kept and _single_value(op.text):
+        raise StoreError(
+            "a number or code from one item is a fact about that item, not a lesson: state what holds for the next "
+            "one, or propose nothing"
+        )
     data: dict[str, Any] = {
         "text": op.text,
         "evidence": _evidence(tx, op, w, st),
@@ -213,7 +224,7 @@ def proposal_rules(
     the evidence linked. Returns the entry it merged into, or None when it is not a duplicate."""
     from engine import proposals
 
-    existing = proposals.duplicate_of(tx, kind, data)
+    existing = proposals.duplicate_of(tx, kind, data, alike=st.alike)
     if existing is None:
         return None
     if kind == "glossary_entry" and _knows_more(data, existing.data):

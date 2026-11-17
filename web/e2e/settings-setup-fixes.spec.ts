@@ -6,7 +6,7 @@
 // workspace made as a person makes it, with the add-ons on, beside the fake services (tests/fake_services.py).
 import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
-import { collectProblems, fakeAddress, pressStart, visit, FIRST_SCREEN, pickFolder, type Info } from "./journey-helpers";
+import { collectProblems, fakeAddress, pressStart, visit, FIRST_SCREEN, pickFolder, type Info, leaveOut, turnOnAndGoOn } from "./journey-helpers";
 
 const FAKE = fakeAddress("JOURNEY_SETTINGS_FAKE_PORT", 8773);
 const LOADED = { timeout: 30_000 };
@@ -63,6 +63,7 @@ test.describe.serial("setup and settings fixes", () => {
     await expect(main.getByText("Works. Ready to use.")).toBeVisible();
     await main.getByRole("radio", { name: /^Yes/ }).check();
     await main.getByRole("button", { name: "Continue" }).click();
+    await turnOnAndGoOn(main);
     await expect(main.getByRole("heading", { level: 2, name: "Mail and calendar" })).toBeVisible(LOADED);
 
     // Back on the AI step after connecting: one card for the one account, none of the jargon.
@@ -76,7 +77,11 @@ test.describe.serial("setup and settings fixes", () => {
     await visit(page);
     await main.getByRole("button", { name: "Continue" }).click();
     await expect(main.getByRole("heading", { level: 2, name: "Mail and calendar" })).toBeVisible(LOADED);
-    await main.getByRole("button", { name: "I'll do this later" }).click();
+    await leaveOut(page, main);
+
+    // With mail left out there is no wait: People comes next, and is left out after its confirmation too.
+    await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible();
+    await leaveOut(page, main);
 
     // X97: the Backups step. The chooser starts where the checked folder is, shows the way down as a breadcrumb, can make a
     // folder, and refuses the computer's own folders in words.
@@ -101,8 +106,6 @@ test.describe.serial("setup and settings fixes", () => {
     await pickFolder(page, main, ["offsite"]);
     await main.getByRole("button", { name: "Continue" }).click();
     await expect(page.locator('[data-screen="backup"][data-state]')).toContainText("Done");
-    await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible();
-    await main.getByRole("button", { name: "I'll do this later" }).click();
     await expect(main.getByRole("heading", { level: 2, name: "Where things stand" })).toBeVisible();
     await main.getByRole("button", { name: "Go to Today" }).click();
     await expect(page.getByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening)/ })).toBeVisible(LOADED);

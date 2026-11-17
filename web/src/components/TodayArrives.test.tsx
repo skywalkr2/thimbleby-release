@@ -99,7 +99,18 @@ test("a bill the person wrote down, and a renewal from an email, carry no such n
   expect(screen.queryByText(NOTE)).toBeNull();
 });
 
-const area = line("area", { text: "Dentist", subject: "dentist", count: 4, names: ["Book the dentist", "Ask about the crown", "Closed on Fridays"] });
+const AREA_ITEMS = ["Book the dentist", "Ask about the crown", "Closed on Fridays", "Which dentist takes the new plan?"];
+const area = line("area", { text: "Dentist", subject: "AREA-1", count: 4, reason: "All four are about looking after your teeth.", names: AREA_ITEMS });
+
+test("an area the assistant offered shows why and every item it would take as its own row, never run together in one line", async () => {
+  show([area]);
+  await screen.findByText("Start the area Dentist");
+  const rows = within(within(row("area")).getByRole("list", { name: "What it would take" })).getAllByRole("listitem");
+  expect(rows.map((r) => r.textContent)).toEqual(AREA_ITEMS);
+  expect(row("area")).toHaveTextContent("All four are about looking after your teeth.");
+  expect(row("area")).toHaveTextContent("4 items");
+  expect(row("area")).not.toHaveTextContent("Book the dentist; Ask about the crown");
+});
 
 test("an area offered for items that share a word is started and filled with one press, and Undo takes both changes back", async () => {
   const keep = vi.fn(() => ({ project: "PRJ-9", filed: "CS-2", started: "CS-1" }));
@@ -117,11 +128,10 @@ test("an area offered for items that share a word is started and filled with one
   });
   // The line starts with its one verb and the suggested name already in it; the box for another name is behind Rename.
   expect(await screen.findByText("Start the area Dentist")).toBeInTheDocument();
-  expect(row("area")).toHaveTextContent("4 to-dos: Book the dentist; Ask about the crown; Closed on Fridays");
   expect(within(row("area")).queryByLabelText("Name of the area")).toBeNull();
   await userEvent.click(within(row("area")).getByRole("button", { name: "Start the area" }));
   await waitFor(() => expect(keep).toHaveBeenCalled());
-  expect(calls.find((c) => c.route === "POST areas/keep")?.body).toEqual({ word: "dentist", name: "Dentist" });
+  expect(calls.find((c) => c.route === "POST areas/keep")?.body).toEqual({ offer: "AREA-1", name: "Dentist" });
   expect(await screen.findByText("Started Dentist and filed 4 items under it")).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Undo" }));
   await waitFor(() => expect(undone).toEqual(["CS-2", "CS-1"]));
@@ -139,7 +149,7 @@ test("Rename in the line's menu opens the name field with the cursor in it, and 
   await user.clear(field);
   await user.type(field, "Teeth and health");
   await user.click(within(row("area")).getByRole("button", { name: "Start the area" }));
-  await waitFor(() => expect(calls.find((c) => c.route === "POST areas/keep")?.body).toEqual({ word: "dentist", name: "Teeth and health" }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST areas/keep")?.body).toEqual({ offer: "AREA-1", name: "Teeth and health" }));
   expect(await screen.findByText("Started Teeth and health and filed 4 items under it")).toBeInTheDocument();
 });
 

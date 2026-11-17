@@ -5,7 +5,7 @@ import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
 import { openScreen, screenReady } from "./open-screen";
 import { choicesOf, choose } from "./choose";
-import { expectQueueShows, pressStart, settingsSections, showSteps, widerThanWindow, FIRST_SCREEN } from "./journey-helpers";
+import { expectQueueShows, pressStart, settingsSections, showSteps, widerThanWindow, FIRST_SCREEN, toToday } from "./journey-helpers";
 
 interface Case {
   id: string;
@@ -312,11 +312,17 @@ test.describe.serial("acceptance scenario", () => {
   // reads no sent mail.
   test("the People step lists suggestions in one layout whatever the length of a name, with no sideways scroll", async ({ page }) => {
     const people = [
-      { name: "Jo Li", address: "jo@example.com", count: 1, from_sent: true },
-      { name: "Wilhelmina Featherstonehaugh-Cholmondeley-Throckmorton", address: "wilhelmina.featherstonehaugh.cholmondeley@example.com", count: 12, from_sent: true },
-      { name: "Sam Ng", address: "sam.ng.with.a.very.long.address.that.keeps.going@subdomain.example.com", count: 3, from_sent: true },
+      { name: "Jo Li", address: "jo@example.com", count: 1, why: "Someone you deal with." },
+      { name: "Wilhelmina Featherstonehaugh-Cholmondeley-Throckmorton", address: "wilhelmina.featherstonehaugh.cholmondeley@example.com", count: 12, why: "Someone you deal with." },
+      { name: "Sam Ng", address: "sam.ng.with.a.very.long.address.that.keeps.going@subdomain.example.com", count: 3, why: "Someone you deal with." },
     ];
     await page.route("**/setup/people-suggestions", (route) => route.fulfill({ json: { people } }));
+    // The shared workspace has no mail read, so the step would be by hand; the assistant's offers are shown as when mail was read.
+    await page.route(/\/setup(\?.*)?$/, async (route) => {
+      if (route.request().method() !== "GET" || route.request().resourceType() === "document") return route.fallback();
+      const response = await route.fetch();
+      await route.fulfill({ response, json: { ...(await response.json()), people_by_hand: false } });
+    });
     await signIn(page);
     await page.evaluate(() => {
       window.location.hash = "setup";
@@ -338,7 +344,7 @@ test.describe.serial("acceptance scenario", () => {
       }).toPass({ timeout: 5000 });
     }
     expect(await widerThanWindow(page, "People step")).toEqual([]);
-    await page.getByRole("button", { name: "Finish later" }).click();
+    await toToday(page);
     await expect(page.getByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening)/ })).toBeVisible();
     await page.setViewportSize({ width: 1280, height: 720 });
   });
@@ -401,8 +407,8 @@ test.describe.serial("acceptance scenario", () => {
     // The cursor starts on the screen's heading, never in a field (design 7.0).
     await expect.poll(() => page.evaluate(() => document.activeElement?.tagName)).toBe("H2");
     await checkAccessibility(page);
-    // Finish later leaves the walkthrough, and Today's setup line stays as it was.
-    await page.getByRole("button", { name: "Finish later" }).click();
+    // The address that names Today leaves the walkthrough, and Today's setup line stays as it was.
+    await toToday(page);
     await expect(page.getByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening)/ })).toBeVisible();
     // The next step is still the first one not done or skipped: the work question comes before the AI account.
     await expect(line).toContainText(/\d+ of 6 done/);
@@ -434,7 +440,7 @@ test.describe.serial("acceptance scenario", () => {
     await expect(page.getByRole("heading", { level: 2, name: "People", exact: true })).toBeFocused();
     await expect(page.getByRole("combobox", { name: /relates to you/ }).first()).toBeVisible();
     await expect(page.getByRole("form", { name: "Add someone" }).getByRole("textbox", { name: "Name" })).toBeVisible();
-    await page.getByRole("button", { name: "Finish later" }).click();
+    await toToday(page);
     await expect(page.getByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening)/ })).toBeVisible();
     await line.getByRole("button", { name: "More actions for setup" }).click();
     await page.getByRole("menuitem", { name: "Hide" }).click();
@@ -522,7 +528,7 @@ test.describe.serial("acceptance scenario", () => {
     const extrasWidth = (await page.getByRole("region", { name: "Optional extras" }).boundingBox())!.width;
     expect(extrasWidth).toBeGreaterThanOrEqual(listWidth - 2);
     await checkAccessibility(page);
-    await page.getByRole("button", { name: "Finish later" }).click();
+    await toToday(page);
     await expect(page.getByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening)/ })).toBeVisible();
   });
 

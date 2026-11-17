@@ -33,6 +33,7 @@ import { FormBlock } from "../ui/FormBlock";
 import { useContinue } from "../lib/walkthrough-continue";
 import { Actions } from "../ui/Actions";
 import { RowList } from "../ui/RowList";
+import { FullReadChoice } from "./FullReadChoice";
 import { SOURCES, SourceSides, listOf } from "./SourceSides";
 import styles from "./WalkthroughMail.module.css";
 import { Row } from "../ui/Row";
@@ -233,6 +234,9 @@ export function WalkthroughMail(props: {
   const sources = useQuery({ queryKey: ["watch"], queryFn: api.watchSources });
   const business = useQuery({ queryKey: ["business"], queryFn: api.business });
   const mailServices = useQuery({ queryKey: ["mail-services"], queryFn: api.mailServices });
+  const setupView = useQuery({ queryKey: ["setup"], queryFn: api.setup });
+  // What happens to the mail once read depends on whether there is an AI account to read it.
+  const firstGo = t(setupView.data?.steps.find((s) => s.id === "ai")?.done ? "walkthrough.mail.first_go" : "walkthrough.mail.first_go_no_ai");
   const hasMailGuide = (mailServices.data?.length ?? 0) > 0;
   // Once an account is connected the ways to add another are in one panel over the step, opened by "Connect another account".
   const [panel, setPanel] = useState(false);
@@ -372,7 +376,7 @@ export function WalkthroughMail(props: {
                   )}
                   {reads.length > 0 && needing === 0 && several && <> {t(grouped ? "walkthrough.mail.result.accounts_private" : "walkthrough.mail.result.accounts", { n: groups.length })}</>}
                 </p>
-                {reads.length > 0 && <p className="hint">{t("walkthrough.mail.first_go")}</p>}
+                {reads.length > 0 && <p className="hint">{firstGo}</p>}
                 {reads.length > 0 && hasSides && (
                   <p className="hint" id={hintId}>
                     {t("walkthrough.mail.sides.hint")}
@@ -393,6 +397,7 @@ export function WalkthroughMail(props: {
                         sources={mine}
                         grouped={grouped}
                         need={need}
+                        below={<FullReadChoice sources={mine} account={account} />}
                         action={(() => {
                           const mineIn = (signIns.data ?? []).filter((s) => addonOfSignIn(s.name) === service.id);
                           const item = mineIn.find((s) => (s.accounts ?? []).some((a) => a.address === account) || s.account === account) ?? (account === "" ? mineIn[0] : undefined);
@@ -442,7 +447,7 @@ export function WalkthroughMail(props: {
                   />
                 ))}
               </ul>
-              {!hasResult && <p className="hint">{t("walkthrough.mail.first_go")}</p>}
+              {!hasResult && <p className="hint">{firstGo}</p>}
             </FormBlock>
           )}
           {signedOut.length > 0 && (

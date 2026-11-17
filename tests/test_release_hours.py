@@ -117,6 +117,8 @@ def test_an_input_at_23_00_adds_no_line_until_09_00_the_next_working_day_then_sh
     assert [x.key for x in found] == ["away", f"go:{request}"]
     away = found[0]
     assert (away.kind, away.count) == ("away", 1) and datetime.fromisoformat(away.since) == at(tuesday, 9)
+    # It says when the first of them came in, so Came in can show what arrived between.
+    assert datetime.fromisoformat(away.at) == at(MONDAY, 23)
 
 
 def test_an_input_at_10_00_shows_at_once_with_no_away_row(env):

@@ -185,7 +185,7 @@ export const allProjects = [
       ...(s.base === "/" ? [{ name: `${s.name}-tables`, testMatch: /tables\.spec\.ts/, use, dependencies: [s.name] }] : []),
     ];
   }),
-  { name: "layout", testMatch: /(layout|handled|guards|internals|changed-rows|today-work|shared-rules|today-todos-46|states-phone)\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${layout.port}/` } },
+  { name: "layout", testMatch: /(layout|handled|guards|internals|changed-rows|today-work|shared-rules|today-todos-46|states-phone|w1-today-lines|learned-review)\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${layout.port}/` } },
   { name: "access", testMatch: /work-access\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${access.port}/` } },
   { name: "one-click", testMatch: /today-one-click\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${oneClick.port}/` } },
   { name: "schedule-review", testMatch: /schedule-review\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${scheduleReview.port}/` } },
@@ -252,7 +252,14 @@ export const allProjects = [
   { name: "review-r2-sides", testMatch: /review-r2-sides\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${manySides.port}/` } },
   { name: "review-r3", testMatch: /review-r3\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${reviewR3.port}/` } },
   { name: "review-r4", testMatch: /review-r4\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${reviewR4.port}/` } },
-  { name: "worst-case", testMatch: /(h1|t3)-worst-case\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${worstCase.port}/` } },
+  // Both files read and change the one server's records in order, so the second starts only after the first has finished.
+  { name: "worst-case", testMatch: /h1-worst-case\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${worstCase.port}/` } },
+  {
+    name: "worst-case-t3",
+    testMatch: /t3-worst-case\.spec\.ts/,
+    use: { baseURL: `http://127.0.0.1:${worstCase.port}/` },
+    dependencies: ["worst-case"],
+  },
   {
     name: "journeys-first-evening",
     testMatch: /journeys-first-evening\.spec\.ts/,
@@ -419,7 +426,8 @@ export const allServers = [
     on(worstCase.port, {
       command: `uv run python -m tests.e2e_server --port ${worstCase.port} --base-path / --worst-case --clock-at ${daytimeAt}`,
       cwd: "..",
-      url: `http://127.0.0.1:${worstCase.port}/api/health`,
+      // Ready when the seed's own background work (the stand-in sign-ins and what is read from them) is over.
+      url: `http://127.0.0.1:${worstCase.port}/__e2e/worst-case-ready`,
       reuseExistingServer: false,
       timeout: 90_000,
     }),

@@ -172,7 +172,36 @@ def _who(sender: str | None, people: People) -> tuple[str | None, str | None]:
     resolved = people.resolve(name)
     if resolved.status == "ok" and resolved.person:
         return resolved.person, name
-    return None, name
+    # A bare address names the service or the person it belongs to, never the address itself.
+    return None, (readable_sender(name) or name) if "@" in name and " " not in name else name
+
+
+#: Domain labels that name a kind of organization or a country's second level, never the sender.
+_PLAIN_LABELS = frozenset({"co", "com", "org", "net", "gov", "edu", "ac"})
+_SENDER_PARTS = re.compile(r"[._+-]+")
+
+
+def readable_sender(address: str, automated: tuple[str, ...] | None = None) -> str:
+    """The words a bare address stands for: the service for an automated sender (its address starts with a word of
+    `watch.automated_mail.senders`), else the person's name from the part before the @ sign. Empty when the address has
+    neither (digits only, no domain), so the caller keeps what it had."""
+    if automated is None:
+        from engine.config.schema import AutomatedMail
+
+        automated = tuple(AutomatedMail.model_fields["senders"].default_factory())  # type: ignore[misc,call-arg]
+    local, _, domain = address.strip().strip("<>").partition("@")
+    local = local.lower()
+    labels = [x for x in domain.lower().split(".") if x]
+    service = ""
+    if len(labels) >= 2:
+        rest = labels[:-1]
+        while len(rest) > 1 and rest[-1] in _PLAIN_LABELS:
+            rest = rest[:-1]
+        service = " ".join(w.capitalize() for w in _SENDER_PARTS.split(rest[-1]) if w)
+    words = [w.capitalize() for w in _SENDER_PARTS.split(local) if w.isalpha()]
+    if local.startswith(tuple(w.lower() for w in automated)) or not words:
+        return service
+    return " ".join(words)
 
 
 def _clean_subject(subject: str) -> str:

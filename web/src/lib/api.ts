@@ -204,6 +204,10 @@ export const api = {
   lookBackPreview: (source: string, days: number) =>
     call<S["LookBackView"]>("GET", `watch/${id(source)}/look-back?days=${days}`),
   lookBack: (source: string, days: number) => call<S["LookBackView"]>("POST", `watch/${id(source)}/look-back`, { days }),
+  /** The reaches a first sign-in offers for reading mail in full, each with its count and cost; nothing is chosen. */
+  fullRead: (source: string) => call<S["FullReadView"]>("GET", `watch/${id(source)}/full-read`),
+  /** The answer: a reach in days (read through the look further back, held for the go), or 0 for "not now". */
+  answerFullRead: (source: string, days: number) => call<S["LookBackView"]>("POST", `watch/${id(source)}/full-read`, { days }),
   watchKinds: () => call<S["WatchKindView"][]>("GET", "watch/kinds"),
   mailServices: () => call<S["MailServiceView"][]>("GET", "watch/mail-services"),
   watchAuthors: () => call<S["WatchAuthorOption"][]>("GET", "watch/authors"),
@@ -379,8 +383,8 @@ export const api = {
       body: file,
     });
   },
-  /** Keep the area offered for a word, under the name the person chose: start it and file the items that share the word under it. */
-  keepArea: (word: string, name?: string) => call<S["AreaKept"]>("POST", "areas/keep", { word, name: name || null }),
+  /** Keep an area the assistant offered, under the name the person chose: start it and file its items under it. */
+  keepArea: (offer: string, name?: string) => call<S["AreaKept"]>("POST", "areas/keep", { offer, name: name || null }),
   looksGood: (cs: string) => call<S["Ok"]>("POST", `changesets/${id(cs)}/looks-good`),
   reopen: (cs: string) => call<S["Ok"]>("POST", `changesets/${id(cs)}/reopen`),
   /** "All looks good" for a batch on Today: every changeset of it marked reviewed, one signal for each request. */
@@ -550,6 +554,7 @@ export const api = {
   editPerson: (p: string, body: S["PersonPatch"]) => call<S["Ok"]>("POST", `people/${id(p)}`, body),
   addSetupPerson: (body: S["SetupPersonIn"]) => call<S["Created"]>("POST", "setup/people-add", body),
   peopleSuggestions: () => call<S["PeopleSuggestionsView"]>("GET", "setup/people-suggestions"),
+  leaveOutSuggested: (body: S["PeopleLeaveOutIn"]) => call<S["Ok"]>("POST", "setup/people-suggestions/leave-out", body),
   previewPaste: (body: S["PeoplePasteIn"]) => call<S["PeoplePastePreview"]>("POST", "setup/people-paste/preview", body),
   pastePeople: (body: S["PeoplePasteIn"]) => call<S["PeoplePasteDone"]>("POST", "setup/people-paste", body),
   organizations: () => call<S["OrganizationView"][]>("GET", "organizations"),
@@ -667,6 +672,8 @@ export const api = {
   restoreWeekAhead: (previous: string[]) => call<S["Ok"]>("POST", "week-ahead/restore", { previous }),
   dismissWeekly: () => call<S["Ok"]>("POST", "brief/weekly/dismiss"),
   undismissWeekly: () => call<S["Ok"]>("POST", "brief/weekly/undismiss"),
+  /** Ask the assistant to offer goals for this week: estimated first and held for the person's go above the amount to confirm. */
+  offerGoals: () => call<S["HandedOver"]>("POST", "brief/goals/offer"),
   putGoals: (body: S["BriefGoalsIn"]) => call<S["BriefGoalsKept"]>("PUT", "brief/goals", body),
   /** Ask the assistant to draft this week's message to whoever the person reports to. */
   askBriefMessage: (body: S["BriefMessageAsk"]) => call<S["HandedOver"]>("POST", "brief/message", body),

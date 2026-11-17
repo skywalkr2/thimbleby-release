@@ -292,7 +292,11 @@ def build_knowledge_router(cfg: Config, store: Store, events: Events, worker: Wo
         separate."""
         view = store.read()
         listed = catch_up.proposal_ids(view, catch_up.load(store))
-        found = [p for p in proposals.proposals(view) if p.stored.id not in listed]
+        found = [
+            p
+            for p in proposals.proposals(view, alike=cfg.dispatch.knowledge.discard_similarity)
+            if p.stored.id not in listed
+        ]
         origins_count: dict[str, int] = {}
         for p in found:
             origins_count[p.came_from] = origins_count.get(p.came_from, 0) + 1
@@ -338,7 +342,11 @@ def build_knowledge_router(cfg: Config, store: Store, events: Events, worker: Wo
         view = store.read()
         state = catch_up.load(store)
         listed = catch_up.proposal_ids(view, state)
-        found = [p for p in proposals.proposals(view) if p.stored.id in listed]
+        found = [
+            p
+            for p in proposals.proposals(view, alike=cfg.dispatch.knowledge.discard_similarity)
+            if p.stored.id in listed
+        ]
         return CatchUpView(
             proposals=views(view, found, "catch_up"),
             made_at=state.made_at if state is not None else None,

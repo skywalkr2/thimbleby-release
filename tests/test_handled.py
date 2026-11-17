@@ -266,7 +266,7 @@ def test_treat_as_work_on_set_aside_mail_hands_it_in_records_a_signal_and_undo_s
     assert done.status_code == 200, done.text
     assert done.json()["request"] in {r.id for r in requests_in(store, "queued")}
     signals = [s.data for s in store.read().list("signal") if s.data["kind"] == "pulled_back"]
-    assert len(signals) == 1 and "Set aside" in signals[0]["note"]
+    assert len(signals) == 1 and signals[0]["note"] == "The person marked this message as work."
     view = get(client, base, tab="set_aside")
     assert item["id"] not in ids(view) and view["counts"]["set_aside"] == 3
     back = client.post(f"{base}/mail/{item['id']}/set-aside", json={"section": item["section"]})
@@ -299,7 +299,7 @@ def test_treat_as_personal_on_set_aside_mail_files_it_under_the_personal_project
     request = store.read().get("request", done.json()["request"])
     assert request.data["project"] == sides.personal_project(store.read(), cfg)
     signals = [s.data for s in store.read().list("signal") if s.data["kind"] == "pulled_back"]
-    assert len(signals) == 1 and "treated as personal" in signals[0]["note"]
+    assert len(signals) == 1 and signals[0]["note"] == "The person marked this message as personal."
 
 
 def test_treat_as_a_side_files_the_hand_in_under_that_side_on_either_list_and_refuses_what_is_not_a_side(app):

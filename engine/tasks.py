@@ -37,6 +37,9 @@ NOT_FROM_NOTES = (
         "reminder.entry",
         "away.read",
         "week.read",
+        "week.goals",
+        "area.offer",
+        "person.offer",
     }
     # Drafting something to send is the person's, or an add-on's action they apply; outward acts are never offered to
     # the assistant's reading of notes (design 6.12).
@@ -255,10 +258,11 @@ TASKS: dict[str, TaskKind] = {
         defaults={"max_output": 4000, "expected_output": 500, "expected_image_tokens": 1600},
     ),
     # The weekly look at who the person deals with (engine/person_look.py): the contact tally's top entries and the
-    # repeating calendar entries in, glossary and routing proposals out, kept or discarded by the person. Low-cost tier.
+    # repeating calendar entries in, glossary and routing proposals and offers of people to add out, kept or discarded
+    # by the person. Low-cost tier.
     "knowledge-person": TaskKind(
         name="knowledge-person",
-        ops=("glossary.add", "routing.add"),
+        ops=("glossary.add", "routing.add", "person.offer"),
         prompt="knowledge-person",
         playbook="knowledge-person",
         label="Looking at who you deal with",
@@ -277,6 +281,32 @@ TASKS: dict[str, TaskKind] = {
         defaults={"max_output": 2000, "expected_output": 500},
         max_ops=1,
         requires_ops=("week.read",),
+    ),
+    # The goals offered for the coming week (engine/week_goals.py): the person's due to-dos and promises, the week's
+    # calendar and the goals they kept before in, an offer of goals out, kept on the record for the week.
+    "monday-goals": TaskKind(
+        name="monday-goals",
+        ops=("week.goals",),
+        prompt="monday-goals",
+        playbook="monday-goals",
+        label="Offering goals for the week",
+        on="week_plan",
+        defaults={"max_output": 1500, "expected_output": 300},
+        max_ops=1,
+        requires_ops=("week.goals",),
+    ),
+    # An area of the person's life offered for items filed under Personal that share a word (engine/area_offers.py):
+    # the narrowed items in, areas named by what the items are about out, each waiting for the person's yes.
+    "area-read": TaskKind(
+        name="area-read",
+        ops=("area.offer",),
+        prompt="area-read",
+        playbook="area-read",
+        label="Reading what your Personal items are about",
+        on="project",
+        defaults={"max_output": 2000, "expected_output": 400},
+        max_ops=1,
+        requires_ops=("area.offer",),
     ),
     "follow-on": TaskKind(
         name="follow-on",

@@ -66,7 +66,10 @@ DECLINED_ENDING = (
 KIND_WORDS = {
     "sent_back": "The person sent the assistant's work back with a note.",
     "undone": "The person undid some or all of the assistant's work (the ops marked undone).",
-    "pulled_back": "The person pulled back a change that the assistant had closed by itself.",
+    "pulled_back": "The person pulled back a change that the assistant, or a rule, had closed or set aside by itself: "
+    "what they did is in the line below, in the app's own words. What they did tells the direction of the lesson: "
+    "teach that this kind of item is work (to track, to make a to-do of), never the reverse, and never that it "
+    "should have been set aside.",
     "draft_edited": "The person edited the assistant's draft before using it; the note is the text as they used it.",
     "routed": "The person answered the assistant's question about who someone is or who owns something.",
     "answered_assistant": "The person answered a question the assistant asked them; the note is their answer.",
@@ -84,6 +87,50 @@ KIND_WORDS = {
     "missed": "The person said the assistant missed something: it failed to find it. The note is their sentence, and "
     "no run is named; teach what to look for and where, or ask.",
 }
+
+
+#: The kinds of correction whose note is the app's own record of what the person did, not words they wrote.
+APP_NOTE_KINDS = ("pulled_back", "set_aside", "undone")
+
+
+def _plain(text: Any) -> str:
+    return " ".join(str(text or "").casefold().split())
+
+
+def app_words(reader: Any, signal: Mapping[str, Any]) -> list[str]:
+    """The app's own words about a correction: its record of what the person did, and the reasons it gave for setting
+    a message aside or closing a change by itself. They are never a source for a lesson."""
+    found: list[str] = []
+    if signal.get("kind") in APP_NOTE_KINDS and signal.get("note"):
+        found.append(str(signal["note"]))
+    for ref in signal.get("refs") or []:
+        kind = kind_of_id(REGISTRY, ref)
+        record = reader.get(kind, ref) if kind in ("request", "snapshot") else None
+        if record is None:
+            continue
+        for mark in (record.data.get("set_aside"), record.data.get("auto_closed")):
+            if isinstance(mark, Mapping) and mark.get("reason"):
+                found.append(str(mark["reason"]))
+        waiting = str(record.data.get("waiting") or "")
+        if waiting.startswith(("Set aside:", "Closed by")):
+            found.append(waiting.partition(":")[2].strip())
+    return [w for w in found if w.strip()]
+
+
+def evidence_is_app_words(reader: Any, request_data: Mapping[str, Any], op: Any) -> str | None:
+    """Why a learning answer's evidence can't stand, or None: the words it quotes are the app's own (its reason for
+    setting a message aside, its record of what the person did), which no lesson rests on."""
+    quote = getattr(getattr(op, "evidence", None), "quote", None)
+    signal = reader.get("signal", signal_of(request_data) or "")
+    if not quote or signal is None:
+        return None
+    said = _plain(quote)
+    if any(said and said in _plain(words) for words in app_words(reader, signal.data)):
+        return (
+            "the quote is the app's own wording about the correction, not the person's words or the message's: "
+            "quote the person's note or the message, or leave the evidence out"
+        )
+    return None
 
 
 def is_learning(task: str | None) -> bool:
@@ -645,6 +692,9 @@ def build(ws: Any, store: Any, cfg: Any, req: Any, kind: Any, today: date) -> An
     correction = [words]
     if note and data["kind"] in ("sent_back", "draft_edited", "answered_assistant", "missed", "dropped"):
         correction.append(f"<note>\n{note}\n</note>")
+    elif note and data["kind"] in APP_NOTE_KINDS:
+        # The app's own record of what the person did: said plainly, and never a source to quote.
+        correction.append(f"What the person did, in the app's words (never a source to quote): {_marked(note)}")
     elif note:
         # A declined change's note is the change's own description, not words the person wrote.
         source = "the change they declined" if data["kind"] == "held_declined" else "the note"

@@ -1,17 +1,18 @@
 """Areas of life under the personal project (design 6.32, "Personal life").
 
-An area (`Project.area`) is ongoing and has no end day; a project under it has a goal and an end. Three things are
-decided here, all by rules over the records and the settings, with no AI:
+An area (`Project.area`) is ongoing and has no end day; a project under it has a goal and an end. Three things
+are done here, the first two by rules over the records and the settings with no AI:
 
 - **Reach.** What a draft about a project in an area may draw on stops at that area: the area, the projects inside
   it and the projects above it (the personal project), never a sibling area's facts, open items or knowledge.
 - **Reading.** Which accounts may read an area's material (its content levels, and the ones above it) and whether
   reading it sends anything away from this computer.
-- **Proposals.** When enough items filed under the personal project itself share a word, one area is offered for
-  them. Words are matched whole, case aside, and a word the language uses every day never counts. Only the items'
-  own subject is read: a question the app asks about a held item is its own wording, never a source of a name.
-  Nothing is moved until the person says yes, and what they keep is their own edit, so a move is recorded as a
-  correction.
+- **Offers.** Whether items filed under the personal project make an area of the person's life, what to call it and why
+  is the assistant's judgment (`engine/area_offers.py`, the `area-read` task kind), kept as offer records. A plain
+  rule only narrows what it looks at: items that share a whole word with enough others, a word the language uses every
+  day never counting. Only the items' own subject is read: a question the app asks about a held item is its own
+  wording, never a source of a name. Nothing is moved until the person says yes, and what they keep is their own edit,
+  so a move is recorded as a correction.
 """
 
 from __future__ import annotations
@@ -180,12 +181,25 @@ _ITEMS: dict[str, tuple[str, tuple[str, ...] | None]] = {
 
 
 @dataclass(frozen=True)
-class Proposal:
-    """An area offered for items that share a word: the `word` they share (also the proposed name, capitalized),
-    and the `items` (kind, id, read version, words) it would take, most recent first."""
+class Candidate:
+    """An item the rule narrowed to for the assistant's reading: its kind, id, read version and words, and the whole
+    words it shares with enough other items under the personal project (`shared`, most shared first)."""
 
-    word: str
+    kind: str
+    id: str
+    version: int
+    text: str
+    shared: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Offer:
+    """An area the assistant offered, as it stands now: the offer record's `id`, the `name` it gave the area, its `why`
+    and the `items` (kind, id, read version, words) that are still there to take, most recent first."""
+
+    id: str
     name: str
+    why: str
     items: tuple[tuple[str, str, int, str], ...]
 
 
@@ -207,10 +221,17 @@ def _own_items(view: Any, cfg: Any, personal: str) -> list[tuple[str, str, int, 
     return found
 
 
-def proposals(view: Any, cfg: Any) -> list[Proposal]:
-    """The areas to offer now. None when the setting is zero or there is no personal project. The word shared by the
-    most items goes first (ties by the word), and an item is offered once: it goes with the first word that takes
-    it. A word already naming a project under the personal project, or a project of the same name, is not offered."""
+def _offered_ids(view: Any) -> set[str]:
+    """The ids of the items an offer already holds, whatever became of it: they are not offered again."""
+    return {i["id"] for o in view.list("area_offer") for i in o.data["items"]}
+
+
+def narrowed(view: Any, cfg: Any) -> list[Candidate]:
+    """The items the assistant is asked about: those filed under the personal project itself that share a whole word
+    with enough others (`steward.areas.propose_after`; none when it is zero or there is no personal project), a word the
+    language uses every day or that already names a project never counting, and items an earlier offer holds left out.
+    A plain rule only narrows: whether the items make an area of the person's life, and what it is called, is the
+    assistant's to say. Newest first."""
     from engine.knowledge_section import _overlap_words
 
     needed = cfg.steward.areas.propose_after
@@ -224,28 +245,33 @@ def proposals(view: Any, cfg: Any) -> list[Proposal]:
         if project.id in _inside(view, personal) and project.id != personal
         for word in _overlap_words(str(project.data["name"]))
     } | {str(p.data["name"]).strip().lower() for p in view.list("project")}
-    items = _own_items(view, cfg, personal)
+    held = _offered_ids(view)
+    items = [i for i in _own_items(view, cfg, personal) if i[1] not in held]
     words: dict[str, set[str]] = {}
     for _kind, record_id, _, text in items:
         for word in _overlap_words(text):
             if word.isalpha() and word not in everyday and _stem(word) not in everyday and word not in named:
                 words.setdefault(word, set()).add(record_id)
-    taken: set[str] = set()
-    out: list[Proposal] = []
+    shared_by: dict[str, list[str]] = {}
     for word, ids in sorted(words.items(), key=lambda kv: (-len(kv[1]), kv[0])):
-        mine = [i for i in items if i[1] in ids and i[1] not in taken]
-        shown = _whole_word(word, [i[3] for i in mine])
-        if len(mine) < needed or shown.lower() in named or word.capitalize().lower() in named:
+        if len(ids) < needed:
             continue
-        taken |= {i[1] for i in mine}
-        out.append(Proposal(word, shown.capitalize(), tuple(sorted(mine, key=lambda i: i[1], reverse=True))))
-    return out
+        shown = _whole_word(word, [i[3] for i in items if i[1] in ids])
+        if shown.lower() in named or shown.capitalize().lower() in named:
+            continue
+        for record_id in ids:
+            shared_by.setdefault(record_id, []).append(shown.lower())
+    return [
+        Candidate(kind, record_id, version, text, tuple(shared_by[record_id]))
+        for kind, record_id, version, text in sorted(items, key=lambda i: i[1], reverse=True)
+        if record_id in shared_by
+    ]
 
 
 def _whole_word(stem: str, texts: list[str]) -> str:
     """The word the items wrote for a matching stem, the one most of them used (the shorter one on a tie, then the first
     alphabetically). The stem folds plurals so "swatches" and "swatch" meet, but it is not always a word ("swatche"), so
-    an area is never named by it. With none found the stem stands."""
+    the words shown are never the stem. With none found the stem stands."""
     from collections import Counter
 
     from engine.knowledge_section import _PART, _WORD
@@ -267,10 +293,29 @@ def _stem(word: str) -> str:
     return stem(word)
 
 
-def find(view: Any, cfg: Any, word: str) -> Proposal | None:
-    """The offer for a word as it stands now, or None when it no longer stands (fewer items share it, or the area
-    exists)."""
-    return next((p for p in proposals(view, cfg) if p.word == word), None)
+def offers(view: Any, cfg: Any) -> list[Offer]:
+    """The areas to offer now: each offer the assistant made that waits for the person, with the items of it that are
+    still there (still filed under the personal project and open). An offer with fewer than two left, or whose name is
+    now a project's, is not shown. Oldest first."""
+    personal = sides.personal_project(view, cfg)
+    if personal is None:
+        return []
+    names = {str(p.data["name"]).strip().lower() for p in view.list("project")}
+    out: list[Offer] = []
+    for record in sorted(view.list("area_offer"), key=lambda r: r.id):
+        d = record.data
+        if d["status"] != "offered" or d["name"].strip().lower() in names:
+            continue
+        here = {i[1]: i for i in _own_items(view, cfg, personal)}
+        standing = tuple(here[i["id"]] for i in d["items"] if i["id"] in here and here[i["id"]][0] == i["kind"])
+        if len(standing) >= 2:
+            out.append(Offer(record.id, d["name"], d["why"], standing))
+    return out
+
+
+def find(view: Any, cfg: Any, offer_id: str) -> Offer | None:
+    """The offer as it stands now, or None when it no longer stands (fewer items are left, or the area exists)."""
+    return next((o for o in offers(view, cfg) if o.id == offer_id), None)
 
 
 @dataclass(frozen=True)
@@ -282,18 +327,19 @@ class Kept:
     started: str
 
 
-def keep(store: Any, cfg: Any, word: str, name: str | None = None) -> Kept:
-    """Start the area offered for a word under the personal project and file its items under it, each filing the
-    person's own edit of the item's project (so a move from the personal project is a correction the assistant learns
-    from). Two changes, so the screen can undo both. Raises `StoreError` when the offer no longer stands or an item
-    changed since it was offered. `name` is the name the person chose for the area; the offer's own when it is empty."""
+def keep(store: Any, cfg: Any, offer_id: str, name: str | None = None) -> Kept:
+    """Start the area an offer names under the personal project and file its items under it, each filing the person's
+    own edit of the item's project (so a move from the personal project is a correction the assistant learns from), and
+    mark the offer kept. Two changes, so the screen can undo both. Raises `StoreError` when the offer no longer stands
+    or an item changed since it was offered. `name` is the name the person chose for the area; the offer's own when it
+    is empty."""
     from engine.applier import apply_as_person
     from engine.storage import StoreError
 
     view = store.read()
-    offer = find(view, cfg, word)
+    offer = find(view, cfg, offer_id)
     if offer is None:
-        raise StoreError("That offer no longer stands: fewer items share the word now, or the area is already there.")
+        raise StoreError("That offer no longer stands: fewer of its items are left, or the area is already there.")
     chosen = " ".join((name or "").split()) or offer.name
     if chosen.lower() in {str(p.data["name"]).strip().lower() for p in view.list("project")}:
         raise StoreError(f"You already have something called {chosen}. Choose a different name.")
@@ -314,5 +360,14 @@ def keep(store: Any, cfg: Any, word: str, name: str | None = None) -> Kept:
         }
         for kind, record_id, version, _ in offer.items
     ]
-    filed = apply_as_person(store, cfg, ops, f"Filed {len(ops)} items under the area {chosen}")
+    record = view.get("area_offer", offer_id)
+    ops.append(
+        {
+            "op": "record.edit",
+            "record": {"kind": "area_offer", "id": offer_id},
+            "fields": {"status": "kept", "project": project},
+            "read_version": record.version,
+        }
+    )
+    filed = apply_as_person(store, cfg, ops, f"Filed {len(offer.items)} items under the area {chosen}")
     return Kept(project, filed, started)

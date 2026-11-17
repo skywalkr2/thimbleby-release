@@ -3869,12 +3869,33 @@ class WatchFile(FileModel):
         description="How many more days further back than the first read the person can ask a mail source to look, "
         "offered as a list to pick from. Each shows its item count and cost before anything is read.",
     )
+    full_read_choices: list[int] = Field(
+        default_factory=lambda: [14, 30, 90],
+        description="After a mail account is first signed in, how many days back its mail can be read in full, offered "
+        'as a list to pick from with each one\'s item count and cost. None is chosen for the person, and "Not now" '
+        "is always one of the choices. Empty: the question is not asked.",
+    )
     look_back_max_items: int = Field(
         100,
         ge=1,
         le=1000,
         description="The most older messages one look further back asks a mail source for. A look that would find "
         "more takes the newest of them and says where the mail it took starts.",
+    )
+    first_headers_days: int = Field(
+        365,
+        ge=0,
+        le=3650,
+        description="After a mail account is first signed in, how many days back its message headers (who wrote to "
+        "whom, when and where each message ended up, never its text) are read once as ground for the assistant's "
+        "first look at your habits. It costs no assistant work and holds nothing for you to do. 0: not read.",
+    )
+    first_headers_max_items: int = Field(
+        5000,
+        ge=1,
+        le=50000,
+        description="The most message headers that first read asks a mail source for. A year with more takes the "
+        "newest.",
     )
     sorting_batch: int = Field(
         25,

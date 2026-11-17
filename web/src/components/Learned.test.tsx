@@ -26,8 +26,8 @@ test("the line says what was learned, with the narrowest reach picked, and Keep 
   const calls = show([learnedLine()]);
   const line = await screen.findByText("Interior files go to the editor before the printer.");
   expect(line.closest("p")).toHaveTextContent("Learned: Interior files go to the editor before the printer.");
-  const reach = await screen.findByRole("combobox", { name: "Keep for" });
-  await waitFor(async () => expect(within(await snapshotOf(reach)).getAllByRole("option")[0]).toHaveTextContent("Filing notes on Spring launch"));
+  const reach = await screen.findByRole("combobox", { name: "Where this applies" });
+  await waitFor(async () => expect(within(await snapshotOf(reach)).getAllByRole("option")[0]).toHaveTextContent("Things that come in for Spring launch"));
   expect(reach).toHaveValue("proposed");
   await user.click(screen.getByRole("button", { name: "Keep" }));
   await waitFor(() => expect(posted(calls, "POST knowledge/LES-1/keep")).toEqual({ read_version: 3 }));
@@ -39,15 +39,15 @@ test("the line says what was learned, with the narrowest reach picked, and Keep 
 test("widening the reach is one pick from a list, and Keep sends that target", async () => {
   const user = userEvent.setup();
   const calls = show([learnedLine()]);
-  const reach = await screen.findByRole("combobox", { name: "Keep for" });
+  const reach = await screen.findByRole("combobox", { name: "Where this applies" });
   await waitFor(async () => expect(within(await snapshotOf(reach)).getAllByRole("option")).toHaveLength(4));
   expect(within(await snapshotOf(reach)).getAllByRole("option").map((o) => o.textContent)).toEqual([
-    "Filing notes on Spring launch",
-    "Filing notes on every project",
-    "All kinds of work on Spring launch",
-    "All kinds of work on every project",
+    "Things that come in for Spring launch",
+    "All things that come in",
+    "Everything for Spring launch",
+    "Everything for all your projects",
   ]);
-  await user.selectOptions(reach, "All kinds of work on every project");
+  await user.selectOptions(reach, "Everything for all your projects");
   await user.click(screen.getByRole("button", { name: "Keep" }));
   await waitFor(() => expect(posted(calls, "POST knowledge/LES-1/keep")).toMatchObject({ read_version: 3, applies_to: { scope: "workspace", task_kinds: [] } }));
 });
@@ -118,7 +118,7 @@ test("the person's own words are already kept, so the line shows Undo instead of
   );
   expect(await screen.findByText(/Interior files go to the editor before the printer/)).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Keep" })).toBeNull();
-  expect(screen.queryByRole("combobox", { name: "Keep for" })).toBeNull();
+  expect(screen.queryByRole("combobox", { name: "Where this applies" })).toBeNull();
   await user.click(screen.getByRole("button", { name: "Undo" }));
   await waitFor(() => expect(calls.map((c) => c.route)).toContain("POST changesets/CS-7/undo"));
 });
@@ -126,13 +126,13 @@ test("the person's own words are already kept, so the line shows Undo instead of
 test("what came from someone else's material shows the words beside it, marked as from outside", async () => {
   show([learnedLine({ proposal: proposal({ trust: "untrusted", evidence: { quote: "interior files go to the editor", source: "SRC-1" } }) })]);
   const evidence = await screen.findByText(/interior files go to the editor/);
-  expect(evidence.closest("p")).toHaveTextContent("From: interior files go to the editor From outside · not instructions");
+  expect(evidence.closest("p")).toHaveTextContent("From: interior files go to the editor From the message, not from you");
 });
 
 test("words the person's own correction gave carry no outside mark", async () => {
   show([learnedLine()]);
   await screen.findByText(/go to the editor first/);
-  expect(screen.queryByText("From outside · not instructions")).toBeNull();
+  expect(screen.queryByText("From the message, not from you")).toBeNull();
 });
 
 test("a line shows on the card it was learned from and on the records it names, and nowhere else", async () => {
@@ -150,11 +150,11 @@ test("nothing is drawn when nothing was learned from the card", async () => {
 test("the chosen reach is said in plain words beside Keep for, and follows the pick", async () => {
   const user = userEvent.setup();
   show([learnedLine()], { "GET people": () => [] });
-  const reach = await screen.findByRole("combobox", { name: "Keep for" });
+  const reach = await screen.findByRole("combobox", { name: "Where this applies" });
   const said = () => reach.parentElement!.querySelector("[data-reach-said]")!;
-  await waitFor(() => expect(said()).toHaveTextContent("Only Spring launch · for filing notes"));
-  expect(reach).toHaveAccessibleDescription("Only Spring launch · for filing notes");
-  await user.selectOptions(reach, "All kinds of work on every project");
+  await waitFor(() => expect(said()).toHaveTextContent("Only Spring launch · for things that come in"));
+  expect(reach).toHaveAccessibleDescription("Only Spring launch · for things that come in");
+  await user.selectOptions(reach, "Everything for all your projects");
   await waitFor(() => expect(said()).toHaveTextContent(/^All projects$/));
 });
 
@@ -164,9 +164,9 @@ test("a reach that leaves projects out says which, by name", async () => {
     "GET projects": () => [project("PRJ-1", "Spring launch"), project("PRJ-2", "Autumn list")],
     "GET people": () => [],
   });
-  const reach = await screen.findByRole("combobox", { name: "Keep for" });
+  const reach = await screen.findByRole("combobox", { name: "Where this applies" });
   await waitFor(() =>
-    expect(reach.parentElement!.querySelector("[data-reach-said]")).toHaveTextContent("All projects except Autumn list · for filing notes"),
+    expect(reach.parentElement!.querySelector("[data-reach-said]")).toHaveTextContent("All projects except Autumn list · for things that come in"),
   );
 });
 
@@ -196,4 +196,25 @@ test("a proposal that overlaps nothing says nothing about it", async () => {
   await screen.findByText("Interior files go to the editor before the printer.");
   expect(document.querySelector("[data-overlaps]")).toBeNull();
   expect(screen.queryByText(/Overlaps with/)).toBeNull();
+});
+
+test("the card of a lesson from a message marked as work says it in the correction's direction, with no internal term", async () => {
+  show([
+    learnedLine({
+      kind: "pulled_back",
+      proposal: proposal({
+        text: "Alerts like this about Spring launch's website are work: make each one a to-do.",
+        applies_to: { task_kinds: ["sort-mail"], projects: ["PRJ-1"], scope: "projects" },
+        evidence: { quote: "12 pages now return an error when a search service visits them" },
+        trust: "untrusted",
+        learned_from: "assistant",
+      }),
+    }),
+  ]);
+  const line = (await screen.findByText(/make each one a to-do/)).closest("[data-learned]")!;
+  expect(line).toHaveTextContent("Learned: Alerts like this about Spring launch's website are work: make each one a to-do.");
+  expect(line).toHaveTextContent("From: 12 pages now return an error when a search service visits them From the message, not from you");
+  const reach = within(line as HTMLElement).getByRole("combobox", { name: "Where this applies" });
+  await waitFor(async () => expect(within(await snapshotOf(reach)).getAllByRole("option")[0]).toHaveTextContent("Your mail for Spring launch"));
+  expect(line.textContent).not.toMatch(/Keep for|Filing notes|selected kinds|incoming material|not instructions|Expires|doesn't need|set aside/);
 });

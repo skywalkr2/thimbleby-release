@@ -130,6 +130,7 @@ from api.schemas import (
     PanelRow,
     PanelView,
     PendingRestoreView,
+    PeopleLeaveOutIn,
     PeoplePasteDone,
     PeoplePasteEntry,
     PeoplePasteIn,
@@ -843,6 +844,8 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
             if line.until:
                 # A time of the person's own clock, so the screen shows it as they would say it.
                 data["until"] = datetime.fromisoformat(line.until).astimezone(here)
+            if line.kind == "away" and line.since:
+                data["since"] = datetime.fromisoformat(line.since).astimezone(here)
             if line.waiting_since:
                 data["waiting_since"] = datetime.fromisoformat(line.waiting_since).astimezone(here)
             about = view.get("action", line.actions[0]) if len(line.actions) == 1 else None
@@ -1560,13 +1563,13 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
     def first_go() -> FirstGoStarted:
         """The person's first go: the mail handed in unsorted while it was pending is sorted first (the go covers that
         run), then every run still waiting for it starts, and no run waits for it again."""
-        from engine import watch
+        from engine import setup, watch
 
-        aside = watch.sort_before_first_go(ws, store, cfg)
+        setup.give_first_go(ws)
+        watch.sort_before_first_go(ws, store, cfg)
         started = grant_first_go(store)
-        if started or aside:
-            worker.poke()
-            changed()
+        worker.poke()
+        changed()
         return FirstGoStarted(started=started)
 
     @r.get("/status")
@@ -1908,6 +1911,14 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
                     found = s.id
             return found
 
+        def message_link(source: str | None, key: str | None) -> str | None:
+            """The address that opens a mail item, from its latest snapshot that has one."""
+            found = None
+            for s in snapshots.get((source or "", key or ""), []):
+                if s.data.get("message") and s.data.get("link"):
+                    found = s.data["link"]
+            return found
+
         out: list[ChangeItem] = []
         edited: dict[str, tuple[str, str]] = {}  # request id to the one record the person's own edit changed
         for req in newest_first:
@@ -1978,6 +1989,7 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
                     if cs is not None and d["state"] in ("review", "done")
                     else None,
                     mail_item=mail_item(watched.get("source"), watched.get("key")) if watched else None,
+                    link=message_link(watched.get("source"), watched.get("key")) if watched else None,
                     intake=d.get("intake"),
                     project=request_project(store.read(), req, cs.data if cs is not None else {}),
                     title=_title_view(
@@ -2686,18 +2698,50 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
     def add_setup_person(body: SetupPersonIn) -> Created:
         """Add a person from the people step with the address their mail showed, kept as the way to reach them."""
         new = create_person(PersonIn(**body.model_dump(exclude={"address"})), body.address)
+        from engine import person_look
+
+        if body.address:
+            person_look.settle(store, cfg, body.address, "kept", new)  # an offer for them is answered
         changed()
         return Created(id=new)
 
     @r.get("/setup/people-suggestions")
     def people_suggestions() -> PeopleSuggestionsView:
-        """The people the person's mail shows most (who their sent mail went to, else who wrote to them), not yet on
-        file, for the people step to offer each with an Add. Reads only; nothing is asked of a service."""
-        from engine import people_suggestions
+        """The people the assistant offers to add, read by its look at who the person deals with (`engine.person_look`):
+        each with the reason, not on file yet. With none, where the look stands, so the step can say what happens next.
+        Reads only; the rules of an address's shape decide nothing."""
+        from engine import person_look
 
         now = current()
-        found = people_suggestions.suggest(store, now, now.ui.walkthrough.suggested_people)
-        return PeopleSuggestionsView(people=[PersonSuggestion(**asdict(f)) for f in found])
+        offers = person_look.waiting_offers(store)[: now.ui.walkthrough.suggested_people]
+        people = [
+            PersonSuggestion(
+                name=o.data["name"],
+                address=o.data["address"],
+                count=o.data["from_them"] + o.data["to_them"],
+                why=o.data["why"],
+            )
+            for o in offers
+        ]
+        state = person_look.look_state(ws, store, now) if not people else "looked"
+        held = person_look.held_for_go(store) if state == "waiting" else None
+        return PeopleSuggestionsView(
+            people=people,
+            state=state,
+            request=held.id if held else None,
+            read_version=held.version if held else None,
+            estimate_usd=held.data.get("estimate_usd") if held else None,
+        )
+
+    @r.post("/setup/people-suggestions/leave-out")
+    def leave_out_suggested(body: PeopleLeaveOutIn) -> Ok:
+        """Leave offered people out: each offer is marked left out and is never made again."""
+        from engine import person_look
+
+        left = [a for a in body.addresses if person_look.settle(store, cfg, a, "dismissed")]
+        if left:
+            changed()
+        return Ok(ok=str(len(left)))
 
     @r.post("/setup/people-paste/preview")
     def paste_people_preview(body: PeoplePasteIn) -> PeoplePastePreview:

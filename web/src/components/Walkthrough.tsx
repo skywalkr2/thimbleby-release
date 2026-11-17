@@ -1,10 +1,11 @@
 // The new-start walkthrough (design 7.8): the setup as one guided path, full window, one screen at a time in the order a
 // person needs them: Welcome (which is no step), then six counted steps, You, Work, Your AI account, Mail and calendar,
-// Backups, People, and Done. The server decides each
+// People, Backups, and Done, with a wait for Reginald's first reading between Mail and People. The server decides each
 // step's standing and its place ("You · 1 of 8", counting every row of the rail); this only draws them. Every screen says why it matters and
 // can be skipped now and done later. The server keeps the screen the person is on, so it resumes where they left it,
-// also after a restart; "Finish later" closes it for good, and it opens again only when the person asks. The core's own
-// step forms are the ones the setup list uses.
+// also after a restart. There is no way out of it as a whole: the AI, Mail and People steps (and the others) are left out one
+// at a time, each after a confirmation that says what that gives up, and the screens after it follow what was left out.
+// The core's own step forms are the ones the setup list uses.
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { api, type S } from "../lib/api";
@@ -25,6 +26,9 @@ import { WalkthroughPeople } from "./WalkthroughPeople";
 import { WorkStep } from "./WalkthroughWork";
 import { AddConnection } from "./Sources";
 import { WalkthroughMail } from "./WalkthroughMail";
+import { WalkthroughReading } from "./WalkthroughReading";
+import { ReginaldOn } from "./ReginaldOn";
+import { SkipConfirm } from "./SkipConfirm";
 import { WelcomeAi } from "./WelcomeAi";
 import { WelcomeBackup } from "./WelcomeBackup";
 import { StepFooter, WizardRail, WizardShell, WizardStep, type RailStep } from "../ui/Wizard";
@@ -48,8 +52,6 @@ export function Walkthrough(
   props: Given & {
     /** Open at this screen, when a line elsewhere sent the person to a step; `n` tells one request from the next. */
     at?: { screen: Screen; n: number } | null;
-    /** Finish later was chosen, and kept. */
-    onFinishLater: () => void;
     /** The last button was pressed, and kept. */
     onDone: () => void;
   },
@@ -66,6 +68,11 @@ export function Walkthrough(
   const requested = useRef(0);
   const [problem, setProblem] = useState("");
   const [busy, setBusy] = useState(false);
+  // The confirmation of leaving the screen's step out, while it is open.
+  const [confirming, setConfirming] = useState(false);
+  // Whether the person moved forward to the screen they are on (a finished reading then moves on by itself) or came to it by
+  // going back or picking it in the list.
+  const forward = useRef(false);
   // The form that adds a connection, shown in the step's own place while it is open, then back to the step.
   const [adding, setAdding] = useState<{ plugin: string | null; kind?: string } | null>(null);
   // On a phone the list of steps is behind a Steps button; this is whether it is showing.
@@ -165,7 +172,8 @@ export function Walkthrough(
   }
 
   const steps = data.steps;
-  const go = (screen: Screen) => {
+  const go = (screen: Screen, how: "forward" | "free" = "free") => {
+    forward.current = how === "forward";
     setChosen(screen);
     setListOpen(false);
     void keep({ step: screen });
@@ -173,9 +181,13 @@ export function Walkthrough(
   const here = standing(steps, current);
   // With nothing connected the mail step has one way on, "I'll do this later"; a Continue beside it would do the same thing.
   // Continue comes once something is connected (the step is done), or once the step was left for later.
-  const next = after(current);
-  const previous = before(current);
+  // The wait for the first reading is passed by when there is nothing to wait for (mail left out, or no AI account); read from
+  // the answer as it stands after what the screen saved, never from the one this screen was drawn with.
+  const noWait = (view?: S["SetupView"]) => (view ?? client.getQueryData<S["SetupView"]>(["setup"]) ?? data).reading.state === "none";
+  const next = after(current, noWait(data));
+  const previous = before(current, noWait(data));
 
+  /** Leaves the screen's step out, once confirmed, and goes on. */
   const skip = async () => {
     const id = STEP_OF[current];
     if (!id) return;
@@ -184,7 +196,9 @@ export function Walkthrough(
     try {
       await api.skipStep(id);
       await client.invalidateQueries({ queryKey: ["setup"] });
-      if (next) go(next);
+      setConfirming(false);
+      const onward = after(current, noWait());
+      if (onward) go(onward, "forward");
     } catch (err) {
       setProblem(problemText(err, t));
     } finally {
@@ -195,6 +209,11 @@ export function Walkthrough(
   /** Continue: what the screen saves (when it has something), then the next screen. A screen that says it couldn't save
    * keeps the person where they are. */
   const carryOn = async () => {
+    // Going on from People with nobody added leaves the step out, which is confirmed first.
+    if (current === "people" && here === "todo") {
+      setConfirming(true);
+      return;
+    }
     const spec = slot.current;
     if (spec) {
       setBusy(true);
@@ -210,13 +229,15 @@ export function Walkthrough(
     }
     // What the screen saved is what the list of steps and Today's line read, so they are read again now.
     await client.invalidateQueries({ queryKey: ["setup"] });
-    if (next) go(next);
+    // An account just added and checked leaves the person on the AI step, where turning the assistant on is offered next.
+    if (current === "ai") {
+      const view = client.getQueryData<S["SetupView"]>(["setup"]);
+      if (view && view.steps.some((s) => s.id === "ai" && s.done) && !view.first_go_given) return;
+    }
+    const onward = after(current, noWait());
+    if (onward) go(onward, "forward");
   };
 
-  const finishLater = async () => {
-    await keep({ closed: true });
-    props.onFinishLater();
-  };
   const finish = async () => {
     await keep({ finished: true });
     props.onDone();
@@ -233,6 +254,8 @@ export function Walkthrough(
   const why = current === "done" ? t(waitingGo ? "walkthrough.why.done" : left ? "walkthrough.why.done_left" : "walkthrough.why.done_all") : t(`walkthrough.why.${current}`);
   const stepData = (id: string) => steps.find((s) => s.id === id);
   const aiDone = !!stepData("ai")?.done;
+  // The AI step goes on only once the assistant is turned on there: its first go is given in this step.
+  const needsGo = current === "ai" && aiDone && !data.first_go_given;
   const hasMailSteps = steps.some((s) => s.group === "mail" && !!s.plugin && !s.sign_in);
   const handlers = {
     onOpenPeople: props.onOpenPeople,
@@ -241,7 +264,7 @@ export function Walkthrough(
     onChooseSource: (plugin: string | null, kind?: string) => setAdding({ plugin, kind }),
   };
 
-  const railSteps: RailStep[] = SCREENS.filter((screen) => screen !== "welcome").map((screen) => {
+  const railSteps: RailStep[] = SCREENS.filter((screen) => screen !== "welcome" && !(screen === "reading" && noWait(data))).map((screen) => {
     const state = standing(steps, screen);
     const reason = stepOf(steps, screen)?.reason;
     return {
@@ -252,12 +275,12 @@ export function Walkthrough(
       doneWords: t("walkthrough.state.done"),
       current: screen === current,
       hereWords: t("walkthrough.here"),
-      numbered: screen !== "done",
+      numbered: screen !== "done" && screen !== "reading",
     };
   });
   // The steps are numbered as Today's setup line counts them (the seven that count); the last row, where things stand, is
   // the summary of them and has no number, so "Step 7 of 7" and "6 of 7 done" are the same seven.
-  const numbered = railSteps.filter((step) => step.id !== "done");
+  const numbered = railSteps.filter((step) => step.id !== "done" && step.id !== "reading");
   const railAt = numbered.findIndex((step) => step.id === current);
   const position = railAt >= 0 ? { n: railAt + 1, total: numbered.length } : null;
   const stepsToggle = (
@@ -274,15 +297,7 @@ export function Walkthrough(
         title={t("walkthrough.title")}
         intro={t("walkthrough.intro")}
         banner={<OfflineBanner words={{ title: "walkthrough.offline.title", text: "walkthrough.offline.text" }} />}
-        headAction={
-          <>
-            {/* On a phone the Steps button sits in the header bar beside Finish later, not on a bar of its own. */}
-            {narrow && current !== "welcome" && stepsToggle}
-            <Button variant="quiet" onClick={() => void finishLater()}>
-              {t("walkthrough.later")}
-            </Button>
-          </>
-        }
+        headAction={narrow && current !== "welcome" ? stepsToggle : undefined}
         rail={
           current !== "welcome" ? (
             <WizardRail
@@ -314,7 +329,7 @@ export function Walkthrough(
               back={previous ? <Button onClick={() => go(previous)}>{t("walkthrough.back")}</Button> : undefined}
               later={
                 current !== "done" && here === "todo" && STEP_OF[current] ? (
-                  <Button variant="quiet" disabled={busy} onClick={() => void skip()}>
+                  <Button variant="quiet" disabled={busy} onClick={() => setConfirming(true)}>
                     {t("walkthrough.skip")}
                   </Button>
                 ) : undefined
@@ -328,8 +343,8 @@ export function Walkthrough(
                   <Button
                     variant={slot.current?.quiet ? "secondary" : "primary"}
                     loading={busy}
-                    disabled={!!slot.current?.disabled}
-                    reason={slot.current?.disabled ? slot.current.why : undefined}
+                    disabled={!!slot.current?.disabled || needsGo}
+                    reason={slot.current?.disabled ? slot.current.why : needsGo ? t("reginald_on.needed") : undefined}
                     onClick={() => void carryOn()}
                   >
                     {slot.current?.label ?? t("walkthrough.next")}
@@ -343,10 +358,15 @@ export function Walkthrough(
           {adding && <AddConnection plugin={adding.plugin} kind={adding.kind} onClose={() => setAdding(null)} />}
           {!adding && (
           <>
-          {current === "welcome" && <WalkthroughWelcome onStart={() => next && go(next)} />}
-          {current === "you" && <WorkspaceStep done={here !== "todo"} onContinue={next ? () => go(next) : undefined} />}
-          {current === "work" && <WorkStep done={here !== "todo"} onContinue={next ? () => go(next) : undefined} />}
-          {current === "ai" && <WelcomeAi local={data.local} done={aiDone} />}
+          {current === "welcome" && <WalkthroughWelcome onStart={() => next && go(next, "forward")} />}
+          {current === "you" && <WorkspaceStep done={here !== "todo"} onContinue={next ? () => go(next, "forward") : undefined} />}
+          {current === "work" && <WorkStep done={here !== "todo"} onContinue={next ? () => go(next, "forward") : undefined} />}
+          {current === "ai" && (
+            <>
+              <WelcomeAi local={data.local} done={aiDone} />
+              {aiDone && <ReginaldOn />}
+            </>
+          )}
           {current === "mail" && (
             <>
               <WalkthroughMail
@@ -357,7 +377,8 @@ export function Walkthrough(
             </>
           )}
           {current === "backup" && <WelcomeBackup local={data.local} />}
-          {current === "people" && <WalkthroughPeople done={here !== "todo"} />}
+          {current === "reading" && <WalkthroughReading autoAdvance={forward.current} onDone={() => next && go(next, "forward")} />}
+          {current === "people" && <WalkthroughPeople done={here !== "todo"} byHand={data.people_by_hand} />}
           {current === "done" && <DoneScreen go={go} finished={!left} {...handlers} />}
           </>
           )}
@@ -366,6 +387,7 @@ export function Walkthrough(
               {problem}
             </p>
           )}
+          {confirming && STEP_OF[current] && <SkipConfirm step={STEP_OF[current] as string} busy={busy} onCancel={() => setConfirming(false)} onConfirm={() => void skip()} />}
         </WizardStep>
       </WizardShell>
     </ContinueSlotProvider>

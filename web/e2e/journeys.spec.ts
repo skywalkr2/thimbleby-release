@@ -10,7 +10,7 @@ import { expect, type Locator } from "@playwright/test";
 import { test } from "./test";
 import { screenReady } from "./open-screen";
 import { choose } from "./choose";
-import { collectProblems, expectQueueShows, connectedAgain, dismissToasts, fakeAddress, openView, pressStart, visit, type Info, type Requests, FIRST_SCREEN, pickFolder } from "./journey-helpers";
+import { collectProblems, connectedAgain, dismissToasts, fakeAddress, openView, pressStart, visit, type Info, type Requests, FIRST_SCREEN, pickFolder, leaveOut } from "./journey-helpers";
 
 const FAKE = fakeAddress("JOURNEY_FAKE_PORT", 8790);
 
@@ -88,9 +88,15 @@ test.describe.serial("journeys", () => {
     // One explicit yes lets this account read my mail and notes (the usual hand-in is internal material).
     await main.getByRole("radio", { name: /^Yes/ }).check();
     await main.getByRole("button", { name: "Continue" }).click();
-    // Continue saved the account, tested it and went on to the next screen.
-    await expect(main.getByRole("heading", { level: 2, name: "Mail and calendar" })).toBeVisible({ timeout: 30_000 });
+    // Continue saved the account and tested it, and stays on the step: turning the assistant on (the first go) is given here.
+    await expect(main.getByRole("heading", { level: 3, name: /^Turn .* on$/ })).toBeVisible({ timeout: 30_000 });
     await expect(page.locator('[data-screen="ai"][data-state]')).toContainText("Done");
+    await expect(main.getByRole("button", { name: "Continue" })).toBeDisabled();
+    expect((await requests()).work).toBe(0); // nothing is read by the AI before it is turned on
+    await main.getByRole("button", { name: "Turn on" }).click();
+    await expect(main.getByText(/ is on\.$/)).toBeVisible();
+    await main.getByRole("button", { name: "Continue" }).click();
+    await expect(main.getByRole("heading", { level: 2, name: "Mail and calendar" })).toBeVisible({ timeout: 30_000 });
     // Changing an account needs no restart, and nothing on the page is waiting for one.
     await expect(main.getByText(/Restart/)).toHaveCount(0);
     await visit(page);
@@ -102,20 +108,22 @@ test.describe.serial("journeys", () => {
     await expect(main.getByRole("heading", { level: 2, name: "Mail and calendar" })).toBeVisible();
     await expect(main.getByRole("button", { name: "Connect one" })).toBeVisible();
     await visit(page);
-    await main.getByRole("button", { name: "I'll do this later" }).click();
+    await leaveOut(page, main);
+
+    // With mail left out there is no wait for a first reading, and People offers adding by hand only. Leaving it out asks first.
+    await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible();
+    await expect(main.locator("[data-people-by-hand]")).toBeVisible();
+    await expect(main.locator("[data-people-suggestions]")).toHaveCount(0);
+    await visit(page);
+    await leaveOut(page, main);
 
     // Backups: a folder outside the workspace, which is checked before it is saved.
     await expect(main.getByRole("heading", { level: 2, name: "Backups" })).toBeVisible();
     await pickFolder(page, main, ["offsite"]);
     await main.getByRole("button", { name: "Continue" }).click();
     await expect(page.locator('[data-screen="backup"][data-state]')).toContainText("Done", { timeout: 30_000 });
-    await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible();
+    await expect(main.getByRole("heading", { level: 2, name: "Where things stand" })).toBeVisible();
     await visit(page);
-
-    // People: skipping is fine.
-    await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible();
-    await visit(page);
-    await main.getByRole("button", { name: "I'll do this later" }).click();
 
     // Done: what was set up and what was skipped, then Today.
     // Something was passed by, so the last screen says where things stand and is not headed Done.
@@ -140,9 +148,8 @@ test.describe.serial("journeys", () => {
     await page.reload();
     await expect(page.getByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening)/ })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Getting started" })).toHaveCount(0);
-    // What I passed by waits on Today as one setup line that counts only what is done (the name, the work answer, the AI
-    // account and the backup), never as a forced return.
-    await expect(page.getByRole("region", { name: /^Finish setting up/ })).toContainText("4 of 6 done");
+    // What I left out, after its confirmation, is settled: Today has no setup line counting it as unfinished.
+    await expect(page.getByRole("region", { name: /^Finish setting up/ })).toHaveCount(0);
     await visit(page);
 
     // I hand in a short note of my own.
@@ -153,21 +160,11 @@ test.describe.serial("journeys", () => {
     await visit(page);
     await page.getByRole("button", { name: "Hand in", exact: true }).click();
 
-    // Today shows one line asking for my go, with a count and what it would cost. Nothing has been sent to the service.
+    // The go was given where the AI account was added, so Today has no first-go line and the note is read at once.
     await page.getByRole("link", { name: /^Today/ }).first().click();
-    // The line comes once the server has taken the hand-in in, which on a busy machine can take more than a moment.
-    const go = page.locator('[data-queue-line="first_go"]');
-    await expectQueueShows(page, ["first_go"], { atLeast: 1 });
-    await expect(go).toHaveCount(1);
-    await expect(go).toContainText(/Start the assistant: 1 item, (about \$\d+\.\d\d|less than a cent)/);
-    await expect(go).toContainText("Nothing is spent until you press Start.");
+    await expect(page.locator('[data-queue-line="first_go"]')).toHaveCount(0);
     await visit(page);
-    expect(await requests()).toEqual(afterTest);
 
-    // Go starts it, and the result is on Today: the assistant's work to look over (my action is listed in To-dos and
-    // questions, its one home, below).
-    await go.getByRole("button", { name: "Start", exact: true }).click();
-    await expect(page.locator('[data-queue-line="first_go"]')).toHaveCount(0, { timeout: 20_000 });
     // The assistant's work waits behind "N new · Show" while the cursor is in the queue, so the list doesn't move under it.
     const review = page.locator('[data-queue-line="review"]');
     const showNew = page.getByRole("button", { name: /^Show \d+ new items?$/ });

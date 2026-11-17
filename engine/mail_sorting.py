@@ -315,6 +315,7 @@ def estimate(ws: Any, cfg: Any, router: Any, headers: list[Header], level: str, 
 
 
 def _sort_batch(ws: Any, store: Any, cfg: Any, router: Any, batch: list[Header], level: str, go: bool = False) -> _Try:
+    from engine import setup
     from engine.dispatcher import has_account
 
     task, ids = build_task(ws, cfg, batch, store.read())
@@ -326,7 +327,7 @@ def _sort_batch(ws: Any, store: Any, cfg: Any, router: Any, batch: list[Header],
     if estimate is not None and estimate > budgets.per_run_usd:
         return _Try(why=f"it would cost about {usd(estimate)}, above the most one run may cost", stop=True)
     if (
-        budgets.first_go
+        setup.first_go_holds(ws, cfg)
         and not go
         and (estimate is None or estimate > 0)
         and not store.read().has("run")

@@ -329,3 +329,12 @@ test("a change that names no screens still reads everything", () => {
   invalidateFor(client, '{"version": 5, "kinds": [], "position": 9}');
   expect(Object.values(stale()).every(Boolean)).toBe(true);
 });
+
+test("the add-on list read in the background at start reads again on the Add-ons screen and setup's Mail step, and nothing else", () => {
+  const client = new QueryClient();
+  for (const key of [["packs"], ["settings"], ["today", "queue"]]) client.setQueryData(key, []);
+  invalidateFor(client, '{"version": 6, "kinds": [], "position": 9, "families": ["packs"]}');
+  expect(client.getQueryState(["packs"])!.isInvalidated).toBe(true); // both screens read this one query
+  expect(client.getQueryState(["settings"])!.isInvalidated).toBe(false);
+  expect(client.getQueryState(["today", "queue"])!.isInvalidated).toBe(false);
+});

@@ -457,3 +457,24 @@ def test_a_rule_is_suggested_where_the_model_in_use_is_under_the_minimum_and_a_s
     rule = {"when": {"task": "notes", "quoted_messages_over": 3}, "tier": "deep"}
     assert _saved(c, api, {"ai.routing": [rule]}).status_code == 200
     assert c.get(f"{api}/ai/routing").json()["rule_suggestions"] == []
+
+
+def test_a_setting_given_as_a_whole_value_on_the_command_line_never_asks_for_a_restart_when_another_file_is_saved(
+    tmp_path,
+):
+    from engine.storage import Store
+    from engine.worker import Events, Worker
+    from engine.workspace import init_workspace
+
+    ws = init_workspace(tmp_path / "ws", git=False)  # no template: the stages file holds no types of its own
+    given = [{"id": "planned", "label": "Planned"}, {"id": "done", "label": "Done"}]
+    cfg = ws.config(env={}, flags={"stages.types.project.stages": given})
+    store = Store(ws.db_path, cfg=cfg)
+    worker = Worker(ws, store, cfg, Events(), on_restart=lambda: None)
+    try:
+        path = ws.config_dir / "workspace.yaml"
+        path.write_text(path.read_text(encoding="utf-8") + "\n# saved\n", encoding="utf-8")
+        worker.apply_live()
+        assert worker.needs_restart() is False and worker.restart_for == []
+    finally:
+        store.close()

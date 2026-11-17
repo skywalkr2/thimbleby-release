@@ -79,6 +79,7 @@ from api.schemas import (
     PackTierView,
     PackTokenIn,
     ProjectEndingDone,
+    ReadingView,
     RestartAsked,
     SentFolderIn,
     SettingChangeView,
@@ -606,6 +607,9 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
             local=local,
             walkthrough=WalkthroughView(**vars(setup.walkthrough(ws, now, steps))),
             first_go_waiting=setup.first_go_waiting(store),
+            first_go_given=setup.first_go_given(ws, now),
+            reading=ReadingView(**vars(setup.reading(ws, now, store, steps))),
+            people_by_hand=setup.people_by_hand(steps),
         )
 
     @r.post("/setup/walkthrough")

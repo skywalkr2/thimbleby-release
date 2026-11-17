@@ -14,3 +14,8 @@
 .pane[data-anchored]::before { content: ""; position: absolute; left: -7px; top: var(--pointer-top, var(--space-4)); width: 12px; height: 12px; transform: rotate(45deg); background: var(--surface); border-left: 1px solid var(--pane-border); border-bottom: 1px solid var(--pane-border); }
 /* Measures the pane's width while no pane is open. */
 .probe { position: absolute; top: 0; left: 0; width: var(--detail-w); height: 0; visibility: hidden; pointer-events: none; }
+/* A card beside the thing it describes: placed by the component from the thing's box, inside the list's area. The list keeps its width. */
+.floating { grid-template-columns: minmax(0, 1fr); }
+.floating .pane { position: absolute; left: var(--float-left, 0px); top: var(--float-top, 0px); z-index: 5; width: var(--detail-w); max-width: 100%; max-height: calc(100dvh - var(--header-h) - var(--space-4)); display: flex; flex-direction: column; box-shadow: var(--elev-3); margin-top: 0; }
+.floating .pane .body { overflow-y: auto; min-height: 0; }
+.floating .pane[data-side="left"]::before { left: auto; right: -7px; transform: rotate(225deg); }

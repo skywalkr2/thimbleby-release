@@ -17,6 +17,7 @@ from pydantic import ValidationError
 
 from engine import (
     answer_effect,
+    area_offers,
     booking_entries,
     follow_on,
     learn,
@@ -27,6 +28,7 @@ from engine import (
     read_image,
     transcribe,
     week_ahead,
+    week_goals,
 )
 from engine import search as workspace_search
 from engine.ai import pricing
@@ -204,7 +206,10 @@ def process(
     if req.data["task"] == follow_on.TASK and (why := follow_on.skip_reason(store, cfg, req.data)) is not None:
         follow_on.close(store, request_id, why)  # the move is gone or stands no more: no packet, no estimate, no call
         return None
-    if req.data["task"] == person_look.TASK and (why := person_look.skip_reason(store, cfg, req.data)) is not None:
+    if (
+        req.data["task"] == person_look.TASK
+        and (why := person_look.skip_reason(store, cfg, req.data, request_id)) is not None
+    ):
         person_look.close(store, request_id, why)  # nothing to look at any more: no packet, no estimate, no call
         return None
     if (
@@ -212,6 +217,12 @@ def process(
         and (why := week_ahead.skip_reason(ws, store, cfg, req.data, now)) is not None
     ):
         week_ahead.close(store, request_id, why)  # nothing falls in the week any more: no packet, no estimate, no call
+        return None
+    if req.data["task"] == week_goals.TASK and (why := week_goals.skip_reason(store, cfg, req.data, now)) is not None:
+        week_goals.close(store, request_id, why)  # nothing is due any more: no packet, no estimate, no call
+        return None
+    if req.data["task"] == area_offers.TASK and (why := area_offers.skip_reason(store, cfg, req.data)) is not None:
+        area_offers.close(store, request_id, why)  # nothing is left to read: no packet, no estimate, no call
         return None
     if req.data.get("approval") == "required":
         from engine.stages import wording
@@ -329,8 +340,10 @@ def process(
     if unpriced and req.data.get("approval") != "granted":
         _set(store, request_id, state="needs_you", approval="required", waiting=UNPRICED_GO)
         return None
+    from engine import setup
+
     if (
-        budgets.first_go
+        setup.first_go_holds(ws, cfg)
         and req.data.get("approval") != "granted"
         and (estimate is None or estimate > 0)
         and not store.read().has("run")
@@ -547,6 +560,10 @@ def process(
         person_look.finish(store, request_id, cs_id)
     if kind.name == week_ahead.TASK:
         week_ahead.finish(store, request_id, cs_id)
+    if kind.name == week_goals.TASK:
+        week_goals.finish(store, request_id, cs_id)
+    if kind.name == area_offers.TASK:
+        area_offers.finish(store, request_id, cs_id)
     if _applied_something(store, cs_id):
         retire_earlier_attempts(store, request_id)
     return cs_id
@@ -1087,7 +1104,7 @@ def _rounds(
             if needs_another_round(problems, judgment_asked=judgment_asked):
                 if not last:
                     judgment_asked = judgment_asked or asks_judgment(problems)
-                    task = replace(task, request=shown + "\n\n" + feedback(problems))
+                    task = replace(task, request=shown + "\n\n" + _answer_shown(changeset) + feedback(problems))
                     continue
                 out.escalate = needs_escalation(problems)
             return out
@@ -1137,7 +1154,15 @@ def _rounds(
         if fine and (lost := unexplained_drops(dropped_ops(fine, changeset), changeset)):
             # A return round that dropped an op which was fine is refused and sent back, never applied.
             if not last:
-                task = replace(task, request=shown + "\n\n" + wrong + "\n" + DROPPED.format(ops=", ".join(lost)))
+                task = replace(
+                    task,
+                    request=shown
+                    + "\n\n"
+                    + _answer_shown(changeset)
+                    + wrong
+                    + "\n"
+                    + DROPPED.format(ops=", ".join(lost)),
+                )
                 continue
             return _Outcome(run_id=out.run_id, stop=DROPPED_STOP, escalate=True, retry=DROPPED_WHY)
         problems = check(changeset, ctx)
@@ -1149,7 +1174,14 @@ def _rounds(
             if not last:
                 judgment_asked = judgment_asked or asks_judgment(problems)
                 fine, wrong = fine_ops(changeset, problems), feedback(problems)
-                task = replace(task, request=shown + "\n\n" + wrong)
+                keep = (
+                    KEEP.format(ops=", ".join(sorted({str(json.loads(t).get("op", "an op")) for t in fine})))
+                    if fine
+                    else ""
+                )
+                task = replace(
+                    task, request=shown + "\n\n" + _answer_shown(changeset) + wrong + ("\n" + keep if keep else "")
+                )
                 continue
             out.escalate = needs_escalation(problems)
         return out
@@ -1161,10 +1193,7 @@ def _rounds(
 RETRIED = ("invalid_output", "no_output", "timeout", "provider_down", "other")
 UNREADABLE_WHY = "The assistant's answer wasn't in the form this work needs"
 #: What a request waits on when the assistant's answer wasn't in the form the work needs, even when asked again.
-UNREADABLE = (
-    "The assistant's answer wasn't in the form this work needs, even when asked again. Try again, or pick another "
-    "account for this work."
-)
+UNREADABLE = "The assistant's answer wasn't in the form this work needs, even when asked again."
 #: What a request waits on while no AI account can be reached for want of a network connection.
 OFFLINE_WAITING = "Waiting for an internet connection"
 #: What a request waits on after a run that did no work, and what it says when run after run did none.
@@ -1271,11 +1300,20 @@ DROPPED = (
     "problems and never drops one that was fine. Answer again with the complete JSON object: every op that had no "
     "problem exactly as before, and the corrected ones."
 )
-DROPPED_WHY = "The assistant's corrected answer left out changes that were fine"
-DROPPED_STOP = (
-    "The assistant's corrected answer left out changes that were fine, so nothing was applied. Try again, or pick "
-    "another account for this work."
+#: Said with the first return round, so a correction knows from the start which ops it has to keep.
+KEEP = (
+    "These ops had no problem: {ops}. Answer with each of them exactly as it was, and only the others corrected. "
+    'If you leave one out on purpose, name it in "omitted" with the reason.'
 )
+DROPPED_WHY = "The assistant's second answer left out part of its first"
+DROPPED_STOP = "Nothing was applied: the assistant's second answer left out part of its first that was fine."
+
+
+def _answer_shown(changeset: Any) -> str:
+    """The answer a fix round is about, as the assistant gave it, so the notes on its ops (by number) and the ones to
+    keep exactly as they were can be read against it: a fix round starts a fresh call, which holds no earlier answer."""
+    answer = json.dumps(changeset.model_dump(mode="json", exclude_none=True), ensure_ascii=False)
+    return "Your previous answer (its ops are numbered from 0):\n" + answer + "\n\n"
 
 
 def _op_text(op: Any) -> str:

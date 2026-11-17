@@ -2,7 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { S } from "../lib/api";
-import { fakeApi, renderApp, snapshotOf } from "../test-utils";
+import { fakeApi, Refuse, renderApp, snapshotOf } from "../test-utils";
 import { WelcomeAi } from "./WelcomeAi";
 
 /** The amount the person asked to be asked above. */
@@ -286,6 +286,28 @@ test("the drawer asks to close as soon as the account is saved, before any check
   expect(screen.queryByText("Adding…")).toBeNull();
   expect(screen.queryByRole("button", { name: /Adding/ })).toBeNull();
   await act(async () => release());
+});
+
+test("an account added while an earlier one's checks have saved their own change is added once, on the settings as they are now, with no refusal (S-0586)", async () => {
+  const user = userEvent.setup();
+  // The settings moved on after the form loaded them (the earlier account's check kept a backup): the server holds fp-2 now.
+  let held = "fp-1";
+  const calls = api([MAIN], {
+    "GET settings": () => ({ fingerprint: held, items: [LIMIT] }),
+    "POST ai/accounts": (sent) => ((sent as S["AiAccountAdd"]).fingerprint === held ? SAVED : new Refuse(409, "The settings changed since you opened them. Look again, then save.")),
+    "POST ai/accounts/service-a-account/test?tier=routine&model=everyday": answered("service-a-account"),
+    "POST ai/accounts/service-a-account/test?tier=deep&model=everyday": answered("service-a-account"),
+  });
+  const handlers = open();
+  await keyed(user);
+  held = "fp-2";
+  await user.click(screen.getByRole("button", { name: /Add and check/ }));
+  await waitFor(() => expect(handlers.onAdded).toHaveBeenCalledTimes(1));
+  const adds = calls.filter((c) => c.route === "POST ai/accounts");
+  expect(adds).toHaveLength(1);
+  expect(body(calls).fingerprint).toBe("fp-2");
+  expect(screen.queryByText(/settings changed since/)).toBeNull();
+  expect(screen.queryByRole("button", { name: /Adding/ })).toBeNull();
 });
 
 test("the line that opens the model choice names no model, and a closed choice shows none", async () => {

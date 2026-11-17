@@ -4,9 +4,12 @@ It opens the app (`open` on the Mac, `Start-Process` on Windows), waits for the 
 running a minute later, asks the app (over the control listener's `GET /state`, with the install token) for the
 window's address and whether the page has drawn, fails if it has not drawn within 30 seconds, takes a picture once it
 has, takes a picture of the screen with the window showing (and, on the Mac, with the menu-bar
-item's menu open, when the session lets the script click it), then quits it through the menu's own path (the loopback
-"quit" the app offers with its install token) and checks that it exits. On the Mac the app runs under Apple's
-main-thread checker, set to stop the app on any report; a crash report written during the run fails the check.
+item's menu open, when the session lets the script click it), then, on the Mac, closes the window and checks that the
+app is still running, and sends it the system's Quit (command-Q through System Events, else the Quit the Dock sends) and
+checks that the process is gone within its timeout and that the workspace is unlocked. On Windows it quits the app
+through the menu's own path (the loopback "quit" the app offers with its install token) and checks that it exits.
+On the Mac the app runs under Apple's main-thread checker, set to stop the app on any report;
+a crash report written during the run fails the check.
 
 Usage: python session_check.py <the app: Thimbleby.app or Thimbleby.exe> <folder for the pictures> [port]"""
 
@@ -103,6 +106,39 @@ def open_menu_on_mac(pictures: Path) -> bool:
     return True
 
 
+CLOSE_WINDOW = 'tell application "System Events" to tell process "Thimbleby" to click button 1 of window 1'
+COMMAND_Q = 'tell application "System Events" to tell process "Thimbleby" to keystroke "q" using command down'
+QUIT_EVENT = 'tell application "Thimbleby" to quit'
+QUIT_SECONDS = 30
+
+
+def close_keeps_running(
+    run: Callable[[list[str]], int], pids: Callable[[], list[int]], wait: Callable[[float], None]
+) -> bool:
+    """Close the window as the red button does; true when the script could and the app is still running after it."""
+    if run(["osascript", "-e", CLOSE_WINDOW]) != 0:
+        raise SystemExit("The session did not let the script close the window, so the close was not checked.")
+    wait(3)
+    return bool(pids())
+
+
+def system_quit_ends_app(
+    run: Callable[[list[str]], int],
+    pids: Callable[[], list[int]],
+    unlocked: Callable[[], bool],
+    wait: Callable[[float], None],
+    seconds: int = QUIT_SECONDS,
+) -> str | None:
+    """Send the system's Quit; None when the process is gone and the workspace unlocked in time, else why not."""
+    if run(["osascript", "-e", COMMAND_Q]) != 0:
+        run(["osascript", "-e", QUIT_EVENT])
+    for _ in range(seconds):
+        if not pids():
+            return None if unlocked() else "The app exited but left the workspace locked."
+        wait(1)
+    return f"The app was still running {seconds} seconds after the system's Quit."
+
+
 def crash_reports(since: float) -> list[Path]:
     folder = Path.home() / "Library" / "Logs" / "DiagnosticReports"
     return [p for p in folder.glob(f"{PROCESS_NAME}*") if p.stat().st_mtime >= since] if folder.is_dir() else []
@@ -170,6 +206,16 @@ def main(app: str, pictures_folder: str, port: int = 8792) -> None:
             raise SystemExit(f"The app left a crash report: {[str(r) for r in reports]}")
         print(f"still running after {STAY_UP_SECONDS} seconds")
         print(f"window state: {ask_state(control_port, token)}")
+        if system == "Darwin":
+            osa = lambda command: subprocess.run(command, capture_output=True, check=False).returncode  # noqa: E731
+            if not close_keeps_running(osa, lambda: running_pids(system), pause):
+                raise SystemExit("Closing the window ended the app; it should only hide the window.")
+            print("closing the window left the app running")
+            problem = system_quit_ends_app(osa, lambda: running_pids(system), lock.acquire, pause)
+            if problem:
+                raise SystemExit(problem)
+            print("the system's Quit ended the app and the workspace was unlocked")
+            return
         connection_port = lock.control_port()
         if connection_port is None or not ask_to_show(connection_port, token, what="quit"):
             raise SystemExit("The app did not take the quit by the menu's path.")

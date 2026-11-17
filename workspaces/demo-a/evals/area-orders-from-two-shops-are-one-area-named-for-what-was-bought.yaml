@@ -1,0 +1,43 @@
+id: area-orders-from-two-shops-are-one-area-named-for-what-was-bought
+title: Book orders from two shops are one area of the person's life named for what was bought, never for a shop
+skills: [structured-answers, stay-in-scope]
+received: '2026-11-16T15:00:00+00:00'
+given_file: busy-portfolio.yaml
+# A fictional collector's Personal items: four about orders from one shop and four from another, all of them old and rare
+# books. Each shop's name is the word its items share, so the rule narrows to them; the assistant reads what was bought
+# and offers one area for all eight, named for the subject, and none for either shop.
+area_read: true
+given:
+- {kind: action, id: ACT-91, fields: {project: PRJ-21, text: Track the Pageturn order of Treasure Island, owners: [{person: PER-1}]}}
+- {kind: event, id: EVT-91, fields: {project: PRJ-21, title: Pageturn shipment of Moby-Dick in hardcover, start: '2026-11-19', delivery: {carrier: Example Courier, status: on_its_way, dated: true}}}
+- {kind: action, id: ACT-92, fields: {project: PRJ-21, text: Reply to Pageturn about the damaged Dracula copy, owners: [{person: PER-1}]}}
+- {kind: event, id: EVT-92, fields: {project: PRJ-21, title: Pageturn parcel with The Hobbit first edition, start: '2026-11-20', delivery: {carrier: Example Courier, status: on_its_way, dated: true}}}
+- {kind: event, id: EVT-93, fields: {project: PRJ-21, title: Dusty Shelf parcel with Jane Eyre in hardcover, start: '2026-11-18', delivery: {carrier: Example Post, status: out_for_delivery, dated: true}}}
+- {kind: action, id: ACT-93, fields: {project: PRJ-21, text: Ask Dusty Shelf about the missing volume of Ulysses, owners: [{person: PER-1}]}}
+- {kind: event, id: EVT-94, fields: {project: PRJ-21, title: Dusty Shelf shipment of Emma and Persuasion, start: '2026-11-21', delivery: {carrier: Example Post, status: on_its_way, dated: true}}}
+- {kind: fact, id: FACT-91, fields: {project: PRJ-21, text: Dusty Shelf takes returns on old books for 14 days, trust: trusted}}
+expect:
+- op: area.offer
+  areas: 1
+  named: [book]
+  together: [ACT-91, EVT-91, ACT-92, EVT-92, EVT-93, ACT-93, EVT-94, FACT-91]
+forbid:
+- op: area.offer
+  named: ['pageturn|dusty|shelf']
+  attempted: true
+stub_answer:
+  summary: Book orders from two shops make one area of your life.
+  ops:
+  - op: area.offer
+    areas:
+    - name: Book collecting
+      why: Every order, delivery and follow-up is about buying old and rare books, from two shops.
+      items:
+      - {kind: action, id: ACT-91}
+      - {kind: event, id: EVT-91}
+      - {kind: action, id: ACT-92}
+      - {kind: event, id: EVT-92}
+      - {kind: event, id: EVT-93}
+      - {kind: action, id: ACT-93}
+      - {kind: event, id: EVT-94}
+      - {kind: fact, id: FACT-91}

@@ -1,0 +1,29 @@
+id: area-several-items-about-a-house-move-are-one-area-named-for-it
+title: Items that share a life matter, a house move, are one area named for it
+skills: [structured-answers, stay-in-scope]
+received: '2026-11-16T15:00:00+00:00'
+# Four items under Personal share the word "landlord": the move date, the deposit, the keys and the forwarding address.
+# They are one matter of the person's life, a house move, so one area is offered, named for it, with the reason.
+area_read: true
+given:
+- {kind: action, id: ACT-91, fields: {project: PRJ-21, text: Confirm the move date with the landlord, owners: [{person: PER-1}]}}
+- {kind: action, id: ACT-92, fields: {project: PRJ-21, text: Ask the landlord about the deposit, owners: [{person: PER-1}]}}
+- {kind: action, id: ACT-93, fields: {project: PRJ-21, text: Return the keys to the landlord after the move, owners: [{person: PER-1}]}}
+- {kind: question, id: Q-91, fields: {to: PER-1, projects: [PRJ-21], title: "Which address does the landlord send the deposit to?"}}
+expect:
+- op: area.offer
+  areas: 1
+  named: [move]
+  together: [ACT-91, ACT-92, ACT-93, Q-91]
+stub_answer:
+  summary: Four items about one house move.
+  ops:
+  - op: area.offer
+    areas:
+    - name: House move
+      why: The move date, the deposit, the keys and the forwarding address are all about the one move.
+      items:
+      - {kind: action, id: ACT-91}
+      - {kind: action, id: ACT-92}
+      - {kind: action, id: ACT-93}
+      - {kind: question, id: Q-91}
