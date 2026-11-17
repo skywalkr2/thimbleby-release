@@ -429,6 +429,10 @@ class _LoopbackServer(ThreadingHTTPServer):
         self.server_name, self.server_port = str(host), int(port)
 
 
+#: How long quitting waits for the control listener to stop before closing its socket anyway.
+CONTROL_STOP_SECONDS = 2.0
+
+
 class ControlServer:
     """A loopback listener on its own port where a second open of the app asks this one to show its window.
 
@@ -490,11 +494,18 @@ class ControlServer:
         self.thread.start()
         return self.server.server_address[1]
 
-    def stop(self) -> None:
-        if self.server is not None:
-            self.server.shutdown()
-            self.server.server_close()
-            self.server = None
+    def stop(self, wait_seconds: float = CONTROL_STOP_SECONDS) -> None:
+        """Stop listening. Quitting never waits on it for long: past `wait_seconds` the socket is closed anyway."""
+        if self.server is None:
+            return
+        server, self.server = self.server, None
+        stopping = threading.Thread(target=server.shutdown, name="control-listener-stop", daemon=True)
+        stopping.start()
+        stopping.join(wait_seconds)
+        if stopping.is_alive():
+            note(f"the control listener had not stopped after {wait_seconds} seconds; closing it anyway")
+        server.server_close()
+        note("the control listener stopped")
 
 
 def ask_to_show(port: int, token: str, timeout: float = 3, what: str = "show") -> bool:

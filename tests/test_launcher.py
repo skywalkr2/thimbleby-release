@@ -513,3 +513,21 @@ def test_the_state_answer_needs_the_install_token_and_reports_the_window():
         assert not launcher.ask_to_show(port, "install-token", what="state")  # a POST to it is refused
     finally:
         control.stop()
+
+
+def test_quitting_never_waits_long_on_the_control_listener():
+    """A listener whose stop doesn't return (as one did on a Mac while quitting) is closed anyway after its wait, so
+    the quit goes on."""
+    import threading
+
+    control = launcher.ControlServer(lambda: "install-token", lambda: None)
+    control.start()
+    never = threading.Event()
+    real = control.server
+    real.shutdown = lambda: never.wait(30)  # a stop that hangs
+    stopping = threading.Thread(target=control.stop, kwargs={"wait_seconds": 0.2}, daemon=True)
+    stopping.start()
+    stopping.join(5)
+    stopped = not stopping.is_alive()
+    never.set()
+    assert stopped and control.server is None

@@ -599,8 +599,9 @@ def test_the_mac_session_check_closes_the_window_then_quits_by_the_systems_quit(
     assert sent[-1] == session_check.QUIT_EVENT
     assert "locked" in session_check.system_quit_ends_app(run, lambda: [], lambda: False, lambda s: None)
     assert "still running" in session_check.system_quit_ends_app(run, lambda: [7], lambda: True, lambda s: None, 3)
-    refused = []
+    # The app declines the system's termination and ends itself, so the script's cancel is not a failure.
+    cancelled = []
     told = session_check.system_quit_ends_app(
-        lambda c: refused.append(c[-1]) or 1, lambda: [], lambda: True, lambda s: None
+        lambda c: cancelled.append(c[-1]) or 1, lambda: [], lambda: True, lambda s: None
     )
-    assert refused == [session_check.QUIT_EVENT] and "not checked" in told
+    assert cancelled == [session_check.QUIT_EVENT] and told is None

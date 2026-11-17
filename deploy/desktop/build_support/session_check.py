@@ -131,8 +131,9 @@ def system_quit_ends_app(
     seconds: int = QUIT_SECONDS,
 ) -> str | None:
     """Send the system's Quit; None when the process is gone and the workspace unlocked in time, else why not."""
-    if run(["osascript", "-e", QUIT_EVENT]) != 0:
-        return "The session refused to send the app the system's Quit, so Quit was not checked."
+    # The app answers the system's own termination with "not yet" and then ends itself once its work has stopped, so the
+    # script reports a cancel; whether the app ends is what counts.
+    run(["osascript", "-e", QUIT_EVENT])
     for _ in range(seconds):
         if not pids():
             return None if unlocked() else "The app exited but left the workspace locked."
