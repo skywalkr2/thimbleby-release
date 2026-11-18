@@ -1,5 +1,5 @@
 // One account on setup's mail step as a card (design 7.8): its address and what is read there, how it stands (connected, or the
-// service no longer lets it in, with Sign in again), how private it is, and who it is for as chips with Change.
+// service no longer lets it in, with Sign in again), how private it is, and what it is for, asked as a list to pick from.
 import type { ReactNode } from "react";
 import type { S } from "../lib/api";
 import type { AccountState } from "../lib/connections";
@@ -8,7 +8,6 @@ import { Button } from "../ui/Button";
 import { Icon } from "../ui/Icon";
 import { StateMark } from "../ui/StateMark";
 import { useAccountWords, useSignInAgain } from "./AccountRow";
-import { AccountSidesLine } from "./AccountSidesLine";
 import { privacyFact } from "./Sources";
 import styles from "./SetupAccountRow.module.css";
 
@@ -35,8 +34,8 @@ export function SetupAccountRow(props: {
   sources: Source[];
   /** Set when the service no longer lets the account in. */
   need?: AccountState;
-  /** The editor for who it is for; none when the person has no sides to pick from. */
-  sidesEditor?: ReactNode;
+  /** The question of what the account is for (a list of the person's sides); none when the person has no sides to pick from. */
+  question?: ReactNode;
   /** The service and how private it is are said once above the rows (several accounts of one service, all at one level), so a row says only its own. */
   grouped?: boolean;
   /** A button of the row's own (Remove, for a mailbox connected another way). */
@@ -84,7 +83,7 @@ export function SetupAccountRow(props: {
             )}
           </span>
         </span>
-        {props.sidesEditor && <AccountSidesLine sources={props.sources} account={name} editor={props.sidesEditor} closed />}
+        {props.question}
         {props.below}
       </div>
       {(props.need || props.action) && (

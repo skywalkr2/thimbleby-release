@@ -12,6 +12,7 @@ links: [{name: Planning board, address: "https://planning-board.example.com/spri
 feedback_to: feedback@example.com   # where the feedback button writes
 handled_group: kind   # how Handled for you groups what it lists to start with: kind, reason, sender or account
 handled_rows_shown: 25   # how many rows a group shows before Show more
+handled_preview_lines: 3   # how many lines of a message a row on Handled for you shows before Show the message
 since_rows_shown: 25   # how many rows a day on Since yesterday shows before Show more
 twin_window_minutes: 10   # how close in time the same change from two accounts must be to show as one row in What changed (0 turns it off)
 changes_recent_days: 90   # how many days back What changed lists finished work (work still open is always listed)

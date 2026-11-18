@@ -3095,6 +3095,13 @@ class UiFile(FileModel):
         le=500,
         description="How many rows a group on the Handled for you screen shows before Show more.",
     )
+    handled_preview_lines: int = Field(
+        3,
+        ge=1,
+        le=10,
+        description="How many lines of a message a row on the Handled for you screen shows, taken from the copy kept "
+        "on this computer, before Show the message opens it whole.",
+    )
     since_rows_shown: int = Field(
         25,
         ge=5,

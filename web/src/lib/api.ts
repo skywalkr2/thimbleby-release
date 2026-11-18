@@ -259,6 +259,8 @@ export const api = {
   waiting: () => call<S["WaitingCounts"]>("GET", "waiting"),
   /** The person opened a screen with a count of what is new in it. */
   looked: (screen: S["LookedAt"]["screen"]) => call<S["Ok"]>("POST", "waiting/looked", { screen } satisfies S["LookedAt"]),
+  /** One mail item whole, from the copy kept on this computer. */
+  handledMessage: (snapshot: string) => call<S["HandledMessage"]>("GET", `handled/${id(snapshot)}/message`),
   handledCounts: () => call<S["HandledCountsToday"]>("GET", "handled/counts"),
   closerLookUndo: (req: string) => call<S["Created"]>("POST", `requests/${id(req)}/closer-look/undo`),
   /** What can be said about a watched file (the saved copy `record` came from it): the files it can be linked to. */

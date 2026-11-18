@@ -11,3 +11,11 @@
 .editor { grid-column: 1 / -1; min-width: 0; display: grid; gap: var(--space-2); justify-items: start; }
 :global([data-narrow]) .row[data-need], :global([data-narrow]) .row[data-action] { grid-template-columns: 40px minmax(0, 1fr); }
 :global([data-narrow]) .row[data-need] .acts, :global([data-narrow]) .row[data-action] .acts { grid-column: 2; }
+/* The question and its choices share a line where they fit: the legend floats before the choices, which wrap beside and under it. A very long
+   name is cut with an ellipsis inside its own choice (the full name is its title), so one long name does not push every choice onto a line of
+   its own. */
+fieldset.question { display: block; grid-column: 1 / -1; min-width: 0; margin: var(--space-2) 0 0; }
+fieldset.question legend { float: left; width: auto; margin: 0 var(--space-3) var(--space-2) 0; min-height: var(--target-min); display: flex; align-items: center; }
+fieldset.question :global(.side-chip) { max-width: min(100%, 15rem); }
+fieldset.question :global(.side-chip) > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+fieldset.question > p { clear: both; margin: 0; }

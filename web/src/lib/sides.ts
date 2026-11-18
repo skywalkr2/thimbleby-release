@@ -104,9 +104,14 @@ export interface ViewOption {
   sideName: string;
 }
 
+/** The choice for what came from a connection that serves no side: counted once as not assigned (the side the server gives it). */
+export const UNASSIGNED: SideChoice = "unassigned";
+
 export interface SideFilter {
   /** Whether the person has a side beside their own life, so the filter is offered at all. */
   offered: boolean;
+  /** Whether a connection serves no side, so the filter also offers Not assigned (what comes from it is on no side's list). */
+  unassigned: boolean;
   /** Whether the choices are all known: the sides and the views have both been read (or failed). The control is drawn as a
    * strip or a button only once they are, so it never changes shape under a click. */
   ready: boolean;
@@ -137,6 +142,7 @@ export function useSideFilter(): SideFilter {
   const sides = state.data?.sides ?? [];
   const personal = state.data?.personal ?? null;
   const offered = state.data?.business === true && sides.length > 0;
+  const unassigned = offered && state.data?.unassigned === true;
   const options: SideOption[] = offered
     ? [...(personal ? [{ id: personal, name: t("sides.filter.personal"), personal: true }] : []), ...sides.map((s) => ({ id: s.project, name: s.name, personal: false }))]
     : [];
@@ -152,11 +158,12 @@ export function useSideFilter(): SideFilter {
   // A pick that names a view that is gone (or one not read yet) falls back to All.
   const pickedView = views.find((v) => v.id === resolved);
   const found = pickedView ? options.find((o) => o.id === pickedView.side) : options.find((o) => o.id === resolved);
-  const choice = found ? found.id : "all";
+  const notAssigned = unassigned && resolved === UNASSIGNED;
+  const choice = found ? found.id : notAssigned ? UNASSIGNED : "all";
   const view = pickedView && found ? pickedView.view : null;
-  const named = pickedView && found ? pickedView.name : (found?.name ?? "");
+  const named = pickedView && found ? pickedView.name : notAssigned ? t("sides.filter.unassigned") : (found?.name ?? "");
   const pickedChoice = pickedView && found ? pickedView.id : choice;
-  return { offered, ready: !offered || !read.isPending, options, views, choice, view, picked: pickedChoice, named, shows: (side, held, inProject) => onSide(side, pickedChoice, held, inProject), set: setSideChoice };
+  return { offered, unassigned, ready: !offered || !read.isPending, options, views, choice, view, picked: pickedChoice, named, shows: (side, held, inProject) => onSide(side, pickedChoice, held, inProject), set: setSideChoice };
 }
 
 export interface SidesState {

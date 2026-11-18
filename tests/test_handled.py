@@ -334,11 +334,19 @@ def test_a_row_carries_the_one_side_its_source_serves_and_the_side_filter_narrow
     side = sides.set_business(ws, store, cfg, BUSINESS_NAME, kind="business").project
     personal = sides.personal_project(store.read(), cfg)
     everything = get(client, base, tab="set_aside")
-    assert {i["side"] for g in everything["groups"] for i in g["items"]} == {None}  # the source serves no side yet
+    # The source serves no side yet: its mail is not assigned, and counts once, as that, never under every side.
+    assert {i["side"] for g in everything["groups"] for i in g["items"]} == {sides.UNASSIGNED}
+    for chosen in (side, personal):
+        assert titles(get(client, base, tab="set_aside", side=chosen)) == []
+        assert get(client, base, tab="set_aside", side=chosen)["counts"] == {"set_aside": 0, "read": 0}
+    unassigned = get(client, base, tab="set_aside", side=sides.UNASSIGNED)
+    assert titles(unassigned) == titles(everything) and unassigned["counts"] == everything["counts"]
     path = ws.config_dir / "watch.yaml"
     config = yaml.safe_load(path.read_text())
     config["sources"][0]["sides"] = [side]
     path.write_text(yaml.safe_dump(config))
+    # A side set later moves the mail already read: no new read is needed.
+    assert titles(get(client, base, tab="set_aside", side=sides.UNASSIGNED)) == []
     mine = get(client, base, tab="set_aside", side=side)
     assert titles(mine) == titles(everything) and {i["side"] for g in mine["groups"] for i in g["items"]} == {side}
     elsewhere = get(client, base, tab="set_aside", side=personal)
@@ -505,3 +513,76 @@ def test_the_treat_as_correction_undoes_what_was_done_files_it_as_chosen_and_rec
         assert "pulled_back" in kinds
     finally:
         store.close()
+
+
+def test_a_row_previews_the_kept_message_and_shows_it_whole_and_carries_the_sources_own_link(tmp_path):
+    own_link = "https" + "://mail.example.com/mail/u/1/#inbox/abc123"
+    body = "First paragraph of the offer.\n\nSecond paragraph.\n\nThird paragraph.\n\nFourth paragraph."
+    sale = {**promo("sale-x", SHOP_LIST, 2), "link": own_link}
+    plain = promo("sale-y", SHOP_LIST_TWO, 3)  # a message the source gave no link for
+    sale["text"] = f"From: Someone <{SHOP_LIST}>\nSubject: Sale sale-x\n\n{body}"
+    ws, cfg, store, client, base = start(tmp_path, [sale, plain])
+    try:
+        shown = row(get(client, base, tab="set_aside"), "Sale sale-x")
+        # Two or three lines (the configured number) of the words, past the header lines; the link is the source's own.
+        assert shown["preview"] == [p for p in body.split("\n\n")][: cfg.ui.handled_preview_lines]
+        assert shown["link"] == own_link
+        whole = client.get(f"{base}/handled/{shown['id']}/message")
+        assert whole.status_code == 200, whole.text
+        assert "Fourth paragraph." in whole.json()["text"] and whole.json()["link"] == own_link
+        # No link from the source means none is made up for it.
+        assert row(get(client, base, tab="set_aside"), "Sale sale-y")["link"] is None
+        assert client.get(f"{base}/handled/not-a-snapshot/message").status_code == 404
+    finally:
+        store.close()
+
+
+def test_the_preview_skips_header_lines_and_keeps_only_lines_with_words():
+    from engine.handled import preview_of
+
+    assert preview_of("From: A <a@example.com>\nSubject: Hi\n\n\n  One   two \n\nThree\nFour", 2) == [
+        "One two",
+        "Three",
+    ]
+    assert preview_of("Just words\nmore", 3) == ["Just words", "more"]
+    assert preview_of("", 3) == []
+
+
+def test_mail_of_a_connection_with_no_side_counts_once_as_not_assigned_never_under_every_side(app):
+    from tests.test_sides import BUSINESS_NAME
+
+    ws, cfg, store, client, base = app
+    made = client.post(f"{base}/setup/business", json={"name": BUSINESS_NAME, "kind": "business"})
+    assert made.status_code == 200, made.text
+    side = made.json()["project"]
+    personal = sides.personal_project(store.read(), cfg)
+    counted = {c["side"]: c["count"] for c in client.get(f"{base}/waiting").json()["handled"]["sides"]}
+    # Six handled mails, from a source that serves no side: the one count is the not-assigned one.
+    assert counted == {personal: 0, side: 0, sides.UNASSIGNED: 6}
+    assert client.get(f"{base}/setup/business").json()["unassigned"] is True
+
+
+def test_the_side_of_a_source_is_not_assigned_when_it_serves_none_and_there_is_more_than_one_side(app):
+    import yaml
+
+    from tests.test_sides import BUSINESS_NAME
+
+    ws, cfg, store, client, base = app
+    source = cfg.watch.sources[0].id
+    # Only Personal: nothing to tell apart, so a source that serves nothing is on no side.
+    assert sides.watch_source_side(store.read(), ws.config(env={}), source) is None
+    side = sides.set_business(ws, store, cfg, BUSINESS_NAME, kind="business").project
+    personal = sides.personal_project(store.read(), cfg)
+    path = ws.config_dir / "watch.yaml"
+    config = yaml.safe_load(path.read_text())
+
+    def side_now(held):
+        config["sources"][0]["sides"] = held
+        path.write_text(yaml.safe_dump(config))
+        return sides.watch_source_side(store.read(), ws.config(env={}), source)
+
+    assert side_now([]) == sides.UNASSIGNED
+    assert side_now(["PRJ-no-such-side"]) == sides.UNASSIGNED  # a side that is gone serves nothing
+    assert side_now([side]) == side
+    assert side_now([side, personal]) is None  # several sides: on none alone, shown under each
+    assert sides.watch_source_side(store.read(), ws.config(env={}), "no-such-source") is None

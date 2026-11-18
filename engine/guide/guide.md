@@ -16,7 +16,7 @@ People say "panel", "page", "screen", "tab" or "view" for the same thing: a scre
 - Today: the home screen. What needs you now, each line starting with what to do.
 - Schedule: your calendar as a page, under Today in the side menu: your meetings and what is due, by day, work week, week, month or timeline (see The Schedule and the Timeline below). Add a meeting to it from its Add button.
 - What changed: the history of the assistant's work, newest first: what it did with each thing you handed in. It has no buttons for the work: what waits for you is a line on Today, and a held item here links to it. Undo is in each row's menu.
-- Handled for you: mail the app dealt with for you: what it set aside before reading, and what it read and found nothing to do in. Treat one as work or as personal, or set mail like it aside from now on.
+- Handled for you: mail the app dealt with for you: what it set aside before reading, and what it read and found nothing to do in. Each mail row shows the first lines of the message, **Show the message** opens it whole, and **Open the message** goes to it in your mail service. Treat one as work or as personal, or set mail like it aside from now on.
 - Follow-ups: To send holds the messages, pages and files that wait for your approval of exactly what will go; Later holds what you put off; Waiting on them holds the replies you are waiting for.
 - To-dos: every open to-do and every open question, with owners and dates.
 - Stages: work that moves through steps, the checks to pass at each step and where each item stands.
@@ -154,7 +154,8 @@ If you keep track of a job or a business as well as your own life, each is a **s
 Projects and people sit on a side, and each side is listed in the side menu by its own name. Where more than one side
 exists, a **side filter** (a row of choices, or one Side button when there are many) narrows Today, the Schedule and the
 lists to one side; a line that belongs to no side stays under every choice. A calendar or mail account says which sides
-it serves when you connect it, and can be changed in Settings under Connections. A **view** is a short list of the
+it serves when you connect it (setup asks "What is this account for?" for each account), and can be changed in Settings under
+Connections; mail from an account that serves no side is counted once, under **Not assigned**, never under every side. A **view** is a short list of the
 projects inside one side, such as a manager's portfolio: add one on the Projects screen with **Add view**, pick its
 projects, give it a name and an optional short tag. Add a business or rename a side in Settings, under Your business.
 

@@ -154,6 +154,7 @@ const ownSides = (): S["BusinessState"] => ({
   name: "Quarry House",
   personal: "PRJ-1",
   sides: [{ project: "PRJ-7", kind: "business", name: "Quarry House", organization: "ORG-1", removable: false, filed: 0 }],
+  unassigned: false,
   chosen: "work",
 });
 

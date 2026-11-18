@@ -7601,6 +7601,12 @@
             },
             "title": "Sides",
             "type": "array"
+          },
+          "unassigned": {
+            "default": false,
+            "description": "Whether a connection that is on serves no side, so what comes from it counts once as not assigned and the side filter offers that choice. Always false while there is no side beside Personal.",
+            "title": "Unassigned",
+            "type": "boolean"
           }
         },
         "required": [
@@ -13693,6 +13699,67 @@
         "title": "HandledKindCount",
         "type": "object"
       },
+      "HandledMessage": {
+        "description": "A mail item whole, from the copy kept on this computer, for Show the message on Handled for you.",
+        "properties": {
+          "id": {
+            "description": "The mail item's snapshot.",
+            "title": "Id",
+            "type": "string"
+          },
+          "link": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The link the source gave for the message, unchanged, when it has one.",
+            "title": "Link"
+          },
+          "received": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "ISO 8601 date-time with its offset, as the service gave it.",
+            "title": "Received"
+          },
+          "sender": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sender"
+          },
+          "text": {
+            "description": "The message as kept: plain text from outside, never markup.",
+            "title": "Text",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "text"
+        ],
+        "title": "HandledMessage",
+        "type": "object"
+      },
       "HandledRow": {
         "description": "One item on the Handled for you screen: mail set aside before the assistant read it, a change a rule closed, or\nmail read with nothing to do.",
         "properties": {
@@ -13773,7 +13840,7 @@
                 "type": "null"
               }
             ],
-            "description": "Where the message opens in the person's mail service, when it has one.",
+            "description": "Where the message opens in the person's mail service, when it has one: the link the source gave for it, unchanged.",
             "title": "Link"
           },
           "older_version": {
@@ -13781,6 +13848,14 @@
             "description": "A change a rule closed because the file is an older version of another copy: Not the same document is offered on it, and hands it in after all.",
             "title": "Older Version",
             "type": "boolean"
+          },
+          "preview": {
+            "description": "The first lines of the message, from the copy kept on this computer (plain text, untrusted); empty when none is kept or the item is not mail.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Preview",
+            "type": "array"
           },
           "reason": {
             "anyOf": [
@@ -13871,7 +13946,7 @@
                 "type": "null"
               }
             ],
-            "description": "The side (a top-level project) of the one source it came from serves; empty when that source serves none or several, so the side filter shows it under every choice.",
+            "description": "The side (a top-level project) of the one source it came from serves; `unassigned` when that source serves none and there is more than one side, so it counts once as not assigned; empty when that source serves several, so the side filter shows it under every choice.",
             "title": "Side"
           },
           "source": {
@@ -44705,6 +44780,46 @@
           }
         },
         "summary": "Handled Counts"
+      }
+    },
+    "/api/handled/{snapshot_id}/message": {
+      "get": {
+        "description": "One mail item whole, from the copy kept on this computer, for Show the message. Reads only.",
+        "operationId": "handled_message_api_handled__snapshot_id__message_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "snapshot_id",
+            "required": true,
+            "schema": {
+              "title": "Snapshot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HandledMessage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Handled Message"
       }
     },
     "/api/handled/{snapshot_id}/personal": {

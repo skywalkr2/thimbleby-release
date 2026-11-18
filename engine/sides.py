@@ -262,13 +262,27 @@ def side_word(view: Any, cfg: Any, side: str | None) -> Literal["personal", "bus
     return "business" if any(s.project == side for s in side_list(view, cfg)) else None
 
 
+#: What an item's side is when it came from a source that serves no side while the person has more than one: it is not
+#: assigned, and counts once as that, never under every side.
+UNASSIGNED = "unassigned"
+
+
+def source_unassigned(view: Any, cfg: Any, source: Any) -> bool:
+    """Whether a watched source serves no side that exists while the person has more than one side (so the side filter
+    is offered and an answer is needed)."""
+    return len(side_ids(view, cfg)) > 1 and not any(i in set(source.sides) for i in side_ids(view, cfg))
+
+
 def watch_source_side(view: Any, cfg: Any, source_id: str | None) -> Side | None:
-    """The one side a watched source serves (the sides that exist, in the sides' order); none when it serves none or
-    several, so what came from it shows under every choice of the side filter."""
+    """The one side a watched source serves (the sides that exist, in the sides' order); `UNASSIGNED` when it serves
+    none and the person has more than one side; none when it serves several, so what came from it shows under every
+    choice of the side filter, or when the source or the sides aren't there."""
     source = next((s for s in cfg.watch.sources if s.id == source_id), None)
     if source is None:
         return None
     served = [i for i in side_ids(view, cfg) if i in set(source.sides)]
+    if not served:
+        return UNASSIGNED if source_unassigned(view, cfg, source) else None
     return served[0] if len(served) == 1 else None
 
 

@@ -13,6 +13,9 @@ import { Handled } from "./Handled";
 const AT = "@";
 const addr = (name: string, domain = "lists.example.com") => `${name}${AT}${domain}`;
 
+/** Made-up addresses are built from this, so none is written out whole. */
+const WEB = "https" + "://";
+
 const row = (id: string, extra: Partial<S["HandledRow"]> = {}): S["HandledRow"] => ({
   id,
   version: 3,
@@ -24,6 +27,7 @@ const row = (id: string, extra: Partial<S["HandledRow"]> = {}): S["HandledRow"] 
   received: "2026-10-11T08:30:00+00:00",
   reason: "it was sent to many people, as a mailing list or bulk mail",
   link: null,
+  preview: [],
   saved: null,
   address: addr(id),
   domain: "lists.example.com",
@@ -307,16 +311,43 @@ test("a row of the read list has Take a closer look, and in its menu the other c
   await user.click(within(other).getByRole("button", { name: "More actions for Lunch q" }));
   expect(await screen.findByRole("menuitem", { name: "Treat as personal" })).toBeInTheDocument();
   expect(screen.getByRole("menuitem", { name: "Always set aside mail like this" })).toBeInTheDocument();
-  expect(screen.getByRole("menuitem", { name: "Open the message" })).toBeInTheDocument();
+  // This row has no link from its source, so the way out to the mail service is not offered (Show the message reads it here).
+  expect(screen.queryByRole("menuitem", { name: "Open the message" })).not.toBeInTheDocument();
 });
 
-test("Open the message goes to the saved page when the message has no link in the mail service", async () => {
+test("Open the message is not offered for mail the source gave no link for, even when a saved page exists, and with a link it opens that link as given", async () => {
   const user = userEvent.setup();
-  open({ "GET handled?tab=set_aside&q=": () => ({ ...ASIDE, groups: [group("kind:sales", [row("a", { saved: "SRC-a" })])] }) });
-  const sales = await open_(user, /^Sales, promotions and social updates · 1$/);
+  const link = `${WEB}mail.example.com/mail/u/1/#inbox/abc`;
+  const opened = vi.spyOn(window, "open").mockImplementation(() => null);
+  open({ "GET handled?tab=set_aside&q=": () => ({ ...ASIDE, groups: [group("kind:sales", [row("a", { saved: "SRC-a" }), row("b", { link })])] }) });
+  const sales = await open_(user, /^Sales, promotions and social updates · 2$/);
   await user.click(within(sales).getByRole("button", { name: "More actions for Offer a" }));
+  expect(await screen.findByRole("menuitem", { name: "Always set aside mail like this" })).toBeInTheDocument();
+  expect(screen.queryByRole("menuitem", { name: "Open the message" })).not.toBeInTheDocument();
+  await user.keyboard("{Escape}");
+  await user.click(within(sales).getByRole("button", { name: "More actions for Offer b" }));
   await user.click(await screen.findByRole("menuitem", { name: "Open the message" }));
-  expect(window.location.hash).toBe("#records/source/SRC-a");
+  expect(opened).toHaveBeenCalledWith(link, "_blank", "noopener,noreferrer");
+  opened.mockRestore();
+});
+
+test("a set-aside row shows the start of the kept message as text and Show the message opens it whole, as text with links showing their domain", async () => {
+  const user = userEvent.setup();
+  open({
+    "GET handled?tab=set_aside&q=": () => ({ ...ASIDE, groups: [group("kind:sales", [row("a", { preview: ["First line of the offer.", "<b>not markup</b>"] })])] }),
+    "GET handled/a/message": () => ({ id: "a", title: "Offer a", sender: null, received: null, text: `Whole first line.\n\nWebsite: ${WEB}shop.example.com/deal`, link: null }),
+  });
+  const sales = await open_(user, /^Sales, promotions and social updates · 1$/);
+  const preview = within(sales).getByRole("group", { name: "The start of the message" });
+  expect(preview).toHaveTextContent("First line of the offer.");
+  expect(preview).toHaveTextContent("<b>not markup</b>");
+  expect(preview.querySelector("b")).toBeNull();
+  await user.click(within(sales).getByRole("button", { name: "Show the message: Offer a" }));
+  const whole = await within(sales).findByRole("region", { name: "Offer a" });
+  expect(await within(whole).findByText("Whole first line.")).toBeInTheDocument();
+  expect(whole).toHaveTextContent("shop.example.com");
+  await user.click(within(sales).getByRole("button", { name: "Hide the message: Offer a" }));
+  expect(within(sales).queryByRole("region", { name: "Offer a" })).toBeNull();
 });
 
 test("Open the message is not offered for a message with neither a link nor a saved page", async () => {

@@ -6343,6 +6343,17 @@ class SetAsideDone(BaseModel):
     )
 
 
+class HandledMessage(BaseModel):
+    """A mail item whole, from the copy kept on this computer, for Show the message on Handled for you."""
+
+    id: str = Field(description="The mail item's snapshot.")
+    title: str
+    sender: str | None = None
+    received: str | None = Field(None, description="ISO 8601 date-time with its offset, as the service gave it.")
+    text: str = Field(description="The message as kept: plain text from outside, never markup.")
+    link: str | None = Field(None, description="The link the source gave for the message, unchanged, when it has one.")
+
+
 class HandledRow(BaseModel):
     """One item on the Handled for you screen: mail set aside before the assistant read it, a change a rule closed, or
     mail read with nothing to do."""
@@ -6369,15 +6380,25 @@ class HandledRow(BaseModel):
     source: str = Field(description="The watched source's label.")
     side: str | None = Field(
         None,
-        description="The side (a top-level project) of the one source it came from serves; empty when that source "
-        "serves none or several, so the side filter shows it under every choice.",
+        description="The side (a top-level project) of the one source it came from serves; `unassigned` when that "
+        "source serves none and there is more than one side, so it counts once as not assigned; empty when that source "
+        "serves several, so the side filter shows it under every choice.",
     )
     received: str | None = Field(None, description="ISO 8601 date-time with its offset, as the service gave it.")
     reason: str | None = Field(
         None,
         description="Why it was set aside or closed, in plain words; empty for mail the assistant read.",
     )
-    link: str | None = Field(None, description="Where the message opens in the person's mail service, when it has one.")
+    link: str | None = Field(
+        None,
+        description="Where the message opens in the person's mail service, when it has one: the link the source gave "
+        "for it, unchanged.",
+    )
+    preview: list[str] = Field(
+        default_factory=list,
+        description="The first lines of the message, from the copy kept on this computer (plain text, untrusted); "
+        "empty when none is kept or the item is not mail.",
+    )
     saved: str | None = Field(None, description="The saved source record of the message, whose page opens it.")
     address: str = Field("", description="The sender's address, when the mail holds one.")
     domain: str | None = Field(
@@ -7123,6 +7144,11 @@ class BusinessState(BaseModel):
     name: str | None = None
     personal: str | None = Field(None, description="The id of the personal project, when there is one.")
     sides: list[SideView] = Field(default_factory=list, description="The sides beside the personal one, in order.")
+    unassigned: bool = Field(
+        False,
+        description="Whether a connection that is on serves no side, so what comes from it counts once as not "
+        "assigned and the side filter offers that choice. Always false while there is no side beside Personal.",
+    )
     chosen: Literal["me", "work"] | None = Field(
         None,
         description="What the person said about their work at setup: Just me (`me`) or Me and my work (`work`); "

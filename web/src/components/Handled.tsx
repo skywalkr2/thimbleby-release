@@ -22,6 +22,7 @@ import { Icon } from "../ui/Icon";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import styles from "./Handled.module.css";
 import { AssistantCloses } from "./HandledClosed";
+import { SafeText } from "./SafeText";
 import { SideFilter } from "./SideFilter";
 import { RowMenu, type MenuAction } from "./RowMenu";
 import { useVersionActs } from "./SameDocument";
@@ -246,16 +247,18 @@ function HandledRow(props: { item: Row; picked?: { on: boolean; toggle: () => vo
       () => ({ message: t("sources.silent.toast", { title: item.title }) }),
     );
   };
+  const closed = item.tab === "closed";
+  // Go to mail opens the link the source gave for the message, as given, so a link that names its account opens that account; a
+  // message with no link has no such action. A change a rule closed (any kind of item) can still open its saved record.
   const open = item.link
     ? { run: () => void window.open(item.link ?? "", "_blank", "noopener,noreferrer") }
-    : item.saved
+    : closed && item.saved
       ? {
           run: () => {
             window.location.hash = toHash(recordView("source", item.saved ?? ""));
           },
         }
       : null;
-  const closed = item.tab === "closed";
   // A file a rule closed: which files are one document, where a wrong grouping is noticed (design 6.2).
   const versions = useVersionActs(
     closed && item.item === "file" ? item.saved : null,
@@ -370,6 +373,37 @@ function HandledRow(props: { item: Row; picked?: { on: boolean; toggle: () => vo
         </div>
       )}
       {versions.form}
+      {item.item === "mail" && !closed && <MessagePreview item={item} />}
     </Row>
+  );
+}
+
+/** The start of a set-aside or read message from the copy kept on this computer (plain text, untrusted), and Show the message,
+ * which opens it whole here. Nothing was sent to the assistant for this: it is read from the file kept. */
+function MessagePreview(props: { item: Row }) {
+  const { t } = useWords();
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  const whole = useQuery({ queryKey: ["handled-message", props.item.id], queryFn: () => api.handledMessage(props.item.id), enabled: open, staleTime: Infinity });
+  return (
+    <div className={styles.message} data-handled-message="">
+      {(props.item.preview ?? []).length > 0 && (
+        <div className={styles.preview} data-handled-preview="" role="group" aria-label={t("handled.message.preview_label")}>
+          {(props.item.preview ?? []).map((line, i) => (
+            <p key={i}>{line}</p>
+          ))}
+        </div>
+      )}
+      <Button variant="quiet" size="sm" aria-expanded={open} aria-controls={open ? id : undefined} aria-label={`${t(open ? "handled.message.hide" : "handled.message.show")}: ${props.item.title}`} onClick={() => setOpen((on) => !on)}>
+        {t(open ? "handled.message.hide" : "handled.message.show")}
+      </Button>
+      {open && (
+        <div id={id} className={styles.whole} data-handled-whole="" role="region" aria-label={props.item.title}>
+          {whole.isPending && <p className="hint">{t("handled.message.loading")}</p>}
+          {whole.isError && <p className="hint">{t("handled.message.gone")}</p>}
+          {whole.data && (whole.data.text.trim() ? <SafeText text={whole.data.text} /> : <p className="hint">{t("handled.message.gone")}</p>)}
+        </div>
+      )}
+    </div>
   );
 }

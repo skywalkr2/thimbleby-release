@@ -19,6 +19,7 @@ from api.schemas import (
     FullReadView,
     HandledCountsToday,
     HandledDone,
+    HandledMessage,
     HandledView,
     IntakeSeen,
     IntakeStarted,
@@ -649,6 +650,14 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
             ws, store, config, tab, group or config.ui.handled_group, q.strip(), worker.now(), item, side or None
         )
         return HandledView.model_validate(found)
+
+    @r.get("/handled/{snapshot_id}/message")
+    def handled_message(snapshot_id: str) -> HandledMessage:
+        """One mail item whole, from the copy kept on this computer, for Show the message. Reads only."""
+        found = handled.message_text(ws, store, snapshot_id)
+        if found is None:
+            raise HTTPException(status_code=404, detail="That message isn't kept here any more.")
+        return HandledMessage.model_validate(found)
 
     @r.get("/handled/counts")
     def handled_counts() -> HandledCountsToday:

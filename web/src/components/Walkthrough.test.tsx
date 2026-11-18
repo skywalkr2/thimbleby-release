@@ -98,6 +98,7 @@ const stateWith = (sides: S["SideView"][], chosen: "me" | "work" | null = "work"
   name: sides[0]?.name ?? null,
   personal: PERSONAL,
   sides,
+  unassigned: false,
   chosen,
 });
 
@@ -2117,10 +2118,6 @@ describe("Mail and calendar", () => {
 
   const row = async () => (await screen.findByText("Service mail-addon")).closest("li") as HTMLElement;
   /** The side question of each account row is closed until its Pick (or Change) is pressed: opens every row's. */
-  const openSides = async (user: ReturnType<typeof userEvent.setup>) => {
-    for (const button of await screen.findAllByRole("button", { name: /^Change the sides / })) await user.click(button);
-  };
-
   /** Opens the panel that holds the ways to add an account, and returns it. */
   const panel = async (user: ReturnType<typeof userEvent.setup>) => {
     await user.click(await screen.findByRole("button", { name: "Connect another account" }));
@@ -2554,65 +2551,6 @@ describe("Mail and calendar", () => {
     expect(within(line).getByText(/not the message body/)).toBeInTheDocument();
   });
 
-  test("with a side of work, each mailbox and calendar asks which it serves and saves the ticks as its sides", async () => {
-    const user = userEvent.setup();
-    service("on", { signed: true });
-    let sources: Array<Record<string, unknown>> = [
-      { id: "s1", connector: "mail-addon/mail", label: "Your inbox", settings: {} },
-      { id: "s2", connector: "mail-addon/mail", label: "Your calendar", settings: {}, sides: ["PRJ-3"] },
-    ];
-    const first = sources;
-    const saves: unknown[] = [];
-    const mail = fakeApi({
-      ...routes({}, CORE.map((c) => step(c)), { step: "mail" }),
-      "GET packs": () => ({
-        enabled: true,
-        feeds: [],
-        available: [available("mail-addon", { installed_version: "1.0.0", enabled: true })],
-        installed: [installedPack("mail-addon", { enabled: true, state: "enabled" })],
-      }),
-      "GET sign-ins": () => [signIn("mail-addon/account", { status: "signed_in", account: "me@example.com" })],
-      "GET watch": () => [source("s1", "Your inbox"), source("s2", "Your calendar", { reads: ["calendar"] })],
-      "GET setup/business": () => stateWith([side("PRJ-2", "job", EMPLOYER), side("PRJ-3", "business", SHOP)]),
-      "GET settings": () => ({
-        fingerprint: "fp-1",
-        items: [
-          ...SETTINGS,
-          { key: "watch.sources", file: "watch", group: "watch", description: "", type: "other", options: [], value: sources, default: [], source: "file", locked: false, basic: false, editable: false },
-        ],
-      }),
-      "POST settings": (body) => {
-        saves.push(body);
-        const before = sources;
-        sources = (body as { changes: { "watch.sources": Array<Record<string, unknown>> } }).changes["watch.sources"];
-        return { changes: [{ key: "watch.sources", before, after: sources, was_default: false, is_default: false }], fingerprint: "fp-2", needs_restart: false };
-      },
-    });
-    open();
-    await openSides(user);
-    const inbox = await screen.findByRole("group", { name: "Your inbox: who is it for?" });
-    const calendar = screen.getByRole("group", { name: "Your calendar: who is it for?" });
-    expect(within(inbox).getAllByRole("checkbox").map((b) => (b.closest("label") as HTMLElement).textContent)).toEqual(["Personal", EMPLOYER, SHOP]);
-    // Nothing ticked is allowed; what a source already serves is shown ticked.
-    expect(within(inbox).getAllByRole("checkbox").every((b) => !(b as HTMLInputElement).checked)).toBe(true);
-    expect(within(calendar).getByRole("checkbox", { name: SHOP })).toBeChecked();
-    // The same mailbox may serve several: Personal and the job.
-    await user.click(within(inbox).getByRole("checkbox", { name: "Personal" }));
-    await waitFor(() => expect(saves).toHaveLength(1));
-    expect(saves[0]).toEqual({
-      changes: { "watch.sources": [{ ...first[0], sides: [PERSONAL] }, first[1]] },
-      reset: [],
-      fingerprint: "fp-1",
-    });
-    await user.click(within(inbox).getByRole("checkbox", { name: EMPLOYER }));
-    await waitFor(() => expect(saves).toHaveLength(2));
-    expect((saves[1] as { changes: { "watch.sources": Array<{ sides: string[] }> } }).changes["watch.sources"][0].sides).toEqual([PERSONAL, "PRJ-2"]);
-    expect(mail.filter((c) => c.route === "POST settings")).toHaveLength(2);
-    // A tick raises no message (nothing to cover the next box), and the line under the boxes says how it stands.
-    expect(document.querySelector("[data-toast]")).toBeNull();
-    expect(await within(inbox).findByRole("status")).toHaveTextContent(`Your inbox is for Personal and ${EMPLOYER}.`);
-  });
-
   /** The mail step with a job and a business beside Personal and two sources whose ticks save through `post`, as the settings route
    * does; `held` is what the sources serve when the step opens. */
   function ticks(post: (body: { changes: { "watch.sources": Array<Record<string, unknown>> } }) => unknown) {
@@ -2652,144 +2590,6 @@ describe("Mail and calendar", () => {
     return { calls, state };
   }
 
-  test("a second tick made while a save runs is queued and saved after it, so neither is lost", async () => {
-    const user = userEvent.setup();
-    let release: () => void = () => undefined;
-    const gate = new Promise<void>((resolve) => (release = resolve));
-    const saved: string[][] = [];
-    let first = true;
-    ticks(async (body) => {
-      saved.push(body.changes["watch.sources"][0].sides as string[]);
-      if (first) {
-        first = false;
-        await gate;
-      }
-    });
-    open();
-    await openSides(user);
-    expect((await screen.findByRole("button", { name: "Set them separately" })).className).toMatch(/link/);
-    expect(screen.getByRole("button", { name: "Set them separately" }).querySelector("svg")).not.toBeNull();
-    await user.click(await screen.findByRole("button", { name: "Set them separately" }));
-    const inbox = await screen.findByRole("group", { name: "Your inbox: who is it for?" });
-    await user.click(within(inbox).getByRole("checkbox", { name: "Personal" }));
-    // The first save is still running: the other box is not greyed out and its tick is kept.
-    expect(within(inbox).getByRole("checkbox", { name: EMPLOYER })).toBeEnabled();
-    await user.click(within(inbox).getByRole("checkbox", { name: EMPLOYER }));
-    expect(within(inbox).getByRole("checkbox", { name: "Personal" })).toBeChecked();
-    expect(within(inbox).getByRole("checkbox", { name: EMPLOYER })).toBeChecked();
-    release();
-    await waitFor(() => expect(saved).toHaveLength(2));
-    expect(saved).toEqual([[PERSONAL], [PERSONAL, "PRJ-2"]]);
-    expect(await within(inbox).findByRole("status")).toHaveTextContent(`Your inbox is for Personal and ${EMPLOYER}.`);
-  });
-
-  test("quick ticks, on a server that checks the fingerprint and answers after a while, all end up saved as the boxes show", async () => {
-    const user = userEvent.setup();
-    service("on", { signed: true });
-    let sources: Array<Record<string, unknown>> = [
-      { id: "s1", connector: "mail-addon/mail", label: "Your inbox", settings: {} },
-      { id: "s2", connector: "mail-addon/mail", label: "Your calendar", settings: {} },
-    ];
-    // The fingerprint is of what is saved, as the server's is of the files, so it repeats when the same list comes back.
-    const fingerprint = () => `fp-${JSON.stringify(sources)}`;
-    const later = (ms: number) => new Promise((done) => setTimeout(done, ms));
-    fakeApi({
-      ...routes({}, CORE.map((c) => step(c)), { step: "mail" }),
-      "GET packs": () => ({
-        enabled: true,
-        feeds: [],
-        available: [available("mail-addon", { installed_version: "1.0.0", enabled: true })],
-        installed: [installedPack("mail-addon", { enabled: true, state: "enabled" })],
-      }),
-      "GET sign-ins": () => [signIn("mail-addon/account", { status: "signed_in", account: "me@example.com" })],
-      "GET watch": () => [source("s1", "Your inbox"), source("s2", "Your calendar", { reads: ["calendar"] })],
-      "GET setup/business": () => stateWith([side("PRJ-2", "job", EMPLOYER), side("PRJ-3", "business", SHOP)]),
-      "GET settings": async () => {
-        const answer = {
-          fingerprint: fingerprint(),
-          items: [
-            ...SETTINGS,
-            { key: "watch.sources", file: "watch", group: "watch", description: "", type: "other", options: [], value: sources, default: [], source: "file", locked: false, basic: false, editable: false },
-          ],
-        };
-        await later(15);
-        return answer;
-      },
-      "POST settings": async (body) => {
-        await later(25);
-        const sent = body as { fingerprint: string; changes: { "watch.sources": Array<Record<string, unknown>> } };
-        if (sent.fingerprint !== fingerprint()) return new Refuse(409, "The settings changed since you opened them. Look again, then save.");
-        const before = sources;
-        sources = sent.changes["watch.sources"];
-        return { changes: [{ key: "watch.sources", before, after: sources, was_default: false, is_default: false }], fingerprint: fingerprint(), needs_restart: false };
-      },
-    });
-    const app = open();
-    await openSides(user);
-    // The app's live stream asks for everything again whenever the server says something changed, at any moment.
-    const stream = setInterval(() => void app.client.invalidateQueries(), 9);
-    await user.click(await screen.findByRole("button", { name: "Set them separately" }));
-    const inbox = await screen.findByRole("group", { name: "Your inbox: who is it for?" });
-    // The four clicks of the review: Personal on, the job on, the shop on, the shop off.
-    await user.click(within(inbox).getByRole("checkbox", { name: "Personal" }));
-    await user.click(within(inbox).getByRole("checkbox", { name: EMPLOYER }));
-    await user.click(within(inbox).getByRole("checkbox", { name: SHOP }));
-    await user.click(within(inbox).getByRole("checkbox", { name: SHOP }));
-    const shown = () => within(inbox).getAllByRole("checkbox").map((b) => (b as HTMLInputElement).checked);
-    await later(600);
-    expect(shown()).toEqual([true, true, false]);
-    await waitFor(() => expect((sources[0] as { sides?: string[] }).sides).toEqual([PERSONAL, "PRJ-2"]), { timeout: 3000 });
-    await later(300);
-    // What is saved is what the boxes show, and the boxes still show it once the saves are done.
-    expect((sources[0] as { sides?: string[] }).sides).toEqual([PERSONAL, "PRJ-2"]);
-    expect(shown()).toEqual([true, true, false]);
-    expect(within(inbox).queryByRole("alert")).toBeNull();
-    clearInterval(stream);
-  });
-
-  test("ticking and unticking quickly ends with a message that matches the boxes", async () => {
-    const user = userEvent.setup();
-    let release: () => void = () => undefined;
-    const gate = new Promise<void>((resolve) => (release = resolve));
-    let first = true;
-    ticks(async () => {
-      if (first) {
-        first = false;
-        await gate;
-      }
-    });
-    open();
-    await openSides(user);
-    await user.click(await screen.findByRole("button", { name: "Set them separately" }));
-    const inbox = await screen.findByRole("group", { name: "Your inbox: who is it for?" });
-    const personal = within(inbox).getByRole("checkbox", { name: "Personal" });
-    await user.click(personal);
-    await user.click(personal);
-    release();
-    await waitFor(() => expect(within(inbox).getByRole("status")).toHaveTextContent("Your inbox isn't marked for any of them."));
-    expect(within(inbox).getAllByRole("checkbox").every((b) => !(b as HTMLInputElement).checked)).toBe(true);
-    expect(within(inbox).getByRole("status")).not.toHaveTextContent(/ is for /);
-  });
-
-  test("a tick that couldn't be saved names its box and offers Try again, which saves it", async () => {
-    const user = userEvent.setup();
-    let fail = true;
-    const { state } = ticks(async () => (fail ? new Refuse(500, "") : undefined));
-    open();
-    await openSides(user);
-    await user.click(await screen.findByRole("button", { name: "Set them separately" }));
-    const inbox = await screen.findByRole("group", { name: "Your inbox: who is it for?" });
-    await user.click(within(inbox).getByRole("checkbox", { name: EMPLOYER }));
-    const problem = await within(inbox).findByRole("alert");
-    expect(problem).toHaveTextContent(`Your inbox: couldn't save ${EMPLOYER}.`);
-    expect(within(inbox).getByRole("checkbox", { name: EMPLOYER })).not.toBeChecked();
-    fail = false;
-    await user.click(within(problem).getByRole("button", { name: "Try again" }));
-    await waitFor(() => expect(within(inbox).getByRole("checkbox", { name: EMPLOYER })).toBeChecked());
-    expect((state.sources[0] as { sides: string[] }).sides).toEqual(["PRJ-2"]);
-    expect(within(inbox).queryByRole("alert")).toBeNull();
-  });
-
   test("the setting that sorts mail, saved at once, offers Try again when it couldn't be saved", async () => {
     const user = userEvent.setup();
     let fail = true;
@@ -2803,30 +2603,6 @@ describe("Mail and calendar", () => {
     await user.click(within(problem).getByRole("button", { name: "Try again" }));
     await waitFor(() => expect(calls.filter((c) => c.route === "POST settings")).toHaveLength(2));
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
-  });
-
-  test("after a connect with a side of work the step asks once who they are for, and a tick saves to every source of the sign-in", async () => {
-    const user = userEvent.setup();
-    const saved: Array<Array<{ id: string; sides?: string[] }>> = [];
-    ticks(async (body) => void saved.push(body.changes["watch.sources"] as Array<{ id: string; sides?: string[] }>));
-    open();
-    await openSides(user);
-    const group = await screen.findByRole("group", { name: "Who are they for?" });
-    // One question for the whole sign-in, in the result block, with Personal and each side.
-    expect((group.closest("[data-mail-result]") as HTMLElement).firstElementChild).toBe(group.closest("section"));
-    expect(within(group).getAllByRole("checkbox").map((b) => (b.closest("label") as HTMLElement).textContent)).toEqual(["Personal", EMPLOYER, SHOP]);
-    expect(screen.queryByRole("group", { name: /: who is it for\?$/ })).toBeNull();
-    await user.click(within(group).getByRole("checkbox", { name: EMPLOYER }));
-    await waitFor(() => expect(saved).toHaveLength(1));
-    expect(saved[0].map((s) => s.sides)).toEqual([["PRJ-2"], ["PRJ-2"]]);
-    expect(await within(group).findByRole("status")).toHaveTextContent(`They're for ${EMPLOYER}.`);
-    // One way to ask for each source on its own.
-    await user.click(screen.getByRole("button", { name: "Set them separately" }));
-    expect(await screen.findByRole("group", { name: "Your inbox: who is it for?" })).toBeInTheDocument();
-    expect(screen.getByRole("group", { name: "Your calendar: who is it for?" })).toBeInTheDocument();
-    expect(screen.queryByRole("group", { name: "Who are they for?" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Set them separately" })).toBeNull();
-    expect(screen.getAllByRole("button", { name: "Continue" })).toHaveLength(1);
   });
 
   /** Two sign-ins of one service, each with an inbox and a calendar, and a job and a business beside Personal. Ticks save
@@ -2877,64 +2653,84 @@ describe("Mail and calendar", () => {
     return { calls, state };
   }
 
-  test("two accounts of one service: the sides question is one choice per account, named by its address, and a tick saves to that account's sources only", async () => {
+  const radios = (scope: HTMLElement) => within(scope).getAllByRole("radio").map((r) => (r.closest("label") as HTMLElement).textContent);
+
+  test("with a side of work, a connected account asks what it is for as a list to pick from, and the pick is saved as the sides of the account's sources", async () => {
     const user = userEvent.setup();
-    const { calls, state } = twoAccounts();
+    const { state } = twoAccounts(["sam@example.com"]);
     open();
-    await openSides(user);
-    const sam = await screen.findByRole("group", { name: "Who is mail and calendar at sam@example.com for?" });
-    const pat = screen.getByRole("group", { name: "Who is mail and calendar at pat@example.com for?" });
-    // Two questions, not one per source.
-    expect(screen.getAllByRole("group")).toHaveLength(2);
-    expect(screen.queryByRole("group", { name: /^Your (inbox|calendar)/ })).toBeNull();
-    await user.click(within(sam).getByRole("checkbox", { name: EMPLOYER }));
-    await waitFor(() => expect(calls.some((c) => c.route === "POST settings")).toBe(true));
-    const saves = calls.filter((c) => c.route === "POST settings");
-    expect(saves).toHaveLength(1);
-    expect(state.sources.map((x) => [x.id, x.sides])).toEqual([
-      ["i0", ["PRJ-2"]],
-      ["c0", ["PRJ-2"]],
-      ["i1", undefined],
-      ["c1", undefined],
-    ]);
-    expect(within(pat).getAllByRole("checkbox").every((b) => !(b as HTMLInputElement).checked)).toBe(true);
+    const rows = await screen.findByRole("list", { name: "The accounts being read" });
+    const mine = within(rows).getAllByRole("listitem");
+    expect(mine).toHaveLength(1);
+    expect(within(mine[0]).getByText("Your inbox and your calendar")).toBeInTheDocument();
+    // The question is the step's own choice, on the row: a list to pick from, never a link or a box to type in.
+    const question = within(mine[0]).getByRole("group", { name: "What is this account for?" });
+    expect(radios(question)).toEqual(["Personal", EMPLOYER, SHOP, "Every side"]);
+    expect(within(mine[0]).queryByRole("textbox")).toBeNull();
+    expect(screen.queryByText(/Tick every one it serves/)).toBeNull();
+    expect(screen.queryByText("For")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Change the sides/ })).toBeNull();
+    await user.click(within(question).getByRole("radio", { name: EMPLOYER }));
+    await waitFor(() => expect(state.sources.map((x) => [x.id, x.sides])).toEqual([["i0", ["PRJ-2"]], ["c0", ["PRJ-2"]]]));
+    await waitFor(() => expect(within(question).getByRole("radio", { name: EMPLOYER })).toBeChecked());
+    // Every side is one pick too, saved in the order of the sides.
+    await user.click(within(question).getByRole("radio", { name: "Every side" }));
+    await waitFor(() => expect(state.sources.map((x) => x.sides)).toEqual([[PERSONAL, "PRJ-2", "PRJ-3"], [PERSONAL, "PRJ-2", "PRJ-3"]]));
   });
 
-  test("two accounts: Set them separately opens the choices for that account's sources only", async () => {
+  test("two accounts are asked one question each, named by the row, and a pick saves to that account's sources only", async () => {
     const user = userEvent.setup();
-    twoAccounts();
+    const { state } = twoAccounts();
     open();
-    await openSides(user);
-    const sam = await screen.findByRole("group", { name: "Who is mail and calendar at sam@example.com for?" });
-    // One quiet button per account, each after its own question; the first account's follows its question.
-    const buttons = screen.getAllByRole("button", { name: "Set them separately" });
-    expect(buttons).toHaveLength(2);
-    expect(sam.compareDocumentPosition(buttons[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    await user.click(buttons[0]);
-    expect(await screen.findByRole("group", { name: "Your inbox (sam@example.com): who is it for?" })).toBeInTheDocument();
-    expect(screen.getByRole("group", { name: "Your calendar (sam@example.com): who is it for?" })).toBeInTheDocument();
-    expect(screen.queryByRole("group", { name: /pat@example.com\): who is it for\?/ })).toBeNull();
-    // The other account is still asked as one.
-    expect(screen.getByRole("group", { name: "Who is mail and calendar at pat@example.com for?" })).toBeInTheDocument();
-    expect(screen.queryByRole("group", { name: "Who is mail and calendar at sam@example.com for?" })).toBeNull();
+    const rows = await screen.findByRole("list", { name: "The accounts being read" });
+    const [sam, pat] = within(rows).getAllByRole("listitem");
+    expect(screen.getAllByRole("group", { name: "What is this account for?" })).toHaveLength(2);
+    await user.click(within(sam).getByRole("radio", { name: SHOP }));
+    await waitFor(() => expect(state.sources.map((x) => [x.id, x.sides])).toEqual([["i0", ["PRJ-3"]], ["c0", ["PRJ-3"]], ["i1", undefined], ["c1", undefined]]));
+    expect(within(pat).getAllByRole("radio").every((r) => !(r as HTMLInputElement).checked)).toBe(true);
   });
 
-  test("two accounts: the reading is one compact row per account, with its address, what is read there and who it is for, not one run-on of every source", async () => {
+  test("Continue waits for every account to be answered, and I'll say later, once confirmed, goes on and shows the account as not assigned", async () => {
     const user = userEvent.setup();
+    twoAccounts(["sam@example.com"]);
+    open();
+    const rows = await screen.findByRole("list", { name: "The accounts being read" });
+    const next = screen.getByRole("button", { name: "Continue" });
+    expect(next).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "I'll say later" }));
+    // Nothing is left out until it is confirmed, and the safe answer is the one the cursor starts on.
+    const dialog = await screen.findByRole("dialog", { name: "Leave these accounts not assigned?" });
+    await user.click(within(dialog).getByRole("button", { name: "Keep this step" }));
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "I'll say later" }));
+    await user.click(within(await screen.findByRole("dialog", { name: "Leave these accounts not assigned?" })).getByRole("button", { name: "Leave it out" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+    expect(within(rows).getByText("Not assigned")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "I'll say later" })).toBeNull();
+  });
+
+  test("one account is one row that says what is read there and carries its own question about who it is for", async () => {
+    twoAccounts(["sam@example.com"]);
+    open();
+    const rows = await screen.findByRole("list", { name: "The accounts being read" });
+    const mine = within(rows).getAllByRole("listitem");
+    expect(mine).toHaveLength(1);
+    expect(within(mine[0]).getByText("Your inbox and your calendar")).toBeInTheDocument();
+    // The question is on the row, asked there once, and nowhere above the rows.
+    expect(within(mine[0]).getByRole("group", { name: "What is this account for?" })).toBeInTheDocument();
+    expect(screen.getAllByRole("group")).toHaveLength(1);
+  });
+
+  test("two accounts: the reading is one row per account, with its address and what is read there", async () => {
     twoAccounts();
     open();
-    await openSides(user);
     const rows = await screen.findByRole("list", { name: "The accounts being read" });
     expect(screen.getByText("Helper is reading 2 accounts.")).toBeInTheDocument();
-    expect(screen.queryByText(/Helper is reading: /)).toBeNull();
     const [sam, pat] = within(rows).getAllByRole("listitem");
     expect(sam).toHaveTextContent("sam@example.com");
     expect(sam).toHaveTextContent("Your inbox and your calendar");
     expect(pat).toHaveTextContent("pat@example.com");
-    // Each row carries its own question for who the account is for, and the hint under the sides is said once, not per row.
-    expect(within(sam).getByRole("group", { name: "Who is mail and calendar at sam@example.com for?" })).toBeInTheDocument();
-    expect(within(pat).getByRole("group", { name: "Who is mail and calendar at pat@example.com for?" })).toBeInTheDocument();
-    expect(screen.getAllByText("Tick every one it serves. You can leave them all empty if you'd rather not say.")).toHaveLength(1);
+    expect(screen.queryByText(/Tick every one it serves/)).toBeNull();
   });
 
   test("an account that needs signing in again is the shared row with its state and Sign in again, not Connected", async () => {
@@ -2946,8 +2742,8 @@ describe("Mail and calendar", () => {
     expect(pat).not.toHaveTextContent("Connected");
     expect(pat).toHaveTextContent(/Needs sign-in/);
     expect(within(pat).getByRole("button", { name: /Sign in again/ })).toBeInTheDocument();
-    // Its sides are said in the same row, as for the others.
-    expect(within(pat).getByText("For")).toBeInTheDocument();
+    // Its question is in the same row, as for the others.
+    expect(within(pat).getByRole("group", { name: "What is this account for?" })).toBeInTheDocument();
     // The lead line is counted from how each account stands, so it never says "connected" over a row that needs signing in, and the
     // fix is the outline weight so Continue stays the one filled button (G5c).
     expect(screen.getByText(/1 of 2 accounts are connected\./)).toBeInTheDocument();
@@ -2964,49 +2760,6 @@ describe("Mail and calendar", () => {
       expect(row).not.toHaveTextContent("Private to you");
     }
     expect(screen.getByText(/is reading 2 accounts, all private to you\./)).toBeInTheDocument();
-  });
-
-  test("three accounts are three rows, each address cut with the full address on hover, and the sides are ticked in the row", async () => {
-    const user = userEvent.setup();
-    twoAccounts(["avery.lane@example.com", "avery.lane.home@example.com", "avery.lane.studio@example.com"]);
-    open();
-    await openSides(user);
-    const rows = await screen.findByRole("list", { name: "The accounts being read" });
-    const items = within(rows).getAllByRole("listitem");
-    expect(items).toHaveLength(3);
-    for (const item of items) {
-      expect(item.querySelectorAll("strong")).toHaveLength(1);
-      expect(within(item).getAllByRole("checkbox").length).toBeGreaterThan(0);
-    }
-    expect(within(items[2]).getByText("avery.lane.studio@example.com")).toHaveAttribute("title", "avery.lane.studio@example.com");
-    expect(screen.getAllByRole("group")).toHaveLength(3);
-  });
-
-  test("each account row is a card: its mark, its address, what is read, that it is connected in words and a check, then For and the sides as chips", async () => {
-    const user = userEvent.setup();
-    twoAccounts(["avery.lane@example.com", "avery.lane.home@example.com", "avery.lane.studio@example.com"]);
-    open();
-    const rows = await screen.findByRole("list", { name: "The accounts being read" });
-    for (const item of within(rows).getAllByRole("listitem")) {
-      expect(item.querySelector(".account-icon svg")).not.toBeNull();
-      const state = item.querySelector<HTMLElement>(".account-state")!;
-      expect(within(state).getByText("Connected")).toBeInTheDocument();
-      expect(state.querySelector(".account-ok svg")).not.toBeNull();
-      // "For" and the sides said so far as chips (none yet: "no side yet"), with Pick; the boxes stay closed until it is pressed,
-      // so three accounts are three short rows.
-      const line = item.querySelector<HTMLElement>("[data-account-sides]")!;
-      expect(within(line).getByText("For")).toBeInTheDocument();
-      expect(within(line).getByText("no side yet")).toBeInTheDocument();
-      expect(within(line).getByRole("button", { name: /^Change the sides/ })).toHaveAttribute("aria-expanded", "false");
-      expect(within(line).getByRole("button", { name: /^Change the sides/ })).toHaveTextContent("Pick");
-      expect(item.querySelectorAll("[data-account-sides-editor], .side-chip input[type=checkbox]")).toHaveLength(0);
-    }
-    expect(screen.queryByRole("button", { name: "Set them separately" })).toBeNull();
-    // Pressing Pick in one row opens the ticks in that row only.
-    await user.click(within(within(rows).getAllByRole("listitem")[1]).getByRole("button", { name: /^Change the sides/ }));
-    expect(within(rows).getAllByRole("listitem")[1].querySelectorAll(".side-chip input[type=checkbox]").length).toBeGreaterThan(0);
-    expect(within(rows).getAllByRole("listitem")[0].querySelectorAll(".side-chip input[type=checkbox]")).toHaveLength(0);
-    expect(screen.getAllByRole("button", { name: "Set them separately" })).toHaveLength(1);
   });
 
   test("while the service's window is open the step says to finish there and that this page carries on by itself, with a way to cancel", async () => {
@@ -3081,20 +2834,6 @@ describe("Mail and calendar", () => {
     const line = (await screen.findByText(/looks at each message and sorts it itself/)).closest("[data-set-aside-line]") as HTMLElement;
     expect(line).toHaveTextContent(/your rules only give it hints/);
     expect(screen.queryByText(/Newsletters, sales and mailing lists are set aside/)).toBeNull();
-  });
-
-  test("one account is one row that says what is read there and carries its own question about who it is for", async () => {
-    twoAccounts(["sam@example.com"]);
-    open();
-    const rows = await screen.findByRole("list", { name: "The accounts being read" });
-    const mine = within(rows).getAllByRole("listitem");
-    expect(mine).toHaveLength(1);
-    expect(within(mine[0]).getByText("Your inbox and your calendar")).toBeInTheDocument();
-    // The question is closed on the row until Pick is pressed, then asked there once.
-    expect(within(mine[0]).queryByRole("group")).toBeNull();
-    await userEvent.setup().click(within(mine[0]).getByRole("button", { name: /^Change the sides/ }));
-    expect(within(mine[0]).getByRole("group", { name: /^Who is .* for\?$/ })).toBeInTheDocument();
-    expect(screen.getAllByRole("group")).toHaveLength(1);
   });
 
   test("with no side of work, the mailboxes are not asked which they serve", async () => {

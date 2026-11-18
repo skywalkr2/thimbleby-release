@@ -18,9 +18,12 @@ from engine.workspace import Workspace
 def counted(
     found: list[waiting.Thing], held: list[str], held_views: list[tuple[str, str]] | None = None
 ) -> WaitingCount:
-    """The total, and for each side its own things plus those on no side (they show under every side). For each view
-    (its id and its side): the things in it, those on no project at all in its side, and those on no side."""
+    """The total, and for each side its own things plus those on no side (they show under every side), and the things
+    from a connection that serves no side counted once, as not assigned. For each view (its id and its side): the
+    things in it, those on no project at all in its side, and those on no side."""
     loose = sum(1 for thing in found if thing.side is None)
+    # What came from a connection that serves no side is counted once, as not assigned, never under every side.
+    held = [*held, sides.UNASSIGNED] if held and any(t.side == sides.UNASSIGNED for t in found) else held
     return WaitingCount(
         total=len(found),
         sides=[SideCount(side=side, count=loose + sum(1 for t in found if t.side == side)) for side in held],

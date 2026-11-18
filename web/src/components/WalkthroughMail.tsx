@@ -34,7 +34,9 @@ import { useContinue } from "../lib/walkthrough-continue";
 import { Actions } from "../ui/Actions";
 import { RowList } from "../ui/RowList";
 import { FullReadChoice } from "./FullReadChoice";
-import { SOURCES, SourceSides, listOf } from "./SourceSides";
+import { AccountSideQuestion, accountAnswered } from "./AccountSideQuestion";
+import { SkipConfirm } from "./SkipConfirm";
+import { listOf } from "./SourceSides";
 import styles from "./WalkthroughMail.module.css";
 import { Row } from "../ui/Row";
 import { refreshEverything, useWrite } from "../lib/write";
@@ -159,39 +161,6 @@ function SortingSwitch() {
   );
 }
 
-/** The sides question for what one sign-in (or, with several accounts of a service, one account) reads: one set of boxes for all
- * of its sources, with a quiet way to set them separately. Where the sources already serve different sides, each is asked on its own, and once asked that way it stays so. */
-function SignInSides(props: { sources: Source[]; what: string; account?: string; labelOf: (source: Source) => string; personal: string | null; sides: S["SideView"][]; compact?: boolean; hintId?: string }) {
-  const { t } = useWords();
-  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
-  const [apart, setApart] = useState(false);
-  const latched = useRef(false);
-  const stored = (settings.data?.items.find((i) => i.key === SOURCES)?.value ?? []) as Array<{ id: string; sides?: string[] }>;
-  const held = props.sources.map((src) => [...(stored.find((s) => s.id === src.id)?.sides ?? [])].sort().join("|"));
-  if (props.sources.length > 1 && new Set(held).size > 1) latched.current = true;
-  if (props.sources.length > 1 && (apart || latched.current)) {
-    return (
-      <>
-        {props.sources.map((source) => (
-          <SourceSides key={source.id} sources={[source]} label={props.labelOf(source)} personal={props.personal} sides={props.sides} compact={props.compact} hintId={props.hintId} />
-        ))}
-      </>
-    );
-  }
-  return (
-    <>
-      <SourceSides sources={props.sources} group what={props.what} account={props.account} personal={props.personal} sides={props.sides} compact={props.compact} hintId={props.hintId} />
-      {props.sources.length > 1 && (
-        <div>
-          <Button variant="quiet" className={styles.link} onClick={() => setApart(true)}>
-            {t("walkthrough.mail.sides.separately")} <Icon name="chevron" size={14} />
-          </Button>
-        </div>
-      )}
-    </>
-  );
-}
-
 /** One line saying how the mail is sorted: the assistant looks at each message and the rules only give it hints, with a typical
  *  day's cost where the switch is, and Change opening the switch in place. */
 function SetAsideLine() {
@@ -300,7 +269,15 @@ export function WalkthroughMail(props: {
 
   // Continue is the walkthrough's own, in the footer on the column's edge like every other step's: it comes once something is
   // connected (or the step was done or left for later), so this step draws none of its own and only says that it can be pressed.
-  useContinue(any ? { run: async () => true } : null);
+  // With a side beside Personal, an account is asked what it is for, and the step goes on only once each is answered; the step's own
+  // Skip (confirmed) is the way to leave it, and the account then stays not assigned.
+  const sideIds = [...(business.data?.personal ? [business.data.personal] : []), ...(business.data?.sides ?? []).map((x) => x.project)];
+  const askedFor = (business.data?.sides ?? []).length > 0 ? [...connected.flatMap((c) => c.reads), ...others].map((x) => x.account ?? x.id).filter((a, i, all) => all.indexOf(a) === i) : [];
+  const unanswered = askedFor.filter((account) => !accountAnswered([...connected.flatMap((c) => c.reads), ...others].filter((x) => (x.account ?? x.id) === account), sideIds));
+  const [later, setLater] = useState(false);
+  const [askingLater, setAskingLater] = useState(false);
+  const waitingOnSides = unanswered.length > 0 && !later;
+  useContinue(any ? { run: async () => true, disabled: waitingOnSides, why: waitingOnSides ? t(unanswered.length === 1 ? "walkthrough.mail.account_for.needed_one" : "walkthrough.mail.account_for.needed_other", { account: unanswered[0], n: unanswered.length }) : undefined } : null);
   // A result that appears while the screen is open (the sign-in just finished) takes the cursor to its first field.
   useEffect(() => {
     const was = shown.current;
@@ -360,7 +337,6 @@ export function WalkthroughMail(props: {
             // With several accounts the headline counts them; each account is one row either way, in the order the accounts first appear.
             const several = accountsOf(service.id).length > 1;
             const groups = [...new Set(reads.map((s) => s.account ?? ""))];
-            const hintId = `sides-hint-${service.id.replace(/[^A-Za-z0-9_-]/g, "-")}`;
             const needing = several ? groups.filter((account) => accountStates(reads.filter((s) => (s.account ?? "") === account)).some((a) => a.need !== null)).length : 0;
             // With several accounts at one privacy level, the service and the level are said once, above the rows.
             const levels = new Set(reads.map((s) => s.data_level ?? "internal"));
@@ -377,11 +353,6 @@ export function WalkthroughMail(props: {
                   {reads.length > 0 && needing === 0 && several && <> {t(grouped ? "walkthrough.mail.result.accounts_private" : "walkthrough.mail.result.accounts", { n: groups.length })}</>}
                 </p>
                 {reads.length > 0 && <p className="hint">{firstGo}</p>}
-                {reads.length > 0 && hasSides && (
-                  <p className="hint" id={hintId}>
-                    {t("walkthrough.mail.sides.hint")}
-                  </p>
-                )}
                 {/* One row for each account: its address, what is read there, how it stands and who it is for. */}
                 <ul className="account-rows" aria-label={t("walkthrough.mail.accounts_label")} data-account-rows="">
                   {groups.map((account) => {
@@ -403,20 +374,7 @@ export function WalkthroughMail(props: {
                           const item = mineIn.find((s) => (s.accounts ?? []).some((a) => a.address === account) || s.account === account) ?? (account === "" ? mineIn[0] : undefined);
                           return item ? <AccountSignOut item={item} address={account} /> : undefined;
                         })()}
-                        sidesEditor={
-                          hasSides ? (
-                            <SignInSides
-                              sources={mine}
-                              what={listOf(mine.map(labelOf))}
-                              account={account || undefined}
-                              labelOf={labelOf}
-                              personal={business.data?.personal ?? null}
-                              sides={business.data?.sides ?? []}
-                              compact
-                              hintId={hintId}
-                            />
-                          ) : undefined
-                        }
+                        question={hasSides ? <AccountSideQuestion sources={mine} account={account || labelOf(mine[0])} later={later} personal={business.data?.personal ?? null} sides={business.data?.sides ?? []} /> : undefined}
                       />
                     );
                   })}
@@ -441,9 +399,7 @@ export function WalkthroughMail(props: {
                         {t("sources.remove")} <span className="sr">{labelOf(source)}</span>
                       </Button>
                     }
-                    sidesEditor={
-                      hasSides ? <SourceSides sources={[source]} label={labelOf(source)} personal={business.data?.personal ?? null} sides={business.data?.sides ?? []} compact /> : undefined
-                    }
+                    question={hasSides ? <AccountSideQuestion sources={[source]} account={labelOf(source)} later={later} personal={business.data?.personal ?? null} sides={business.data?.sides ?? []} /> : undefined}
                   />
                 ))}
               </ul>
@@ -452,6 +408,16 @@ export function WalkthroughMail(props: {
           )}
         </div>
       )}
+      {any && waitingOnSides && (
+        <FormBlock>
+          <div>
+            <Button variant="quiet" size="sm" data-sides-later="" onClick={() => setAskingLater(true)}>
+              {t("walkthrough.mail.account_for.later")}
+            </Button>
+          </div>
+        </FormBlock>
+      )}
+      {askingLater && <SkipConfirm step="mail_sides" onCancel={() => setAskingLater(false)} onConfirm={() => (setLater(true), setAskingLater(false))} />}
       {any && (
         <FormBlock>
           <div>

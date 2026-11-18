@@ -477,6 +477,7 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
                 )
                 for s in listed
             ],
+            unassigned=any(sides.source_unassigned(view, now, src) for src in now.watch.sources if src.enabled),
             chosen=setup.work_choice(ws, now, view),
         )
 

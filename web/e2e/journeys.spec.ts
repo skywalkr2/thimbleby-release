@@ -222,11 +222,18 @@ test.describe.serial("journeys", () => {
       await folder.getByRole("button", { name: /^More actions for / }).click();
       await page.getByRole("menuitem", { name: "Read now" }).click();
     };
-    const before = await requests();
+    // Reading the folder hands nothing in: no work, sorting or learning is asked for. The assistant's own background
+    // readings (of areas, of the week) run on the worker's schedule whatever the test does, so they and the grand total
+    // that includes them are left out of the comparison.
+    const handedIn = async () => {
+      const { total: _total, readings: _readings, ...rest } = await requests();
+      return rest;
+    };
+    const before = await handedIn();
     await readNow();
     await expect(page.getByText(new RegExp(`^${name}: `)).last()).toBeVisible();
     await visit(page);
-    expect(await requests()).toEqual(before);
+    expect(await handedIn()).toEqual(before);
 
     // A new file lands in the folder. Check now reads it, hands it in, and the assistant's result appears.
     const put = await fetch(`${FAKE}/__e2e/source-file`, {

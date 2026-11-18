@@ -104,6 +104,9 @@ class State:
         self.evening = False  # the first-evening journey's extra mail, event and retired model
         self.notice_mail = False  # the inbox also holds a notice to the person alone and a mailing to many (S-0519)
         self.sent_mail = False  # the mailbox also has a sent folder, which the mail service lists by its name
+        self.account_links = (
+            False  # with accounts: each inbox also holds a mailing to many, whose link names its account
+        )
         self.later_mail: list[dict] = []  # messages that arrive after the first read (added by a helper route)
         #: With `--accounts N` (more than none) each sign-in is one of N people, each with a mailbox and calendar of
         #: their own; 0 is the single sign-in of every other journey.
@@ -457,6 +460,8 @@ def stamp(moment: datetime) -> str:
 #: The sender of the social update and of the mail that comes later: a made-up network, not a person in the workspace.
 NETWORK = ("Neighborhood Network", "updates@network.example.com")
 SHOP = ("Spring Shop", "deals@shop.example.com")
+#: Where the made-up mail service says a message opens: a link that names the account it is in, as a real one's does.
+MAIL_LINKS = "https" + "://mail.example.com/mail"
 
 
 def message(
@@ -469,9 +474,12 @@ def message(
     now: datetime,
     bulk: bool = False,
     categories: tuple[str, ...] = (),
+    link: str | None = None,
 ) -> dict:
-    """One message as the made-up mail service gives it: who from, when, and what the service says about it."""
+    """One message as the made-up mail service gives it: who from, when, and what the service says about it, and the
+    link that opens it in the service when it gives one."""
     return {
+        **({"link": link} if link else {}),
         "id": key,
         "from": {"name": sender[0], "address": sender[1]},
         "subject": subject,
@@ -838,6 +846,23 @@ def account_messages(state: State, number: int) -> list[dict]:
     ]
     if number == 0:
         out += messages(now, state.later_mail, state.evening, state.notice_mail)
+    if state.account_links:
+        key = f"a{number}-promo"
+        promo = message(
+            key,
+            SHOP,
+            f"Offer for account {number + 1}",
+            timedelta(hours=7 + number),
+            True,
+            f"Half price at the shop this week, sent to account {number + 1}.",
+            "A second line of the offer.",
+            "A third line of the offer.",
+            now=now,
+            bulk=True,
+            link=f"{MAIL_LINKS}/u/{number}/#inbox/{key}",
+        )
+        # Written to many, so the app sets it aside rather than treating it as a notice to the person alone.
+        out.append({**promo, "recipients": ["Ada Example <ada@example.com>", "Bo Example <bo@example.com>"]})
     if number < 2:
         key, subject, name, address = SHARED_THREAD
         copy = message(
@@ -1424,6 +1449,11 @@ def _configure(argv: list[str] | None):
         "page or with a login_hint); shared mail and meetings are seeded between them",
     )
     parser.add_argument(
+        "--account-links",
+        action="store_true",
+        help="with --accounts: each inbox also holds a mailing to many, set aside, whose link names its account",
+    )
+    parser.add_argument(
         "--spread-week",
         action="store_true",
         help="with --accounts: the calendars hold a working week spread over the accounts (one clash today, a normal "
@@ -1439,6 +1469,7 @@ def _configure(argv: list[str] | None):
     state.sent_mail = args.sent_mail
     state.notice_mail = args.notice_mail
     state.accounts = args.accounts
+    state.account_links = args.account_links
     state.spread_week = args.spread_week
     state.failing_account = args.failing_account
     state.failing_how = args.failing_how

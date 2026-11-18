@@ -11,7 +11,7 @@ import { useIsNarrow, useMediaQuery } from "../lib/media";
 import { countText } from "../lib/counts";
 import { filterBarShown } from "../lib/filterbar";
 import { useSideSlot } from "../lib/marks";
-import { useSideFilter, type SideChoice } from "../lib/sides";
+import { UNASSIGNED, useSideFilter, type SideChoice } from "../lib/sides";
 import { useTabCounts, type WaitingScreen } from "../lib/waiting";
 import { useWords } from "../lib/wording";
 import { Icon } from "../ui/Icon";
@@ -91,6 +91,7 @@ export function useSideOptions(): SideOptionRow[] {
   return [
     row("all", t("sides.filter.all")),
     ...filter.options.flatMap((o) => [row(o.id, o.name, o.id), ...filter.views.filter((v) => v.side === o.id).map((v) => row(v.id, t("sides.filter.view", { side: v.sideName, view: v.name }), o.id))]),
+    ...(filter.unassigned ? [row(UNASSIGNED, t("sides.filter.unassigned"))] : []),
   ];
 }
 
@@ -132,6 +133,7 @@ export function SideFilter(props: {
     option("all", t("sides.filter.all")),
     // A side's views follow it, each named with its side so a choice is never a bare name.
     ...filter.options.flatMap((o) => [option(o.id, o.name, o.id), ...filter.views.filter((v) => v.side === o.id).map((v) => option(v.id, t("sides.filter.view", { side: v.sideName, view: v.name }), o.id))]),
+    ...(filter.unassigned ? [option(UNASSIGNED, t("sides.filter.unassigned"))] : []),
   ];
   if (inSheet) {
     // Inside the Filter sheet the choices are the list itself, so one tap picks and nothing opens over the sheet.

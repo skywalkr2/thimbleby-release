@@ -21,6 +21,7 @@ where it came from. Nothing here changes the mailbox.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 from email.utils import parseaddr
 from pathlib import Path
@@ -55,6 +56,41 @@ def _read_text(ws: Any, content_hash: str | None) -> str:
         return ""
     path: Path = ws.sources_dir / f"{content_hash}.txt"
     return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+#: The most characters of one line a preview keeps, so a long line never fills the row.
+PREVIEW_CHARS = 240
+_HEADER = re.compile(r"^(from|to|cc|bcc|subject|date|received|reply-to):", re.IGNORECASE)
+
+
+def preview_of(text: str, lines: int) -> list[str]:
+    """The first lines of a message that hold words, trimmed, at most `lines` of them: what a row shows of the copy kept
+    on this computer. Plain text only; the caller never renders it as markup."""
+    rows = text.splitlines()
+    # A copy that starts with its header lines (From, To, Subject, Date) shows the words after them: the sender and the
+    # subject are already on the row.
+    if rows and _HEADER.match(rows[0]):
+        blank = next((i for i, row in enumerate(rows) if not row.strip()), len(rows))
+        rows = rows[blank:]
+    found = [" ".join(line.split()) for line in rows]
+    return [line[:PREVIEW_CHARS] for line in found if line][:lines]
+
+
+def message_text(ws: Any, store: Any, snapshot_id: str) -> dict[str, Any] | None:
+    """The whole kept copy of a mail item by its snapshot: its title, sender, when it came, the text kept on this
+    computer and the link its source gave for it, unchanged. None when it isn't a mail item that is still kept."""
+    snap = store.read().get("snapshot", snapshot_id)
+    if snap is None or not snap.data.get("message") or snap.data.get("deleted"):
+        return None
+    message = snap.data["message"]
+    return {
+        "id": snap.id,
+        "title": snap.data["title"],
+        "sender": message.get("sender"),
+        "received": message.get("received"),
+        "text": _read_text(ws, snap.data.get("content_hash")),
+        "link": snap.data.get("link"),
+    }
 
 
 def _moment(stamp: Any) -> datetime:
@@ -142,6 +178,7 @@ def _row(
         "source": labels.get(data["source"], data["source"]),
         "received": message.get("received"),
         "link": data.get("link"),
+        "preview": preview_of(_read_text(ws, data.get("content_hash")), cfg.ui.handled_preview_lines),
         "address": address,
         "domain": set_aside.offerable_domain(address, cfg),
         "item": "mail",

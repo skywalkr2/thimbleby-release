@@ -91,6 +91,7 @@ def _inbox_items(messages: list[dict]) -> list[SourceItem]:
                 text=text,
                 author=sender["name"],
                 changed_at=message["received"],
+                link=message.get("link"),
                 message=MessageDetails(
                     sender=who,
                     received=message["received"],
