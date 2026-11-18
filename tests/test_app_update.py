@@ -584,3 +584,15 @@ def test_the_copy_put_back_after_a_failed_update_is_the_one_taken_first(ws):
     conn.close()
     assert updating.restore(ws) is True
     assert sqlite3.connect(ws.db_path).execute("SELECT v FROM marker").fetchone() == ("before",)
+
+
+def test_a_started_hand_over_keeps_its_own_output_beside_its_script(tmp_path):
+    """What the script prints before its log begins (a refusal to run) is kept: a silent hand-over says why."""
+    from engine.app_update import spawn_detached, spawn_output
+
+    script = tmp_path / "hand-over.sh"
+    script.write_text("exit 0\n", encoding="utf-8")
+    argv = ["/bin/sh", str(script)]
+    assert spawn_output(argv) == tmp_path / "hand-over.sh.out"
+    spawn_detached(argv)
+    assert spawn_output(argv).exists()

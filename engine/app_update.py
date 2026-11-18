@@ -442,27 +442,44 @@ def launch_command(install: Install, environ: Mapping[str, str]) -> list[str]:
     return ["open", "-n", *passed, str(install.folder)]
 
 
+#: Windows' flag that starts a process outside the job its parent is in, so closing the parent's job can't end it.
+CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+
+
+def spawn_output(argv: Sequence[str]) -> Path:
+    """Where a started script's own output goes, beside the script (its last argument): what it printed before its log
+    began, such as a refusal to run, is kept for the person's details and the build's check."""
+    return Path(argv[-1]).with_name(Path(argv[-1]).name + ".out")
+
+
 def spawn_detached(argv: Sequence[str]) -> None:
-    """Start a program that goes on after this one ends."""
-    if sys.platform == "win32":
-        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-        subprocess.Popen(
-            list(argv),
-            creationflags=flags,
-            close_fds=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    else:
-        subprocess.Popen(
-            list(argv),
-            start_new_session=True,
-            close_fds=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+    """Start a program that goes on after this one ends, its output kept beside it (`spawn_output`)."""
+    with spawn_output(argv).open("wb") as out:
+        if sys.platform == "win32":
+            flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            for extra in (CREATE_BREAKAWAY_FROM_JOB, 0):  # a job that refuses breakaway is started in place
+                try:
+                    subprocess.Popen(
+                        list(argv),
+                        creationflags=flags | extra,
+                        close_fds=True,
+                        stdin=subprocess.DEVNULL,
+                        stdout=out,
+                        stderr=subprocess.STDOUT,
+                    )
+                    return
+                except OSError:
+                    if not extra:
+                        raise
+        else:
+            subprocess.Popen(
+                list(argv),
+                start_new_session=True,
+                close_fds=True,
+                stdin=subprocess.DEVNULL,
+                stdout=out,
+                stderr=subprocess.STDOUT,
+            )
 
 
 def hand_over(

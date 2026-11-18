@@ -164,12 +164,15 @@ def step_times(logs: Path) -> list[str]:
 
 
 def hand_over_log(workspace: Path) -> str:
+    """The hand-over's own log, then whatever its script printed before the log began (a refusal to run)."""
+    folder = private_dir(workspace) / "update-helper"
     try:
-        return (private_dir(workspace) / "update-helper" / "hand-over.log").read_text(
-            encoding="utf-8", errors="replace"
-        )
+        text = (folder / "hand-over.log").read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return "no hand-over log"
+        text = "no hand-over log"
+    for printed in sorted(folder.glob("*.out")):
+        text += f"\n{printed.name}:\n" + printed.read_text(encoding="utf-8", errors="replace")[-4000:]
+    return text
 
 
 def wait_for_result(workspace: Path, logs: Path, started: float) -> dict:
