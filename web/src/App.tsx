@@ -21,6 +21,7 @@ import { Addons } from "./components/Addons";
 import { Ask } from "./components/Ask";
 import { SEARCH_FIELD } from "./components/SearchBox";
 import { Feedback } from "./components/Feedback";
+import { AlphaNumbers } from "./components/AlphaNumbers";
 import { ReportProblem } from "./components/ReportProblem";
 import { FollowUps } from "./components/FollowUps";
 import { HandIn } from "./components/HandIn";
@@ -117,6 +118,9 @@ function Shell(props: { rc: S["RuntimeConfig"]; live: ReturnType<typeof useLive>
   const [help, setHelp] = useState(false);
   const [feedback, setFeedback] = useState(false);
   const [report, setReport] = useState(false);
+  // The alpha numbers, and the words a report starts with when the person shares them.
+  const [alpha, setAlpha] = useState(false);
+  const [reportWords, setReportWords] = useState<string | undefined>(undefined);
   // The Ask box, with the question it opens on when a screen suggests one.
   const [ask, setAsk] = useState<{ question?: string; reveal?: string } | null>(null);
   const [view, setView] = useView();
@@ -398,10 +402,29 @@ function Shell(props: { rc: S["RuntimeConfig"]; live: ReturnType<typeof useLive>
           }}
         />
       )}
+      {alpha && (
+        <AlphaNumbers
+          onClose={() => {
+            setAlpha(false);
+            restoreFocus(() => visible("[data-feedback-button]"));
+          }}
+          onShare={
+            rc.report_enabled
+              ? (words) => {
+                  setAlpha(false);
+                  setReportWords(words);
+                  setReport(true);
+                }
+              : undefined
+          }
+        />
+      )}
       {report && (
         <ReportProblem
+          initialWords={reportWords}
           onClose={() => {
             setReport(false);
+            setReportWords(undefined);
             restoreFocus(() => visible("[data-feedback-button]"));
           }}
         />
@@ -439,6 +462,7 @@ function Shell(props: { rc: S["RuntimeConfig"]; live: ReturnType<typeof useLive>
   };
   const openFeedback = () => setFeedback(true);
   const openReport = rc.report_enabled ? () => setReport(true) : undefined;
+  const openAlpha = () => setAlpha(true);
   return (
     <>
       <a href="#main" className="skip" onClick={skip}>
@@ -456,6 +480,7 @@ function Shell(props: { rc: S["RuntimeConfig"]; live: ReturnType<typeof useLive>
           onHelp={() => setHelp(true)}
           onFeedback={openFeedback}
           onReport={openReport}
+          onAlpha={openAlpha}
           onOpenGuide={openGuide}
           onOpenQuality={() => setView("quality")}
           onOpenSettings={() => setView("settings")}
@@ -516,6 +541,7 @@ function Shell(props: { rc: S["RuntimeConfig"]; live: ReturnType<typeof useLive>
           onHelp={() => setHelp(true)}
           onFeedback={openFeedback}
           onReport={openReport}
+          onAlpha={openAlpha}
           onOpenGuide={() => openGuide()}
         />
       )}

@@ -118,8 +118,11 @@ test("To-dos: Enter twice fast in the add form makes one to-do, and the menu's n
   const menu = await page.getByRole("navigation").getByRole("link", { name: /^To-dos/ }).first().getAttribute("aria-label");
   const said = Number(/(\d+) (?:needs|need) you/.exec(menu ?? "")?.[1]);
   expect(said).toBeGreaterThan(0);
+  // It is the sum of the two numbers the page says: what is yours and the questions for you (S-0539).
   const head = await page.locator("main").innerText();
-  expect(head.includes(`${said} need you across to-dos and questions`) || head.includes(`${said} are yours`)).toBe(true);
+  const yours = Number(/(\d+) yours/.exec(head)?.[1] ?? 0);
+  const asked = Number(/(\d+) questions? for you/.exec(head)?.[1] ?? 0);
+  expect(yours + asked).toBe(said);
 });
 
 test("every to-do with no owner is a Pick an owner line on Today (H1-07)", async ({ page }) => {

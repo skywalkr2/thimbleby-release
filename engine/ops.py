@@ -1139,6 +1139,24 @@ class PersonOfferIn(BaseModel):
         max_length=240,
         description="In a sentence, why this is someone the person deals with, from the counts and the name.",
     )
+    relation: str | None = Field(
+        None,
+        max_length=60,
+        description="How they relate to the user in a few plain words ('your accountant'), only when the counts and "
+        "the name make it plain; leave it out otherwise. Never a guess about private life.",
+    )
+
+
+class PersonKeepOfferOp(OpModel):
+    """The person keeps someone the assistant offered (a person.offer): they are added to the people on file with the
+    relation the offer gave and the sides of the accounts their mail came from, and the offer is settled, all in one
+    change. Only the person makes it, from their own screen; the assistant never does."""
+
+    op: Literal["person.keep_offer"] = "person.keep_offer"
+    offer: str = Field(description="The id of the offer being kept.")
+
+    def describe(self, view: Any = None) -> str | None:
+        return "Add someone the assistant offered"
 
 
 class PersonOfferOp(OpModel):
@@ -1622,7 +1640,30 @@ class RuleAddOp(OpModel):
         default_factory=list,
         description="What the rule is about: op kinds (`question.add`) or op fields (`action.add.owners`).",
     )
+    pauses: str | None = Field(
+        None,
+        description="For a pause the person states (a document is still being edited): the id of the record to hold "
+        "off, from the material. While the rule is active a change to it yields facts only, never a question. Needs "
+        "`until`.",
+    )
+    until: str | None = Field(
+        None,
+        max_length=200,
+        description="With `pauses`: when it ends, in the person's own words (such as the person saying it is ready).",
+    )
+    contradicts: list[str] = Field(
+        default_factory=list,
+        description="The active rules this rule contradicts in meaning, each by its id (such as RULE-3) or its name. "
+        "Name one only when the two cannot both be followed; a rule that merely overlaps another names nothing. A rule "
+        "that names an active one waits for the person to say which wins, even when the person typed it.",
+    )
     evidence: EvidenceIn | None = Field(None, description="The words from the input that justify the rule, if any.")
+
+    @model_validator(mode="after")
+    def _pause_has_an_end(self) -> RuleAddOp:
+        if bool(self.pauses) != bool((self.until or "").strip()):
+            raise ValueError("a pause names the record it holds (pauses) and when it ends (until), both or neither")
+        return self
 
     def describe(self) -> str | None:
         return f"Add the rule: {' '.join(self.text.split())}"
@@ -1968,6 +2009,11 @@ class ActDraftOp(OpModel):
     )
     template: ActTemplate | None = Field(None, description="The template the content was rendered from, if any.")
     sources: list[str] = Field(default_factory=list, description="Ids of the saved inputs the content draws on.")
+    facts: list[str] = Field(
+        default_factory=list,
+        description="Ids of the facts the content states to its readers. A fact you only inferred is never stated to "
+        "anyone else, and a fact older than its freshness limit is held for the person to check.",
+    )
     in_reply_to: str | None = Field(None, description="The id of the saved message it answers, if it does.")
     project: str | None = Field(None, description="The id of the project it is about, if any.")
     account: str | None = Field(
@@ -2263,6 +2309,7 @@ Op = Annotated[
     | WeekGoalsOp
     | AreaOfferOp
     | PersonOfferOp
+    | PersonKeepOfferOp
     | PersonStanceOp
     | StageMoveOp
     | RecordDeleteOp
@@ -2357,6 +2404,7 @@ OP_MODELS: dict[str, type[OpModel]] = {
     "week.goals": WeekGoalsOp,
     "area.offer": AreaOfferOp,
     "person.offer": PersonOfferOp,
+    "person.keep_offer": PersonKeepOfferOp,
     "person.stance": PersonStanceOp,
     "stage.move": StageMoveOp,
     "record.delete": RecordDeleteOp,
@@ -2461,6 +2509,7 @@ NON_OVERWRITING_OPS: frozenset[str] = frozenset(
         "week.goals",
         "area.offer",
         "person.offer",
+        "person.keep_offer",
         "stage.move",
         "record.delete",
         "file.forget",
@@ -2575,6 +2624,7 @@ KNOWLEDGE_ADD_OPS = {"lesson.add", "glossary.add", "routing.add", "style.add", "
 
 #: Ops only the person makes: from anyone else they are refused, never held.
 PERSON_ONLY_OPS = {
+    "person.keep_offer",
     "file.forget",
     "person.forget",
     "text.edit",

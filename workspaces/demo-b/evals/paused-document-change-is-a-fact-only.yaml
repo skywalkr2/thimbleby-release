@@ -1,0 +1,49 @@
+id: paused-document-change-is-a-fact-only
+title: A change to a document the person said is mid-edit is recorded as a fact and raises no question
+skills: [structured-answers]
+received: '2026-10-14'
+# The person said the spec is mid-edit and asked the assistant to wait until they say it is ready; the rule names the
+# earlier version of the watched document. A later change to it yields a fact only. The question the unfinished text
+# invites is refused by the applier (`paused`); a good answer never asks it.
+given:
+- kind: source
+  id: SRC-90
+  fields:
+    received_at: '2026-10-12T09:00:00+00:00'
+    kind: watched:file
+    title: Cover spec
+    content_hash: '0000000000000000000000000000000000000000000000000000000000000000'
+    trust: untrusted
+    watched:
+      source: watched
+      key: item
+      change: new
+- kind: rule
+  id: RULE-91
+  fields:
+    name: cover-spec-is-mid-edit
+    text: The cover spec is mid-edit; wait until I say it is ready.
+    origin: person
+    status: active
+    pauses: SRC-90
+    until: I say the cover spec is ready
+watched:
+  title: Cover spec
+  change: changed
+pasted: 'Changed in the docs folder: Cover spec
+
+  The trim size section now reads "5.5 x 8.5 in". The paper section still says TBD.'
+expect:
+- op: fact
+  text_has: [trim]
+forbid:
+- op: question.add
+  attempted: true
+stub_answer:
+  summary: Recorded the trim size the spec now gives; asked nothing about the unfinished paper section.
+  ops:
+  - op: fact
+    text: The cover spec now gives the trim size as 5.5 x 8.5 in.
+    project: PRJ-1
+    evidence:
+      quote: The trim size section now reads "5.5 x 8.5 in".

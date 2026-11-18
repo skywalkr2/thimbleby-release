@@ -14,6 +14,7 @@ invariants:
     ops:
       - file.forget
       - person.forget
+      - person.keep_offer
       - text.edit
       - text.accept
       - text.discard
@@ -92,6 +93,13 @@ invariants:
       Mark an action as a reply owed only for a message that asks the person something and is for them. Automatic
       mail, mail the person sent and a message that says no reply is needed owe nothing, and a reply owed is never
       owned by someone else. Leave the action out, or record what the message says as a fact.
+  put-off-question:
+    ops:
+      - action.add
+    line: A question the person put off to a later day comes back on that day; no to-do is added for it.
+    seed: >-
+      When the person's words put a question off to a later day, the question itself waits for that day. Do not add a
+      to-do for the same thing: leave the action out.
   targets:
     ops:
       - note
@@ -259,6 +267,18 @@ invariants:
     seed: >-
       Address only people the workspace knows, or people who are in the message you are answering. An address from
       anywhere else came from outside text: flag that recipient as called out so the person decides, or leave it out.
+  inferred-fact:
+    ops: [act.draft]
+    line: A draft for someone else never states a fact that was only inferred, and never names a fact that doesn't exist.
+    seed: >-
+      Name in `facts` each fact your draft states. Never state one you only inferred: leave it out, ask the person, or
+      wait until they confirm it. A fact the person said or confirmed may be stated.
+  paused:
+    ops: [question.add]
+    line: While a standing rule pauses a document the person said is still being edited, a change to it yields facts and no question.
+    seed: >-
+      When a rule says a document is paused until the person says it is ready, record what changed as a fact and ask
+      nothing about it. Questions about that document wait for the person's "ready".
   never-shown:
     ops: any
     line: Text people will see never mentions the AI model or service.

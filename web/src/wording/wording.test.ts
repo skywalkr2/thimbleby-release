@@ -18,6 +18,14 @@ function sources(dir: string): string[] {
 
 const code = sources(root).map((p) => readFileSync(p, "utf-8")).join("\n");
 
+test("the wording sheet holds each key once, so no entry quietly replaces another", () => {
+  const text = readFileSync(join(__dirname, "en.json"), "utf8");
+  const keys = [...text.matchAll(/^\s*"([^"]+)":/gm)].map((m) => m[1]);
+  const seen = new Set<string>();
+  const twice = keys.filter((key) => (seen.has(key) ? true : (seen.add(key), false)));
+  expect(twice).toEqual([]);
+});
+
 test("every literal key exists", () => {
   const used = new Set<string>();
   for (const m of code.matchAll(/\bt\(\s*"([a-z_]+(?:\.[a-z_]+)+)"/g)) used.add(m[1]);

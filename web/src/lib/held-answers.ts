@@ -19,6 +19,12 @@ export interface HeldAnswers {
   noting: boolean;
   closeNote: () => void;
   declineWithNote: (note: string) => Promise<S["Noted"] | undefined>;
+  /** For a rule that contradicts one in force: "Narrow the new one", which opens the new rule's target for the person to limit
+   * (only where the screen has room for the form), and what saving or leaving it does. */
+  narrow?: { label: string; run: () => void };
+  narrowing: boolean;
+  saveNarrow: (scope: S["Scope"]) => void;
+  closeNarrow: () => void;
 }
 
 export function useHeldAnswers(changeset: string, index: number, held: S["HeldAsk"] | null | undefined, onClosed?: () => void): HeldAnswers | null {
@@ -26,6 +32,7 @@ export function useHeldAnswers(changeset: string, index: number, held: S["HeldAs
   const act = useAct();
   const noted = useNoted();
   const [noting, setNoting] = useState(false);
+  const [narrowing, setNarrowing] = useState(false);
   if (!held) return null;
   const cs = changeset;
   const words = heldAnswers(held, t);
@@ -53,6 +60,44 @@ export function useHeldAnswers(changeset: string, index: number, held: S["HeldAs
     setNoting(false);
     onClosed?.();
   };
+  const closeNarrow = () => {
+    setNarrowing(false);
+    onClosed?.();
+  };
+  const none = { narrowing: false, saveNarrow: () => undefined, closeNarrow };
+  if (held.ask === "contradiction") {
+    // Which rule wins. The new one retires the old in a change of its own, so Undo takes both back; keeping both is the
+    // plain answer, optionally with the new rule limited first.
+    const answer = (choice: "new" | "both", scope?: S["Scope"]) =>
+      void act(
+        () => api.ruleAnswer(cs, index, choice, scope),
+        (done) => ({
+          message: t(choice === "new" ? "queue.held.done.rule_new" : "queue.held.done.rule_both", { what: held.item }),
+          undo: async () => {
+            await api.unreleaseOp(cs, index);
+            if (done.retired) await api.undo(done.retired);
+          },
+        }),
+        undefined,
+        { ...once, kinds: ["changeset", "rule", "request"] },
+      );
+    return {
+      title: heldTitle(held, t),
+      primary: { label: words.primary, run: () => answer("new") },
+      other: { label: words.other, run: decline },
+      menu: [{ id: "both", label: t("queue.held.a.rule_both"), run: () => answer("both") }],
+      noting: false,
+      closeNote,
+      declineWithNote,
+      narrow: { label: t("queue.held.a.rule_narrow"), run: () => setNarrowing(true) },
+      narrowing,
+      saveNarrow: (scope) => {
+        setNarrowing(false);
+        answer("both", scope);
+      },
+      closeNarrow,
+    };
+  }
   if (held.ask === "ending") {
     const toldNames = held.told ?? [];
     const answer = (ending: "done" | "called_off") =>
@@ -78,6 +123,7 @@ export function useHeldAnswers(changeset: string, index: number, held: S["HeldAs
       noting: false,
       closeNote,
       declineWithNote,
+      ...none,
     };
   }
   // A drop of something that reached people is one answer, "Drop it and tell them": it drops the to-do and drafts a
@@ -104,5 +150,6 @@ export function useHeldAnswers(changeset: string, index: number, held: S["HeldAs
     noting: noting && (held.ask === "close" || held.ask === "part"),
     closeNote,
     declineWithNote,
+    ...none,
   };
 }

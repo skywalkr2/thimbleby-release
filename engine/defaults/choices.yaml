@@ -8,6 +8,14 @@ owner_formats:
   - "{team} ({full_name})"
   - "{team}: {full_name}"
 
+# How often mail or calendars can be read, in minutes.
+read_minutes:
+  - "5"
+  - "10"
+  - "15"
+  - "30"
+  - "60"
+
 # The kinds of file a person may add, by media type.
 media_types:
   - application/pdf

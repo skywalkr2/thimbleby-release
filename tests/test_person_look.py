@@ -612,3 +612,97 @@ def test_the_stand_in_answers_the_story_tally_with_the_four_people_and_not_the_n
     (offer,) = answer["ops"]
     assert {p["address"] for p in offer["people"]} == set(case["expect"][0]["addresses"])
     assert all(p["why"] for p in offer["people"])
+
+
+# ---- keeping an offer from the review card (S-0534) ------------------------------------------------------------------
+
+
+def offered(store, address="c0@example.com"):
+    return next(o for o in entries(store, "person_offer") if o.data["address"] == address)
+
+
+def test_keeping_an_offer_adds_the_person_with_the_relation_and_the_side_of_their_account_in_one_change(env):
+    _, cfg, store, client = env
+    personal = cfg.workspace.project.personal
+    cfg.watch.sources[0].sides = [personal]
+    look(env)
+    offer = offered(store)
+    with store.transaction() as tx:
+        tx.update("person_offer", offer.id, {"relation": "your accountant"}, _W, read_version=offer.version)
+    shown = client.get("/api/knowledge/proposals").json()["people"]
+    assert [p["address"] for p in shown] == ["c0@example.com", "c1@example.com"]
+    first = shown[0]
+    assert first["relation"] == "your accountant" and first["sides"] and first["count"] == 5
+    done = client.post(f"/api/knowledge/people/{offer.id}/keep")
+    assert done.status_code == 200
+    people = {p["name"]: p for p in client.get("/api/people").json()}
+    kept = people[offer.data["name"]]
+    assert kept["relation"] == "your accountant" and kept["sides"] == [personal]
+    assert offered_status(store, offer.id) == ("kept", kept["id"])
+    changes = store.read().get("changeset", done.json()["changeset"]).data["ops"]
+    assert len(changes) == 1 and changes[0]["op"]["op"] == "person.keep_offer"  # one change for both
+    assert [p["address"] for p in client.get("/api/knowledge/proposals").json()["people"]] == ["c1@example.com"]
+
+
+def offered_status(store, offer_id):
+    d = store.read().get("person_offer", offer_id).data
+    return d["status"], d["person"]
+
+
+def test_undoing_a_kept_offer_takes_the_person_back_and_the_offer_waits_again(env):
+    _, cfg, store, client = env
+    look(env)
+    offer = offered(store)
+    before = {p.id for p in store.read().list("person")}
+    done = client.post(f"/api/knowledge/people/{offer.id}/keep").json()
+    assert {p.id for p in store.read().list("person")} - before
+    assert client.post(f"/api/changesets/{done['changeset']}/undo", json={}).status_code == 200
+    assert {p.id for p in store.read().list("person") if not p.deleted} == before
+    assert offered_status(store, offer.id) == ("offered", None)
+    assert offer.data["address"] in [p["address"] for p in client.get("/api/knowledge/proposals").json()["people"]]
+
+
+def test_an_offer_kept_twice_or_for_someone_already_on_file_is_refused_and_adds_no_one(env):
+    _, cfg, store, client = env
+    look(env)
+    offer = offered(store)
+    assert client.post(f"/api/knowledge/people/{offer.id}/keep").status_code == 200
+    count = len(store.read().list("person"))
+    assert client.post(f"/api/knowledge/people/{offer.id}/keep").status_code == 409
+    assert len(store.read().list("person")) == count
+
+
+def test_not_this_one_leaves_the_offer_out_for_good_and_records_a_signal_and_undo_puts_it_back(env):
+    _, cfg, store, client = env
+    look(env)
+    offer = offered(store)
+    signals = lambda: [s for s in store.read().list("signal") if offer.id in s.data["refs"]]  # noqa: E731
+    assert signals() == []
+    done = client.post(f"/api/knowledge/people/{offer.id}/not-this-one")
+    assert done.status_code == 200
+    assert offered_status(store, offer.id)[0] == "dismissed"
+    assert [s.data["kind"] for s in signals()] == ["discarded"]
+    assert offer.data["address"] not in [p["address"] for p in client.get("/api/knowledge/proposals").json()["people"]]
+    assert client.post(f"/api/changesets/{done.json()['changeset']}/undo", json={}).status_code == 200
+    assert offered_status(store, offer.id)[0] == "offered"
+
+
+def test_the_people_step_leaving_someone_out_records_the_same_signal(env):
+    _, cfg, store, client = env
+    look(env)
+    offer = offered(store)
+    client.post("/api/setup/people-suggestions/leave-out", json={"addresses": [offer.data["address"]]})
+    assert [s.data["kind"] for s in store.read().list("signal") if offer.id in s.data["refs"]] == ["discarded"]
+
+
+def test_a_waiting_offer_is_a_line_on_todays_review_and_the_assistant_cannot_keep_one(env):
+    from engine.ops import PERSON_ONLY_OPS
+    from engine.tasks import TASKS
+
+    ws, cfg, store, client = env
+    look(env)
+    queue = client.get("/api/today/queue").json()
+    line = next(item for item in queue if item["kind"] == "learned")
+    assert line["count"] >= 2 and line["origins"]["person"] == 2
+    assert "person.keep_offer" in PERSON_ONLY_OPS
+    assert "person.keep_offer" not in TASKS["knowledge-person"].ops and "person.keep_offer" not in TASKS["notes"].ops

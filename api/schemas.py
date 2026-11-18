@@ -420,7 +420,11 @@ class MissedSent(BaseModel):
 class ChangeRequested(BaseModel):
     ok: str = Field(description="The id of the item the change was asked for.")
     request: str | None = Field(None, description="The work queued for the assistant from the note.")
-    signal: str = Field(description="The id of the correction recorded for it.")
+    signal: str | None = Field(
+        None,
+        description="The id of the correction recorded for it; none when the words only put the question off to a "
+        "later day (it is held, nothing is corrected).",
+    )
 
 
 # ---- responses -------------------------------------------------------------------------------------------------------
@@ -476,6 +480,24 @@ class ReportFacts(BaseModel):
     version: str = Field(description="The app's version, as the report states it.")
     system: str = Field(description="The operating system and release, as the report states it.")
     reply_to: str = Field("", description="The person's own address when their record holds one, else empty.")
+
+
+class AlphaNumbers(BaseModel):
+    """GET /api/alpha-measures: the five numbers of the workspace's first week, worked out from the records on this
+    computer. Nothing here names a person or holds record text, and nothing is sent."""
+
+    since: date | None = Field(None, description="The first day counted, on the person's clock; none with nothing yet.")
+    until: date | None = Field(None, description="The last day counted: today, or the seventh day.")
+    days_so_far: int = Field(description="How many days are counted, at most seven.")
+    complete: bool = Field(description="A whole week has passed, so the numbers are the first week's.")
+    days_used: int = Field(description="Days in the period on which the person did something of their own.")
+    cost_per_day: float = Field(description="What the assistant's work cost per day, in US dollars; 0 with no AI use.")
+    corrections_per_day: float = Field(description="The person's corrections of the assistant's work per day.")
+    sent_as_written: int = Field(description="Drafts the assistant made that the person said yes to unchanged.")
+    sent_edited: int = Field(description="Drafts the assistant made that the person changed before saying yes.")
+    first_result_minutes: int | None = Field(
+        None, description="Minutes from the first record to the first AI result the person could see; none until then."
+    )
 
 
 class ReportSend(BaseModel):
@@ -849,6 +871,72 @@ class OpMeta(BaseModel):
     as_of: str | None = Field(None, description="For a fact that names who said it: the day it was true as of.")
 
 
+class ReadBackTarget(BaseModel):
+    kind: str
+    kind_label: str = Field(description="What one record of the kind is called, in words.")
+    field: str | None = None
+
+
+class ReadBackNamed(BaseModel):
+    id: str
+    name: str
+
+
+class ReadBackFilter(BaseModel):
+    field: str
+    value: str
+
+
+class ReadBackApplies(BaseModel):
+    """Line 1 of the read-back: what the rule's target names. `everywhere` when it names nothing in particular."""
+
+    everywhere: bool
+    targets: list[ReadBackTarget] = Field(default_factory=list)
+    filter: list[ReadBackFilter] = Field(default_factory=list)
+    projects: list[ReadBackNamed] = Field(default_factory=list)
+    except_: list[ReadBackNamed] = Field(default_factory=list, alias="except")
+    people: list[ReadBackNamed] = Field(default_factory=list)
+    task_kinds: list[str] = Field(default_factory=list)
+
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+
+
+class ReadBackUnchanged(BaseModel):
+    """One neighbor the rule leaves out (line 2): the same field on another record type (`field`), a project outside its
+    projects (`project`), or a task kind outside its task kinds (`task_kind`)."""
+
+    why: Literal["field", "project", "task_kind"]
+    kind: str | None = None
+    kind_label: str | None = None
+    field: str | None = None
+    id: str | None = None
+    name: str | None = None
+
+
+class ReadBackOverlap(BaseModel):
+    id: str = Field(description="The overlapping rule's record id, to link it.")
+    name: str
+    text: str
+
+
+class ReadBackItem(BaseModel):
+    kind: str
+    id: str
+    title: str
+
+
+class ReadBackView(BaseModel):
+    """The four lines shown next to Undo for a rule the person states (design 6.7). `count` is None when the rule names
+    no record type, so there is nothing to count; `items` lists the first of the records counted."""
+
+    applies: ReadBackApplies
+    unchanged: list[ReadBackUnchanged] = Field(default_factory=list)
+    overlaps: list[ReadBackOverlap] = Field(default_factory=list)
+    count: int | None = None
+    items: list[ReadBackItem] = Field(default_factory=list)
+    matches_nothing: bool = False
+
+
 class OpView(BaseModel):
     index: int
     op: str
@@ -870,6 +958,29 @@ class OpView(BaseModel):
         description="For a held item that rests on an inference, ends or moves a promise, or would drop something that "
         "reached someone: the question the person is asked, shaped as Today's line asks it, so the change's card "
         "offers the same two answers in the same words.",
+    )
+    read_back: ReadBackView | None = Field(
+        None,
+        description="For a rule the person stated: what it applies to, what it leaves alone, what it overlaps with and "
+        "what it would change now, worked out when it was stated.",
+    )
+
+
+class RuleAnswer(BaseModel):
+    """Which rule wins when a rule the person stated contradicts one in force."""
+
+    choice: Literal["new", "existing", "both"]
+    applies_to: Scope | None = Field(
+        None,
+        description="With `both`: where the new rule now applies. Its scope, projects and exceptions replace the new "
+        "rule's own; the rest of the rule's target stays as it was.",
+    )
+
+
+class RuleAnswered(BaseModel):
+    ok: str
+    retired: str | None = Field(
+        None, description="The change that stopped following the old rule, to undo with the new."
     )
 
 
@@ -3391,10 +3502,13 @@ class HeldAsk(BaseModel):
     drop would leave out of the loop (told on `told_on`) and `quote` the words the assistant rested it on. An ending of
     an action also carries what the input says happened: the action's id in `record`, its `owners` in the owner
     format, `reporter` (who said it), and by ask the words of a new date (`due_words`) with the promise's own earlier
-    words (`earlier`), what was `delivered` and what is `left`, or the `reason` it is called off. The screen words the
-    title and the answers from these."""
+    words (`earlier`), what was `delivered` and what is `left`, or the `reason` it is called off. A rule the person
+    stated that contradicts rules in force (`contradiction`) names the new rule in `item` and the words of those rules
+    in `against`. The screen words the title and the answers from these."""
 
-    ask: Literal["close", "date", "owner", "routing", "drop", "move", "part", "ending", "effort", "remind"]
+    ask: Literal[
+        "close", "date", "owner", "routing", "drop", "move", "part", "ending", "effort", "remind", "contradiction"
+    ]
     item: str
     value: str | None = None
     from_value: str | None = None
@@ -3411,6 +3525,11 @@ class HeldAsk(BaseModel):
     delivered: str | None = None
     left: str | None = None
     reason: str | None = None
+    against: list[str] | None = Field(
+        None,
+        description="For a rule that contradicts rules already in force (`contradiction`): the words of each of them. "
+        "`item` is the new rule and `record` the first rule it contradicts.",
+    )
 
 
 class PromisePerson(BaseModel):
@@ -5980,7 +6099,11 @@ class WatchSourceView(BaseModel):
         default_factory=list, description="Whether the place is mail, a calendar, or neither (empty)."
     )
     enabled: bool
-    every_minutes: int
+    every_minutes: int = Field(
+        description="How often it is read: its own interval when one was set by hand, else the mail or calendar "
+        "interval in Settings (watch.mail_read_minutes, watch.calendar_read_minutes)."
+    )
+    every_minutes_set: bool | None = Field(None, description="Whether the interval was set by hand for this source.")
     stance: Literal["follow", "understand"] | None = Field(
         None,
         description="follow (Mine to track) or understand (Only to understand: another group's work, read and kept "
@@ -7338,7 +7461,9 @@ class WatchSourceIn(BaseModel):
 
     connector: str = Field(description="The kind of source, from GET /api/watch/kinds.")
     label: str = ""
-    every_minutes: int = Field(10, ge=5)
+    every_minutes: int | None = Field(
+        None, ge=5, description="Left out, it follows the mail or calendar interval in Settings."
+    )
     project: str | None = None
     stance: Literal["follow", "understand"] | None = Field(
         None,
@@ -7665,9 +7790,28 @@ class LearnedView(BaseModel):
     lines: list[LearnedLine]
 
 
+class PersonOfferView(BaseModel):
+    """Someone the assistant offers to add to the people on file (design 6.22): kept from the review card with the
+    relation the offer gave and the sides of the accounts their mail came from, or left out ("Not this one")."""
+
+    id: str
+    version: int
+    name: str
+    address: str
+    why: str = Field(description="In a sentence, why they are someone the person deals with.")
+    relation: str | None = Field(None, description="How they relate to the person, when the offer says.")
+    sides: list[str] = Field(
+        default_factory=list, description="The names of the sides they would be added on; none when not known."
+    )
+    count: int = Field(description="How many messages there are between them and the person.")
+
+
 class ProposalsView(BaseModel):
     """Everything the assistant learned that waits for the person, oldest first, apart from the catch-up list."""
 
+    people: list[PersonOfferView] = Field(
+        default_factory=list, description="The people the assistant offers to add, the ones with most messages first."
+    )
     proposals: list[ProposalView]
     origins: dict[str, int] = Field(description="How many came from an input and how many from a correction.")
     expired: int = Field(description="How many from inputs expired unreviewed since the person last looked.")
@@ -8259,6 +8403,7 @@ class OpenQuestionView(BaseModel):
     waiting_days: int | None = Field(None, description="For one that was sent, the days since the last word to them.")
     chases: int = Field(0, description="How many follow-ups it has had.")
     held_until: str | None = None
+    yours: bool = Field(False, description="Whether it is put to the person themself, so a hold is theirs to read.")
     origin: Origin | None = None
 
 

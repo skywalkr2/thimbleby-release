@@ -128,7 +128,7 @@ test("the people, projects, open to-dos and unfiled lists say names, dates and w
     since: "2026-10-01", on_hold: null, blocker: null, duplicate: null, origin: null, untouched_days: null, owner_question: null, to_send: false,
   };
   const none: S["OpenActionView"] = { ...open, id: "ACT-2", text: "Order the sample copies", owners: [], due: null, project: null, project_name: "", state: "no_owner" };
-  const ask: S["OpenQuestionView"] = { id: "Q-1", version: 2, title: "Which cover finish?", text: "", kind: "question", state: "waiting", to: "PER-1", to_name: "Ana Person", project_name: "Harbor", projects: ["PRJ-1"], since: "2026-10-08", waiting_days: 6, chases: 0, held_until: null, origin: null };
+  const ask: S["OpenQuestionView"] = { id: "Q-1", version: 2, title: "Which cover finish?", text: "", kind: "question", state: "waiting", to: "PER-1", to_name: "Ana Person", project_name: "Harbor", projects: ["PRJ-1"], since: "2026-10-08", waiting_days: 6, chases: 0, held_until: null, yours: false, origin: null };
   const routes: Routes = {
     "GET people": () => [ana, person("PER-2", "Ben Person")],
     "GET organizations": () => [org("ORG-1", "Quarry House", 1)],

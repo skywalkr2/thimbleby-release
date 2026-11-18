@@ -677,3 +677,12 @@ def older_mail(connector: str) -> OlderMail | None:
 
         _OLDER[connector] = OlderMail(count_older, read_older)
     return _OLDER.get(connector)
+
+
+def header_mail(connector: str) -> Callable[[Any, date, date, int, ConnectorContext], list[SourceItem] | Poll] | None:
+    """How to ask a core mail connector for message headers alone, or None when it can't be asked."""
+    if connector == "mailbox":
+        from engine.connectors.mailbox import read_headers
+
+        return read_headers
+    return None

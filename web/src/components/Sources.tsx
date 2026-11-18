@@ -737,7 +737,7 @@ function SourceForm(props: {
   const listFirst = adding && chosen === "mailbox" && !given && (mailServices.data?.length ?? 0) > 0 && guide === "";
 
   const [label, setLabel] = useState(source?.label ?? "");
-  const [every, setEvery] = useState(String(source?.every_minutes ?? 10));
+  const [every, setEvery] = useState(source?.every_minutes_set ? String(source.every_minutes) : "");
   const [project, setProject] = useState("");
   const [author, setAuthor] = useState(source?.author ?? "");
   const [account, setAccount] = useState(source?.account ?? (mode.type === "add" ? (mode.account ?? "") : ""));
@@ -762,7 +762,7 @@ function SourceForm(props: {
   const [opened, setOpened] = useState<string | null>(null);
   // What the form showed when it opened (or was last refreshed), to tell which fields the person touched after a refusal,
   // and what a refusal refreshed.
-  const shown = useRef({ label: source?.label ?? "", every: String(source?.every_minutes ?? 10), author: source?.author ?? "", account: source?.account ?? "", color: source?.color ?? "" });
+  const shown = useRef({ label: source?.label ?? "", every: source?.every_minutes_set ? String(source.every_minutes) : "", author: source?.author ?? "", account: source?.account ?? "", color: source?.color ?? "" });
   const storedWas = useRef<unknown>(undefined);
   const [refreshed, setRefreshed] = useState<{ lines: Refreshed[]; time: string }>({ lines: [], time: "" });
 
@@ -922,7 +922,7 @@ function SourceForm(props: {
       ]);
       const now = list.find((x) => x.id === was.id);
       if (!now) return;
-      const saved = { label: now.label, every: String(now.every_minutes), author: now.author ?? "", account: now.account ?? "", color: now.color ?? "" };
+      const saved = { label: now.label, every: now.every_minutes_set ? String(now.every_minutes) : "", author: now.author ?? "", account: now.account ?? "", color: now.color ?? "" };
       const out = reconcile<string>(shown.current, { label, every, author, account, color }, saved);
       setLabel(out.next.label);
       setEvery(out.next.every);
@@ -962,13 +962,13 @@ function SourceForm(props: {
     setFieldProblems({});
     try {
       const fp = opened;
-      const minutes = Number(every);
+      const minutes = every === "" ? null : Number(every);
       const name = label.trim();
       if (mode.type === "add") {
         const saved = await api.addSource({
           connector: kind.name,
           label: name,
-          every_minutes: minutes,
+          ...(minutes !== null ? { every_minutes: minutes } : {}),
           project: project || null,
           author: author || null,
           ...(asksWhose ? { stance: whose } : {}),
@@ -978,11 +978,11 @@ function SourceForm(props: {
           ...(Object.keys(typed).length > 0 ? { secrets: typed } : {}),
           fingerprint: fp,
         });
-        await afterSave(saved, { message: t("sources.added_toast", { label: addedLabel(saved, name, kind.label), every: everyText(minutes, tn) }) });
+        await afterSave(saved, { message: minutes !== null ? t("sources.added_toast", { label: addedLabel(saved, name, kind.label), every: everyText(minutes, tn) }) : t("sources.added_toast_setting", { label: addedLabel(saved, name, kind.label) }) });
       } else {
         const saved = await api.changeSource(mode.source.id, {
           ...(name ? { label: name } : {}),
-          every_minutes: minutes,
+          ...(minutes !== null ? { every_minutes: minutes } : {}),
           author: author || null,
           ...(asksWhose && whose !== mode.source.stance ? { stance: whose } : {}),
           ...(isCalendar && holds !== (mode.source.holds ?? "meetings") ? { holds } : {}),
@@ -1171,6 +1171,7 @@ function SourceForm(props: {
             <summary>{t("sources.more")}</summary>
           <FormField id={`${base}-every`} label={t("sources.field.every")}>
             <Select id={`${base}-every`} value={every} onChange={(e) => setEvery(e.target.value)}>
+              <option value="">{t("sources.every_setting")}</option>
               {everyOptions.map((n) => (
                 <option key={n} value={String(n)}>
                   {everyText(n, tn)}

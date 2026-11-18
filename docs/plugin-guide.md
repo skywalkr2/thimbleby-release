@@ -266,7 +266,7 @@ The default pair: `default_client_id` alone is a public client (the service issu
 
 `acting_scopes` are the extra scopes acting needs (send, change messages, write events), asked for only when the person turns on **Let the assistant act after your yes** for an account of this sign-in; `scopes` stay the reading ones, and signing in asks for those alone. Turning acting on starts the sign-in again for that account with `scopes` and `acting_scopes` together; turning it off stops the core using the wider access, and signing in again with the reading scopes gives it back where the service allows. Declare them only when a channel of the plugin serves this sign-in's accounts.
 
-`sources` are what the core starts reading as soon as the person signs in, so signing in is all the setup there is: each is `{"connector": <one of this plugin's connectors>, "label": <a name for the list>, "settings": {...}, "every_minutes": 10}` (10 when left out; settings checked against the connector's, defaults filling the rest). Each is added once per sign-in, and only when the workspace reads nothing with that connector yet; a source the person later removes or changes stays as they left it. Choose settings that read something useful with no further choice (the inbox, the main calendar); the person narrows them later.
+`sources` are what the core starts reading as soon as the person signs in, so signing in is all the setup there is: each is `{"connector": <one of this plugin's connectors>, "label": <a name for the list>, "settings": {...}}` (settings checked against the connector's, defaults filling the rest; an `every_minutes` is accepted and ignored: how often mail and calendars are read is the person's setting, whatever plugin made the source). Each is added once per sign-in, and only when the workspace reads nothing with that connector yet; a source the person later removes or changes stays as they left it. Choose settings that read something useful with no further choice (the inbox, the main calendar); the person narrows them later.
 
 **The account's sent mail:** a source declared with `"sent": True` reads the folder or label the service keeps the person's own sent mail in (name it in the source's `settings`, as the connector's settings take it; it is the same connector as the inbox). The core starts it with the others, credits it to the person (what it holds is their own mail, so the promises they made in it are found and a reply they sent ends the one they owed), and shows no button for it. It is started once the workspace knows who the person is, so a sign-in made before that gets it then. Each account gets its own; one the person removed isn't brought back by a new sign-in, and "Start reading" brings it back.
 
@@ -1863,6 +1863,8 @@ A standing instruction the assistant follows, kept as a record so changing one h
 | `kept_at` | datetime \| None | `None` | When it was made active. |
 | `constrains` | list[str] | `[]` | What it is about, so a run's log can tell a rule that applied from one that was only present: op kinds (`question.add`) or op fields (`action.add.owners`). Empty means nothing is checked, so the rule is only ever present. |
 | `reviewed_at` | datetime \| None | `None` | When the person last chose to keep it in a review; the clock for its next review starts here. |
+| `pauses` | str \| None | `None` | The id of a record this rule pauses: while it is active, a change to that record is recorded as a fact only, with no question to anyone. Needs `until`. The person saying it is ready retires the rule. |
+| `until` | str \| None | `None` | With `pauses`: when the pause ends, in the person's words (such as "I say it is ready"). |
 
 ### `event` (EVT-n)
 
@@ -2356,6 +2358,7 @@ Someone the assistant offers to add to the people on file (design 6.22, "Learnin
 | `name` | str | required | The name as the mail shows it. |
 | `address` | str | required | The address, in lower case. |
 | `why` | str | required | In a sentence, why this is someone the person deals with. |
+| `relation` | str \| None | `None` | How they relate to the person, in a few plain words ('your accountant'), when the assistant's line shows it; kept as their relation when the person keeps the offer. |
 | `from_them` | int | `0` | How many messages came from them when it was offered. |
 | `to_them` | int | `0` | How many messages the person sent them when it was offered. |
 | `status` | Literal['offered', 'kept', 'dismissed'] | `'offered'` | offered while it waits for the person; kept once they were added; dismissed. |
@@ -2664,6 +2667,7 @@ One thing the app does outside the workspace on the person's behalf (design 6.12
 | `reminder_at` | AwareDatetime \| None | `None` | For a reminder act: the reminder time it was drafted for, so one reminder time never gets two acts and a snooze is noticed. |
 | `run` | str \| None | `None` | The AI run that wrote the draft, if one did. |
 | `sources` | list[Annotated[str, RefTo(kind='source', blocks_delete=True)]] | `[]` | The saved inputs the content draws on. |
+| `facts` | list[Annotated[str, RefTo(kind='fact', blocks_delete=True)]] | `[]` | The facts the content states to its readers. An inferred fact is never one of them, and a fact older than its freshness limit is held for a check. |
 | `in_reply_to` | str \| None | `None` | The message this answers; the people in that thread are people it may address. |
 | `project` | str \| None | `None` | The project it is about, if any. |
 | `sensitivity` | Literal['open', 'internal', 'restricted'] | `'internal'` | The most sensitive level of what it draws on. |
@@ -2759,6 +2763,7 @@ Draft something to go outside the workspace on the person's behalf: a message, a
 | `template.name` | str | required | The template's name. |
 | `template.version` | str | required | The template's version when the content was rendered from it. |
 | `sources` | list[str] | `[]` | Ids of the saved inputs the content draws on. |
+| `facts` | list[str] | `[]` | Ids of the facts the content states to its readers. A fact you only inferred is never stated to anyone else, and a fact older than its freshness limit is held for the person to check. |
 | `in_reply_to` | str \| None | `None` | The id of the saved message it answers, if it does. |
 | `project` | str \| None | `None` | The id of the project it is about, if any. |
 | `account` | str \| None | `None` | The account that carries it, as the sign-in or mailbox it goes through. Left out, a reply, a mailbox act or an answer uses the account the message or invitation came in on, and a new message the account last picked. |
@@ -3463,6 +3468,15 @@ The person's own forgetting of someone: their record stays, with its id, so ever
 | `person` | str | required | The person to forget. |
 | `read_version` | int | required | The version of the person that was read; the forget fails if it changed. |
 
+### `person.keep_offer`
+
+The person keeps someone the assistant offered (a person.offer): they are added to the people on file with the relation the offer gave and the sides of the accounts their mail came from, and the offer is settled, all in one change. Only the person makes it, from their own screen; the assistant never does.
+
+| Field | Type | Default | What it is |
+|---|---|---|---|
+| `group` | str \| None | `None` | Ops that must be undone together share a group name. |
+| `offer` | str | required | The id of the offer being kept. |
+
 ### `person.offer`
 
 The assistant's offer of people to add, read from the contact tally: each is an address the packet listed that is not on file and was not offered or left out before, with the reason. It is for someone who is a person to the user (a colleague, a client, a tradesperson, a relative, a recruiter), whatever shape their address or the name they write under has; it is never for a list, a service or a machine. Offers wait for the person's yes; nobody is added until they keep one.
@@ -3474,6 +3488,7 @@ The assistant's offer of people to add, read from the contact tally: each is an 
 | `people[].address` | str | required | Their address, exactly as the list shows it. |
 | `people[].name` | str | required | The name to add them under: as the list shows it, or made plain from it when the list gives none. |
 | `people[].why` | str | required | In a sentence, why this is someone the person deals with, from the counts and the name. |
+| `people[].relation` | str \| None | `None` | How they relate to the user in a few plain words ('your accountant'), only when the counts and the name make it plain; leave it out otherwise. Never a guess about private life. |
 
 ### `person.stance`
 
@@ -3723,6 +3738,9 @@ Add a standing rule: an instruction the assistant follows from now on. A system 
 | `applies_to.except` | list[Annotated[str, RefTo(kind='project', blocks_delete=True)]] | `[]` | With scope workspace, the projects it does not apply to. Dumped by alias, so the key is `except`. |
 | `check` | str \| None | `None` | The id of a deterministic check that implements the rule, when one exists. |
 | `constrains` | list[str] | `[]` | What the rule is about: op kinds (`question.add`) or op fields (`action.add.owners`). |
+| `pauses` | str \| None | `None` | For a pause the person states (a document is still being edited): the id of the record to hold off, from the material. While the rule is active a change to it yields facts only, never a question. Needs `until`. |
+| `until` | str \| None | `None` | With `pauses`: when it ends, in the person's own words (such as the person saying it is ready). |
+| `contradicts` | list[str] | `[]` | The active rules this rule contradicts in meaning, each by its id (such as RULE-3) or its name. Name one only when the two cannot both be followed; a rule that merely overlaps another names nothing. A rule that names an active one waits for the person to say which wins, even when the person typed it. |
 | `evidence` | EvidenceIn \| None | see below | The words from the input that justify the rule, if any. |
 | `evidence.quote` | str | required | The exact words from the input that justify this op. |
 

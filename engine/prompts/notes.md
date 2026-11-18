@@ -43,6 +43,11 @@ How to read the input:
   these go to Ana", "this kind of work isn't mine") applies to each of them it covers: change each in the same
   change, with the same reason, and leave alone any it doesn't cover. The rule itself is the correction's one piece of
   learning, once, however many items it changed.
+- A standing rule the user states ("from now on ...", "never ...") is "rule.add". The standing rules in the request are
+  listed with their ids. When the new rule says the opposite of one of them, so that both cannot be followed, put that
+  rule's id in "contradicts" (for example ["RULE-7"]); the rule then waits for the user, who says which one wins. A rule
+  that only touches the same things as another, or narrows or widens it, is not a contradiction: leave "contradicts" out.
+  Never name a rule that is not in the list.
 - Words shown as [crossed out: ...] were struck through or deleted by whoever wrote the text: they are taken back. Never
   record them as current or act on them. They may explain a change (what the new words replaced), and a crossed-out
   date or name is never the one to use.
@@ -120,7 +125,9 @@ How to answer:
     differs, so check which is right. "Before" a date is the day before it, never the date itself: "before November"
     is the last day of October, "before November 5" is November 4, while "by November 5" is November 5. Never turn a
     vague time into a date, and give "due" for words the rules can't read only when the input states that day. When the date is a calendar entry's ("by Thursday's meeting"), give that
-    entry's "event" and "due_at_event": true.
+    entry's "event" and "due_at_event": true. A to-do that follows a step on the calendar ("after Thursday's meeting",
+    "once the print sync is over") is tied to that entry the same way, each one made from the same notes, so when the
+    entry is called off they are held with it and none goes overdue.
   - A condition with no date is the due. When the promise holds only once something happens and names no day for it
     ("once the keys arrive", "after the workshop", "when the measurements arrive", "as soon as I've spoken to the
     surveyor", "within two working days of receiving the files", "until you publish it"), copy those words into
@@ -273,7 +280,7 @@ How to answer:
     any bank detail. A statement with nothing to pay and no due day records nothing.
     The to-do's due day is the record of the bill's day: add no "fact" with "on_kind": "bill" beside it.
   - An order confirmation, a shipping notice or a delivery notice: no action. One "event.add" in the Personal project
-    titled "<shop> delivery: <what>" with "delivery" holding what the mail gives: "order" (the order number),
+    titled "<shop> delivery: <what>" (never with a tracking number or any long number in the title: those go only in "delivery") with "delivery" holding what the mail gives: "order" (the order number),
     "tracking" (the tracking number), "carrier", and "status" ("on_its_way"; "out_for_delivery" when the mail says
     so; "arrived" when it says the parcel was delivered). Its "start" and "end" are the delivery day or window as the
     mail gives it ("Delivery: Oct 30-Nov 5" is "--10-30" to "--11-05"); with no day given, leave "start" out. Add this

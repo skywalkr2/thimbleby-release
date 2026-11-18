@@ -87,8 +87,8 @@ def test_the_first_start_makes_the_workspace_with_no_template_and_runs_the_windo
     desktop.start(root, shell, launch=launch, environ=env)
     ws = resolve(root)
     assert (root / "config").is_dir() and ws.db_path.exists()
-    # The installed app's first workspace starts with the bundled parcels add-on on, with no Add-ons screen.
-    assert ws.config().workspace.plugins.enabled == ["parcels"]
+    # The installed app bundles no add-on: its first workspace starts with none on.
+    assert ws.config().workspace.plugins.enabled == []
     assert not (root / "data" / "plugins").exists() and "demo" not in {p.name for p in root.iterdir()}
     assert given["port"] == ws.config().server.port and given["folder"] == ws.private_dir
     assert given["readiness_path"] == "/thimble/api/health" and given["health"] == 200

@@ -91,7 +91,7 @@ test("an expired account is the first line at risk, naming its side and since wh
   show([decision(1, "risk")], { "GET watch": () => [expired()] });
   const risk = await loaded("At risk");
   const first = rowsOf(risk)[0];
-  expect(first).toHaveTextContent(/^Harborview's mail isn't being read · since /);
+  expect(first).toHaveTextContent(/^Your Example mail account's mail isn't being read · since /);
   expect(first).not.toHaveTextContent("@example.com");
   expect(within(first).getByRole("button", { name: /Sign in again/ })).toHaveAttribute("data-weight", "filled");
   // It is the only tinted row of the group, and the only filled button on the screen: the question under it is a plain row with an outlined button.
@@ -104,9 +104,31 @@ test("an expired account is the first line at risk, naming its side and since wh
   expect((await screen.findAllByText("2 things need you")).length).toBeGreaterThan(0);
 });
 
+test("three accounts of one service, one refused: one line naming the service and the account's own label, no address anywhere on Today", async () => {
+  const one = (id: string, address: string, over: Partial<Source> = {}) => source(id, { account: address, label: `${id}-label, ${address}`, ...over });
+  show([], {
+    "GET watch": () => [
+      one("a", "avery.lane@example.com"),
+      one("b", "robin.hart@example.com", { account_state: "expired" }),
+      one("c", "sam.ford@example.com"),
+    ],
+  });
+  const line = await screen.findByText(/aren't|isn't being read/);
+  expect(line).toHaveTextContent(/^b-label's mail isn't being read/);
+  expect(document.body).not.toHaveTextContent("@example.com");
+  expect(document.querySelectorAll("[data-account-line]")).toHaveLength(1);
+});
+
+test("two accounts of one service with the same label are told apart by number, never by address", async () => {
+  const one = (id: string, address: string, over: Partial<Source> = {}) => source(id, { account: address, label: "Your inbox", ...over });
+  show([], { "GET watch": () => [one("a", "avery.lane@example.com", { account_state: "expired" }), one("b", "robin.hart@example.com")] });
+  expect(await screen.findByText(/^Your Example mail account \(1\)'s mail isn't being read/)).toBeInTheDocument();
+  expect(document.body).not.toHaveTextContent("@example.com");
+});
+
 test("a refused account says calendar when it holds only a calendar, and both when it holds both", async () => {
   show([], { "GET watch": () => [expired({ id: "cal", reads: ["calendar"] })] });
-  expect(await screen.findByText(/^Harborview's calendar isn't being read/)).toBeInTheDocument();
+  expect(await screen.findByText(/^Your Example mail account's calendar isn't being read/)).toBeInTheDocument();
 });
 
 test("an account that is only retrying stays out of Today until it has gone a day, then it is a line that opens Connections", async () => {
@@ -120,7 +142,7 @@ test("an account retrying for more than a day is a line with a button to Connect
   const user = userEvent.setup();
   const old = source("mail-a", { account_state: "signed_in", last: { outcome: "failed", error_kind: "outage" } as Source["last"], read_at: hoursAgo(30) });
   const { onView } = show([], { "GET watch": () => [old] });
-  expect(await screen.findByText(/^Harborview's mail isn't being read/)).toBeInTheDocument();
+  expect(await screen.findByText(/^Your Example mail account's mail isn't being read/)).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Open Connections" }));
   expect(onView).toHaveBeenCalled();
 });
@@ -200,16 +222,15 @@ test("under one side's filter an account that serves no side says Every side bes
   expect(document.querySelector("[data-every-side]")).toBeNull();
 });
 
-test("no part of an account's address is on Today: it is named by its side, else its label without the address, else a plain phrase", async () => {
+test("no part of an account's address is on Today: one account of a service is named by the service, whatever its label or sides", async () => {
   const all = () => `${document.body.textContent} ${Array.from(document.querySelectorAll("[title],[aria-label]")).map((e) => `${e.getAttribute("title")} ${e.getAttribute("aria-label")}`).join(" ")}`;
-  // Two sides served by one account whose address looks like a name: the label stays, without the address.
   const several = { account: "harper.quinn@example.com", label: "Inbox, harper.quinn@example.com", sides: [SIDE.project, OTHER.project] };
   show([], { "GET watch": () => [expired(several)] });
-  expect(await screen.findByText(/^Inbox's mail isn't being read/)).toBeInTheDocument();
+  expect(await screen.findByText(/^Your Example mail account's mail isn't being read/)).toBeInTheDocument();
   expect(all()).not.toMatch(/@|harper|quinn/i);
   cleanup();
-  // A label that is only the address leaves nothing: the wording sheet's plain phrase.
-  show([], { "GET watch": () => [expired({ ...several, label: "harper.quinn@example.com" })] });
+  // A service the person can't be told by name leaves the wording sheet's plain phrase.
+  show([], { "GET watch": () => [expired({ ...several, connector_label: "" })], "GET sign-ins": () => [] });
   expect(await screen.findByText(/^Your account's mail isn't being read/)).toBeInTheDocument();
   expect(all()).not.toMatch(/@|harper|quinn/i);
 });

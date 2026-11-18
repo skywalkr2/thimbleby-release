@@ -25,6 +25,7 @@ const source = (id: string, extra: Partial<Source> = {}): Source => ({
   connector_label: "A folder",
   enabled: true,
   every_minutes: 15,
+  every_minutes_set: true,
   items: 3,
   last: run(),
   read_at: run().started_at,
@@ -395,7 +396,7 @@ describe("adding a source", () => {
     expect(within(form).getByLabelText("About address")).toBeInTheDocument();
     expect(within(form).getByLabelText("About days_ahead")).toHaveValue("30");
     expect(within(form).getByLabelText("Name")).toBeInTheDocument();
-    expect(within(form).getByLabelText("How often to read")).toHaveValue("10");
+    expect(within(form).getByLabelText("How often to read")).toHaveValue("");
     // Switching kind shows that kind's form.
     await backToKinds(user, form);
     await user.click(within(form).getByRole("radio", { name: "A mailbox" }));
@@ -542,21 +543,36 @@ describe("adding a source", () => {
     expect(within(form).getByText("Leave empty to name it after what it reads.")).toBeInTheDocument();
   });
 
-  test("how often is 10, 15, 30, 60 or 240 minutes, and a new source starts at 10", async () => {
+  test("how often is as set in Settings or 10, 15, 30, 60 or 240 minutes, and a new source starts at the setting", async () => {
     const user = userEvent.setup();
     open([]);
     await user.click(await screen.findByRole("button", { name: "Add mail, calendar or folder" }));
     await user.click(await screen.findByRole("radio", { name: "A feed" }));
     await continueAdd(user);
     const every = screen.getByLabelText("How often to read");
-    expect(every).toHaveValue("10");
+    expect(every).toHaveValue("");
     expect(within(await snapshotOf(every)).getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "As set in Settings",
       "every 10 minutes",
       "every 15 minutes",
       "every 30 minutes",
       "every hour",
       "every 4 hours",
     ]);
+  });
+
+  test("a new source sends no interval unless the person picks one, so it follows the setting (S-0536)", async () => {
+    const user = userEvent.setup();
+    const { calls } = open([], { "POST watch/sources": () => SAVED([], [{ id: "work-calendar" }]) });
+    await user.click(await screen.findByRole("button", { name: "Add mail, calendar or folder" }));
+    await user.click(await screen.findByRole("radio", { name: "A calendar" }));
+    await continueAdd(user);
+    await user.type(screen.getByLabelText("Name"), "Work calendar");
+    await user.type(screen.getByLabelText("About address"), "env:WORK_ADDRESS");
+    await user.click(screen.getByRole("button", { name: "Add connection" }));
+    await waitFor(() => expect(post(calls, "POST watch/sources")).toBeDefined());
+    expect(post(calls, "POST watch/sources")).not.toHaveProperty("every_minutes");
+    expect(await screen.findByText("Added Work calendar. It is read within a minute, then as often as Settings says.")).toBeInTheDocument();
   });
 
   test("saving sends the kind, name, schedule, project and the settings as nested values with the fresh fingerprint, then reads back with Undo", async () => {
@@ -982,7 +998,7 @@ describe("a source's menu", () => {
     const user = userEvent.setup();
     let moved = false;
     const { calls } = open([source("a", { connector: "folder", every_minutes: 60 })], {
-      "GET watch": () => [source("a", { connector: "folder", every_minutes: moved ? 240 : 60 })],
+      "GET watch": () => [source("a", { connector: "folder", every_minutes: moved ? 240 : 60, every_minutes_set: true })],
       "GET settings": () => ({
         ...stored([{ id: "a", settings: { path: moved ? "elsewhere" : "inbox", patterns: ["*.md"] } }].map((x) => x)),
         fingerprint: moved ? "fp-2" : "fp-1",

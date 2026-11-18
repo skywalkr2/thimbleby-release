@@ -31,7 +31,6 @@ BUNDLED_FOLDERS = (
     "engine/playbook",
     "engine/ai/adapters",
     "plugins/kit",
-    "plugins/parcels",
     "web/src/assets/brand",
 )
 

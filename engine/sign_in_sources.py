@@ -245,7 +245,6 @@ def _start_sources(
                 "id": source_id,
                 "connector": wanted["connector"],
                 "label": named_by(wanted["label"], address),
-                "every_minutes": wanted["every_minutes"],
                 # The first read is taken in quietly (one total, one go, one list to look over), not item by item.
                 "first_run": "intake",
                 "settings": settings,

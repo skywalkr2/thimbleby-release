@@ -85,6 +85,9 @@ due_ordinal_suffixes: [st, nd, rd, th]
 due_condition_words: [once, after, before, when, whenever, until, till, if, unless, upon, as soon as, of receiving, of receipt, sometime, soon, eventually]
 due_hold_words: [once, after, when, whenever, until, till, if, unless, upon, as soon as, of receiving, of receipt]
 due_before_words: [before]
+# The words before a span that says how far ahead a day is ("in 2 days"), and the words of an answer that put a question off to a later day ("let's follow up on this in 2 days").
+due_span_words: [in]
+answer_later_words: [follow up, follow-up, followup, revisit, circle back, come back to this, come back to it, check back, ask me again, remind me, pick this up, look at this again, look at it again, talk about this again]
 # The words of the day-and-time phrases ("day after tomorrow", "first thing Monday", "within 48 hours"), by what they mean; the number words read in "within two days"; the time zone abbreviations ("5pm ET") and the zone each names; and the list of named days ("by Thanksgiving") the reader uses (empty: the one for the language).
 due_phrase_words:
   day_after_tomorrow: [day after tomorrow]
@@ -195,6 +198,7 @@ messages:
   undo_no_answer: "The service gave no answer to taking this back. Look in it to see whether it was."
   resourced_summary: "Took the assistant's name out of {count} history lines and said where each came from"
   resourced_label: "Put where the change came from in a history line instead of the assistant's name"
+  stale_fact: "Check this: {fact} was true as of {as_of}, {days} days ago, and facts of this kind are trusted for {limit} days. Confirm it still holds before this goes to anyone."
   withheld_name: "Held back: {where} names {name}. Take the name out before this goes to anyone."
   nudge_second_ask: "Is there someone else I should ask, or a date I can plan around?"
   date_format: "%a, %b %d"

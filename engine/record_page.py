@@ -27,7 +27,12 @@ _HIDDEN = {"id", "stage", "ext", "aliases", "agenda", "filed_by", "repeat", "occ
 
 
 def display_name(data: dict[str, Any]) -> str:
-    """The name a record is shown by: its full name, name, title or text (never its id)."""
+    """The name a record is shown by: its full name, name, title or text (never its id). A delivery's name never holds
+    its tracking number."""
+    if data.get("delivery") and data.get("title"):
+        from engine import deliveries
+
+        return deliveries.entry_title(data)
     for field in _NAME_FIELDS:
         if data.get(field):
             return str(data[field])
@@ -121,6 +126,8 @@ def page(
                         )
         if not found:
             found = _ids_named(view, store, value, name_of)
+        if field == "title" and data.get("delivery"):
+            value = display_name(data)  # a delivery's words never carry its tracking number
         details.append({"field": field, "value": value, "type": _type_of(info.annotation), "refs": found})
 
     actions, questions = _open_with(view, kind, record_id, pm)

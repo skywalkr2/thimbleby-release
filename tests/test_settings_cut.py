@@ -59,8 +59,9 @@ def test_the_settings_walk_counts_at_most_26_basic_and_30_advanced():
     # is one; the clock, the time list's step and Today's rail rows are three more, and the once-a-day look for a new
     # version is one), 23 with a business (the words
     # that mean each side moved to Advanced, Filing), and 28 more behind the pages' folds and Advanced (the
-    # calendar's day start and end are two of them).
-    assert (without_business, with_business, more) == (22, 23, 30)
+    # calendar's day start and end are two of them). How often mail and calendars are read is one merged row on Today
+    # (S-0536), the 23rd.
+    assert (without_business, with_business, more) == (23, 24, 30)
     assert {s.topic for s in shown if s.advanced and s.page} == set(levels.TOPICS)
     assert all(s.topic is None for s in shown if s.page in PAGES and not s.advanced)
     assert all(s.topic for s in shown if s.advanced and s.page)
@@ -86,6 +87,7 @@ def test_working_hours_the_brief_times_quiet_hours_and_where_reminders_go_are_on
         ),
         "steward.reminders.where": ("steward.reminders.where", "steward.reminders.where_account"),
         "steward.reminders.quiet_start": ("steward.reminders.quiet_start", "steward.reminders.quiet_end"),
+        "watch.mail_read_minutes": ("watch.mail_read_minutes", "watch.calendar_read_minutes"),
     }
     for first, row in levels.MERGED_ROWS.items():
         # The settings of a row sit together, in order, on one page or topic, and each is still a setting of its own.

@@ -767,3 +767,11 @@ def test_the_repeat_cases_pass_on_their_stub_answers_and_the_repeat_stays_held(m
     # A repeat waiting for the person's yes counts as made, so a case that forbids one catches it.
     caught = run_edited(monkeypatch, template, named["id"], expect=[], forbid=[{"op": "action.repeat"}])
     assert not caught.passed and caught.forbidden
+
+
+def test_notes_todos_that_follow_a_calendar_step_are_tied_to_it_as_they_are_made(monkeypatch):
+    """S-0648's learning case: a run that made to-dos with no tie for what follows a meeting fails; tied, it passes."""
+    case = case_of(DEMO_B, "notes-todos-are-tied-to-the-step-they-follow")
+    assert run_edited(monkeypatch, DEMO_B, case["id"]).passed
+    untied = [{k: v for k, v in op.items() if k not in ("event", "due_at_event")} for op in case["stub_answer"]["ops"]]
+    assert not run_edited(monkeypatch, DEMO_B, case["id"], stub_answer={**case["stub_answer"], "ops": untied}).passed

@@ -98,4 +98,43 @@ test.describe("Report a problem", () => {
     await expect(dialog).toHaveCount(0);
     expect((await reports(page)).received.length).toBe(before);
   });
+
+  test("the alpha numbers are shown on this computer, and sharing them sends exactly the previewed text only after Send", async ({ page }) => {
+    const problems: string[] = [];
+    collectProblems(page, problems);
+    const before = (await reports(page)).received.length;
+    await page.goto("?token=e2e-token");
+    await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
+    await page.getByRole("button", { name: "Help" }).click();
+    await page.getByRole("menuitem", { name: "Your alpha numbers" }).click();
+    const numbers = page.getByRole("dialog", { name: "Your alpha numbers" });
+    await expect(numbers).toBeVisible();
+    await expect(numbers.getByText(/^Days used: \d+ of \d+$/)).toBeVisible();
+    await expect(numbers.getByText(/^Cost per day: /)).toBeVisible();
+    await expect(numbers.getByText(/^Corrections per day: /)).toBeVisible();
+    await expect(numbers.getByText(/^Drafts sent as written: \d+\. Edited first: \d+\.$/)).toBeVisible();
+    await expect(numbers.getByText(/^Time from install to a first result: /)).toBeVisible();
+    await checkAccessibility(page);
+    // Looking at the numbers sends nothing.
+    expect((await reports(page)).received).toHaveLength(before);
+
+    await numbers.getByRole("button", { name: "Share these with the makers" }).click();
+    const dialog = page.getByRole("dialog", { name: "Report a problem" });
+    await expect(dialog).toBeVisible();
+    const preview = dialog.locator("textarea[readonly]");
+    await expect(preview).toHaveValue(/My numbers from the alpha/);
+    await expect(preview).toHaveValue(/Days used: \d+ of \d+/);
+    const shown = await preview.inputValue();
+    expect((await reports(page)).received).toHaveLength(before);
+
+    await dialog.getByRole("button", { name: "Send" }).click();
+    await expect(page.getByText("Sent. Thank you: the makers have your report.")).toBeVisible();
+    const { received } = await reports(page);
+    expect(received).toHaveLength(before + 1);
+    const got = received[before];
+    expect(got.words).toContain("Days used:");
+    // What the form received is the previewed words, first, then the lines the preview adds.
+    expect(shown.startsWith(got.words)).toBe(true);
+    expect(problems).toEqual([]);
+  });
 });

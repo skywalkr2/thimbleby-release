@@ -1,0 +1,42 @@
+# The carriers whose public tracking page the app can open for a parcel and read for its arrival day (design 6.19 and 7.7,
+# "Deliveries"). This folder is the app's named place for public-service data: the names and public addresses of real
+# businesses whose public services everyone uses; core code never names them, only this data does. Each entry:
+#   id:     what a setting names the carrier by (`ui.today.delivery_carriers_extra`; an entry with a shipped id replaces it).
+#   words:  words of the carrier's name as a mail writes it (capitals and the order of the words don't matter); a mail's
+#           carrier that holds all the words of an entry is that carrier.
+#   page:   the carrier's public tracking page for one parcel, as a web address without its https:// start (the app adds it
+#           and shows the page with its real domain), with {number} where the tracking number goes. Its host is the only
+#           place the arrival-day lookup reaches for that carrier.
+# The core's code and wording never name a carrier: they read this file, and a workspace adds entries of its own. A
+# parcel whose carrier is in no entry shows the carrier's name and no link; the tracking number itself is never shown.
+carriers:
+  - id: ups
+    words: [ups]
+    page: www.ups.com/track?tracknum={number}
+  - id: ups-long
+    words: [united, parcel, service]
+    page: www.ups.com/track?tracknum={number}
+  - id: fedex
+    words: [fedex]
+    page: www.fedex.com/fedextrack/?trknbr={number}
+  - id: fedex-long
+    words: [federal, express]
+    page: www.fedex.com/fedextrack/?trknbr={number}
+  - id: usps
+    words: [usps]
+    page: tools.usps.com/go/TrackConfirmAction?tLabels={number}
+  - id: usps-long
+    words: [united, states, postal]
+    page: tools.usps.com/go/TrackConfirmAction?tLabels={number}
+  - id: dhl
+    words: [dhl]
+    page: www.dhl.com/global-en/home/tracking/tracking-express.html?submit=1&tracking-id={number}
+  - id: royal-mail
+    words: [royal, mail]
+    page: www.royalmail.com/track-your-item#/tracking-results/{number}
+  - id: canada-post
+    words: [canada, post]
+    page: www.canadapost-postescanada.ca/track-reperage/en#/search?searchFor={number}
+  - id: australia-post
+    words: [australia, post]
+    page: auspost.com.au/mypost/track/#/details/{number}

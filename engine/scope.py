@@ -16,7 +16,7 @@ from engine.ops import ActionAddOp, OpModel, QuestionAddOp
 from engine.records import PROJECT_ROLES
 
 #: The checks that return an item once and hold it if it comes back, whoever the item reaches.
-HELD_LINTS = frozenset({"watched-project", "other-team-item", "stance", "understand-tracks"})
+HELD_LINTS = frozenset({"watched-project", "other-team-item", "stance", "understand-tracks", "chase-too-soon"})
 #: The part a person has on a project that gives them none.
 DEFAULT_ROLE = "run"
 
@@ -46,7 +46,11 @@ def findings(op: OpModel, view: Any, people: Any, language: Any, project_id: str
         resolved = [people.resolve(name) for name in op.owners]
         others = any(r.status != "ok" or r.person != pm for r in resolved)
         noun = "an action"
-    if others and role_of(view, project_id, pm) == "watch":
+    # On work someone else runs, only a real problem still goes: a mistake, an apparent contradiction with a recorded
+    # decision or fact, which `stance_findings` already requires both sides of. A date, a timeline or a status is
+    # never asked of anyone there.
+    asks_a_problem = isinstance(op, QuestionAddOp) and op.asks_about == "mistake"
+    if others and role_of(view, project_id, pm) == "watch" and not asks_a_problem:
         name = view.get("project", project_id).data["name"]
         return [
             (
@@ -155,3 +159,26 @@ def stance_findings(op: OpModel, view: Any, people: Any, steward: Any) -> list[t
     if op.asks_about == "mistake" and len(op.links) < 2:
         return [("stance", "a possible mistake links both sides: what it contradicts and where it was said")]
     return []
+
+
+def chase_findings(
+    op: OpModel, view: Any, people: Any, timing: Any, received: Any, today: Any
+) -> list[tuple[str, str]]:
+    """A question to someone else that chases a date (`asks_about` is date) waits for its time: it is returned while the
+    input it comes from is newer than the chase delay (`ui.followups.question_after_days`), so a commitment read from
+    a note stays a fact until it has had its days. Nothing else is looked at, and an input of unknown age is let
+    through."""
+    if not isinstance(op, QuestionAddOp) or op.asks_about != "date" or received is None:
+        return []
+    resolved = people.resolve(op.to)
+    if resolved.status == "ok" and resolved.person == people.pm:
+        return []
+    if (today - received).days >= timing.question_after_days:
+        return []
+    return [
+        (
+            "chase-too-soon",
+            f"this asks about a date from something that came in less than {timing.question_after_days} days ago: "
+            "record what was said as a fact; it is chased only after it has had its days with no word",
+        )
+    ]

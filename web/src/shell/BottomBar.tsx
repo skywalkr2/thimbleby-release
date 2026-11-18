@@ -42,6 +42,8 @@ export function BottomBar(props: {
   onFeedback: () => void;
   /** Opens Report a problem; absent where no report address is set. */
   onReport?: () => void;
+  /** Opens the person's alpha numbers. */
+  onAlpha?: () => void;
   onOpenGuide: () => void;
 }) {
   const { t } = useWords();
@@ -137,6 +139,12 @@ export function BottomBar(props: {
               <Icon name="chat" />
               {t("feedback.open")}
             </button>
+            {props.onAlpha && (
+              <button type="button" className={styles.link} onClick={later(props.onAlpha)}>
+                <Icon name="grid" />
+                {t("alpha.open")}
+              </button>
+            )}
             {props.onReport && (
               <button type="button" className={styles.link} onClick={later(props.onReport)}>
                 <Icon name="alert" />

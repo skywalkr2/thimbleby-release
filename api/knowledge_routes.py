@@ -22,6 +22,7 @@ from api.schemas import (
     LearnedView,
     Ok,
     OverlapView,
+    PersonOfferView,
     ProposalsView,
     ProposalView,
     ReadVersion,
@@ -30,7 +31,7 @@ from api.schemas import (
     RuleReviewView,
     RuleView,
 )
-from engine import catch_up, knowledge, knowledge_use, proposals
+from engine import catch_up, contact_tally, knowledge, knowledge_use, person_look, proposals
 from engine import learned as card_learning
 from engine.applier import apply_as_person
 from engine.config import Config
@@ -285,6 +286,46 @@ def build_knowledge_router(cfg: Config, store: Store, events: Events, worker: Wo
         links = {kind: origins(view, kind, [p.stored.id for p in found if p.kind == kind]) for kind in proposals.KINDS}
         return [_proposal(view, p, links[p.kind].get(p.stored.id), batch, cfg.dispatch.knowledge) for p in found]
 
+    def person_offers() -> list[PersonOfferView]:
+        view = store.read()
+        served = {c.address: c.sides for c in contact_tally.tally(store, cfg)}
+        out = []
+        for o in person_look.waiting_offers(store):
+            names = [str(p.data["name"]) for s in served.get(o.data["address"], ()) if (p := view.get("project", s))]
+            out.append(
+                PersonOfferView(
+                    id=o.id,
+                    version=o.version,
+                    name=o.data["name"],
+                    address=o.data["address"],
+                    why=o.data["why"],
+                    relation=o.data.get("relation"),
+                    sides=names,
+                    count=o.data["from_them"] + o.data["to_them"],
+                )
+            )
+        return out
+
+    @r.post("/knowledge/people/{offer_id}/keep")
+    def keep_person(offer_id: str) -> Applied:
+        """Keep someone the assistant offered: they are added to the people on file with the relation the offer gave and
+        the sides of the accounts their mail came from, and the offer is settled, in one change that Undo takes back."""
+        try:
+            changeset = person_look.keep(store, cfg, offer_id)
+        except (StoreError, ValueError) as err:
+            raise HTTPException(status_code=409, detail=str(err)) from None
+        events.changed()
+        return Applied(changeset=changeset)
+
+    @r.post("/knowledge/people/{offer_id}/not-this-one")
+    def leave_person_out(offer_id: str) -> Applied:
+        """ "Not this one": the offer is left out, never made again, and a signal records it; Undo puts it back."""
+        changeset = person_look.dismiss(store, cfg, offer_id)
+        if changeset is None:
+            raise HTTPException(status_code=409, detail="That offer no longer stands.")
+        events.changed()
+        return Applied(changeset=changeset)
+
     @r.get("/knowledge/proposals")
     def waiting_proposals() -> ProposalsView:
         """What the assistant learned that waits for the person, oldest first, each tagged by where it came from
@@ -301,6 +342,7 @@ def build_knowledge_router(cfg: Config, store: Store, events: Events, worker: Wo
         for p in found:
             origins_count[p.came_from] = origins_count.get(p.came_from, 0) + 1
         return ProposalsView(
+            people=person_offers(),
             proposals=views(view, found, "daily"),
             origins=origins_count,
             expired=proposals.expired_since(view, proposals.last_reviewed(view)),

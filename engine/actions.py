@@ -49,6 +49,7 @@ ACTION_CORE_OPS = (
         "week.goals",
         "area.offer",
         "person.offer",
+        "person.keep_offer",
     }
     - (ACT_OPS - {"act.draft"})
 )

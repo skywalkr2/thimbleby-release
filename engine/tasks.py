@@ -282,6 +282,18 @@ TASKS: dict[str, TaskKind] = {
         max_ops=1,
         requires_ops=("week.read",),
     ),
+    # A delivery's arrival day read from its carrier's public tracking page (engine/delivery_arrival.py): the page's
+    # words in as outside content, one event.add for that delivery out, the day quoted from the page. Low-cost tier.
+    "read-arrival": TaskKind(
+        name="read-arrival",
+        ops=("event.add",),
+        prompt="read-arrival",
+        playbook="read-arrival",
+        label="Reading a delivery's arrival day from the carrier's page",
+        on="event",
+        defaults={"max_output": 400, "expected_output": 150},
+        max_ops=1,
+    ),
     # The goals offered for the coming week (engine/week_goals.py): the person's due to-dos and promises, the week's
     # calendar and the goals they kept before in, an offer of goals out, kept on the record for the week.
     "monday-goals": TaskKind(

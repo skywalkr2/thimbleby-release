@@ -46,3 +46,6 @@ skills:
   - id: recording-only-what-matters
     label: Recording only what matters
     description: Leaves small talk and mail the person set aside unrecorded.
+  - id: spot-contradicting-rule
+    label: Spotting a rule that contradicts another
+    description: Names the active rules a rule the person states cannot live with, so they choose which one wins.

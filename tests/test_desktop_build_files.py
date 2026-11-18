@@ -55,8 +55,8 @@ def test_every_bundled_folder_is_in_the_repository_and_nothing_made_up_is_bundle
         if folder != "web/dist":  # built before a freeze
             assert (REPO / folder).is_dir() and any((REPO / folder).rglob("*")), folder
     assert not any(f.startswith(("workspaces", "plugins/example")) for f in BUNDLED_FOLDERS)
-    # The parcels add-on ships in the installed app, with its data files (carriers, prompts, guidance).
-    assert "plugins/parcels" in BUNDLED_FOLDERS
+    # No add-on is bundled but the kit's templates: the carriers and the arrival-day lookup are the core's own.
+    assert not any(f.startswith("plugins/parcels") for f in BUNDLED_FOLDERS)
     # The folders of non-code files inside `engine/` are all there, so no data file is missing in a frozen app.
     holding = {
         path.parent.relative_to(REPO).parts[:3]
@@ -156,7 +156,7 @@ def test_specs_preserve_resources_and_disable_console(monkeypatch, filename, sys
 def test_the_freeze_looks_for_the_thimbleby_command_and_collects_what_is_loaded_by_name():
     text = (BUILD / "freeze_common.py").read_text()
     assert 'name="thimbleby"' in text and 'name="cockpit"' not in text
-    for package in ("api", "plugins.kit", "plugins.parcels", "uvicorn", "pystray", "webview"):
+    for package in ("api", "plugins.kit", "uvicorn", "pystray", "webview"):
         assert f'"{package}"' in text
     assert "plugins.example" not in text
     # The window library's script files, which put the bridge into each page: without them, nothing in the page can
@@ -571,13 +571,13 @@ def test_the_fresh_install_check_keeps_the_apps_log_and_the_slow_or_failed_reque
     assert "responseEnd > 2000" in spec and "status() >= 400" in spec
 
 
-def test_the_fresh_install_walk_presses_a_button_only_when_it_is_enabled_and_checks_the_bundled_add_ons():
+def test_the_fresh_install_walk_presses_a_button_only_when_it_is_enabled_and_checks_the_add_ons_screen():
     """S-0542 and S-0551: the walk presses a step's button once it is enabled and still on the step it was found on
     (a press on a disabled button landed a step late and waited on a button that had gone), and the check proves the
-    first workspace's bundled add-on is on and the Add-ons screen opens, on both systems."""
+    Add-ons screen opens, on both systems (the app bundles no add-on, S-0535)."""
     spec = (REPO / "web" / "e2e-install" / "fresh-install.spec.ts").read_text()
     assert "toBeEnabled" in spec
-    assert "#settings/addons" in spec and "parcels" in spec and '"Add-ons"' in spec
+    assert "#settings/addons" in spec and '"Add-ons"' in spec and "parcels" not in spec
 
 
 def test_the_mac_session_check_closes_the_window_then_quits_by_the_systems_quit():

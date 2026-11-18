@@ -22,7 +22,8 @@ no less the person's own mail. The lists before it hold the practice to follow, 
 What to suggest, each with the line it rests on:
 - Someone who is a person to the user, not on file: one entry of the "person.offer" op, with their address exactly as
   the line gives it, the name to add them under, and a sentence saying why ("writes to you every week and you reply:
-  likely a colleague or client"), in plain words and only as far as the counts show. Say "likely". Write the user's
+  likely a colleague or client"), in plain words and only as far as the counts show. Say "likely". Give "relation"
+  (a few plain words, "your accountant") only when the counts and the name make it plain, and leave it out otherwise. Write the user's
   own side, never a guess about private life. A person is a person whatever the address looks like: someone who
   writes from a role address (a recruiter at a jobs address), a tradesperson or a small business that writes under a
   company-like name, a name in capitals, or an address with a tag all count when the counts and the name show a

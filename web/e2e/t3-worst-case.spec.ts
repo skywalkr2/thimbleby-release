@@ -142,3 +142,17 @@ test("an item with no name goes by a plain word on Stages, never its id (T3-13)"
   await expect(page.getByText(/^REM-\d+$/)).toHaveCount(0);
   await expect(page.getByText("An item with no name").first()).toBeVisible();
 });
+
+test("the menu's badge beside To-dos is the sum of the two numbers the page says, and the tabs say them (S-0539)", async ({ page }) => {
+  await openScreen(page, "work/open");
+  const menu = await page.getByRole("navigation").getByRole("link", { name: /^To-dos/ }).first().getAttribute("aria-label");
+  const badge = Number(/(\d+) (?:needs|need) you/.exec(menu ?? "")?.[1]);
+  expect(badge).toBeGreaterThan(0);
+  const main = page.locator("main");
+  const head = await main.innerText();
+  const yours = Number(/(\d+) yours/.exec(head)?.[1]);
+  const asked = Number(/(\d+) questions? for you/.exec(head)?.[1]);
+  expect(yours + asked).toBe(badge);
+  await expect(main.getByRole("button", { name: /^To-dos/ })).toContainText(String(yours));
+  await expect(main.getByRole("button", { name: /^Questions/ })).toContainText(String(asked));
+});

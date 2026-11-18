@@ -1164,7 +1164,7 @@ function QueueRow(props: {
           other: heldWords.other,
           menu: [
             ...heldWords.menu,
-            ...(record && props.handlers.onOpenRecord ? [{ id: "change", label: t("queue.held.e.change"), run: () => props.handlers.onOpenRecord?.("action", record) }] : []),
+            ...(record && ask.ask !== "contradiction" && props.handlers.onOpenRecord ? [{ id: "change", label: t("queue.held.e.change"), run: () => props.handlers.onOpenRecord?.("action", record) }] : []),
           ],
         };
       }

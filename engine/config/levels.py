@@ -41,6 +41,8 @@ BASIC: dict[str, str] = {
     "steward.reminders.working_start": "today",
     "steward.reminders.working_end": "today",
     "steward.hold_outside_hours": "today",
+    "watch.mail_read_minutes": "today",
+    "watch.calendar_read_minutes": "today",
     "steward.reminders.quiet_start": "today",
     "steward.reminders.quiet_end": "today",
     "steward.brief.enabled": "today",
@@ -148,6 +150,10 @@ MERGED_ROWS: dict[str, tuple[str, ...]] = {
     "steward.reminders.quiet_start": (
         "steward.reminders.quiet_start",
         "steward.reminders.quiet_end",
+    ),
+    "watch.mail_read_minutes": (
+        "watch.mail_read_minutes",
+        "watch.calendar_read_minutes",
     ),
 }
 
@@ -270,6 +276,10 @@ FILES_ONLY = (
     "watch.older_read_tries",
     "watch.first_headers_days",
     "watch.first_headers_max_items",
+    "watch.arrival_reads_per_day",
+    "watch.arrival_max_parcels",
+    "watch.arrival_page_max_chars",
+    "watch.arrival_page_min_chars",
     "watch.burst_items",
     "watch.stale_after_hours",
     "watch.default_data_level",

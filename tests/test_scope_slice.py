@@ -220,6 +220,67 @@ def test_on_a_watched_project_a_question_to_someone_else_is_returned_then_held(e
     assert [q for q in store.read().list("question") if WATCHED in (q.data.get("projects") or [])] == []
 
 
+def test_on_work_someone_else_runs_a_question_about_a_contradiction_still_goes_but_a_date_question_does_not(env):
+    _, cfg, store = env
+    mate = teammate(cfg)
+    contradiction = question(cfg, mate, WATCHED, asks_about="mistake", links=[LINK, LINK])
+    assert not problems(env, contradiction, "", "watched-project")
+    assert not problems(env, contradiction, "", "stance")
+    for asks in ("date", "other", "decision"):
+        (found,) = problems(env, question(cfg, mate, WATCHED, asks_about=asks), "", "watched-project")
+        assert found.severity == "return" and "record it as a fact" in found.message
+
+
+def _chase(env, days_old: int, project=PLAIN, to=None, **more):
+    """The findings for a question chasing a date, drawn from an input that came `days_old` days ago."""
+    from datetime import timedelta
+
+    _, cfg, store = env
+    came = datetime.fromisoformat(store.clock()) - timedelta(days=days_old)
+    src = source(store, received_at=came)
+    op = question(cfg, to or teammate(cfg), project, asks_about="date", **more)
+    cs = CHANGESET.validate_python({"ops": [op]}, context={"op_models": store.plugins.ops})
+    ctx = Context(
+        store,
+        cfg,
+        People(store, cfg),
+        tuple(store.plugins.ops),
+        Inputs(request(store, "input", source=src), src, "", "", "untrusted"),
+    )
+    return [p for p in check(cs, ctx) if p.check == "chase-too-soon"]
+
+
+def test_a_date_question_drawn_from_something_a_day_old_is_returned_and_one_that_has_had_its_days_is_not(env):
+    _, cfg, _ = env
+    (found,) = _chase(env, 1)
+    assert found.severity == "return" and "record what was said as a fact" in found.message
+    assert _chase(env, cfg.ui.followups.question_after_days) == []
+    assert _chase(env, 30) == []
+
+
+def test_a_question_that_is_not_about_a_date_or_is_for_the_person_is_never_held_back_for_its_age(env):
+    _, cfg, store = env
+    from datetime import timedelta
+
+    came = datetime.fromisoformat(store.clock()) - timedelta(days=1)
+    src = source(store, received_at=came)
+    mate = teammate(cfg)
+    ctx = Context(
+        store,
+        cfg,
+        People(store, cfg),
+        tuple(store.plugins.ops),
+        Inputs(request(store, "input", source=src), src, "", "", "untrusted"),
+    )
+    for op in (
+        question(cfg, mate, PLAIN, asks_about="mistake", links=[LINK, LINK]),
+        question(cfg, mate, PLAIN, asks_about="decision"),
+        question(cfg, pm_record(cfg), PLAIN, asks_about="date"),
+    ):
+        cs = CHANGESET.validate_python({"ops": [op]}, context={"op_models": store.plugins.ops})
+        assert not [p for p in check(cs, ctx) if p.check == "chase-too-soon"]
+
+
 def test_on_a_watched_project_facts_notes_calendar_entries_and_the_persons_own_items_apply(env):
     _, cfg, store = env
     mate = teammate(cfg)

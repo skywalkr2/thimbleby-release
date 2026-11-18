@@ -1,0 +1,49 @@
+id: notes-todos-are-tied-to-the-step-they-follow
+title: To-dos made from a meeting's notes that follow a step on the calendar are tied to that entry when they are made
+skills: [dates]
+received: '2026-11-17'
+project: PRJ-1
+given:
+- kind: event
+  id: EVT-1
+  fields:
+    title: Thursday's meeting
+    start: '2026-11-19T14:00:00+00:00'
+    end: '2026-11-19T15:00:00+00:00'
+    project: PRJ-1
+    trust: trusted
+pasted: 'Plan from Tuesday: after Thursday''s meeting, Avery sends the corrected spine file and Maya chases the printer for the proof.'
+expect:
+- op: action.add
+  owners:
+  - PER-1
+  text_has:
+  - spine
+  due_event: EVT-1
+- op: action.add
+  owners:
+  - PER-2
+  text_has:
+  - printer
+  due_event: EVT-1
+stub_answer:
+  summary: Two to-dos follow Thursday's meeting.
+  ops:
+  - op: action.add
+    text: Send the corrected spine file
+    owners:
+    - Avery Lane
+    event: EVT-1
+    due_at_event: true
+    project: PRJ-1
+    evidence:
+      quote: after Thursday's meeting, Avery sends the corrected spine file
+  - op: action.add
+    text: Chase the printer for the proof
+    owners:
+    - Maya Okafor
+    event: EVT-1
+    due_at_event: true
+    project: PRJ-1
+    evidence:
+      quote: Maya chases the printer for the proof

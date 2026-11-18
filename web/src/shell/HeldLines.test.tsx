@@ -694,6 +694,15 @@ test("a source line for a kind of failure with no verb of its own still starts w
   expect(await screen.findByRole("region", { name: "Connection not read" })).toHaveTextContent(/Check Work mail: not read since/);
 });
 
+test("a failing account's line never says its address, only its connection's wording", async () => {
+  show([unreadSource({ subject: "robin.hart@example.com", count: 2 })], {
+    "GET watch": () => [{ id: "work-mail", label: "Work mail", connector: "k", connector_label: "Example mail", account: "robin.hart@example.com", enabled: true, reads: ["mail"], every_minutes: 10, items: 0, failures: 0, problem: null }],
+  });
+  const row = await screen.findByRole("region", { name: "Connection not read" });
+  await waitFor(() => expect(row).toHaveTextContent(/^Sign in to Example mail again/));
+  expect(row).not.toHaveTextContent(/robin|@/);
+});
+
 const workAccess = (over: Partial<S["QueueLineView"]> = {}) => line("work_access", { key: "work_access:second", group: "decide", account: "second", ...over });
 
 test("an account the person said Not now about is a line that starts with Let, names it and has one button, Allow", async () => {

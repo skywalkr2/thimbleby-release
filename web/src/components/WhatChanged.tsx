@@ -54,6 +54,8 @@ import { EmptyState } from "../ui/EmptyState";
 import { PageHeader } from "../ui/PageHeader";
 import { TabStrip } from "../ui/TabStrip";
 import { Actions } from "../ui/Actions";
+import { NarrowRule } from "./NarrowRule";
+import { ReadBack } from "./ReadBack";
 import { RowList, DetailItem } from "../ui/RowList";
 import { ItemList, Item } from "../ui/ItemList";
 import { ExpandableRow, RowItem } from "../ui/Row";
@@ -1073,6 +1075,7 @@ export function OpRow(props: { op: S["OpView"]; cs: S["ChangesetView"]; source: 
     menu.push({ id: "source", label: t(showSource ? "op.hide_source" : "op.show_source"), run: () => setShowSource((v) => !v) });
 
   if (heldWords && !history) for (const extra of heldWords.menu) menu.push(extra);
+  if (heldWords?.narrow && !history) menu.push({ id: "narrow", ...heldWords.narrow });
   useRowKeys(ref, { primary: op.status === "held" && !ask && !history ? (heldWords ? heldWords.primary.run : () => void release()) : undefined });
 
   const labelOf = useFieldLabel();
@@ -1130,6 +1133,16 @@ export function OpRow(props: { op: S["OpView"]; cs: S["ChangesetView"]; source: 
       {heldWords?.noting && heldWords.other && (
         <div className="full">
           <NoteBox sends={[{ label: heldWords.other.label, run: heldWords.declineWithNote }]} onClose={heldWords.closeNote} />
+        </div>
+      )}
+      {heldWords?.narrowing && !history && (
+        <div className="full">
+          <NarrowRule back={op.read_back} onSave={heldWords.saveNarrow} onCancel={heldWords.closeNarrow} />
+        </div>
+      )}
+      {op.read_back && op.status !== "undone" && op.status !== "refused" && (
+        <div className="full">
+          <ReadBack back={op.read_back} />
         </div>
       )}
       {op.evidence && (

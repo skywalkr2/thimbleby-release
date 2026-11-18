@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from engine import knowledge, learn
+from engine import knowledge, learn, rule_contradiction
 from engine.legacy_names import private_dir
 from engine.records import REGISTRY
 from engine.state_file import changing, write_whole
@@ -222,8 +222,8 @@ def move_held_rules(store: Any, cfg: Any, now: datetime) -> list[str]:
         for outcome in changeset.data.get("ops", []):
             if outcome.get("status") != "held" or (outcome.get("op") or {}).get("op") != "rule.add":
                 continue
-            if outcome.get("question"):
-                continue
+            if outcome.get("question") or rule_contradiction.is_held_for(outcome):
+                continue  # a question for the person to answer, or a rule that waits on which one wins
             try:
                 op = CHANGESET.validate_python({"ops": [outcome["op"]]}, context={"op_models": store.plugins.ops}).ops[
                     0

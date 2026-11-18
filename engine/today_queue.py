@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from engine import (
+    answer_hold,
     areas,
     attention_learning,
     called_off,
@@ -35,6 +36,7 @@ from engine import (
     reminder_lines,
     reply_lines,
     review_batches,
+    rule_contradiction,
     running,
     sent_version,
     sides,
@@ -660,6 +662,7 @@ def _everything(
                 reporter=outcome.get("reporter"),
                 choice=any(p.get("check") == endings.CHOICE_CHECK for p in outcome.get("problems") or []),
                 cfg=cfg,
+                contradiction=rule_contradiction.is_held_for(outcome),
             ),
             untrusted=cs.get("trust") == "untrusted",
             since=str(req.data.get("created_at") or ""),
@@ -724,6 +727,8 @@ def _everything(
         d = q.data
         if d.get("to") != people.pm or people.pm is None or d.get("status") != "open":
             continue
+        if answer_hold.is_put_off(reader, d, today, zone(cfg)):
+            continue  # the person put it off to a later day: it is back on that day
         resolves = d.get("resolves") or {}
         about = resolves.get("kind")
         line = Line(key=f"question:{q.id}", group="decide", kind="question", text=d["title"], question=q.id)
@@ -1841,19 +1846,25 @@ def _everything(
     listed = catch_up.proposal_ids(reader, state)
     waiting = proposals(reader, alike=cfg.dispatch.knowledge.discard_similarity)
     daily = [p for p in waiting if p.stored.id not in listed]
-    if daily:
+    from engine import person_look
+
+    offered = person_look.waiting_offers_in(reader)
+    if daily or offered:
         origins: dict[str, int] = {}
         for p in daily:
             origins[p.came_from] = origins.get(p.came_from, 0) + 1
+        if offered:
+            origins["person"] = len(offered)
+        first = str(daily[0].stored.data.get("learned_at") or "") if daily else str(offered[0].data["offered_at"])
         lines.append(
             Line(
                 key="learned",
                 group="review",
                 kind="learned",
-                count=len(daily),
+                count=len(daily) + len(offered),
                 origins=origins,
                 expired=expired_since(reader, last_reviewed(reader)),
-                since=str(daily[0].stored.data.get("learned_at") or ""),
+                since=first,
             )
         )
     on_list = [p for p in waiting if p.stored.id in listed]

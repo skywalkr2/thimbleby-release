@@ -332,6 +332,7 @@ class Worker:
         self._backups: threading.Thread | None = None
         self._sync: threading.Thread | None = None
         self._jobs: threading.Thread | None = None
+        self._arrivals_read_at: datetime | None = None
         self._model_watch: threading.Thread | None = None
         self._catalog_read: threading.Thread | None = None
         self._update_look: threading.Thread | None = None
@@ -1081,6 +1082,25 @@ class Worker:
             self.events.changed()
         return made
 
+    def read_arrivals_if_due(self) -> list[str]:
+        """Read the carrier's public page for each delivery with no arrival day, as often a day as `watch.
+        arrival_reads_per_day` says, and queue the assistant's reading of what it finds (`engine.delivery_arrival`).
+        Returns the requests made."""
+        from engine import delivery_arrival
+
+        now = self.now()
+        if self.cfg.watch.arrival_reads_per_day <= 0:  # the person turned the carriers' pages off
+            return []
+        every = timedelta(minutes=max(24 * 60 // self.cfg.watch.arrival_reads_per_day, 5))
+        if self._arrivals_read_at is not None and now - self._arrivals_read_at < every:
+            return []
+        self._arrivals_read_at = now
+        made = delivery_arrival.lookup(self.store, self.cfg, now)
+        if made:
+            self.events.changed()
+            self.poke()
+        return made
+
     def ask_about_meetings(self) -> list[str]:
         """Ask about each date of a meeting the person runs that has no agenda or needs someone who is away (design
         6.32); every date once. Returns the ids of the questions made."""
@@ -1539,6 +1559,11 @@ class Worker:
         except (Exception, SystemExit):  # asked again the next time round; nothing here may stop the thread
             log.exception("queueing the reading of areas of life failed")
             self._problem("queueing the reading of areas of life failed")
+        try:
+            self.read_arrivals_if_due()
+        except (Exception, SystemExit):  # asked again the next time round; nothing here may stop the thread
+            log.exception("reading a carrier's page for a delivery failed")
+            self._problem("reading a carrier's page for a delivery failed")
         try:
             self.ask_about_meetings()
         except (Exception, SystemExit):  # asked again the next time round; nothing here may stop the thread

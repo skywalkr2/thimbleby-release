@@ -5,8 +5,11 @@ A plain entry whose title and an open to-do's words contain one another, on the 
 and decides nothing. The person's yes ("Tie it") makes the tie, the to-do's `due_event`, as their own change with Undo;
 "Not this" records that the pair is not the one, so it is never proposed again. Only a tie moves the to-do's date when
 the entry moves, or tells it the entry was called off (`engine.applier.follow_event`, `engine.source_entries`). A to-do
-the assistant makes at an entry by its own op is tied from the start, and the assistant can tie one itself with
-`action.tie` (the applier uses `tied_fields`), as a run that sees the proposal or the words that show it."""
+the assistant makes at an entry by its own op is tied from the start. When due words follow one calendar entry still
+ahead ("after Thursday's meeting", `followed`) the applier points the assistant at the entry, which ties it or not; when
+that entry is called off, the other open to-dos from the same notes whose words follow it are tied and held with it
+(`engine.called_off.sync`). The assistant can tie one itself with `action.tie` (the applier uses `tied_fields`), as a
+run that sees the proposal or the words that show it."""
 
 from __future__ import annotations
 
@@ -15,6 +18,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 from engine.applier import apply_as_person
+from engine.due_phrases import after_marker, named_entry, names_title
+from engine.language_words import language_words
 from engine.storage import StoreError
 
 KIND = "tie"
@@ -68,6 +73,30 @@ def view_of(view: Any, action: Any) -> dict[str, Any] | None:
     if entry is None:
         return None
     return {"entry": entry.id, "title": entry.data["title"], "day": str(entry.data["start"])[:10]}
+
+
+def _step_words(cfg: Any, words: str | None) -> str | None:
+    """The words after the first of the language's condition markers that point at a step ("after", "before", "once":
+    the hold and before words), or None when the due words have none."""
+    from engine.config.schema import LanguageFile
+
+    settings = cfg.language if cfg is not None else LanguageFile()
+    markers = [*language_words(settings, "due_hold_words"), *language_words(settings, "due_before_words")]
+    return after_marker(" ".join((words or "").split()), markers)
+
+
+def followed(view: Any, cfg: Any, words: str | None, today: str) -> Any | None:
+    """The one calendar entry still ahead that a to-do's due words follow ("after Thursday's meeting", "before the print
+    sync"), or None when they name none or several. A rule on the words (whole title, in order), so a to-do made from
+    notes is tied to the step it follows when it is made, not found out when that step is called off."""
+    named = _step_words(cfg, words)
+    return named_entry(view.list("event"), named, today) if named else None
+
+
+def follows(cfg: Any, words: str | None, entry: Any) -> bool:
+    """Whether a to-do's due words follow this entry, called off or not."""
+    named = _step_words(cfg, words)
+    return bool(named) and names_title(named, str(entry.data["title"]))
 
 
 def tied_fields(entry: Any) -> dict[str, Any]:

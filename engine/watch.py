@@ -38,6 +38,8 @@ from engine.connectors import (
     ConnectorContext,
     ConnectorError,
     SourceItem,
+    declared_reads,
+    reads,
     skipped_counts,
     unreadable_dicts,
 )
@@ -184,6 +186,15 @@ def calendar_colors(cfg: Any, declared: Any) -> dict[str, str]:
     return out
 
 
+def interval_minutes(store: Any, cfg: Any, source: Any) -> int:
+    """How often a source is read, in minutes: its own interval when one was set by hand, else the mail or calendar
+    interval the settings give, whatever add-on made the source. A source that reads neither uses the mail one."""
+    if source.every_minutes:
+        return int(source.every_minutes)
+    kinds = reads(source.connector, declared_reads(connectors(store)))
+    return int(cfg.watch.calendar_read_minutes if kinds == ["calendar"] else cfg.watch.mail_read_minutes)
+
+
 def unread(store: Any, cfg: Any, source: Any, now: datetime) -> Unread | None:
     """Whether a source that is on has been failing for longer than `watch.unread_gap_factor` times its own read
     interval, counted from its first failed read in the current run of failures (so one failed read after a long quiet
@@ -206,7 +217,7 @@ def unread(store: Any, cfg: Any, source: Any, now: datetime) -> Unread | None:
             break
         began = earlier
     if now - datetime.fromisoformat(str(began.data["started_at"])) <= timedelta(
-        minutes=source.every_minutes * cfg.watch.unread_gap_factor
+        minutes=interval_minutes(store, cfg, source) * cfg.watch.unread_gap_factor
     ):
         return None
     kind = failing.data.get("error_kind") or ""
@@ -240,7 +251,7 @@ def due(store: Any, cfg: Any, now: datetime) -> list[str]:
             continue
         last = last_run(store, source.id)
         started = datetime.fromisoformat(str(last.data["started_at"])) if last else None
-        if started is not None and now - started < timedelta(minutes=source.every_minutes):
+        if started is not None and now - started < timedelta(minutes=interval_minutes(store, cfg, source)):
             continue
         retry_at = last.data.get("retry_at") if last else None
         if retry_at and now < datetime.fromisoformat(str(retry_at)):
@@ -394,7 +405,7 @@ def _failed_read(store: Any, cfg: Any, source: Any, err: ConnectorError, now: da
         # An answer over the limit says so in the app's own words, never the service's text or the size.
         err.detail = word(None, "read.failed.too_large")
     outcome = {"offline": "offline", "throttled": "throttled"}.get(err.kind, "failed")
-    wait = err.retry_after if err.retry_after is not None else source.every_minutes * 60
+    wait = err.retry_after if err.retry_after is not None else interval_minutes(store, cfg, source) * 60
     _record(
         store,
         source.id,

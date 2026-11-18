@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from engine import new_terms
+from engine import answer_hold, new_terms
 from engine.blocked import blocked_actions, holds_up, standing_hold, waits_on_person
 from engine.firm_due import firm_due
 from engine.followups import sections
@@ -243,6 +243,8 @@ def top_priorities(store: Any, cfg: Any, now: datetime) -> TopPriorities:
         d = q.data
         if d.get("to") != pm or d.get("status") != "open" or new_terms.term_of(q) is not None:
             continue  # a question about a word is one Review line on Today, never a priority
+        if answer_hold.is_put_off(reader, d, today, zone(cfg)):
+            continue  # put off to a later day by the person
         entries = reader.ledger(kind="question", record_id=q.id)
         raised = _local_day(str(entries[0]["at"]), zone(cfg)) if entries else today
         project = (d.get("projects") or [None])[0]

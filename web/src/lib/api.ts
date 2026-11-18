@@ -319,6 +319,7 @@ export const api = {
   /** The last failures Send feedback may add to a message, already masked by the server. */
   slowScreenReport: (screen: string) => call<S["SlowScreenReport"]>("GET", `slow-screens/${screen}/report`),
   feedbackProblems: () => call<S["FeedbackProblems"]>("GET", "feedback/problems"),
+  alphaMeasures: () => call<S["AlphaNumbers"]>("GET", "alpha-measures"),
   reportFacts: () => call<S["ReportFacts"]>("GET", "report/facts"),
   sendReport: (body: S["ReportSend"]) => call<S["ReportSent"]>("POST", "report/send", body),
   /** Save, or correct, the person's own count for a day: what Undo takes comes back as `previous`. */
@@ -499,6 +500,10 @@ export const api = {
   catchUp: () => call<S["CatchUpView"]>("GET", "knowledge/catch-up"),
   /** The go for the learning runs held for the catch-up list: they all start. */
   catchUpGo: () => call<S["CatchUpStarted"]>("POST", "knowledge/catch-up/go"),
+  /** Keeps someone the assistant offered: they are added to People, with the offer settled, in one change. */
+  keepPerson: (offer: string) => call<S["Applied"]>("POST", `knowledge/people/${id(offer)}/keep`),
+  /** "Not this one" on an offered person: left out for good; the answer is the change that Undo takes back. */
+  leavePersonOut: (offer: string) => call<S["Applied"]>("POST", `knowledge/people/${id(offer)}/not-this-one`),
   keepKnowledge: (entry: string, body: S["KnowledgeKeep"]) => call<S["Applied"]>("POST", `knowledge/${id(entry)}/keep`, body),
   discardKnowledge: (entry: string, readVersion: number, reason?: string) =>
     call<S["Applied"]>("POST", `knowledge/${id(entry)}/discard`, { read_version: readVersion, reason: reason || null }),
@@ -561,6 +566,10 @@ export const api = {
   declineOp: (cs: string, index: number, note?: string) =>
     call<S["Noted"]>("POST", `changesets/${id(cs)}/ops/${index}/decline`, note ? { note } : undefined),
   /** Take back a yes to a held question: it is undone and the question waits for the person again. */
+  /** Which rule wins when a rule the person stated contradicts one in force: the new one (the old is retired in a change of
+   * its own, returned as `retired`), the existing one, or both (with the new rule's target narrowed when `applies_to` is given). */
+  ruleAnswer: (cs: string, index: number, choice: "new" | "existing" | "both", applies_to?: S["Scope"]) =>
+    call<S["RuleAnswered"]>("POST", `changesets/${id(cs)}/ops/${index}/rule-answer`, { choice, applies_to: applies_to ?? null }),
   unreleaseOp: (cs: string, index: number) => call<S["UndoReport"]>("POST", `changesets/${id(cs)}/ops/${index}/unrelease`),
   undeclineOp: (cs: string, index: number) => call<S["Ok"]>("POST", `changesets/${id(cs)}/ops/${index}/undecline`),
   addPerson: (body: S["PersonIn"]) => call<S["Created"]>("POST", "people", body),

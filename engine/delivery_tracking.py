@@ -1,11 +1,11 @@
 """The public tracking page of a parcel's carrier (design 7.7, "Deliveries").
 
-The carriers the app knows are a shipped list (`engine/defaults/delivery_carriers.yaml`): each has the words of its
-name as a mail writes it and its public tracking page, with the tracking number's place marked. A workspace adds
-carriers of its own (`ui.today.delivery_carriers_extra`, an entry with a shipped id replacing it), and an add-on may
-ship its own list (`provides.delivery_carriers`). A delivery whose carrier is in the list gets a link to that page;
-the tracking number is only ever inside that address, never shown as text. Nothing here names a carrier: the names are
-the file's."""
+The carriers the app knows are a shipped list (`engine/defaults/public_services/delivery_carriers.yaml`): each has the
+words of its name as a mail writes it and its public tracking page, with the tracking number's place marked. A
+workspace adds carriers of its own (`ui.today.delivery_carriers_extra`, an entry with a shipped id replacing it), and
+an add-on may ship its own list (`provides.delivery_carriers`). A delivery whose carrier is in the list gets a link to
+that page; the tracking number is only ever inside that address, never shown as text. Nothing here names a carrier:
+the names are the file's."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from urllib.parse import quote
 
 from engine.yaml_load import load_yaml
 
-CARRIERS_FILE = Path(__file__).parent / "defaults" / "delivery_carriers.yaml"
+CARRIERS_FILE = Path(__file__).parent / "defaults" / "public_services" / "delivery_carriers.yaml"
 NUMBER = "{number}"
 _WORDS = re.compile(r"[^\W_]+")
 
@@ -38,6 +38,16 @@ def known(cfg: Any, added: Any = ()) -> list[Any]:
     base += [c for c in added if c.id not in taken]
     own = {c.id: c for c in cfg.ui.today.delivery_carriers_extra}
     return [*(own.pop(c.id, c) for c in base), *own.values()]
+
+
+def host_of(page: str) -> str:
+    """The host of a carrier's page address (written without its https:// start)."""
+    return page.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0].lower()
+
+
+def hosts(cfg: Any, added: Any = ()) -> list[str]:
+    """The hosts of every known carrier's tracking page: the only places the arrival-day lookup may reach."""
+    return sorted({host_of(entry.page) for entry in known(cfg, added) if entry.page})
 
 
 def _words(text: str) -> set[str]:

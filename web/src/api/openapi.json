@@ -5221,6 +5221,95 @@
         "title": "AlikeView",
         "type": "object"
       },
+      "AlphaNumbers": {
+        "description": "GET /api/alpha-measures: the five numbers of the workspace's first week, worked out from the records on this\ncomputer. Nothing here names a person or holds record text, and nothing is sent.",
+        "properties": {
+          "complete": {
+            "description": "A whole week has passed, so the numbers are the first week's.",
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "corrections_per_day": {
+            "description": "The person's corrections of the assistant's work per day.",
+            "title": "Corrections Per Day",
+            "type": "number"
+          },
+          "cost_per_day": {
+            "description": "What the assistant's work cost per day, in US dollars; 0 with no AI use.",
+            "title": "Cost Per Day",
+            "type": "number"
+          },
+          "days_so_far": {
+            "description": "How many days are counted, at most seven.",
+            "title": "Days So Far",
+            "type": "integer"
+          },
+          "days_used": {
+            "description": "Days in the period on which the person did something of their own.",
+            "title": "Days Used",
+            "type": "integer"
+          },
+          "first_result_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Minutes from the first record to the first AI result the person could see; none until then.",
+            "title": "First Result Minutes"
+          },
+          "sent_as_written": {
+            "description": "Drafts the assistant made that the person said yes to unchanged.",
+            "title": "Sent As Written",
+            "type": "integer"
+          },
+          "sent_edited": {
+            "description": "Drafts the assistant made that the person changed before saying yes.",
+            "title": "Sent Edited",
+            "type": "integer"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The first day counted, on the person's clock; none with nothing yet.",
+            "title": "Since"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The last day counted: today, or the seventh day.",
+            "title": "Until"
+          }
+        },
+        "required": [
+          "days_so_far",
+          "complete",
+          "days_used",
+          "cost_per_day",
+          "corrections_per_day",
+          "sent_as_written",
+          "sent_edited"
+        ],
+        "title": "AlphaNumbers",
+        "type": "object"
+      },
       "Answer": {
         "properties": {
           "person": {
@@ -8227,14 +8316,20 @@
             "title": "Request"
           },
           "signal": {
-            "description": "The id of the correction recorded for it.",
-            "title": "Signal",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The id of the correction recorded for it; none when the words only put the question off to a later day (it is held, nothing is corrected).",
+            "title": "Signal"
           }
         },
         "required": [
-          "ok",
-          "signal"
+          "ok"
         ],
         "title": "ChangeRequested",
         "type": "object"
@@ -14238,8 +14333,23 @@
         "type": "object"
       },
       "HeldAsk": {
-        "description": "A held item as the question the person is asked (design 7.6): `ask` is what is proposed (close an item, change\nits date, give it to another owner, send a question to someone else instead, drop it, or, for an ending of a\npromise, move its date or record a part delivered, or keep a guess at how long it takes (`effort`, with the minutes\nin `value`), or keep a reminder proposed for a dated fact or a to-do (`remind`, with the moment in `value`, the day\nit is for in `day` and the reminder it has now in `from_value`); `ending`: the words said only that it is closed,\nso the person is asked whether it is done by its owners or no longer needed), `item` the words of what it is about,\n`value` and `from_value` the new and the present date, `to_name` the person it would go to, `told` the people a\ndrop would leave out of the loop (told on `told_on`) and `quote` the words the assistant rested it on. An ending of\nan action also carries what the input says happened: the action's id in `record`, its `owners` in the owner\nformat, `reporter` (who said it), and by ask the words of a new date (`due_words`) with the promise's own earlier\nwords (`earlier`), what was `delivered` and what is `left`, or the `reason` it is called off. The screen words the\ntitle and the answers from these.",
+        "description": "A held item as the question the person is asked (design 7.6): `ask` is what is proposed (close an item, change\nits date, give it to another owner, send a question to someone else instead, drop it, or, for an ending of a\npromise, move its date or record a part delivered, or keep a guess at how long it takes (`effort`, with the minutes\nin `value`), or keep a reminder proposed for a dated fact or a to-do (`remind`, with the moment in `value`, the day\nit is for in `day` and the reminder it has now in `from_value`); `ending`: the words said only that it is closed,\nso the person is asked whether it is done by its owners or no longer needed), `item` the words of what it is about,\n`value` and `from_value` the new and the present date, `to_name` the person it would go to, `told` the people a\ndrop would leave out of the loop (told on `told_on`) and `quote` the words the assistant rested it on. An ending of\nan action also carries what the input says happened: the action's id in `record`, its `owners` in the owner\nformat, `reporter` (who said it), and by ask the words of a new date (`due_words`) with the promise's own earlier\nwords (`earlier`), what was `delivered` and what is `left`, or the `reason` it is called off. A rule the person\nstated that contradicts rules in force (`contradiction`) names the new rule in `item` and the words of those rules\nin `against`. The screen words the title and the answers from these.",
         "properties": {
+          "against": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For a rule that contradicts rules already in force (`contradiction`): the words of each of them. `item` is the new rule and `record` the first rule it contradicts.",
+            "title": "Against"
+          },
           "ask": {
             "enum": [
               "close",
@@ -14251,7 +14361,8 @@
               "part",
               "ending",
               "effort",
-              "remind"
+              "remind",
+              "contradiction"
             ],
             "title": "Ask",
             "type": "string"
@@ -19035,6 +19146,17 @@
             "title": "Op",
             "type": "string"
           },
+          "read_back": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReadBackView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For a rule the person stated: what it applies to, what it leaves alone, what it overlaps with and what it would change now, worked out when it was stated."
+          },
           "reason": {
             "anyOf": [
               {
@@ -19873,6 +19995,12 @@
             ],
             "description": "For one that was sent, the days since the last word to them.",
             "title": "Waiting Days"
+          },
+          "yours": {
+            "default": false,
+            "description": "Whether it is put to the person themself, so a hold is theirs to read.",
+            "title": "Yours",
+            "type": "boolean"
           }
         },
         "required": [
@@ -21909,6 +22037,67 @@
           "matters"
         ],
         "title": "PersonMemoryView",
+        "type": "object"
+      },
+      "PersonOfferView": {
+        "description": "Someone the assistant offers to add to the people on file (design 6.22): kept from the review card with the\nrelation the offer gave and the sides of the accounts their mail came from, or left out (\"Not this one\").",
+        "properties": {
+          "address": {
+            "title": "Address",
+            "type": "string"
+          },
+          "count": {
+            "description": "How many messages there are between them and the person.",
+            "title": "Count",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "relation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How they relate to the person, when the offer says.",
+            "title": "Relation"
+          },
+          "sides": {
+            "description": "The names of the sides they would be added on; none when not known.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Sides",
+            "type": "array"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "why": {
+            "description": "In a sentence, why they are someone the person deals with.",
+            "title": "Why",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "version",
+          "name",
+          "address",
+          "why",
+          "count"
+        ],
+        "title": "PersonOfferView",
         "type": "object"
       },
       "PersonPatch": {
@@ -24462,6 +24651,14 @@
             "description": "How many came from an input and how many from a correction.",
             "title": "Origins",
             "type": "object"
+          },
+          "people": {
+            "description": "The people the assistant offers to add, the ones with most messages first.",
+            "items": {
+              "$ref": "#/components/schemas/PersonOfferView"
+            },
+            "title": "People",
+            "type": "array"
           },
           "proposals": {
             "items": {
@@ -27434,6 +27631,299 @@
         "title": "ReachView",
         "type": "object"
       },
+      "ReadBackApplies": {
+        "description": "Line 1 of the read-back: what the rule's target names. `everywhere` when it names nothing in particular.",
+        "properties": {
+          "everywhere": {
+            "title": "Everywhere",
+            "type": "boolean"
+          },
+          "except": {
+            "items": {
+              "$ref": "#/components/schemas/ReadBackNamed"
+            },
+            "title": "Except",
+            "type": "array"
+          },
+          "filter": {
+            "items": {
+              "$ref": "#/components/schemas/ReadBackFilter"
+            },
+            "title": "Filter",
+            "type": "array"
+          },
+          "people": {
+            "items": {
+              "$ref": "#/components/schemas/ReadBackNamed"
+            },
+            "title": "People",
+            "type": "array"
+          },
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/ReadBackNamed"
+            },
+            "title": "Projects",
+            "type": "array"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/ReadBackTarget"
+            },
+            "title": "Targets",
+            "type": "array"
+          },
+          "task_kinds": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Task Kinds",
+            "type": "array"
+          }
+        },
+        "required": [
+          "everywhere"
+        ],
+        "title": "ReadBackApplies",
+        "type": "object"
+      },
+      "ReadBackFilter": {
+        "properties": {
+          "field": {
+            "title": "Field",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "title": "ReadBackFilter",
+        "type": "object"
+      },
+      "ReadBackItem": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "title"
+        ],
+        "title": "ReadBackItem",
+        "type": "object"
+      },
+      "ReadBackNamed": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "ReadBackNamed",
+        "type": "object"
+      },
+      "ReadBackOverlap": {
+        "properties": {
+          "id": {
+            "description": "The overlapping rule's record id, to link it.",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "text"
+        ],
+        "title": "ReadBackOverlap",
+        "type": "object"
+      },
+      "ReadBackTarget": {
+        "properties": {
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "kind_label": {
+            "description": "What one record of the kind is called, in words.",
+            "title": "Kind Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "kind_label"
+        ],
+        "title": "ReadBackTarget",
+        "type": "object"
+      },
+      "ReadBackUnchanged": {
+        "description": "One neighbor the rule leaves out (line 2): the same field on another record type (`field`), a project outside its\nprojects (`project`), or a task kind outside its task kinds (`task_kind`).",
+        "properties": {
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "kind_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind Label"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "why": {
+            "enum": [
+              "field",
+              "project",
+              "task_kind"
+            ],
+            "title": "Why",
+            "type": "string"
+          }
+        },
+        "required": [
+          "why"
+        ],
+        "title": "ReadBackUnchanged",
+        "type": "object"
+      },
+      "ReadBackView": {
+        "description": "The four lines shown next to Undo for a rule the person states (design 6.7). `count` is None when the rule names\nno record type, so there is nothing to count; `items` lists the first of the records counted.",
+        "properties": {
+          "applies": {
+            "$ref": "#/components/schemas/ReadBackApplies"
+          },
+          "count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Count"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ReadBackItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "matches_nothing": {
+            "default": false,
+            "title": "Matches Nothing",
+            "type": "boolean"
+          },
+          "overlaps": {
+            "items": {
+              "$ref": "#/components/schemas/ReadBackOverlap"
+            },
+            "title": "Overlaps",
+            "type": "array"
+          },
+          "unchanged": {
+            "items": {
+              "$ref": "#/components/schemas/ReadBackUnchanged"
+            },
+            "title": "Unchanged",
+            "type": "array"
+          }
+        },
+        "required": [
+          "applies"
+        ],
+        "title": "ReadBackView",
+        "type": "object"
+      },
       "ReadVersion": {
         "properties": {
           "read_version": {
@@ -28748,6 +29238,61 @@
           "seconds"
         ],
         "title": "ReviewTimeSaved",
+        "type": "object"
+      },
+      "RuleAnswer": {
+        "description": "Which rule wins when a rule the person stated contradicts one in force.",
+        "properties": {
+          "applies_to": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Scope"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With `both`: where the new rule now applies. Its scope, projects and exceptions replace the new rule's own; the rest of the rule's target stays as it was."
+          },
+          "choice": {
+            "enum": [
+              "new",
+              "existing",
+              "both"
+            ],
+            "title": "Choice",
+            "type": "string"
+          }
+        },
+        "required": [
+          "choice"
+        ],
+        "title": "RuleAnswer",
+        "type": "object"
+      },
+      "RuleAnswered": {
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "string"
+          },
+          "retired": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The change that stopped following the old rule, to undo with the new.",
+            "title": "Retired"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "RuleAnswered",
         "type": "object"
       },
       "RuleReviewPutOff": {
@@ -36543,10 +37088,17 @@
             "type": "string"
           },
           "every_minutes": {
-            "default": 10,
-            "minimum": 5.0,
-            "title": "Every Minutes",
-            "type": "integer"
+            "anyOf": [
+              {
+                "minimum": 5.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Left out, it follows the mail or calendar interval in Settings.",
+            "title": "Every Minutes"
           },
           "fingerprint": {
             "title": "Fingerprint",
@@ -36827,8 +37379,21 @@
             "type": "boolean"
           },
           "every_minutes": {
+            "description": "How often it is read: its own interval when one was set by hand, else the mail or calendar interval in Settings (watch.mail_read_minutes, watch.calendar_read_minutes).",
             "title": "Every Minutes",
             "type": "integer"
+          },
+          "every_minutes_set": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Whether the interval was set by hand for this source.",
+            "title": "Every Minutes Set"
           },
           "failures": {
             "default": 0,
@@ -40168,6 +40733,25 @@
         "summary": "Ai Test"
       }
     },
+    "/api/alpha-measures": {
+      "get": {
+        "description": "The alpha's five numbers for this person, from the records on this computer: days used in the first week,\ncost per day, corrections per day, drafts sent as written and edited, and minutes from install to a first\nresult. Nothing is sent: sharing them is the person's own Send in Report a problem.",
+        "operationId": "alpha_numbers_api_alpha_measures_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlphaNumbers"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Alpha Numbers"
+      }
+    },
     "/api/areas/keep": {
       "post": {
         "description": "Keep an area the assistant offered: start it under the personal project and file its items under it, as the\nperson's own edits with Undo (two changes, filing first).",
@@ -41861,6 +42445,65 @@
           }
         },
         "summary": "Release With Note"
+      }
+    },
+    "/api/changesets/{cs_id}/ops/{index}/rule-answer": {
+      "post": {
+        "description": "Say which rule wins when a rule the person stated contradicts one in force: the new one (the old is retired,\nin a change of its own returned as `retired`, so Undo can take both back), the existing one (the new one is\nnot kept) or both, with the new rule's target narrowed when `applies_to` is given.",
+        "operationId": "answer_contradiction_api_changesets__cs_id__ops__index__rule_answer_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cs_id",
+            "required": true,
+            "schema": {
+              "title": "Cs Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "index",
+            "required": true,
+            "schema": {
+              "title": "Index",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RuleAnswer"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuleAnswered"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Answer Contradiction"
       }
     },
     "/api/changesets/{cs_id}/ops/{index}/undecline": {
@@ -45413,6 +46056,86 @@
           }
         },
         "summary": "Learned Lines"
+      }
+    },
+    "/api/knowledge/people/{offer_id}/keep": {
+      "post": {
+        "description": "Keep someone the assistant offered: they are added to the people on file with the relation the offer gave and\nthe sides of the accounts their mail came from, and the offer is settled, in one change that Undo takes back.",
+        "operationId": "keep_person_api_knowledge_people__offer_id__keep_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "offer_id",
+            "required": true,
+            "schema": {
+              "title": "Offer Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Applied"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Keep Person"
+      }
+    },
+    "/api/knowledge/people/{offer_id}/not-this-one": {
+      "post": {
+        "description": "\"Not this one\": the offer is left out, never made again, and a signal records it; Undo puts it back.",
+        "operationId": "leave_person_out_api_knowledge_people__offer_id__not_this_one_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "offer_id",
+            "required": true,
+            "schema": {
+              "title": "Offer Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Applied"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Leave Person Out"
       }
     },
     "/api/knowledge/proposals": {

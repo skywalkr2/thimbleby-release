@@ -16,6 +16,7 @@ from engine.selfcheck.scans import (
     scan_boundary,
     scan_patterns,
     scan_providers,
+    scan_public_services,
     scan_specificity,
 )
 from tests.conftest import fixture_records
@@ -105,3 +106,28 @@ def test_the_network_scan_flags_reaching_modules_not_pure_helpers():
     assert reaches_network("urllib.parse") is None and reaches_network("http") is None
     assert reaches_network("urllib.request") == "urllib.request" and reaches_network("http.client") == "http.client"
     assert reaches_network("httpx") == "httpx" and reaches_network("subprocess") == "subprocess"
+
+
+def test_a_web_address_in_the_place_for_public_service_data_is_not_a_url_in_code_but_it_is_anywhere_else(tmp_path):
+    address = "https" + "://carrier.example.com/track"
+    root = tree(
+        tmp_path,
+        {
+            "engine/defaults/public_services/places.yaml": f"places:\n  - {address}\n",
+            "engine/defaults/other.yaml": f"places:\n  - {address}\n",
+        },
+    )
+    assert [f.path for f in scan_patterns(root=root)] == ["engine/defaults/other.yaml"]
+
+
+def test_the_place_for_public_service_data_holds_yaml_maps_and_nothing_else(tmp_path):
+    root = tree(
+        tmp_path,
+        {
+            "engine/defaults/public_services/ok.yaml": "carriers: []\n",
+            "engine/defaults/public_services/code.py": "x = 1\n",
+            "engine/defaults/public_services/list.yaml": "- a\n",
+        },
+    )
+    assert sorted(f.path.rsplit("/", 1)[1] for f in scan_public_services(root=root)) == ["code.py", "list.yaml"]
+    assert scan_public_services() == []

@@ -1,0 +1,5 @@
+/* The four lines of a rule's read-back (design 6.7): plain rows that wrap, never wider than their card. */
+.back { min-width: 0; overflow-wrap: anywhere; }
+.list { margin: 0; padding-left: var(--space-4); display: grid; gap: var(--space-1); }
+.items { margin: var(--space-1) 0 0; padding-left: var(--space-4); display: grid; gap: var(--space-1); }
+.flag { font-weight: var(--weight-semibold); }

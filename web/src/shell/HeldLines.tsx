@@ -12,6 +12,7 @@ import { api, type S } from "../lib/api";
 import { useAct } from "../lib/act";
 import { useAccountNames } from "../lib/account-names";
 import { useTierName } from "../lib/ai-routing";
+import { withoutAddress } from "../lib/calendar";
 import { whenWords } from "../lib/coverage";
 import { day, noReset, wallWhen } from "../lib/dates";
 import { useEstimate, useMoney } from "../lib/money";
@@ -811,13 +812,17 @@ function SourceUnreadLine(props: { line: Line; onOpen?: () => void }) {
   const kind = `queue.source_unread.${line.problem_kind ?? ""}`;
   const key = line.problem_kind && has(kind) ? kind : "queue.source_unread.other";
   const since = line.waiting_since ? whenWords(line.waiting_since, new Date(), t, true) : "";
+  // The line never says an address, or part of one: an account's name is its connection's own wording, else its service.
+  const watch = useQuery({ queryKey: ["watch"], queryFn: api.watchSources });
+  const source = (watch.data ?? []).find((s) => s.id === line.source);
+  const named = withoutAddress(line.subject ?? "", source?.account) || (source?.connector_label ?? "") || t("account_today.fallback");
   return (
     <HeldRow
       as="section"
       aria-label={t("queue.source_unread.label")}
       data-queue-line="source_unread"
       state="warn"
-      title={<>{t(key, { label: line.subject ?? "", when: since })}</>}
+      title={<>{t(key, { label: named, when: since })}</>}
       meta={<StateMark tone="warn">{t("queue.source_unread.label")}</StateMark>}
       primary={props.onOpen ? (
           <>

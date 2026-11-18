@@ -109,6 +109,8 @@ class OpenQuestion:
     waiting_days: int | None = None
     chases: int = 0
     held_until: str | None = None
+    #: Put to the person themself (so a hold on it is theirs to read, not a day to ask someone).
+    yours: bool = False
     origin: dict[str, Any] | None = None
     #: The sides it is filed on directly, by name and joined with commas, apart from the projects.
     side_name: str | None = None
@@ -116,6 +118,14 @@ class OpenQuestion:
     side: str | None = None
     #: The views of the projects it names, which only change what a screen shows (design 6.32).
     views: list[str] = field(default_factory=list)
+
+
+def waits_on_person(action: OpenAction, me: str | None) -> bool:
+    """Whether a to-do waits on the person: theirs, or with no owner yet, and not on hold. The one rule behind the side
+    menu's count and each row's mark on the screen, so the two never disagree."""
+    if action.state == "on_hold":
+        return False
+    return action.state == "no_owner" or (me is not None and any(o.person == me for o in action.owners))
 
 
 def _last_chase(d: dict[str, Any]) -> str | None:
@@ -471,10 +481,10 @@ def open_questions(store: Any, cfg: Any, today: date) -> list[OpenQuestion]:
         held_until, _name = held_until_day(view, d.get("held_for"), today, here)
         if d["status"] == "sent":
             state = "waiting"
-        elif d["to"] == people.pm:
-            state = "yours"
         elif held_until is not None and held_until > today:
             state = "later"
+        elif d["to"] == people.pm:
+            state = "yours"
         else:
             state = "not_sent"
         began = sent or (_day(created[q.id][1], here) if q.id in created else None)
@@ -500,6 +510,7 @@ def open_questions(store: Any, cfg: Any, today: date) -> list[OpenQuestion]:
                 waiting_days=max(0, (today - last_word).days) if last_word and state == "waiting" else None,
                 chases=len(chased),
                 held_until=held_until.isoformat() if state == "later" and held_until else None,
+                yours=d["to"] == people.pm,
             )
         )
     found = origins(view, "question", [r.id for r in rows])

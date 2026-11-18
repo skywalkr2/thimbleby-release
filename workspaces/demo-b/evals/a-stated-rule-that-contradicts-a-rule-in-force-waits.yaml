@@ -1,0 +1,40 @@
+id: a-stated-rule-that-contradicts-a-rule-in-force-waits
+title: A rule the person states that cannot live with an active rule waits for them, naming that rule
+skills: [spot-contradicting-rule]
+received: '2026-10-14'
+given:
+- kind: rule
+  id: RULE-90
+  fields:
+    name: every-action-names-a-project
+    text: Every to-do names the project it belongs to.
+    applies_to:
+      records:
+      - action.project
+    origin: person
+    trust: trusted
+    status: active
+    kept_by: PER-1
+    kept_at: '2026-10-01T09:00:00+00:00'
+    learned_at: '2026-10-01T09:00:00+00:00'
+note: 'From now on a to-do never needs a project.'
+# The new rule says the opposite of the one on file, so it is held for the person even though they typed it. Applying it
+# beside the old one, or keeping it as a proposal, is wrong.
+expect:
+- held: rule.add
+  text_has:
+  - never needs a project
+forbid:
+- op: rule.retire
+stub_answer:
+  summary: A rule that a to-do never needs a project; it contradicts the rule that every to-do names one.
+  ops:
+  - op: rule.add
+    text: A to-do never needs a project.
+    applies_to:
+      records:
+      - action.project
+    contradicts:
+    - RULE-90
+    evidence:
+      quote: a to-do never needs a project

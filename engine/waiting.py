@@ -133,9 +133,7 @@ def _on_the_person(store: Store, cfg: Any, today: date) -> list[Thing]:
     me = cfg.workspace.user.person
     found: list[Thing] = []
     for a in open_items.open_actions(store, cfg, today, light=True):
-        if a.state == "on_hold":
-            continue
-        if a.state == "no_owner" or (me and any(o.person == me for o in a.owners)):
+        if open_items.waits_on_person(a, me or None):
             found.append(Thing(sides.side_of_project(view, cfg, a.project), tuple(a.views), not a.project_name))
     for q in open_items.open_questions(store, cfg, today):
         if q.state == "yours":

@@ -1723,6 +1723,7 @@ def _default_lints() -> dict[str, Severity]:
         "ending-reading": "return",
         "reply-not-needed": "return",
         "fact-from-notice": "return",
+        "stale-fact": "return",
         "project-unfiled": "return",
         "evidence-fit": "return",
         "already-known": "return",
@@ -1744,6 +1745,7 @@ def _default_lints() -> dict[str, Severity]:
         "stance": "return",
         "rejected-ask": "return",
         "understand-tracks": "return",
+        "chase-too-soon": "return",
         "question-changes-nothing": "return",
         "bookkeeping": "return",
         "long-quote": "return",
@@ -2029,6 +2031,13 @@ class MessageSettings(ConfigModel):
     resourced_label: str = Field(
         "Put where the change came from in a history line instead of the assistant's name",
         description="The line for one project's history lines in that change.",
+    )
+    stale_fact: str = Field(
+        "Check this: {fact} was true as of {as_of}, {days} days ago, and facts of this kind are trusted for {limit} "
+        "days. Confirm it still holds before this goes to anyone.",
+        description="The line held with a draft for someone else that states a fact older than its freshness limit: "
+        "{fact} is the fact, {as_of} the day it was true as of, {days} how old it is and {limit} the limit for its "
+        "kind.",
     )
     withheld_name: str = Field(
         "Held back: {where} names {name}. Take the name out before this goes to anyone.",
@@ -2366,6 +2375,15 @@ class LanguageFile(FileModel):
         "when they name none, or more than one, it has no date and keeps its words. Followed by a written date, "
         'one of these words means the day before it ("before November" is the last day of October, "before '
         'November 5" is November 4). Case is ignored.'
+    )
+    due_span_words: list[str] | None = word_list(
+        'The words before a span that says how far ahead a day is ("in 2 days", "in two working days"). With '
+        "none, such a span is not read as a day. Case is ignored."
+    )
+    answer_later_words: list[str] | None = word_list(
+        'The words of an answer that put a question off to a later day ("let\'s follow up on this in 2 days"). '
+        "An answer to a question put to you with one of them, as whole words, and a later day (a weekday, a date, "
+        '"in 2 days", or after a meeting) holds that question until that day instead of closing it. Case is ignored.'
     )
     due_phrase_words: dict[str, list[str]] | None = word_list(
         "The words of the day-and-time phrases the date reader knows, by what they mean: "
@@ -3440,10 +3458,11 @@ class WatchSource(ConfigModel):
     )
     label: str = Field("", description="What to call it on screen.")
     enabled: bool = Field(True, description="Off keeps its history and stops reading it.")
-    every_minutes: int = Field(
-        10,
+    every_minutes: int | None = Field(
+        None,
         ge=5,
-        description="How often it is read while the app runs, in minutes. A source set before keeps its own.",
+        description="How often this one source is read while the app runs, in minutes, when it is set by hand. Unset "
+        "(the usual case) it follows the mail or calendar interval in watch.yaml, whatever add-on made the source.",
     )
     project: str | None = Field(None, description="The project its changes are about, if they all are.")
     stance: Literal["follow", "understand"] = Field(
@@ -3947,6 +3966,30 @@ class WatchFile(FileModel):
         description="The most message headers that first read asks a mail source for. A year with more takes the "
         "newest.",
     )
+    arrival_reads_per_day: int = Field(
+        2,
+        ge=0,
+        le=24,
+        description="How many times a day a parcel's carrier page is read while the parcel has no arrival day. Each "
+        "parcel is read once each time, and never once it has a day or has arrived. Zero never reads a carrier's page: "
+        "nothing about a parcel leaves the computer.",
+    )
+    arrival_max_parcels: int = Field(
+        10, ge=1, le=50, description="The most parcels whose carrier page is read in one pass."
+    )
+    arrival_page_max_chars: int = Field(
+        6000,
+        ge=500,
+        le=20000,
+        description="The most characters of a carrier's page the assistant reads; the rest of a long page is left out.",
+    )
+    arrival_page_min_chars: int = Field(
+        40,
+        ge=0,
+        le=1000,
+        description="A page with less text than this once its scripts and markup are taken out (a page that only "
+        "works with scripts) is not sent to the assistant, and the parcel stays without a day.",
+    )
     sorting_batch: int = Field(
         25,
         ge=1,
@@ -4020,6 +4063,20 @@ class WatchFile(FileModel):
         3,
         ge=1,
         description="Failed reads in a row before the person is asked about a source; one question, not one per read.",
+    )
+    mail_read_minutes: int = Field(
+        10,
+        ge=5,
+        description="How often every mail source is read while the app runs, in minutes, whether a core connector or "
+        "an add-on made it. A source whose own interval is set by hand keeps it.",
+        json_schema_extra={"choices": "read_minutes"},
+    )
+    calendar_read_minutes: int = Field(
+        10,
+        ge=5,
+        description="How often every calendar source is read while the app runs, in minutes, whether a core "
+        "connector or an add-on made it. A source whose own interval is set by hand keeps it.",
+        json_schema_extra={"choices": "read_minutes"},
     )
     unread_gap_factor: float = Field(
         2,
@@ -4654,6 +4711,59 @@ class DatesSettings(ConfigModel):
     )
 
 
+class FreshnessDaysSettings(ConfigModel):
+    deadline: int = Field(
+        30,
+        ge=0,
+        le=3650,
+        description="How many days old a fact about a deadline may be when a draft for someone else states it as "
+        "current. An older one is held for you to check. Zero never holds.",
+    )
+    renewal: int = Field(
+        60,
+        ge=0,
+        le=3650,
+        description="How many days old a fact about a renewal may be when a draft for someone else states it. Zero "
+        "never holds.",
+    )
+    expiry: int = Field(
+        60,
+        ge=0,
+        le=3650,
+        description="How many days old a fact about when something expires may be when a draft for someone else "
+        "states it. Zero never holds.",
+    )
+    warranty: int = Field(
+        180,
+        ge=0,
+        le=3650,
+        description="How many days old a fact about a warranty may be when a draft for someone else states it. Zero "
+        "never holds.",
+    )
+    bill: int = Field(
+        30,
+        ge=0,
+        le=3650,
+        description="How many days old a fact about a bill may be when a draft for someone else states it. Zero never "
+        "holds.",
+    )
+    other: int = Field(
+        90,
+        ge=0,
+        le=3650,
+        description="How many days old any other fact may be when a draft for someone else states it. Zero never "
+        "holds.",
+    )
+
+
+class FactsSettings(ConfigModel):
+    freshness_days: FreshnessDaysSettings = Field(
+        default_factory=FreshnessDaysSettings,
+        description="How old a fact may be, by kind, before a draft for someone else that states it is held with a "
+        "line asking you to check it. The age counts from the day the fact was true as of.",
+    )
+
+
 class AreasSettings(ConfigModel):
     propose_after: int = Field(
         4,
@@ -4779,6 +4889,10 @@ class StewardFile(FileModel):
         default_factory=DatesSettings,
         description="What happens to the days that documents and bookings state: calendar entries from bookings, and "
         "the reminders offered for deadlines, renewals, expiries, warranties and bills.",
+    )
+    facts: FactsSettings = Field(
+        default_factory=FactsSettings,
+        description="How old a fact may be before a draft for someone else that states it is held for a check.",
     )
     areas: AreasSettings = Field(
         default_factory=AreasSettings,

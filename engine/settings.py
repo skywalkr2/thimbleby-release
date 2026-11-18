@@ -346,7 +346,8 @@ def picked_fields(model: type[BaseModel], picker: str) -> list[str]:
 
 def _with_current(options: list[str], value: Any) -> list[str]:
     """A named list with the setting's current value in it when it isn't there, so a list never shows a wrong value."""
-    return [*options, value] if isinstance(value, str) and value and value not in options else options
+    held = str(value) if isinstance(value, (str, int)) and not isinstance(value, bool) else ""
+    return [*options, held] if held and held not in options else options
 
 
 def _canonical_zones() -> set[str]:
@@ -427,6 +428,11 @@ def _choices_of(name: str) -> list[str]:
     return [str(value) for value in data.get(name) or []]
 
 
+def _read_minutes() -> list[str]:
+    """How often a kind of source can be read, in minutes, from the shipped list."""
+    return _choices_of("read_minutes")
+
+
 def _owner_formats() -> list[str]:
     """The ways an action's owner can be shown, from the shipped list."""
     return _choices_of("owner_formats")
@@ -464,6 +470,7 @@ CHOICE_LISTS = {
     "date_formats": _date_formats,
     "date_time_formats": _date_time_formats,
     "owner_formats": _owner_formats,
+    "read_minutes": _read_minutes,
     "media_types": _media_types,
     "attention_kinds": _attention_kinds,
 }

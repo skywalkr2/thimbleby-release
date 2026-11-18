@@ -171,6 +171,8 @@ from api.schemas import (
     RestoreCopyIn,
     RestoreStaged,
     RetryRequest,
+    RuleAnswer,
+    RuleAnswered,
     SendBack,
     SentCounts,
     SentText,
@@ -215,6 +217,7 @@ from api.schemas import (
 from engine import actions as person_actions
 from engine import (
     answer_groups,
+    answer_hold,
     catch_up,
     endings,
     follow_on,
@@ -226,6 +229,7 @@ from engine import (
     repeats,
     restore_in_app,
     review_batches,
+    rule_contradiction,
     source_intake,
     week_ahead,
 )
@@ -2108,6 +2112,18 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
         changed()
         return Ok(ok=cs_id)
 
+    @r.post("/changesets/{cs_id}/ops/{index}/rule-answer")
+    def answer_contradiction(cs_id: str, index: int, body: RuleAnswer) -> RuleAnswered:
+        """Say which rule wins when a rule the person stated contradicts one in force: the new one (the old is retired,
+        in a change of its own returned as `retired`, so Undo can take both back), the existing one (the new one is
+        not kept) or both, with the new rule's target narrowed when `applies_to` is given."""
+        need("changeset", cs_id)
+        retired = guard(
+            lambda: rule_contradiction.answer(store, cfg, cs_id, index, body.choice, applies_to=body.applies_to, ws=ws)
+        )
+        changed()
+        return RuleAnswered(ok=cs_id, retired=retired)
+
     @r.post("/changesets/{cs_id}/ops/{index}/ending")
     def answer_ending(cs_id: str, index: int, body: EndingAnswer) -> DropDone:
         """Answer "Done by <owner>, or no longer needed?" for an ending whose words only said it was closed: done
@@ -2254,6 +2270,10 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
             raise HTTPException(status_code=422, detail="Choose a person.")
         if body.person:
             need("person", body.person)
+        elif guard(lambda: answer_hold.hold(store, cfg, qid, body.text)) is not None:
+            # "Follow up in 2 days" puts the question off to that day: it stays open, held, and nothing is handed in.
+            changed()
+            return Noted(ok=qid)
         if resolves.get("kind") == "owner":
             guard(lambda: pick_owner(store, qid, body.person))
         elif resolves.get("kind") == "held-op":
@@ -3531,6 +3551,7 @@ def _op_view(
             reporter=o.get("reporter"),
             choice=any(p.get("check") == endings.CHOICE_CHECK for p in o.get("problems") or []),
             cfg=cfg,
+            contradiction=rule_contradiction.is_held_for(o),
         )
     return OpView(
         index=o["index"],
@@ -3545,6 +3566,7 @@ def _op_view(
         evidence={"quote": evidence["quote"]} if evidence else None,
         record={"kind": record[0], "id": record[1].id} if record else None,
         ask=_ask(store, people, o.get("question"), cfg),
+        read_back=o.get("read_back"),
     )
 
 

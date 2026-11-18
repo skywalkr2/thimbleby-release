@@ -136,3 +136,49 @@ def test_the_calendars_own_call_off_holds_the_tied_todos_and_a_restore_releases_
         tx.update("event", meeting, {"cancelled": False}, _PM, read_version=tx.get("event", meeting).version)
         called_off.sync(tx, meeting, _PM, cfg)
     assert data(store, "action", tied)["on_hold"] is None
+
+
+NOTES = "Plan from Tuesday: after Thursday's meeting, send the agenda and chase the figures"
+
+
+def test_calling_a_meeting_off_holds_the_other_todos_from_the_same_notes_and_none_shows_overdue(env):
+    """S-0648: the to-dos of one set of notes were tied only to each other; calling off the step they follow now checks
+    the others from the same notes for a tie, so none goes overdue and Today doesn't ask to chase anyone."""
+    ws, cfg, store = env
+    step = entry(store, title="Thursday's meeting", start="2026-11-12T14:00:00+00:00")
+    other = entry(store, title="Printer visit", start="2026-11-12T16:00:00+00:00")
+    source = {"source": "SRC-notes"}
+    tied = todo(store, step, text="Send the agenda", due="2026-11-08", **source)
+    untied = [
+        todo(store, None, text=text, due="2026-11-08", due_words=words, **source)
+        for text, words in (("Chase the figures", "after Thursday's meeting"), ("Chase the quote", "after the printer"))
+    ]
+    elsewhere = todo(store, None, text="Pay the invoice", due="2026-11-08", due_words="after Thursday's meeting")
+    for ident in (tied, *untied, elsewhere):
+        assert ident in [a for x in today_queue.queue(ws, store, cfg, NOW) if x.kind == "overdue" for a in x.actions]
+    called_off.call_off(store, cfg, step)
+    chased, unnamed = untied
+    for ident in (tied, chased):
+        assert data(store, "action", ident)["due_event"] == step
+        assert data(store, "action", ident)["on_hold"]["entry"] == step
+    assert not data(store, "action", unnamed).get("on_hold") and not data(store, "action", elsewhere).get("on_hold")
+    shown = [a for x in today_queue.queue(ws, store, cfg, NOW) if x.kind == "overdue" for a in x.actions]
+    assert tied not in shown and chased not in shown and unnamed in shown and elsewhere in shown
+    assert other  # the other meeting is untouched
+    back = called_off.new_date(store, cfg, step, "2026-11-13T14:00:00+00:00")
+    assert (
+        back
+        and data(store, "action", chased)["on_hold"] is None
+        and data(store, "action", chased)["due"] == "2026-11-13"
+    )
+
+
+def test_in_a_list_of_meetings_booked_ones_come_first_and_held_ones_last(env):
+    from engine import today
+
+    _, cfg, store = env
+    held = entry(store, title="Walkthrough", start="2026-11-09T09:30:00+00:00")
+    booked = entry(store, title="Standup", start="2026-11-09T15:00:00+00:00")
+    called_off.call_off(store, cfg, held)
+    titles = [(a.title, a.held) for a in today.agenda(store, cfg, NOW) if a.snapshot in (held, booked)]
+    assert titles == [("Standup", False), ("Walkthrough", True)]

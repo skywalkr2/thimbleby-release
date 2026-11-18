@@ -162,6 +162,22 @@ def test_before_a_known_entry_goes_back_once_naming_it_and_is_tied_only_when_the
     assert (made["due"], made["due_event"], made["due_check"]) == ("2026-10-15", meeting, False)
 
 
+def test_after_a_known_entry_goes_back_once_naming_it_and_is_tied_when_the_assistant_says_so(env):
+    """S-0648: words that follow a step on the calendar point at that entry (not a hold) and the assistant's tie, made
+    as the to-do is made, carries it; words that name no entry still read as waiting."""
+    _, _, store = env
+    meeting = event(store, "2026-10-15T15:00", "Thursday's meeting")
+    seen, _, made = applied(env, promise("after Thursday's meeting", due="2026-10-15"))
+    said = returned(seen)[0]
+    assert 'tied to the calendar entry "Thursday\'s meeting" on 2026-10-15' in said
+    assert "waiting for something to happen" not in said and made["due_event"] is None
+    tied = promise("after Thursday's meeting", event=meeting, due_at_event=True)
+    seen, _, made = applied(env, promise("after Thursday's meeting", due="2026-10-15"), tied)
+    assert (made["due"], made["due_event"], made["due_check"]) == ("2026-10-15", meeting, False)
+    seen, _, _ = applied(env, promise("after the workshop", due="2026-10-20"))
+    assert "waiting for something to happen" in returned(seen)[0]
+
+
 def test_the_lint_can_be_turned_off_and_the_assistants_date_is_still_marked_to_check(env):
     _, cfg, _ = env
     cfg.checks.lints[LINT] = "off"

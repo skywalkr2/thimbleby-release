@@ -1,10 +1,11 @@
 // Today's lines for an account that is not being read (design 7.7): "<name>'s mail isn't being read · since 4:20 PM", with the one
 // button that fixes it. They come first in At risk and count among the things that need the person. The name is the side the
 // account serves, as the calendar's banner and the header's chip name it; the address is on Connections only.
+import { useQuery } from "@tanstack/react-query";
+import { api } from "../lib/api";
 import { sidesOfAccount, unreadParts } from "../lib/account-today";
-import type { AccountState } from "../lib/connections";
+import { accountStates, type AccountState } from "../lib/connections";
 import { whenWords } from "../lib/coverage";
-import { useSideFilter } from "../lib/sides";
 import { useWords } from "../lib/wording";
 import { Button } from "../ui/Button";
 import { Icon } from "../ui/Icon";
@@ -12,15 +13,25 @@ import { Row } from "../ui/Row";
 import { FilledPrimary } from "../ui/rowContext";
 import { accountName } from "../lib/account-name";
 import { useSignInAgain } from "./AccountRow";
+import { addonOfConnector } from "./MissingAddon";
+import { addonOfSignIn } from "./SignIns";
 import styles from "./Today.module.css";
 
 function AccountTodayRow(props: { account: AccountState; first: boolean; filled: boolean; everySide: boolean; onOpenConnections: () => void }) {
   const { t } = useWords();
   const { account } = props;
   const again = useSignInAgain(account);
-  const options = useSideFilter().options;
   const sides = sidesOfAccount(account);
-  const name = accountName(account, (id) => options.find((o) => o.id === id)?.name, t("account_today.fallback"));
+  const watch = useQuery({ queryKey: ["watch"], queryFn: api.watchSources });
+  const signIns = useQuery({ queryKey: ["sign-ins"], queryFn: api.signIns });
+  const addon = addonOfConnector(account.connector);
+  const service = (signIns.data ?? []).find((s) => addonOfSignIn(s.name) === addon)?.label ?? account.sources[0]?.connector_label ?? "";
+  const same = accountStates(watch.data ?? []).filter((a) => addonOfConnector(a.connector) === addon);
+  const name = accountName(account, service, same, {
+    single: (svc) => t("account_today.service", { service: svc }),
+    numbered: (svc, n) => t("account_today.numbered", { service: svc, n }),
+    fallback: t("account_today.fallback"),
+  });
   const what = t(`account_today.${unreadParts(account)}`, { name });
   const since = account.since ?? account.latest;
   const title = since ? t("account_today.since", { what, when: whenWords(since, new Date(), t) }) : what;

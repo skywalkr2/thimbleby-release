@@ -49,7 +49,7 @@ def freeze_inputs(root: Path, expected_system: str) -> dict:
             raise SystemExit("The window library's script files were not found to bundle")
         datas.extend(bridge)
     hiddenimports = collect_submodules("engine")
-    for package in ("api", "plugins.kit", "plugins.parcels", "uvicorn", "pystray", "webview"):
+    for package in ("api", "plugins.kit", "uvicorn", "pystray", "webview"):
         if importlib.util.find_spec(package) is not None:
             hiddenimports.extend(collect_submodules(package))
     architecture = platform.machine().lower()

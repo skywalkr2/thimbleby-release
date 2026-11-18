@@ -33,6 +33,7 @@ from engine.open_items import (
     merge_actions,
     open_actions,
     open_questions,
+    waits_on_person,
 )
 from engine.storage import Store, StoreError
 from engine.today import zone
@@ -71,8 +72,7 @@ def _action(r: OpenAction, me: str | None = None) -> OpenActionView:
         remind_at=r.remind_at,
         followed_up=r.followed_up,
         # What waits on the person, as the side menu counts it: theirs (or with no owner yet) and not on hold.
-        needs_you=r.state != "on_hold"
-        and (r.state == "no_owner" or (me is not None and any(o.person == me for o in r.owners))),
+        needs_you=waits_on_person(r, me),
     )
 
 

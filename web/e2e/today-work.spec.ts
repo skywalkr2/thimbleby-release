@@ -32,17 +32,17 @@ test.describe("Today and the work screens", () => {
     await open(page, "work/open");
     // The tab's count appears once the list has loaded.
     await expect(page.getByRole("button", { name: /^To-dos\b/ }).first()).toContainText(/\d/, LOADED);
-    const tab = await page.getByRole("button", { name: /^To-dos\b/ }).first().innerText();
-    const total = Number(/(\d+)\s*$/.exec(tab)?.[1]);
+    // The tab counts what is yours; the line under the title counts the open to-dos (S-0539).
+    const opened = await page.getByText(/^\d+ open\b/).first().innerText();
+    const total = Number(/^(\d+)/.exec(opened)?.[1]);
     // The line under the title says how many need the person only when that is not all of them, never more than the tab holds.
     const line = page.locator("[data-need-count]");
     if (await line.count()) {
-      const said = /^· (\d+) (?:are|is) yours$|^· None are yours$/.exec((await line.innerText()).trim());
+      const said = /^· (\d+) yours$|^· None yours$/.exec((await line.innerText()).trim());
       expect(said, await line.innerText()).not.toBeNull();
       expect(Number(said?.[1] ?? 0)).toBeLessThanOrEqual(total);
     }
     // The line under the title counts the rows of the tab shown, the to-dos (design 7.5).
-    const opened = await page.getByText(/^\d+ open\b/).first().innerText();
     expect(Number(/^(\d+)/.exec(opened)?.[1])).toBe(total);
   });
 

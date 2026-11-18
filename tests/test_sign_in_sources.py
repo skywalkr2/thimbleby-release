@@ -280,21 +280,72 @@ def test_signing_in_again_reads_every_source_of_the_account_at_once_and_clears_i
     assert worker.read_accounts_now() == 0
 
 
-def test_a_source_made_by_signing_in_without_an_interval_is_read_every_10_minutes(
+def test_a_source_an_add_on_makes_names_no_interval_and_is_read_at_the_settings(
     signing,
 ):  # noqa: F811
+    from engine import watch
+
     ws, cfg, store, _ = signing
     store.close()
     _with_sources(ws)
     c, api = _app(ws, cfg)
     sign_in(c, api)
-    assert [s["every_minutes"] for s in sources(ws) if s["connector"] == "p18/inbox"] == [10]
+    made = [s for s in sources(ws) if s["connector"] == "p18/inbox"]
+    assert made and all(s["every_minutes"] is None for s in made)
+    from engine.config import load_config
+    from engine.storage import Store
+
+    now_cfg = load_config(ws.config_dir, env={})
+    store2 = Store(ws.db_path, cfg=now_cfg)
+    try:
+        source = next(s for s in now_cfg.watch.sources if s.connector == "p18/inbox")
+        assert watch.interval_minutes(store2, now_cfg, source) == now_cfg.watch.mail_read_minutes
+    finally:
+        store2.close()
 
 
-def test_the_interval_a_source_defaults_to_is_10_minutes_and_a_saved_one_is_kept():
-    from api.schemas import WatchSourceIn
+def test_the_mail_and_calendar_intervals_are_lists_to_pick_from_and_a_sources_own_interval_wins():
+    from engine.config.schema import WatchFile, WatchSource
+    from engine.settings import CHOICE_LISTS
+
+    fields = WatchFile.model_fields
+    for key in ("mail_read_minutes", "calendar_read_minutes"):
+        assert fields[key].default == 10
+        assert fields[key].json_schema_extra["choices"] == "read_minutes"
+        assert "10" in CHOICE_LISTS["read_minutes"]()
+    assert WatchSource(id="a", connector="folder").every_minutes is None
+    assert WatchSource(id="a", connector="folder", every_minutes=60).every_minutes == 60
+
+
+def test_changing_the_setting_moves_every_mail_source_at_once_and_a_hand_set_one_keeps_its_own(signing):  # noqa: F811
+    from engine import watch
     from engine.config.schema import WatchSource
 
-    assert WatchSource(id="a", connector="folder").every_minutes == 10
-    assert WatchSourceIn.model_fields["every_minutes"].default == 10
-    assert WatchSource(id="a", connector="folder", every_minutes=60).every_minutes == 60
+    ws, cfg, store, _ = signing
+    try:
+        cfg.watch.mail_read_minutes = 30
+        cfg.watch.calendar_read_minutes = 15
+        mail = WatchSource(id="m", connector="mailbox")
+        calendar = WatchSource(id="c", connector="calendar")
+        by_hand = WatchSource(id="h", connector="mailbox", every_minutes=60)
+        assert watch.interval_minutes(store, cfg, mail) == 30
+        assert watch.interval_minutes(store, cfg, calendar) == 15
+        assert watch.interval_minutes(store, cfg, by_hand) == 60
+        cfg.watch.mail_read_minutes = 5
+        assert watch.interval_minutes(store, cfg, mail) == 5
+        assert watch.interval_minutes(store, cfg, by_hand) == 60
+    finally:
+        store.close()
+
+
+def test_settings_lists_the_two_intervals_as_lists_to_pick_from(signing):  # noqa: F811
+    from engine.settings import describe
+
+    _, cfg, store, _ = signing
+    try:
+        shown = {s.key: s for s in describe(cfg)}
+        for key in ("watch.mail_read_minutes", "watch.calendar_read_minutes"):
+            assert shown[key].type == "choice" and shown[key].options == ["5", "10", "15", "30", "60"]
+            assert shown[key].editable and shown[key].default == 10 and shown[key].description
+    finally:
+        store.close()

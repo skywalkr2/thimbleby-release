@@ -17,7 +17,8 @@ alternatives (`complet|finish|done`), each a case-insensitive part of the text. 
 `reply_has` (words in the drafted reply attached to the action) or `no_reply: true` (the action carries no draft), and,
 for a promise (design 6.33), `promised_to` (the people it is owed to), `due_words` (the words its date came from) and
 `on_hold` (true when it starts on hold, waiting for those words, as a condition that waits for something does; false
-when it doesn't).
+when it doesn't) and `due_event` (the calendar entry it is tied to as it is made, as words that follow a step on the
+calendar tie it).
 An expected `glossary.add` may name the `term` and its `confidence` (assumed or unknown). An expected `action.tie`
 names the action's `id` and may name the `event` it is tied to, and an expected `event.guests` names the entry's `id`
 and may name its `people`. An expected `action.move`, `action.part` or `action.news` names the action's `id`, and may
@@ -901,6 +902,8 @@ def _op_matches(e: dict[str, Any], o: dict[str, Any], store: Store) -> bool:
         if "due_words" in e and _due_words(a.get("due_words")) != _due_words(e["due_words"]):
             return False
         if "on_hold" in e and bool(a.get("on_hold")) != bool(e["on_hold"]):
+            return False
+        if "due_event" in e and a.get("due_event") != e["due_event"]:
             return False
         return "status" not in e or a["status"] == e["status"]
     if op in ("action.close", "action.hold", "action.unhold", "action.drop", "question.drop", "question.done"):

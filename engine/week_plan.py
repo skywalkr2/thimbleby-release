@@ -23,7 +23,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from engine import sides
+from engine import answer_hold, sides
 from engine.config.schema import WEEKDAYS
 from engine.names import PacketPeople, People
 from engine.scope import stance_of
@@ -406,7 +406,11 @@ def facts(store: Any, cfg: Any, now: datetime) -> str:
     deciding = [
         _marked(q.data["title"])
         for q in view.list("question")
-        if q.data.get("to") == pm and q.data.get("status") == "open" and q.data.get("kind") == "decision" and on_job(q)
+        if q.data.get("to") == pm
+        and q.data.get("status") == "open"
+        and q.data.get("kind") == "decision"
+        and on_job(q)
+        and not answer_hold.is_put_off(view, q.data, today, zone(cfg))
     ]
     goals = goals_of(view, pm, week_bounds(cfg, today)[0])
     names = ", ".join(people.name(p) for p in report_to(view, cfg))

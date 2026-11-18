@@ -26,11 +26,11 @@ function fit(lines: string): string {
   return cut.slice(0, Math.max(0, cut.lastIndexOf("\n")));
 }
 
-export function ReportProblem(props: { onClose: () => void }) {
+export function ReportProblem(props: { onClose: () => void; /** Words to start the report with, which the person may change; they are shown in what will be sent. */ initialWords?: string }) {
   const { t } = useWords();
   const { push } = useToasts();
   const base = useId();
-  const [words, setWords] = useState("");
+  const [words, setWords] = useState(props.initialWords ?? "");
   const [reply, setReply] = useState("");
   const [replyTouched, setReplyTouched] = useState(false);
   const [withProblems, setWithProblems] = useState(true);

@@ -84,17 +84,13 @@ test("a fresh install opens on the walkthrough and skipping it reaches Today, an
     }
     await expect(today(page)).toBeVisible({ timeout: 30_000 });
   }
-  // What only an install can get wrong: the add-ons bundled with the app (S-0533) are on in the first workspace, and the
-  // Add-ons screen opens and lists them.
+  // What only an install can get wrong: the Add-ons screen opens. The app bundles no add-on: the carriers and the
+  // arrival-day lookup are the core's own (S-0535).
   // The screen is opened by its own address in the page, so the signed-in page is not loaded again.
   await page.evaluate(() => {
     window.location.hash = "#settings/addons";
   });
   await expect(page.getByRole("heading", { level: 2, name: "Add-ons" })).toBeVisible({ timeout: 30_000 });
-  await page.getByRole("tab", { name: "Installed" }).click();
-  const row = page.getByRole("tabpanel").locator("[id$='-row']").filter({ hasText: /parcels/i });
-  await expect(row, "the bundled parcels add-on is listed as installed").toHaveCount(1, { timeout: 30_000 });
-  await expect(row.getByText("On", { exact: true }), "and it is on in the first workspace").toBeVisible();
   await page.evaluate(() => {
     window.location.hash = "#today";
   });

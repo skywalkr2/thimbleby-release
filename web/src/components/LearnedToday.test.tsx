@@ -257,3 +257,53 @@ test("the person's own typed words are theirs: marked as theirs, quoted as their
   expect(row.textContent).not.toMatch(/from outside|not from you|came from a message/i);
   expect(within(row).getByRole("button", { name: "Keep" })).toBeInTheDocument();
 });
+
+const offer = (over: Partial<S["PersonOfferView"]> = {}): S["PersonOfferView"] => ({
+  id: "POFR-1",
+  version: 1,
+  name: "Dana Sample",
+  address: "dana@example.com",
+  why: "Writes to you every week and you reply: likely your accountant.",
+  relation: "your accountant",
+  sides: ["Work"],
+  count: 12,
+  ...over,
+});
+
+test("a person the assistant offered is a row on the review card, and Keep adds them in one change with Undo (S-0534)", async () => {
+  const user = userEvent.setup();
+  const calls = show([line("learned", { count: 1, origins: { person: 1 } })], {
+    "GET knowledge/proposals": () => ({ people: [offer()], proposals: [], origins: {}, expired: 0 }),
+    "POST knowledge/people/POFR-1/keep": () => ({ changeset: "CS-31" }),
+    "POST changesets/CS-31/undo": () => ({ restored: [0], skipped: [] }),
+  });
+  expect(await screen.findByRole("region", { name: "Review" })).toHaveTextContent("1 person to add");
+  await user.click(await screen.findByRole("button", { name: "Review" }));
+  const drawer = await screen.findByRole("dialog", { name: "What Helper learned" });
+  const row = await within(drawer).findByRole("listitem");
+  expect(row).toHaveTextContent("Dana Sample");
+  expect(row).toHaveTextContent("Added as your accountant · On Work · 12 messages between you");
+  await user.click(within(row).getByRole("button", { name: "Add to People" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST knowledge/people/POFR-1/keep")).toBe(true));
+  expect(await screen.findByText("Added Dana Sample to People.")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST changesets/CS-31/undo")).toBe(true));
+});
+
+test("Not this one leaves the offered person out, with Undo", async () => {
+  const user = userEvent.setup();
+  const calls = show([line("learned", { count: 1, origins: { person: 1 } })], {
+    "GET knowledge/proposals": () => ({ people: [offer({ relation: null, sides: [] })], proposals: [], origins: {}, expired: 0 }),
+    "POST knowledge/people/POFR-1/not-this-one": () => ({ changeset: "CS-32" }),
+    "POST changesets/CS-32/undo": () => ({ restored: [0], skipped: [] }),
+  });
+  await user.click(await screen.findByRole("button", { name: "Review" }));
+  const row = await within(await screen.findByRole("dialog", { name: "What Helper learned" })).findByRole("listitem");
+  expect(row).not.toHaveTextContent("Added as");
+  await user.click(within(row).getByRole("button", { name: "More actions for Dana Sample" }));
+  await user.click(await screen.findByRole("menuitem", { name: "Not this one" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST knowledge/people/POFR-1/not-this-one")).toBe(true));
+  expect(await screen.findByText("Left out Dana Sample. They won't be offered again.")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST changesets/CS-32/undo")).toBe(true));
+});

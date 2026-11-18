@@ -24,13 +24,13 @@ import {
   type Filters,
   type OpenAction,
   type OpenQuestion,
+  workCounts,
 } from "../lib/open-items";
 import { useSaid } from "../lib/repeat";
 import { revealOrKeep } from "../lib/reveal";
 import { openOnToday } from "./AnswerOnToday";
 import { filterCanChange } from "../lib/filterbar";
 import { onSide, useSideFilter, useSides, type SideChoice } from "../lib/sides";
-import { useWaiting, waitingUnder } from "../lib/waiting";
 import { useSideSlot } from "../lib/marks";
 import { recordView, toHash, viewHref } from "../lib/views";
 import { useWords } from "../lib/wording";
@@ -115,9 +115,8 @@ export function OpenItems() {
   const sidesHeld = new Set(
     (tab === "done" ? (finished.data?.actions ?? []) : tab === "actions" ? (items.data?.actions ?? []) : (items.data?.questions ?? [])).map((r) => r.side).filter(Boolean),
   ).size;
-  // How many of the rows the open tab counts wait on the person: worked out from those rows, so the tab's number, the list and this
-  // line never disagree (the side menu counts the same rows, of both tabs, under the same side choice).
-  const needYou = tab === "actions" ? actions.filter((a) => a.needs_you).length : questions.filter((q) => q.state === "yours").length;
+  // What waits on the person is one pair of numbers, the same on both tabs and in the menu's badge, which is their sum.
+  const mine = workCounts(actions, questions);
   const total = tab === "done" ? 0 : tab === "actions" ? actions.length : questions.length;
 
   // "12 open · 1 overdue · 2 due today": the to-dos and the questions, the same rows the tabs count.
@@ -128,12 +127,8 @@ export function OpenItems() {
   // The line under the title counts what the open tab holds: the to-dos (and how many are late or due today), or the questions.
   // At most three things: the open count (the tab's number), then what is late and what is the person's own (the number the menu
   // shows); "due today" is the part given up when all four would stand, since the list has its own "Today" group.
-  const yours = needYou !== total ? ` · ${tn("open.subtitle.need", needYou)}` : "";
-  // What the menu shows beside To-dos is the server's count of both tabs' rows that wait on the person; when it is not this tab's own
-  // number, it is said here in the same words, so the figure in the menu is always one the screen says.
-  const waitingNow = useWaiting();
-  const everything = tab === "done" || !waitingNow ? null : waitingUnder(waitingNow.open, side.picked);
-  const allText = everything !== null && everything > 0 && everything !== needYou ? ` · ${tn("open.subtitle.need_all", everything)}` : "";
+  const yours = ` · ${tn("open.subtitle.need", mine.yours)}`;
+  const askedText = mine.asked > 0 ? ` · ${tn("open.subtitle.asked", mine.asked)}` : "";
   const lateText = tab === "actions" && late > 0 ? ` · ${t("open.subtitle.overdue", { n: late })}` : "";
   const dueText = tab === "actions" && dueNow > 0 && !(lateText && yours) ? ` · ${t("open.subtitle.today", { n: dueNow })}` : "";
   const subtitle =
@@ -143,7 +138,7 @@ export function OpenItems() {
         {lateText}
         {dueText}
         {yours && <span data-need-count="">{yours}</span>}
-        {allText && <span data-need-all="">{allText}</span>}
+        {askedText && <span data-asked-count="">{askedText}</span>}
       </>
     );
 
@@ -234,8 +229,8 @@ export function OpenItems() {
             value={tab}
             onChange={choose}
             options={[
-              { value: "actions", label: t("open.tab.actions"), count: items.data === undefined ? undefined : actions.length },
-              { value: "questions", label: t("open.tab.questions"), count: items.data === undefined ? undefined : questions.length },
+              { value: "actions", label: t("open.tab.actions"), count: items.data === undefined ? undefined : mine.yours },
+              { value: "questions", label: t("open.tab.questions"), count: items.data === undefined ? undefined : mine.asked },
               // A count of finished things is not a need, so this tab has none.
               { value: "done", label: t("open.tab.done") },
             ]}
@@ -647,7 +642,7 @@ function QuestionRow(props: { question: OpenQuestion; inlineOrigin: boolean }) {
       : q.state === "waiting"
         ? t("open.q.waiting_on", { name: q.to_name })
         : q.state === "later"
-          ? t("open.q.held", { name: q.to_name, date: q.held_until ? monthDay(q.held_until) : "" })
+          ? t(q.yours ? "open.q.held_yours" : "open.q.held", { name: q.to_name, date: q.held_until ? monthDay(q.held_until) : "" })
           : t("open.q.not_sent", { name: q.to_name });
   const inViews = useViewLabels(q.views);
   const meta = joinMeta([

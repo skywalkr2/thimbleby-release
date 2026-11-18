@@ -47,6 +47,8 @@ def sync(tx: Any, event_id: str, w: WriteContext, cfg: Any = None) -> list[str]:
     dropped = bool(entry.data.get("dropped"))
     since = date.fromisoformat(tx._clock()[:10])
     changed = []
+    if held:
+        _tie_siblings(tx, entry, w, cfg)
     for action in tx.find("action", {"due_event": event_id}):
         data = action.data
         if data["status"] != "open":
@@ -60,6 +62,30 @@ def sync(tx: Any, event_id: str, w: WriteContext, cfg: Any = None) -> list[str]:
             tx.update("action", action.id, {"on_hold": None}, w, read_version=action.version)
             changed.append(action.id)
     return changed
+
+
+def _tie_siblings(tx: Any, entry: Any, w: WriteContext, cfg: Any) -> None:
+    """When an entry is called off, the other open to-dos made from the same notes as one tied to it are checked for a
+    tie: one whose due words follow this entry outright is tied to it now, so it is held with the rest and doesn't go
+    overdue. A to-do whose words don't follow it is left alone."""
+    from engine.entry_ties import follows
+
+    tied = tx.find("action", {"due_event": entry.id})
+    sources = {a.data.get("source") for a in tied if a.data["status"] == "open" and a.data.get("source")}
+    if not sources:
+        return
+    for action in tx.list("action"):
+        d = action.data
+        if d["status"] != "open" or d.get("due_event") or d.get("source") not in sources:
+            continue
+        if follows(cfg, d.get("due_words"), entry):
+            tx.update(
+                "action",
+                action.id,
+                {"due_event": entry.id, "due_check": False, "proposed_event": None},
+                w,
+                read_version=action.version,
+            )
 
 
 def held_entries(view: Any, today: date) -> list[Any]:

@@ -2582,10 +2582,11 @@ class Registrar:
 
         `sources` are what the core starts reading as soon as the person signs in, so signing in is all the setup
         there is: each is `{"connector": <one of this plugin's connectors>, "label": <a name for the list>,
-        "settings": {...}, "every_minutes": 10}` (10 when left out; settings checked against the connector's, defaults
-        filling the rest). Each is added once per sign-in, and only when the workspace reads nothing with that
-        connector yet; a source the person later removes or changes stays as they left it. Choose settings that read
-        something useful with no further choice (the inbox, the main calendar); the person narrows them later.
+        "settings": {...}}` (settings checked against the connector's, defaults filling the rest; an
+        `every_minutes` is accepted and ignored: how often mail and calendars are read is the person's setting,
+        whatever plugin made the source). Each is added once per sign-in, and only when the workspace reads nothing
+        with that connector yet; a source the person later removes or changes stays as they left it. Choose settings
+        that read something useful with no further choice (the inbox, the main calendar); the person narrows them later.
 
         **The account's sent mail:** a source declared with `"sent": True` reads the folder or label the service
         keeps the person's own sent mail in (name it in the source's `settings`, as the connector's settings take it;

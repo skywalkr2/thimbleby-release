@@ -199,7 +199,7 @@ export const allProjects = [
       ...(s.base === "/" ? [{ name: `${s.name}-tables`, testMatch: /tables\.spec\.ts/, use, dependencies: [s.name] }] : []),
     ];
   }),
-  { name: "layout", testMatch: /(layout|handled|guards|internals|changed-rows|today-work|shared-rules|today-todos-46|states-phone|w1-today-lines|learned-review)\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${layout.port}/` } },
+  { name: "layout", testMatch: /(layout|handled|guards|internals|changed-rows|today-work|shared-rules|today-todos-46|states-phone|w1-today-lines|learned-review|read-back)\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${layout.port}/` } },
   { name: "access", testMatch: /work-access\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${access.port}/` } },
   { name: "one-click", testMatch: /today-one-click\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${oneClick.port}/` } },
   { name: "schedule-review", testMatch: /schedule-review\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${scheduleReview.port}/` } },

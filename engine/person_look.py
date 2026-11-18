@@ -419,6 +419,7 @@ def apply(tx: Any, op: Any, ctx: Any, w: Any) -> list[dict[str, Any]]:
                 "name": " ".join(neutralize(person.name).split())[:80],
                 "address": address,
                 "why": " ".join(neutralize(person.why).split())[:240],
+                **({"relation": rel} if (rel := " ".join(neutralize(person.relation or "").split())[:60]) else {}),
                 "from_them": from_them,
                 "to_them": to_them,
                 "status": "offered",
@@ -432,20 +433,13 @@ def apply(tx: Any, op: Any, ctx: Any, w: Any) -> list[dict[str, Any]]:
 
 def waiting_offers(store: Any) -> list[Any]:
     """The offers waiting for the person, the ones from the most messages first, then by name."""
-    addresses, names = ps._known(store)
-    found = [
-        o
-        for o in store.read().list("person_offer")
-        if o.data["status"] == "offered"
-        and o.data["address"].lower() not in addresses
-        and o.data["name"].lower() not in names
-    ]
+    found = waiting_offers_in(store.read())
     return sorted(found, key=lambda o: (-(o.data["from_them"] + o.data["to_them"]), o.data["name"].lower(), o.id))
 
 
-def settle(store: Any, cfg: Any, address: str, status: str, person: str | None = None) -> bool:
+def settle(store: Any, cfg: Any, address: str, status: str, person: str | None = None) -> str | None:
     """Mark the waiting offer for an address kept (with the person it became) or dismissed, as the person's own edit.
-    Returns whether there was one."""
+    A dismissal records a signal. Returns the change's id (which Undo takes back), or None when there was no offer."""
     from engine.applier import apply_as_person
 
     for offer in store.read().list("person_offer"):
@@ -453,7 +447,7 @@ def settle(store: Any, cfg: Any, address: str, status: str, person: str | None =
             fields: dict[str, Any] = {"status": status}
             if person:
                 fields["person"] = person
-            apply_as_person(
+            changeset = apply_as_person(
                 store,
                 cfg,
                 [
@@ -466,8 +460,99 @@ def settle(store: Any, cfg: Any, address: str, status: str, person: str | None =
                 ],
                 "Added someone the assistant offered" if status == "kept" else "Left out someone the assistant offered",
             )
-            return True
-    return False
+            if status == "dismissed":
+                _rejected(store, offer.id)
+            return changeset
+    return None
+
+
+def _rejected(store: Any, offer_id: str) -> None:
+    """The person said no to someone the assistant offered: a signal, so the repeat-correction rate sees it. It queues
+    no learning (the offer is never made again, which is what it teaches)."""
+    from engine.dispatcher import signal
+
+    signal(store, "discarded", [offer_id], note="Not this one: left out of the people the assistant offered")
+
+
+def find_waiting(view: Any, offer_id: str) -> Any | None:
+    """The offer with this id when it still waits for the person and its address and name are not on file."""
+    offer = view.get("person_offer", offer_id)
+    if offer is None or offer.data["status"] != "offered":
+        return None
+    return next((o for o in waiting_offers_in(view) if o.id == offer_id), None)
+
+
+def waiting_offers_in(view: Any) -> list[Any]:
+    """The offers still waiting in a read of the records: those whose address and name are not on file."""
+    addresses: set[str] = set()
+    names: set[str] = set()
+    for p in view.list("person"):
+        addresses.update(v.lower() for v in all_values(p.data.get("how_to_reach")))
+        names.update(n.lower() for n in [p.data["full_name"], *p.data.get("aliases", [])] if n)
+    return [
+        o
+        for o in view.list("person_offer")
+        if o.data["status"] == "offered"
+        and o.data["address"].lower() not in addresses
+        and o.data["name"].lower() not in names
+    ]
+
+
+def check_keep(ctx: Any, op: Any) -> list[str]:
+    """The problems with keeping an offer, in plain words: it no longer waits (kept, left out, or the person is on file
+    now)."""
+    if find_waiting(ctx.store.read(), op.offer) is None:
+        return ["That offer no longer stands: they are on file already, or it was answered."]
+    return []
+
+
+def apply_keep(tx: Any, op: Any, ctx: Any, w: Any) -> list[dict[str, Any]]:
+    """Add the person an offer names, as the person's own add: their name, the relation the offer gave, the sides of the
+    accounts their mail came from (those the tally shows for the address; none when it shows none, which leaves the side
+    not known) and their address as a way to reach them, and mark the offer kept with the person it became. One change,
+    so Undo takes both back."""
+    from engine import sides
+    from engine.applier import contact_kind
+    from engine.storage import StoreError
+
+    offer = tx.get("person_offer", op.offer)
+    if offer is None or offer.data["status"] != "offered":
+        raise StoreError("That offer no longer stands.")
+    address = offer.data["address"].lower()
+    data: dict[str, Any] = {"full_name": offer.data["name"], "name_verified": True}
+    if offer.data.get("relation"):
+        data["relation"] = offer.data["relation"]
+    served = next((c.sides for c in contact_tally.tally(ctx.store, ctx.cfg) if c.address == address), ())
+    if served:
+        written, why = sides.person_write(ctx.store.read(), ctx.cfg, {"sides": list(served)})
+        if why is None:
+            data |= written
+    kind = contact_kind(ctx.cfg, "email")
+    if kind and "@" in address:
+        data["how_to_reach"] = {kind: [address]}
+    person = tx.create("person", data, w)
+    tx.update("person_offer", offer.id, {"status": "kept", "person": person.id}, w, read_version=offer.version)
+    return [{"kind": "person", "id": person.id}, {"kind": "person_offer", "id": offer.id}]
+
+
+def keep(store: Any, cfg: Any, offer_id: str) -> str:
+    """Keep an offer: the person is added and the offer settled, in one change the screen can undo. Returns the
+    change's id; raises `StoreError` when the offer no longer stands."""
+    from engine.applier import apply_as_person
+    from engine.dispatcher import signal
+
+    changeset = apply_as_person(
+        store, cfg, [{"op": "person.keep_offer", "offer": offer_id}], "Added someone the assistant offered"
+    )
+    signal(store, "kept", [offer_id])
+    return changeset
+
+
+def dismiss(store: Any, cfg: Any, offer_id: str) -> str | None:
+    """Leave an offer out ("Not this one"): it is never made again and a signal records it. Returns the change's id
+    (Undo takes it back), or None when the offer no longer stood."""
+    offer = store.read().get("person_offer", offer_id)
+    return settle(store, cfg, offer.data["address"], "dismissed") if offer is not None else None
 
 
 def held_for_go(store: Any) -> Any | None:

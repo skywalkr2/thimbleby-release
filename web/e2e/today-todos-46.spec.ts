@@ -196,15 +196,16 @@ test.describe("To-dos", () => {
   test("the counts agree: the tab, the groups with the line for those that need a date, and the line under the title", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await openTodos(page);
-    const tab = await page.getByRole("button", { name: /^To-dos/ }).innerText();
-    const tabCount = Number(tab.match(/\d+/)?.[0]);
+    // The line under the title counts the open to-dos; the tab counts the ones that are yours (S-0539).
+    const opened = await page.getByText(/^\d+ open\b/).first().innerText();
+    const tabCount = Number(/^(\d+)/.exec(opened)?.[1]);
     const counts = await page.locator("[data-todo-group] [data-group-count]").allInnerTexts();
     const grouped = counts.reduce((n, c) => n + Number(c), 0);
     expect(grouped + (await needsDateCount(page))).toBe(tabCount);
     // The line under the title says how many of them need the person only when that is not all of them, never more than the tab holds.
     const needs = page.locator("[data-need-count]");
     if (await needs.count()) {
-      const said = /^· (\d+) (?:are|is) yours$|^· None are yours$/.exec((await needs.innerText()).trim());
+      const said = /^· (\d+) yours$|^· None yours$/.exec((await needs.innerText()).trim());
       expect(said, await needs.innerText()).not.toBeNull();
       expect(Number(said?.[1] ?? 0)).toBeLessThanOrEqual(tabCount);
     }

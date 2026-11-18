@@ -64,7 +64,15 @@ class Server:
         messages = Server.folders[self.folder]
         if command == "SEARCH":
             return "OK", [b" ".join(str(u).encode() for u in messages)]
-        return "OK", [(b"1 (BODY[] {10}", messages[int(args[0])]), b")"]
+        wanted = [int(u) for u in args[0].split(",")]
+        if "HEADER.FIELDS" not in args[1]:
+            return "OK", [(b"1 (BODY[] {10}", messages[wanted[0]]), b")"]
+        # A header fetch names a set of messages and is answered once for each, as a real server does.
+        parts: list = []
+        for uid in wanted:
+            head = messages[uid].split(b"\r\n\r\n", 1)[0] + b"\r\n\r\n"
+            parts += [(f"{uid} (UID {uid} FLAGS () BODY[HEADER.FIELDS (...)] {{{len(head)}}}".encode(), head), b")"]
+        return "OK", parts
 
     def logout(self):
         pass

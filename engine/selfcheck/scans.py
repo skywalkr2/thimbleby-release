@@ -26,6 +26,9 @@ CODE_DIRS = ("engine", "api", "web/src", "web/e2e", "plugins", "tests")
 CODE_SUFFIXES = {".py", ".ts", ".tsx", ".js", ".jsx", ".css", ".html", ".yaml", ".yml", ".json", ".md"}
 SKIP_PARTS = {"__pycache__", "node_modules", "fixtures", ".pytest_cache"}
 ADAPTERS = Path("engine/ai/adapters")
+#: The named place for public-service data: the names and public addresses of real businesses whose public services
+#: everyone uses (shipping carriers' tracking pages, say). Data files only; a web address there is not "a URL in code".
+PUBLIC_SERVICES = Path("engine/defaults/public_services")
 MIN_TERM = 4
 
 URL = re.compile(r"https?://[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
@@ -214,7 +217,7 @@ def scan_patterns(root: Path = REPO) -> list[Finding]:
     for path in code_files(root):
         rel = _rel(path, root)
         lines = _lines(path)
-        if any("://" in line for line in lines):
+        if any("://" in line for line in lines) and not Path(rel).is_relative_to(PUBLIC_SERVICES):
             for n, line in enumerate(lines, 1):
                 if URL.search(line):
                     findings.append(Finding("pattern", rel, n, "a URL in code; URLs belong in config or data"))
@@ -224,6 +227,31 @@ def scan_patterns(root: Path = REPO) -> list[Finding]:
                     message = "a comment that dates or attributes a decision; put the why in the decision log"
                     findings.append(Finding("pattern", rel, n, message))
                     break
+    return findings
+
+
+def scan_public_services(root: Path = REPO) -> list[Finding]:
+    """The named place for public-service data holds data files only: each one YAML that loads as a map, never code."""
+    base = root / PUBLIC_SERVICES
+    findings = []
+    if not base.is_dir():
+        return findings
+    for path in sorted(base.rglob("*")):
+        if not path.is_file() or SKIP_PARTS & set(path.relative_to(root).parts):
+            continue
+        rel = _rel(path, root)
+        if path.suffix != ".yaml":
+            findings.append(
+                Finding("public services", rel, 0, "the place for public-service data holds YAML data only")
+            )
+            continue
+        try:
+            data = load_yaml(path.read_text(encoding="utf-8"))
+        except Exception as err:  # a file that doesn't load is a finding, whatever it raises
+            findings.append(Finding("public services", rel, 0, f"doesn't load as YAML: {type(err).__name__}"))
+            continue
+        if not isinstance(data, dict):
+            findings.append(Finding("public services", rel, 0, "a public-service data file is a map of lists"))
     return findings
 
 

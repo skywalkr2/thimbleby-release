@@ -38,6 +38,9 @@ RECEIVED = datetime(2026, 11, 4, 14, 30, tzinfo=ZONE)
         ("next month", date(2026, 12, 1), date(2026, 12, 31), None, False),
         ("in two weeks", date(2026, 11, 18), date(2026, 11, 18), None, True),
         ("in 2 weeks", date(2026, 11, 18), date(2026, 11, 18), None, True),
+        ("in 2 days", date(2026, 11, 6), date(2026, 11, 6), None, True),
+        ("in 3 days", date(2026, 11, 9), date(2026, 11, 9), None, True),  # a Saturday moves on to a working day
+        ("in two working days", date(2026, 11, 6), date(2026, 11, 6), None, True),
         ("within two working days", date(2026, 11, 4), date(2026, 11, 6), None, False),
         ("within 2 working days", date(2026, 11, 4), date(2026, 11, 6), None, False),
         ("  TOMORROW   MORNING  ", date(2026, 11, 5), date(2026, 11, 5), None, False),

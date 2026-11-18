@@ -95,12 +95,20 @@ def add_rule(tx: Any, store: Any, op: Any, w: WriteContext, st: Any, *, evidence
     stage_checks = store.plugins.stage_checks
     if op.check is not None and op.check not in stage_checks:
         raise StoreError(f"there is no check called {op.check}")
+    if op.pauses is not None:
+        from engine.learn import kind_of_id
+
+        found = kind_of_id(store.plugins.records, op.pauses)
+        if found is None or tx.get(found, op.pauses) is None:
+            raise StoreError(f"{op.pauses} isn't the id of a record, so a pause can't hold it")
     kept = st.person  # the person's own words apply at once, even before the workspace knows who they are
     data: dict[str, Any] = {
         "text": " ".join(op.text.split()),
         "applies_to": join_scope(tx, op.applies_to.model_dump(mode="json", by_alias=True), store.plugins.references()),
         "check": op.check,
         "constrains": list(dict.fromkeys(op.constrains)),
+        "pauses": op.pauses,
+        "until": " ".join(op.until.split()) if op.until else None,
         "origin": st.origin,
         "trust": st.trust,
         "status": "active" if kept else "proposed",
@@ -162,4 +170,8 @@ def retire_rule(tx: Any, op: Any, w: WriteContext) -> str:
     if current.data["status"] != "active":
         raise StoreError(f"{op.id} isn't an active rule")
     tx.update("rule", op.id, {"status": "retired"}, w, read_version=current.version)
+    if current.data.get("pauses"):
+        from engine.fact_pause import queue_review
+
+        queue_review(tx, current)  # the person's "ready": the review the pause held back runs now
     return op.id

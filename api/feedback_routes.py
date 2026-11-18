@@ -6,8 +6,16 @@ import os
 
 from fastapi import APIRouter, HTTPException
 
-from api.schemas import FeedbackProblem, FeedbackProblems, ReportFacts, ReportSend, ReportSent, SlowScreenReport
-from engine import __version__, problems, report_send, slow_screens
+from api.schemas import (
+    AlphaNumbers,
+    FeedbackProblem,
+    FeedbackProblems,
+    ReportFacts,
+    ReportSend,
+    ReportSent,
+    SlowScreenReport,
+)
+from engine import __version__, alpha_measures, problems, report_send, slow_screens
 from engine.config import Config, ConfigError, load_config
 from engine.reminder_content import own_address
 from engine.storage import Store
@@ -52,6 +60,27 @@ def build_feedback_router(ws: Workspace, cfg: Config, store: Store, worker: Work
                 )
                 for p in found
             ]
+        )
+
+    @r.get("/alpha-measures")
+    def alpha_numbers() -> AlphaNumbers:
+        """The alpha's five numbers for this person, from the records on this computer: days used in the first week,
+        cost per day, corrections per day, drafts sent as written and edited, and minutes from install to a first
+        result. Nothing is sent: sharing them is the person's own Send in Report a problem."""
+        here = zone(current())
+        with store.read_scope():
+            found = alpha_measures.alpha_measures(store.read(), worker.now(), here)
+        return AlphaNumbers(
+            since=found.since,
+            until=found.until,
+            days_so_far=found.days_so_far,
+            complete=found.complete,
+            days_used=found.days_used,
+            cost_per_day=found.cost_per_day,
+            corrections_per_day=found.corrections_per_day,
+            sent_as_written=found.sent_as_written,
+            sent_edited=found.sent_edited,
+            first_result_minutes=found.first_result_minutes,
         )
 
     @r.get("/report/facts")

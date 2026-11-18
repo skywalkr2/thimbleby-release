@@ -7,6 +7,7 @@ These are plain functions: the applier passes the records in and writes what the
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from typing import Any
 
@@ -17,6 +18,34 @@ def _key(value: str | None) -> str | None:
     """A number as compared: trimmed, capitals ignored; None for nothing."""
     text = (value or "").strip().casefold()
     return text or None
+
+
+_LONG_NUMBER = re.compile(r"(?:\btracking(?:\s+(?:number|no\.?|#))?\s*[:#]?\s*)?\d{12,}", re.IGNORECASE)
+
+
+def without_number(text: str, tracking: str | None = None) -> str:
+    """Words for a screen with the delivery's tracking number left out: a run of twelve or more digits, and the entry's
+    own tracking number wherever the words repeat it, with the word "tracking" that introduces it. The number is kept
+    only in the delivery's details and the carrier's link; any text shown names the carrier and where the parcel is."""
+    out = _LONG_NUMBER.sub("", text)
+    kept = (tracking or "").strip()
+    if len(kept) >= 6:
+        out = re.sub(
+            r"(?:\btracking(?:\s+(?:number|no\.?|#))?\s*[:#]?\s*)?" + re.escape(kept), "", out, flags=re.IGNORECASE
+        )
+    out = re.sub(r"\s{2,}", " ", out)
+    out = re.sub(r"\s+([,;:.)])", r"\1", out)
+    return out.strip(" \t·-–—:,;(")
+
+
+def entry_title(data: dict[str, Any]) -> str:
+    """A calendar entry's title as shown: for a delivery, without its tracking number (the words the assistant wrote can
+    repeat it); any other entry's title as it is."""
+    title = str(data.get("title") or "")
+    delivery = data.get("delivery")
+    if not delivery:
+        return title
+    return without_number(title, delivery.get("tracking")) or str(delivery.get("carrier") or "")
 
 
 def _rank(status: str) -> int:

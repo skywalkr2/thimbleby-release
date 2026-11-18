@@ -131,6 +131,9 @@ ROUTES: dict[str, Declared] = {
     "POST /api/knowledge/{entry_id}/narrow": _local(
         "the person's own limit on what a rule or entry applies to, kept as its scope; not a note"
     ),
+    "POST /api/changesets/{cs_id}/ops/{index}/rule-answer": _local(
+        "the person's choice of which rule wins, and the projects they limit the new rule to; not a note"
+    ),
     "POST /api/knowledge/{entry_id}/discard": _local(
         "the reason the person discarded a proposal, kept with it so the same one isn't shown again; not a note"
     ),

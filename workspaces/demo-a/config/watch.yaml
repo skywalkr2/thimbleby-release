@@ -78,8 +78,14 @@ older_read_retry_minutes: 10   # a read of older mail that stopped on a failure 
 older_read_tries: 3   # carries-on in a row, without getting further, before Today offers to read the rest
 first_headers_days: 365   # days back a mail account's headers are read once at first sign-in, with no assistant work (0: not read)
 first_headers_max_items: 5000   # the most headers that first read asks for
+arrival_reads_per_day: 2   # how many times a day a parcel with no arrival day has its carrier's page read
+arrival_max_parcels: 10   # the most parcels whose carrier page is read in one pass
+arrival_page_max_chars: 6000   # the most characters of a carrier's page the assistant reads
+arrival_page_min_chars: 40   # a page with less text than this (one that only works with scripts) is not sent to the assistant
 burst_items: 5   # more changed items than this from one read of a page, feed or tracker are filed as one input per project
 failures_before_asking: 3
+mail_read_minutes: 10   # how often every mail source is read, whichever add-on made it; a source set by hand keeps its own
+calendar_read_minutes: 10   # how often every calendar source is read
 unread_gap_factor: 2   # a failing source becomes a line on Today after this many of its own read intervals
 stale_after_hours: 24   # hours without a good read before Today names a source instead of saying nothing needs you
 default_data_level: internal   # how sensitive a watched source's items are when nothing else says

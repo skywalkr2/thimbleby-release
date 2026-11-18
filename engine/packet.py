@@ -134,6 +134,10 @@ def build(ws: Workspace, store: Store, cfg: Config, request_id: str, today: date
         from engine.week_ahead import build as week_ahead_packet
 
         return week_ahead_packet(ws, store, cfg, req, kind, today)
+    if kind.name == "read-arrival":
+        from engine.delivery_arrival import build as read_arrival_packet
+
+        return read_arrival_packet(ws, store, cfg, req, kind, today)
     if kind.name == "monday-goals":
         from engine.week_goals import build as monday_goals_packet
 

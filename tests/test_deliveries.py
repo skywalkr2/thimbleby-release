@@ -14,6 +14,7 @@ from engine import schedule, today
 from engine.ai.adapters.stub import set_responder
 from engine.ai.router import Router
 from engine.applier import Context, Inputs, apply_as_person, apply_changeset, check
+from engine.config.schema import CarrierPage
 from engine.dispatcher import process, undo_changeset
 from engine.intake import hand_in
 from engine.names import People
@@ -36,6 +37,12 @@ CARRIER = "Example Freight"
 def env(tmp_path):
     ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
     cfg = ws.config(env={"COCKPIT__WORKSPACE__USER__TIMEZONE": "UTC"})
+    # The made-up carrier these tests use is the workspace's own: the app ships only real carriers.
+    cfg.ui.today.delivery_carriers_extra = [
+        CarrierPage(
+            id="made-up-freight", words=["example", "freight"], page="tracking.example.com/track?number={number}"
+        )
+    ]
     store = Store(ws.db_path, cfg=cfg)
     yield ws, cfg, store
     store.close()
@@ -442,6 +449,58 @@ def test_the_agenda_route_carries_the_delivery(env):
     }
     assert json.dumps(found).count(TRACKING_A) == 1, "the number is only inside the carrier's page address"
     assert deliveries[ORDER_B]["days"] == [] and deliveries[ORDER_B]["delivery"]["dated"] is False
+
+
+LONG_NUMBER = "92341234567890123456"
+
+
+def long_digits(text: str) -> bool:
+    import re
+
+    return re.search(r"\d{12,}", text) is not None
+
+
+def test_words_the_assistant_wrote_with_a_tracking_number_never_show_it_on_a_screen(env):
+    """S-0571: a title that repeats the number is cleaned when it is kept, and an entry kept earlier with the number in
+    its title shows without it on the agenda, the schedule and the record's name; the number stays in the details."""
+    from engine import record_page
+    from engine.record_page import display_name
+
+    _, cfg, store = env
+    first = apply(env, [delivery_op("Delivery: Oct 30", "--10-30", tracking=LONG_NUMBER, carrier=CARRIER)])
+    assert first
+    entry = next(e for e in store.read().list("event") if e.data.get("delivery"))
+    with store.transaction() as tx:  # an entry kept before the cleaning: its words hold the number
+        tx.update(
+            "event", entry.id, {"title": f"{CARRIER} · Tracking {LONG_NUMBER}"}, _ENGINE, read_version=entry.version
+        )
+    held = store.read().get("event", entry.id).data
+    assert LONG_NUMBER in held["title"] and held["delivery"]["tracking"] == LONG_NUMBER
+    shown = [i.title for i in today.agenda(store, cfg, NOW, through=date(2026, 11, 2))]
+    shown += [
+        e.item.title for d in schedule.schedule(store, cfg, NOW, date(2026, 10, 28), 6) for e in d.all_day + d.timed
+    ]
+    shown.append(display_name(held))
+    page = record_page.page(store, "event", entry.id, pm=None, cfg=cfg)
+    shown += [str(d["value"]) for d in page["details"] if d["field"] == "title"]
+    assert shown and not any(long_digits(t) or "Tracking" in t for t in shown), shown
+    assert shown[0] == CARRIER
+
+
+def test_a_title_written_with_the_number_is_kept_without_it(env):
+    _, _, store = env
+    op = delivery_op("Delivery: Oct 30", "--10-30", tracking=LONG_NUMBER, carrier=CARRIER, order=ORDER_B)
+    op["title"] = f"USPS · Tracking {LONG_NUMBER}"
+    apply(env, [op])
+    entry = next(e for e in store.read().list("event") if e.data.get("delivery"))
+    assert entry.data["title"] == "USPS" and entry.data["delivery"]["tracking"] == LONG_NUMBER
+
+
+def test_the_prompt_that_writes_a_deliverys_title_says_to_leave_the_number_out():
+    from pathlib import Path
+
+    text = (Path(__file__).parent.parent / "engine" / "prompts" / "notes.md").read_text()
+    assert "never with a tracking number" in text
 
 
 # ---- the evaluation scorer -----------------------------------------------------------------------------------------

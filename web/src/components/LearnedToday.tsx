@@ -38,6 +38,7 @@ export function LearnedLine(props: { line: S["QueueLineView"] }) {
   const list: List = line.kind === "learned" ? "daily" : "catch_up";
   const origins = line.origins ?? {};
   const sub = [
+    line.kind === "learned" && origins.person ? tn("learned.today.from_people", origins.person) : "",
     line.kind === "learned" && origins.input ? tn("learned.today.from_inputs", origins.input) : "",
     line.kind === "learned" && origins.correction ? tn("learned.today.from_corrections", origins.correction) : "",
     line.kind === "learned" && line.expired ? tn("learned.today.expired", line.expired) : "",
@@ -77,9 +78,11 @@ function ReviewDrawer(props: { list: List; onClose: () => void }) {
   const catchUp = useQuery({ queryKey: ["catch-up"], queryFn: api.catchUp, enabled: !daily });
   const found = daily ? proposals : catchUp;
   const rows = (daily ? proposals.data?.proposals : catchUp.data?.proposals) ?? [];
+  const people = (daily ? proposals.data?.people : undefined) ?? [];
   const terms = keptTogether(rows);
   const summary = daily
     ? [
+        people.length ? tn("learned.today.from_people", people.length) : "",
         proposals.data?.origins.input ? tn("learned.today.from_inputs", proposals.data.origins.input) : "",
         proposals.data?.origins.correction ? tn("learned.today.from_corrections", proposals.data.origins.correction) : "",
         proposals.data?.expired ? tn("learned.today.expired", proposals.data.expired) : "",
@@ -97,11 +100,14 @@ function ReviewDrawer(props: { list: List; onClose: () => void }) {
           <Skeleton />
         ) : found.isError ? (
           <LoadFailed message={t("learned.load_failed")} onRetry={() => void found.refetch()} />
-        ) : rows.length === 0 ? (
+        ) : rows.length + people.length === 0 ? (
           <EmptyState text={t("learned.review.empty")} />
         ) : (
           <>
             <ul className={styles.list} aria-label={daily ? t("learned.review.title") : t("learned.catch_up.title")}>
+              {people.map((o) => (
+                <PersonOfferRow key={o.id} offer={o} />
+              ))}
               {rows.map((p) => (
                 <ProposalRow key={p.id} p={p} />
               ))}
@@ -183,6 +189,49 @@ function ProposalRow(props: { p: Proposal }) {
         {!state.editing && <ProposalEvidence p={p} />}
         {p.just_this_time_before > 0 && <p className={styles.summary}>{tn("learned.said_just_this_time", p.just_this_time_before)}</p>}
         <ProposalForms p={p} state={state} />
+      </div>
+    </Row>
+  );
+}
+
+/** Someone the assistant offered to add: Keep puts them in People with the relation the offer gave and the sides their mail came from, in one change with Undo. */
+function PersonOfferRow(props: { offer: S["PersonOfferView"] }) {
+  const { t, tn } = useWords();
+  const act = useAct();
+  const { offer } = props;
+  const keep = () =>
+    void act(
+      () => api.keepPerson(offer.id),
+      (done) => ({ message: t("toast.person_kept", { name: offer.name }), undo: () => api.undo(done.changeset) }),
+    );
+  const leaveOut = () =>
+    void act(
+      () => api.leavePersonOut(offer.id),
+      (done) => ({ message: t("toast.person_left_out", { name: offer.name }), undo: () => api.undo(done.changeset) }),
+    );
+  const sides = offer.sides ?? [];
+  const meta = [
+    offer.relation ? t("learned.person.relation", { relation: offer.relation }) : "",
+    sides.length ? t("learned.person.on_sides", { sides: sides.join(", ") }) : "",
+    tn("learned.person.messages", offer.count),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <Row
+      data-person-offer={offer.id}
+      pill={<Pill>{t("learned.person.pill")}</Pill>}
+      title={offer.name}
+      meta={meta}
+      primary={
+        <Button size="sm" variant="primary" onClick={keep}>
+          {t("learned.person.keep")}
+        </Button>
+      }
+      menu={<RowMenu label={offer.name} actions={[{ id: "not-this-one", label: t("learned.person.not_this_one"), run: leaveOut }]} />}
+    >
+      <div className={styles.detail}>
+        <p className={styles.summary}>{offer.why}</p>
       </div>
     </Row>
   );

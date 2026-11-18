@@ -18,6 +18,8 @@ import { ProjectProposalRow } from "./NextSteps";
 import { OpRow, SourcePanel } from "./WhatChanged";
 import { ItemList } from "../ui/ItemList";
 import { NoteBox } from "./NoteBox";
+import { NarrowRule } from "./NarrowRule";
+import { ReadBack } from "./ReadBack";
 
 /** The parts of a line the decision reads: a held line on Today, or a held row inside a batch. */
 export type HeldLine = Pick<QueueLine, "changeset" | "op" | "held" | "request" | "title" | "waiting">;
@@ -55,6 +57,7 @@ export function HeldDetail(props: { line: HeldLine }) {
     ...(answers.other ? [{ id: "other", ...answers.other, primary: false }] : []),
     { id: "primary", ...answers.primary, primary: true },
     ...answers.menu.map((m) => ({ ...m, primary: false })),
+    ...(answers.narrow ? [{ id: "narrow", ...answers.narrow, primary: false }] : []),
   ];
   return (
     <section className={styles.held} aria-label={heldTitle(ask, t)}>
@@ -91,6 +94,12 @@ export function HeldDetail(props: { line: HeldLine }) {
             </dd>
           </Definition>
         )}
+        {(ask.against ?? []).length > 0 && (
+          <Definition>
+            <dt>{t("queue.held.detail.against")}</dt>
+            <dd>{(ask.against ?? []).join("; ")}</dd>
+          </Definition>
+        )}
         {line.waiting && (
           <Definition>
             <dt>{t("queue.held.detail.reason")}</dt>
@@ -106,6 +115,8 @@ export function HeldDetail(props: { line: HeldLine }) {
           </Button>
         ))}
       </div>
+      {answers.narrowing && <NarrowRule back={op?.read_back} onSave={answers.saveNarrow} onCancel={answers.closeNarrow} />}
+      {op?.read_back && <ReadBack back={op.read_back} />}
       {answers.noting && answers.other && <NoteBox sends={[{ label: answers.other.label, run: answers.declineWithNote }]} onClose={answers.closeNote} />}
     </section>
   );

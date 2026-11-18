@@ -16,7 +16,8 @@ What to answer:
   parcel" gives them), and "status" "on_its_way", "out_for_delivery" (the page says it is out for delivery today) or
   "arrived" (the page says it was delivered). Its "start" is that day as YYYY-MM-DD; when the page gives a window of
   days, "start" is the first and "end" the last. Its "evidence" quotes, word for word, the words of the page that give the
-  day. Its "title" is a few words naming the delivery.
+  day. Its "title" is a few words naming the delivery, with the carrier or shop and what is in it; never with the
+  tracking number or any long number, which belong only in "delivery".
 - A day with no year is the next such day on or after today. A word such as "today" or "tomorrow" is today or the day
   after today, only when the page says it as the day the parcel is expected.
 - When the page states no day, answer with an empty "ops" list and say so in the summary. A page that asks to sign in,

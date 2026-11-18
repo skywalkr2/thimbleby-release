@@ -146,7 +146,8 @@ def _rule_line(rule: Any, *, one_line: bool = False) -> str:
     data = rule.data
     lines = [line.strip() for line in data["text"].splitlines() if line.strip()]
     text = (lines[0] if one_line else " ".join(lines)) if lines else data["name"]
-    return f"- {rule.id}: {text}{_origin_note(data)}"
+    pause = f" (pauses {data['pauses']} until {data['until']})" if data.get("pauses") else ""
+    return f"- {rule.id}: {text}{pause}{_origin_note(data)}"
 
 
 def _entry_line(stored: Any) -> str:

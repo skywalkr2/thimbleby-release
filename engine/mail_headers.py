@@ -32,7 +32,13 @@ _SHOWN_SUBJECT = 60
 
 def asker(store: Any, source: Any) -> Any:
     """How the source is asked for headers alone: its plugin connector's `headers` function as the plugin host wraps
-    it, or None when the connector can't be asked (a connector that says nothing about headers works as before)."""
+    it, or the core mailbox connector's own header fetch, or None when the connector can't be asked (a connector that
+    says nothing about headers works as before)."""
+    from engine.connectors import header_mail
+
+    core = header_mail(source.connector)
+    if core is not None:
+        return core
     plugins = getattr(store, "plugins", None)
     connector = plugins.connectors().get(source.connector) if plugins is not None else None
     if connector is None or getattr(connector, "headers", None) is None:
@@ -68,6 +74,10 @@ def read_first(ws: Any, store: Any, cfg: Any, source: Any, now: datetime, before
 
 
 def _settings_of(store: Any, source: Any) -> Any:
+    from engine.connectors import CORE
+
+    if source.connector in CORE:
+        return CORE[source.connector].settings.model_validate(source.settings)
     connector = store.plugins.connectors()[source.connector]
     return connector.settings.model_validate(source.settings)
 

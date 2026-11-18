@@ -115,6 +115,7 @@ export const MERGED_ROWS: Record<string, string[]> = {
   ],
   brief_times: ["steward.brief.morning_from", "steward.brief.evening_from", "steward.brief.weekly_day"],
   quiet_hours: ["steward.reminders.quiet_start", "steward.reminders.quiet_end"],
+  read_intervals: ["watch.mail_read_minutes", "watch.calendar_read_minutes"],
 };
 
 /** What a list of settings shows, in order: a setting as a row of its own, or a merged row. A row is merged only when every

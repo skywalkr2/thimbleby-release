@@ -29,7 +29,7 @@ WORKSPACE_FOLDER = "workspace"
 LOG_FILE = "desktop.log"
 #: The add-ons bundled in the installed app that its first workspace starts with turned on (a workspace made any other
 #: way keeps the setting `server.new_workspace_addons`, empty by default).
-INSTALLED_APP_ADDONS = ("parcels",)
+INSTALLED_APP_ADDONS: tuple[str, ...] = ()
 
 
 def places(

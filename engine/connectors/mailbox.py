@@ -419,6 +419,74 @@ def read_older(settings: MailboxSettings, since: date, before: date, limit: int,
         _close(server)
 
 
+_HEADER_FIELDS = "FROM TO CC DATE SUBJECT MESSAGE-ID LIST-UNSUBSCRIBE PRECEDENCE"
+_HEADER_BATCH = 200
+
+
+def header_item(raw: bytes, seen: bool) -> SourceItem | None:
+    """A message's header alone as an item: the same key, sender, participants and bulk mark a full read gives, the
+    subject as its title, whether it was opened, and no text and no files. None when it has no Message-ID."""
+    message = email.message_from_bytes(raw, policy=email.policy.default)
+    key = str(message.get("Message-ID") or "").strip()
+    if not key:
+        return None
+    subject = " ".join(str(message.get("Subject") or "(no subject)").split())
+    sender = " ".join(str(message.get("From") or "").split()) or None
+    details = MessageDetails(
+        sender=sender,
+        received=_received(str(message.get("Date") or "")),
+        bulk=is_bulk(message),
+        participants=participants(message),
+        unread=not seen,
+        where="inbox",
+    )
+    return SourceItem(key, subject[:200], "", sender, str(message.get("Date") or "") or None, message=details)
+
+
+def read_headers(
+    settings: MailboxSettings, since: date, before: date, limit: int, context: ConnectorContext
+) -> list[SourceItem]:
+    """The headers of the newest `limit` messages in the folder dated from `since` up to `before`, fetched with IMAP's
+    own header fetch: no text, no files, nothing marked read. A message the server won't give is left out."""
+    server = _open(settings)
+    try:
+        uids = _older_uids(server, settings, since, before)[-limit:]
+        items: list[SourceItem] = []
+        used: dict[str, int] = {}
+        for start in range(0, len(uids), _HEADER_BATCH):
+            batch = uids[start : start + _HEADER_BATCH]
+            try:
+                status, parts = server.uid(
+                    "FETCH", ",".join(str(u) for u in batch), f"(FLAGS BODY.PEEK[HEADER.FIELDS ({_HEADER_FIELDS})])"
+                )
+            except imaplib.IMAP4.error:
+                continue
+            if status != "OK":
+                continue
+            listed = list(parts or [])
+            for at, part in enumerate(listed):
+                if not (isinstance(part, tuple) and len(part) > 1 and isinstance(part[0], bytes)):
+                    continue
+                # A server may say the flags before the header's text or after it, in the bytes that close the answer.
+                after = listed[at + 1] if at + 1 < len(listed) and isinstance(listed[at + 1], bytes) else b""
+                try:
+                    item = header_item(part[1], b"\\Seen" in part[0] or b"\\Seen" in after)
+                except Exception as err:  # a broken header only leaves that one message out
+                    log.warning("A message header couldn't be read: %s", type(err).__name__)
+                    continue
+                if item is None:
+                    continue
+                used[item.key] = used.get(item.key, 0) + 1
+                if used[item.key] > 1:
+                    item = replace(item, key=f"{item.key}#{used[item.key]}")
+                items.append(item)
+        return items
+    except (imaplib.IMAP4.abort, TimeoutError, OSError):
+        raise ConnectorError("outage", "the mail server stopped answering") from None
+    finally:
+        _close(server)
+
+
 @dataclass(frozen=True)
 class Folders:
     """The folders of a mailbox that can be read, the one the server marks as the sent mail and the one it marks as the

@@ -51,7 +51,9 @@ What to propose:
   plain words. Use "routing.add" when the correction shows who answers or owns a kind of question or work, with the
   person's id from the people list. Use "glossary.add" for a term or acronym the correction explains. Use "style.add"
   for what a recipient wants or avoids in what is written to them. Use "rule.add" only when the user's own words in the
-  correction state a standing instruction ("from now on ...", "never ..."); it waits for the user either way.
+  correction state a standing instruction ("from now on ...", "never ..."); it waits for the user either way. When it
+  says the opposite of an active rule in the list, so that both cannot be followed, put that rule's id in "contradicts";
+  leave it out when the two merely touch the same things.
 - When the user rejects asking someone at all ("not my job", "we are not their boss"), propose that person's stance with
   "person.stance" instead of a lesson: "report_to" when the user answers to them, "watch" when the user only follows what
   they do, or "alongside" for "not my place to ask about their design". Use the person's id from the people list; it

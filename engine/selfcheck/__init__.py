@@ -20,6 +20,7 @@ from engine.selfcheck.scans import (
     scan_config_coverage,
     scan_patterns,
     scan_providers,
+    scan_public_services,
     scan_specificity,
 )
 from engine.selfcheck.skills import check_skills_named
@@ -160,6 +161,7 @@ def run(private_workspace: Path | None = None, *, out: Callable[[str], None] = p
         ("provider scan", lambda: scan_providers(_fixture_ai_names())),
         ("pattern scan", scan_patterns),
         ("boundary scan", scan_boundary),
+        ("public-service data", scan_public_services),
         ("config coverage", scan_config_coverage),
         ("file names", check_name_case),
         ("merge conflicts", check_conflict_markers),

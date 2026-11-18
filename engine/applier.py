@@ -26,14 +26,18 @@ from engine import (
     deliveries,
     draft_checks,
     endings,
+    fact_pause,
+    fact_use,
     id_words,
     knowledge,
     learn,
     outward,
     proposals,
+    read_back,
     redactions,
     reminder_entries,
     reply_lines,
+    rule_contradiction,
     scope,
     sides,
     signature_contact,
@@ -102,6 +106,7 @@ from engine.ops import (
     PersonAwayOp,
     PersonContactOp,
     PersonForgetOp,
+    PersonKeepOfferOp,
     PersonOfferOp,
     PersonStanceOp,
     ProjectAddOp,
@@ -368,6 +373,12 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
     def refuse(i: int, check_name: str, message: str) -> None:
         problems.append(Problem(check_name, "refuse", i, message))
 
+    pauses = (
+        fact_pause.holding(view, ctx.inputs.source, ctx.inputs.request)
+        if ctx.actor != "pm" and not _from_pm(view, ctx)
+        else []
+    )
+
     def lint(i: int, name: str, message: str) -> None:
         severity = lints.get(name, "off")
         if severity == "return" and name in WORDING_LINTS and not _reaches_someone_else(cs.ops[i], ctx):
@@ -426,6 +437,20 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
                 continue
             if isinstance(op, ActDraftOp) and ctx.actor != "pm" and op.target.kind == "message":
                 _single_out(i, op.parts.values(), singling_out.group_of(ctx.people, acts.op_recipients(op)), ctx, lint)
+            if isinstance(op, ActDraftOp) and op.reminder is None and op.notice is None:
+                if (why := _facts_stated_problem(op, view)) is not None:
+                    refuse(i, "inferred-fact", why)
+                    continue
+                for late in fact_use.stale(
+                    view, ctx.cfg, op.facts, local_day(datetime.fromisoformat(ctx.store.clock()), zone(ctx.cfg))
+                ):
+                    lint(
+                        i,
+                        "stale-fact",
+                        ctx.cfg.language.messages.stale_fact.format(
+                            fact=late.fact.data["text"], as_of=late.as_of.isoformat(), days=late.days, limit=late.limit
+                        ),
+                    )
             if isinstance(op, (ActDraftOp, ActEditOp)):
                 held = view.get("act", op.id) if isinstance(op, ActEditOp) else None
                 drawn = (
@@ -440,6 +465,10 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
         # The person's own note saying they already asked is theirs to file; outside content never is.
         if name in PERSON_ONLY_OPS and ctx.actor != "pm" and not (name == "question.mark_sent" and _from_pm(view, ctx)):
             refuse(i, "person-only", f"only the person can use {name}")
+            continue
+        # A document the person said is still being edited yields facts only until they say it is ready.
+        if pauses and name in fact_pause.PAUSED_OPS:
+            refuse(i, "paused", fact_pause.refusal(pauses[0], name))
             continue
         # What others read never names the assistant, whoever wrote it but the person on their own screen.
         if ctx.actor != "pm" and (why := outward.op_problem(op, assistant_names)) is not None:
@@ -827,6 +856,13 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
             if said:
                 refuse(i, "targets", "; ".join(said))
                 continue
+        if isinstance(op, PersonKeepOfferOp):
+            from engine import person_look
+
+            said = person_look.check_keep(ctx, op)
+            if said:
+                refuse(i, "targets", "; ".join(said))
+                continue
         if isinstance(op, PersonStanceOp):
             if view.get("person", op.id) is None:
                 refuse(i, "targets", f"there is no person {op.id}")
@@ -969,6 +1005,8 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
                     "one promise per owner: for two people who each owe it, add one action each; for work they do "
                     'together, keep one action with both owners and leave "promised_to" out',
                 )
+            if ctx.actor != "pm" and (why := _put_off_problem(view, ctx)) is not None:
+                refuse(i, "put-off-question", why)
             if op.due_at_event and not (op.event or op.series):
                 refuse(i, "targets", "a date at a calendar entry needs the entry: give its event or series")
             if op.reply_owed and (why := _reply_owed_problem(view, ctx, op)) is not None:
@@ -1076,6 +1114,19 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
                     lint(i, found_name, found)
                 for found_name, found in scope.stance_findings(op, view, ctx.people, ctx.cfg.steward):
                     lint(i, found_name, found)
+                if isinstance(op, QuestionAddOp):
+                    here = zone(ctx.cfg)
+                    from engine.facts import received_on
+
+                    for found_name, found in scope.chase_findings(
+                        op,
+                        view,
+                        ctx.people,
+                        ctx.cfg.ui.followups,
+                        received_on(view, ctx.inputs.request, ctx.inputs.source, here),
+                        local_day(datetime.fromisoformat(ctx.store.clock()), here),
+                    ):
+                        lint(i, found_name, found)
                 if (why := understand.finding(op, view, ctx.cfg, ctx.inputs.source)) is not None:
                     lint(i, "understand-tracks", why)
             if (
@@ -1127,6 +1178,14 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
             else:
                 held = why if reported else "changes how the product behaves; needs your confirmation"
             problems.append(Problem("tier", "hold", i, held))
+        # A rule the person states that contradicts one in force waits even though they typed it: they say which wins.
+        against = (
+            rule_contradiction.contradicted(view, op)
+            if isinstance(op, RuleAddOp) and op.contradicts and not ctx.confirmed_by_pm and _from_pm(view, ctx)
+            else []
+        )
+        if against:
+            problems.append(Problem(rule_contradiction.CHECK, "hold", i, rule_contradiction.held_message(against)))
         # An outbound op is never applied on its own: from the assistant it waits for the person.
         if (
             ctx.store.plugins.tiers.get(name) == "outbound"
@@ -2101,6 +2160,15 @@ class OpOutcome:
     label: str | None = None
     reporter: str | None = None  # for a held ending: who the input says reported it, credited when it is kept
     answer_group: str | None = None  # the label its task kind gave it, so the review shows the answer by group
+    read_back: dict[str, Any] | None = None  # for a rule: what it applies to, leaves alone, overlaps and would change
+
+
+def _read_back(op: OpModel, view: Any, ctx: Context) -> dict[str, Any] | None:
+    """The read-back of a rule being added, worked out before it is applied so its overlaps and its count are what the
+    person's words would change (design 6.7). Nothing for any other op."""
+    if not isinstance(op, RuleAddOp):
+        return None
+    return read_back.read_back(ctx.store, view, op.applies_to, op.constrains, people=ctx.people)
 
 
 def _label(op: OpModel, view: Any = None, store: Store | None = None) -> str | None:
@@ -2391,6 +2459,7 @@ def apply_changeset(
                     op.group or f"op{i}",
                     problems=[asdict(p) for p in mine],
                     label=_label(op, tx, ctx.store),
+                    read_back=_read_back(op, tx, ctx),
                 )
                 if any(p.severity == "refuse" for p in mine):
                     outcome.status = "refused"
@@ -2599,10 +2668,28 @@ OWNER_HELD_LINTS = OWNER_WORDING_LINTS
 
 
 def _reaches_someone_else(op: OpModel, ctx: Context) -> bool:
-    """Whether the op's item will be put in front of another person, as a question to someone other than the PM."""
+    """Whether the op's item will be put in front of another person: a question to someone other than the PM, or a draft
+    with a recipient other than the PM."""
     if isinstance(op, QuestionAddOp):
         return ctx.people.resolve(op.to).person != ctx.people.pm
+    if isinstance(op, ActDraftOp):
+        return any(ctx.people.resolve(who).person != ctx.people.pm for who in acts.op_recipients(op))
     return False
+
+
+def _facts_stated_problem(op: ActDraftOp, view: Any) -> str | None:
+    """Why the facts a draft states can't go to its readers, or None: a fact named that doesn't exist, or one the
+    assistant only inferred (named, or whose words the content states). The person confirms an inference first."""
+    for fact_id in op.facts:
+        if view.get("fact", fact_id) is None:
+            return f"{fact_id} isn't the id of a fact, so the draft can't state it"
+    guessed = fact_use.inferred(view, op.facts, op.parts.values())
+    if guessed:
+        return (
+            f"{guessed[0].id} ({guessed[0].data['text']}) was only inferred, and what is only inferred is never stated "
+            "to anyone else: leave it out, ask the person, or let them confirm it first"
+        )
+    return None
 
 
 def _owned_by_someone_else(op: OpModel, ctx: Context) -> bool:
@@ -2946,6 +3033,27 @@ def _thread_linked(view: Any, ctx: Context, among: set[str] | None = None) -> di
         if len(quote.split()) >= THREAD_PROMISE_MIN_WORDS and normalize(quote) in history:
             linked[action_id] = quote
     return linked
+
+
+def _put_off_problem(view: Any, ctx: Context) -> str | None:
+    """Why a to-do made by a run about a question is refused: the person put that question off to a later day, so it
+    comes back then and is the follow-up. A rule on the question's hold, never on the words of the to-do."""
+    from engine import answer_hold
+
+    request = view.get("request", ctx.inputs.request) if ctx.inputs.request else None
+    about = (request.data.get("about") or {}) if request is not None else {}
+    if about.get("kind") != "question":
+        return None
+    question = view.get("question", about.get("id") or "")
+    if question is None:
+        return None
+    today = datetime.fromisoformat(ctx.store.clock()).astimezone(zone(ctx.cfg)).date()
+    if not answer_hold.is_put_off(view, question.data, today, zone(ctx.cfg)):
+        return None
+    return (
+        f"the person put {question.id} ({question.data['title']!r}) off to a later day: it comes back then, so no "
+        "to-do is added for the same thing"
+    )
 
 
 def _thread_promise_unanswered(cs: ChangesetIn, ctx: Context) -> list[Problem]:
@@ -4429,6 +4537,13 @@ def _apply_op(
             "trust": trust,
         }
         if op.delivery is not None:
+            # The words the assistant wrote never carry the tracking number: it stays in the delivery's details.
+            data["title"] = (
+                deliveries.without_number(op.title, op.delivery.tracking)
+                or op.delivery.carrier
+                or op.delivery.order
+                or op.title
+            )
             received = _received_day(ctx, tx, None)
             kept = deliveries.match(tx.list("event"), op.delivery.order, op.delivery.tracking)
             if kept is not None:
@@ -4755,6 +4870,11 @@ def _apply_op(
 
         for ref in area_offers.apply(tx, op, ctx, w):
             made(ref["kind"], ref["id"])
+    elif isinstance(op, PersonKeepOfferOp):
+        from engine import person_look
+
+        for ref in person_look.apply_keep(tx, op, ctx, w):
+            made(ref["kind"], ref["id"])
     elif isinstance(op, PersonOfferOp):
         from engine import person_look
 
@@ -4847,6 +4967,7 @@ def _read_due(tx: Tx, ctx: Context, source: str | None, words: str | None) -> Du
         locale=locale,
         lead_words=language_words(settings, "due_lead_words"),
         before_words=language_words(settings, "due_before_words"),
+        span_words=language_words(settings, "due_span_words"),
         ordinal_suffixes=language_words(settings, "due_ordinal_suffixes"),
         phrase_words=language_words(settings, "due_phrase_words"),
         number_words=language_words(settings, "due_number_words"),
@@ -4900,7 +5021,11 @@ def _condition(tx: Tx, ctx: Context, source: str | None, words: str, today: date
     ):
         return None, None
     if is_condition(words, language_words(settings, "due_hold_words")):
-        return "hold", None
+        from engine import entry_ties
+
+        # "after Thursday's meeting": a step on the calendar the to-do may follow, for the assistant to tie or not.
+        step = entry_ties.followed(tx, ctx.cfg, words, today.isoformat())
+        return ("event", step.id) if step is not None else ("hold", None)
     named = after_marker(words, language_words(settings, "due_before_words"))
     if named:
         found = named_entry(tx.list("event"), named, today.isoformat())

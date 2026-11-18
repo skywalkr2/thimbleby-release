@@ -92,6 +92,14 @@ dates:
     expiry: 14
     warranty: 30
     bill: 3
+facts:
+  freshness_days:
+    deadline: 30   # days old a fact about a deadline may be when a draft for someone else states it; older is held for a check, 0 never holds
+    renewal: 60
+    expiry: 60
+    warranty: 180
+    bill: 30
+    other: 90   # any other fact
 areas:
   propose_after: 3   # items under the personal project sharing a word before an area is offered; 0 never offers one
 capture:

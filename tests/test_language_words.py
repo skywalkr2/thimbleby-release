@@ -31,6 +31,8 @@ ADDED = {
     "recurring_day_patterns",
     "unnamed_item_phrases",
     "away_words",
+    "due_span_words",
+    "answer_later_words",
 }
 
 

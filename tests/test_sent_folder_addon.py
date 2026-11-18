@@ -65,7 +65,7 @@ def test_an_add_on_mails_sent_folder_is_added_as_a_source_of_its_own_credited_to
     assert done.status_code == 200, done.text
     (sent,) = [s for s in sources(ws) if s["id"] != inbox["id"] and s["connector"] == "p18/inbox"]
     assert sent["settings"] == {"folder": "Sent Items"} and sent["label"] == "Your inbox (Sent Items)"
-    assert sent.get("author") == person and sent["every_minutes"] == inbox["every_minutes"]
+    assert sent.get("author") == person and sent.get("every_minutes") == inbox.get("every_minutes")
     # Taking it again is refused in words, and so is a choice of nothing.
     again = c.post(f"{api}/watch/{inbox['id']}/sent-folder", json=_body(c, api, folder="Sent Items"))
     assert again.status_code == 400 and "Choose a folder" in again.json()["detail"]

@@ -37,7 +37,7 @@ from api.schemas import (
     QuestionRewordIn,
     QuestionSentIn,
 )
-from engine import not_mine
+from engine import answer_hold, not_mine
 from engine.applier import apply_as_person, fold_unowned
 from engine.config import Config, load_config
 from engine.corrections import CHANGEABLE, missed_one, request_change
@@ -250,6 +250,10 @@ def build_correction_router(ws: Workspace, cfg: Config, store: Store, events: Ev
         if record_kind is None:
             raise HTTPException(status_code=404, detail=f"A change can't be asked for on a {kind}.")
         need(record_kind, id)
+        if record_kind == "question" and guard(lambda: answer_hold.hold(store, cfg, id, body.note)) is not None:
+            # Words that put a question off to a later day hold it there: no correction, no run, no second to-do.
+            events.changed()
+            return ChangeRequested(ok=id)
         request, signal_id = guard(lambda: request_change(ws, store, cfg, kind, id, body.note))
         if request is not None:
             worker.poke()

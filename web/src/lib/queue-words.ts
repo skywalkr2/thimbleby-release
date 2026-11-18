@@ -57,6 +57,8 @@ export function heldTitle(held: S["HeldAsk"], t: T): string {
       return t("queue.held.q.effort", { item, time: effortTime(held, t) });
     case "remind":
       return t("queue.held.q.remind", { item, day: held.day ? day(held.day) : "" });
+    case "contradiction":
+      return t("queue.held.q.contradiction", { item });
     default:
       return item;
   }
@@ -94,6 +96,8 @@ export function heldAnswers(held: S["HeldAsk"], t: T): { primary: string; other:
       return { primary: t("queue.held.a.effort", { time: effortTime(held, t) }), other: held.from_value ? t("queue.held.k.effort", { time: effortTime({ ...held, value: held.from_value }, t) }) : t("queue.held.k.same") };
     case "remind":
       return { primary: t("queue.held.a.remind", { when: held.value ? wallWhen(held.value) : "" }), other: held.from_value ? t("queue.held.k.remind", { when: wallWhen(held.from_value) }) : t("queue.held.k.no_remind") };
+    case "contradiction":
+      return { primary: t("queue.held.a.contradiction"), other: t("queue.held.k.contradiction") };
     default:
       return { primary: t("queue.held.a.close"), other: t("queue.held.k.close") };
   }

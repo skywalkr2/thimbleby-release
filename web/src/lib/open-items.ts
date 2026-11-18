@@ -82,3 +82,11 @@ export function groupActions(rows: OpenAction[], today: string): Array<{ group: 
 
 /** How many of the rows are due today, for the line under the title. */
 export const dueToday = (rows: OpenAction[], today: string): number => rows.filter((a) => a.state !== "overdue" && !!a.due && a.due.slice(0, 10) === today).length;
+
+/** What waits on the person across To-dos: their own to-dos (the server marks each `needs_you`) and the questions put to them.
+ * The tabs, the line under the title and the side menu's badge all say these numbers, so the badge is always their sum. */
+export function workCounts(actions: OpenAction[], questions: Array<{ state: string }>): { yours: number; asked: number; sum: number } {
+  const yours = actions.filter((a) => a.needs_you).length;
+  const asked = questions.filter((q) => q.state === "yours").length;
+  return { yours, asked, sum: yours + asked };
+}

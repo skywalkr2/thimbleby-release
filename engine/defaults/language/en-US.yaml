@@ -197,6 +197,11 @@ due_condition_words: [once, after, before, when, whenever, until, till, if, unle
 due_hold_words: [once, after, when, whenever, until, till, if, unless, upon, as soon as, of receiving, of receipt]
 # Of those, the ones after which a calendar entry may be named ("before the print sync").
 due_before_words: [before]
+# The words before a span that says how far ahead a day is ("in 2 days").
+due_span_words: [in]
+# The words of an answer that put a question off to a later day ("let's follow up on this in 2 days").
+answer_later_words: [follow up, follow-up, followup, revisit, circle back, come back to this, come back to it, check back,
+  ask me again, remind me, pick this up, look at this again, look at it again, talk about this again]
 # The day-and-time phrases the date reader knows, by what they mean. Each meaning is a list of whole phrases.
 due_phrase_words:
   day_after_tomorrow: [day after tomorrow]

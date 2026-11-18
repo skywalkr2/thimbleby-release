@@ -38,6 +38,8 @@ DEFAULT_CONDITION_WORDS = tuple(shipped("due_condition_words"))
 DEFAULT_HOLD_WORDS = tuple(shipped("due_hold_words"))
 #: The condition words after which a calendar entry may be named: a due "before the print sync" is due at that entry.
 DEFAULT_BEFORE_WORDS = tuple(shipped("due_before_words"))
+#: The words before a span that says how far ahead a day is: "in 2 days" is the second day from the received day.
+DEFAULT_SPAN_WORDS = tuple(shipped("due_span_words"))
 #: The verbs a task's title starts with: a plain calendar entry whose first word is one is offered as a to-do.
 DEFAULT_TASK_VERBS = tuple(shipped("task_verbs"))
 #: The words of the day-and-time phrases the date reader knows, by what they mean. Each is a list of whole phrases.
@@ -232,6 +234,7 @@ def resolve(
     end_of_day: time = time(17),
     lead_words: Sequence[str] = DEFAULT_LEAD_WORDS,
     before_words: Sequence[str] = DEFAULT_BEFORE_WORDS,
+    span_words: Sequence[str] = DEFAULT_SPAN_WORDS,
     ordinal_suffixes: Sequence[str] = DEFAULT_ORDINAL_SUFFIXES,
     phrase_words: Mapping[str, Sequence[str]] | None = None,
     number_words: Mapping[str, int] | None = None,
@@ -291,6 +294,7 @@ def resolve(
             end_of_day=end_of_day,
             lead_words=lead_words,
             before_words=before_words,
+            span_words=span_words,
             ordinal_suffixes=ordinal_suffixes,
             phrase_words=phrase_words,
             number_words=number_words,
@@ -631,6 +635,26 @@ def resolve(
         for unit in ("hours", "days", "working_days")
     }
     unit_text = "|".join(f"(?P<{unit}>{text})" for unit, text in units.items())
+    spans = "|".join(re.escape(_plain(w)) for w in sorted(span_words, key=len, reverse=True) if w.strip()) or "(?!)"
+    if (match := re.fullmatch(rf"(?:{spans}) (\d+{'|' + count if count else ''}) (?:{unit_text})", value)) and not (
+        match["hours"]
+    ):
+        # "in 2 days" is one day: that many days on (working days when it says so), moved on to a working day.
+        amount = int(match[1]) if match[1].isdigit() else numbers[match[1]]
+        if not 1 <= amount <= 1000:
+            return unknown("That span is not read; no date was guessed.")
+        deadline = today
+        if match["working_days"]:
+            remaining = amount
+            while remaining:
+                deadline += timedelta(days=1)
+                if deadline.weekday() in weekdays:
+                    remaining -= 1
+            return single(deadline, f"{amount} working days after the received day.")
+        deadline = today + timedelta(days=amount)
+        while deadline.weekday() not in weekdays:
+            deadline += timedelta(days=1)
+        return single(deadline, f"{amount} days after the received day, moved on to a working day.")
     if match := re.fullmatch(rf"(?:{within}) (\d+{'|' + count if count else ''}) (?:{unit_text})", value):
         amount = int(match[1]) if match[1].isdigit() else numbers[match[1]]
         if not 1 <= amount <= 1000:

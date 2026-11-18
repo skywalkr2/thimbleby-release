@@ -2081,7 +2081,15 @@ class Rule(Record):
     layout: ClassVar[str | None] = "rules/{id}"
     unique: ClassVar[tuple[tuple[str, ...], ...]] = (("name",),)
     #: Where a rule came from and when never change after it is made.
-    fixed_fields: ClassVar[tuple[str, ...]] = ("origin", "trust", "learned_at", "evidence", "more_evidence")
+    fixed_fields: ClassVar[tuple[str, ...]] = (
+        "origin",
+        "trust",
+        "learned_at",
+        "evidence",
+        "more_evidence",
+        "pauses",
+        "until",
+    )
 
     name: str = Field(
         min_length=1,
@@ -2127,6 +2135,14 @@ class Rule(Record):
     reviewed_at: datetime | None = Field(
         None,
         description="When the person last chose to keep it in a review; the clock for its next review starts here.",
+    )
+    pauses: str | None = Field(
+        None,
+        description="The id of a record this rule pauses: while it is active, a change to that record is recorded as "
+        "a fact only, with no question to anyone. Needs `until`. The person saying it is ready retires the rule.",
+    )
+    until: str | None = Field(
+        None, description='With `pauses`: when the pause ends, in the person\'s words (such as "I say it is ready").'
     )
 
 
@@ -3115,6 +3131,11 @@ class Act(Record):
     sources: list[Annotated[str, RefTo("source")]] = Field(
         default_factory=list, description="The saved inputs the content draws on."
     )
+    facts: list[Annotated[str, RefTo("fact")]] = Field(
+        default_factory=list,
+        description="The facts the content states to its readers. An inferred fact is never one of them, and a fact "
+        "older than its freshness limit is held for a check.",
+    )
     in_reply_to: Annotated[str | None, RefTo("source")] = Field(
         None, description="The message this answers; the people in that thread are people it may address."
     )
@@ -3194,6 +3215,12 @@ class PersonOffer(Record):
     address: str = Field(min_length=3, max_length=254, description="The address, in lower case.")
     why: str = Field(
         min_length=1, max_length=240, description="In a sentence, why this is someone the person deals with."
+    )
+    relation: str | None = Field(
+        None,
+        max_length=60,
+        description="How they relate to the person, in a few plain words ('your accountant'), when the assistant's "
+        "line shows it; kept as their relation when the person keeps the offer.",
     )
     from_them: int = Field(0, ge=0, description="How many messages came from them when it was offered.")
     to_them: int = Field(0, ge=0, description="How many messages the person sent them when it was offered.")
@@ -3331,6 +3358,7 @@ REFERENCES: dict[str, list[tuple[str, str]]] = {
         ("reminder", "action"),
         ("run", "run"),
         ("sources[]", "source"),
+        ("facts[]", "fact"),
         ("in_reply_to", "source"),
         ("project", "project"),
     ],

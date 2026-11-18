@@ -14,6 +14,8 @@ EFFORT = "effort"
 REMIND = "remind"
 #: An ending whose words say only "closed": the person is asked whether it is done by its owners or no longer needed.
 ENDING = "ending"
+#: A rule the person stated that contradicts one in force: which wins is the person's to say.
+CONTRADICTION = "contradiction"
 
 
 def _text(record: Any) -> str:
@@ -69,7 +71,14 @@ def _ending(people: Any, found: Any, op: dict[str, Any], reporter: str | None) -
 
 
 def describe(
-    view: Any, people: Any, op: dict[str, Any], *, reporter: str | None = None, choice: bool = False, cfg: Any = None
+    view: Any,
+    people: Any,
+    op: dict[str, Any],
+    *,
+    reporter: str | None = None,
+    choice: bool = False,
+    cfg: Any = None,
+    contradiction: bool = False,
 ) -> dict[str, Any] | None:
     """The held op as a question, or None when it isn't one of the shaped holds: `ask` (close, date, owner, routing,
     drop, move or part), `item` (the words of what it is about), `value` (what it would change to), `from_value`
@@ -77,9 +86,25 @@ def describe(
     assistant rested it on). An ending of an action also says what the input says happened (see `_ending`);
     `reporter` is who said it. With `choice`, a close or a drop of an action is the one question "done by its owners, or
     no longer needed?" (`ask` is `ending`), whatever op the assistant proposed, and it carries `told` and `told_on` like
-    a drop. With `cfg`, `told` is exactly the people a note about the action goes to."""
+    a drop. With `cfg`, `told` is exactly the people a note about the action goes to. With `contradiction`, a rule that
+    names the rules it contradicts is the question of which one wins: `item` is the new rule, `against` the words of
+    each active rule it contradicts and `record` the first of them."""
     name = op.get("op", "")
     quote = (op.get("evidence") or {}).get("quote")
+    if contradiction and name == "rule.add":
+        from engine.ops import RuleAddOp
+        from engine.rule_contradiction import contradicted
+
+        against = contradicted(view, RuleAddOp.model_validate(op))
+        if not against:
+            return None
+        return {
+            "ask": CONTRADICTION,
+            "item": " ".join(str(op.get("text") or "").split()),
+            "against": [" ".join(str(r.data.get("text") or r.data["name"]).split()) for r in against],
+            "record": against[0].id,
+            "quote": quote,
+        }
     if choice and name in ("action.close", "action.drop"):
         found = view.get("action", op.get("id", ""))
         if found is None:

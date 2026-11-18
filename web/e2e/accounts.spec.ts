@@ -297,7 +297,12 @@ test.describe.serial("several accounts", () => {
     await go(page, "today");
     await expect(page.getByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening)/ })).toBeVisible(LOADED);
     await expect(page.locator('[data-queue-line="source_unread"]')).toHaveCount(1, LOADED);
-    await expect(page.locator('[data-queue-line="source_unread"]')).toContainText(failing);
+    // Neither it nor the account's At risk line says any part of the address: the account is named by its service (S-0543).
+    await expect(page.locator('[data-queue-line="source_unread"]')).not.toContainText(failing.split("@")[0]);
+    const accountLine = page.locator("[data-account-line]");
+    await expect(accountLine).toHaveCount(1, LOADED);
+    await expect(accountLine).toContainText(/Your .* account (\(\d\) )?|isn't being read|aren't being read/);
+    await expect(accountLine).not.toContainText(failing.split("@")[0]);
   });
 
   test("VC13. with one of three accounts failing the header says 1 account needs you, and its popover is one state row for each account, not a wall of red lines", async ({ page }) => {

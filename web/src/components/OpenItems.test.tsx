@@ -50,6 +50,7 @@ const question = (id: string, title: string, over: Partial<S["OpenQuestionView"]
   waiting_days: 6,
   chases: 0,
   held_until: null,
+  yours: false,
   origin: null,
   ...over,
 });
@@ -273,6 +274,17 @@ test("the questions are another list: who each waits on and since when", async (
   expect(waiting).toHaveTextContent("6 days");
   expect(yours).toHaveTextContent("Waiting on you");
   expect(yours).toHaveTextContent("since Oct 10");
+});
+
+test("a question the person put off to a later day says so and when it comes back, not that it is to be asked of someone", async () => {
+  const user = userEvent.setup();
+  const put = question("Q-5", "Which handover day?", { state: "later", to: "P-1", to_name: "Quinn Sample", yours: true, held_until: "2026-10-22", waiting_days: null });
+  api({}, { questions: [put] });
+  renderApp(<OpenItems />);
+  await user.click(await screen.findByRole("button", { name: /Questions/ }));
+  const [row] = within(await screen.findByRole("list", { name: "Open questions" })).getAllByRole("listitem");
+  expect(row).toHaveTextContent("Put off until Oct 22");
+  expect(row).not.toHaveTextContent("To ask");
 });
 
 test("a question waiting on you says Answer on Today, and takes you there; it has no answer form on this screen", async () => {
@@ -797,15 +809,18 @@ test("the overdue line's link shows the person's own overdue to-dos and no one e
   expect(screen.queryByText("Order the sample copies")).toBeNull();
 });
 
-test("the line under the list counts the rows the tab counts, with the noun the tab names, and never a number of its own (X87)", async () => {
+test("the tabs and the line under the title say what is yours and how many questions are for you, the same on both tabs (S-0539)", async () => {
   const user = userEvent.setup();
   api();
   renderApp(<OpenItems />);
-  // Five to-dos are listed: three wait on the person (two of theirs and one with no owner yet), two don't.
-  expect(await screen.findByRole("button", { name: /^To-dos\b.*5/ })).toBeInTheDocument();
-  expect(await screen.findByText("· 3 are yours")).toBeInTheDocument();
+  // Five to-dos are listed: three wait on the person (two of theirs and one with no owner yet), two don't; one question is for them.
+  expect(await screen.findByRole("button", { name: /^To-dos\b.*3/ })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /^Questions\b/ })).toHaveTextContent("1");
+  expect(await screen.findByText("· 3 yours")).toBeInTheDocument();
+  expect(screen.getByText("· 1 question for you")).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: /^Questions\b/ }));
-  expect(await screen.findByText("· 1 is yours")).toBeInTheDocument();
+  expect(await screen.findByText("· 3 yours")).toBeInTheDocument();
+  expect(screen.getByText("· 1 question for you")).toBeInTheDocument();
 });
 
 test("under the title it says how many the open tab holds and how many of them are overdue, from the rows listed, and follows the tab (VS10)", async () => {
@@ -856,8 +871,8 @@ test("the counts agree: the tab, the line under the title, the groups with the l
   renderApp(<OpenItems />);
   await screen.findByRole("list", { name: "Open to-dos" });
   // 7 to-dos and 2 questions are open; the line counts the tab shown (the to-dos); one is overdue and two are due today; the line says at most three things, so with the person's own count it gives up "due today".
-  expect(screen.getByRole("button", { name: /^To-dos/ })).toHaveTextContent("7");
-  expect(screen.getByRole("button", { name: /^Questions/ })).toHaveTextContent("2");
+  expect(screen.getByRole("button", { name: /^To-dos/ })).toHaveTextContent("6");
+  expect(screen.getByRole("button", { name: /^Questions/ })).toHaveTextContent("1");
   expect(screen.getByText("7 open")).toBeInTheDocument();
   expect(screen.getByText(/· 1 overdue/)).toBeInTheDocument();
   expect(screen.queryByText(/due today/)).toBeNull();
@@ -866,7 +881,7 @@ test("the counts agree: the tab, the line under the title, the groups with the l
   expect(screen.getByText("1 to-do needs a date")).toBeInTheDocument();
   expect(grouped + 1).toBe(7);
   // How many of the seven wait on the person is said once, in the line under the title, not in a footer.
-  expect(document.querySelector("[data-need-count]")).toHaveTextContent(/\d+ are yours|None are yours|1 is yours/);
+  expect(document.querySelector("[data-need-count]")).toHaveTextContent(/\d+ yours|None yours/);
 });
 
 test("those that need a date are listed at the foot of the list under one line, with a date picker beside each and no button to press", async () => {
@@ -1118,15 +1133,15 @@ test("a row's second line starts with its due date, and no part of it starts wit
   expect(line.indexOf("Due")).toBeLessThan(line.indexOf("Robin Sample"));
 });
 
-// H1-06: the number the menu shows beside To-dos is a number this screen says, in the same words.
-test("the menu's count of what needs the person, to-dos and questions together, is said under the title when it is not the tab's own", async () => {
+// S-0539: the badge beside To-dos is the sum of the two numbers the page says.
+test("the two numbers the page says add up to what the menu's badge counts, whichever tab is open", async () => {
   const user = userEvent.setup();
-  const none = { total: 0, sides: [], views: [] };
-  api({ "GET waiting": () => ({ changed: none, followups: none, open: { total: 4, sides: [], views: [] }, handled: none }) });
+  const { workCounts } = await import("../lib/open-items");
+  api();
   renderApp(<OpenItems />);
-  expect(await screen.findByText("· 3 are yours")).toBeInTheDocument();
-  expect(await screen.findByText("· 4 need you across to-dos and questions")).toBeInTheDocument();
+  expect(await screen.findByText("· 3 yours")).toBeInTheDocument();
+  const sum = workCounts(actions, questions);
+  expect(sum).toEqual({ yours: 3, asked: 1, sum: 4 });
   await user.click(screen.getByRole("button", { name: /^Questions\b/ }));
-  expect(await screen.findByText("· 1 is yours")).toBeInTheDocument();
-  expect(screen.getByText("· 4 need you across to-dos and questions")).toBeInTheDocument();
+  expect(await screen.findByText("· 1 question for you")).toBeInTheDocument();
 });

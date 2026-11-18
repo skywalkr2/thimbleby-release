@@ -14,7 +14,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from engine import agenda as agenda_module
-from engine import called_off, entry_rules, own_repeats, repeats
+from engine import called_off, deliveries, entry_rules, own_repeats, repeats
 from engine.blocked import Blocker, blocker_of, own_wait
 from engine.connectors import moment
 from engine.contacts import all_values
@@ -156,7 +156,7 @@ def agenda(
             if event.get("uid"):
                 uids[id(item)] = str(event["uid"])
             found.append(item)
-    found.sort(key=lambda a: (a.days[0], not a.all_day, _sort_key(a, here), a.title))
+    found.sort(key=lambda a: (a.days[0], a.held, not a.all_day, _sort_key(a, here), a.title))
     return [*_one_invitation_each(found, uids), *_own_entries(store, days, here, today, undated, cfg)]
 
 
@@ -287,7 +287,7 @@ def _own_entries(
                 AgendaItem(
                     snapshot=entry.id,
                     source=data.get("source") or "",
-                    title=data["title"],
+                    title=deliveries.entry_title(data),
                     start=_local_text(began, here),
                     end=_local_text(ended, here) if ended is not None else None,
                     all_day=all_day,
@@ -306,7 +306,9 @@ def _own_entries(
                     made_by="assistant" if entry.id in made else "person",
                 )
             )
-    return sorted(found, key=lambda a: (a.days[0] if a.days else date.max, not a.all_day, _sort_key(a, here), a.title))
+    return sorted(
+        found, key=lambda a: (a.days[0] if a.days else date.max, a.held, not a.all_day, _sort_key(a, here), a.title)
+    )
 
 
 def _made_by_assistant(view: Any) -> set[str]:
