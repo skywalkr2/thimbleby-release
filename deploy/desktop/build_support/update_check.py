@@ -175,6 +175,70 @@ def hand_over_log(workspace: Path) -> str:
     return text
 
 
+#: Windows' process-creation flags, spelled out so the probe runs the same start as the app's on any build machine.
+DETACHED = 0x00000008
+NEW_GROUP = 0x00000200
+NO_WINDOW = 0x08000000
+BREAKAWAY = 0x01000000
+
+
+def script_head(workspace: Path) -> str:
+    """The hand-over script's size and first lines, so a script written empty or cut short shows in the log."""
+    folder = private_dir(workspace) / "update-helper"
+    lines = []
+    for script in sorted(folder.glob("hand-over.*")):
+        if script.suffix in (".ps1", ".sh"):
+            data = script.read_bytes()
+            lines.append(f"{script.name}: {len(data)} bytes, starts {data[:120]!r}")
+    return "\n".join(lines) or "no hand-over script"
+
+
+def probe_powershell(folder: Path) -> list[str]:
+    """Start a two-line script the way the app starts its hand-over, then with one part of that start left out each
+    time, and say what each did: the exit code, what it printed, and whether it wrote its file. A hand-over that ends at
+    once with nothing printed is then traced to the part of the start that stops it."""
+    folder.mkdir(parents=True, exist_ok=True)
+    marker_file = folder / "probe.log"
+    script = folder / "probe.ps1"
+    script.write_text(f"Add-Content -LiteralPath '{marker_file}' -Value 'ran'\nWrite-Output 'probe ran'\nexit 5\n")
+    base = ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass"]
+    hidden = ["-WindowStyle", "Hidden"]
+    flags = DETACHED | NEW_GROUP | NO_WINDOW
+    cases = [
+        ("as the app does", base + hidden, flags | BREAKAWAY, True),
+        ("without breakaway", base + hidden, flags, True),
+        ("without a hidden window", base, flags | BREAKAWAY, True),
+        ("without detaching", base + hidden, NEW_GROUP | NO_WINDOW, True),
+        ("plain, output read", base, 0, False),
+    ]
+    found = []
+    for name, args, creation, to_file in cases:
+        marker_file.unlink(missing_ok=True)
+        out_path = folder / "probe.out"
+        argv = [*args, "-File", str(script)]
+        try:
+            if to_file:
+                with out_path.open("wb") as out:
+                    done = subprocess.Popen(
+                        argv,
+                        creationflags=creation,
+                        close_fds=True,
+                        stdin=subprocess.DEVNULL,
+                        stdout=out,
+                        stderr=subprocess.STDOUT,
+                    )
+                    code = done.wait(timeout=60)
+                printed = out_path.read_text(encoding="utf-8", errors="replace").strip()
+            else:
+                run = subprocess.run(argv, capture_output=True, text=True, timeout=60, check=False)
+                code, printed = run.returncode, (run.stdout + run.stderr).strip()
+        except (OSError, subprocess.SubprocessError) as err:
+            found.append(f"probe {name}: could not start: {err!r}")
+            continue
+        found.append(f"probe {name}: code {code}, wrote its file: {marker_file.exists()}, printed: {printed[:200]!r}")
+    return found
+
+
 def app_log_lines(logs: Path) -> list[str]:
     try:
         return (logs / "desktop.log").read_text(encoding="utf-8", errors="replace").splitlines()
@@ -203,6 +267,9 @@ def wait_for_result(workspace: Path, logs: Path, started: float) -> dict:
             print("\n".join(step_times(logs)))
             print("\n".join(ended))
             print(hand_over_log(workspace))
+            print(script_head(workspace))
+            if sys.platform == "win32":
+                print("\n".join(probe_powershell(Path(tempfile.mkdtemp(prefix="hand-over-probe-")))))
             raise SystemExit("The update's hand-over ended as soon as it started.")
         pause(2)
     print("\n".join(step_times(logs)))

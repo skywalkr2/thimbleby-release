@@ -10,6 +10,15 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      only:
+        description: "Build one installer only (a run by hand while a single platform is being fixed)"
+        type: choice
+        default: all
+        options:
+          - all
+          - windows-x64
+          - macos-arm64
 
 permissions:
   contents: read
@@ -53,12 +62,15 @@ jobs:
         id: targets
         env:
           TAGGED: ${{ github.ref_type == 'tag' }}
+          ONLY: ${{ inputs.only || 'all' }}
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json, os
           wanted = json.load(open("deploy/desktop/build_support/targets.json"))
           tagged = os.environ["TAGGED"] == "true"
           chosen = [t for t in wanted["include"] if tagged or not t.get("tag_only")]
+          only = "all" if tagged else os.environ["ONLY"]
+          chosen = [t for t in chosen if only == "all" or t["target"] == only]
           print("matrix=" + json.dumps({"include": chosen}))
           PY
       - run: npm --prefix web ci
