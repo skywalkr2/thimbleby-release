@@ -3,6 +3,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test } from "vitest";
 import type { S } from "../lib/api";
+import { clockTime } from "../lib/dates";
 import { fakeApi, renderApp } from "../test-utils";
 import { FullReadChoice } from "./FullReadChoice";
 
@@ -33,7 +34,7 @@ const offered: S["FullReadView"] = {
     { days: 90, count: 40, estimate_usd: 1.2, unpriced: 0, reaches: true, capped: false, estimate: false },
   ],
 };
-const done = (taken: number): S["LookBackView"] => ({ days: 30, from_date: "2026-09-19", count: taken, unpriced: 0, reaches: true, capped: false, estimate: false, expected: 0, expected_estimate: false, gave: 0, short: false, taken, started: false });
+const done = (taken: number): S["LookBackView"] => ({ days: 30, from_date: "2026-09-19", count: taken, unpriced: 0, reaches: true, capped: false, estimate: false, expected: 0, expected_estimate: false, gave: 0, short: false, gave_up: false, taken, started: false });
 
 const pickerOf = () => screen.findByRole("combobox", { name: "Read in full from: person@example.com" });
 
@@ -161,4 +162,39 @@ test("a look that took in far fewer than its count says how many of how many, wi
   await user.click(await screen.findByRole("option", { name: /1 month/ }));
   await user.click(screen.getByRole("button", { name: "Read it" }));
   expect(await screen.findByText("Taking in 2 older items from Inbox. Took in 2 of about 201: the service gave no more.")).toBeInTheDocument();
+});
+
+const AT = "2026-10-19T15:42:00+00:00";
+
+async function readWith(answer: S["LookBackView"]) {
+  const user = userEvent.setup();
+  fakeApi({ "GET watch/m/full-read": () => offered, "POST watch/m/full-read": () => answer, "GET watch": () => [] });
+  renderApp(<FullReadChoice sources={[source()]} account="person@example.com" />);
+  await user.click(await pickerOf());
+  await user.click(await screen.findByRole("option", { name: /1 month/ }));
+  await user.click(screen.getByRole("button", { name: "Read it" }));
+}
+
+test("a read the service slowed down says what it took in and when the rest continues, on the person's clock, never the service's words", async () => {
+  await readWith({ ...done(412), started: true, stopped: "throttled", continues_at: AT });
+  const line = await screen.findByText(/^Taking in 412 older items from Inbox\./);
+  expect(line.textContent).toBe(`Taking in 412 older items from Inbox. The mail service asked to slow down; the rest continues at ${clockTime(AT)}.`);
+  expect(line.textContent).not.toMatch(/HTTP|429|busy/i);
+});
+
+test("a read that failed partway says when it carries on, and one that gave up says it waits for the person on Today", async () => {
+  await readWith({ ...done(7), started: true, stopped: "outage", continues_at: AT });
+  expect(await screen.findByText(`Taking in 7 older items from Inbox. The mail service didn't answer; the rest continues at ${clockTime(AT)}.`)).toBeInTheDocument();
+});
+
+test("a read that stopped for a sign-in problem says what to do and does not promise it continues", async () => {
+  await readWith({ ...done(7), started: true, stopped: "auth", continues_at: null });
+  const line = await screen.findByText(/^Taking in 7 older items from Inbox\./);
+  expect(line.textContent).toMatch(/sign in again/i);
+  expect(line.textContent).not.toMatch(/continues/);
+});
+
+test("a read that gave up says the rest waits for the person", async () => {
+  await readWith({ ...done(7), started: true, stopped: "outage", continues_at: null, gave_up: true });
+  expect(await screen.findByText("Taking in 7 older items from Inbox. The rest of the older mail is waiting for you to read it from Today.")).toBeInTheDocument();
 });

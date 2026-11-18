@@ -232,3 +232,13 @@ test("an account's card says what its latest reads skipped in plain words, and s
   expect(blake.querySelector("[data-skipped]")).toBeNull();
   expect(within(blake).queryByText(/skipped/i)).toBeNull();
 });
+
+test("an account's card says what a stopped read of older mail took in and when the rest continues, and says nothing when none waits", async () => {
+  const at = "2026-10-19T15:42:00+00:00";
+  open([part("a", ALEX, { label: "Your inbox", older_read: { kind: "throttled", at, gave_up: false, taken: 412, tries: 1 } }), part("b", BLAKE, {})]);
+  const alex = await screen.findByRole("region", { name: ALEX });
+  const said = alex.querySelector("[data-older-read]");
+  expect(said?.textContent).toMatch(/^Taking in 412 older items from Your inbox\. The mail service asked to slow down; the rest continues at \d{1,2}:42/);
+  const blake = await screen.findByRole("region", { name: BLAKE });
+  expect(blake.querySelector("[data-older-read]")).toBeNull();
+});

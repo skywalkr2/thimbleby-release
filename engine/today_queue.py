@@ -126,7 +126,10 @@ class Line:
     waiting and `left_out`, how many kinds of correction were too many for one list), extractor (a kind of file that
     isn't being read: `file_kind` is the kind, and `text` why), source_unread (a source that has failed for longer than
     its usual gap: `source` is its id, `subject` its label, `problem_kind` the kind of failure, `text` what went wrong
-    and what to do, and `waiting_since` when it was last read, or first tried when it never was), promise (one open
+    and what to do, and `waiting_since` when it was last read, or first tried when it never was), older_read (a read
+    of a source's older mail that stopped after its tries and waits for the person: `source` is its id, `subject` its
+    label, `count` the items taken in so far, `problem_kind` why it stopped and `waiting_since` when; the line's
+    button carries it on from where it stopped), promise (one open
     action that needs a look: its id in `actions`, its words in `text`, its day in `due` (none when undated),
     `waiting_days` (days past its date, below zero while the date is ahead, or days with nothing heard when undated),
     and in `person` the one to chase, none when it is the person's own, with `stance`: who they are to the person, so
@@ -244,6 +247,7 @@ class Line:
     changesets: list[str] = field(default_factory=list)
     untrusted: bool = False
     estimate_usd: float | None = None
+    estimate_max_usd: float | None = None  # with `estimate_usd`: the most the work could cost (intake_go)
     unpriced: int = 0
     account: str | None = None
     until: str | None = None
@@ -912,6 +916,24 @@ def _everything(
             )
         )
 
+    for watched_source in cfg.watch.sources:
+        # A read of older mail that ran out of tries is never a silent stop: one line, whose button carries it on.
+        stopped = source_intake.older_read_waiting(reader, watched_source.id)
+        if stopped and stopped.get("gave_up"):
+            lines.append(
+                Line(
+                    key=f"older_read:{watched_source.id}",
+                    group="risk",
+                    kind="older_read",
+                    source=watched_source.id,
+                    subject=watched_source.label or watched_source.id,
+                    count=int(stopped.get("taken") or 0),
+                    problem_kind=str(stopped.get("kind") or ""),
+                    waiting_since=stopped.get("stopped_at"),
+                    since=str(stopped.get("stopped_at") or ""),
+                )
+            )
+
     if handover is not None:
         # The folder not being written is never a silent stop; the line opens the page that settles it.
         lines.append(
@@ -1003,7 +1025,8 @@ def _everything(
 
     for source_id, held_for_go in sorted(intake_go.items()):
         # One line for each newly added source, with the total of everything its go starts.
-        count, total, unpriced = source_intake.total_waiting(ws, store, cfg, source_id)
+        cost = source_intake.waiting_cost(ws, store, cfg, source_id)
+        count = cost.count
         label = next((s.label or s.id for s in cfg.watch.sources if s.id == source_id), source_id)
         lines.append(
             Line(
@@ -1014,8 +1037,9 @@ def _everything(
                 source=source_id,
                 subject=label,
                 days=source_intake.days_taken(reader, source_id),
-                estimate_usd=total,
-                unpriced=unpriced,
+                estimate_usd=cost.likely,
+                estimate_max_usd=cost.at_most,
+                unpriced=cost.unpriced,
                 waiting=source_intake.WAITING,
                 since=min(str(r.data.get("created_at") or "") for r in held_for_go),
             )
@@ -2303,6 +2327,7 @@ _KIND_ORDER = {
     "go": 4,
     "catch_up_go": 4,
     "intake_go": 4,
+    "older_read": 1,
     "refused": 5,
     "no_effect": 5.5,
     "question": 6,

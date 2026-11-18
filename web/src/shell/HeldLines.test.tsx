@@ -359,6 +359,24 @@ test("a new source's intake is one line with its items and days and the total, a
   await waitFor(() => expect(screen.queryByRole("region", { name: "Waiting for you to start it" })).toBeNull());
 });
 
+test("a read of older mail that gave up is one line that says what was taken in, and Read now carries it on", async () => {
+  const user = userEvent.setup();
+  let carried = false;
+  const { calls } = show([], {
+    "GET today/queue": () => (carried ? [] : [line("older_read", { key: "older_read:m", group: "risk", source: "m", subject: "Your inbox", count: 412, problem_kind: "outage" })]),
+    "POST watch/m/older-read/continue": () => {
+      carried = true;
+      return { days: 0, from_date: "2026-10-19", count: 0, reaches: true, unpriced: 0, capped: false, estimate: false, expected: 0, expected_estimate: false, gave: 0, short: false, gave_up: false, taken: 0, started: false };
+    },
+  });
+  const row = await screen.findByRole("region", { name: "Needs you" });
+  expect(row).toHaveTextContent("Read the rest of Your inbox's older mail");
+  expect(row).toHaveTextContent("412 older items are taken in already.");
+  await user.click(within(row).getByRole("button", { name: "Read now" }));
+  await waitFor(() => expect(calls.filter((c) => c.route === "POST watch/m/older-read/continue")).toHaveLength(1));
+  expect(await screen.findByText("Reading the rest of Your inbox's older mail.")).toBeInTheDocument();
+});
+
 test("a source with no mail says items without days, one item and one day are singular, and no price says so", async () => {
   show([
     line("intake_go", { key: "intake_go:pages", group: "decide", source: "pages", subject: "Pages", count: 3, days: null, estimate_usd: null, unpriced: 3 }),

@@ -22,6 +22,7 @@ from typing import Any
 
 from engine import catch_up, watch
 from engine.connectors import OlderCount
+from engine.net import AnswerTooLarge
 from engine.storage import StoreError, WriteContext
 
 #: A look that takes in fewer than this fraction of the count the source gave says so.
@@ -34,6 +35,10 @@ _ENGINE = WriteContext(actor="engine", trust="trusted", op="intake.take_in")
 _GO = WriteContext(actor="pm", trust="trusted", op="intake.go")
 _SEEN = WriteContext(actor="pm", trust="trusted", op="intake.seen")
 _MOVED = WriteContext(actor="engine", trust="trusted", op="intake.look_back")
+
+#: The kinds of stop a read of older mail carries on from by itself; any other kind (a sign-in the service withdrew,
+#: access refused, a message too large) is the person's to act on, and the account's own state says so.
+CONTINUES = ("throttled", "outage", "offline")
 
 #: How far past now a message's time may be and still count as received.
 _SKEW = timedelta(minutes=5)
@@ -160,11 +165,12 @@ def _take(
     if not held:
         return made
     catch_up._price(ws, store, cfg, router, held, now, _ENGINE)
-    count, total, unpriced = total_waiting(ws, store, cfg, source.id, router)
+    cost = waiting_cost(ws, store, cfg, source.id, router)
     # A run whose price isn't known always waits for the go; one on a flat account only when the person asked for a go
-    # before those too, as single runs do.
-    priced_enough = unpriced == 0 or not any(_go_for_price(ws, store, cfg, router, r, now) for r in held)
-    if count and priced_enough and (total or 0.0) <= cfg.ai.budgets.confirm_above_usd:
+    # before those too, as single runs do. Starting without asking is decided on the most it could cost, never on the
+    # likely figure: the configured amount is a ceiling on what starts unasked.
+    priced_enough = cost.unpriced == 0 or not any(_go_for_price(ws, store, cfg, router, r, now) for r in held)
+    if cost.count and priced_enough and (cost.at_most or 0.0) <= cfg.ai.budgets.confirm_above_usd:
         # Sorting first, while they are held, so mail it sets aside never queues; with no go given, its own checks hold.
         watch.sort_before_first_go(ws, store, cfg, router, now, only=source.id, go=False)
         _release(store, source.id, now)
@@ -218,20 +224,61 @@ def waiting(view: Any, source_id: str | None = None) -> list[Any]:
     return sorted(held, key=lambda r: str(r.data.get("created_at")))
 
 
-def total_waiting(ws: Any, store: Any, cfg: Any, source_id: str, router: Any = None) -> tuple[int, float | None, int]:
-    """What a source's intake would start: how many requests wait for its go, what the ones with a price cost together
-    with the sorting run for their mail (None when nothing has a price) and how many runs have no price."""
+@dataclass(frozen=True)
+class WaitingCost:
+    """What a source's go would start: `count` requests, about `likely` and at most `at_most` USD together with the
+    sorting for their mail (None when nothing has a price) and how many runs have no price."""
+
+    count: int
+    likely: float | None
+    at_most: float | None
+    unpriced: int
+
+
+def waiting_cost(ws: Any, store: Any, cfg: Any, source_id: str, router: Any = None) -> WaitingCost:
+    """What a source's intake would start, in two figures. The most is every held run at its own estimate plus the
+    sorting at the full price. The likely price reads in full only the share of the mail awaiting sorting that the
+    source's sorting keeps (`read_estimate.kept_share`), with the runs' stable part at the account's cached price
+    (the ratio the formula gives for a packet this source's requests built), plus the sorting priced the same way."""
     held = waiting(store.read(), source_id)
     if not held:
-        return 0, None, 0
+        return WaitingCost(0, None, None, 0)
     priced = [r.data["estimate_usd"] for r in held if r.data.get("estimate_usd") is not None]
-    _runs, sorting_usd, sorting_unpriced = watch.first_go_sorting(ws, store, cfg, router, only=source_id)
-    total = sum(priced) + (sorting_usd or 0.0)
-    return (
+    _runs, sort_likely, sort_most, sort_unpriced = watch.first_go_sorting_range(ws, store, cfg, router, only=source_id)
+    read_most = sum(priced)
+    read_likely = read_most
+    if priced:
+        from engine import read_estimate
+
+        router = read_estimate.router_for(cfg, store, router)
+        ids = {r.id for r in held}
+        through = sum(
+            1
+            for items in watch._awaiting_sorting(ws, store, cfg, source_id).values()
+            for it in items
+            if it[0].id in ids
+        )
+        kept = min(len(held), through * read_estimate.kept_share(store, cfg, source_id) + len(held) - through)
+        range_ = read_estimate.read_range(ws, store, cfg, router, source_id, kept, len(held), datetime.now(UTC))
+        if range_ is not None and range_[1] > 0:
+            read_likely = read_most * range_[0] / range_[1]
+    total_likely = read_likely + (sort_likely or 0.0)
+    total_most = read_most + (sort_most or 0.0)
+    known = bool(priced) or sort_likely is not None
+    return WaitingCost(
         len(held),
-        round(total, 4) if priced or sorting_usd is not None else None,
-        len(held) - len(priced) + sorting_unpriced,
+        round(total_likely, 4) if known else None,
+        round(total_most, 4) if known else None,
+        len(held) - len(priced) + sort_unpriced,
     )
+
+
+def total_waiting(ws: Any, store: Any, cfg: Any, source_id: str, router: Any = None) -> tuple[int, float | None, int]:
+    """What a source's intake would start: how many requests wait for its go, about what the ones with a price cost
+    together with the sorting run for their mail (None when nothing has a price) and how many runs have no price.
+    `waiting_cost` also gives the most it could cost."""
+    cost = waiting_cost(ws, store, cfg, source_id, router)
+    return cost.count, cost.likely, cost.unpriced
 
 
 def grant_go(ws: Any, store: Any, cfg: Any, source_id: str, router: Any = None, now: datetime | None = None) -> int:
@@ -327,7 +374,8 @@ class LookBack:
     days: int
     from_date: date  # the day asked for
     count: int = 0
-    estimate_usd: float | None = None
+    estimate_usd: float | None = None  # about what reading them costs
+    estimate_max_usd: float | None = None  # the most it could cost: "at most"
     unpriced: int = 0
     available_from: date | None = None  # the oldest mail the source has returned, when it is later than asked
     reaches: bool = True  # the source holds mail as far back as asked
@@ -340,6 +388,9 @@ class LookBack:
     expected_estimate: bool = False  # that figure was an estimate
     gave: int = 0  # after a look: how many messages the source gave (those it couldn't read among them)
     short: bool = False  # after a look: the source gave fewer than a third of what it said it holds
+    stopped: str | None = None  # after a look the service slowed down or failed partway: the kind of stop
+    continues_at: str | None = None  # when the rest is read by itself; None when it waits for the person or ended
+    gave_up: bool = False  # the read ran out of tries and waits for the person to continue it
 
 
 def _candidates(ws: Any, store: Any, cfg: Any, source: Any, accept: Callable[[dict[str, Any]], bool]) -> list[Any]:
@@ -437,6 +488,18 @@ def _item_day(item: Any) -> date | None:
     return at.astimezone(UTC).date() if at is not None else None
 
 
+@dataclass
+class Fetched:
+    """What a read of older mail gave: how many messages (those it couldn't read among them), what it skipped, and, when
+    the service slowed it down or failed partway, the error and the day the next page would have ended on: the days from
+    there up to where the read began were read whole, and the rest of the range is still to read."""
+
+    count: int
+    skipped: dict[str, int] = field(default_factory=dict)
+    stop: Any = None
+    end: date | None = None
+
+
 def _fetch_older(
     ws: Any,
     store: Any,
@@ -446,15 +509,17 @@ def _fetch_older(
     before: date,
     now: datetime,
     limit: int | None = None,
-) -> tuple[int, dict[str, int]]:
+    carrying_on: bool = False,
+) -> Fetched:
     """Ask the source for its older mail of these days, within the setting's limit, and note it the way a first read
-    notes what it doesn't hand in. Returns how many messages the source gave (those it couldn't read among them) and
-    what it skipped, by kind. A message the source couldn't read never stops the rest."""
+    notes what it doesn't hand in. A message the source couldn't read never stops the rest. When the service slows the
+    read down or fails after some pages, what was read stays and the answer says where it stopped (`stop`, `end`); a
+    failure before any page was read raises, unless the read is carrying on from an earlier stop."""
     from engine.connectors import ConnectorError, Poll, skipped_counts
 
     asker = _asker(store, source)
     if asker is None or since >= before:
-        return 0, {}
+        return Fetched(0)
     asking, model = asker
     settings = model.model_validate(source.settings)
     page = cfg.watch.look_back_max_items
@@ -467,7 +532,9 @@ def _fetch_older(
         try:
             answer = asking.read(settings, since, end, size, _older_context(ws, cfg, now))
         except ConnectorError as err:
-            raise StoreError(older_failure(err)) from None
+            if not seen and not carrying_on:
+                raise StoreError(older_failure(err)) from None
+            return Fetched(len(seen), skipped, err, end)
         items, unreadable = (answer.items, answer.unreadable) if isinstance(answer, Poll) else (answer, [])
         new_items = [i for i in items if i.key not in seen]
         new_unreadable = [u for u in unreadable if u.key not in seen]
@@ -493,7 +560,7 @@ def _fetch_older(
             size = min(size * 2, ceiling)
         if end <= since:
             break
-    return len(seen), skipped
+    return Fetched(len(seen), skipped)
 
 
 def add_older_skipped(store: Any, source_id: str, counts: dict[str, int]) -> None:
@@ -526,7 +593,15 @@ def _plan(store: Any, cfg: Any, source_id: str, days: int, exact: bool = False) 
         raise StoreError("this source was not taken in with a look back, so there is nothing further to look at")
     if days not in cfg.watch.look_back_choices and not (exact and days >= 1):
         raise StoreError(f"{days} days is not one of the choices")
-    asked = old - timedelta(days=days)
+    return _plan_from(store, source_id, old - timedelta(days=days))
+
+
+def _plan_from(store: Any, source_id: str, asked: date) -> tuple[date, date, date, date | None]:
+    """`_plan` for a day already asked for: the day asked, the day the mail was looked at back to, the day the look will
+    stop at and the oldest mail the source holds."""
+    old = back_to_of(store.read(), source_id)
+    if old is None:
+        raise StoreError("this source was not taken in with a look back, so there is nothing further to look at")
     oldest = min(
         (
             at
@@ -541,11 +616,19 @@ def _plan(store: Any, cfg: Any, source_id: str, days: int, exact: bool = False) 
 
 
 def look_back_preview(
-    ws: Any, store: Any, cfg: Any, source_id: str, days: int, now: datetime | None = None, exact: bool = False
+    ws: Any,
+    store: Any,
+    cfg: Any,
+    source_id: str,
+    days: int,
+    now: datetime | None = None,
+    exact: bool = False,
+    router: Any = None,
 ) -> LookBack:
     """What looking `days` further back than the source was looked at would take in: how many items, about what they
-    cost (the average of what the source's earlier items were priced at, times the count; none when none has a price),
-    and whether the source holds mail that far back. Writes nothing."""
+    cost and the most they could (`read_estimate.cost_of_reading`: the sorting for all of them, the full read of the
+    share the sorting keeps, the account's cache; none when no price is known), and whether the source holds mail that
+    far back. Writes nothing."""
     source = _source(cfg, source_id)
     asked, old, _new, available = _plan(store, cfg, source_id, days, exact)
     now = now or datetime.now(UTC)
@@ -555,11 +638,6 @@ def look_back_preview(
     limit = cfg.watch.full_read_max_items if exact else cfg.watch.look_back_max_items
     counted = _remote_count(ws, store, cfg, source, *_remote_range(store, source_id, asked, old, available), now, limit)
     remote = counted.count
-    prices = [
-        r.data["estimate_usd"]
-        for r in store.read().list("request")
-        if r.data.get("intake") == source_id and r.data.get("estimate_usd") is not None
-    ]
     count = len(found) + remote
     result = LookBack(days, asked, count, available_from=available if available and available > asked else None)
     # The source was asked: fewer than the limit means it holds nothing older than it gave.
@@ -568,10 +646,11 @@ def look_back_preview(
     result.reaches = result.available_from is None or not result.capped
     if result.reaches:
         result.available_from = None
-    if count and prices:
-        result.estimate_usd = round(sum(prices) / len(prices) * count, 4)
-    elif count:
-        result.unpriced = count
+    if count:
+        from engine import read_estimate
+
+        cost = read_estimate.cost_of_reading(ws, store, cfg, source, count, now, router)
+        result.estimate_usd, result.estimate_max_usd, result.unpriced = cost.likely, cost.at_most, cost.unpriced
     return result
 
 
@@ -584,11 +663,14 @@ def look_further_back(
     now: datetime | None = None,
     router: Any = None,
     exact: bool = False,
+    reach_days: int | None = None,
 ) -> LookBack:
     """Take in the older mail the source already returned, `days` further back than it was looked at, the same quiet
     way: marked as the source's intake, priced as one total with what is still held, held for the go or started by
     the same rule. The date it was looked back to moves to the day asked for, or to the oldest mail the source holds
-    when that is later. The result says so when the source doesn't reach that far."""
+    when that is later. The result says so when the source doesn't reach that far. When the service slows the read
+    down or fails after some pages, what was read is taken in, the date moves only over the days read whole, and the
+    rest carries on by itself (`continue_older_read`); `reach_days` is the full read's choice, kept with it."""
     now = now or datetime.now(UTC)
     source = _source(cfg, source_id)
     if not can_look_back(source, store):
@@ -602,38 +684,165 @@ def look_further_back(
         asker = _asker(store, source)
         counts = asker is not None and asker[0].counts
         said = _remote_count(ws, store, cfg, source, *reach, now, limit) if counts else OlderCount(0)
-        fetched, skipped = _fetch_older(ws, store, cfg, source, *reach, now, limit)
-        add_older_skipped(store, source_id, skipped)
-        if fetched:
-            asked, old, new, available = _plan(store, cfg, source_id, days, exact)
-        everything = fetched < limit  # the source gave all it holds of those days
+        return _read_older(ws, store, cfg, source, asked, reach, limit, said, now, router, reach_days, None, days)
+
+
+def _read_older(
+    ws: Any,
+    store: Any,
+    cfg: Any,
+    source: Any,
+    asked: date,
+    reach: tuple[date, date],
+    limit: int,
+    said: OlderCount,
+    now: datetime,
+    router: Any,
+    reach_days: int | None,
+    carried: dict[str, Any] | None,
+    days: int = 0,
+) -> LookBack:
+    """Read the range, take in what was read and move the date it was looked back to. `carried` is the earlier stop of
+    a read being carried on. Called with the source's read lock held."""
+    source_id = source.id
+    fetched = _fetch_older(ws, store, cfg, source, *reach, now, limit, carrying_on=carried is not None)
+    add_older_skipped(store, source_id, fetched.skipped)
+    asked, old, new, available = _plan_from(store, source_id, asked)
+    stop = fetched.stop
+    if stop is None:
+        everything = fetched.count < limit  # the source gave all it holds of those days
         if everything:
             new = asked
             available = None
-        found = _candidates(ws, store, cfg, source, _in_window(asked, old, now))
-        result = LookBack(
-            days, asked, len(found), available_from=available if available and available > asked else None
+    elif fetched.end is not None:
+        new = min(old, max(asked, fetched.end))  # only the days read whole are looked at
+        available = None
+    found = _candidates(ws, store, cfg, source, _in_window(asked, old, now))
+    result = LookBack(days=days, from_date=asked, count=len(found))
+    result.available_from = available if available and available > asked else None
+    result.reaches = result.available_from is None
+    result.skipped = fetched.skipped
+    result.expected, result.expected_estimate, result.gave = said.count, said.estimate, fetched.count
+    result.short = (
+        said.count > 0 and fetched.count * SHORT_FRACTION < said.count and said.count < limit and stop is None
+    )
+    keys = {snap.data["key"] for snap in found}
+    made = _take(ws, store, cfg, source, now, router, lambda data: data["key"] in keys)
+    result.taken = len(made)
+    view = store.read()
+    held = [r for r in made if waits_on_go(view.get("request", r).data)]
+    result.started = bool(made) and not held
+    carry = _carry(cfg, stop, fetched, reach[0], limit, now, carried, reach_days, len(made))
+    run = intake_run(view, source_id)
+    if run is not None and (new < old or carry != (run.data.get("older_read") or None)):
+        with store.transaction() as tx:
+            current = tx.get("watch_run", run.id)
+            changes: dict[str, Any] = {"older_read": carry}
+            if new < old:
+                changes["looked_back_to"] = new.isoformat()
+            tx.update("watch_run", run.id, changes, _MOVED, read_version=current.version)
+    if stop is not None:
+        result.stopped = stop.kind
+        result.continues_at = carry["at"] if carry and carry.get("at") else None
+        result.gave_up = bool(carry and carry.get("gave_up"))
+    counted, total, unpriced = total_waiting(ws, store, cfg, source_id, router)
+    result.estimate_usd, result.unpriced = total, unpriced
+    return result
+
+
+def _carry(
+    cfg: Any,
+    stop: Any,
+    fetched: Fetched,
+    since: date,
+    limit: int,
+    now: datetime,
+    carried: dict[str, Any] | None,
+    reach_days: int | None,
+    taken: int,
+) -> dict[str, Any] | None:
+    """Where a read that stopped carries on, kept on the source's first read: the days still to read, what is left of
+    the limit, why it stopped, when it continues and how many times it has stopped in a row without getting further.
+    None when the read finished, or stopped for a reason the person has to deal with."""
+    if stop is None or stop.kind not in CONTINUES or fetched.end is None or isinstance(stop, AnswerTooLarge):
+        return None
+    before = carried or {}
+    progressed = fetched.count > 0
+    # Stops in a row that got no further, whatever their kind: a service that keeps asking to wait is never asked again
+    # and again without end, and after the last try the person decides.
+    tries = 1 if progressed else int(before.get("tries", 0)) + 1
+    base: dict[str, Any] = {
+        "since": since.isoformat(),
+        "before": fetched.end.isoformat(),
+        "left": max(1, limit - fetched.count),
+        "kind": stop.kind,
+        "stopped_at": now.isoformat(),
+        "tries": tries,
+        "taken": int(before.get("taken", 0)) + taken,
+        "reach": reach_days if reach_days is not None else before.get("reach"),
+    }
+    if tries > cfg.watch.older_read_tries:
+        return {**base, "at": None, "gave_up": True}
+    if stop.kind == "throttled":
+        wait = stop.retry_after if stop.retry_after is not None else cfg.watch.older_read_throttle_minutes * 60
+    else:
+        wait = cfg.watch.older_read_retry_minutes * 60
+    return {**base, "at": (now + timedelta(seconds=wait)).isoformat(), "gave_up": False}
+
+
+def older_read_waiting(view: Any, source_id: str) -> dict[str, Any] | None:
+    """Where a source's read of older mail stopped and waits to carry on, or None."""
+    run = intake_run(view, source_id)
+    return dict(run.data["older_read"]) if run is not None and run.data.get("older_read") else None
+
+
+def older_read_due(view: Any, cfg: Any, now: datetime) -> list[str]:
+    """The sources whose read of older mail stopped and whose time to carry on has come."""
+    due = []
+    for source in cfg.watch.sources:
+        waiting_read = older_read_waiting(view, source.id)
+        if waiting_read and waiting_read.get("at") and now >= datetime.fromisoformat(str(waiting_read["at"])):
+            due.append(source.id)
+    return due
+
+
+def continue_older_read(
+    ws: Any, store: Any, cfg: Any, source_id: str, now: datetime | None = None, router: Any = None, force: bool = False
+) -> LookBack | None:
+    """Carry on a read of older mail from where it stopped, under the source's read lock (nothing is done when it is
+    being read already), when its time has come, or at once when the person asks (`force`, also after it gave up).
+    Returns what that pass did, or None when there was nothing to carry on."""
+    now = now or datetime.now(UTC)
+    source = _source(cfg, source_id)
+    lock = watch._read_lock(ws, source_id)
+    if not lock.acquire(blocking=False):
+        return None
+    try:
+        waiting_read = older_read_waiting(store.read(), source_id)
+        if waiting_read is None or not can_look_back(source, store):
+            return None
+        due = waiting_read.get("at")
+        if not force and not (due and now >= datetime.fromisoformat(str(due))):
+            return None
+        reach = (date.fromisoformat(waiting_read["since"]), date.fromisoformat(waiting_read["before"]))
+        if force:  # the person asked: it has another round of tries
+            waiting_read = {**waiting_read, "tries": 0}
+        return _read_older(
+            ws,
+            store,
+            cfg,
+            source,
+            reach[0],
+            reach,
+            int(waiting_read["left"]),
+            OlderCount(0),
+            now,
+            router,
+            waiting_read.get("reach"),
+            waiting_read,
         )
-        result.reaches = result.available_from is None
-        result.skipped = skipped
-        result.expected, result.expected_estimate, result.gave = said.count, said.estimate, fetched
-        result.short = said.count > 0 and fetched * SHORT_FRACTION < said.count and said.count < limit
-        keys = {snap.data["key"] for snap in found}
-        made = _take(ws, store, cfg, source, now, router, lambda data: data["key"] in keys)
-        result.taken = len(made)
-        view = store.read()
-        held = [r for r in made if waits_on_go(view.get("request", r).data)]
-        result.started = bool(made) and not held
-        run = intake_run(view, source_id)
-        if run is not None and new < old:
-            with store.transaction() as tx:
-                current = tx.get("watch_run", run.id)
-                tx.update(
-                    "watch_run", run.id, {"looked_back_to": new.isoformat()}, _MOVED, read_version=current.version
-                )
-        counted, total, unpriced = total_waiting(ws, store, cfg, source_id, router)
-        result.estimate_usd, result.unpriced = total, unpriced
-        return result
+    finally:
+        lock.release()
 
 
 # ---- the full read a first sign-in asks about ----------------------------------------------------------------------
@@ -647,6 +856,7 @@ class FullReadOption:
     days: int
     count: int = 0
     estimate_usd: float | None = None
+    estimate_max_usd: float | None = None
     unpriced: int = 0
     reaches: bool = True
     capped: bool = False
@@ -677,7 +887,7 @@ def _days_beyond_first_read(store: Any, source_id: str, reach: int, now: datetim
 
 
 def full_read_options(
-    ws: Any, store: Any, cfg: Any, source_id: str, now: datetime | None = None
+    ws: Any, store: Any, cfg: Any, source_id: str, now: datetime | None = None, router: Any = None
 ) -> list[FullReadOption]:
     """The reaches offered, each with its count and cost through the look further back's own preview. Nothing is
     chosen and nothing is written."""
@@ -688,12 +898,13 @@ def full_read_options(
         if beyond < 1:
             found.append(FullReadOption(reach))  # the first read already covers it: nothing more to take in
             continue
-        preview = look_back_preview(ws, store, cfg, source_id, beyond, now, exact=True)
+        preview = look_back_preview(ws, store, cfg, source_id, beyond, now, exact=True, router=router)
         found.append(
             FullReadOption(
                 reach,
                 preview.count,
                 preview.estimate_usd,
+                preview.estimate_max_usd,
                 preview.unpriced,
                 preview.reaches,
                 preview.capped,
@@ -703,7 +914,7 @@ def full_read_options(
     return found
 
 
-def _record_full_read(store: Any, source_id: str, reach: int) -> None:
+def _record_full_read(store: Any, source_id: str, reach: int | None) -> None:
     run = intake_run(store.read(), source_id)
     if run is None:
         raise StoreError("this source was not taken in with a look back, so there is nothing further to look at")
@@ -739,6 +950,12 @@ def answer_full_read(
     if reach not in cfg.watch.full_read_choices:
         raise StoreError(f"{reach} days is not one of the choices")
     beyond = _days_beyond_first_read(store, source_id, reach, now)
-    done = look_further_back(ws, store, cfg, source.id, beyond, now, router, exact=True) if beyond >= 1 else None
+    # The choice is recorded before the read starts, so a read that stops partway never asks the question again.
     _record_full_read(store, source_id, reach)
-    return done
+    if beyond < 1:
+        return None
+    try:
+        return look_further_back(ws, store, cfg, source.id, beyond, now, router, exact=True, reach_days=reach)
+    except StoreError:
+        _record_full_read(store, source_id, None)  # nothing was read: the question stays open for another try
+        raise

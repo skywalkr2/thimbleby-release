@@ -929,28 +929,39 @@ def first_go_sorting(
 ) -> tuple[int, float | None, int]:
     """What the first go's sorting run adds to the spend: how many runs it makes, what the runs that have a price cost
     together (None when none has one) and how many have no price. Nothing when no mail waits for the sorting.
-    `only` limits it to the mail of one source (a new source's intake)."""
+    `only` limits it to the mail of one source (a new source's intake). The cost is the most: every run at the full
+    price (`first_go_sorting_range` also gives the likely price)."""
+    runs, _likely, at_most, unpriced = first_go_sorting_range(ws, store, cfg, router, only)
+    return runs, at_most, unpriced
+
+
+def first_go_sorting_range(
+    ws: Any, store: Any, cfg: Any, router: Any = None, only: str | None = None
+) -> tuple[int, float | None, float | None, int]:
+    """The first go's sorting as `first_go_sorting` counts it, in two figures: (runs, likely, at most, runs with no
+    price). The likely price has the runs after the first charged with the packet's stable part at the account's cached
+    price; the most has every run at the full price. Both None when no run has a price."""
     from engine import mail_sorting
 
     found = _awaiting_sorting(ws, store, cfg, only)
     if not found:
-        return 0, None, 0
+        return 0, None, None, 0
     if router is None:
         from engine.ai.router import Router
 
         router = Router(cfg, store, env=os.environ)
     sources = {s.id: s for s in cfg.watch.sources}
-    runs, total, unpriced = 0, 0.0, 0
+    runs, likely, at_most, unpriced = 0, 0.0, 0.0, 0
     for source_id, items in found.items():
         headers = [mail_sorting.header_of(item.key, facts, cfg.watch.mail_kinds, cfg) for _, _, item, facts in items]
-        priced, missing = mail_sorting.estimate(
-            ws, cfg, router, headers, data_level_of(cfg, sources[source_id]), store.read()
-        )
-        batches = -(-len(headers) // cfg.watch.sorting_batch)
-        runs += batches
-        total += priced
+        level = data_level_of(cfg, sources[source_id])
+        soon, most, missing = mail_sorting.estimate_range(ws, cfg, router, headers, level, store.read())
+        runs += -(-len(headers) // cfg.watch.sorting_batch)
+        likely += soon
+        at_most += most
         unpriced += missing
-    return runs, (total if runs > unpriced else None), unpriced
+    priced = runs > unpriced
+    return runs, (likely if priced else None), (at_most if priced else None), unpriced
 
 
 def sort_before_first_go(

@@ -687,6 +687,20 @@ def estimate_request(
     return _priced_as_process_does(ws, store, cfg, router, request_id, now, use, router.estimate)
 
 
+def run_price_request(
+    ws: Workspace,
+    store: Store,
+    cfg: Config,
+    router: Router,
+    request_id: str,
+    now: datetime | None = None,
+    use: str | None = None,
+) -> Any:
+    """What one run of a queued request's packet costs, at the full price and with the packet's stable part served from
+    the account's cache (`Router.run_price`); None when the packet can't be built or the price isn't known."""
+    return _priced_as_process_does(ws, store, cfg, router, request_id, now, use, router.run_price)
+
+
 def price_state_request(
     ws: Workspace,
     store: Store,

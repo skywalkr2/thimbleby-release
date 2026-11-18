@@ -1,10 +1,14 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, renderHook, screen, waitFor, within } from "@testing-library/react";
+import type { ReactNode } from "react";
 import userEvent from "@testing-library/user-event";
 import type { S } from "../lib/api";
 import { day } from "../lib/dates";
 import { fakeApi, renderApp, snapshotOf } from "../test-utils";
+import { useEstimate, useMoney } from "../lib/money";
+import { WordingProvider, useWords } from "../lib/wording";
 import { CoverageLine } from "./Coverage";
+import { costWords } from "./LookBack";
 import { Sources } from "./Sources";
 
 // Mid-morning on a made-up Monday; only the date is faked so waiting still works.
@@ -43,6 +47,7 @@ const view = (over: Partial<S["LookBackView"]> = {}): S["LookBackView"] => ({
   expected_estimate: false,
   gave: 0,
   short: false,
+  gave_up: false,
   available_from: null,
   taken: 0,
   started: false,
@@ -186,4 +191,16 @@ test("nothing to take in says so and leaves the button off", async () => {
   await user.selectOptions(await screen.findByRole("combobox", { name: "How much further" }), "30");
   expect(await screen.findByText("There is no mail in those days to take in.")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Look back" })).toBeDisabled();
+});
+
+test("a cost is written 'about X, at most Y', and 'at most' is left out when the two are the same or the count is only 'at least'", () => {
+  const { result } = renderHook(() => ({ t: useWords().t, estimate: useEstimate(), money: useMoney() }), {
+    wrapper: ({ children }: { children: ReactNode }) => <WordingProvider>{children}</WordingProvider>,
+  });
+  const { t, estimate, money } = result.current;
+  expect(costWords({ estimate_usd: 1.4, estimate_max_usd: 5.2, unpriced: 0 }, estimate, t, money)).toBe("About $1.40 in all, at most $5.20.");
+  expect(costWords({ estimate_usd: 1.4, estimate_max_usd: 5.2, unpriced: 3 }, estimate, t, money)).toBe("About $1.40 plus some of your plan's allowance, at most $5.20.");
+  expect(costWords({ estimate_usd: 5.2, estimate_max_usd: 5.2, unpriced: 0 }, estimate, t, money)).toBe("About $5.20 in all.");
+  expect(costWords({ estimate_usd: 5.201, estimate_max_usd: 5.204, unpriced: 0 }, estimate, t, money)).toBe("About $5.20 in all.");
+  expect(costWords({ estimate_usd: 1.4, estimate_max_usd: 5.2, unpriced: 0, capped: true }, estimate, t, money)).not.toContain("at most");
 });

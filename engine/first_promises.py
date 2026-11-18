@@ -101,6 +101,7 @@ class FirstPromises:
     count: int = 0
     finished: int = 0
     estimate_usd: float | None = None
+    estimate_max_usd: float | None = None
     unpriced: int = 0
     promises: list[Promise] = field(default_factory=list)
     more: int = 0
@@ -212,13 +213,13 @@ def _where(ws: Any, store: Any, cfg: Any, router: Any) -> FirstPromises:
     # offer, or work under way: the offer shows once everything that is going to wait is waiting.
     on_the_way = any(r.data.get("state") in ("queued", "running") for r in mine)
     if held and not on_the_way:
-        count, total, unpriced = 0, 0.0, 0
+        count, total, most, unpriced = 0, 0.0, 0.0, 0
         priced = False
         for s in sources:
-            n, amount, none = source_intake.total_waiting(ws, store, cfg, s.id, router)
-            count, unpriced = count + n, unpriced + none
-            if amount is not None:
-                total, priced = total + amount, True
+            cost = source_intake.waiting_cost(ws, store, cfg, s.id, router)
+            count, unpriced = count + cost.count, unpriced + cost.unpriced
+            if cost.likely is not None and cost.at_most is not None:
+                total, most, priced = total + cost.likely, most + cost.at_most, True
         # Requests that started by themselves and wait on the workspace's first go are priced by their own estimates.
         for r in held:
             if waits_on_first_go(r.data):
@@ -226,13 +227,14 @@ def _where(ws: Any, store: Any, cfg: Any, router: Any) -> FirstPromises:
                 if r.data.get("estimate_usd") is None:
                     unpriced += 1
                 else:
-                    total, priced = total + r.data["estimate_usd"], True
+                    total, most, priced = total + r.data["estimate_usd"], most + r.data["estimate_usd"], True
         return FirstPromises(
             "offer",
             sources=labels,
             days=days,
             count=count,
             estimate_usd=round(total, 4) if priced else None,
+            estimate_max_usd=round(most, 4) if priced else None,
             unpriced=unpriced,
         )
     unfinished = [r for r in mine if source_intake.unfinished(r.data)]

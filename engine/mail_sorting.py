@@ -314,6 +314,25 @@ def estimate(ws: Any, cfg: Any, router: Any, headers: list[Header], level: str, 
     return priced, unpriced
 
 
+def estimate_range(
+    ws: Any, cfg: Any, router: Any, headers: list[Header], level: str, view: Any = None
+) -> tuple[float, float, int]:
+    """What sorting these headers would cost, as `estimate` counts it, in two figures: the most (every run at the full
+    price) and the likely (the first run at the full price, the rest with the packet's stable part from the account's
+    cache). Returns (likely, at most, runs with no price)."""
+    likely, at_most, unpriced = 0.0, 0.0, 0
+    size = cfg.watch.sorting_batch
+    for number, start in enumerate(range(0, len(headers), size)):
+        task, _ids = build_task(ws, cfg, headers[start : start + size], view)
+        price = router.run_price(task, tier=_tier_of(cfg, task, level), data_level=level)
+        if price is None:
+            unpriced += 1
+            continue
+        at_most += price.full
+        likely += price.full if number == 0 else price.warm
+    return likely, at_most, unpriced
+
+
 def _sort_batch(ws: Any, store: Any, cfg: Any, router: Any, batch: list[Header], level: str, go: bool = False) -> _Try:
     from engine import setup
     from engine.dispatcher import has_account

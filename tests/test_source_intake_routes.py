@@ -110,7 +110,7 @@ def test_the_preview_counts_and_prices_and_the_look_back_takes_in_the_older_mail
     before = len(client.get("/api/changes").json())
     preview = client.get("/api/watch/m/look-back", params={"days": 30}).json()
     assert (preview["count"], preview["reaches"], preview["available_from"]) == (1, True, None)
-    assert preview["estimate_usd"] > 0
+    assert preview["estimate_usd"] > 0 and preview["estimate_max_usd"] >= preview["estimate_usd"]
     assert len(client.get("/api/changes").json()) == before, "the preview writes nothing"
     ninety = client.get("/api/watch/m/look-back", params={"days": 90}).json()
     assert ninety["count"] == 1

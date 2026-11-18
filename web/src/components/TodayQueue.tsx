@@ -737,6 +737,7 @@ const KIND_ICONS: Record<QueueLine["kind"], IconName> = {
   first_go: "refresh",
   catch_up_go: "refresh",
   intake_go: "refresh",
+  older_read: "refresh",
   catch_up: "refresh",
   restart: "refresh",
   intake_review: "inbox",

@@ -200,6 +200,7 @@ export const api = {
   watchSources: () => call<S["WatchSourceView"][]>("GET", "watch"),
   /** The go for a newly added source's intake: every item held for it starts. */
   intakeGo: (source: string) => call<S["IntakeStarted"]>("POST", `watch/${id(source)}/intake/go`),
+  continueOlderRead: (source: string) => call<S["LookBackView"]>("POST", `watch/${id(source)}/older-read/continue`),
   /** What looking further back would take in and cost, before anything is read. */
   lookBackPreview: (source: string, days: number) =>
     call<S["LookBackView"]>("GET", `watch/${id(source)}/look-back?days=${days}`),

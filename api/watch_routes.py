@@ -26,6 +26,7 @@ from api.schemas import (
     IntakeUnseenIn,
     LookBackIn,
     LookBackView,
+    OlderReadView,
     ReadVersion,
     RecordRef,
     SetAsideDone,
@@ -183,6 +184,9 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
             if back_to and source_intake.can_look_back(source, store)
             else [],
             full_read_open=source_intake.full_read_pending(store, current(), source) or None,
+            older_read=OlderReadView(**older)
+            if (older := source_intake.older_read_waiting(store.read(), source.id))
+            else None,
             secrets=secret_states(connector, source.settings),
         )
 
@@ -313,6 +317,22 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
         events.changed()
         if found is None:
             return LookBackView(days=0, from_date=worker.now().date(), count=0, reaches=True)
+        return look_back_view(found)
+
+    @r.post("/watch/{source_id}/older-read/continue")
+    def older_read_continue(source_id: str) -> LookBackView:
+        """Carry on a read of older mail that stopped, from where it stopped, now rather than at its time. Nothing is
+        read twice: a read that is under way, or none waiting, does nothing."""
+        need_source(source_id)
+        try:
+            found = source_intake.continue_older_read(ws, store, current(), source_id, worker.now(), force=True)
+        except StoreError as err:
+            raise HTTPException(status_code=409, detail=str(err)) from None
+        events.changed()
+        if found is None:
+            return LookBackView(days=0, from_date=worker.now().date(), count=0, reaches=True)
+        if found.taken:
+            worker.poke()
         return look_back_view(found)
 
     @r.get("/auto-closed")

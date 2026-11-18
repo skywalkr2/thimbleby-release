@@ -72,6 +72,9 @@ look_back_choices: [30, 90, 365]   # days a mail source can be asked to look fur
 full_read_choices: [14, 30, 90]   # days back a first sign-in offers to read mail in full, each with its estimate; none is chosen for the person
 look_back_max_items: 100   # the most older messages one look further back asks a mail source for
 full_read_max_items: 5000   # the most older messages a first sign-in's full read counts and reads, in pages of look_back_max_items
+older_read_throttle_minutes: 15   # a read of older mail the service slowed down carries on after this long when the service gave no time
+older_read_retry_minutes: 10   # a read of older mail that stopped on a failure carries on after this long
+older_read_tries: 3   # carries-on in a row, without getting further, before Today offers to read the rest
 first_headers_days: 365   # days back a mail account's headers are read once at first sign-in, with no assistant work (0: not read)
 first_headers_max_items: 5000   # the most headers that first read asks for
 burst_items: 5   # more changed items than this from one read of a page, feed or tracker are filed as one input per project
@@ -101,6 +104,7 @@ mail_kinds:   # bills, orders and deliveries are tracked for the Personal projec
   order: {senders: [orders, receipts], subject_words: [order confirmation, thank you for your order], words: [order number]}
   shipping: {senders: [shipping, tracking], subject_words: [has shipped, out for delivery, has been delivered, tracking number], words: [estimated delivery]}
 sorting_batch: 25   # messages covered by one sorting run
+estimate_kept_share: 0.5   # the share of messages counted as read in full in a read's cost until enough mail is sorted to count it
 sorting_typical_day: 60   # messages a day the sorting's cost is shown for until enough mail has been read
 set_aside_keep_seconds: 60   # how long a confirmed message's copy is kept so Undo can bring it back
 folders_cache_minutes: 5   # how long an account's list of folders and labels is kept before the service is asked again

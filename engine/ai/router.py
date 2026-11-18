@@ -49,6 +49,25 @@ class Independence:
 
 
 @dataclass(frozen=True)
+class RunPrice:
+    """What one run of a task costs on the account it would use: `full` with every input token at the full price, and
+    `warm` when the account's cache already holds the packet's stable part (instructions and stable text), which it
+    charges at the cached price. `warm` equals `full` when the account lists no cached price."""
+
+    full: float
+    warm: float
+
+    def runs(self, count: float) -> tuple[float, float]:
+        """What `count` runs of this task cost, as (likely, at most): the first at the full price and the rest warm,
+        and every run at the full price. A count that is an expected number (a share of the messages) may have a
+        fraction; less than one run costs its share of one."""
+        if count <= 0:
+            return 0.0, 0.0
+        likely = count * self.full if count <= 1 else self.full + (count - 1) * self.warm
+        return likely, count * self.full
+
+
+@dataclass(frozen=True)
 class Choice:
     tier: str
     provider: str
@@ -614,6 +633,38 @@ class Router:
             task, tier=tier, data_level=data_level, use=use, content=content, independent=independent
         )
         return self._price_of(task, choice) if choice is not None else None
+
+    def run_price(
+        self,
+        task: AiTask,
+        *,
+        tier: str | None = None,
+        data_level: str = "internal",
+        use: str | None = None,
+        content: frozenset[str] = frozenset(),
+        independent: Independence | None = None,
+    ) -> RunPrice | None:
+        """What one run of the task costs on the account it would use, at the full price and with the stable part of
+        its packet served from the cache (the account's `cached_input_per_million` from its model's price); None when
+        the price isn't known. A single run's `estimate` stays the full price."""
+        choice = self.account_for(
+            task, tier=tier, data_level=data_level, use=use, content=content, independent=independent
+        )
+        full = self._price_of(task, choice) if choice is not None else None
+        if choice is None or full is None:
+            return None
+        info = self.model_info(choice)
+        cached = info.cached_input_per_million
+        if (
+            task.audio is not None
+            or cached is None
+            or info.input_per_million is None
+            or cached >= info.input_per_million
+        ):
+            return RunPrice(full, full)
+        stable = round(estimate_tokens(len(task.instructions) + len(task.stable)) * self.calibration(choice).ratio)
+        saving = stable * (info.input_per_million - cached) / 1e6
+        return RunPrice(full, max(0.0, full - saving))
 
     def price_state(
         self,

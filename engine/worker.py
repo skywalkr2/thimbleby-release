@@ -1420,6 +1420,7 @@ class Worker:
     def run_due_watches(self) -> int:
         """Read every watched source that is due, once each however long the computer was asleep. Returns how many
         were read."""
+        from engine import source_intake
         from engine.set_aside import purge_due
         from engine.watch import due, record_crash, refresh
 
@@ -1428,6 +1429,20 @@ class Worker:
         now = self.now()
         if purge_due(self.ws, self.store, self.cfg, now):
             self.events.changed()
+        # A read of older mail that stopped carries on from where it stopped, on this same loop, once its time has come.
+        try:
+            for source in source_intake.older_read_due(self.store.read(), self.cfg, now):
+                if self._stop.is_set():
+                    break
+                done = source_intake.continue_older_read(
+                    self.ws, self.store, self.cfg, source, now, self.router_factory()
+                )
+                if done is not None and done.taken:
+                    self.poke()
+                if done is not None:
+                    self.events.changed()
+        except (Exception, SystemExit):  # it stays waiting and is tried again the next time round
+            log.exception("carrying on a read of older mail failed")
         sources = due(self.store, self.cfg, now)
         handed = 0
         for source in sources:

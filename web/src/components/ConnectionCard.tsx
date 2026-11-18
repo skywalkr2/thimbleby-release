@@ -23,6 +23,7 @@ import { RowMenu, type MenuAction } from "./RowMenu";
 import { SignOutConfirm, addonOfSignIn } from "./SignIns";
 import { ProblemDetails } from "./ProblemDetails";
 import { addSkipped, skippedWords } from "../lib/skipped";
+import { stopWords } from "../lib/olderRead";
 import { FullReadChoice } from "./FullReadChoice";
 import { SourceSides } from "./SourceSides";
 import styles from "./ConnectionCard.module.css";
@@ -93,6 +94,12 @@ export function ConnectionCardView(props: {
   const accountName = card.address ?? card.name;
   // What the account's latest reads skipped, in plain words; nothing is said when none skipped anything.
   const skipped = skippedWords(addSkipped(card.sources.map((s) => s.skipped)), tn);
+  const waitingReads = card.sources.flatMap((s) => {
+    const stopped = s.older_read;
+    if (!stopped) return [];
+    const head = stopped.taken > 0 ? tn("coverage.look_back.done", stopped.taken, { source: s.label }) : "";
+    return [[s.id, [head, stopWords({ stopped: stopped.kind, continues_at: stopped.at, gave_up: stopped.gave_up }, t)].filter(Boolean).join(" ")] as const];
+  });
   const signIn = card.signIn;
   const signedIn = card.signedIn;
   const menu: MenuAction[] = [];
@@ -260,6 +267,12 @@ export function ConnectionCardView(props: {
           {skipped}
         </p>
       )}
+      {card.kind === "account" &&
+        waitingReads.map(([id, words]) => (
+          <p className="hint" key={id} data-older-read={id} role="status">
+            {words}
+          </p>
+        ))}
       {card.kind === "account" && <FullReadChoice sources={card.sources} account={accountName} />}
       {confirming && signIn && signedIn && (
         <SignOutConfirm

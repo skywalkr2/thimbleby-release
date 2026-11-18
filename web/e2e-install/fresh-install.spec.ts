@@ -34,10 +34,15 @@ test("a fresh install opens on the walkthrough and skipping it reaches Today, an
     if (!stream(request)) noted(request, `failed: ${request.failure()?.errorText ?? "unknown"}`);
   });
   page.on("requestfinished", (request) => {
-    void request.response().then((response) => {
-      if (stream(request)) return;
-      if ((response && response.status() >= 400) || request.timing().responseEnd > 2000) noted(request, `status ${response?.status() ?? "none"}`);
-    });
+    // A request that finishes as the page closes has no response to read any more: that is the visit ending, not a
+    // failure, and an unread rejection would fail the test after it passed.
+    void request
+      .response()
+      .then((response) => {
+        if (stream(request)) return;
+        if ((response && response.status() >= 400) || request.timing().responseEnd > 2000) noted(request, `status ${response?.status() ?? "none"}`);
+      })
+      .catch(() => undefined);
   });
   await page.goto(`./?token=${token}`);
   if (visit === "again") {

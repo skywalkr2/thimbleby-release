@@ -3890,6 +3890,27 @@ class WatchFile(FileModel):
         'person chose, in pages of the size one look further back asks for. A reach with more says "at least" '
         "and reads the newest of them.",
     )
+    older_read_throttle_minutes: int = Field(
+        15,
+        ge=1,
+        le=1440,
+        description="When the mail service asks a read of older mail to slow down and says nothing of how long, the "
+        "read carries on after this many minutes. When it says how long, that is used.",
+    )
+    older_read_retry_minutes: int = Field(
+        10,
+        ge=1,
+        le=1440,
+        description="When a read of older mail stops because the mail service failed or couldn't be reached, it "
+        "carries on after this many minutes, from where it stopped.",
+    )
+    older_read_tries: int = Field(
+        3,
+        ge=1,
+        le=20,
+        description="How many times in a row a read of older mail carries on after the mail service slowed it down, "
+        "failed or couldn't be reached, without getting any further. After the last, Today offers to read the rest.",
+    )
     first_headers_days: int = Field(
         365,
         ge=0,
@@ -3918,6 +3939,15 @@ class WatchFile(FileModel):
         le=5000,
         description="How many messages a day to count on when the app shows what the assistant's sorting costs a day, "
         "until it has read enough of your mail to count them itself.",
+    )
+    estimate_kept_share: float = Field(
+        0.5,
+        ge=0.0,
+        le=1.0,
+        description="The share of a source's messages to count on the assistant reading in full when a read's cost is "
+        "shown, until it has sorted enough of that source's mail (one sorting run's worth) to count the share itself. "
+        "The rest is set aside by the sorting and never read in full, so it costs only the sorting. Half is a middle "
+        "guess for a busy inbox; the most the read could cost always counts every message as read.",
     )
     set_aside_keep_seconds: int = Field(
         60,

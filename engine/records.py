@@ -1301,6 +1301,17 @@ class WatchRun(Record):
         description="For a source's first read that took it in quietly: the answer to how far back to read its mail "
         'in full, in days back from the day it was answered; 0 for "not now". None while the question is still open.',
     )
+    older_read: dict[str, Any] | None = Field(
+        None,
+        description="For a source's first read that took it in quietly: where a read of older mail stopped when the "
+        "service slowed it down or failed partway, so it carries on from there. `since` and `before` are the days "
+        "still to read, `left` how many messages the read may still take, `kind` why it stopped (throttled, outage or "
+        "offline), `stopped_at` when it stopped, `at` when it continues (none once it gave up), `tries` the stops in a "
+        "row without progress, "
+        "`gave_up` that it ran out of tries and waits for the person, `taken` the items taken in so far and "
+        "`reach` the days the person chose for a full read (none for a look further back). None when no read is "
+        "waiting to continue.",
+    )
     asks_full_read: bool = Field(
         False,
         description="For a source's first read that took it in quietly: that the full-read question is asked for this "

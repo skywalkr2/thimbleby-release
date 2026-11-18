@@ -14,13 +14,14 @@ import { useAccountNames } from "../lib/account-names";
 import { useTierName } from "../lib/ai-routing";
 import { whenWords } from "../lib/coverage";
 import { day, noReset, wallWhen } from "../lib/dates";
-import { useEstimate } from "../lib/money";
+import { useEstimate, useMoney } from "../lib/money";
 import { useRestart, useRestartText } from "../lib/restart";
 import { inOrder, useActSaved, useAfterSave, useFreshFingerprint } from "../lib/settings-save";
 import { useSignInWindow } from "../lib/sign-in-window";
 import { useWords } from "../lib/wording";
 import { Button, ButtonLink } from "../ui/Button";
 import { domainOf } from "../components/SafeText";
+import { atMost } from "../components/LookBack";
 import { IconButton } from "../ui/IconButton";
 import { MenuButton } from "../ui/MenuButton";
 import { Pill, type PillTone } from "../ui/Pill";
@@ -53,6 +54,7 @@ const HELD_ICON: Record<string, IconName> = {
   slow_screen: "alert",
   catch_up_go: "inbox",
   intake_go: "inbox",
+  older_read: "refresh",
   rule_review: "book",
   pack_tier: "puzzle",
   no_account: "alert",
@@ -70,7 +72,7 @@ function HeldRow(props: RowProps & { "data-queue-line": string }) {
 type Line = S["QueueLineView"];
 
 /** The kinds of queue line that are a stop or a check on the assistant's own work, each drawn here with its one button. */
-export const HELD_KINDS: Line["kind"][] = ["restart", "stuck", "paused", "borrow", "credential", "no_account", "pack_tier", "offline", "handover", "account_check", "switch_failed", "account_move", "sent_folder", "folder_rename", "update", "updated", "model_watch", "model_moved", "identity", "work_access", "extractor", "source_unread", "slow_screen", "rule_review", "catch_up_go", "intake_go"];
+export const HELD_KINDS: Line["kind"][] = ["restart", "stuck", "paused", "borrow", "credential", "no_account", "pack_tier", "offline", "handover", "account_check", "switch_failed", "account_move", "sent_folder", "folder_rename", "update", "updated", "model_watch", "model_moved", "identity", "work_access", "extractor", "source_unread", "slow_screen", "rule_review", "catch_up_go", "intake_go", "older_read"];
 
 export function isHeld(line: Line): boolean {
   return HELD_KINDS.includes(line.kind);
@@ -138,6 +140,8 @@ export function HeldLine(props: {
       return <CatchUpGoLine line={line} />;
     case "intake_go":
       return <IntakeGoLine line={line} />;
+    case "older_read":
+      return <OlderReadLine line={line} />;
     default:
       return <PausedLine line={line} onOpenAiAccounts={props.onOpenAiAccounts} />;
   }
@@ -920,6 +924,7 @@ function IntakeGoLine(props: { line: Line }) {
   const { t, tn } = useWords();
   const act = useAct();
   const estimate = useEstimate();
+  const money = useMoney();
   const [busy, setBusy] = useState(false);
   const { line } = props;
   const source = line.subject ?? line.source ?? "";
@@ -928,7 +933,9 @@ function IntakeGoLine(props: { line: Line }) {
       ? tn("queue.intake_go.mail", line.count, { source, since: tn("queue.intake_go.days", line.days) })
       : tn("queue.intake_go.items", line.count, { source });
   const cost = line.estimate_usd == null ? null : estimate(line.estimate_usd);
-  const sub = t(cost === null ? "queue.intake_go.cost.unpriced" : line.unpriced > 0 ? "queue.intake_go.cost.mixed" : "queue.intake_go.cost.priced", { cost: cost ?? "" });
+  const most = atMost({ estimate_usd: line.estimate_usd, estimate_max_usd: line.estimate_max_usd }, money);
+  const kind = line.unpriced > 0 ? "mixed" : "priced";
+  const sub = t(cost === null ? "queue.intake_go.cost.unpriced" : most !== null ? `queue.intake_go.cost.${kind}_max` : `queue.intake_go.cost.${kind}`, { cost: cost ?? "", most: most ?? "" });
   const go = async () => {
     setBusy(true);
     await act(
@@ -951,6 +958,39 @@ function IntakeGoLine(props: { line: Line }) {
           {t("queue.intake_go.run")}
         </Button>
               </>
+      }
+    />
+  );
+}
+
+/** A read of a source's older mail that stopped and ran out of tries: the one button reads the rest from where it stopped,
+ * now. Nothing is hidden: what was taken in already is said. */
+function OlderReadLine(props: { line: Line }) {
+  const { t, tn } = useWords();
+  const act = useAct();
+  const [busy, setBusy] = useState(false);
+  const { line } = props;
+  const source = line.subject ?? line.source ?? "";
+  const go = async () => {
+    setBusy(true);
+    await act(
+      () => api.continueOlderRead(line.source ?? ""),
+      () => ({ message: t("queue.older_read.started", { source }) }),
+    );
+    setBusy(false);
+  };
+  return (
+    <HeldRow
+      as="section"
+      aria-label={t("queue.older_read.label")}
+      data-queue-line="older_read"
+      pill={<Pill tone="warn">{t("queue.older_read.label")}</Pill>}
+      title={t("queue.older_read.title", { source })}
+      meta={tn("queue.older_read.sub", line.count, {})}
+      primary={
+        <Button size="sm" variant="primary" data-key="primary" loading={busy} onClick={() => void go()}>
+          {t("queue.older_read.run")}
+        </Button>
       }
     />
   );

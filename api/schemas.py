@@ -3567,6 +3567,9 @@ class QueueLineView(BaseModel):
     `unpriced`; the go is POST /api/knowledge/catch-up/go); `intake_go` is a newly added source (`source`, `subject` its
     label) whose first read is held for one go (`count` items, `estimate_usd` and `unpriced` for the total, `days` how
     far back its mail was read, none for a source with no mail; the go is POST /api/watch/{source}/intake/go);
+    `older_read` is a read of a source's older mail (`source`, `subject` its label) that stopped partway and ran out of
+    tries (`count` items taken in so far, `problem_kind` why it stopped, `waiting_since` when); the line's button
+    carries it on from where it stopped, POST /api/watch/{source}/older-read/continue;
     `no_effect` is the person's answer or correction to a question that was handled twice and changed nothing
     (`subject` the question's title, `question` its id, `text` the person's own words, cut short; the line opens the
     question to answer again, and Leave it is POST /api/requests/{request}/dismiss);
@@ -3702,6 +3705,7 @@ class QueueLineView(BaseModel):
         "first_go",
         "catch_up_go",
         "intake_go",
+        "older_read",
         "intake_review",
         "batches",
         "batch_item",
@@ -3957,6 +3961,9 @@ class QueueLineView(BaseModel):
         None,
         description="The estimated cost of everything the line starts (first_go, catch_up_go, intake_go), when any has "
         "a price.",
+    )
+    estimate_max_usd: float | None = Field(
+        None, description='With `estimate_usd` on intake_go: the most the work could cost ("at most").'
     )
     unpriced: int = Field(
         0, description="How many of the things the line starts have no price (first_go, catch_up_go, intake_go)."
@@ -4299,6 +4306,9 @@ class FirstPromisesView(BaseModel):
     estimate_usd: float | None = Field(
         None, description="About what the look back costs; none when nothing has a price."
     )
+    estimate_max_usd: float | None = Field(
+        None, description='The most the look back could cost ("at most"); none when nothing has a price.'
+    )
     unpriced: int = Field(description="How many of the items have no price.")
     promises: list[FirstPromise]
     more: int = Field(description="Open promises beyond the ones shown.")
@@ -4343,7 +4353,16 @@ class FullReadOptionView(BaseModel):
     count: int = Field(
         description="Items it takes in beyond what the first read took; 0 when the first read covers it."
     )
-    estimate_usd: float | None = Field(None, description="About what they cost; None when no price is known.")
+    estimate_usd: float | None = Field(
+        None,
+        description="About what they cost: the sorting of every message, the full read of the share the sorting keeps "
+        "and the cache's price for the repeated part; None when no price is known.",
+    )
+    estimate_max_usd: float | None = Field(
+        None,
+        description='The most they could cost ("at most"): every message read in full at the full price. The same as '
+        "`estimate_usd` when the account has no cached price and nothing is set aside.",
+    )
     unpriced: int = Field(0, description="How many of the items have no price.")
     reaches: bool = Field(True, description="False when the source holds no mail as far back as asked.")
     capped: bool = Field(
@@ -4384,6 +4403,9 @@ class LookBackView(BaseModel):
         description="About what they cost; after the look, what everything held for the source's go costs. None when "
         "no price is known.",
     )
+    estimate_max_usd: float | None = Field(
+        None, description='The most they could cost ("at most"); None when no price is known.'
+    )
     unpriced: int = Field(0, description="How many of the items have no price.")
     reaches: bool = Field(
         description="False when the source holds no mail as far back as asked: `available_from` is where its mail "
@@ -4417,6 +4439,31 @@ class LookBackView(BaseModel):
         description="After the look: the source gave fewer than a third of what it said it held, which the screen "
         "says in plain words.",
     )
+    stopped: str | None = Field(
+        None,
+        description="After the look: the service slowed the read down or failed partway (`throttled`, `outage`, "
+        "`offline`, or another kind the person has to deal with). What was read is kept; the date moved only over "
+        "the days read whole.",
+    )
+    continues_at: datetime | None = Field(
+        None,
+        description="After a look that stopped: when the rest is read by itself; none when it waits for the person "
+        "or has nothing more to read.",
+    )
+    gave_up: bool = Field(
+        False,
+        description="After a look that stopped: it ran out of tries and waits for the person to carry on from Today.",
+    )
+
+
+class OlderReadView(BaseModel):
+    """A read of older mail that stopped partway and waits to carry on from where it stopped."""
+
+    kind: str = Field(description="Why it stopped: throttled, outage or offline.")
+    at: datetime | None = Field(None, description="When it carries on by itself; none once it gave up.")
+    gave_up: bool = Field(False, description="It ran out of tries: Today offers to read the rest.")
+    taken: int = Field(0, description="Items taken in so far by the read that stopped.")
+    tries: int = Field(0, description="Stops in a row without getting further.")
 
 
 class FirstGoSorting(BaseModel):
@@ -6005,6 +6052,9 @@ class WatchSourceView(BaseModel):
         None,
         description="True while the source's first sign-in still has its question open: how far back to read its "
         'mail in full. It stays true until the person answers, "not now" included.',
+    )
+    older_read: OlderReadView | None = Field(
+        None, description="Set while a read of older mail that stopped partway waits to carry on."
     )
     secrets: list[SourceSecretView] = Field(
         default_factory=list, description="Where each secret setting it has set is read from."

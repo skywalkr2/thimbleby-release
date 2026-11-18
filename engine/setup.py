@@ -464,11 +464,13 @@ def reading(ws: Any, cfg: Any, store: Any, found: list[Step], now: Any = None) -
     read = [
         s for s in sources if any(r.data["outcome"] in _READ_OUTCOMES for r in view.find("watch_run", {"source": s.id}))
     ]
-    taken = sum(r.data.get("new", 0) for s in read for r in view.find("watch_run", {"source": s.id}))
+    # What was really taken in: the items handed in from the sources, whichever read took them (the first read, a full
+    # read that stopped partway, or a later one), never a count a read only meant to take.
+    ids = {s.id for s in sources}
+    taken = sum(1 for item in view.list("source") if (item.data.get("watched") or {}).get("source") in ids)
     base = {"sources": len(sources), "read": len(read), "found": taken}
     if len(read) < len(sources):
         return Reading("working", stage="fetching", **base)
-    ids = {s.id for s in sources}
     sorting = any(
         r.data["state"] in ("queued", "running")
         and not r.data.get("dismissed")
