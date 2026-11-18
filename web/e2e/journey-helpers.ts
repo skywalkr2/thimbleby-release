@@ -385,3 +385,9 @@ export async function turnOnAndGoOn(main: Locator) {
   await expect(main.getByText(/ is on\.$/)).toBeVisible();
   await main.getByRole("button", { name: "Continue" }).click();
 }
+
+/** Opens a What changed card's "What <assistant> did (N)" fold, where the list of what it did is, when it is closed. */
+export async function openFold(card: Locator): Promise<void> {
+  const fold = card.getByRole("button", { name: /^What .+ did \(\d+\)$/ }).first();
+  if ((await fold.count()) > 0 && (await fold.getAttribute("aria-expanded")) !== "true") await fold.click();
+}

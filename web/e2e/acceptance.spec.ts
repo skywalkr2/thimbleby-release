@@ -1,11 +1,11 @@
 // The milestone 2 acceptance scenario (the first schedule) in a real browser, with accessibility checks.
 // Names come from the fixture's cases and people, never written out here.
 import AxeBuilder from "@axe-core/playwright";
-import { expect, type Locator, type Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
 import { openScreen, screenReady } from "./open-screen";
 import { choicesOf, choose } from "./choose";
-import { expectQueueShows, pressStart, settingsSections, showSteps, widerThanWindow, FIRST_SCREEN, toToday } from "./journey-helpers";
+import { expectQueueShows, openFold, pressStart, settingsSections, showSteps, widerThanWindow, FIRST_SCREEN, toToday } from "./journey-helpers";
 
 interface Case {
   id: string;
@@ -97,11 +97,6 @@ async function signIn(page: Page) {
 
 /** A change with the assistant's own sentence folds its list under "What <assistant> did (N)"; the steps read that list,
  * so it is opened when it is closed. A change with no sentence has no fold, and its list is open already. */
-async function openFold(card: Locator) {
-  const fold = card.getByRole("button", { name: /^What .+ did \(\d+\)$/ }).first();
-  if ((await fold.count()) > 0 && (await fold.getAttribute("aria-expanded")) !== "true") await fold.click();
-}
-
 async function handIn(page: Page, c: Case) {
   // The result is a line of Today's queue as soon as the assistant has made it; the card itself is read on What changed.
   await go(page, "Today");

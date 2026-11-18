@@ -1,7 +1,7 @@
 import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
 import { openScreen } from "./open-screen";
-import { collectProblems, openView } from "./journey-helpers";
+import { collectProblems, openFold, openView } from "./journey-helpers";
 
 interface CaptureFixture {
   label: string;
@@ -46,6 +46,10 @@ async function readUntilFiled(page: Page, label: string, text: string) {
   }).toPass({ timeout: 30_000 });
 }
 
+// The journey files notes on its server; a re-run would start from that used server, where the note is there twice, and prove
+// nothing: it takes none and shows its failure as it is (S-0560).
+test.describe.configure({ retries: 0 });
+
 test("a capture folder files notes once and offers Undo", async ({ page }, testInfo) => {
   const problems: string[] = [];
   collectProblems(page, problems);
@@ -75,6 +79,8 @@ test("a capture folder files notes once and offers Undo", async ({ page }, testI
   await openView(page, "What changed");
   const change = page.getByRole("complementary", { name: `Your note · ${first}` });
   await expect(change).toBeVisible();
+  // The card leads with the assistant's sentence; what it did is under its fold.
+  await openFold(change);
   await change.getByRole("button", { name: `More actions for ${first}` }).click();
   await page.getByRole("menuitem", { name: "Undo this", exact: true }).click();
   await expect(page.getByText("Undone.")).toBeVisible();
