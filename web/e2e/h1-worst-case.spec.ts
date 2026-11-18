@@ -4,7 +4,7 @@
 import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
 import { choicesOf, choose } from "./choose";
-import { openScreen } from "./open-screen";
+import { PAGE_LOAD, openScreen } from "./open-screen";
 
 test.describe.configure({ mode: "serial" });
 
@@ -114,15 +114,18 @@ test("To-dos: Enter twice fast in the add form makes one to-do, and the menu's n
   expect(adds).toBe(1);
   const after = (await (await page.request.get("api/open-items", { headers: AUTH })).json()).actions.length as number;
   expect(after).toBe(before + 1);
-  // The number beside To-dos in the menu is said on the screen, in the same words.
-  const menu = await page.getByRole("navigation").getByRole("link", { name: /^To-dos/ }).first().getAttribute("aria-label");
-  const said = Number(/(\d+) (?:needs|need) you/.exec(menu ?? "")?.[1]);
-  expect(said).toBeGreaterThan(0);
-  // It is the sum of the two numbers the page says: what is yours and the questions for you (S-0539).
-  const head = await page.locator("main").innerText();
-  const yours = Number(/(\d+) yours/.exec(head)?.[1] ?? 0);
-  const asked = Number(/(\d+) questions? for you/.exec(head)?.[1] ?? 0);
-  expect(yours + asked).toBe(said);
+  // The number beside To-dos in the menu is the sum of the two numbers the page says: what is yours and the questions for you
+  // (S-0539). The add reads the menu's counts and the page's list again as two reads, so the two are compared once both have
+  // answered: equal within the page's load time, and the one added is in both.
+  const numbers = async () => {
+    const menu = await page.getByRole("navigation").getByRole("link", { name: /^To-dos/ }).first().getAttribute("aria-label");
+    const said = Number(/(\d+) (?:needs|need) you/.exec(menu ?? "")?.[1]);
+    const head = await page.locator("main").innerText();
+    const yours = Number(/(\d+) yours/.exec(head)?.[1] ?? 0);
+    const asked = Number(/(\d+) questions? for you/.exec(head)?.[1] ?? 0);
+    return { said, sum: yours + asked };
+  };
+  await expect.poll(async () => { const n = await numbers(); return n.said > 0 && n.said === n.sum; }, PAGE_LOAD).toBe(true);
 });
 
 test("every to-do with no owner is a Pick an owner line on Today (H1-07)", async ({ page }) => {
