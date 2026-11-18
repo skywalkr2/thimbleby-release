@@ -175,6 +175,13 @@ def hand_over_log(workspace: Path) -> str:
     return text
 
 
+def app_log_lines(logs: Path) -> list[str]:
+    try:
+        return (logs / "desktop.log").read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+
+
 def wait_for_result(workspace: Path, logs: Path, started: float) -> dict:
     """The result file the new version writes once it runs; a failed result, or none in time, fails the check."""
     path = private_dir(workspace) / "update-result.json"
@@ -191,8 +198,15 @@ def wait_for_result(workspace: Path, logs: Path, started: float) -> dict:
             print("\n".join(step_times(logs)))
             print(hand_over_log(workspace))
             raise SystemExit(f"The update failed and was rolled back: {result}")
+        ended = [line for line in app_log_lines(logs) if "hand-over ended at once" in line]
+        if ended:
+            print("\n".join(step_times(logs)))
+            print("\n".join(ended))
+            print(hand_over_log(workspace))
+            raise SystemExit("The update's hand-over ended as soon as it started.")
         pause(2)
     print("\n".join(step_times(logs)))
+    print("\n".join(line for line in app_log_lines(logs) if "hand-over" in line))
     print(hand_over_log(workspace))
     raise SystemExit(f"No result from the update within {UPDATE_SECONDS} seconds.")
 

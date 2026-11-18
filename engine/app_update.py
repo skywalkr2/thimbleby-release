@@ -452,14 +452,14 @@ def spawn_output(argv: Sequence[str]) -> Path:
     return Path(argv[-1]).with_name(Path(argv[-1]).name + ".out")
 
 
-def spawn_detached(argv: Sequence[str]) -> None:
-    """Start a program that goes on after this one ends, its output kept beside it (`spawn_output`)."""
+def spawn_detached(argv: Sequence[str]) -> subprocess.Popen[bytes]:
+    """Start a program that goes on after this one ends, its output kept beside it (`spawn_output`). Returns it."""
     with spawn_output(argv).open("wb") as out:
         if sys.platform == "win32":
             flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
             for extra in (CREATE_BREAKAWAY_FROM_JOB, 0):  # a job that refuses breakaway is started in place
                 try:
-                    subprocess.Popen(
+                    return subprocess.Popen(
                         list(argv),
                         creationflags=flags | extra,
                         close_fds=True,
@@ -467,12 +467,12 @@ def spawn_detached(argv: Sequence[str]) -> None:
                         stdout=out,
                         stderr=subprocess.STDOUT,
                     )
-                    return
                 except OSError:
                     if not extra:
                         raise
+            raise OSError("the hand-over couldn't be started")
         else:
-            subprocess.Popen(
+            return subprocess.Popen(
                 list(argv),
                 start_new_session=True,
                 close_fds=True,
@@ -480,6 +480,30 @@ def spawn_detached(argv: Sequence[str]) -> None:
                 stdout=out,
                 stderr=subprocess.STDOUT,
             )
+
+
+#: How long the hand-over must stay running after it starts: it waits for the app to close, so one that ends this soon
+#: never ran its steps.
+HAND_OVER_ALIVE_SECONDS = 3.0
+
+
+def started_alive(process: Any, argv: Sequence[str], wait: float = HAND_OVER_ALIVE_SECONDS) -> None:
+    """Raise when the hand-over ended at once, with its exit code and the start of what it printed, so a hand-over that
+    can't run is a failed update the person sees, never a quiet quit."""
+    if process is None or not hasattr(process, "wait"):
+        return
+    try:
+        code = process.wait(timeout=wait)
+    except subprocess.TimeoutExpired:
+        return
+    try:
+        printed = spawn_output(argv).read_text(encoding="utf-8", errors="replace").strip()[:300]
+    except OSError:
+        printed = ""
+    from engine.launcher import note
+
+    note(f"the hand-over ended at once with code {code}: {printed or 'it printed nothing'}")
+    raise OSError(f"the hand-over ended at once with code {code}")
 
 
 def hand_over(
@@ -493,7 +517,7 @@ def hand_over(
     notes: Sequence[str],
     settings: Any,
     environ: Mapping[str, str] | None = None,
-    spawn: Callable[[Sequence[str]], None] = spawn_detached,
+    spawn: Callable[[Sequence[str]], Any] = spawn_detached,
     pid: int | None = None,
     now: datetime | None = None,
 ) -> Path:
@@ -528,21 +552,20 @@ def hand_over(
         }
         write_whole(_file(ws, PLAN_FILE), json.dumps(plan, separators=(",", ":")))
         if mac:
-            spawn(["/bin/sh", str(script)])
+            argv = ["/bin/sh", str(script)]
         else:
-            spawn(
-                [
-                    "powershell.exe",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-WindowStyle",
-                    "Hidden",
-                    "-File",
-                    str(script),
-                ]
-            )
+            argv = [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-WindowStyle",
+                "Hidden",
+                "-File",
+                str(script),
+            ]
+        started_alive(spawn(argv), argv)
     except OSError as err:
         clear(ws, PLAN_FILE)
         raise UpdateFailed("install", f"the hand-over couldn't be started: {err.__class__.__name__}: {err}") from None
@@ -563,7 +586,7 @@ class Steps:
     run: Run = default_run
     client: Any = None
     free: Callable[[Path], int] | None = None
-    spawn: Callable[[Sequence[str]], None] = spawn_detached
+    spawn: Callable[[Sequence[str]], Any] = spawn_detached
 
 
 def _megabytes(count: int) -> str:

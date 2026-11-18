@@ -596,3 +596,31 @@ def test_a_started_hand_over_keeps_its_own_output_beside_its_script(tmp_path):
     assert spawn_output(argv) == tmp_path / "hand-over.sh.out"
     spawn_detached(argv)
     assert spawn_output(argv).exists()
+
+
+def test_a_hand_over_that_ends_at_once_is_a_failed_update_with_its_code_never_a_quiet_quit(tmp_path):
+    from engine.app_update import started_alive
+
+    script = tmp_path / "hand-over.sh"
+    script.write_text("echo refused; exit 3\n", encoding="utf-8")
+    argv = ["/bin/sh", str(script)]
+    (tmp_path / "hand-over.sh.out").write_text("refused\n", encoding="utf-8")
+
+    class Ended:
+        def wait(self, timeout):
+            return 3
+
+    with pytest.raises(OSError, match="code 3"):
+        started_alive(Ended(), argv)
+
+
+def test_a_hand_over_still_running_after_its_wait_is_left_to_do_its_work(tmp_path):
+    import subprocess
+
+    from engine.app_update import started_alive
+
+    class Running:
+        def wait(self, timeout):
+            raise subprocess.TimeoutExpired("sh", timeout)
+
+    started_alive(Running(), ["/bin/sh", str(tmp_path / "hand-over.sh")])

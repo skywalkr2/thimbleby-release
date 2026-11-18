@@ -2278,7 +2278,8 @@ class Registrar:
         person, and the rest is read. Every read records what it skipped, counted by kind, and says so on the screens.
         A message that is too large to read is one item to skip, never a reason to fail the whole read: a single item
         over the size limit raises `AnswerTooLarge`, a `ConnectorError` a connector may catch to skip that item as
-        `Unreadable(..., kind="too_large")`.
+        `Unreadable(..., kind="too_large")`. Its `kind` is `outage`, so code that sorts errors by kind tests for the
+        class first.
         Raise `ConnectorError(kind, detail)` with kind `auth`, `no_access`, `not_found`, `outage`, `offline` or
         `throttled` (with `retry_after=` seconds). The core compares, keeps snapshots and hands in what is new,
         changed or gone (for a read that lists only changes, the keys in `Poll.removed`); the connector never writes
