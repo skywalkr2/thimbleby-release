@@ -52,7 +52,7 @@ from engine.tasks import TaskKind
 from engine.texts import LongText, Unit
 from engine.tools import ToolBox, ToolError, ToolResult
 
-PLUGIN_API_VERSION = "0.3.101"
+PLUGIN_API_VERSION = "0.3.102"
 
 #: The earlier minor version this core still serves (one minor back). A pack whose range reaches the end of that minor
 #: stays on, marked "Built for an earlier version"; the window ends with the next minor release. Every name the core
@@ -2270,8 +2270,11 @@ class Registrar:
         it in `watch.yaml` with its settings, which `settings` (a pydantic model) checks. `poll(settings, state,
         context) -> Poll` lists what the source holds now as `SourceItem`s (a stable key, a title, the text, who
         changed it last) and returns the `state` to keep for the next read; set `complete=False` when it lists only
-        what changed. An item can carry files (`SourceItem.files`, `ItemFile`: name, media type, bytes), such as a
-        mail's attachments: the core reads them as text and adds it to the item's text, so the connector never parses
+        what changed, and `capped=True` when the source will not hand in the rest of its first window: the first read
+        stopped for good at a limit, so it looked back only as far as the oldest item it returned (a first read that
+        queues its window and brings the rest in on later polls is not capped). An item can carry files
+        (`SourceItem.files`, `ItemFile`: name, media type, bytes), such as a mail's attachments: the core reads them
+        as text and adds it to the item's text, so the connector never parses
         a file and a change in a file is a change in the item. A thing the connector listed but couldn't read goes in
         `Poll.unreadable` as `Unreadable(key, reason)` (never its own text; `kind="too_large"` marks an item over what
         can be read, any other reason leaves `kind` None): the read moves past it, the core records it and tells the
@@ -2319,7 +2322,11 @@ class Registrar:
         account, reads only, and a failure is contained like a poll's (`ConnectorError` kinds pass through).
         `older_count=fn`, with the same arguments, returns how many items there are (at most `max_items`) without
         reading them, so the estimate costs no more than a count; left out, the estimate calls `older` and counts
-        what comes back. A count that reaches `max_items` is shown as "at least" that many, with its cost.
+        what comes back. A count that reaches `max_items` is shown as "at least" that many, with its cost. A service
+        that can only estimate how many there are returns `OlderCount(count, estimate=True)` instead of a whole
+        number: the choices and the go's estimate then say "about" that many, and the cost "about" that much, never
+        an exact figure. A plain whole number is an exact count. A look further back that takes in fewer than a
+        third of the count it was shown says so in plain words, so a count that was wrong is never silent.
 
         **Headers (a year of who writes to whom):** a mail connector that can list message headers alone passes
         `headers=fn`, with `fn(settings, since, before, max_items, context) -> list[SourceItem]` and the same arguments
@@ -2860,6 +2867,7 @@ from engine.connectors import (  # noqa: E402 - part of the plugin API
     EventPerson,
     ItemFile,
     MessageDetails,
+    OlderCount,
     Poll,
     SourceItem,
     Unreadable,
@@ -2883,6 +2891,7 @@ __all__ = [
     "AnswerTooLarge",
     "retry_after",
     "Poll",
+    "OlderCount",
     "Unreadable",
     "SourceItem",
     "ItemFile",

@@ -170,6 +170,18 @@ def test_a_connector_with_no_count_is_read_for_the_estimate(tmp_path):
         store.close()
 
 
+def test_looking_back_on_a_connector_with_no_count_reads_once_never_twice(tmp_path):
+    # Its count would read everything, so the look doesn't ask it first: the older mail is read one time.
+    ws, cfg, store, log = make(tmp_path, "p18/uncounted")
+    try:
+        refresh(ws, store, cfg, "m", NOW)
+        done = source_intake.look_further_back(ws, store, cfg, "m", 30, NOW)
+        assert done.taken and not done.short
+        assert [c[0] for c in calls(log)] == ["read"]
+    finally:
+        store.close()
+
+
 def test_the_source_is_asked_as_the_account_it_reads_with(tmp_path):
     ws, cfg, store, log = make(tmp_path, account="person@example.com")
     try:

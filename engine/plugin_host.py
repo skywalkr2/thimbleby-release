@@ -1185,7 +1185,7 @@ class PluginHost:
         """How to ask a plugin's connector for items older than its first read took, as the account a source reads
         with (the core's `OlderMail`), or None when the connector says it can't be asked. A call is contained like a
         poll: its `ConnectorError` passes through, anything else is noted on the plugin and becomes an outage."""
-        from engine.connectors import ConnectorError, OlderMail
+        from engine.connectors import ConnectorError, OlderCount, OlderMail
 
         if connector.older is None:
             return None
@@ -1197,9 +1197,11 @@ class PluginHost:
             try:
                 if counting and connector.older_count is not None:
                     found = connector.older_count(deepcopy(settings), since, before, limit, context)
-                    if isinstance(found, bool) or not isinstance(found, int) or found < 0:
-                        raise ValueError("older_count returns a whole number")
-                    result: Any = min(found, limit)
+                    estimate = isinstance(found, OlderCount) and found.estimate is True
+                    number = found.count if isinstance(found, OlderCount) else found
+                    if isinstance(number, bool) or not isinstance(number, int) or number < 0:
+                        raise ValueError("older_count returns a whole number or an OlderCount")
+                    result: Any = OlderCount(min(number, limit), estimate) if estimate else min(number, limit)
                 else:
                     result = _as_read(connector.older(deepcopy(settings), since, before, limit, context), limit)
                     if counting:
@@ -1218,6 +1220,7 @@ class PluginHost:
         return OlderMail(
             lambda settings, since, before, limit, context: ask(settings, since, before, limit, context, True),
             lambda settings, since, before, limit, context: ask(settings, since, before, limit, context, False),
+            counts=connector.older_count is not None,
         )
 
     def header_mail(self, connector: Any, account: str | None = None) -> Any:

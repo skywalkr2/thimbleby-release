@@ -6,6 +6,7 @@ import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api, type S } from "../lib/api";
 import { useAct } from "../lib/act";
+import { useToasts } from "../lib/toasts";
 import { useEstimate } from "../lib/money";
 import { skippedWords } from "../lib/skipped";
 import { useWords } from "../lib/wording";
@@ -39,6 +40,7 @@ function summed(views: S["FullReadView"][]): Option[] {
       unpriced: same.reduce((n, x) => n + x.unpriced, 0),
       reaches: same.every((x) => x.reaches),
       capped: same.some((x) => x.capped),
+      estimate: same.some((x) => x.estimate),
     };
   });
 }
@@ -46,6 +48,7 @@ function summed(views: S["FullReadView"][]): Option[] {
 export function FullReadChoice(props: { sources: Source[]; account: string }) {
   const { t, tn } = useWords();
   const act = useAct();
+  const { push } = useToasts();
   const client = useQueryClient();
   const estimate = useEstimate();
   const open = props.sources.filter((s) => s.full_read_open);
@@ -55,24 +58,30 @@ export function FullReadChoice(props: { sources: Source[]; account: string }) {
   if (open.length === 0) return null;
   const ready = views.every((v) => v.data !== undefined);
   const options = ready ? summed(views.map((v) => v.data as S["FullReadView"])) : [];
-  // What the read did, in words: what is being taken in, then what it skipped (nothing is said of skipping when none was).
+  // What the read did for one source, in words: what is being taken in, then what it skipped (nothing is said of skipping when
+  // none was), then, when the service gave far fewer than it said it held, how many it gave of how many.
   const readWords = (r: S["LookBackView"], source: string): string => {
     const head = r.taken === 0 ? t("walkthrough.mail.full_read.nothing") : r.started ? tn("coverage.look_back.done", r.taken, { source }) : t("coverage.look_back.done_held", { source });
     const skipped = skippedWords(r.skipped, tn);
-    return skipped ? `${head} ${skipped}` : head;
+    const short = r.short ? tn(r.expected_estimate ? "walkthrough.mail.full_read.short_about" : "walkthrough.mail.full_read.short", r.gave, { expected: r.expected }) : "";
+    return [head, skipped, short].filter(Boolean).join(" ");
   };
+  // Every open source of the account is answered (the inbox, the sent mail, any other), and what they did is said in one line
+  // that names each, since a newer message would replace an older one.
   const confirm = async () => {
     if (picked === null) return;
     setBusy(true);
+    const said: string[] = [];
+    let failed = false;
     for (const s of open) {
-      const done = await act(
-        () => api.answerFullRead(s.id, picked),
-        picked === NOT_NOW
-          ? undefined
-          : (r) => ({ message: readWords(r, s.label) }),
-      );
-      if (done === undefined) break;
+      const done = await act(() => api.answerFullRead(s.id, picked));
+      if (done === undefined) {
+        failed = true;
+        break;
+      }
+      if (picked !== NOT_NOW) said.push(readWords(done, s.label));
     }
+    if (!failed && said.length > 0) push({ message: said.join(" ") });
     setBusy(false);
     await client.invalidateQueries({ queryKey: ["watch"] });
   };
@@ -92,7 +101,7 @@ export function FullReadChoice(props: { sources: Source[]; account: string }) {
             <option value="">{t("walkthrough.mail.full_read.choose")}</option>
             {options.map((o) => {
               const cost = o.count === 0 ? "" : costWords(o, estimate, t);
-              const found = o.count === 0 ? t("walkthrough.mail.full_read.covered") : tn(o.capped ? "walkthrough.mail.full_read.found_capped" : "walkthrough.mail.full_read.found", o.count, { cost });
+              const found = o.count === 0 ? t("walkthrough.mail.full_read.covered") : tn(o.capped ? "walkthrough.mail.full_read.found_capped" : o.estimate ? "walkthrough.mail.full_read.found_about" : "walkthrough.mail.full_read.found", o.count, { cost });
               return (
                 <option key={o.days} value={String(o.days)}>
                   {reachWords(o.days, tn)}: {found}

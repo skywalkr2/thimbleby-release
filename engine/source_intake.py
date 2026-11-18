@@ -21,7 +21,11 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from engine import catch_up, watch
+from engine.connectors import OlderCount
 from engine.storage import StoreError, WriteContext
+
+#: A look that takes in fewer than this fraction of the count the source gave says so.
+SHORT_FRACTION = 3
 
 #: What the requests of an intake wait on until the person's go; Today gathers them into one line for the source.
 WAITING = "Taking in this source waits for you to start it."
@@ -330,7 +334,12 @@ class LookBack:
     started: bool = False  # taken in and started at once (False: held for the go, or nothing to take in)
     taken: int = 0
     capped: bool = False  # the count stopped at the most one look asks for, so there may be more: "at least"
+    estimate: bool = False  # the source's count is its own rough figure: "about"
     skipped: dict[str, int] = field(default_factory=dict)  # what the look couldn't read, by kind
+    expected: int = 0  # after a look: how many the source said it holds of those days, before it was asked to read
+    expected_estimate: bool = False  # that figure was an estimate
+    gave: int = 0  # after a look: how many messages the source gave (those it couldn't read among them)
+    short: bool = False  # after a look: the source gave fewer than a third of what it said it holds
 
 
 def _candidates(ws: Any, store: Any, cfg: Any, source: Any, accept: Callable[[dict[str, Any]], bool]) -> list[Any]:
@@ -401,23 +410,24 @@ def _remote_range(store: Any, source_id: str, asked: date, old: date, available:
 
 def _remote_count(
     ws: Any, store: Any, cfg: Any, source: Any, since: date, before: date, now: datetime, limit: int | None = None
-) -> int:
-    """How many older messages the source would give for these days, within the setting's limit; 0 when it can't be
-    asked or the days are empty. A core mailbox reads no message to say; a plugin's connector that gives no count is
-    read for it."""
+) -> OlderCount:
+    """How many older messages the source would give for these days, within the setting's limit, and whether that is
+    only its estimate; 0 when it can't be asked or the days are empty. A core mailbox reads no message to say; a
+    plugin's connector that gives no count is read for it."""
     from engine.connectors import ConnectorError
 
     asker = _asker(store, source)
     if asker is None or since >= before:
-        return 0
+        return OlderCount(0)
     asking, model = asker
     settings = model.model_validate(source.settings)
     try:
-        return asking.count(
+        found = asking.count(
             settings, since, before, limit or cfg.watch.look_back_max_items, _older_context(ws, cfg, now)
         )
     except ConnectorError as err:
         raise StoreError(older_failure(err)) from None
+    return found if isinstance(found, OlderCount) else OlderCount(found)
 
 
 def _item_day(item: Any) -> date | None:
@@ -543,7 +553,8 @@ def look_back_preview(
         raise StoreError("this source can't be asked for older mail")
     found = _candidates(ws, store, cfg, source, _in_window(asked, old, now))
     limit = cfg.watch.full_read_max_items if exact else cfg.watch.look_back_max_items
-    remote = _remote_count(ws, store, cfg, source, *_remote_range(store, source_id, asked, old, available), now, limit)
+    counted = _remote_count(ws, store, cfg, source, *_remote_range(store, source_id, asked, old, available), now, limit)
+    remote = counted.count
     prices = [
         r.data["estimate_usd"]
         for r in store.read().list("request")
@@ -553,6 +564,7 @@ def look_back_preview(
     result = LookBack(days, asked, count, available_from=available if available and available > asked else None)
     # The source was asked: fewer than the limit means it holds nothing older than it gave.
     result.capped = remote >= limit
+    result.estimate = counted.estimate and remote > 0
     result.reaches = result.available_from is None or not result.capped
     if result.reaches:
         result.available_from = None
@@ -584,9 +596,13 @@ def look_further_back(
     with watch._read_lock(ws, source_id):
         asked, old, new, available = _plan(store, cfg, source_id, days, exact)
         limit = cfg.watch.full_read_max_items if exact else cfg.watch.look_back_max_items
-        fetched, skipped = _fetch_older(
-            ws, store, cfg, source, *_remote_range(store, source_id, asked, old, available), now, limit
-        )
+        reach = _remote_range(store, source_id, asked, old, available)
+        # What the source says it holds of these days, asked before it is read, so a read that gives far fewer says so.
+        # Asked only of a source that counts without reading: one that reads to count would read everything twice.
+        asker = _asker(store, source)
+        counts = asker is not None and asker[0].counts
+        said = _remote_count(ws, store, cfg, source, *reach, now, limit) if counts else OlderCount(0)
+        fetched, skipped = _fetch_older(ws, store, cfg, source, *reach, now, limit)
         add_older_skipped(store, source_id, skipped)
         if fetched:
             asked, old, new, available = _plan(store, cfg, source_id, days, exact)
@@ -600,6 +616,8 @@ def look_further_back(
         )
         result.reaches = result.available_from is None
         result.skipped = skipped
+        result.expected, result.expected_estimate, result.gave = said.count, said.estimate, fetched
+        result.short = said.count > 0 and fetched * SHORT_FRACTION < said.count and said.count < limit
         keys = {snap.data["key"] for snap in found}
         made = _take(ws, store, cfg, source, now, router, lambda data: data["key"] in keys)
         result.taken = len(made)
@@ -632,6 +650,7 @@ class FullReadOption:
     unpriced: int = 0
     reaches: bool = True
     capped: bool = False
+    estimate: bool = False
 
 
 def full_read_pending(store: Any, cfg: Any, source: Any) -> bool:
@@ -672,7 +691,13 @@ def full_read_options(
         preview = look_back_preview(ws, store, cfg, source_id, beyond, now, exact=True)
         found.append(
             FullReadOption(
-                reach, preview.count, preview.estimate_usd, preview.unpriced, preview.reaches, preview.capped
+                reach,
+                preview.count,
+                preview.estimate_usd,
+                preview.unpriced,
+                preview.reaches,
+                preview.capped,
+                preview.estimate,
             )
         )
     return found

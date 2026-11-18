@@ -62,7 +62,7 @@ export function LookBack(props: { source: Source; onClose: () => void }) {
             : found && found.count === 0
               ? t("coverage.look_back.none")
               : found
-                ? tn(found.capped ? "coverage.look_back.found_capped" : "coverage.look_back.found", found.count, { from: day(found.from_date), cost })
+                ? tn(found.capped ? "coverage.look_back.found_capped" : found.estimate ? "coverage.look_back.found_about" : "coverage.look_back.found", found.count, { from: day(found.from_date), cost })
                 : ""}
         {found && !found.reaches && found.available_from ? ` ${t("coverage.look_back.only_from", { date: day(found.available_from) })}` : ""}
       </p>
@@ -99,5 +99,6 @@ export function doneWords(done: S["LookBackView"], label: string, t: T, tn: (key
   if (!done.reaches && done.available_from) parts.push(t("coverage.look_back.only_from", { date: day(done.available_from) }));
   const skipped = skippedWords(done.skipped, tn);
   if (skipped) parts.push(skipped);
+  if (done.short) parts.push(tn(done.expected_estimate ? "walkthrough.mail.full_read.short_about" : "walkthrough.mail.full_read.short", done.gave, { expected: done.expected }));
   return parts.join(" ");
 }

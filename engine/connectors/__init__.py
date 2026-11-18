@@ -209,13 +209,25 @@ class Poll:
     reports removals). `state`: kept and given back on the next read (a change marker, say); a read that fails keeps
     the state of the last read that worked. `unreadable`: the things the connector listed but couldn't read, each
     with its reason; the read moves past them (a read that lists only changes moves its state past them too), they are
-    recorded on the read, and the person is told, so one bad item never stops the rest being read."""
+    recorded on the read, and the person is told, so one bad item never stops the rest being read. `capped`: True when
+    this source will not hand in the rest of its first window, because the first read stopped for good at a limit; a
+    first read that queues its window and brings the rest in on later polls is not capped."""
 
     items: list[SourceItem]
     state: dict[str, Any] = field(default_factory=dict)
     complete: bool = True
     removed: list[str] = field(default_factory=list)
     unreadable: list[Unreadable] = field(default_factory=list)
+    capped: bool = False
+
+
+@dataclass(frozen=True)
+class OlderCount:
+    """How many older items a connector's `older_count` found. `estimate`: True when the number is the service's own
+    rough figure, not a count of items, so the screens say "about" and the cost they show follows."""
+
+    count: int
+    estimate: bool = False
 
 
 #: The most of a service's own reply a connector error keeps: enough to read a long one whole behind Show details.
@@ -274,6 +286,8 @@ def checked_poll(poll: Any) -> Poll:
         _check_files(item)
     if not isinstance(poll.state, dict):
         raise ValueError("a Poll's state is a dict")
+    if not isinstance(poll.capped, bool):
+        raise ValueError("a Poll's capped is True or False")
     if not all(isinstance(k, str) and k for k in poll.removed):
         raise ValueError("a Poll's removed lists keys")
     if poll.complete and poll.removed:
@@ -606,9 +620,10 @@ def _read_fake(settings: FakeSettings, state: dict[str, Any], context: Connector
         )
     return Poll(
         items,
-        {"reads": reads, "capped": settings.capped},
+        {"reads": reads},
         complete=True,
         unreadable=[Unreadable(u["key"], u["reason"], u.get("kind")) for u in settings.unreadable],
+        capped=settings.capped,
     )
 
 
@@ -645,8 +660,9 @@ class OlderMail:
     context)` says how many messages dated from `since` up to `before` there are (at most `limit`), reading none;
     `read(...)` returns the newest `limit` of them, as a list or as a `Poll` (its `items` and `unreadable` are used)."""
 
-    count: Callable[[Any, date, date, int, ConnectorContext], int]
+    count: Callable[[Any, date, date, int, ConnectorContext], int | OlderCount]
     read: Callable[[Any, date, date, int, ConnectorContext], list[SourceItem] | Poll]
+    counts: bool = True  # False when `count` reads the items to count them, so it costs as much as a read
 
 
 #: The core connectors that can be asked for older mail, by name. A plugin's connector that can be asked says so when it

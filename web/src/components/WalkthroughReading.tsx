@@ -1,5 +1,5 @@
 // The wait after Mail and calendar (design 7.8): the assistant's first reading at work, in plain words, with about how long it
-// takes. It moves on to People by itself when the reading is done, and has a way on while it works (the reading keeps going).
+// takes. It moves on to People by itself when the reading is done, and has a primary "Go on" while it works (the reading keeps going).
 // Nothing is waited for when mail was left out or there is no AI account.
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
@@ -27,7 +27,7 @@ export function WalkthroughReading(props: {
   const reading = setup.data?.reading;
   const state = reading?.state;
   const moved = useRef(false);
-  useContinue({ run: async () => true, label: state === "working" ? t("walkthrough.reading.go_on") : undefined, quiet: state === "working" });
+  useContinue({ run: async () => true, label: state === "working" ? t("walkthrough.reading.go_on") : undefined });
   useEffect(() => {
     if (state === "done" && props.autoAdvance && !moved.current) {
       moved.current = true;

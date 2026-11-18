@@ -339,7 +339,9 @@ def _refresh(ws: Any, store: Any, cfg: Any, source_id: str, now: datetime | None
     source_entries.keep(store, cfg, source, poll.items, now)
 
     back_to = (
-        source_intake.looked_back_to(source, poll.items, now, bool(poll.state.get("capped"))) if taking_in else None
+        source_intake.looked_back_to(source, poll.items, now, poll.capped or bool(poll.state.get("capped")))
+        if taking_in
+        else None
     )
     _record(
         store,

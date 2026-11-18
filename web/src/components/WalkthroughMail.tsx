@@ -277,14 +277,14 @@ export function WalkthroughMail(props: {
   const displayName = (service: Service) =>
     service.name !== service.id ? service.name : ((signIns.data ?? []).find((s) => addonOfSignIn(s.name) === service.id)?.label ?? service.name);
   const covered = new Set(connected.flatMap((c) => c.reads.map((s) => s.id)));
-  // A source whose account has signed out (or whose sign-in ran out) reads nothing: it is listed as signed out, never as "Now reading".
+  // A source whose account has signed out (or whose sign-in ran out) reads nothing: setup doesn't list it (Settings › Connections does),
+  // so signing out of the only account returns the step to its start.
   const stopped = (s: Source) => s.account_state === "signed_out" || s.account_state === "expired";
   const loose = read.filter((s) => !covered.has(s.id));
   const others = loose.filter((s) => !stopped(s));
-  const signedOut = loose.filter(stopped);
   const hasResult = connected.length > 0;
   // Something is connected: an add-on's account, or a mailbox connected another way. The accounts then lead the step.
-  const any = hasResult || others.length > 0 || signedOut.length > 0;
+  const any = hasResult || others.length > 0;
   // How many accounts are signed in or read: when it grows while the panel is open, the sign-in worked and the panel closes.
   const count =
     (signIns.data ?? []).reduce((n, s) => n + (s.several ? (s.accounts ?? []).filter((a) => a.status === "signed_in").length : s.status === "signed_in" ? 1 : 0), 0) + others.length;
@@ -448,21 +448,6 @@ export function WalkthroughMail(props: {
                 ))}
               </ul>
               {!hasResult && <p className="hint">{firstGo}</p>}
-            </FormBlock>
-          )}
-          {signedOut.length > 0 && (
-            <FormBlock data-signed-out="">
-              <span className="what" id="mail-signed-out">
-                {t("walkthrough.mail.signed_out")}
-              </span>
-              <ul className="plain-list" aria-labelledby="mail-signed-out">
-                {signedOut.map((source) => (
-                  <li key={source.id}>
-                    <span>{labelOf(source)}</span>
-                  </li>
-                ))}
-              </ul>
-              <p className="hint">{t("walkthrough.mail.signed_out_hint")}</p>
             </FormBlock>
           )}
         </div>

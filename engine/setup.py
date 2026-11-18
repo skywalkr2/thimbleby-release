@@ -145,6 +145,19 @@ def mail_plugins(store: Any) -> set[str]:
     }
 
 
+def read_sources(ws: Any, cfg: Any, store: Any, said: Any) -> list[Any]:
+    """The enabled mail and calendar sources that can be read: those whose account is neither signed out nor expired.
+    Such a source isn't read until the person signs in again, so it counts for neither the Mail step's done state nor
+    the first reading's wait."""
+    from engine.sign_in_sources import account_state
+
+    return [
+        s
+        for s in cfg.watch.sources
+        if s.enabled and reads(s.connector, said) and account_state(ws, store, s) not in ("signed_out", "expired")
+    ]
+
+
 def steps(ws: Any, cfg: Any, store: Any) -> list[Step]:
     """Every setup step with whether it is done or skipped: the core's, then each running plugin's. An add-on's own
     steps and sign-ins belong to the mail and calendar screen when it provides a source of mail or of a calendar."""
@@ -164,7 +177,7 @@ def steps(ws: Any, cfg: Any, store: Any) -> list[Step]:
     }
     mail_signed = any(signed[name] for name, sign_in in sign_ins.items() if sign_in.plugin in mail_addons)
     said = declared_reads({**CORE, **store.plugins.connectors()})
-    mail_read = any(source.enabled and reads(source.connector, said) for source in cfg.watch.sources)
+    mail_read = bool(read_sources(ws, cfg, store, said))
     requests = view.list("request")
     done = {
         "workspace": _pm_named(cfg, view),  # the workspace's own name is optional; naming yourself is what counts
@@ -444,7 +457,7 @@ def reading(ws: Any, cfg: Any, store: Any, found: list[Step], now: Any = None) -
     if not (by.get("ai") and by["ai"].done):
         return Reading("none", why="no_ai")
     said = declared_reads({**CORE, **store.plugins.connectors()})
-    sources = [s for s in cfg.watch.sources if s.enabled and reads(s.connector, said)]
+    sources = read_sources(ws, cfg, store, said)
     if not sources:
         return Reading("none", why="no_mail")
     view = store.read()

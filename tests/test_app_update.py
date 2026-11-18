@@ -624,3 +624,24 @@ def test_a_hand_over_still_running_after_its_wait_is_left_to_do_its_work(tmp_pat
             raise subprocess.TimeoutExpired("sh", timeout)
 
     started_alive(Running(), ["/bin/sh", str(tmp_path / "hand-over.sh")])
+
+
+def test_the_windows_hand_over_gets_a_hidden_console_of_its_own_never_none(tmp_path, monkeypatch):
+    # PowerShell started with no console (DETACHED_PROCESS) ends at once with code 0 and runs nothing; the hand-over
+    # gets a hidden console instead, and is started in place when the job it is in refuses breakaway.
+    from engine import app_update
+
+    started = []
+
+    class Started:
+        def __init__(self, argv, creationflags=0, **kwargs):
+            started.append(creationflags)
+            if creationflags & app_update.CREATE_BREAKAWAY_FROM_JOB:
+                raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(app_update.sys, "platform", "win32")
+    monkeypatch.setattr(app_update.subprocess, "Popen", Started)
+    app_update.spawn_detached(["powershell.exe", "-File", str(tmp_path / "hand-over.ps1")])
+    detached = 0x00000008
+    assert len(started) == 2 and started[0] & app_update.CREATE_BREAKAWAY_FROM_JOB
+    assert all(flags & app_update.CREATE_NO_WINDOW and not flags & detached for flags in started)

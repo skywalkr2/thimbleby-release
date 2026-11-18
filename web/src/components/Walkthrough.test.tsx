@@ -2405,7 +2405,7 @@ describe("Mail and calendar", () => {
     expect(screen.getByRole("button", { name: "Sign out me@example.com" })).toBeInTheDocument();
   });
 
-  test("signing out the only account leaves the step saying so, with the account listed as signed out", async () => {
+  test("signing out the only account returns the step to its start: the services to connect, no signed-out list, nothing said to be connected (S-0638)", async () => {
     const user = userEvent.setup();
     const { state } = service("on");
     state.signed = false;
@@ -2439,8 +2439,11 @@ describe("Mail and calendar", () => {
     open();
     await user.click(await screen.findByRole("button", { name: "Sign out me@example.com" }));
     await user.click(await screen.findByRole("button", { name: "Sign out" }));
-    expect(await screen.findByText(/until you sign in again/)).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Sign in to The account" })).toBeInTheDocument();
+    expect(screen.queryByText(/until you sign in again/)).toBeNull();
     expect(screen.queryByText(/is connected\./)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect another account" })).toBeNull();
+    expect(screen.queryByText("Your inbox")).toBeNull();
   });
 
   test("a sign-in that comes back as an account already signed in says it refreshed it, in the one wording every screen uses", async () => {
@@ -3802,6 +3805,8 @@ describe("Reginald is turned on in the AI step, the first reading is waited for,
     expect(await screen.findByText("Sorting what it found.")).toBeInTheDocument();
     expect(screen.getByText(/This usually takes a few minutes/)).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Setup steps" })).toHaveTextContent("First reading");
+    // The way on is the step's one filled button, not a plain one.
+    expect(screen.getByRole("button", { name: "Go on while it works" }).className).toMatch(/primary/);
     await user.click(screen.getByRole("button", { name: "Go on while it works" }));
     expect(await screen.findByRole("heading", { level: 2, name: "People" })).toBeInTheDocument();
   });

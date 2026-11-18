@@ -13057,6 +13057,12 @@
             "title": "Days",
             "type": "integer"
           },
+          "estimate": {
+            "default": false,
+            "description": "The count is the source's own rough figure, not an exact count: it reads as \"about\" this many, and the cost as \"about\" this much.",
+            "title": "Estimate",
+            "type": "boolean"
+          },
           "estimate_usd": {
             "anyOf": [
               {
@@ -16504,6 +16510,12 @@
             "title": "Days",
             "type": "integer"
           },
+          "estimate": {
+            "default": false,
+            "description": "The count is the source's own rough figure, not an exact count: it reads as \"about\" this many, and the cost as \"about\" this much.",
+            "title": "Estimate",
+            "type": "boolean"
+          },
           "estimate_usd": {
             "anyOf": [
               {
@@ -16516,15 +16528,39 @@
             "description": "About what they cost; after the look, what everything held for the source's go costs. None when no price is known.",
             "title": "Estimate Usd"
           },
+          "expected": {
+            "default": 0,
+            "description": "After the look: how many the source said it held of those days.",
+            "title": "Expected",
+            "type": "integer"
+          },
+          "expected_estimate": {
+            "default": false,
+            "description": "After the look: that figure was only an estimate.",
+            "title": "Expected Estimate",
+            "type": "boolean"
+          },
           "from_date": {
             "description": "The day asked for: mail from this day on is looked at.",
             "format": "date",
             "title": "From Date",
             "type": "string"
           },
+          "gave": {
+            "default": 0,
+            "description": "After the look: how many messages the source gave.",
+            "title": "Gave",
+            "type": "integer"
+          },
           "reaches": {
             "description": "False when the source holds no mail as far back as asked: `available_from` is where its mail starts and nothing earlier can be taken in.",
             "title": "Reaches",
+            "type": "boolean"
+          },
+          "short": {
+            "default": false,
+            "description": "After the look: the source gave fewer than a third of what it said it held, which the screen says in plain words.",
+            "title": "Short",
             "type": "boolean"
           },
           "skipped": {

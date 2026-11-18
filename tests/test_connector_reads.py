@@ -64,8 +64,11 @@ def _steps(c, api):
 
 def test_an_add_on_that_declares_what_its_connector_reads_is_a_mail_service_whatever_the_connector_is_called(
     signing,  # noqa: F811
+    monkeypatch,
 ):
     ws, cfg, store, _ = signing
+    # The account is signed in: a signed-out account's source isn't mail being read (S-0638), which this isn't about.
+    monkeypatch.setattr("engine.sign_in_sources.account_state", lambda *a, **k: "signed_in")
     store.close()
     _streaming(ws)
     c, api = _app(ws, cfg)

@@ -4351,6 +4351,11 @@ class FullReadOptionView(BaseModel):
         description="The count stopped at the most one read asks a source for, so there may be more: it reads as "
         '"at least" this many, and the cost as "at least" this much.',
     )
+    estimate: bool = Field(
+        False,
+        description='The count is the source\'s own rough figure, not an exact count: it reads as "about" this many, '
+        'and the cost as "about" this much.',
+    )
 
 
 class FullReadView(BaseModel):
@@ -4398,6 +4403,19 @@ class LookBackView(BaseModel):
         default_factory=dict,
         description="After the look: how many messages it couldn't read, by kind (`too_large`, `other`). A kind with "
         "none is left out.",
+    )
+    estimate: bool = Field(
+        False,
+        description='The count is the source\'s own rough figure, not an exact count: it reads as "about" this many, '
+        'and the cost as "about" this much.',
+    )
+    expected: int = Field(0, description="After the look: how many the source said it held of those days.")
+    expected_estimate: bool = Field(False, description="After the look: that figure was only an estimate.")
+    gave: int = Field(0, description="After the look: how many messages the source gave.")
+    short: bool = Field(
+        False,
+        description="After the look: the source gave fewer than a third of what it said it held, which the screen "
+        "says in plain words.",
     )
 
 

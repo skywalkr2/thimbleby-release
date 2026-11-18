@@ -444,6 +444,10 @@ def launch_command(install: Install, environ: Mapping[str, str]) -> list[str]:
 
 #: Windows' flag that starts a process outside the job its parent is in, so closing the parent's job can't end it.
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+#: Windows' flags for the hand-over: its own process group, and a console of its own that is never shown. Never
+#: DETACHED_PROCESS: PowerShell started with no console at all ends at once with code 0 and runs nothing.
+CREATE_NEW_PROCESS_GROUP = 0x00000200
+CREATE_NO_WINDOW = 0x08000000
 
 
 def spawn_output(argv: Sequence[str]) -> Path:
@@ -456,7 +460,7 @@ def spawn_detached(argv: Sequence[str]) -> subprocess.Popen[bytes]:
     """Start a program that goes on after this one ends, its output kept beside it (`spawn_output`). Returns it."""
     with spawn_output(argv).open("wb") as out:
         if sys.platform == "win32":
-            flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            flags = CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
             for extra in (CREATE_BREAKAWAY_FROM_JOB, 0):  # a job that refuses breakaway is started in place
                 try:
                     return subprocess.Popen(

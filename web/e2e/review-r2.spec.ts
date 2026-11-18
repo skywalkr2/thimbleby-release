@@ -135,12 +135,20 @@ test.describe.serial("review R2: setup and Settings", () => {
     await expect(main.locator("[data-mail-result]")).toContainText("Example mail is connected.", LOADED);
     await main.getByRole("button", { name: `Sign out ${addresses[0]}` }).click();
     await page.getByRole("button", { name: "Sign out", exact: true }).click();
-    await expect(main.getByText(/Signed out since|Signed out/).first()).toBeVisible(LOADED);
-    await expect(main.locator("[data-signed-out]")).toContainText("Signed out");
-    await expect(main.locator("[data-signed-out]")).toContainText("Your inbox");
-    await expect(main.locator("[data-signed-out]")).toContainText("until you sign in again");
+    // S-0638: signing out of the only account returns the step to its start (the services to connect); signed-out sources are listed on
+    // Settings › Connections, not here; the step is not done, and the first reading's wait is gone (People is by hand).
+    await expect(row.getByRole("button", { name: "Sign in to Example mail", exact: true })).toBeVisible(LOADED);
+    await expect(main.locator("[data-signed-out]")).toHaveCount(0);
+    await expect(main.locator("[data-mail-result]")).toHaveCount(0);
+    await expect(main.getByRole("button", { name: "Connect another account" })).toHaveCount(0);
     await expect(main.getByText("Now reading")).toHaveCount(0);
     await expect(main.getByText("Also reading")).toHaveCount(0);
+    await expect(async () => {
+      const view = (await (await page.request.get("api/setup", { headers: auth() })).json()) as { steps: Array<{ id: string; done: boolean }>; reading: { state: string; why?: string }; people_by_hand: boolean };
+      expect(view.steps.find((st) => st.id === "mail")?.done).toBe(false);
+      expect(view.reading).toMatchObject({ state: "none", why: "no_mail" });
+      expect(view.people_by_hand).toBe(true);
+    }).toPass({ timeout: 20_000 });
     // S-0404: a calendar read while its account is signed out fails with "isn't signed in"; signing in again reads every source of
     // that account at once, so it is read fine without waiting for its next turn.
     const mine = async () => {
@@ -155,9 +163,8 @@ test.describe.serial("review R2: setup and Settings", () => {
       await page.request.post(`api/watch/${calendar.id}/read`, { headers: auth() });
       expect((await mine())[0].last?.outcome).toBe("failed");
     }).toPass({ timeout: 30_000 });
-    // Signing in again goes back to reading: the ways to sign in are in the panel "Connect another account" opens.
-    await main.getByRole("button", { name: "Connect another account" }).click();
-    const [again] = await Promise.all([page.waitForEvent("popup"), page.getByRole("dialog").locator('[data-service="journey-mail"]').getByRole("button", { name: /^Sign in/ }).first().click()]);
+    // Signing in again goes back to reading: the step's start offers the sign-in again.
+    const [again] = await Promise.all([page.waitForEvent("popup"), row.getByRole("button", { name: "Sign in to Example mail", exact: true }).click()]);
     await again.getByRole("link", { name: addresses[0], exact: true }).click();
     await again.waitForEvent("close", { timeout: 30_000 }).catch(() => undefined);
     await expect(main.locator("[data-mail-result]")).toContainText("Example mail is connected.", LOADED);
