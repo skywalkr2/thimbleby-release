@@ -260,6 +260,8 @@ export function WalkthroughMail(props: {
   // How many accounts are signed in or read: when it grows while the panel is open, the sign-in worked and the panel closes.
   const count =
     (signIns.data ?? []).reduce((n, s) => n + (s.several ? (s.accounts ?? []).filter((a) => a.status === "signed_in").length : s.status === "signed_in" ? 1 : 0), 0) + others.length;
+  // "I'll say later", once confirmed, is kept with the setup's other answers (not in this screen), so Back and Continue keep it.
+  const later = setupView.data?.sides_later ?? false;
   useEffect(() => {
     if (!panel) {
       known.current = null;
@@ -272,7 +274,7 @@ export function WalkthroughMail(props: {
       // An account signed in after the answer was left for later has not been left: it is asked.
       if (later) void api.reopenStep(SIDES_LATER).then(() => client.invalidateQueries({ queryKey: ["setup"] }));
     }
-  }, [panel, count]);
+  }, [panel, count, later, client]);
 
   // Continue is the walkthrough's own, in the footer on the column's edge like every other step's: it comes once something is
   // connected (or the step was done or left for later), so this step draws none of its own and only says that it can be pressed.
@@ -281,8 +283,6 @@ export function WalkthroughMail(props: {
   const sideIds = [...(business.data?.personal ? [business.data.personal] : []), ...(business.data?.sides ?? []).map((x) => x.project)];
   const askedFor = (business.data?.sides ?? []).length > 0 ? [...connected.flatMap((c) => c.reads), ...others].map((x) => x.account ?? x.id).filter((a, i, all) => all.indexOf(a) === i) : [];
   const unanswered = askedFor.filter((account) => !accountAnswered([...connected.flatMap((c) => c.reads), ...others].filter((x) => (x.account ?? x.id) === account), sideIds));
-  // "I'll say later", once confirmed, is kept with the setup's other answers (not in this screen), so Back and Continue keep it.
-  const later = setupView.data?.sides_later ?? false;
   const [askingLater, setAskingLater] = useState(false);
   const leaveLater = async () => {
     setAskingLater(false);
