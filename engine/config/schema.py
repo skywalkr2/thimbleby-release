@@ -3897,6 +3897,14 @@ class WatchFile(FileModel):
         'person chose, in pages of the size one look further back asks for. A reach with more says "at least" '
         "and reads the newest of them.",
     )
+    full_read_count_minutes: int = Field(
+        15,
+        ge=0,
+        le=1440,
+        description="How long the counts shown for the full-read choices are kept before the mail service is asked "
+        "again, so that having the choice open never uses up the service's allowance. 0 asks every time. A count is "
+        "dropped sooner when that source is read, its full read starts or carries on, or its settings change.",
+    )
     older_read_throttle_minutes: int = Field(
         15,
         ge=1,

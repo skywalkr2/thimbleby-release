@@ -34,6 +34,7 @@ import { useContinue } from "../lib/walkthrough-continue";
 import { Actions } from "../ui/Actions";
 import { RowList } from "../ui/RowList";
 import { FullReadChoice } from "./FullReadChoice";
+import { OlderReadWaiting } from "./OlderReadWaiting";
 import { AccountSideQuestion, accountAnswered } from "./AccountSideQuestion";
 import { SkipConfirm } from "./SkipConfirm";
 import { listOf } from "./SourceSides";
@@ -368,7 +369,12 @@ export function WalkthroughMail(props: {
                         sources={mine}
                         grouped={grouped}
                         need={need}
-                        below={<FullReadChoice sources={mine} account={account} />}
+                        below={
+                          <>
+                            <OlderReadWaiting sources={mine} />
+                            <FullReadChoice sources={mine} account={account} />
+                          </>
+                        }
                         action={(() => {
                           const mineIn = (signIns.data ?? []).filter((s) => addonOfSignIn(s.name) === service.id);
                           const item = mineIn.find((s) => (s.accounts ?? []).some((a) => a.address === account) || s.account === account) ?? (account === "" ? mineIn[0] : undefined);

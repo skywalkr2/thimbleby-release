@@ -113,6 +113,10 @@ const threeMailboxes = pair(8720, 8721, 8722);
 // with a job beside Personal and two accounts, each with a set-aside mailing whose link names its account.
 const re3 = pair(8712, 8713, 8714);
 
+// A setup journey on a real-sized mailbox (batch RE4, S-0643): the fake mail service holds hundreds of messages over two months and
+// slows a read of older mail down partway; setup is walked from a fresh install through a sign-out and a sign-in again.
+const re4 = pair(8600, 8601, 8602);
+
 // The closing tests of batch R3 (Today, notes and to-dos): the many-sides workspace with notes, long and many to-dos, today's
 // entries past and to come, and four items that share a word, so each is read as the reviewer read it.
 const reviewR3 = { port: 8730 + offset };
@@ -133,6 +137,7 @@ process.env.JOURNEY_ROUGH_FAKE_PORT = String(rough.fakePort);
 process.env.JOURNEY_R2_FAKE_PORT = String(reviewR2.fakePort);
 process.env.JOURNEY_THREE_FAKE_PORT = String(threeMailboxes.fakePort);
 process.env.JOURNEY_RE3_FAKE_PORT = String(re3.fakePort);
+process.env.JOURNEY_RE4_FAKE_PORT = String(re4.fakePort);
 
 const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || undefined;
 
@@ -245,6 +250,11 @@ export const allProjects = [
     name: "journeys-three-mailboxes",
     testMatch: /journeys-three-mailboxes\.spec\.ts/,
     use: { baseURL: `http://127.0.0.1:${threeMailboxes.port}/`, ignoreHTTPSErrors: true },
+  },
+  {
+    name: "journeys-real-size",
+    testMatch: /journeys-real-size\.spec\.ts/,
+    use: { baseURL: `http://127.0.0.1:${re4.port}/`, ignoreHTTPSErrors: true },
   },
   {
     name: "review-re3",
@@ -443,6 +453,8 @@ export const allServers = [
     }),
     freshServer(threeMailboxes, "--mail"),
     fakeServices(threeMailboxes, "--accounts 3 --sent-mail"),
+    freshServer(re4, "--mail"),
+    fakeServices(re4, "--accounts 1 --big-mailbox"),
     freshServer(re3, "--mail --no-sent-mail"),
     fakeServices(re3, "--accounts 2 --account-links"),
     freshServer(reviewR2, "--mail --no-sent-mail"),

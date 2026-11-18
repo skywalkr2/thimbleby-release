@@ -263,6 +263,7 @@ FILES_ONLY = (
     "watch.propose_round_minutes",
     "watch.look_back_max_items",
     "watch.full_read_max_items",
+    "watch.full_read_count_minutes",
     "watch.older_read_throttle_minutes",
     "watch.older_read_retry_minutes",
     "watch.older_read_tries",

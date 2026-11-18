@@ -57,7 +57,17 @@ export function FullReadChoice(props: { sources: Source[]; account: string }) {
   const open = props.sources.filter((s) => s.full_read_open);
   const [picked, setPicked] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
-  const views = useQueries({ queries: open.map((s) => ({ queryKey: ["full-read", s.id], queryFn: () => api.fullRead(s.id) })) });
+  // The counts are the mail service's to give and cost it requests: asked once for a source's state (its full read answered, started
+  // or finished changes the key), never again on window focus or on a change to something else.
+  const views = useQueries({
+    queries: open.map((s) => ({
+      queryKey: ["full-read", s.id, s.looked_back_to ?? null, s.older_read?.at ?? null],
+      queryFn: () => api.fullRead(s.id),
+      staleTime: Infinity,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+    })),
+  });
   if (open.length === 0) return null;
   const ready = views.every((v) => v.data !== undefined);
   const options = ready ? summed(views.map((v) => v.data as S["FullReadView"])) : [];

@@ -72,7 +72,8 @@ const AFFECTS: Record<string, string[]> = {
   setting_proposal: ["asks", "status"],
   report: ["asks", "status"],
   job_run: ["jobs", "watch", "today", "status", "setup", "sync"],
-  watch_run: ["watch", "watch-kinds", "waiting", "today", "status", "sign-ins", "jobs"],
+  // "full-read" is the counts behind a source's full-read choice: only a source's own read (answered, started, finished) asks again.
+  watch_run: ["watch", "watch-kinds", "waiting", "today", "status", "sign-ins", "jobs", "full-read"],
   tool_run: ["jobs", "status", "files", "working-copies"],
   snapshot: ["status", "sync", "setup", "waiting", WEEK],
   // The person's record for a week: the assistant's reading, the rows set aside and the goals the briefing shows.

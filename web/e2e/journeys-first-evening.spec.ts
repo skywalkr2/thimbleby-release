@@ -234,7 +234,8 @@ test.describe.serial("journey: a first evening", () => {
     await expect(handled.locator("[data-group]").first()).toBeVisible({ timeout: 60_000 });
     const shut = handled.locator("[data-group] > h2 button[aria-expanded=false]");
     for (let closed = await shut.count(); closed > 0; closed = await shut.count()) await shut.first().click();
-    await expect(handled.getByText("Your verification code")).toBeVisible();
+    // The row's own title; its preview below holds the message's words, which name the code too.
+    await expect(handled.getByText("Your verification code", { exact: true })).toBeVisible();
     await openView(page, "What changed");
     await expect(page.getByText("Your verification code")).toHaveCount(0);
 

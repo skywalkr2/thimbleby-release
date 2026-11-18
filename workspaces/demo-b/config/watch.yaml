@@ -72,6 +72,7 @@ look_back_choices: [30, 90, 365]   # days a mail source can be asked to look fur
 full_read_choices: [14, 30, 90]   # days back a first sign-in offers to read mail in full, each with its estimate; none is chosen for the person
 look_back_max_items: 100   # the most older messages one look further back asks a mail source for
 full_read_max_items: 5000   # the most older messages a first sign-in's full read counts and reads, in pages of look_back_max_items
+full_read_count_minutes: 15   # how long the full-read choice keeps the counts the mail service gave before asking again
 older_read_throttle_minutes: 15   # a read of older mail the service slowed down carries on after this long when the service gave no time
 older_read_retry_minutes: 10   # a read of older mail that stopped on a failure carries on after this long
 older_read_tries: 3   # carries-on in a row, without getting further, before Today offers to read the rest

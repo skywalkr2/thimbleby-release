@@ -15,8 +15,9 @@ the same way, under the same go rules, and the date moves.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -705,6 +706,7 @@ def _read_older(
     """Read the range, take in what was read and move the date it was looked back to. `carried` is the earlier stop of
     a read being carried on. Called with the source's read lock held."""
     source_id = source.id
+    forget_full_read_counts(ws, source_id)
     fetched = _fetch_older(ws, store, cfg, source, *reach, now, limit, carrying_on=carried is not None)
     add_older_skipped(store, source_id, fetched.skipped)
     asked, old, new, available = _plan_from(store, source_id, asked)
@@ -873,6 +875,7 @@ def full_read_pending(store: Any, cfg: Any, source: Any) -> bool:
         and run.data.get("asks_full_read")
         and cfg.watch.full_read_choices
         and run.data.get("full_read") is None
+        and not run.data.get("older_read")
         and can_look_back(source, store)
     )
 
@@ -886,31 +889,56 @@ def _days_beyond_first_read(store: Any, source_id: str, reach: int, now: datetim
     return (old - (now.astimezone(UTC).date() - timedelta(days=reach))).days
 
 
+_KEPT_COUNTS: dict[tuple[str, str, int, str], tuple[datetime, FullReadOption]] = {}
+_KEPT_LOCK = threading.Lock()
+
+
+def forget_full_read_counts(ws: Any, source_id: str) -> None:
+    """Drop what is kept of a source's counts for the full-read choices (it was read, its full read starts or carries
+    on, or the next ask must be fresh)."""
+    root = str(ws.root)
+    with _KEPT_LOCK:
+        for key in [k for k in _KEPT_COUNTS if k[0] == root and k[1] == source_id]:
+            del _KEPT_COUNTS[key]
+
+
 def full_read_options(
     ws: Any, store: Any, cfg: Any, source_id: str, now: datetime | None = None, router: Any = None
 ) -> list[FullReadOption]:
     """The reaches offered, each with its count and cost through the look further back's own preview. Nothing is
-    chosen and nothing is written."""
+    chosen and nothing is written. The service is asked once per reach and the answer is kept in memory for
+    `watch.full_read_count_minutes` (never stored: it is not knowledge), keyed by the source, its settings and the
+    range; a source read, its full read starting or carrying on, or its settings changing drops it."""
     now = now or datetime.now(UTC)
+    keep = timedelta(minutes=cfg.watch.full_read_count_minutes)
+    source = _source(cfg, source_id)
+    settings = repr(source.settings)
     found = []
     for reach in cfg.watch.full_read_choices:
         beyond = _days_beyond_first_read(store, source_id, reach, now)
         if beyond < 1:
             found.append(FullReadOption(reach))  # the first read already covers it: nothing more to take in
             continue
+        key = (str(ws.root), source_id, beyond, f"{settings}|{cfg.watch.full_read_max_items}")
+        with _KEPT_LOCK:
+            kept = _KEPT_COUNTS.get(key)
+        if kept is not None and keep > timedelta(0) and timedelta(0) <= now - kept[0] < keep:
+            found.append(replace(kept[1], days=reach))
+            continue
         preview = look_back_preview(ws, store, cfg, source_id, beyond, now, exact=True, router=router)
-        found.append(
-            FullReadOption(
-                reach,
-                preview.count,
-                preview.estimate_usd,
-                preview.estimate_max_usd,
-                preview.unpriced,
-                preview.reaches,
-                preview.capped,
-                preview.estimate,
-            )
+        option = FullReadOption(
+            reach,
+            preview.count,
+            preview.estimate_usd,
+            preview.estimate_max_usd,
+            preview.unpriced,
+            preview.reaches,
+            preview.capped,
+            preview.estimate,
         )
+        with _KEPT_LOCK:
+            _KEPT_COUNTS[key] = (now, option)
+        found.append(option)
     return found
 
 

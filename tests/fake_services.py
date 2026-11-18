@@ -113,6 +113,14 @@ class State:
         self.accounts = 0
         #: With `--spread-week` the calendars hold a working week spread over the accounts (see `week_events`).
         self.spread_week = False
+        #: With `--big-mailbox` every folder holds a real-sized mailbox over two months (see `big_mailbox`).
+        self.big_mailbox = False
+        #: Armed by a test: the service slows down the next page of older inbox mail ending before `ends_before`.
+        self.slow: dict[str, Any] | None = None
+        self.slowed = 0  # how many reads of older mail were told to slow down
+        self.older_asked: list[
+            dict[str, str]
+        ] = []  # each read of older mail: folder, days asked and how it was answered
         self.failing_account = 0  # the number (from 1) of the account whose reads fail; 0 for none
         #: "expired": the sign-in is refused; "retrying": try again later; "refused": its own long refusal text.
         self.failing_how = "expired"
@@ -792,6 +800,67 @@ def intake_items(now: datetime, days: int = 14, notice: bool = False) -> dict[st
 
 
 #: The parts of an account a failure can reach: all of it, its mail alone or its calendar alone.
+#: A real-sized mailbox: the days it spans and how many messages each folder holds (the inbox's are spread evenly), and
+#: how many of the newest a plain listing gives.
+BIG_DAYS = 60
+BIG_INBOX = 7 * BIG_DAYS
+BIG_SENT = BIG_DAYS
+BIG_ARCHIVED = 40
+BIG_DELETED = 20
+BIG_LISTED = 50
+DELETED_FOLDER = "Deleted"
+BIG_FOLDERS = ("inbox", SENT_FOLDER, ARCHIVE_FOLDER, DELETED_FOLDER)
+BIG_TOPICS = (
+    "Agenda for the week",
+    "Notes from the call",
+    "Question about the schedule",
+    "Photos from the visit",
+    "Draft to look over",
+    "Plans for the garden",
+    "Reminder about Friday",
+    "Thanks for yesterday",
+)
+
+
+def big_mailbox(now: datetime) -> dict[str, list[dict]]:
+    """A real-sized fictional mailbox, oldest first within each folder: an inbox of several messages a day over two
+    months, the person's sent mail, an archive and a deleted folder. Senders are the fictional workspace's other people
+    and two made-up mailing senders; every address is on `example.com` and every message is built by `message`."""
+    me = people()[0]
+    others = people()[1:]
+    out: dict[str, list[dict]] = {name: [] for name in BIG_FOLDERS}
+
+    def other(i: int) -> tuple[str, str]:
+        name = others[i % len(others)]
+        return name, address_of(name)
+
+    def add(folder: str, count: int, sender_for: Callable[[int], tuple[str, str]], bulk_every: int = 0) -> None:
+        per_day = count / BIG_DAYS
+        for i in range(count):
+            age = timedelta(days=int(i / per_day), hours=1 + (i * 5) % 20, minutes=(i * 7) % 60)
+            bulk = bulk_every > 0 and i % bulk_every == bulk_every - 1
+            sender = (NETWORK if i % 2 else SHOP) if bulk else sender_for(i)
+            subject = f"{BIG_TOPICS[i % len(BIG_TOPICS)]} ({folder} {i + 1})"
+            made = message(
+                f"big-{folder}-{i}",
+                sender,
+                subject,
+                age,
+                i % 3 == 0,
+                f"Line one of message {i + 1}.",
+                "A second line.",
+                now=now,
+                bulk=bulk,
+            )
+            out[folder].append({**made, "recipients": [f"{me} <{address_of(me)}>"]})
+
+    add("inbox", BIG_INBOX, other, 5)
+    add(SENT_FOLDER, BIG_SENT, lambda i: (me, address_of(me)))
+    add(ARCHIVE_FOLDER, BIG_ARCHIVED, other)
+    add(DELETED_FOLDER, BIG_DELETED, other)
+    return {name: sorted(held, key=lambda m: m["received"]) for name, held in out.items()}
+
+
 FAIL_PARTS = ("all", "mail", "calendar")
 
 
@@ -1019,6 +1088,11 @@ def mail_routes(state: State) -> list[Route]:
             state.seen["unauthorized"] += 1
             return unauthorized()
         state.seen["mail_reads"] += 1
+        if state.big_mailbox:
+            held = big_mailbox(state.moment).get(request.query_params.get("folder") or "inbox")
+            if held is None:
+                return JSONResponse({"error": "no such folder"}, status_code=404)
+            return JSONResponse({"messages": held[-BIG_LISTED:], "more": len(held) > BIG_LISTED})
         if state.accounts:
             failed = failure(state, request)
             if failed is not None:
@@ -1043,7 +1117,29 @@ def mail_routes(state: State) -> list[Route]:
             state.seen["unauthorized"] += 1
             return unauthorized()
         folder = request.query_params.get("folder") or "inbox"
-        if folder == SENT_FOLDER:
+        asked = {
+            "folder": folder,
+            "since": request.query_params.get("since", ""),
+            "before": request.query_params.get("before", ""),
+            "answer": "ok",
+            "purpose": request.query_params.get("purpose", "read"),
+        }
+        state.older_asked.append(asked)
+        slow = state.slow
+        # Only a page that carries on from an earlier one ends before the day the first page ended on; the counts the
+        # screen asks for and the first page of a read all end on that day, so the slow-down lands on a later page.
+        if slow is not None and folder == "inbox" and asked["before"] < slow["ends_before"]:
+            # The service's own "slow down": the status and header the connector already reads as throttled.
+            state.slow, state.slowed = None, state.slowed + 1
+            asked["answer"] = "slow down"
+            return JSONResponse(
+                {"error": {"code": "TooManyRequests"}},
+                status_code=429,
+                headers={"Retry-After": str(slow["retry_after"])},
+            )
+        if state.big_mailbox:
+            held = big_mailbox(state.moment).get(folder, [])
+        elif folder == SENT_FOLDER:
             held = sent_messages(state.moment) if state.sent_mail else []
         elif folder != "inbox":
             held = []
@@ -1347,8 +1443,40 @@ def helper_routes(state: State, base: str) -> list[Route]:
         state.scripted.append({"when": str(body["when"]), "answer": body["answer"]})
         return JSONResponse({"waiting": len(state.scripted)})
 
+    async def slow_down(request: Request) -> JSONResponse:
+        """The mail service slows the next page of older inbox mail down: the first request whose days end before the
+        day `ends_before` (a page that carries on from an earlier one) is refused with a retry-after of `retry_after`
+        seconds, then reads are answered as before."""
+        body = await request.json()
+        state.slow = {"ends_before": str(body["ends_before"]), "retry_after": int(body["retry_after"])}
+        return JSONResponse({"armed": True})
+
+    async def big_mailbox_info(request: Request) -> JSONResponse:
+        """What the real-sized mailbox holds in each folder, how many reads were told to slow down, and (when `folder`,
+        `since` and `before` are asked) how many messages of that folder were received from the day `since` up to, not
+        including, the day `before`."""
+        held = big_mailbox(state.moment)
+        asked = request.query_params
+        window = (
+            len([m for m in held[asked["folder"]] if asked["since"] <= m["received"][:10] < asked["before"]])
+            if {"folder", "since", "before"} <= set(asked)
+            else None
+        )
+        return JSONResponse(
+            {
+                "folders": {name: len(items) for name, items in held.items()},
+                "oldest": {name: items[0]["received"] for name, items in held.items()},
+                "window": window,
+                "slowed": state.slowed,
+                "older_asked": state.older_asked,
+                "armed": state.slow is not None,
+            }
+        )
+
     return [
         Route("/__e2e/info", info),
+        Route("/__e2e/slow-down", slow_down, methods=["POST"]),
+        Route("/__e2e/big-mailbox", big_mailbox_info),
         Route("/__e2e/script", script, methods=["POST"]),
         Route("/__e2e/ai-requests", requests),
         Route("/__e2e/sign-in", sign_in),
@@ -1459,6 +1587,12 @@ def _configure(argv: list[str] | None):
         help="with --accounts: the calendars hold a working week spread over the accounts (one clash today, a normal "
         "day, a free stretch, entries on every account), for pictures that show the screen as it looks in use",
     )
+    parser.add_argument(
+        "--big-mailbox",
+        action="store_true",
+        help="every folder holds a real-sized mailbox over two months (hundreds of messages), and a test can arm a "
+        "rate limit on a read of older mail (POST /__e2e/slow-down)",
+    )
     parser.add_argument("--failing-account", type=int, default=0, help="the account (from 1) whose reads fail")
     parser.add_argument("--failing-how", choices=("expired", "retrying", "refused"), default="expired")
     args = parser.parse_args(argv)
@@ -1471,6 +1605,7 @@ def _configure(argv: list[str] | None):
     state.accounts = args.accounts
     state.account_links = args.account_links
     state.spread_week = args.spread_week
+    state.big_mailbox = args.big_mailbox
     state.failing_account = args.failing_account
     state.failing_how = args.failing_how
     return args, state

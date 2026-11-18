@@ -108,11 +108,16 @@ def _inbox_items(messages: list[dict]) -> list[SourceItem]:
 
 
 def poll_inbox(settings: InboxSettings, state: dict, context) -> Poll:
-    return Poll(_inbox_items(_get(context, "/mail/v1/messages", {"folder": settings.folder}).get("messages", [])), {})
+    body = _get(context, "/mail/v1/messages", {"folder": settings.folder})
+    # A service that lists only the newest page of a bigger mailbox says there is more, so what is not on the page is
+    # never taken for gone.
+    return Poll(_inbox_items(body.get("messages", [])), {}, complete=not body.get("more"))
 
 
-def _older(settings: InboxSettings, since, before, context) -> list[dict]:
+def _older(settings: InboxSettings, since, before, context, counting: bool = False) -> list[dict]:
     params = {"folder": settings.folder, "since": since.isoformat(), "before": before.isoformat()}
+    if counting:
+        params["purpose"] = "count"  # the service tells a count from a read in what it keeps for a test
     return _get(context, "/mail/v1/older", params).get("messages", [])
 
 
@@ -127,7 +132,7 @@ def headers_inbox(settings: InboxSettings, since, before, max_items: int, contex
 
 
 def older_count_inbox(settings: InboxSettings, since, before, max_items: int, context) -> int:
-    return min(len(_older(settings, since, before, context)), max_items)
+    return min(len(_older(settings, since, before, context, counting=True)), max_items)
 
 
 def poll_calendar(settings: CalendarSettings, state: dict, context) -> Poll:
