@@ -443,8 +443,12 @@ test.describe.serial("journey: mail", () => {
       return form;
     };
     const tryFolder = async (folder: string) => {
+      // The form from the attempt before is gone first: a closing form still on screen would take this attempt's typing.
+      await expect(page.locator("form[data-add-connection]")).toHaveCount(0);
       const form = await choose();
-      await form.getByRole("textbox", { name: /folder/i }).fill(folder);
+      const box = form.getByRole("textbox", { name: /folder/i });
+      await box.fill(folder);
+      await expect(box).toHaveValue(folder);
       await form.getByRole("button", { name: "Add connection" }).click();
       return form;
     };
