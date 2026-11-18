@@ -494,6 +494,16 @@ def people_by_hand(found: list[Step]) -> bool:
     return not (by.get("mail") and by["mail"].done and by.get("ai") and by["ai"].done)
 
 
+#: The name under which the confirmed "I'll say later" of the Mail step's account question is kept beside the skips.
+SIDES_LATER = "mail_sides"
+
+
+def sides_later(ws: Any) -> bool:
+    """Whether the person confirmed leaving the accounts not assigned (the Mail step's "I'll say later"), so the step
+    goes on without the account question until something changes."""
+    return SIDES_LATER in _state(ws).get("skipped", [])
+
+
 def walkthrough_ended(ws: Any) -> bool:
     """Whether the person pressed the walkthrough's last button."""
     return bool(_walkthrough_state(_state(ws)).get("finished"))

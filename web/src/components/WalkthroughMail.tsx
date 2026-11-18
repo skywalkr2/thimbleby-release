@@ -118,16 +118,18 @@ const midSentence = (name: string, at: number) => (at > 0 && /^[A-Z][a-z]/.test(
 
 /** The setting that decides whether the assistant sorts the mail the rules can't place; it is on unless set to rules. */
 const SORTING = "watch.sorting";
+/** The name the confirmed "I'll say later" of the account question is kept under, beside the setup's skips. */
+const SIDES_LATER = "mail_sides";
 
 /** Whether the assistant sorts what the rules can't, from sender, subject and category only: a setting the running app
  *  takes in at once, saved like any other, with its read-back and Undo. */
-function SortingSwitch() {
+function SortingSwitch(props: { estimate?: boolean }) {
   const { t } = useWords();
   const afterSave = useAfterSave();
   const fresh = useFreshFingerprint();
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const [problem, setProblem] = useState("");
-  const cost = useSortingCostWords();
+  const cost = useSortingCostWords(props.estimate !== false);
   // The choice that was being saved, so Try again saves the same one.
   const [again, setAgain] = useState(false);
   const on = settings.data?.items.find((i) => i.key === SORTING)?.value !== "rules";
@@ -265,7 +267,11 @@ export function WalkthroughMail(props: {
     }
     // The count can dip while the readings settle after a sign-in: the lowest count seen since the panel opened is the one to beat.
     if (known.current === null || count < known.current) known.current = count;
-    else if (count > known.current) setPanel(false);
+    else if (count > known.current) {
+      setPanel(false);
+      // An account signed in after the answer was left for later has not been left: it is asked.
+      if (later) void api.reopenStep(SIDES_LATER).then(() => client.invalidateQueries({ queryKey: ["setup"] }));
+    }
   }, [panel, count]);
 
   // Continue is the walkthrough's own, in the footer on the column's edge like every other step's: it comes once something is
@@ -275,8 +281,14 @@ export function WalkthroughMail(props: {
   const sideIds = [...(business.data?.personal ? [business.data.personal] : []), ...(business.data?.sides ?? []).map((x) => x.project)];
   const askedFor = (business.data?.sides ?? []).length > 0 ? [...connected.flatMap((c) => c.reads), ...others].map((x) => x.account ?? x.id).filter((a, i, all) => all.indexOf(a) === i) : [];
   const unanswered = askedFor.filter((account) => !accountAnswered([...connected.flatMap((c) => c.reads), ...others].filter((x) => (x.account ?? x.id) === account), sideIds));
-  const [later, setLater] = useState(false);
+  // "I'll say later", once confirmed, is kept with the setup's other answers (not in this screen), so Back and Continue keep it.
+  const later = setupView.data?.sides_later ?? false;
   const [askingLater, setAskingLater] = useState(false);
+  const leaveLater = async () => {
+    setAskingLater(false);
+    await api.skipStep(SIDES_LATER);
+    await client.invalidateQueries({ queryKey: ["setup"] });
+  };
   const waitingOnSides = unanswered.length > 0 && !later;
   useContinue(any ? { run: async () => true, disabled: waitingOnSides, why: waitingOnSides ? t(unanswered.length === 1 ? "walkthrough.mail.account_for.needed_one" : "walkthrough.mail.account_for.needed_other", { account: unanswered[0], n: unanswered.length }) : undefined } : null);
   // A result that appears while the screen is open (the sign-in just finished) takes the cursor to its first field.
@@ -423,7 +435,7 @@ export function WalkthroughMail(props: {
           </div>
         </FormBlock>
       )}
-      {askingLater && <SkipConfirm step="mail_sides" onCancel={() => setAskingLater(false)} onConfirm={() => (setLater(true), setAskingLater(false))} />}
+      {askingLater && <SkipConfirm step="mail_sides" onCancel={() => setAskingLater(false)} onConfirm={() => void leaveLater()} />}
       {any && (
         <FormBlock>
           <div>
@@ -543,7 +555,8 @@ export function WalkthroughMail(props: {
           <p className="hint" data-set-aside="">
             {t("walkthrough.mail.set_aside")}
           </p>
-          <SortingSwitch />
+          {/* Nothing is connected, so there is no day of mail to estimate. */}
+          <SortingSwitch estimate={false} />
         </>
       )}
     </div>

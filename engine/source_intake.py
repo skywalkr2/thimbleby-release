@@ -880,6 +880,37 @@ def full_read_pending(store: Any, cfg: Any, source: Any) -> bool:
     )
 
 
+def follow_account_answer(
+    ws: Any, store: Any, cfg: Any, source_id: str, now: datetime | None = None, router: Any = None
+) -> LookBack | None:
+    """A source of an account that is read for the first time after the person answered the full-read question for
+    another of its sources (the sent mail follows the inbox, which is read first) takes the same answer: the question is
+    asked once per account, so one press covers every source the account reads, whenever each one's first read comes.
+    Returns what the read did, or None when nothing applies (no sibling answered, the choice is not on offer, or the
+    answer is not one of the choices any more)."""
+    now = now or datetime.now(UTC)
+    source = next((s for s in cfg.watch.sources if s.id == source_id), None)
+    if source is None or not source.account or not full_read_pending(store, cfg, source):
+        return None
+    view = store.read()
+    answers = []
+    for other in cfg.watch.sources:
+        if other.id == source.id or other.account != source.account:
+            continue
+        run = intake_run(view, other.id)
+        if run is not None and isinstance(run.data.get("full_read"), int):
+            answers.append(int(run.data["full_read"]))
+    if not answers:
+        return None
+    reach = max(answers)
+    if reach and reach not in cfg.watch.full_read_choices:
+        return None
+    try:
+        return answer_full_read(ws, store, cfg, source.id, reach, now, router)
+    except StoreError:
+        return None
+
+
 def _days_beyond_first_read(store: Any, source_id: str, reach: int, now: datetime) -> int:
     """How many days further back than the first read a reach of `reach` days from today goes; 0 or less when the first
     read already covers it."""

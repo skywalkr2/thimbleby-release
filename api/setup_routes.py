@@ -611,6 +611,7 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
             first_go_given=setup.first_go_given(ws, now),
             reading=ReadingView(**vars(setup.reading(ws, now, store, steps))),
             people_by_hand=setup.people_by_hand(steps),
+            sides_later=setup.sides_later(ws),
         )
 
     @r.post("/setup/walkthrough")

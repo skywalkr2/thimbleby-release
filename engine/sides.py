@@ -295,6 +295,23 @@ def watch_source_sides(view: Any, cfg: Any, source_id: str | None) -> list[Side]
     return [i for i in side_ids(view, cfg) if i in named]
 
 
+def watch_source_in_side(view: Any, cfg: Any, source_id: str | None, side: str) -> bool:
+    """Whether what came from a watched source belongs under the side filter's choice `side`: the source serves that
+    side (one of several is enough), or the choice is `UNASSIGNED` and it serves none while the person has more than one
+    side. A side that doesn't exist, or a source that isn't there, holds nothing. With one side or none there is no
+    filter to answer, so a source that serves no side is shown whatever is asked."""
+    source = next((s for s in cfg.watch.sources if s.id == source_id), None)
+    if source is None:
+        return False
+    if side == UNASSIGNED:
+        return source_unassigned(view, cfg, source)
+    if side not in side_ids(view, cfg):
+        return False
+    if side in watch_source_sides(view, cfg, source_id):
+        return True
+    return len(side_ids(view, cfg)) <= 1 and not source.sides
+
+
 def resolve_side(view: Any, cfg: Any, choice: str | None) -> Side | None:
     """A side id from what a caller names: the id itself, or the older words (`personal`: the personal project,
     `business`: the first other side); none for anything else."""

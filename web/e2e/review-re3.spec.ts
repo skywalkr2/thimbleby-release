@@ -222,5 +222,23 @@ test.describe.serial("review RE3: what each account is for, and what Handled for
     await expect.poll(async () => (await handled(page, job)).rows.map((r) => r.title), { timeout: 30_000 }).toEqual(["Offer for account 2"]);
     expect((await handled(page, "unassigned")).rows).toHaveLength(0);
     expect((await handled(page, sides.personal)).rows.map((r) => r.title)).toEqual(["Offer for account 1"]);
+
+    // H4-03: an account that serves two sides shows its mail under each of them and under no side it does not serve.
+    await group.getByRole("checkbox", { name: "Personal" }).check();
+    await expect
+      .poll(async () => (await handled(page, sides.personal)).rows.map((r) => r.title).sort(), { timeout: 30_000 })
+      .toEqual(["Offer for account 1", "Offer for account 2"]);
+    expect((await handled(page, job)).rows.map((r) => r.title)).toEqual(["Offer for account 2"]);
+    expect((await handled(page, "unassigned")).rows).toHaveLength(0);
+    expect((await handled(page, "PRJ-no-such-side")).rows).toHaveLength(0);
+    await page.goto(`?token=${info.token}#work/handled`);
+    const shown = page.locator("[data-handled]");
+    await expect(shown.getByText("Offer for account 2")).toBeVisible(LOADED);
+    await pickSide(page, JOB);
+    await expect(shown.getByText("Offer for account 2")).toBeVisible();
+    await expect(shown.getByText("Offer for account 1")).toHaveCount(0);
+    await pickSide(page, "Personal");
+    await expect(shown.getByText("Offer for account 1")).toBeVisible();
+    await expect(shown.getByText("Offer for account 2")).toBeVisible();
   });
 });

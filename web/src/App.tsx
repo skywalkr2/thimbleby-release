@@ -21,6 +21,7 @@ import { Addons } from "./components/Addons";
 import { Ask } from "./components/Ask";
 import { SEARCH_FIELD } from "./components/SearchBox";
 import { Feedback } from "./components/Feedback";
+import { ReportProblem } from "./components/ReportProblem";
 import { FollowUps } from "./components/FollowUps";
 import { HandIn } from "./components/HandIn";
 import { NotAvailable } from "./components/NotAvailable";
@@ -115,6 +116,7 @@ function Shell(props: { rc: S["RuntimeConfig"]; live: ReturnType<typeof useLive>
   const [handIn, setHandIn] = useState(false);
   const [help, setHelp] = useState(false);
   const [feedback, setFeedback] = useState(false);
+  const [report, setReport] = useState(false);
   // The Ask box, with the question it opens on when a screen suggests one.
   const [ask, setAsk] = useState<{ question?: string; reveal?: string } | null>(null);
   const [view, setView] = useView();
@@ -178,7 +180,7 @@ function Shell(props: { rc: S["RuntimeConfig"]; live: ReturnType<typeof useLive>
   useEffect(() => {
     if (autoOpened.current || !setup.data) return;
     autoOpened.current = true;
-    const busy = handIn || ask !== null || help || feedback;
+    const busy = handIn || ask !== null || help || feedback || report;
     if (setup.data.walkthrough?.open && shown.type === "core" && shown.view === "today" && !busy && !addressNamedAView.current && !named()) setView("setup");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setup.data]);
@@ -396,6 +398,14 @@ function Shell(props: { rc: S["RuntimeConfig"]; live: ReturnType<typeof useLive>
           }}
         />
       )}
+      {report && (
+        <ReportProblem
+          onClose={() => {
+            setReport(false);
+            restoreFocus(() => visible("[data-feedback-button]"));
+          }}
+        />
+      )}
       <ShortcutHelp open={help} onClose={() => setHelp(false)} keys={keys} />
     </>
   );
@@ -428,6 +438,7 @@ function Shell(props: { rc: S["RuntimeConfig"]; live: ReturnType<typeof useLive>
     document.getElementById("main")?.focus();
   };
   const openFeedback = () => setFeedback(true);
+  const openReport = rc.report_enabled ? () => setReport(true) : undefined;
   return (
     <>
       <a href="#main" className="skip" onClick={skip}>
@@ -444,6 +455,7 @@ function Shell(props: { rc: S["RuntimeConfig"]; live: ReturnType<typeof useLive>
           onAsk={(question) => setAsk(question ? { question } : {})}
           onHelp={() => setHelp(true)}
           onFeedback={openFeedback}
+          onReport={openReport}
           onOpenGuide={openGuide}
           onOpenQuality={() => setView("quality")}
           onOpenSettings={() => setView("settings")}
@@ -503,6 +515,7 @@ function Shell(props: { rc: S["RuntimeConfig"]; live: ReturnType<typeof useLive>
           onAsk={(question) => setAsk(question ? { question } : {})}
           onHelp={() => setHelp(true)}
           onFeedback={openFeedback}
+          onReport={openReport}
           onOpenGuide={() => openGuide()}
         />
       )}

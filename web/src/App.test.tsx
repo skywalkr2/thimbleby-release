@@ -13,6 +13,7 @@ const rc = (extra: Partial<S["RuntimeConfig"]> = {}): S["RuntimeConfig"] => ({
   base_path: "",
   demo: false,
   feedback_to: "feedback@example.com",
+  report_enabled: false,
   narrow_below_px: 640,
   logo: false,
   theme: "system",
@@ -50,6 +51,23 @@ test("the Help menu says the version and opens Write feedback, and focus comes b
   // The preview is plain words; the app's version is under "Details for the makers".
   expect((screen.getByLabelText("Message") as HTMLTextAreaElement).value).toBe("Hello\n\nScreen: Today");
   expect((screen.getByLabelText("Details for the makers") as HTMLTextAreaElement).value).toBe("App version: 9.8.7");
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(dialog).not.toBeInTheDocument());
+  await waitFor(() => expect(help).toHaveFocus());
+});
+
+test("Report a problem is in Help only when the app has an address for it, and focus comes back to Help when it closes", async () => {
+  fakeApi({ "GET panels": () => [], "GET asks": () => [], "GET report/facts": () => ({ enabled: true, version: "9.8.7", system: "Example OS", reply_to: "" }), "GET feedback/problems": () => ({ problems: [] }) });
+  const first = renderApp(<App rc={rc()} />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Help" }));
+  expect(screen.queryByRole("menuitem", { name: "Report a problem" })).toBeNull();
+  first.unmount();
+  renderApp(<App rc={rc({ report_enabled: true })} />);
+  const help = screen.getByRole("button", { name: "Help" });
+  await user.click(help);
+  await user.click(screen.getByRole("menuitem", { name: "Report a problem" }));
+  const dialog = screen.getByRole("dialog", { name: "Report a problem" });
   await user.keyboard("{Escape}");
   await waitFor(() => expect(dialog).not.toBeInTheDocument());
   await waitFor(() => expect(help).toHaveFocus());

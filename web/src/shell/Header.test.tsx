@@ -14,7 +14,7 @@ function below1440() {
   vi.stubGlobal("matchMedia", (query: string) => ({ matches: /max-width:\s*1439px/.test(query), media: query, addEventListener: () => undefined, removeEventListener: () => undefined }));
 }
 
-function show(over: { status?: ReturnType<typeof statusFixture>; changes?: unknown[]; demo?: boolean; logo?: boolean; narrow?: boolean; links?: unknown; handlers?: Partial<Record<"onHandIn" | "onAsk" | "onHelp" | "onFeedback" | "onOpenGuide" | "onOpenQuality" | "onOpenSettings", () => void>> } = {}) {
+function show(over: { status?: ReturnType<typeof statusFixture>; changes?: unknown[]; demo?: boolean; logo?: boolean; narrow?: boolean; links?: unknown; handlers?: Partial<Record<"onHandIn" | "onAsk" | "onHelp" | "onFeedback" | "onReport" | "onOpenGuide" | "onOpenQuality" | "onOpenSettings", () => void>> } = {}) {
   const calls = fakeApi({
     "GET settings": () => ({ fingerprint: "fp", items: over.links === undefined ? [] : [linksItem(over.links)] }),
     "GET status": () => over.status ?? statusFixture(),
@@ -38,6 +38,7 @@ function show(over: { status?: ReturnType<typeof statusFixture>; changes?: unkno
         onAsk={h.onAsk ?? noop}
         onHelp={h.onHelp ?? noop}
         onFeedback={h.onFeedback ?? noop}
+        onReport={h.onReport}
         onOpenGuide={h.onOpenGuide ?? noop}
         onOpenQuality={h.onOpenQuality ?? noop}
         onOpenSettings={h.onOpenSettings ?? noop}
@@ -408,4 +409,22 @@ test("a touch screen is not offered the list of keyboard shortcuts, and the rest
   } finally {
     vi.unstubAllGlobals();
   }
+});
+
+test("Help offers Report a problem only where the app was given a report address to send to", async () => {
+  const user = userEvent.setup();
+  const onReport = vi.fn();
+  show({ handlers: { onReport } });
+  await user.click(screen.getByRole("button", { name: "Help" }));
+  const item = screen.getByRole("menuitem", { name: "Report a problem" });
+  expect(item.querySelector("[data-icon]")?.getAttribute("data-icon")).toBe("alert");
+  await user.click(item);
+  expect(onReport).toHaveBeenCalledTimes(1);
+});
+
+test("with no report address Help has no Report a problem", async () => {
+  const user = userEvent.setup();
+  show();
+  await user.click(screen.getByRole("button", { name: "Help" }));
+  expect(screen.queryByRole("menuitem", { name: "Report a problem" })).toBeNull();
 });

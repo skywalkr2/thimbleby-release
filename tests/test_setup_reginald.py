@@ -177,3 +177,14 @@ def test_an_account_added_later_is_asked_and_one_read_before_the_question_existe
             )
         assert [bool(s["full_read_open"]) for s in client.get("/api/watch").json()] == [True, False]
         assert client.get("/api/watch/m2/full-read").status_code in (200, 409)
+
+
+def test_a_confirmed_i_will_say_later_on_the_mail_steps_account_question_is_kept_until_reopened(api):  # noqa: F811
+    client, _worker = api
+    assert client.get("/api/setup").json()["sides_later"] is False
+    assert client.post("/api/setup/mail_sides/skip").status_code == 200
+    assert client.get("/api/setup").json()["sides_later"] is True, (
+        "kept with the setup's other answers, not in the screen"
+    )
+    assert client.post("/api/setup/mail_sides/reopen").status_code == 200
+    assert client.get("/api/setup").json()["sides_later"] is False

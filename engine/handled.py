@@ -83,13 +83,15 @@ def message_text(ws: Any, store: Any, snapshot_id: str) -> dict[str, Any] | None
     if snap is None or not snap.data.get("message") or snap.data.get("deleted"):
         return None
     message = snap.data["message"]
+    text = _read_text(ws, snap.data.get("content_hash"))
     return {
         "id": snap.id,
         "title": snap.data["title"],
         "sender": message.get("sender"),
         "received": message.get("received"),
-        "text": _read_text(ws, snap.data.get("content_hash")),
-        "link": snap.data.get("link"),
+        "text": text,
+        "empty": not preview_of(text, 1),
+        "link": set_aside.offerable_link(snap.data.get("link")),
     }
 
 
@@ -176,8 +178,9 @@ def _row(
         "title": data["title"],
         "sender": message.get("sender"),
         "source": labels.get(data["source"], data["source"]),
+        "source_id": data["source"],
         "received": message.get("received"),
-        "link": data.get("link"),
+        "link": set_aside.offerable_link(data.get("link")),
         "preview": preview_of(_read_text(ws, data.get("content_hash")), cfg.ui.handled_preview_lines),
         "address": address,
         "domain": set_aside.offerable_domain(address, cfg),
@@ -191,7 +194,9 @@ def _row(
 
 def _closed_rows(view: Any, cfg: Any, labels: dict[str, str], said: dict[str, str | None], cutoff: datetime) -> list:
     """The changes a rule closed before the assistant read them, of any kind of item, each from when it was closed."""
-    links = {(s.data["source"], s.data["key"]): s.data.get("link") for s in view.list("snapshot")}
+    links = {
+        (s.data["source"], s.data["key"]): set_aside.offerable_link(s.data.get("link")) for s in view.list("snapshot")
+    }
     out = []
     for req in view.list("request"):
         mark = req.data.get("auto_closed")
@@ -208,6 +213,7 @@ def _closed_rows(view: Any, cfg: Any, labels: dict[str, str], said: dict[str, st
                 "title": source.data["title"] if source else req.id,
                 "sender": None,
                 "source": labels.get(watched.get("source", ""), watched.get("source", "")),
+                "source_id": watched.get("source"),
                 "received": str(req.data["created_at"]),
                 "reason": mark["reason"],
                 "link": links.get((watched.get("source"), watched.get("key"))),
@@ -393,11 +399,17 @@ def listing(
     """One list for the screen: the counts of both lists (whatever the search or kind), the kinds of item the chosen
     list holds with a count each, and the rows that match the search and the kind, in groups. A group is ordered by its
     newest row; rows in it are newest first. The tab `closed` reads as `set_aside`. With a `side`, only what came from
-    a source that serves that side or no one side is listed and counted."""
+    a source that serves that side (`sides.watch_source_in_side`) is listed and counted."""
     now = now or datetime.now(UTC)
     tab = "set_aside" if tab == "closed" else tab
+    view = store.read()
     all_rows = {
-        t: [r for r in rows(ws, store, cfg, t, now) if side is None or r.get("side") in (None, side)] for t in TABS
+        t: [
+            r
+            for r in rows(ws, store, cfg, t, now)
+            if side is None or sides.watch_source_in_side(view, cfg, r.get("source_id"), side)
+        ]
+        for t in TABS
     }
     kinds: dict[str, int] = {}
     for found in all_rows[tab]:

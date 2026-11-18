@@ -41,3 +41,16 @@ test("with no account the words say the built-in rules sort", async () => {
     "Until an AI account is added, sorting uses the built-in rules.",
   );
 });
+
+test("an amount under a cent reads 'less than a cent a day', never 'about less than a cent'", async () => {
+  const said = await words({ kind: "money", messages: 6, runs: 1, estimate_usd: 0.001, measured: false });
+  expect(said).toBe("Estimated at less than a cent a day for about 6 messages.");
+  expect(said).not.toMatch(/about less/);
+});
+
+test("a hook told there is nothing to estimate for says nothing and asks nothing", async () => {
+  const asked = vi.spyOn(api, "sortingCost").mockResolvedValue({ kind: "money", messages: 12, runs: 1, estimate_usd: 0.001, measured: false } as never);
+  const { result } = renderHook(() => useSortingCostWords(false), { wrapper: wrap });
+  expect(result.current).toBeNull();
+  expect(asked).not.toHaveBeenCalled();
+});

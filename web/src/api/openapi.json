@@ -13702,6 +13702,12 @@
       "HandledMessage": {
         "description": "A mail item whole, from the copy kept on this computer, for Show the message on Handled for you.",
         "properties": {
+          "empty": {
+            "default": false,
+            "description": "True when the kept copy holds no words beyond its header lines, so the screen says so.",
+            "title": "Empty",
+            "type": "boolean"
+          },
           "id": {
             "description": "The mail item's snapshot.",
             "title": "Id",
@@ -13716,7 +13722,7 @@
                 "type": "null"
               }
             ],
-            "description": "The link the source gave for the message, unchanged, when it has one.",
+            "description": "The link the source gave for the message, unchanged, when it has one the app opens (an http or https address with a host); any other is left out.",
             "title": "Link"
           },
           "received": {
@@ -13946,7 +13952,7 @@
                 "type": "null"
               }
             ],
-            "description": "The side (a top-level project) of the one source it came from serves; `unassigned` when that source serves none and there is more than one side, so it counts once as not assigned; empty when that source serves several, so the side filter shows it under every choice.",
+            "description": "The side (a top-level project) of the one source it came from serves; `unassigned` when that source serves none and there is more than one side, so it counts once as not assigned; empty when that source serves several (the side filter shows it under each of them, never another).",
             "title": "Side"
           },
           "source": {
@@ -28407,6 +28413,101 @@
         "title": "Reply",
         "type": "object"
       },
+      "ReportFacts": {
+        "description": "GET /api/report/facts: what a problem report carries besides the person's words and the problem lines.",
+        "properties": {
+          "enabled": {
+            "description": "A report address is set, so Report a problem is offered.",
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "reply_to": {
+            "default": "",
+            "description": "The person's own address when their record holds one, else empty.",
+            "title": "Reply To",
+            "type": "string"
+          },
+          "system": {
+            "description": "The operating system and release, as the report states it.",
+            "title": "System",
+            "type": "string"
+          },
+          "version": {
+            "description": "The app's version, as the report states it.",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "enabled",
+          "version",
+          "system"
+        ],
+        "title": "ReportFacts",
+        "type": "object"
+      },
+      "ReportSend": {
+        "description": "POST /api/report/send: the report exactly as the person was shown it.",
+        "properties": {
+          "problems": {
+            "default": "",
+            "description": "The masked problem lines shown, or empty.",
+            "maxLength": 20000,
+            "title": "Problems",
+            "type": "string"
+          },
+          "reply_to": {
+            "default": "",
+            "description": "Where the makers may answer; empty for nowhere.",
+            "maxLength": 200,
+            "title": "Reply To",
+            "type": "string"
+          },
+          "words": {
+            "description": "What happened, in the person's words.",
+            "maxLength": 5000,
+            "minLength": 1,
+            "title": "Words",
+            "type": "string"
+          }
+        },
+        "required": [
+          "words"
+        ],
+        "title": "ReportSend",
+        "type": "object"
+      },
+      "ReportSent": {
+        "description": "The answer to a send: whether the report arrived, and if not, why, as a kind the screen puts in words.",
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "why": {
+            "anyOf": [
+              {
+                "enum": [
+                  "offline",
+                  "busy",
+                  "refused",
+                  "unavailable"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Why"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ReportSent",
+        "type": "object"
+      },
       "ReportView": {
         "properties": {
           "id": {
@@ -29062,6 +29163,12 @@
             "description": "The rows each card of Today's side column shows before Show more (ui.today.rail_rows).",
             "title": "Rail Rows",
             "type": "integer"
+          },
+          "report_enabled": {
+            "default": false,
+            "description": "Report a problem has an address to send to, so Help offers it.",
+            "title": "Report Enabled",
+            "type": "boolean"
           },
           "request_timeout_seconds": {
             "title": "Request Timeout Seconds",
@@ -31425,6 +31532,12 @@
             "description": "How many of the counted steps are done or skipped (Today's \"Setup n of 7\").",
             "title": "Settled",
             "type": "integer"
+          },
+          "sides_later": {
+            "default": false,
+            "description": "The person confirmed \"I'll say later\" on the Mail step's account question, so the accounts stay not assigned and the step goes on without asking, whenever they come back to it.",
+            "title": "Sides Later",
+            "type": "boolean"
           },
           "steps": {
             "items": {
@@ -50017,6 +50130,64 @@
           }
         },
         "summary": "Reply Copied"
+      }
+    },
+    "/api/report/facts": {
+      "get": {
+        "description": "What a problem report states besides the person's words and the problem lines: the app's version, the\noperating system, and the person's own address when their record holds one, to offer as the reply address.\nWhether a report address is set says whether Report a problem is offered. Nothing is sent.",
+        "operationId": "report_facts_api_report_facts_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportFacts"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Report Facts"
+      }
+    },
+    "/api/report/send": {
+      "post": {
+        "description": "Send the report the person approved, once: their words, the reply address, the version and system, and the\nproblem lines as shown, to the configured address. It never raises for a service that did not take it; the\nanswer says why, and the screen offers Try again and Copy the report.",
+        "operationId": "report_send_now_api_report_send_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportSend"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportSent"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Report Send Now"
       }
     },
     "/api/reports/{report_id}/dismiss": {

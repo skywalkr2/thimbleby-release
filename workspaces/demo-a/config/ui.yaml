@@ -9,6 +9,7 @@ long_request_timeout_seconds: 300   # the same, for the few actions that take a 
 afternoon_from_hour: 12   # the hour of your day from which the opening brief is called the afternoon brief
 links: [{name: Planning board, address: "https://planning-board.example.com/spring"}, {name: Shared schedule, address: "https://shared-schedule.example.com/team"}]   # links to your own pages, shown in the header
 feedback_to: feedback@example.com   # where the feedback button writes
+report_to: ""   # where Report a problem sends a report; empty: the address built into the app
 handled_group: kind   # how Handled for you groups what it lists to start with: kind, reason, sender or account
 handled_rows_shown: 25   # how many rows a group shows before Show more
 handled_preview_lines: 3   # how many lines of a message a row on Handled for you shows before Show the message

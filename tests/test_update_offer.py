@@ -98,9 +98,17 @@ def test_a_run_of_failed_looks_is_logged_once_and_a_good_look_starts_the_count_a
         assert len(caplog.records) == 2
 
 
-def test_a_look_that_fails_after_a_good_one_leaves_no_offer(tmp_path):
-    assert look(tmp_path, Feed([release("v0.2.0")])) is not None
-    assert look(tmp_path, Feed(error=ConnectorError("outage", "down"))) is None
+def test_a_look_that_fails_after_a_good_one_keeps_the_offer_until_a_good_look_says_otherwise(tmp_path):
+    first = look(tmp_path, Feed([release("v0.2.0")]))
+    assert first is not None
+    for failing in (
+        Feed(error=ConnectorError("outage", "down")),
+        Feed(error=ConnectorError("offline", "no network")),
+        Feed(b"<html>not json"),
+        Feed({"message": "rate limited"}),
+    ):
+        assert look(tmp_path, failing) == first, "the row stays through a failed look"
+    assert look(tmp_path, Feed([release("v0.1.0")])) is None, "a good look that lists nothing newer takes it away"
 
 
 def test_the_request_is_the_configured_address_and_one_accept_header_and_nothing_else(tmp_path):
@@ -254,3 +262,22 @@ def test_a_finished_update_is_one_row_until_it_is_seen_and_the_setting_names_ano
     local = "http" + "://127.0.0.1:9/list"
     assert update_offer.feed_address({}, local) == local
     assert update_offer.feed_address({"release_feed": ADDRESS}, "http" + "://example.com/x") is None
+
+
+def test_the_updates_settings_are_live_so_a_change_asks_for_no_restart_and_the_running_app_follows_it(running):
+    from engine.worker import is_live
+
+    assert all(
+        is_live(f"updates.{key}") for key in ("check", "feed_address", "include_prereleases", "check_every_hours")
+    )
+    ws, client = running
+    started_with = ws.config(env={})  # what the running app was started with
+    look(ws.private_dir, Feed([release("v0.2.0")]))
+    store = Store(ws.db_path, cfg=started_with)
+    try:
+        shown = lambda: [x for x in queue(ws, store, started_with, NOW) if x.kind == "update"]  # noqa: E731
+        assert len(shown()) == 1
+        (ws.config_dir / "updates.yaml").write_text("version: 1\ncheck: false\n")
+        assert shown() == [], "Today follows the file as it is now, not as the app was started"
+    finally:
+        store.close()

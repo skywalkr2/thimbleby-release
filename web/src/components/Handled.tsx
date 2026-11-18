@@ -210,8 +210,6 @@ function HandledRow(props: { item: Row; picked?: { on: boolean; toggle: () => vo
   const act = useAct();
   const { isWork, isPersonal, isSide, alwaysLikeThis } = useSetAside();
   const { justMe, personal, sides } = useSides();
-  // Under one side's filter, a row from a source that serves no one side shows under every choice, and says so.
-  const everySide = useSideFilter().choice !== "all" && !props.item.side;
   const [busy, setBusy] = useState(false);
   const [choosing, setChoosing] = useState(false);
   const bringButton = useRef<HTMLButtonElement>(null);
@@ -293,7 +291,7 @@ function HandledRow(props: { item: Row; picked?: { on: boolean; toggle: () => vo
   menu.push(...versions.entries);
   if (open) menu.push({ id: "open", label: t(closed ? "handled.open_item" : "setaside.open"), run: open.run });
   // What kind of item it is is said only when it is not the ordinary one (mail), after the sender and the rest.
-  const facts = [item.item === "mail" ? "" : t(`handled.item.${item.item}`), senderName(item.sender), item.received ? when(item.received) : "", item.source, item.change ? t(`sources.closed.change.${item.change}`) : "", everySide ? t("queue.every_side") : ""].filter(Boolean);
+  const facts = [item.item === "mail" ? "" : t(`handled.item.${item.item}`), senderName(item.sender), item.received ? when(item.received) : "", item.source, item.change ? t(`sources.closed.change.${item.change}`) : ""].filter(Boolean);
   // The reason is the part of the line that matters, so it is in bold; the rest says where it came from.
   const why: ReactNode = closed ? (
     t("handled.closed_why", { rule: item.rule ?? "", reason: item.reason ?? "" })
@@ -402,6 +400,7 @@ function MessagePreview(props: { item: Row }) {
           {whole.isPending && <p className="hint">{t("handled.message.loading")}</p>}
           {whole.isError && <p className="hint">{t("handled.message.gone")}</p>}
           {whole.data && (whole.data.text.trim() ? <SafeText text={whole.data.text} /> : <p className="hint">{t("handled.message.gone")}</p>)}
+          {whole.data?.empty && whole.data.text.trim() !== "" && <p className="hint">{t("handled.message.empty")}</p>}
         </div>
       )}
     </div>

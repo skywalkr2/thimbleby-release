@@ -6,9 +6,10 @@ import os
 
 from fastapi import APIRouter, HTTPException
 
-from api.schemas import FeedbackProblem, FeedbackProblems, SlowScreenReport
-from engine import problems, slow_screens
+from api.schemas import FeedbackProblem, FeedbackProblems, ReportFacts, ReportSend, ReportSent, SlowScreenReport
+from engine import __version__, problems, report_send, slow_screens
 from engine.config import Config, ConfigError, load_config
+from engine.reminder_content import own_address
 from engine.storage import Store
 from engine.today import zone
 from engine.worker import Worker
@@ -52,6 +53,37 @@ def build_feedback_router(ws: Workspace, cfg: Config, store: Store, worker: Work
                 for p in found
             ]
         )
+
+    @r.get("/report/facts")
+    def report_facts() -> ReportFacts:
+        """What a problem report states besides the person's words and the problem lines: the app's version, the
+        operating system, and the person's own address when their record holds one, to offer as the reply address.
+        Whether a report address is set says whether Report a problem is offered. Nothing is sent."""
+        with store.read_scope():
+            mine = own_address(store.read(), cfg.workspace.user.person)
+        return ReportFacts(
+            enabled=report_send.address(cfg.ui.report_to) is not None,
+            version=__version__,
+            system=report_send.system_text(),
+            reply_to=mine,
+        )
+
+    @r.post("/report/send")
+    def report_send_now(body: ReportSend) -> ReportSent:
+        """Send the report the person approved, once: their words, the reply address, the version and system, and the
+        problem lines as shown, to the configured address. It never raises for a service that did not take it; the
+        answer says why, and the screen offers Try again and Copy the report."""
+        to = report_send.address(cfg.ui.report_to)
+        if to is None:
+            raise HTTPException(status_code=404, detail="Report a problem isn't set up here.")
+        done = report_send.send(
+            to,
+            words=body.words.strip(),
+            reply_to=body.reply_to.strip(),
+            version=__version__,
+            problems=body.problems,
+        )
+        return ReportSent(ok=done.ok, why=done.why)
 
     @r.get("/slow-screens/{screen}/report")
     def slow_screen_report(screen: str) -> SlowScreenReport:

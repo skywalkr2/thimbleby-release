@@ -168,6 +168,16 @@ def _no_product_feed(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_report_address(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The build's own report address is blank in tests, as the release feed is: Report a problem is offered only where
+    a test names an address."""
+    import engine.report_send as report_send
+
+    real = report_send.product
+    monkeypatch.setattr(report_send, "product", lambda *a, **k: {**real(*a, **k), "report_to": None})
+
+
+@pytest.fixture(autouse=True)
 def _no_real_network_in_the_trial(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests never reach a mail server or a web address: the trial read that checks a source before it is added sees a
     mailbox with an inbox and a sent folder, and finds a web address readable. A test that stands in for the network

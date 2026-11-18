@@ -238,7 +238,7 @@ test("an account's card says what a stopped read of older mail took in and when 
   open([part("a", ALEX, { label: "Your inbox", older_read: { kind: "throttled", at, gave_up: false, taken: 412, tries: 1 } }), part("b", BLAKE, {})]);
   const alex = await screen.findByRole("region", { name: ALEX });
   const said = alex.querySelector("[data-older-read]");
-  expect(said?.textContent).toMatch(/^Taking in 412 older items from Your inbox\. The mail service asked to slow down; the rest continues at \d{1,2}:42/);
+  expect(said?.textContent).toMatch(/^Taking in 412 older items from Your inbox\. The rest continues around \d{1,2}:42[^,]*, after the mail service asked to slow down/);
   const blake = await screen.findByRole("region", { name: BLAKE });
   expect(blake.querySelector("[data-older-read]")).toBeNull();
 });

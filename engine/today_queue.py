@@ -477,7 +477,7 @@ def _update_lines(ws: Any, cfg: Any) -> list[Line]:
     if cfg.server.mode == "hosted":
         return []
     lines: list[Line] = []
-    found = update_offer.offer(ws.private_dir) if cfg.updates.check else None
+    found = update_offer.offer(ws.private_dir) if update_offer.checking(ws, cfg) else None
     if found is not None:
         lines.append(
             Line(

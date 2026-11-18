@@ -168,7 +168,7 @@ test("mail with no price says it uses the plan's allowance, and a held look says
   await user.selectOptions(await screen.findByRole("combobox", { name: "How much further" }), "30");
   expect(await screen.findByText(`1 item from ${day("2026-07-07")} on. It uses your plan's allowance.`)).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Look back" }));
-  expect(await screen.findByText("Taking in Work mail waits for you to start it.")).toBeInTheDocument();
+  expect(await screen.findByText("1 older item from Work mail is taken in. It waits for your go on Today before the assistant reads it.")).toBeInTheDocument();
 });
 
 test("when the source doesn't reach that far back the answer says where its mail starts, before and after", async () => {

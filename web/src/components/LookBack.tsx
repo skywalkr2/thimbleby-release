@@ -111,8 +111,15 @@ export function costWords(
 
 /** What the look did: how many older items are being taken in, or that they wait for the go, and where the mail starts when
  * the source didn't reach as far as asked. */
+/** The first words of what a look did: how many older items are taken in (and, when the assistant's reading of them waits for the go on
+ * Today, that), or that there was nothing, or nothing when the read stopped before taking any in. `none` is the key said for nothing. */
+export function headWords(done: S["LookBackView"], label: string, t: T, tn: (key: string, n: number, vars?: Record<string, string | number>) => string, none = "coverage.look_back.none"): string {
+  if (done.taken === 0) return done.stopped ? "" : t(none);
+  return tn(done.started ? "coverage.look_back.done" : "coverage.look_back.done_held", done.taken, { source: label });
+}
+
 export function doneWords(done: S["LookBackView"], label: string, t: T, tn: (key: string, n: number, vars?: Record<string, string | number>) => string): string {
-  const parts = [done.taken === 0 ? (done.stopped ? "" : t("coverage.look_back.none")) : done.started ? tn("coverage.look_back.done", done.taken, { source: label }) : t("coverage.look_back.done_held", { source: label })];
+  const parts = [headWords(done, label, t, tn)];
   if (!done.reaches && done.available_from) parts.push(t("coverage.look_back.only_from", { date: day(done.available_from) }));
   const skipped = skippedWords(done.skipped, tn);
   if (skipped) parts.push(skipped);

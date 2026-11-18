@@ -28,6 +28,10 @@ const late = { port: 8789 + offset, clockAt: "2026-10-21T00:30:00Z" };
 // And the way out: its server has the core's stand-in channel and one message waiting for the person's yes.
 const outgoing = { port: 8796 + offset };
 
+// And Report a problem: its server plays the website's form on this computer, so the test sees what a report holds and that
+// nothing is sent before Send.
+const reportForm = { port: 8751 + offset };
+
 // And the acts on mail and calendar: its server's stand-in channel serves a plain mailbox with acting on, and seeds two saved
 // messages and an invitation to reply to, file away and answer.
 const acts = { port: 8797 + offset };
@@ -201,6 +205,7 @@ export const allProjects = [
   { name: "schedule-review", testMatch: /schedule-review\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${scheduleReview.port}/` } },
   { name: "capacity", testMatch: /today-(capacity|review)\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${capacity.port}/` } },
   { name: "outgoing", testMatch: /outgoing\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${outgoing.port}/` } },
+  { name: "report-problem", testMatch: /report-problem\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${reportForm.port}/` } },
   { name: "acts", testMatch: /acts-journey\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${acts.port}/` } },
   { name: "meetings", testMatch: /meetings-journey\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${meetings.port}/` } },
   { name: "capture", testMatch: /capture-journey\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${capture.port}/` } },
@@ -328,6 +333,13 @@ export const allServers = [
       command: `uv run python -m tests.e2e_server --port ${capacity.port} --base-path /${clockFlag}`,
       cwd: "..",
       url: `http://127.0.0.1:${capacity.port}/api/health`,
+      reuseExistingServer: false,
+      timeout: 60_000,
+    }),
+    on(reportForm.port, {
+      command: `uv run python -m tests.e2e_server --port ${reportForm.port} --base-path / --fake-report${clockFlag}`,
+      cwd: "..",
+      url: `http://127.0.0.1:${reportForm.port}/api/health`,
       reuseExistingServer: false,
       timeout: 60_000,
     }),

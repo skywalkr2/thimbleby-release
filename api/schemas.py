@@ -469,6 +469,30 @@ class FeedbackProblems(BaseModel):
     problems: list[FeedbackProblem]
 
 
+class ReportFacts(BaseModel):
+    """GET /api/report/facts: what a problem report carries besides the person's words and the problem lines."""
+
+    enabled: bool = Field(description="A report address is set, so Report a problem is offered.")
+    version: str = Field(description="The app's version, as the report states it.")
+    system: str = Field(description="The operating system and release, as the report states it.")
+    reply_to: str = Field("", description="The person's own address when their record holds one, else empty.")
+
+
+class ReportSend(BaseModel):
+    """POST /api/report/send: the report exactly as the person was shown it."""
+
+    words: str = Field(min_length=1, max_length=5000, description="What happened, in the person's words.")
+    reply_to: str = Field("", max_length=200, description="Where the makers may answer; empty for nowhere.")
+    problems: str = Field("", max_length=20000, description="The masked problem lines shown, or empty.")
+
+
+class ReportSent(BaseModel):
+    """The answer to a send: whether the report arrived, and if not, why, as a kind the screen puts in words."""
+
+    ok: bool
+    why: Literal["offline", "busy", "refused", "unavailable"] | None = None
+
+
 class SlowScreenReport(BaseModel):
     """GET /api/slow-screens/{screen}/report: a report to the maintainers about a screen that has been slow, for the
     person to read and send themselves. Counts and times only; nothing in it names a person, project or file."""
@@ -1865,6 +1889,7 @@ class RuntimeConfig(BaseModel):
         None, description="Changes every time the app starts, so a screen can tell it restarted."
     )
     feedback_to: str | None = Field(None, description="Where the feedback button writes its email, if anywhere.")
+    report_enabled: bool = Field(False, description="Report a problem has an address to send to, so Help offers it.")
     brand_color: str | None = Field(None, description="The accent color as #rrggbb; none uses the app's own.")
     logo: bool = Field(False, description="The workspace has a logo, served at the API's brand/logo address.")
     theme: Literal["system", "light", "dark"] = Field("system", description="The workspace's default theme.")
@@ -5016,6 +5041,11 @@ class SetupView(BaseModel):
         description="The People step offers adding by hand only: mail was left out or there is no AI account, so "
         "Reginald has no one to suggest.",
     )
+    sides_later: bool = Field(
+        False,
+        description="The person confirmed \"I'll say later\" on the Mail step's account question, so the accounts stay "
+        "not assigned and the step goes on without asking, whenever they come back to it.",
+    )
 
 
 class TemplateAdds(BaseModel):
@@ -6351,7 +6381,14 @@ class HandledMessage(BaseModel):
     sender: str | None = None
     received: str | None = Field(None, description="ISO 8601 date-time with its offset, as the service gave it.")
     text: str = Field(description="The message as kept: plain text from outside, never markup.")
-    link: str | None = Field(None, description="The link the source gave for the message, unchanged, when it has one.")
+    empty: bool = Field(
+        False, description="True when the kept copy holds no words beyond its header lines, so the screen says so."
+    )
+    link: str | None = Field(
+        None,
+        description="The link the source gave for the message, unchanged, when it has one the app opens (an http or "
+        "https address with a host); any other is left out.",
+    )
 
 
 class HandledRow(BaseModel):
@@ -6382,7 +6419,7 @@ class HandledRow(BaseModel):
         None,
         description="The side (a top-level project) of the one source it came from serves; `unassigned` when that "
         "source serves none and there is more than one side, so it counts once as not assigned; empty when that source "
-        "serves several, so the side filter shows it under every choice.",
+        "serves several (the side filter shows it under each of them, never another).",
     )
     received: str | None = Field(None, description="ISO 8601 date-time with its offset, as the service gave it.")
     reason: str | None = Field(

@@ -762,6 +762,17 @@ describe("toasts", () => {
     expect(within(region()).queryByText(/Saved\./)).toBeNull();
   });
 
+  test("a first reading that is already done is passed by: it is not in the list of steps and Back from People goes to Mail and calendar (H4-09)", async () => {
+    const user = userEvent.setup();
+    const steps = CORE.map((id) => step(id, id === "mail" || id === "ai" || id === "workspace" || id === "work" ? { done: true } : {}));
+    fakeApi(routes({}, steps, { step: "people" }, { reading: { state: "done", sources: 1, read: 20, found: 3 }, first_go_given: true }));
+    openWith();
+    expect(await screen.findByRole("heading", { level: 2, name: "People" }, { timeout: 5000 })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^First reading/ })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(await screen.findByRole("heading", { level: 2, name: "Mail and calendar" }, { timeout: 5000 })).toBeInTheDocument();
+  });
+
   test("a toast stays while the person stays on the screen that made it", async () => {
     const user = userEvent.setup();
     fakeApi(routes({}, CORE.map((id) => step(id)), { step: "you" }));
@@ -2614,9 +2625,14 @@ describe("Mail and calendar", () => {
         { id: `i${i}`, connector: "mail-addon/mail", label: "Your inbox", settings: {} },
         { id: `c${i}`, connector: "mail-addon/mail", label: "Your calendar", settings: {} },
       ]) as Array<Record<string, unknown>>,
+      later: false,
     };
     const calls = fakeApi({
       ...routes({}, CORE.map((c) => step(c)), { step: "mail" }),
+      // The confirmed "I'll say later" is kept by the server with the setup's other answers.
+      "GET setup": () => setupView(CORE.map((c) => step(c)), { sides_later: state.later, walkthrough: { open: true, step: "mail" } }),
+      "POST setup/mail_sides/skip": () => ((state.later = true), { ok: "mail_sides" }),
+      "POST setup/mail_sides/reopen": () => ((state.later = false), { ok: "mail_sides" }),
       "GET packs": () => ({
         enabled: true,
         feeds: [],
@@ -2704,6 +2720,22 @@ describe("Mail and calendar", () => {
     expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "I'll say later" }));
     await user.click(within(await screen.findByRole("dialog", { name: "Leave these accounts not assigned?" })).getByRole("button", { name: "Leave it out" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+    expect(within(rows).getByText("Not assigned")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "I'll say later" })).toBeNull();
+  });
+
+  test("a confirmed I'll say later is still confirmed when the step is opened again after Back and Continue (H4-08)", async () => {
+    const user = userEvent.setup();
+    twoAccounts(["sam@example.com"]);
+    const first = open();
+    await screen.findByRole("list", { name: "The accounts being read" });
+    await user.click(screen.getByRole("button", { name: "I'll say later" }));
+    await user.click(within(await screen.findByRole("dialog", { name: "Leave these accounts not assigned?" })).getByRole("button", { name: "Leave it out" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+    first.unmount();
+    open();
+    const rows = await screen.findByRole("list", { name: "The accounts being read" });
     await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
     expect(within(rows).getByText("Not assigned")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "I'll say later" })).toBeNull();

@@ -55,7 +55,8 @@ RESTORE = "restore"
 #: tokens and refresh time of the Add-ons screen, for each time it reads them; whether a switch of account is offered
 #: a check, for each switch; how much of a file is read, for each file; the window and the smallest week of the
 #: quality figures, for each time they are asked for; how long a preview beside a data form may take, and how many
-#: searches an add-on's packet function may make, for each time they are used).
+#: searches an add-on's packet function may make, for each time they are used; whether and where the look for a newer
+#: version is made, for each look and each time Today is read).
 #: Any other change waits for a restart the person chooses.
 LIVE_KEYS = (
     "ai.",
@@ -76,6 +77,7 @@ LIVE_KEYS = (
     "storage.files.read_max_chars",
     "watch.",
     "steward.",
+    "updates.",
     "workspace.plugins.catalog.",
     "workspace.plugins.preview_seconds",
     "language.known_terms",

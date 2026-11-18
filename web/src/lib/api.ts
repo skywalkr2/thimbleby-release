@@ -36,7 +36,7 @@ export function setRequestTimeouts(seconds: number, longSeconds: number): void {
   waits = { seconds, longSeconds };
 }
 
-/** The calls that take a while on purpose: a test of an account, a backup or restore, adding a file, a sign-in, a check for new mail. */
+/** The calls that take a while on purpose: a test of an account, a backup or restore, adding a file, a sign-in, a check for new mail, a read of older mail (it reads page after page and may wait out the mail service's slowing down). */
 const WAITS_ON_PURPOSE = [
   /^ai\/(test|models|account-check)/,
   /^ai\/accounts\/[^/]+\/(test|switch-check)/,
@@ -45,6 +45,7 @@ const WAITS_ON_PURPOSE = [
   /^(files\?|brand\/logo)/,
   /^packs\/[^/]+\/(install|uninstall)$/,
   /^sign-ins\/.+\/(start|sources)/,
+  /^watch\/[^/]+\/(full-read|older-read\/continue|look-back)$/,
 ];
 
 async function send<T>(method: "GET" | "POST" | "PUT" | "DELETE", path: string, init: RequestInit): Promise<T> {
@@ -318,6 +319,8 @@ export const api = {
   /** The last failures Send feedback may add to a message, already masked by the server. */
   slowScreenReport: (screen: string) => call<S["SlowScreenReport"]>("GET", `slow-screens/${screen}/report`),
   feedbackProblems: () => call<S["FeedbackProblems"]>("GET", "feedback/problems"),
+  reportFacts: () => call<S["ReportFacts"]>("GET", "report/facts"),
+  sendReport: (body: S["ReportSend"]) => call<S["ReportSent"]>("POST", "report/send", body),
   /** Save, or correct, the person's own count for a day: what Undo takes comes back as `previous`. */
   saveCount: (day: string, body: S["QualityCountIn"]) => call<S["QualityCountSaved"]>("PUT", `quality/counts/${id(day)}`, body),
   undoCount: (day: string, previous: S["QualityCountBefore"] | null) =>

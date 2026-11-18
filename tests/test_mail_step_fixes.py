@@ -110,6 +110,27 @@ def test_the_full_read_is_offered_and_answered_for_every_mail_source_of_the_acco
         assert not after["m"]["full_read_open"] and not after["s"]["full_read_open"]
 
 
+def test_a_source_read_for_the_first_time_after_the_answer_takes_the_accounts_answer_and_not_now_stays_not_now(
+    tmp_path,
+):
+    ws, cfg, store = make(tmp_path, datetime.now(UTC))
+    store.close()
+    from api.app import create_app
+
+    app = create_app(ws, cfg, TOKEN, ui_dist=tmp_path / "no-ui", start_worker=False)
+    with TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"}) as client:
+        # The inbox is read and answered before the sent mail has had its first read (H4-06).
+        assert client.post("/api/watch/m/read").status_code == 200
+        assert client.post("/api/watch/m/full-read", json={"days": 30}).status_code == 200
+        assert client.post("/api/watch/s/read").status_code == 200
+        shown = {x["id"]: x for x in client.get("/api/watch").json()}
+        assert not shown["s"]["full_read_open"], (
+            "the account's one answer covers the sent mail, which asks nothing again"
+        )
+        sent = [x for x in client.get("/api/watch").json() if x["id"] == "s"][0]
+        assert sent["items"] == 2 + 2, "its older mail was taken in without a second press"
+
+
 def test_a_count_the_service_only_estimated_says_so_and_an_exact_one_does_not(tmp_path):
     for estimate in (True, False):
         ws, cfg, store = make(tmp_path / str(estimate), estimate=estimate)

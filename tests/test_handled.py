@@ -351,11 +351,16 @@ def test_a_row_carries_the_one_side_its_source_serves_and_the_side_filter_narrow
     assert titles(mine) == titles(everything) and {i["side"] for g in mine["groups"] for i in g["items"]} == {side}
     elsewhere = get(client, base, tab="set_aside", side=personal)
     assert titles(elsewhere) == [] and elsewhere["counts"] == {"set_aside": 0, "read": 0}
-    # A source that serves two sides says neither, so its mail shows under every choice.
+    # A source that serves two sides says neither alone: its mail shows under each of the two, and under no other choice
+    # (H4-03: it used to show under every side, even one the connection does not serve).
     config["sources"][0]["sides"] = [side, personal]
     path.write_text(yaml.safe_dump(config))
-    both = get(client, base, tab="set_aside", side=personal)
-    assert titles(both) == titles(everything) and {i["side"] for g in both["groups"] for i in g["items"]} == {None}
+    for chosen in (personal, side):
+        both = get(client, base, tab="set_aside", side=chosen)
+        assert titles(both) == titles(everything) and {i["side"] for g in both["groups"] for i in g["items"]} == {None}
+    assert titles(get(client, base, tab="set_aside", side=sides.UNASSIGNED)) == []
+    other = get(client, base, tab="set_aside", side="PRJ-no-such-side")
+    assert titles(other) == [] and other["counts"] == {"set_aside": 0, "read": 0}
 
 
 def test_treat_as_work_on_mail_read_with_nothing_to_do_reads_it_again_and_records_a_signal(app):
@@ -586,3 +591,57 @@ def test_the_side_of_a_source_is_not_assigned_when_it_serves_none_and_there_is_m
     assert side_now([side]) == side
     assert side_now([side, personal]) is None  # several sides: on none alone, shown under each
     assert sides.watch_source_side(store.read(), ws.config(env={}), "no-such-source") is None
+
+
+def test_watch_source_in_side_is_one_rule_for_a_source_serving_one_several_or_no_side(app):
+    import yaml
+
+    from tests.test_sides import BUSINESS_NAME
+
+    ws, cfg, store, client, base = app
+    source = cfg.watch.sources[0].id
+    view = store.read()
+    # One side only: no filter to answer, so a source that serves nothing is shown whatever is asked.
+    personal = sides.personal_project(view, cfg)
+    assert sides.watch_source_in_side(view, ws.config(env={}), source, personal)
+    side = sides.set_business(ws, store, cfg, BUSINESS_NAME, kind="business").project
+    path = ws.config_dir / "watch.yaml"
+    config = yaml.safe_load(path.read_text())
+
+    def holds(held, choice):
+        config["sources"][0]["sides"] = held
+        path.write_text(yaml.safe_dump(config))
+        return sides.watch_source_in_side(store.read(), ws.config(env={}), source, choice)
+
+    assert holds([], sides.UNASSIGNED) and not holds([], side) and not holds([], personal)
+    assert holds([side], side) and not holds([side], personal) and not holds([side], sides.UNASSIGNED)
+    assert holds([side, personal], side) and holds([side, personal], personal)
+    assert not holds([side, personal], "PRJ-no-such-side")
+    assert not sides.watch_source_in_side(store.read(), ws.config(env={}), "no-such-source", side)
+
+
+def test_a_link_the_app_will_not_open_is_never_offered_on_a_row_or_in_the_whole_message(app):
+    from engine import set_aside
+
+    for link in ("javascript:alert(1)", "data:text/html,<b>x</b>", "/relative/path", "//host-only", "https://", ""):
+        assert set_aside.offerable_link(link) is None, link
+    assert set_aside.offerable_link(None) is None
+    GOOD = "https" + "://mail.example.com/u/1/#a"
+    SHOUTED = "HTTP" + "://mail.example.com/x"
+    assert set_aside.offerable_link(GOOD) == GOOD
+    assert set_aside.offerable_link(SHOUTED) == SHOUTED
+    ws, cfg, store, client, base = app
+    with store.transaction() as tx:
+        for snap in store.read().list("snapshot"):
+            tx.update("snapshot", snap.id, {"link": "javascript:alert(1)"}, _engine(), read_version=snap.version)
+    shown = [i for tab in ("set_aside", "read") for g in get(client, base, tab=tab)["groups"] for i in g["items"]]
+    assert shown and all(i["link"] is None for i in shown)
+    whole = client.get(f"{base}/handled/{shown[0]['id']}/message")
+    assert whole.status_code == 200 and whole.json()["link"] is None
+
+
+def test_a_message_with_only_header_lines_says_it_is_empty_and_one_with_words_does_not():
+    from engine.handled import preview_of
+
+    assert preview_of("From: a@example.com\nReceived: today", 1) == []
+    assert preview_of("From: a@example.com\n\nHello", 1) == ["Hello"]

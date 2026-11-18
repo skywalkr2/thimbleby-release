@@ -130,6 +130,23 @@ def seed_layout(store, cfg, stress: dict[str, str]) -> None:
             )
 
 
+def seed_failed_read(store, cfg) -> str:
+    """One failed read of a source an hour before the server's clock, so a problem report has a line to show. Returns
+    the error text it was given, so the browser test reads it from here and does not write it out."""
+    text = "the source did not answer in time"
+    at = datetime.fromisoformat(store.clock()) - timedelta(hours=1)
+    data = {
+        "source": cfg.watch.sources[0].id,
+        "started_at": at.isoformat(),
+        "outcome": "failed",
+        "error_kind": "outage",
+        "error": text,
+    }
+    with store.transaction() as tx:
+        tx.create("watch_run", data, WriteContext(actor="engine", trust="trusted", op="e2e-seed"))
+    return text
+
+
 def seed_outgoing(store, cfg):
     """The core's stand-in channel, registered, and one message drafted to a known person who has an address, waiting
     for the person's yes. Returns the channel and what the browser test reads from the fixture."""
@@ -243,6 +260,35 @@ def seed_acts(ws, store, cfg):
     }
 
 
+class FakeForm:
+    """The website's problem-report form, played on this computer: it keeps what each report posted and answers with the
+    status the test sets (200 takes it)."""
+
+    def __init__(self) -> None:
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        self.received: list[dict] = []
+        self.status = 200
+        form = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                if form.status < 300:
+                    form.received.append(json.loads(body))
+                self.send_response(form.status)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": form.status < 300}).encode())
+
+            def log_message(self, *args) -> None:
+                pass
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        self.address = f"http://127.0.0.1:{self._server.server_address[1]}/api/report"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, required=True)
@@ -257,6 +303,12 @@ def main() -> None:
         action="store_true",
         help="add a second stand-in AI account whose person said Not now about reading work mail and notes, so Today "
         "has the line that offers Allow",
+    )
+    parser.add_argument(
+        "--fake-report",
+        action="store_true",
+        help="play the website's problem-report form on this computer and point Report a problem at it; "
+        "/__e2e/reports says what it received and POST /__e2e/reports/status?code=N sets its answer",
     )
     parser.add_argument(
         "--fake-channel",
@@ -429,6 +481,9 @@ def main() -> None:
         # flag like the rest: settings read again from the files and the environment leave a flag's key alone.
         "server.addons_dir": str(tmp / "addons"),
     }
+    form = FakeForm() if args.fake_report else None
+    if form is not None:
+        flags["ui.report_to"] = form.address
     if args.review_r4 or args.review_r3 or args.worst_case:
         # What the seed adds on its own shows whatever the hour the test runs at, so the lines are read as they stand.
         flags["steward.hold_outside_hours"] = False
@@ -541,6 +596,7 @@ def main() -> None:
         seed_layout(store, cfg, stress)
     folder_targets = list(cfg.storage.backups.targets)
     fake_channel = seed_outgoing(store, cfg) if args.fake_channel else None
+    failed_read = seed_failed_read(store, cfg) if form is not None else None
     acts = seed_acts(ws, store, cfg) if args.acts else None
     meetings = seed_meetings(store, cfg) if args.meetings else None
     just_me = seed_just_me(store, cfg) if args.just_me else None
@@ -633,6 +689,16 @@ def main() -> None:
         """Turn the configured backup folder off (`configured=0`) or back on (`configured=1`)."""
         cfg.storage.backups.targets = folder_targets if request.query_params["configured"] == "1" else []
         return JSONResponse({"configured": len(cfg.storage.backups.targets)})
+
+    async def reports(request):
+        """What the played form received (reports it took), and the status it answers with; a POST sets the status."""
+        if form is None:
+            return JSONResponse({"enabled": False})
+        if request.method == "POST":
+            form.status = int(request.query_params["code"])
+        return JSONResponse(
+            {"enabled": True, "received": form.received, "status": form.status, "failed_read": failed_read}
+        )
 
     async def delivered(_request):
         """What the stand-in channel was handed and the message waiting for it: who, where and the parts as drafted."""
@@ -759,6 +825,7 @@ def main() -> None:
             Route("/__e2e/review-r3", with_review_r3),
             Route("/__e2e/review-r4", with_review_r4),
             Route("/__e2e/delivered", delivered),
+            Route("/__e2e/reports", reports, methods=["GET", "POST"]),
             Route("/__e2e/meetings", met),
             Route("/__e2e/acts", acted),
             Route("/__e2e/capture", capture_fixture, methods=["GET", "POST"]),

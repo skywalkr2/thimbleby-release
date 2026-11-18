@@ -25,6 +25,7 @@ const NOTHING_KEPT = /didn't work|is busy|try again/i;
 
 interface WatchSource {
   id: string;
+  account?: string;
   account_state?: string;
   looked_back_to?: string | null;
   full_read_open?: boolean | null;
@@ -152,6 +153,13 @@ test.describe.serial("journey: real-sized mailbox", () => {
     expect(counts, "count requests while the Mail step is open").toBeLessThanOrEqual(reaches * open);
     await fetch(`${FAKE}/__e2e/slow-down`, { method: "POST", body: JSON.stringify({ ends_before: first.looked_back_to, retry_after: RETRY_AFTER }) });
     await fullRead.getByRole("button", { name: "Read it" }).click();
+    // H4-06: one press answers every open source of the account (the inbox and the sent mail), the choice then leaves, and a read that
+    // goes through never shows a failure.
+    await expect
+      .poll(async () => (await watch(page)).filter((w) => w.account === address && w.full_read_open).length, { timeout: 180_000 })
+      .toBe(0);
+    await expect(fullRead).toHaveCount(0, { timeout: 180_000 });
+    await expect(page.getByRole("region", { name: "Notifications" })).not.toContainText("That didn't work");
     // The line says what happened in the person's words: when the rest continues, and none of the service's own words, and no failure.
     const toasts = page.getByRole("region", { name: "Notifications" });
     await expect(toasts).toContainText(/\d{1,2}:\d{2}/, LOADED);

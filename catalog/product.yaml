@@ -1,5 +1,8 @@
 # Facts about this build of the product, shipped with it. A release build may replace these from repository variables.
 feedback_to: null   # where the feedback button writes, unless a workspace sets ui.feedback_to
+# Where "Report a problem" sends a report, after the person has read all of it and pressed Send: the maintainers' website
+# form. A workspace may name another address in ui.report_to; with neither, the item is not offered.
+report_to: "https://thimbleby.app/api/report"
 # The product's own packs catalog feed, which the Add-ons screen always reads; set by the maintainers, not a setting.
 pack_catalog: "https://raw.githubusercontent.com/skywalkr2/Thimbleby-Catalog/main/packs.yaml"
 pack_catalog_former:

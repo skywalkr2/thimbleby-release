@@ -40,6 +40,8 @@ export function BottomBar(props: {
   /** The keyboard list: a phone has no keyboard to speak of, so the sheet does not offer it. */
   onHelp?: () => void;
   onFeedback: () => void;
+  /** Opens Report a problem; absent where no report address is set. */
+  onReport?: () => void;
   onOpenGuide: () => void;
 }) {
   const { t } = useWords();
@@ -135,6 +137,12 @@ export function BottomBar(props: {
               <Icon name="chat" />
               {t("feedback.open")}
             </button>
+            {props.onReport && (
+              <button type="button" className={styles.link} onClick={later(props.onReport)}>
+                <Icon name="alert" />
+                {t("report.open")}
+              </button>
+            )}
             <button type="button" className={styles.link} disabled>
               <span className={styles.spacer} aria-hidden="true" />
               {t("app.version", { version: props.version })}

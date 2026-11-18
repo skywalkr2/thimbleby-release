@@ -71,7 +71,7 @@ from api.view_routes import build_view_router
 from api.waiting_routes import build_waiting_router
 from api.watch_routes import build_watch_router
 from api.week_ahead_routes import build_week_ahead_router
-from engine import __version__, problems, slow_screens
+from engine import __version__, problems, report_send, slow_screens
 from engine.ai.router import Router
 from engine.brand import LOGO_TYPES, logo_path
 from engine.config import Config
@@ -467,6 +467,7 @@ def create_app(
             demo=cfg.workspace.demo,
             instance=instance,
             feedback_to=cfg.ui.feedback_to or product().get("feedback_to") or None,
+            report_enabled=report_send.address(cfg.ui.report_to) is not None,
             brand_color=cfg.ui.brand.color,
             logo=logo_path(ws.config_dir, cfg.ui.brand.logo) is not None,
             theme=cfg.ui.theme,

@@ -6,13 +6,14 @@ an Accept header: it carries no identifier, no version and nothing about the per
 compared here. The newest eligible release is kept
 in the private folder with the moment of the look. Today shows one row for a release newer than the one running, until
 the person chooses Later, which hides that version and no newer one. A look that fails, or a feed that doesn't read,
-leaves no row and no message on screen; the first failure of a run of them goes in the log once.
+keeps the offer already found and shows no message on screen; the first failure of a run of them goes in the log once.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import platform
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -185,8 +186,8 @@ def look(
     now: datetime | None = None,
     system: str | None = None,
 ) -> Offer | None:
-    """Read the feed now and keep what it says. Returns the offer kept (none when there is nothing newer, or the look
-    failed). Nothing here raises: a failed look leaves no offer, and its first failure in a row is logged once."""
+    """Read the feed now and keep what it says. Returns the offer kept (none when there is nothing newer). Nothing here
+    raises: a failed look keeps the offer already found, and its first failure in a row is logged once."""
     from engine.connectors import ConnectorError
     from engine.net import WebClient
 
@@ -223,8 +224,11 @@ def look(
             state["failing"] = True
         else:
             state["failing"] = False
+            state["found"] = found
+        if address is None:
+            state["found"] = None  # no feed is named any more, so nothing is on offer
+        # A look that failed keeps the release already found: the row stays until a good look says otherwise.
         state["checked_at"] = now.isoformat()
-        state["found"] = found
         _write(private_dir, state)
     return offer(private_dir, running)
 
@@ -275,6 +279,18 @@ def later(private_dir: Path, version: str, on: bool = True) -> None:
         elif state.get("later") == version:
             state.pop("later")
         _write(private_dir, state)
+
+
+def checking(ws: Any, cfg: Any) -> bool:
+    """Whether the look for a newer version is on, read from the settings as the files hold them now (like the look
+    itself), so turning it off or on applies at once; `cfg` stands in when the files can't be read."""
+    from engine.config import ConfigError
+    from engine.config.current import load_config_now
+
+    try:
+        return bool(load_config_now(ws.config_dir, env=dict(os.environ)).updates.check)
+    except ConfigError:
+        return bool(cfg.updates.check)
 
 
 def check_now(ws: Any, cfg: Any, **more: Any) -> Offer | None:

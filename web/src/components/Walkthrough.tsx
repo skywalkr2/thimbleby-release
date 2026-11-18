@@ -181,9 +181,10 @@ export function Walkthrough(
   const here = standing(steps, current);
   // With nothing connected the mail step has one way on, "I'll do this later"; a Continue beside it would do the same thing.
   // Continue comes once something is connected (the step is done), or once the step was left for later.
-  // The wait for the first reading is passed by when there is nothing to wait for (mail left out, or no AI account); read from
+  // The wait for the first reading is passed by when there is nothing to wait for (mail left out, no AI account, or the reading is
+  // already done: Back never lands on a finished wait with no counts, design 7.8); read from
   // the answer as it stands after what the screen saved, never from the one this screen was drawn with.
-  const noWait = (view?: S["SetupView"]) => (view ?? client.getQueryData<S["SetupView"]>(["setup"]) ?? data).reading.state === "none";
+  const noWait = (view?: S["SetupView"]) => (view ?? client.getQueryData<S["SetupView"]>(["setup"]) ?? data).reading.state !== "working";
   const next = after(current, noWait(data));
   const previous = before(current, noWait(data));
 
@@ -264,7 +265,7 @@ export function Walkthrough(
     onChooseSource: (plugin: string | null, kind?: string) => setAdding({ plugin, kind }),
   };
 
-  const railSteps: RailStep[] = SCREENS.filter((screen) => screen !== "welcome" && !(screen === "reading" && noWait(data))).map((screen) => {
+  const railSteps: RailStep[] = SCREENS.filter((screen) => screen !== "welcome" && !(screen === "reading" && noWait(data) && current !== "reading")).map((screen) => {
     const state = standing(steps, screen);
     const reason = stepOf(steps, screen)?.reason;
     return {

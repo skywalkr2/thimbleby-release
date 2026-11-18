@@ -60,7 +60,7 @@ export function useAppearanceGroups(): MenuGroup[] {
 }
 
 /** The groups of the Help menu: the shortcuts, the setup guide, feedback, and the version as a line that does nothing. */
-export function useHelpGroups(handlers: { onHelp: () => void; onOpenGuide: () => void; onFeedback: () => void }, version: string): MenuGroup[] {
+export function useHelpGroups(handlers: { onHelp: () => void; onOpenGuide: () => void; onFeedback: () => void; onReport?: () => void }, version: string): MenuGroup[] {
   const { t } = useWords();
   const missed = useMissedOne();
   const anythingMissed = useAnythingToMiss();
@@ -74,6 +74,7 @@ export function useHelpGroups(handlers: { onHelp: () => void; onOpenGuide: () =>
         { id: "guide", label: t("header.help_guide"), icon: "book", run: () => afterClose(handlers.onOpenGuide) },
         ...(anythingMissed ? [{ id: "missed", label: t("missed.menu"), icon: "flag" as const, run: missed }] : []),
         { id: "feedback", label: t("feedback.open"), icon: "chat", run: handlers.onFeedback },
+        ...(handlers.onReport ? [{ id: "report", label: t("report.open"), icon: "alert" as const, run: handlers.onReport }] : []),
       ],
     },
     { id: "version", entries: [{ id: "version", label: t("app.version", { version }), disabled: true }] },
@@ -110,6 +111,8 @@ export function Header(props: {
   onAsk: (question: string) => void;
   onHelp: () => void;
   onFeedback: () => void;
+  /** Opens Report a problem; absent where no report address is set, so the item is not offered. */
+  onReport?: () => void;
   onOpenGuide: (step?: string) => void;
   /** Opens the figures for how the assistant is doing. */
   onOpenQuality: () => void;
@@ -120,7 +123,7 @@ export function Header(props: {
   const { rc } = props;
   const person = usePersonName(rc.workspace_name);
   const userMenu = useUserMenuGroups(person, { onOpenSettings: props.onOpenSettings, onOpenQuality: props.onOpenQuality }, rc.workspace_name);
-  const helpGroups = useHelpGroups({ onHelp: props.onHelp, onOpenGuide: () => props.onOpenGuide(), onFeedback: props.onFeedback }, rc.version);
+  const helpGroups = useHelpGroups({ onHelp: props.onHelp, onOpenGuide: () => props.onOpenGuide(), onFeedback: props.onFeedback, onReport: props.onReport }, rc.version);
   // Below 1440px the assistant's state is in the status chip's popover, as on a phone.
   const tight = useMediaQuery("(max-width: 1439px)");
   const inChip = props.narrow || tight;

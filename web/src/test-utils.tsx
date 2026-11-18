@@ -80,6 +80,7 @@ export function rcFixture(extra: Partial<S["RuntimeConfig"]> = {}): S["RuntimeCo
     base_path: "",
     demo: false,
     feedback_to: "feedback@example.com",
+    report_enabled: true,
     narrow_below_px: 640,
     logo: false,
     theme: "system",
@@ -143,6 +144,7 @@ export function setupView(
     first_go_given?: boolean;
     reading?: Partial<S["ReadingView"]>;
     people_by_hand?: boolean;
+    sides_later?: boolean;
     walkthrough?: Partial<S["WalkthroughView"]>;
   } = {},
 ): S["SetupView"] {
@@ -160,6 +162,7 @@ export function setupView(
     first_go_given: over.first_go_given ?? true,
     reading: { state: "none", why: "no_mail", sources: 0, read: 0, found: 0, ...over.reading },
     people_by_hand: over.people_by_hand ?? false,
+    sides_later: over.sides_later ?? false,
     walkthrough: { open: false, step: "you", closed: false, finished: false, ...over.walkthrough },
   };
 }

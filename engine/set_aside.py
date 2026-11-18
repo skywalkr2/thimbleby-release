@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from functools import cache
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from engine.storage import StoreError, WriteContext
 from engine.triage import sender_address
@@ -66,6 +67,20 @@ def is_public_domain(domain: str, cfg: Any) -> bool:
     a subdomain of a listed domain is not public, because a company can run its own mail on one. No sorting rule is
     ever offered or saved for a whole public domain, only for a sender."""
     return _normal_domain(domain) in public_domains(cfg)
+
+
+def offerable_link(link: Any) -> str | None:
+    """The link a service gave for an item, when it is one the app opens: an `http` or `https` address with a host. Any
+    other scheme, and a relative address, is never offered, so no screen can offer to open it. The link is otherwise
+    returned unchanged."""
+    if not isinstance(link, str) or not link.strip():
+        return None
+    try:
+        parts = urlsplit(link.strip())
+        host = parts.hostname
+    except ValueError:
+        return None
+    return link if parts.scheme.lower() in ("http", "https") and host else None
 
 
 def offerable_domain(address: str, cfg: Any) -> str | None:
@@ -424,7 +439,7 @@ def folder(ws: Any, store: Any, cfg: Any) -> list[dict[str, Any]]:
                 "source": labels.get(data["source"], data["source"]),
                 "received": message.get("received"),
                 "reason": mark["reason"],
-                "link": data.get("link"),
+                "link": offerable_link(data.get("link")),
                 "address": address,
                 "domain": offerable_domain(address, cfg),
             }

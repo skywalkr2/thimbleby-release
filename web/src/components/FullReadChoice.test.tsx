@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { expect, test } from "vitest";
 import type { S } from "../lib/api";
 import { clockTime } from "../lib/dates";
-import { fakeApi, renderApp } from "../test-utils";
+import { fakeApi, Refuse, renderApp } from "../test-utils";
 import { FullReadChoice } from "./FullReadChoice";
 
 function source(over: Partial<S["WatchSourceView"]> = {}): S["WatchSourceView"] {
@@ -65,7 +65,7 @@ test("choosing a reach sends it and says the work waits for the go", async () =>
   await user.click(await screen.findByRole("option", { name: /1 month/ }));
   await user.click(screen.getByRole("button", { name: "Read it" }));
   await waitFor(() => expect(calls.find((c) => c.route === "POST watch/m/full-read")?.body).toEqual({ days: 30 }));
-  expect(await screen.findByText("Taking in Inbox waits for you to start it.")).toBeInTheDocument();
+  expect(await screen.findByText("12 older items from Inbox are taken in. They wait for your go on Today before the assistant reads them.")).toBeInTheDocument();
 });
 
 test("Not now sends 0 and reads nothing", async () => {
@@ -178,13 +178,13 @@ async function readWith(answer: S["LookBackView"]) {
 test("a read the service slowed down says what it took in and when the rest continues, on the person's clock, never the service's words", async () => {
   await readWith({ ...done(412), started: true, stopped: "throttled", continues_at: AT });
   const line = await screen.findByText(/^Taking in 412 older items from Inbox\./);
-  expect(line.textContent).toBe(`Taking in 412 older items from Inbox. The mail service asked to slow down; the rest continues at ${clockTime(AT)}.`);
+  expect(line.textContent).toBe(`Taking in 412 older items from Inbox. The rest continues around ${clockTime(AT)}, after the mail service asked to slow down.`);
   expect(line.textContent).not.toMatch(/HTTP|429|busy/i);
 });
 
 test("a read that failed partway says when it carries on, and one that gave up says it waits for the person on Today", async () => {
   await readWith({ ...done(7), started: true, stopped: "outage", continues_at: AT });
-  expect(await screen.findByText(`Taking in 7 older items from Inbox. The mail service didn't answer; the rest continues at ${clockTime(AT)}.`)).toBeInTheDocument();
+  expect(await screen.findByText(`Taking in 7 older items from Inbox. The rest continues around ${clockTime(AT)}, after the mail service didn't answer.`)).toBeInTheDocument();
 });
 
 test("a read that stopped for a sign-in problem says what to do and does not promise it continues", async () => {
@@ -197,4 +197,22 @@ test("a read that stopped for a sign-in problem says what to do and does not pro
 test("a read that gave up says the rest waits for the person", async () => {
   await readWith({ ...done(7), started: true, stopped: "outage", continues_at: null, gave_up: true });
   expect(await screen.findByText("Taking in 7 older items from Inbox. The rest of the older mail is waiting for you to read it from Today.")).toBeInTheDocument();
+});
+
+test("one source failing does not stop the account's other source being read, and what the others did is said", async () => {
+  const user = userEvent.setup();
+  const sent = source({ id: "s", label: "Sent mail" });
+  const calls = fakeApi({
+    "GET watch/m/full-read": () => offered,
+    "GET watch/s/full-read": () => offered,
+    "POST watch/m/full-read": () => new Refuse(409, "this source can't be asked for older mail"),
+    "POST watch/s/full-read": () => done(5),
+    "GET watch": () => [],
+  });
+  renderApp(<FullReadChoice sources={[source(), sent]} account="person@example.com" />);
+  await user.click(await pickerOf());
+  await user.click(await screen.findByRole("option", { name: /1 month/ }));
+  await user.click(screen.getByRole("button", { name: "Read it" }));
+  expect(await screen.findByText(/5 older items from Sent mail are taken in\./)).toBeInTheDocument();
+  expect(calls.filter((c) => c.route.startsWith("POST watch/")).map((c) => c.route)).toEqual(["POST watch/m/full-read", "POST watch/s/full-read"]);
 });

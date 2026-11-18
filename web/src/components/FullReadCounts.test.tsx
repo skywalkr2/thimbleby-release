@@ -57,7 +57,7 @@ test("a source whose read stopped shows the read waiting with its time and no fu
     </>,
   );
   const said = await screen.findByRole("status");
-  expect(said.textContent).toMatch(/^Taking in 412 older items from Inbox\. The mail service asked to slow down; the rest continues at \d{1,2}:42/);
+  expect(said.textContent).toMatch(/^Taking in 412 older items from Inbox\. The rest continues around \d{1,2}:42[^,]*, after the mail service asked to slow down/);
   expect(screen.queryByRole("combobox")).toBeNull();
   expect(calls.filter((c) => c.route === "GET watch/m/full-read")).toHaveLength(0);
 });

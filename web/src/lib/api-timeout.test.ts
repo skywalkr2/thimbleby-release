@@ -63,3 +63,12 @@ test("an answer that arrives in time is not cut off, and a refused connection st
   }) as unknown as typeof fetch;
   expect(await outcome(() => api.status())).toBeInstanceOf(TypeError);
 });
+
+test("a read of older mail waits as long as the long wait, since it pages and may wait out the mail service", async () => {
+  silent();
+  const long = outcome(() => api.answerFullRead("m", 90));
+  let settled = false;
+  void long.then(() => (settled = true));
+  await vi.advanceTimersByTimeAsync(59_000);
+  expect(settled).toBe(false);
+});

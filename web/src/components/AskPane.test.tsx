@@ -17,6 +17,7 @@ const rc = (extra: Partial<S["RuntimeConfig"]> = {}): S["RuntimeConfig"] => ({
   base_path: "",
   demo: false,
   feedback_to: "feedback@example.com",
+  report_enabled: false,
   narrow_below_px: 640,
   logo: false,
   theme: "system",

@@ -270,9 +270,22 @@ def refresh(ws: Any, store: Any, cfg: Any, source_id: str, now: datetime | None 
     if not lock.acquire(blocking=False):
         return Result(source_id, "busy", note=ALREADY_READING)
     try:
-        return _refresh(ws, store, cfg, source_id, now, router)
+        result = _refresh(ws, store, cfg, source_id, now, router)
     finally:
         lock.release()
+    _follow_account_answer(ws, store, cfg, source_id, now, router)
+    return result
+
+
+def _follow_account_answer(ws: Any, store: Any, cfg: Any, source_id: str, now: Any, router: Any) -> None:
+    """After a source's first read, give it the answer already given to the full-read question for its account (outside
+    the read lock, which the read of older mail takes). A failure here never fails the read."""
+    from engine import source_intake
+
+    try:
+        source_intake.follow_account_answer(ws, store, cfg, source_id, now, router)
+    except Exception:  # the source keeps its open question, which the person can still answer
+        log.exception("applying the account's full-read answer to %s failed", source_id)
 
 
 def _refresh(ws: Any, store: Any, cfg: Any, source_id: str, now: datetime | None, router: Any = None) -> Result:

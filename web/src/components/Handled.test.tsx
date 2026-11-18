@@ -4,7 +4,6 @@ import userEvent from "@testing-library/user-event";
 import type { S } from "../lib/api";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { setSideChoice } from "../lib/sides";
 import { fakeApi, renderApp, type Routes } from "../test-utils";
 import en from "../wording/en.json";
 import { Handled } from "./Handled";
@@ -335,7 +334,7 @@ test("a set-aside row shows the start of the kept message as text and Show the m
   const user = userEvent.setup();
   open({
     "GET handled?tab=set_aside&q=": () => ({ ...ASIDE, groups: [group("kind:sales", [row("a", { preview: ["First line of the offer.", "<b>not markup</b>"] })])] }),
-    "GET handled/a/message": () => ({ id: "a", title: "Offer a", sender: null, received: null, text: `Whole first line.\n\nWebsite: ${WEB}shop.example.com/deal`, link: null }),
+    "GET handled/a/message": () => ({ id: "a", title: "Offer a", sender: null, received: null, text: `Whole first line.\n\nWebsite: ${WEB}shop.example.com/deal`, link: null, empty: false }),
   });
   const sales = await open_(user, /^Sales, promotions and social updates · 1$/);
   const preview = within(sales).getByRole("group", { name: "The start of the message" });
@@ -697,19 +696,14 @@ test("the rows keep a reading width, so a row's words and its action stay close 
   expect(css).toMatch(/\.groups \{[^}]*max-width: 56rem/);
 });
 
-// H2-08: under a side's filter, a row from a source that serves no one side stays listed and says "Every side".
-test("under a side's filter a row on no side says Every side, and the side's own row does not", async () => {
-  const WORK = "PRJ-work";
-  setSideChoice(WORK);
-  const view: S["HandledView"] = { ...ASIDE, groups: [group("kind:sales", [row("a", { side: WORK }), row("b", { side: null })])] };
-  const rowName = (id: string) => new RegExp(`Offer ${id}`);
+test("Show the message on a message with no words beyond its header lines says it has no text", async () => {
+  const user = userEvent.setup();
   open({
-    "GET handled": () => view,
-    "GET setup/business": () => ({ business: true, name: "Orchard Press", personal: "PRJ-personal", sides: [{ project: WORK, kind: "business", name: "Orchard Press" }], chosen: null }),
-    "GET views": () => [],
+    "GET handled?tab=set_aside&q=": () => ({ ...ASIDE, groups: [group("kind:sales", [row("a", { preview: [] })])] }),
+    "GET handled/a/message": () => ({ id: "a", title: "Offer a", sender: null, received: null, text: "From: a@example.com\nReceived: today", link: null, empty: true }),
   });
-  const loose = await screen.findByRole("listitem", { name: rowName("b") });
-  expect(within(loose).getByText(/Every side/)).toBeInTheDocument();
-  expect(within(screen.getByRole("listitem", { name: rowName("a") })).queryByText(/Every side/)).toBeNull();
-  setSideChoice("all");
+  const sales = await open_(user, /^Sales, promotions and social updates · 1$/);
+  await user.click(within(sales).getByRole("button", { name: "Show the message: Offer a" }));
+  const whole = await within(sales).findByRole("region", { name: "Offer a" });
+  expect(await within(whole).findByText("This message has no text.")).toBeInTheDocument();
 });

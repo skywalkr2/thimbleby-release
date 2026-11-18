@@ -1,0 +1,123 @@
+import "@testing-library/jest-dom/vitest";
+import { screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { S } from "../lib/api";
+import { fakeApi, Refuse, renderApp } from "../test-utils";
+import { ReportProblem } from "./ReportProblem";
+
+type Problem = S["FeedbackProblem"];
+const PROBLEM: Problem = {
+  at: "2026-10-21T08:00:00Z",
+  doing: "source_read",
+  what: "folder",
+  service: null,
+  adapter: null,
+  program_version: null,
+  params: {},
+  status: null,
+  error_kind: "outage",
+  text: "couldn't read <path>",
+};
+const FACTS = { enabled: true, version: "9.8.7", system: "Example OS 1", reply_to: "own@example.com" };
+
+function open(over: { send?: () => unknown; problems?: Problem[]; facts?: Partial<typeof FACTS> } = {}) {
+  const calls = fakeApi({
+    "GET report/facts": () => ({ ...FACTS, ...over.facts }),
+    "GET feedback/problems": () => ({ problems: over.problems ?? [PROBLEM] }),
+    "POST report/send": over.send ?? (() => ({ ok: true, why: null })),
+  });
+  const onClose = vi.fn();
+  renderApp(<ReportProblem onClose={onClose} />);
+  return { calls, onClose, user: userEvent.setup() };
+}
+
+const words = () => screen.getByLabelText("What happened?");
+const preview = () => screen.getByLabelText("What will be sent", { selector: "textarea" }) as HTMLTextAreaElement;
+const sends = (calls: ReturnType<typeof open>["calls"]) => calls.filter((c) => c.route === "POST report/send");
+
+test("the cursor is in the first field, and Send waits for words", async () => {
+  open();
+  expect(screen.getByRole("dialog", { name: "Report a problem" })).toBeInTheDocument();
+  expect(words()).toHaveFocus();
+  expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Send" })).toHaveAccessibleDescription("Write a few words to continue.");
+});
+
+test("what will be sent shows the words, the reply address, the version, the system and the problem lines, and nothing is sent before Send", async () => {
+  const { calls, user } = open();
+  await waitFor(() => expect(screen.getByLabelText(/Your email address/)).toHaveValue("own@example.com"));
+  expect(await screen.findByRole("checkbox", { name: "Include the recent problems (1)" })).toBeChecked();
+  await user.type(words(), "The list is empty");
+  const shown = preview().value;
+  expect(shown).toContain("The list is empty");
+  expect(shown).toContain("Reply to: own@example.com");
+  expect(shown).toContain("App version: 9.8.7");
+  expect(shown).toContain("System: Example OS 1");
+  expect(shown).toContain("Recent problems");
+  expect(shown).toContain("Doing: reading folder");
+  expect(shown).toContain("Said: couldn't read <path>");
+  expect(sends(calls)).toHaveLength(0);
+  // Unticking takes every problem line out; clearing the address says nobody is named.
+  await user.click(screen.getByRole("checkbox", { name: "Include the recent problems (1)" }));
+  await user.clear(screen.getByLabelText(/Your email address/));
+  expect(preview().value).not.toContain("Recent problems");
+  expect(preview().value).toContain("Reply to: nobody");
+});
+
+test("Send posts exactly the words, the address and the lines shown, once, says so and closes", async () => {
+  const { calls, onClose, user } = open();
+  await waitFor(() => expect(screen.getByLabelText(/Your email address/)).toHaveValue("own@example.com"));
+  await screen.findByRole("checkbox", { name: "Include the recent problems (1)" });
+  await user.type(words(), "It broke");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  const [only] = sends(calls);
+  expect(sends(calls)).toHaveLength(1);
+  const body = only.body as { words: string; reply_to: string; problems: string };
+  expect(body.words).toBe("It broke");
+  expect(body.reply_to).toBe("own@example.com");
+  expect(body.problems.startsWith("Recent problems")).toBe(true);
+  expect(preview().value).toContain(body.problems);
+  expect(await screen.findByText("Sent. Thank you: the makers have your report.")).toBeInTheDocument();
+});
+
+test("a bad reply address is named and holds Send; a person with no address on record starts with an empty field", async () => {
+  const { user } = open({ facts: { reply_to: "" } });
+  await user.type(words(), "It broke");
+  const field = screen.getByLabelText(/Your email address/);
+  expect(field).toHaveValue("");
+  await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeEnabled());
+  await user.type(field, "not an address");
+  expect(await screen.findByText(/doesn't look like an email address/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+});
+
+test("a report the form did not take says why in words, keeps the dialog and the text, and offers Try again and Copy the report", async () => {
+  let answer: unknown = { ok: false, why: "offline" };
+  const { calls, onClose, user } = open({ send: () => answer });
+  await user.type(words(), "It broke");
+  await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeEnabled());
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("isn't connected to the internet. Nothing was sent.");
+  expect(onClose).not.toHaveBeenCalled();
+  expect(words()).toHaveValue("It broke");
+  // The toast and the dialog both offer the two ways on; the dialog's are used here, the toast's are checked to be there.
+  expect(screen.getAllByRole("button", { name: "Copy the report" })).toHaveLength(2);
+  expect(screen.getAllByRole("button", { name: "Try again" })).toHaveLength(2);
+  const dialog = within(screen.getByRole("dialog"));
+  await user.click(dialog.getByRole("button", { name: "Copy the report" }));
+  expect(await navigator.clipboard.readText()).toContain("It broke");
+  expect(await navigator.clipboard.readText()).toContain("App version: 9.8.7");
+  answer = { ok: true, why: null };
+  await user.click(dialog.getByRole("button", { name: "Try again" }));
+  await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  expect(sends(calls)).toHaveLength(2);
+});
+
+test("a server that cannot be reached at all is told as the form not answering", async () => {
+  const { user } = open({ send: () => new Refuse(500, "boom") });
+  await user.type(words(), "It broke");
+  await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeEnabled());
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("isn't answering right now");
+});

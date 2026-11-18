@@ -6,13 +6,14 @@ import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api, type S } from "../lib/api";
 import { useAct } from "../lib/act";
+import { alreadyOut } from "../lib/write";
 import { useToasts } from "../lib/toasts";
 import { useEstimate, useMoney } from "../lib/money";
 import { skippedWords } from "../lib/skipped";
 import { stopWords } from "../lib/olderRead";
 import { useWords } from "../lib/wording";
 import { Button } from "../ui/Button";
-import { costWords } from "./LookBack";
+import { costWords, headWords } from "./LookBack";
 import { Select } from "../ui/Select";
 import styles from "./FullReadChoice.module.css";
 
@@ -74,7 +75,7 @@ export function FullReadChoice(props: { sources: Source[]; account: string }) {
   // What the read did for one source, in words: what is being taken in, then what it skipped (nothing is said of skipping when
   // none was), then, when the service gave far fewer than it said it held, how many it gave of how many.
   const readWords = (r: S["LookBackView"], source: string): string => {
-    const head = r.taken === 0 ? (r.stopped ? "" : t("walkthrough.mail.full_read.nothing")) : r.started ? tn("coverage.look_back.done", r.taken, { source }) : t("coverage.look_back.done_held", { source });
+    const head = headWords(r, source, t, tn, "walkthrough.mail.full_read.nothing");
     const skipped = skippedWords(r.skipped, tn);
     const short = r.short ? tn(r.expected_estimate ? "walkthrough.mail.full_read.short_about" : "walkthrough.mail.full_read.short", r.gave, { expected: r.expected }) : "";
     return [head, skipped, short, stopWords(r, t)].filter(Boolean).join(" ");
@@ -83,18 +84,16 @@ export function FullReadChoice(props: { sources: Source[]; account: string }) {
   // that names each, since a newer message would replace an older one.
   const confirm = async () => {
     if (picked === null) return;
+    // A second press while the read is out does nothing: the read goes through once, and its answer is the one shown.
+    if (open.some((s) => alreadyOut(client, `full-read:${s.id}`))) return;
     setBusy(true);
     const said: string[] = [];
-    let failed = false;
+    // A source that fails does not stop the others: each is answered, the failure is shown by its own toast, and what the others did is said.
     for (const s of open) {
-      const done = await act(() => api.answerFullRead(s.id, picked));
-      if (done === undefined) {
-        failed = true;
-        break;
-      }
-      if (picked !== NOT_NOW) said.push(readWords(done, s.label));
+      const done = await act(() => api.answerFullRead(s.id, picked), undefined, undefined, { once: `full-read:${s.id}` });
+      if (done !== undefined && picked !== NOT_NOW) said.push(readWords(done, s.label));
     }
-    if (!failed && said.length > 0) push({ message: said.join(" ") });
+    if (said.length > 0) push({ message: said.join(" ") });
     setBusy(false);
     await client.invalidateQueries({ queryKey: ["watch"] });
   };

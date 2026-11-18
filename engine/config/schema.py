@@ -3191,6 +3191,12 @@ class UiFile(FileModel):
         description="The address the feedback button writes its email to. Empty uses the address the app was "
         "packaged with, if any; with neither, feedback is drafted to copy.",
     )
+    report_to: str = Field(
+        "",
+        description="Where Report a problem sends a report, after you have read all of it and pressed Send, when it "
+        "isn't the address the app was packaged with. An address that starts with https, or one on this computer. "
+        "Leave it empty to use the built-in one.",
+    )
     feedback_problem_days: int = Field(
         3,
         ge=1,
