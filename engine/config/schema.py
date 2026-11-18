@@ -3464,6 +3464,15 @@ class WatchSource(ConfigModel):
         description="How often this one source is read while the app runs, in minutes, when it is set by hand. Unset "
         "(the usual case) it follows the mail or calendar interval in watch.yaml, whatever add-on made the source.",
     )
+    data_fresh_hours: int = Field(
+        72,
+        ge=1,
+        le=8760,
+        description="How old this source's own data may be, in hours, before Today says it is old. Some sources say "
+        "when their data was made (a calendar kept in a file, a calendar link that says when it last changed); data "
+        'older than this is told to you as old and is never read as "no changes". Raise it for a source that '
+        "rarely changes.",
+    )
     project: str | None = Field(None, description="The project its changes are about, if they all are.")
     stance: Literal["follow", "understand"] = Field(
         "follow",

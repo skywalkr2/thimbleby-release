@@ -2,7 +2,7 @@
 // screen they named, at their width, and reads what the person sees there (layout is measured in the browser; nothing here reads the
 // data instead of the screen). The workspace is the reviewer's many-sides state with notes, long to-dos, today's entries past and to
 // come, four items that share a word, a person with to-dos of theirs, and a message that came in (tests/e2e_review_r3.py).
-import { daytimeAt } from "./clock";
+import { mondayAt } from "./clock";
 import { expect, type APIRequestContext, type Locator, type Page } from "@playwright/test";
 import { test } from "./test";
 
@@ -191,7 +191,7 @@ test.describe("S-0356: Month folds the same entry said more than once, as Week d
 test.describe("S-0348: a quoted title loses its end punctuation", () => {
   test("Today's pattern line reads 'Decide about Send the headcount: you have moved its day 5 times', never 'headcount.:'", async ({ page, request }) => {
     // The to-do is moved to another day five times, as the reviewer's was, through the app's own editor route.
-    const days = [4, 5, 6, 7, 8].map((n) => new Date(new Date(daytimeAt).getTime() + n * 86_400_000).toISOString().slice(0, 10));
+    const days = [4, 5, 6, 7, 8].map((n) => new Date(new Date(mondayAt).getTime() + n * 86_400_000).toISOString().slice(0, 10));
     for (const [n, to] of days.entries()) {
       const version = ((await (await request.get("api/open-items")).json()) as { actions: Array<{ id: string; version: number }> }).actions.find((a) => a.id === seed.stopped)!.version;
       const done = await request.post("api/records/edit", { data: { kind: "action", id: seed.stopped, fields: { due: to }, read_version: version } });

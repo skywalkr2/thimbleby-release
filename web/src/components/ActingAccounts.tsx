@@ -9,6 +9,7 @@ import { problemText } from "../lib/problem";
 import { freshSettings, rememberFingerprint, useAfterSave, useFreshFingerprint } from "../lib/settings-save";
 import { useWords } from "../lib/wording";
 import { LoadFailed } from "../ui/LoadFailed";
+import { useLoadFailure } from "../lib/load-failure";
 import { Skeleton } from "../ui/Skeleton";
 import styles from "./ActingAccounts.module.css";
 import { inAppWindow, openInBrowser } from "../lib/external-links";
@@ -25,6 +26,7 @@ export function ActingAccounts() {
   const fingerprint = useFreshFingerprint();
   const base = useId();
   const accounts = useQuery({ queryKey: ["act-accounts"], queryFn: api.actAccounts });
+  const failure = useLoadFailure(accounts);
   const [busy, setBusy] = useState<string | null>(null);
   const [problem, setProblem] = useState("");
 
@@ -77,10 +79,10 @@ export function ActingAccounts() {
     <section className={styles.section} aria-labelledby={`${base}-title`} data-acting-accounts="">
       <h3 id={`${base}-title`}>{t("acting.heading")}</h3>
       <p className="hint">{t("acting.intro")}</p>
-      {accounts.isPending ? (
-        <Skeleton />
-      ) : accounts.isError ? (
+      {failure.failed ? (
         <LoadFailed message={t("acting.load_failed")} onRetry={() => void accounts.refetch()} />
+      ) : accounts.isPending ? (
+        <Skeleton />
       ) : (accounts.data?.accounts ?? []).length === 0 ? (
         <p className="hint">{t("acting.none")}</p>
       ) : (

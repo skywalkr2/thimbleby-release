@@ -181,6 +181,13 @@ def _complete(places: list[Place]) -> bool:
     )
 
 
+def _today(store: Any, cfg: Any) -> date:
+    """The person's own day now, on their clock, whatever zone the computer is set to."""
+    from engine.today import zone
+
+    return datetime.fromisoformat(store.clock()).astimezone(zone(cfg)).date()
+
+
 def _held(request: dict[str, Any]) -> bool:
     """Whether an intake request waits for the person: its own go, or the workspace's first go."""
     return source_intake.waits_on_go(request) or (bool(request.get("intake")) and waits_on_first_go(request))
@@ -190,7 +197,7 @@ def where(ws: Any, store: Any, cfg: Any, router: Any = None, today: date | None 
     """Where the first result stands now, with what it reads and how each source went. Reads only."""
     state = _where(ws, store, cfg, router)
     if state.sources:
-        state.coverage = _places(ws, store, cfg, _sources(store, cfg), today or date.today())
+        state.coverage = _places(ws, store, cfg, _sources(store, cfg), today or _today(store, cfg))
         state.complete = _complete(state.coverage)
     return state
 
@@ -358,7 +365,7 @@ def found(store: Any, cfg: Any, limit: int, today: date | None = None) -> FirstP
     shown_ids = {a.id for a in shown}
     ready = [
         s
-        for s in followups.sections(store, cfg, today or date.today())
+        for s in followups.sections(store, cfg, today or _today(store, cfg))
         if not s.is_pm and s.message and any(a["id"] in shown_ids and a["to_send"] for a in s.actions)
     ]
     follow_up = FollowUp(ready[0].person, ready[0].name, ready[0].message, ready[0].to_send) if ready else None
@@ -373,5 +380,5 @@ def view(ws: Any, store: Any, cfg: Any, router: Any = None, today: date | None =
     result = found(store, cfg, cfg.ui.walkthrough.first_promises, today)
     state.promises, state.more, state.follow_up = result.promises, result.more, result.follow_up
     if not state.promises:
-        state.messages_read, state.meetings_week = read_counts(store, cfg, today or date.today())
+        state.messages_read, state.meetings_week = read_counts(store, cfg, today or _today(store, cfg))
     return state

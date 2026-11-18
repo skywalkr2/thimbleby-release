@@ -223,6 +223,13 @@ test("a source whose mail the assistant couldn't sort says so on its row, with w
   expect(within(await row("Source b")).queryByText("Some of its mail wasn't sorted")).toBeNull();
 });
 
+test("a read of old data says how old it is and never says nothing is new", async () => {
+  open([source("stale", { last: run(), old_data_days: 49 })]);
+  const stale = await row("Source stale");
+  expect(stale).toHaveTextContent("Its data is 49 days old");
+  expect(stale).not.toHaveTextContent("Nothing new");
+});
+
 test("every outcome has its own words", async () => {
   open([
     source("quiet", { last: run() }),

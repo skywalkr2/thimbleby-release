@@ -163,6 +163,7 @@ desktop.copied: Copied
 sign_in.away.done: You're signed in
 sign_in.away.not_done: The sign-in didn't finish
 sign_in.away.back: You can close this tab and go back to Thimbleby, which shows what happened.
+read.old_data.hint: The copy it reads was made before its normal refresh, so changes made since may be missing. Nothing in it is treated as news until it is refreshed.
 read.failed.too_large: The mail service sent an answer too large to read here, so nothing was read this time. It is tried again on its schedule.
 full_read.failed.too_large: The mail service sent a message too large to read here. Try again later, or choose a shorter reach.
 full_read.failed.auth: The mail service asked you to sign in again. Sign in on this account, then try again.

@@ -29,6 +29,7 @@ import { Actions } from "../ui/Actions";
 import { RowList } from "../ui/RowList";
 import { Row } from "../ui/Row";
 import { LoadFailed } from "../ui/LoadFailed";
+import { useLoadFailure } from "../lib/load-failure";
 import { useWrite } from "../lib/write";
 type Form = S["DataFormView"];
 type DataFile = S["DataFile"];
@@ -90,17 +91,18 @@ function FormFiles(props: { form: Form; project: string }) {
   const [naming, setNaming] = useState(false);
   const newButton = `${base}-new`;
   const titleId = `${base}-title`;
+  const filesFailure = useLoadFailure(files);
   const names = (files.data ?? []).map((f) => f.file);
 
   return (
     <section className="data-forms-kind" aria-labelledby={titleId}>
       <h4 id={titleId}>{t("dataform.form_title", { addon: addonName(form.plugin), label: form.label })}</h4>
       {form.description && <p className="hint">{form.description}</p>}
-      {files.isPending ? (
+      {!filesFailure.failed && files.isPending ? (
         <Skeleton />
-      ) : files.isError ? (
+      ) : filesFailure.failed ? (
         <LoadFailed message={t("dataform.load_failed")} onRetry={() => void files.refetch()} />
-      ) : files.data.length === 0 ? (
+      ) : !files.data || files.data.length === 0 ? (
         <EmptyState text={t("dataform.none")} />
       ) : (
         <RowList>
@@ -296,6 +298,7 @@ function FileEditor(props: { form: Form; file: string; project: string; isNew: b
     staleTime: 0,
     gcTime: 0,
   });
+  const viewFailure = useLoadFailure(view);
   const [edits, setEdits] = useState<Record<string, Draft>>({});
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
@@ -357,11 +360,11 @@ function FileEditor(props: { form: Form; file: string; project: string; isNew: b
         {t(isNew ? "dataform.new_title" : "dataform.editing", { file })}
       </h5>
       <p className="hint">{t(project ? "dataform.saves_project" : "dataform.saves_workspace")}</p>
-      {view.isPending ? (
+      {!viewFailure.failed && view.isPending ? (
         <Skeleton rows={2} />
-      ) : view.isError ? (
+      ) : viewFailure.failed ? (
         <p className="problem-note">{t("dataform.load_failed")}</p>
-      ) : (
+      ) : !view.data ? null : (
         <>
           {view.data.problem && (
             <p className="problem-note">

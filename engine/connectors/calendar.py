@@ -438,7 +438,7 @@ def _read_file(settings: CalendarSettings, state: dict[str, Any], context: Conne
     return text, {**state, "modified": modified}
 
 
-def _read_link(settings: CalendarSettings, context: ConnectorContext) -> str:
+def _read_link(settings: CalendarSettings, context: ConnectorContext) -> tuple[str, str | None]:
     from engine.net import WebClient
     from engine.secrets import SecretError, resolve_secret
 
@@ -456,15 +456,29 @@ def _read_link(settings: CalendarSettings, context: ConnectorContext) -> str:
     finally:
         if context.web is None:
             client.close()
-    return response.text
+    return response.text, _http_time(response.headers)
+
+
+def _http_time(headers: dict[str, str]) -> str | None:
+    """The time the service says the calendar was last changed (its `Last-Modified` answer), as ISO text with its
+    offset; None when it says none or it can't be read."""
+    from email.utils import parsedate_to_datetime
+
+    given = next((v for k, v in headers.items() if k.lower() == "last-modified"), None)
+    try:
+        when = parsedate_to_datetime(given) if given else None
+    except (TypeError, ValueError):
+        return None
+    return when.astimezone(UTC).isoformat() if when is not None and when.tzinfo is not None else None
 
 
 def read_calendar(settings: CalendarSettings, state: dict[str, Any], context: ConnectorContext) -> Poll:
     if settings.file.strip():
         text, state = _read_file(settings, state, context)
         problem = ("no_access", "that file doesn't hold a calendar")
+        generated = state["modified"]
     else:
-        text = _read_link(settings, context)
+        text, generated = _read_link(settings, context)
         problem = ("outage", "that address doesn't hold a calendar file")
     if "BEGIN:VCALENDAR" not in text[:_HEAD].upper():
         raise ConnectorError(*problem)
@@ -476,4 +490,4 @@ def read_calendar(settings: CalendarSettings, state: dict[str, Any], context: Co
         settings.expand_days,
         context.timezone,
     )
-    return Poll(found, state, complete=False)
+    return Poll(found, state, complete=False, generated_at=generated)

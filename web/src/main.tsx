@@ -18,6 +18,7 @@ import { installInputMode } from "./lib/input-mode";
 import { installExternalLinks, reportDrawn } from "./lib/external-links";
 import { setClockZone, setTimePrefs } from "./lib/dates";
 import { useSides } from "./lib/sides";
+import { noteLoadedVersion } from "./lib/update-ready";
 import { setTitleWords } from "./lib/title-dates";
 
 const client = new QueryClient({
@@ -63,6 +64,7 @@ function LiveWording(props: { rc: S["RuntimeConfig"]; children: ReactNode }) {
 }
 
 function start(rc: S["RuntimeConfig"]) {
+  noteLoadedVersion(rc.version);
   setRequestTimeouts(rc.request_timeout_seconds, rc.long_request_timeout_seconds);
   initAppearance(rc);
   installInputMode();

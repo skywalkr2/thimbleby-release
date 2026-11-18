@@ -21,6 +21,7 @@ import styles from "./Learned.module.css";
 
 import { EmptyState } from "../ui/EmptyState";
 import { LoadFailed } from "../ui/LoadFailed";
+import { useLoadFailure } from "../lib/load-failure";
 import { refreshSince, writeMark } from "../lib/write";
 type List = "daily" | "catch_up";
 
@@ -77,6 +78,7 @@ function ReviewDrawer(props: { list: List; onClose: () => void }) {
   const proposals = useQuery({ queryKey: ["proposals"], queryFn: api.proposals, enabled: daily });
   const catchUp = useQuery({ queryKey: ["catch-up"], queryFn: api.catchUp, enabled: !daily });
   const found = daily ? proposals : catchUp;
+  const failure = useLoadFailure(found);
   const rows = (daily ? proposals.data?.proposals : catchUp.data?.proposals) ?? [];
   const people = (daily ? proposals.data?.people : undefined) ?? [];
   const terms = keptTogether(rows);
@@ -96,10 +98,10 @@ function ReviewDrawer(props: { list: List; onClose: () => void }) {
       <div className={styles.review}>
         {summary.some(Boolean) && <p className={styles.summary}>{summary.filter(Boolean).join(" · ")}</p>}
         {terms.length > 0 && <KeepAll terms={terms} />}
-        {found.isPending ? (
-          <Skeleton />
-        ) : found.isError ? (
+        {failure.failed ? (
           <LoadFailed message={t("learned.load_failed")} onRetry={() => void found.refetch()} />
+        ) : found.isPending ? (
+          <Skeleton />
         ) : rows.length + people.length === 0 ? (
           <EmptyState text={t("learned.review.empty")} />
         ) : (

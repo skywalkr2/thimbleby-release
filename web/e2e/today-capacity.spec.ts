@@ -3,15 +3,10 @@
 // would take the room this check measures.
 import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
+import { openScreen } from "./open-screen";
 
 async function signIn(page: Page, hash = "") {
-  await page.goto("?token=e2e-token");
-  await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
-  if (hash) {
-    await page.evaluate((h) => {
-      window.location.hash = h;
-    }, hash);
-  }
+  await openScreen(page, hash);
 }
 
 test.describe("Today's capacity", () => {

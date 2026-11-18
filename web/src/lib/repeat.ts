@@ -66,12 +66,12 @@ export function saidShape(t: Say, shape: Shape): string {
   return clamped ? t("repeat.clamped", { said }) : said;
 }
 
-const startFormat = new Intl.DateTimeFormat(undefined, { month: "long", day: "numeric" });
+const startFormat = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", month: "long", day: "numeric" });
 
 /** The whole sentence: "Every Monday and Thursday, starting November 2". */
 export function saidRepeat(t: Say, shape: Shape, start: string): string {
   const [y, m, d] = start.slice(0, 10).split("-").map(Number);
-  return t("repeat.starting", { said: saidShape(t, shape), date: startFormat.format(new Date(y, m - 1, d)) });
+  return t("repeat.starting", { said: saidShape(t, shape), date: startFormat.format(new Date(Date.UTC(y, m - 1, d))) });
 }
 
 /** What the words typed so far are read as, asked of the server once typing pauses; nothing while the words are empty. */

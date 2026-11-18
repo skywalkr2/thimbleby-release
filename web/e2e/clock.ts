@@ -13,3 +13,16 @@
 // that crosses midnight keeps one day.
 export const momentAt: string = (process.env.PW_CLOCK_AT ||= `${new Date().toISOString().slice(0, 10)}T12:00:00Z`);
 export const daytimeAt: string = (process.env.PW_DAYTIME_AT ||= `${momentAt.slice(0, 10)}T12:00:00Z`);
+
+/** Noon UTC of the first date on or after `from` that falls on `weekday` (0 is Sunday, 1 is Monday, as `Date.getUTCDay` counts). */
+export const weekdayAt = (weekday: number, from: string = daytimeAt): string => {
+  const start = new Date(from);
+  const ahead = (weekday - start.getUTCDay() + 7) % 7;
+  return `${new Date(start.getTime() + ahead * 86_400_000).toISOString().slice(0, 10)}T12:00:00Z`;
+};
+
+// - `mondayAt`: for a project whose screens read the weekday. Today shows the Monday briefing on its weekly day only (and
+//   the weekly form beside the morning brief on the days after it), so a test of what that briefing holds, or of a side's
+//   filter over it, runs on a Monday: its server always starts at noon UTC of the first Monday on or after `daytimeAt`,
+//   whatever day the run starts. The clock is moved inside the server process (`--clock-at`, time-machine), never by faketime.
+export const mondayAt: string = weekdayAt(1);

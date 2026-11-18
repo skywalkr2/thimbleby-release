@@ -65,3 +65,30 @@ test("a run in hand shows in the header as a moving ring and words, and the head
   await expect(line.locator("[data-indicator]")).toBeVisible();
   await expect(line).toHaveAccessibleName(`${name}: Working`);
 });
+
+// S-0540: the line shows wherever it fits with the search field kept at least 320px wide, not only from 1440, and no word "Live" is on screen.
+test("the header shows the assistant's line at 1280, 1366 and 1440 with the search field at least 320px wide, and never says Live", async ({ page }) => {
+  for (const width of [1280, 1366, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    await openScreen(page);
+    const name = await assistantName(page);
+    const header = page.getByRole("banner");
+    const line = header.getByRole("button", { name: new RegExp(`^${name}`) });
+    await expect(line, `the line at ${width}px`).toBeVisible(LOADED);
+    const ask = header.locator("[data-header-ask]");
+    expect((await ask.boundingBox())!.width, `search field at ${width}px`).toBeGreaterThanOrEqual(320);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth), `sideways at ${width}px`).toBeLessThanOrEqual(0);
+    // The chip says one of its plain states ("All good", or what needs a look); the word "Live" is nowhere.
+    await expect(header.getByRole("button", { name: /^App status: (?!Live)/ })).toBeVisible();
+    await expect(page.getByText(/^Live$/)).toHaveCount(0);
+  }
+});
+
+test("where the search field would be under 320px the line leaves the header and the status chip keeps the word", async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 900 });
+  await openScreen(page);
+  const name = await assistantName(page);
+  const header = page.getByRole("banner");
+  await expect(header.getByRole("button", { name: /^App status/ })).toBeVisible(LOADED);
+  await expect(header.getByRole("button", { name: new RegExp(`^${name}`) })).toHaveCount(0);
+});

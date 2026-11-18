@@ -7,7 +7,7 @@
 // Below 1440px the assistant's state is in the status chip's popover instead of beside it; below 1024px the search field shrinks; on a phone one row remains, with the logo, the status chip and the user menu. The workspace's name keeps its room
 // before the Ask field gives any up.
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { Button as AriaButton } from "react-aria-components";
 import { api, type S } from "../lib/api";
 import type { LiveState } from "../lib/live";
@@ -101,6 +101,62 @@ export function usePersonName(workspace: string): string {
   return me.data?.full_name?.trim() || workspace;
 }
 
+/** The least width the search field keeps when the assistant's line is drawn beside the status chip. */
+export const ASK_MIN_PX = 320;
+
+/** The next answer to "does the line fit", made so it can never go back and forth. Drawing the line changes other parts' widths
+ * (the chip's word, the name that gives way), so a row near the limit can measure "fits" without the line and "doesn't" with it.
+ * Taking the line away always wins, and once it has gone at a row width it is not drawn again until that width changes: the
+ * answer settles within two draws, on the side that keeps the search field wide. `hiddenAt` is the row width it last went at. */
+export function nextLineFits(prev: boolean, want: boolean, inner: number, hiddenAt: { current: number | null }): boolean {
+  if (prev && !want) {
+    hiddenAt.current = inner;
+    return false;
+  }
+  if (!prev && want && hiddenAt.current !== null && Math.abs(hiddenAt.current - inner) < 1) return false;
+  return want;
+}
+
+/** Whether the assistant's line fits in the header's row with the search field at least `ASK_MIN_PX` wide. It measures the row, not
+ * the window: the other parts' widths (the brand's name, the buttons, the chip's word) and the line's own, so a long name or a wide
+ * font hides the line where it would squeeze the search field, and a 1280 or 1366 window shows it where it fits. Without a layout
+ * to measure (no width), it falls back to `fallback`. */
+export function useLineFits(row: RefObject<HTMLElement | null>, enabled: boolean, fallback: boolean): boolean {
+  const [fits, setFits] = useState(fallback);
+  // The line's width the last time it was drawn, for the moments it is not.
+  const lineWidth = useRef(0);
+  const hiddenAt = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const el = row.current;
+    if (!enabled || !el) return;
+    const measure = () => {
+      const style = getComputedStyle(el);
+      const inner = el.clientWidth - parseFloat(style.paddingLeft || "0") - parseFloat(style.paddingRight || "0");
+      if (!(inner > 0)) return setFits(fallback);
+      const gap = parseFloat(style.columnGap || style.gap || "0") || 0;
+      const kids = Array.from(el.children) as HTMLElement[];
+      const status = el.querySelector<HTMLElement>("[data-header-status]");
+      const line = status?.querySelector<HTMLElement>("[data-line-slot]") ?? null;
+      if (line) lineWidth.current = line.offsetWidth + gap / 4;
+      let used = 0;
+      for (const kid of kids) {
+        if (kid.hasAttribute("data-header-ask") || kid.hasAttribute("data-header-spacer")) continue;
+        used += kid.offsetWidth - (kid === status && line ? line.offsetWidth + gap / 4 : 0);
+      }
+      // Every part but the search field and the spring is a flex item with a gap on each side of it.
+      const free = inner - used - gap * (kids.length - 1) - lineWidth.current;
+      const want = free >= ASK_MIN_PX;
+      setFits((prev) => nextLineFits(prev, want, inner, hiddenAt));
+    };
+    measure();
+    const watch = typeof ResizeObserver === "function" ? new ResizeObserver(measure) : null;
+    watch?.observe(el);
+    for (const kid of Array.from(el.children)) watch?.observe(kid);
+    return () => watch?.disconnect();
+  });
+  return fits;
+}
+
 export function Header(props: {
   rc: Pick<S["RuntimeConfig"], "workspace_name" | "assistant_name" | "demo" | "logo" | "api_base" | "version">;
   live: { state: LiveState; lastUpdate: Date | null; refresh: () => void };
@@ -129,16 +185,17 @@ export function Header(props: {
   const helpGroups = useHelpGroups({ onHelp: props.onHelp, onOpenGuide: () => props.onOpenGuide(), onFeedback: props.onFeedback, onReport: props.onReport, onAlpha: props.onAlpha }, rc.version);
   // Below 1440px the assistant's state is in the status chip's popover, as on a phone.
   const tight = useMediaQuery("(max-width: 1439px)");
-  const inChip = props.narrow || tight;
   // One status on screen: when the assistant is not fine the status chip says it (its own states, a restart to finish, the network), so
   // the assistant's own line shows only while it is fine, and never as a second chip beside one that says what to do.
   const alive = useAlive();
-  const lineShown = !inChip && !(alive && alive.tone !== "ok");
+  const row = useRef<HTMLElement>(null);
+  const roomy = useLineFits(row, !props.narrow, !tight);
+  const lineShown = !props.narrow && roomy && !(alive && alive.tone !== "ok");
   // On a phone the search field is behind an icon in the header; it opens in a strip under it.
   const [searching, setSearching] = useState(false);
   return (
     <>
-    <header className={styles.header}>
+    <header ref={row} className={styles.header}>
       <a className={styles.brand} href={viewHref("today")} aria-label={t("nav.brand_named", { name: rc.workspace_name })} title={rc.workspace_name}>
         {rc.logo ? (
           <AuthImage className={styles.logo} src={`${rc.api_base}/brand/logo`} alt="" />
@@ -156,10 +213,10 @@ export function Header(props: {
           <Pill tone="warn">{t("demo.label")}</Pill>
         </span>
       )}
-      {!props.narrow && <SearchBox className={styles.ask} keyHint={props.shortcuts.ask} onOpenRecord={props.onOpenRecord} onAsk={props.onAsk} />}
-      <span className={styles.spacer} />
-      <div className={styles.status}>
-        <StatusMenu live={props.live} demo={rc.demo} onOpenGuide={props.onOpenGuide} narrow={inChip} />
+      {!props.narrow && <SearchBox className={styles.ask} headerAsk keyHint={props.shortcuts.ask} onOpenRecord={props.onOpenRecord} onAsk={props.onAsk} />}
+      <span className={styles.spacer} data-header-spacer="" />
+      <div className={styles.status} data-header-status="">
+        <StatusMenu live={props.live} demo={rc.demo} onOpenGuide={props.onOpenGuide} narrow={!lineShown} />
         {lineShown && <AssistantLine onOpenGuide={props.onOpenGuide} />}
       </div>
       {props.narrow && (

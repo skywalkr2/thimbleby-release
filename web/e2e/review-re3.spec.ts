@@ -17,6 +17,10 @@ const problems: string[] = [];
 const auth = (info: Info) => ({ Authorization: `Bearer ${info.token}` });
 
 test.describe.serial("review RE3: what each account is for, and what Handled for you shows", () => {
+  // These steps change their server's state (setup walked, accounts signed in or out, records added), and a re-run would start
+  // from that used server and fail on its first line for that reason: a re-run proves nothing, so it takes none and shows its
+  // failure as it is (S-0560).
+  test.describe.configure({ retries: 0 });
   test.use({ actionTimeout: 30_000 });
   let info: Info;
   let addresses: string[];

@@ -1090,7 +1090,7 @@ What a mail item is, for the day's inbox. `sender`: who it is from, as the servi
 
 ### Poll
 
-What a source holds now. `items`: what it lists. `complete`: True when the list is everything, so an item missing from it is gone; False when it is only what changed since `state`. `removed`: keys the service says are gone, for a read that lists only changes (handed in like an item missing from a complete read, when the source reports removals). `state`: kept and given back on the next read (a change marker, say); a read that fails keeps the state of the last read that worked. `unreadable`: the things the connector listed but couldn't read, each with its reason; the read moves past them (a read that lists only changes moves its state past them too), they are recorded on the read, and the person is told, so one bad item never stops the rest being read. `capped`: True when this source will not hand in the rest of its first window, because the first read stopped for good at a limit; a first read that queues its window and brings the rest in on later polls is not capped.
+What a source holds now. `items`: what it lists. `complete`: True when the list is everything, so an item missing from it is gone; False when it is only what changed since `state`. `removed`: keys the service says are gone, for a read that lists only changes (handed in like an item missing from a complete read, when the source reports removals). `state`: kept and given back on the next read (a change marker, say); a read that fails keeps the state of the last read that worked. `unreadable`: the things the connector listed but couldn't read, each with its reason; the read moves past them (a read that lists only changes moves its state past them too), they are recorded on the read, and the person is told, so one bad item never stops the rest being read. `capped`: True when this source will not hand in the rest of its first window, because the first read stopped for good at a limit; a first read that queues its window and brings the rest in on later polls is not capped. `generated_at`: when the source's own data was made, as an ISO 8601 date-time with its offset, for a source that says (a copy of a calendar a file holds, a service's last-modified time); left out when the source holds no such time, so a source that is quiet is never taken for an old one. Data older than the source's normal refresh (`data_fresh_hours`) is told to the person as old, never read as "no changes"; set it only to a time the source itself gives, never to the time of the read.
 
 | Field | Type | Default |
 |---|---|---|
@@ -1100,6 +1100,7 @@ What a source holds now. `items`: what it lists. `complete`: True when the list 
 | `removed` | list[str] | `[]` |
 | `unreadable` | list[Unreadable] | `[]` |
 | `capped` | bool | `False` |
+| `generated_at` | str \| None | `None` |
 
 ### ConnectorError
 
@@ -2512,6 +2513,8 @@ One read of a watched source and what came of it. The watcher writes it; only a 
 | `skipped` | dict[str, int] | `{}` | How many things this read skipped, by kind: `too_large` (over what can be read here) and `other`. A kind with none is left out, so an empty answer says nothing was skipped. |
 | `older_skipped` | dict[str, int] | `{}` | For a source's first read that took it in quietly: what its reads of older mail and of a year of headers skipped, added up by kind as `skipped` is. |
 | `state` | dict[str, Any] | `{}` | What the connector keeps between reads. |
+| `generated_at` | datetime \| None | `None` | When the source's own data was made, as the source said on this read; none when it says none. |
+| `old_data` | bool | `False` | The source's own data was older than the source's `data_fresh_hours` when this read made it: the read is not "no changes", and the read after it that finds fresh data files what was missed together. |
 | `looked_back_to` | date \| None | `None` | For a source's first read that took it in quietly: the day before which its mail was not looked at. A look further back moves it earlier; none for a source with no mail or another kind of first read. |
 | `full_read` | int \| None | `None` | For a source's first read that took it in quietly: the answer to how far back to read its mail in full, in days back from the day it was answered; 0 for "not now". None while the question is still open. |
 | `older_read` | dict[str, Any] \| None | `None` | For a source's first read that took it in quietly: where a read of older mail stopped when the service slowed it down or failed partway, so it carries on from there. `since` and `before` are the days still to read, `left` how many messages the read may still take, `kind` why it stopped (throttled, outage or offline), `stopped_at` when it stopped, `at` when it continues (none once it gave up), `tries` the stops in a row without progress, `gave_up` that it ran out of tries and waits for the person, `taken` the items taken in so far and `reach` the days the person chose for a full read (none for a look further back). None when no read is waiting to continue. |

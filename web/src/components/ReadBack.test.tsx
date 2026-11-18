@@ -47,7 +47,7 @@ function change(op: Partial<S["OpView"]>): S["ChangeItem"] {
     source_title: "A note",
     changeset: {
       id: "CS-1",
-      summary: "Kept a rule.",
+      summary: "",
       status: op.status === "held" ? "held" : "applied",
       reviewed: false,
       trust: "trusted",

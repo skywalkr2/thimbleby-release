@@ -20,6 +20,10 @@ const go = (page: Page, hash: string) =>
   }, hash);
 
 test.describe.serial("setup and settings fixes", () => {
+  // These steps change their server's state (setup walked, accounts signed in or out, records added), and a re-run would start
+  // from that used server and fail on its first line for that reason: a re-run proves nothing, so it takes none and shows its
+  // failure as it is (S-0560).
+  test.describe.configure({ retries: 0 });
   test.beforeAll(async () => {
     info = await (await fetch(`${FAKE}/__e2e/info`)).json();
   });

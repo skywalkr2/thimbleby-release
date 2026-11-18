@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
 import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { CONNECT_LIMIT_MS, PROBE_RETRY_MS, REOPEN_MS, RETRY_BEFORE_OFFLINE_MS, familiesFor, familiesOf, inFamilies, invalidateFor, kindsOf, servedHere, unmapped, useLive } from "./live";
+import { CONNECT_LIMIT_MS, PROBE_RETRY_MS, REOPEN_MS, RETRY_BEFORE_OFFLINE_MS, familiesFor, familiesOf, inFamilies, invalidateFor, kindsOf, queueEvent, servedHere, unmapped, useLive } from "./live";
 
 test("each kind of record names the queries it affects", () => {
   expect(familiesFor(["request", "changeset"])).toEqual(expect.arrayContaining(["changes", "today/queue", "stages/requests", "plugin-today"]));
@@ -337,4 +337,42 @@ test("the add-on list read in the background at start reads again on the Add-ons
   expect(client.getQueryState(["packs"])!.isInvalidated).toBe(true); // both screens read this one query
   expect(client.getQueryState(["settings"])!.isInvalidated).toBe(false);
   expect(client.getQueryState(["today", "queue"])!.isInvalidated).toBe(false);
+});
+
+// S-0599: a burst of the assistant's request events reads Today's queue a handful of times, never once per event.
+test("a burst of 50 request events reads each Today query a handful of times, not once per event (S-0599)", async () => {
+  vi.useFakeTimers();
+  try {
+    const client = new QueryClient();
+    const reads = { queue: 0, brief: 0, waiting: 0 };
+    const answer = (name: keyof typeof reads) => async () => {
+      reads[name] += 1;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      return [];
+    };
+    const observers = [
+      new QueryObserver(client, { queryKey: ["today", "queue"], queryFn: answer("queue") }),
+      new QueryObserver(client, { queryKey: ["brief"], queryFn: answer("brief") }),
+      new QueryObserver(client, { queryKey: ["waiting"], queryFn: answer("waiting") }),
+    ];
+    const unsubscribe = observers.map((o) => o.subscribe(() => {}));
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(reads).toEqual({ queue: 1, brief: 1, waiting: 1 });
+    const before = { ...reads };
+    for (let i = 0; i < 50; i += 1) {
+      queueEvent(client, `{"version": ${i + 1}, "kinds": ["request"]}`);
+      await vi.advanceTimersByTimeAsync(40);
+    }
+    // 50 events over 2 seconds (measured before the join: 50 reads of the queue): the first reads at once, the other 49
+    // read together once the first read has answered.
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(reads.queue - before.queue).toBeLessThanOrEqual(3);
+    expect(reads.brief - before.brief).toBeLessThanOrEqual(3);
+    // And the last read began after the last event, so what is on screen is never older than the news.
+    const last = client.getQueryState(["today", "queue"])!;
+    expect(last.isInvalidated).toBe(false);
+    unsubscribe.forEach((u) => u());
+  } finally {
+    vi.useRealTimers();
+  }
 });

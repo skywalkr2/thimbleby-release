@@ -4,6 +4,7 @@
 // where the person says yes to exactly what will be written. Nothing is added before it.
 import { useId, useState } from "react";
 import { useCalendarOptions, useDraftAct } from "../lib/acts";
+import { momentOf } from "../lib/dates";
 import { useWords } from "../lib/wording";
 import { Button } from "../ui/Button";
 import { Drawer } from "../ui/Drawer";
@@ -43,9 +44,9 @@ export function NewEventDrawer(props: { today: string; accounts: { id: string; l
   const ready = what.trim() !== "" && account !== "" && day !== "" && from !== "" && to !== "";
   const submit = async () => {
     if (!ready) return;
-    const start = new Date(`${day}T${from}`);
-    const end = new Date(`${day}T${to}`);
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
+    const start = momentOf(`${day}T${from}`);
+    const end = momentOf(`${day}T${to}`);
+    if (!start || !end || end <= start) {
       setBad(true);
       return;
     }

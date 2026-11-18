@@ -46,6 +46,7 @@ import { RowList } from "../ui/RowList";
 import { Row } from "../ui/Row";
 import { StateMark, needsYou, type StateTone } from "../ui/StateMark";
 import { LoadFailed } from "../ui/LoadFailed";
+import { useLoadFailure } from "../lib/load-failure";
 import { ConfirmRemove } from "./ConfirmRemove";
 type Pack = S["PackView"];
 type Feed = S["PackFeedView"];
@@ -255,13 +256,14 @@ function SwitchButton(props: { on: boolean; label: string; busy: boolean; id?: s
 }
 
 function Loaded(props: {
-  query: { isPending: boolean; isError: boolean; data?: S["PacksView"]; refetch: () => unknown };
+  query: { isPending: boolean; isError: boolean; error: unknown; errorUpdateCount?: number; data: S["PacksView"] | undefined; refetch: () => unknown };
   children: (view: S["PacksView"]) => ReactNode;
 }) {
   const { t } = useWords();
   const { query } = props;
-  if (query.isPending) return <Skeleton />;
-  if (query.isError || !query.data) {
+  const failure = useLoadFailure(query);
+  if (!failure.failed && query.isPending) return <Skeleton />;
+  if (failure.failed || !query.data) {
     return (
       <LoadFailed message={t("addons.load_failed")} onRetry={() => void query.refetch()} />
     );

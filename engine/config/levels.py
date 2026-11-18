@@ -41,8 +41,6 @@ BASIC: dict[str, str] = {
     "steward.reminders.working_start": "today",
     "steward.reminders.working_end": "today",
     "steward.hold_outside_hours": "today",
-    "watch.mail_read_minutes": "today",
-    "watch.calendar_read_minutes": "today",
     "steward.reminders.quiet_start": "today",
     "steward.reminders.quiet_end": "today",
     "steward.brief.enabled": "today",
@@ -85,6 +83,9 @@ ADVANCED: dict[str, str] = {
     # assistant needs a nudge, so they sit with filing, not on the business page.
     "workspace.project.side_words.personal": "filing",
     "workspace.project.side_words.business": "filing",
+    # How often mail and calendars are read belongs to reading mail: it lives with the other mail settings, as one row.
+    "watch.mail_read_minutes": "mail",
+    "watch.calendar_read_minutes": "mail",
     "watch.automated_mail.set_aside": "mail",
     "watch.mail_kinds.enabled": "mail",
     "watch.sorting": "mail",

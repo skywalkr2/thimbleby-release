@@ -32,6 +32,7 @@ import { Row } from "../ui/Row";
 import { Pill } from "../ui/Pill";
 import { RowBody } from "../ui/RowBody";
 import { LoadFailed } from "../ui/LoadFailed";
+import { useLoadFailure } from "../lib/load-failure";
 import { settingsView, viewHref } from "../lib/views";
 type Shown = "board" | "list";
 const KEPT = "stages.view";
@@ -62,6 +63,7 @@ export function Stages() {
   const { t } = useWords();
   const kindWords = useKindWords();
   const records = useStageRecords();
+  const failure = useLoadFailure(records);
   const requests = useStageRequests();
   const waiting = waitingForGo(requests.data);
   const [shown, setShown] = useShown();
@@ -86,11 +88,11 @@ export function Stages() {
           ) : undefined
         }
       />
-      {records.isPending ? (
+      {records.isPending && !failure.failed ? (
         <section className="panel-section" aria-labelledby="stages-title">
           <Skeleton />
         </section>
-      ) : records.isError ? (
+      ) : failure.failed ? (
         <section className="panel-section" aria-labelledby="stages-title">
           <LoadFailed message={t("stages.load_failed")} onRetry={() => void records.refetch()} />
         </section>

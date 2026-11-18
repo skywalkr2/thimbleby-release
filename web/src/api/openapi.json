@@ -26414,6 +26414,18 @@
             "description": "For a rule_review line: how many days the flagged rules have been given and never applied. For an intake_go line: how many days back the source's mail was read; none when it holds no mail.",
             "title": "Days"
           },
+          "days_old": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For a source_unread line of old data: how many days old the source's data is.",
+            "title": "Days Old"
+          },
           "deciding": {
             "description": "For a review line: the keys of the lines under Decide that ask about its own held ops, which the line leaves out of its count and the screen links to.",
             "items": {
@@ -27014,7 +27026,7 @@
                 "type": "null"
               }
             ],
-            "description": "For a source_unread line: the kind of failure (auth, no_access, not_found, outage, or another kind a connector reports), which the screen words as what to do.",
+            "description": "For a source_unread line: the kind of failure (auth, no_access, not_found, outage, or another kind a connector reports), which the screen words as what to do; `old_data` for a source whose own data is older than its normal refresh.",
             "title": "Problem Kind"
           },
           "project": {
@@ -37472,6 +37484,18 @@
             ],
             "description": "For a source whose first read took it in quietly: the day before which its mail wasn't looked at. None for a source with no mail or another kind of first read.",
             "title": "Looked Back To"
+          },
+          "old_data_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Whole days old the source's own data is, when its latest read served data older than its `data_fresh_hours`; none when it is fresh or the source says no time. Its last read is never worded as \"nothing new\" while this is set.",
+            "title": "Old Data Days"
           },
           "older_read": {
             "anyOf": [

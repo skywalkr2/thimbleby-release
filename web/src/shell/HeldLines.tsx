@@ -9,7 +9,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { isValidElement, useState, type ReactNode } from "react";
 import { api, type S } from "../lib/api";
-import { useAct } from "../lib/act";
+import { NO_RECORD_ACTS, useAct } from "../lib/act";
 import { useAccountNames } from "../lib/account-names";
 import { useTierName } from "../lib/ai-routing";
 import { withoutAddress } from "../lib/calendar";
@@ -411,6 +411,8 @@ function AccountCheckLine(props: { line: Line }) {
         const bad = results.find((r) => !r.ok);
         return { message: bad ? t("queue.account_check.not_passed", { account, detail: bad.detail }) : t("queue.account_check.passed", { account, work }) };
       },
+      undefined,
+      NO_RECORD_ACTS.checkAccount,
     );
     setChecking(false);
   };
@@ -807,8 +809,9 @@ function ExtractorLine(props: { line: Line }) {
 /** A source that has failed for longer than its usual gap: what to do about it, since when it hasn't been read, and why;
  * one button, to the screen where it is signed in again or changed. It goes once the source is read again. */
 function SourceUnreadLine(props: { line: Line; onOpen?: () => void }) {
-  const { t, has } = useWords();
+  const { t, tn, has } = useWords();
   const { line } = props;
+  const old = line.problem_kind === "old_data" && !!line.days_old;
   const kind = `queue.source_unread.${line.problem_kind ?? ""}`;
   const key = line.problem_kind && has(kind) ? kind : "queue.source_unread.other";
   const since = line.waiting_since ? whenWords(line.waiting_since, new Date(), t, true) : "";
@@ -822,7 +825,7 @@ function SourceUnreadLine(props: { line: Line; onOpen?: () => void }) {
       aria-label={t("queue.source_unread.label")}
       data-queue-line="source_unread"
       state="warn"
-      title={<>{t(key, { label: named, when: since })}</>}
+      title={<>{old ? tn("queue.source_unread.old_data", line.days_old ?? 0, { label: named }) : t(key, { label: named, when: since })}</>}
       meta={<StateMark tone="warn">{t("queue.source_unread.label")}</StateMark>}
       primary={props.onOpen ? (
           <>

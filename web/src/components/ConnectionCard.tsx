@@ -5,7 +5,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useId, useRef, useState, type ReactNode } from "react";
 import { api, type S } from "../lib/api";
-import { SIGNED_OUT_READS, useAct } from "../lib/act";
+import { SIGNED_OUT_READS, NO_RECORD_ACTS, useAct } from "../lib/act";
 import type { ConnectionCard } from "../lib/connection-cards";
 import { signInNeed, sourceState, type AccountState } from "../lib/connections";
 import { failureText } from "../lib/sources";
@@ -26,6 +26,7 @@ import { addSkipped, skippedWords } from "../lib/skipped";
 import { OlderReadWaiting } from "./OlderReadWaiting";
 import { FullReadChoice } from "./FullReadChoice";
 import { SourceSides } from "./SourceSides";
+import { AccountReadEvery } from "./AccountReadEvery";
 import styles from "./ConnectionCard.module.css";
 
 type Source = S["WatchSourceView"];
@@ -61,6 +62,8 @@ export function ConnectionCardView(props: {
         return fresh;
       },
       () => ({ message: t("connection.read_all_toast", { account: card.address ?? card.name }) }),
+      undefined,
+      NO_RECORD_ACTS.readSource,
     );
     setReading(false);
   };
@@ -170,6 +173,7 @@ export function ConnectionCardView(props: {
               </Button>
             </div>
           )}
+          {card.sources.length > 0 && <AccountReadEvery sources={card.sources} account={accountName} />}
           <div className={styles.acts}>
             {need && again.item && (
               <Button

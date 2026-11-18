@@ -4,6 +4,7 @@
 // server of its own (`--fake-channel`), which says what the channel was handed.
 import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
+import { openScreen } from "./open-screen";
 import { checkAccessibility, collectProblems } from "./journey-helpers";
 
 interface Outgoing {
@@ -16,8 +17,7 @@ interface Outgoing {
 }
 
 async function signIn(page: Page) {
-  await page.goto("?token=e2e-token");
-  await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
+  await openScreen(page);
 }
 
 const handed = async (page: Page): Promise<Outgoing> => (await page.request.get("/__e2e/delivered")).json();

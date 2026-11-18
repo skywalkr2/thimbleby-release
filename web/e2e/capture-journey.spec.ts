@@ -1,5 +1,6 @@
 import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
+import { openScreen } from "./open-screen";
 import { collectProblems, openView } from "./journey-helpers";
 
 interface CaptureFixture {
@@ -52,8 +53,7 @@ test("a capture folder files notes once and offers Undo", async ({ page }, testI
   const first = `Capture journey: remember the silver heron marker ${testInfo.repeatEachIndex}.`;
   const second = `Capture journey: remember the amber thimble marker ${testInfo.repeatEachIndex}.`;
 
-  await page.goto("?token=e2e-token");
-  await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
+  await openScreen(page);
   await openView(page, "Connections");
 
   const sourceMenu = page.getByRole("button", { name: `More actions for ${seeded.label}` });

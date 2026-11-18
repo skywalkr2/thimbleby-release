@@ -20,6 +20,7 @@ import { CheckboxGroup } from "../ui/CheckboxGroup";
 import { Actions } from "../ui/Actions";
 import { RowList } from "../ui/RowList";
 import { LoadFailed } from "../ui/LoadFailed";
+import { useLoadFailure } from "../lib/load-failure";
 // ---- synced folder -------------------------------------------------------------------------------------------------
 
 const SYNC_FOLDER = "storage.sync.folder";
@@ -203,6 +204,8 @@ export function SyncPanel() {
     retry: 3,
     retryDelay: (attempt) => Math.min(500 * 2 ** attempt, 4000),
   });
+  const settingsFailure = useLoadFailure(settings);
+  const syncFailure = useLoadFailure(sync);
   const { open, dialog } = useTextReview();
   const restart = useRestart();
   const data = sync.data;
@@ -211,13 +214,13 @@ export function SyncPanel() {
       <div className="heading">
         <h3 id="sync-title">{t("setup.sync")}</h3>
       </div>
-      {settings.isPending || (folderSet && sync.isPending) ? (
+      {!settingsFailure.failed && !syncFailure.failed && (settings.isPending || (folderSet && sync.isPending)) ? (
         <Skeleton />
-      ) : settings.isError ? (
+      ) : settingsFailure.failed ? (
         <LoadFailed message={t("setup.sync_failed")} onRetry={() => void settings.refetch()} />
       ) : !folderSet ? (
         <SyncUnset />
-      ) : sync.isError || !data ? (
+      ) : syncFailure.failed || !data ? (
         <LoadFailed message={t("setup.sync_failed")} onRetry={() => void sync.refetch()} />
       ) : !data.folder ? (
         // A folder saved after the app started: the running app keeps what it started with until it restarts.

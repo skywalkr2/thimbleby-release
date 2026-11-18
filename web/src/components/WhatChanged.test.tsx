@@ -54,7 +54,7 @@ function change(id: string, extra: Partial<S["ChangeItem"]> = {}): S["ChangeItem
     source_title: "Email from the printer",
     changeset: {
       id: `CS-${id}`,
-      summary: "One fact.",
+      summary: "",
       status: "applied",
       reviewed: false,
       trust: "untrusted",
@@ -397,13 +397,14 @@ test("a second opinion is labeled in words, by where it came from, in the change
   expect(within(screen.getByRole("listitem", { name: "From the same account" })).queryByText(/Second opinion/)).toBeNull();
 });
 
-test("the assistant's own summary of a run never shows, in the row or its details", async () => {
+test("the previous change's summary is not shown in the row or its details, and a change with no summary has no account line", async () => {
   const after = change("REQ-1", { source_title: "Chapter updates", follows: "CS-3", follows_summary: "Told the user about chapter 4" });
   fakeApi({ "GET changes": () => [after] });
   renderApp(<WhatChanged />);
   const pane = await findPane();
   expect(within(pane).queryByText(/Told the user/)).toBeNull();
   expect(within(pane).queryByText(/One fact\./)).toBeNull();
+  expect(pane.querySelector("[data-assistant-account]")).toBeNull();
   expect(document.body.textContent).not.toMatch(/the user|assistant says/i);
 });
 

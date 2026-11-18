@@ -1,6 +1,6 @@
 // Live updates: the server's event stream says when anything changed, and only the queries that change affects refresh.
 // No polling. The browser's own offline and online events count too, so a lost connection shows within moments.
-import { useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useQueryClient, type Query, type QueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { EVENTS_PATH } from "./api";
 import { AuthEventSource } from "./event-stream";
@@ -197,24 +197,29 @@ export function writeAnswered(client: QueryClient): void {
   const held = out.held.splice(0);
   for (const h of held) {
     clearTimeout(h.timer);
-    applyEvent(client, h.data);
+    void applyEvent(client, h.data);
   }
 }
 
 /** Refreshes the queries an event's data says it affects, or all of them when it doesn't say. An event that only repeats
  * what the person's own write just wrote is not read again: the write's own reads came after its answer. */
 export function invalidateFor(client: QueryClient, data: string): void {
+  void invalidateWith(client, data);
+}
+
+/** `invalidateFor`, giving back when the reads it started have answered, and sharing the queries read already by `done`. */
+function invalidateWith(client: QueryClient, data: string, done?: Set<Query>): Promise<void> {
   const out = writesOut.get(client);
   if (out && out.count > 0) {
     const entry = { data, timer: setTimeout(() => {
       const at = out.held.indexOf(entry);
       if (at >= 0) out.held.splice(at, 1);
-      applyEvent(client, data);
+      void applyEvent(client, data);
     }, OWN_WRITE_WINDOW_MS) };
     out.held.push(entry);
-    return;
+    return Promise.resolve();
   }
-  applyEvent(client, data);
+  return applyEvent(client, data, done);
 }
 
 /** An event that only repeats the kinds the person's own write just wrote leaves alone a query that is reading right now (the
@@ -226,7 +231,7 @@ export function invalidateFor(client: QueryClient, data: string): void {
  * ends. An event that ends no later, and names only screens the write read again, announces nothing the write's reads (made
  * after its answer) missed, so even a read that has finished is not repeated. Anything past that position is another writer's
  * change and reads. */
-function applyEvent(client: QueryClient, data: string): void {
+function applyEvent(client: QueryClient, data: string, done?: Set<Query>): Promise<void> {
   const kinds = kindsOf(data) ?? [];
   const named = familiesOf(data);
   // Kinds that name nothing, with families the change itself named, read only those; kinds and families read both.
@@ -246,17 +251,68 @@ function applyEvent(client: QueryClient, data: string): void {
     position !== null &&
     position <= own.position &&
     (own.families === null || (wanted !== null && [...wanted].every((f) => own.families?.has(f))));
-  if (covered) return;
-  void client.invalidateQueries({
-    predicate: (query) => {
-      if (wanted && !readsAgain(query.queryKey, wanted)) return false;
-      if (echo && query.state.fetchStatus === "fetching") return false;
-      return true;
-    },
-  });
+  if (covered) return Promise.resolve();
+  const matching = client
+    .getQueryCache()
+    .findAll({
+      predicate: (query) => {
+        if (wanted && !readsAgain(query.queryKey, wanted)) return false;
+        if (echo && query.state.fetchStatus === "fetching") return false;
+        return true;
+      },
+    })
+    // A query already read again for an earlier event of the same burst is not read a second time.
+    .filter((query) => !done?.has(query));
+  for (const query of matching) done?.add(query);
+  const reads = client.invalidateQueries({ predicate: (query) => matching.includes(query) });
   // A change this page did not make: its reads are not what the ready mark waits for. The page's own write just before it (the echo)
   // is read by that write, which counts.
   if (!echo) leaveFetching(client);
+  return reads;
+}
+
+/** The shortest time a burst of events is held while its first read goes out, so events that follow close behind join it. */
+export const BURST_HOLD_MS = 200;
+/** The longest a read can hold the events behind it: a read that hangs never freezes the screen. */
+export const BURST_LIMIT_MS = 5000;
+interface Burst {
+  /** Whether a read for an earlier event is out and later events wait for it. */
+  busy: boolean;
+  held: string[];
+}
+const bursts = new WeakMap<QueryClient, Burst>();
+
+/** Reads again what a stream event affects. The first event of a quiet moment reads at once. Events that arrive while
+ * its reads are out wait, and then read together: each query they name is read once for all of them, after the last,
+ * so a burst of the assistant's events (a first read of many messages) is a handful of reads and never one per event. */
+export function queueEvent(client: QueryClient, data: string): void {
+  const burst = bursts.get(client) ?? { busy: false, held: [] };
+  bursts.set(client, burst);
+  if (burst.busy) {
+    burst.held.push(data);
+    return;
+  }
+  const run = (events: string[]) => {
+    burst.busy = true;
+    const seen = new Set<Query>();
+    const settled: Promise<unknown>[] = [];
+    for (const one of events) settled.push(invalidateWith(client, one, seen));
+    let ended = false;
+    const next = () => {
+      if (ended) return;
+      ended = true;
+      const more = burst.held.splice(0);
+      if (more.length) run(more);
+      else burst.busy = false;
+    };
+    const hold = new Promise<void>((resolve) => setTimeout(resolve, BURST_HOLD_MS));
+    const limit = setTimeout(next, BURST_LIMIT_MS);
+    void Promise.all([hold, Promise.allSettled(settled)]).then(() => {
+      clearTimeout(limit);
+      next();
+    });
+  };
+  run([data]);
 }
 
 /** `hellos` counts how many times the stream has (re)connected, so a caller can wait for the next one. */
@@ -284,7 +340,7 @@ export function useLive(): { state: LiveState; lastUpdate: Date | null; hellos: 
     });
     stream.addEventListener("changed", (event) => {
       setLastUpdate(new Date());
-      invalidateFor(client, event.data);
+      queueEvent(client, event.data);
     });
     // A lost stream is retried before the state changes: the browser reconnects by itself, and the timer below ends
     // "connecting" in the offline line when nothing comes back.

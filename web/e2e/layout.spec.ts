@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
+import { openScreen } from "./open-screen";
 
 const strings: Record<string, string> = Object.fromEntries(
   (JSON.parse(readFileSync(fileURLToPath(new URL("./fixtures/layout-strings.json", import.meta.url)), "utf8")) as Array<{ id: string; text: string }>).map(
@@ -270,15 +271,14 @@ test.describe("no screen is wider than the window", () => {
     for (const width of [320, 390, 768, 1280]) {
       listed = longModels;
       await page.setViewportSize({ width, height: 900 });
-      await page.goto("?token=e2e-token");
+      await openScreen(page);
       // Each width starts with an empty form: what was typed before is kept for the tab.
       await page.evaluate(() => {
         window.sessionStorage.clear();
       });
-      await page.reload();
-      await page.evaluate(() => {
-        window.location.hash = "settings/ai";
-      });
+      // The address is changed only once the first screen is ready: the app takes a change of it from then on, and a change made
+      // sooner is lost (a busy machine drew the first screen late, and the test then waited on a screen that never opened).
+      await openScreen(page, "settings/ai");
       await section(page, "AI accounts");
       await page.getByRole("button", { name: "Add an account" }).first().click();
       const panel = page.getByRole("dialog", { name: "Add an account" });
@@ -366,6 +366,35 @@ test.describe("no screen is wider than the window", () => {
           }),
         )
         .toBeLessThan(24);
+    }
+  });
+
+  test("a change made from a note leads with the assistant's sentence, its list folded, with no sideways scroll", async ({ page }) => {
+    test.setTimeout(120_000);
+    for (const size of [
+      { width: 1440, height: 900 },
+      { width: 390, height: 844 },
+    ]) {
+      await page.setViewportSize(size);
+      await page.goto("?token=e2e-token");
+      await page.evaluate(() => {
+        window.location.hash = "work/changed";
+      });
+      await heading(page, "What changed");
+      await expect(page.locator("ol[data-row-list]:not([data-detail]) > li [data-expander]").first()).toBeVisible(LOADED);
+      // Beside the list the detail is already there; on a narrow window the row opens it as a drawer.
+      if (size.width < 1024) await page.locator("ol[data-row-list]:not([data-detail]) > li [data-expander]").first().click();
+      const card = size.width >= 1024 ? page.locator("[data-detail-pane]") : page.getByRole("dialog");
+      const account = card.locator("[data-assistant-account]").first();
+      await expect(account).toBeVisible(LOADED);
+      expect(((await account.innerText()) ?? "").trim().length).toBeGreaterThan(0);
+      const fold = card.getByRole("button", { name: /^What .+ did \(\d+\)$/ }).first();
+      await expect(fold).toBeVisible(LOADED);
+      await expect(fold).toHaveAttribute("aria-expanded", "false");
+      expect(tooWide(await overflow(page)), `closed at ${size.width}px`).toBe(false);
+      await fold.click();
+      await expect(fold).toHaveAttribute("aria-expanded", "true");
+      expect(tooWide(await overflow(page)), `open at ${size.width}px`).toBe(false);
     }
   });
 

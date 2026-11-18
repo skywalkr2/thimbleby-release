@@ -4,6 +4,7 @@
 // something waiting for the person shows how many, and says in words what the number counts: Today's come from its own
 // lines, the others from the one answer of what waits on each screen.
 import { useQuery } from "@tanstack/react-query";
+import { useEffect } from "react";
 import { api, type S } from "../lib/api";
 import { panelView, type View } from "../lib/views";
 import { useWords } from "../lib/wording";
@@ -47,16 +48,44 @@ export interface NavModel {
 
 const some = (n: number | null | undefined): number | null => (n ? n : null);
 
+const PANELS_KEY = "cockpit:nav:panels";
+type NavPanel = Pick<S["PanelView"], "name" | "title" | "tab">;
+
+function rememberedPanels(): NavPanel[] {
+  try {
+    const found: unknown = JSON.parse(window.localStorage.getItem(PANELS_KEY) ?? "[]");
+    return Array.isArray(found) ? found.filter((p): p is NavPanel => !!p && typeof p.name === "string" && typeof p.title === "string" && typeof p.tab === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The add-ons' panels for the menu. Until they are read it is what this browser last read, so the entries the add-ons add do not
+ * arrive after the screen draws and push every link below them down under the pointer; a read that fails keeps them too. */
+export function useStablePanels(): NavPanel[] {
+  const panels = useQuery({ queryKey: ["panels"], queryFn: () => api.panels() });
+  const found = panels.data;
+  useEffect(() => {
+    if (!found) return;
+    try {
+      window.localStorage.setItem(PANELS_KEY, JSON.stringify(found.map((p) => ({ name: p.name, title: p.title, tab: p.tab }))));
+    } catch {
+      // Storage can be blocked; the menu is then drawn from what is read.
+    }
+  }, [found]);
+  return found ?? rememberedPanels();
+}
+
 export function useNav(): NavModel {
   const { t, tn } = useWords();
-  const panels = useQuery({ queryKey: ["panels"], queryFn: () => api.panels() });
+  const panels = useStablePanels();
   const waiting = useWaiting();
   const needsYou = useTodayCount();
   const { personal, sides } = useSides();
   const justMe = useStableJustMe();
   const plugin = (tab: string, group: "work" | "records"): NavEntry[] =>
-    (panels.data ?? [])
-      .filter((p: S["PanelView"]) => p.tab === tab)
+    panels
+      .filter((p) => p.tab === tab)
       .map((p) => ({ view: panelView(p.name, group), label: p.title, glyph: [...p.title.trim()][0]?.toUpperCase() ?? "", sub: true }));
   // Personal and each side by its own name, each a link to that top project's page; a person with nothing beside Personal
   // has Personal alone, where Projects would be. With a side, the projects live inside each side's page. Anyone else (a

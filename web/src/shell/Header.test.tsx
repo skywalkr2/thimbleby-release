@@ -7,7 +7,7 @@ import userEvent from "@testing-library/user-event";
 import { RestartProvider } from "../lib/restart";
 import { initAppearance } from "../lib/theme";
 import { fakeApi, rcFixture, renderApp, statusFixture } from "../test-utils";
-import { Header } from "./Header";
+import { Header, nextLineFits } from "./Header";
 
 /** Windows narrower than 1440px but not a phone: the media query the header watches matches. */
 function below1440() {
@@ -427,4 +427,23 @@ test("with no report address Help has no Report a problem", async () => {
   show();
   await user.click(screen.getByRole("button", { name: "Help" }));
   expect(screen.queryByRole("menuitem", { name: "Report a problem" })).toBeNull();
+});
+
+// A row near the limit measures "fits" without the line and "doesn't" with it (drawing the line changes the chip's word and the
+// name that gives way). Before, the answer flipped on every draw until the screen could not be drawn at all.
+test("the assistant's line settles within two draws on a row that fits only without it, hidden, and comes back when the row widens", () => {
+  const hiddenAt = { current: null as number | null };
+  let fits = false;
+  const answers: boolean[] = [];
+  for (let draw = 0; draw < 20; draw++) {
+    const want = !fits; // fits only while the line is not drawn
+    fits = nextLineFits(fits, want, 940, hiddenAt);
+    answers.push(fits);
+  }
+  expect(answers.slice(2).every((a) => a === false)).toBe(true);
+  expect(answers.filter((a, i) => i > 0 && a !== answers[i - 1]).length).toBeLessThanOrEqual(2);
+  // A wider row is a new question: the line is drawn where it fits.
+  expect(nextLineFits(false, true, 1180, hiddenAt)).toBe(true);
+  // A row that fits with the line keeps it.
+  expect(nextLineFits(true, true, 1180, hiddenAt)).toBe(true);
 });

@@ -2,15 +2,14 @@
 // breaks inside a word, rows carry no filled button, and the priority columns stay.
 import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
-import { openScreen } from "./open-screen";
+import { openScreen, screenReady } from "./open-screen";
 
 async function open(page: Page, hash: string) {
   await openScreen(page);
-  await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
   await page.evaluate((h) => {
     window.location.hash = h;
   }, hash);
-  await expect(page.getByRole("main").getByRole("heading", { level: 1 }).first()).toBeVisible();
+  await screenReady(page);
   await expect(page.locator("main [data-skeleton]")).toHaveCount(0, { timeout: 15_000 });
 }
 

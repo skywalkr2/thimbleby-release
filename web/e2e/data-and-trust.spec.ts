@@ -4,6 +4,7 @@
 // and removing the AI account asks first and leaves Today with nothing to Start (X76).
 import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
+import { screenReady } from "./open-screen";
 import { momentAt } from "./clock";
 import { choicesOf } from "./choose";
 import { findInternals } from "./internals-scan";
@@ -15,13 +16,13 @@ const ahead = (n: number) => new Date(Date.parse(momentAt) + n * 86_400_000).toI
 
 async function openScreen(page: Page, hash: string) {
   // The app listens for a change of the address once it has drawn its first screen; a person can't change it sooner, so the
-  // first screen is waited for. A change made before then is lost and the screen stays where it opened.
-  await expect(page.getByRole("main").getByRole("heading", { level: 1 }).first()).toBeVisible(LOADED);
+  // first screen's ready mark is waited for. A change made before then is lost and the screen stays where it opened.
+  await screenReady(page);
   await page.evaluate((h) => {
     window.location.hash = h;
   }, hash);
   await expect(page).toHaveURL(new RegExp(`#${hash.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`));
-  await expect(page.getByRole("main").getByRole("heading", { level: 1 }).first()).toBeVisible(LOADED);
+  await screenReady(page);
   await expect(page.locator("main [data-skeleton]")).toHaveCount(0, LOADED);
 }
 

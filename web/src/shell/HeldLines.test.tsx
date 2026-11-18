@@ -679,6 +679,13 @@ test("a source that couldn't be read for too long is a line that starts with wha
   expect(onOpenSources).toHaveBeenCalledTimes(1);
 });
 
+test("a source whose own data is old says how old, never when it was last read or that nothing is new", async () => {
+  show([unreadSource({ problem_kind: "old_data", days_old: 49, text: "The copy it reads was made before its normal refresh." })]);
+  const row = await screen.findByRole("region", { name: "Connection not read" });
+  expect(row).toHaveTextContent("Work mail's data is 49 days old");
+  expect(row).not.toHaveTextContent(/not read since|nothing new/i);
+});
+
 test("a failing account is a state row: the warning edge, an icon and the words, never the color alone", async () => {
   show([unreadSource()]);
   const row = await screen.findByRole("region", { name: "Connection not read" });

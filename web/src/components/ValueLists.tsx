@@ -7,6 +7,7 @@ import { api, type S } from "../lib/api";
 import { listsOn, offers, useListChange, useValueLists, type ListsPlace, type ValueList } from "../lib/lists";
 import { readable, readableTail } from "../lib/records";
 import { useSides } from "../lib/sides";
+import { useLoadFailure } from "../lib/load-failure";
 import { useWords } from "../lib/wording";
 import { Pill } from "../ui/Pill";
 import { RowMenu, type MenuAction } from "./RowMenu";
@@ -31,9 +32,11 @@ export function ValueLists(props: { level?: 2 | 3; place?: ListsPlace }) {
   const lists = useValueLists();
   const { justMe, sides } = useSides();
   const place = props.place ?? "lists";
+  const failure = useLoadFailure(lists);
   // Nothing is shown until the lists have loaded.
-  if (lists.isPending) return null;
-  if (lists.isError) return <LoadFailed message={t("lists.load_failed")} onRetry={() => void lists.refetch()} />;
+  if (lists.isPending && !failure.failed) return null;
+  if (failure.failed) return <LoadFailed message={t("lists.load_failed")} onRetry={() => void lists.refetch()} />;
+  if (lists.data === undefined) return null;
   const shown = listsOn(lists.data, place, { sides: sides.length > 0, justMe });
   if (lists.data.length === 0 || (place === "business" && shown.length === 0)) return null;
   const Heading = props.level === 2 ? "h2" : "h3";

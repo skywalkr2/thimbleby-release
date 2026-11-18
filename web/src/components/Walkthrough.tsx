@@ -15,6 +15,7 @@ import { useSides } from "../lib/sides";
 import { useToastCount, useToasts } from "../lib/toasts";
 import { after, before, counted, SCREENS, standing, STEP_OF, stepOf, type Screen } from "../lib/walkthrough";
 import { ContinueSlotProvider, type ContinueSlot, type ContinueSpec } from "../lib/walkthrough-continue";
+import { useLoadFailure } from "../lib/load-failure";
 import { useWords } from "../lib/wording";
 import { Button } from "../ui/Button";
 import { OfflineBanner } from "../ui/OfflineBanner";
@@ -62,6 +63,7 @@ export function Walkthrough(
   const shownToasts = useToastCount();
   const foot = useRef<HTMLDivElement>(null);
   const setup = useQuery({ queryKey: ["setup"], queryFn: api.setup });
+  const failure = useLoadFailure(setup);
   const [chosen, setChosen] = useState<Screen | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const reopened = useRef(false);
@@ -166,7 +168,7 @@ export function Walkthrough(
   if (!data || !current) {
     return (
       <div className={styles.root}>
-        <div className={styles.layout}>{setup.isError ? <LoadFailed message={t("welcome.failed")} onRetry={() => void setup.refetch()} /> : <Skeleton />}</div>
+        <div className={styles.layout}>{failure.failed ? <LoadFailed message={t("welcome.failed")} onRetry={() => void setup.refetch()} /> : <Skeleton />}</div>
       </div>
     );
   }

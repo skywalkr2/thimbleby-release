@@ -7,7 +7,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
-import { screenReady } from "./open-screen";
+import { openScreen as openFirstScreen } from "./open-screen";
 import { openScreen, setUpWithBusiness, SIDE, type FirstDay } from "./first-day-helpers";
 
 const DIR = process.env.CAPTURE_DIR;
@@ -45,9 +45,7 @@ test.describe("first-day captures", () => {
     mkdirSync(DIR!, { recursive: true });
     const day = await setUpWithBusiness(request);
     const missing: string[] = [];
-    await page.goto("?token=e2e-token");
-    await screenReady(page);
-    await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
+    await openFirstScreen(page);
     for (const scheme of SCHEMES) {
       await page.emulateMedia({ colorScheme: scheme });
       for (const size of SIZES) {

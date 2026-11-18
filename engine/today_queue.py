@@ -127,8 +127,10 @@ class Line:
     the person last looked), catch_up (what the assistant learned from corrections made before it could: `count`
     waiting and `left_out`, how many kinds of correction were too many for one list), extractor (a kind of file that
     isn't being read: `file_kind` is the kind, and `text` why), source_unread (a source that has failed for longer than
-    its usual gap: `source` is its id, `subject` its label, `problem_kind` the kind of failure, `text` what went wrong
-    and what to do, and `waiting_since` when it was last read, or first tried when it never was), older_read (a read
+    its usual gap, or whose own data is older than its normal refresh (`problem_kind` "old_data", `days_old` how
+    many days old): `source` is its id, `subject` its label, `problem_kind` the kind of failure, `text` what went wrong
+    and what to do, and `waiting_since` when it was last read, or first tried when it never was; for old data, when
+    the data was made), older_read (a read
     of a source's older mail that stopped after its tries and waits for the person: `source` is its id, `subject` its
     label, `count` the items taken in so far, `problem_kind` why it stopped and `waiting_since` when; the line's
     button carries it on from where it stopped), promise (one open
@@ -274,6 +276,7 @@ class Line:
     file_kind: str | None = None
     source: str | None = None
     problem_kind: str | None = None
+    days_old: int | None = None
     credential_kind: str | None = None
     credential_name: str | None = None
     places: list[str] = field(default_factory=list)
@@ -709,6 +712,18 @@ def _everything(
     unread: dict[str, Any] = {}
     for watched_source in cfg.watch.sources:
         found = watch.unread(store, cfg, watched_source, now)
+        if found is None:
+            # A source whose own data is older than its normal refresh is never a clean "nothing new".
+            old = watch.old_data(store, cfg, watched_source, now)
+            if old is not None:
+                from engine.sides import word as sides_word
+
+                found = watch.Unread(
+                    since=old.generated_at,
+                    kind="old_data",
+                    problem=sides_word(cfg, "read.old_data.hint"),
+                    days=old.days,
+                )
         if found is not None:
             unread[watched_source.id] = found
     requests = {r.id: r for r in reader.requests_in_play()}
@@ -914,6 +929,7 @@ def _everything(
                 or watched_source.label
                 or watched_source.id,
                 problem_kind=found.kind,
+                days_old=max(unread[m.id].days for m in members) or None,
                 text=found.problem,
                 waiting_since=since,
                 since=since,

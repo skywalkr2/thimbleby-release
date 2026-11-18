@@ -13,11 +13,13 @@ import { RowList } from "../ui/RowList";
 import { Row } from "../ui/Row";
 import { Pill } from "../ui/Pill";
 import { LoadFailed } from "../ui/LoadFailed";
+import { useLoadFailure } from "../lib/load-failure";
 type SilentClose = S["SilentCloseView"];
 
 export function AssistantCloses() {
   const { t, tn } = useWords();
   const found = useQuery({ queryKey: ["silent-closes"], queryFn: api.silentCloses });
+  const failure = useLoadFailure(found);
   const mine = found.data?.closes.filter((c) => c.kind === "assistant") ?? [];
   // With nothing of the assistant's own to list there is no section: the tab's own empty state is the one that says so, and a
   // heading that tells the person to choose something that is not on the screen would only contradict it.
@@ -29,10 +31,10 @@ export function AssistantCloses() {
         <h2 id="silent-closes-title">{t("sources.silent.title")}</h2>
       </div>
       <p className="hint">{t("sources.silent.intro")}</p>
-      {found.isPending ? (
-        <Skeleton />
-      ) : found.isError ? (
+      {failure.failed ? (
         <LoadFailed message={t("sources.silent.load_failed")} onRetry={() => void found.refetch()} />
+      ) : found.isPending || !found.data ? (
+        <Skeleton />
       ) : (
         <>
           {found.data.measure.total > 0 ? (

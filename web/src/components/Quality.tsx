@@ -12,6 +12,7 @@ import { DateField } from "../ui/DateField";
 import { EmptyState } from "../ui/EmptyState";
 import { FormField } from "../ui/FormField";
 import { LoadFailed } from "../ui/LoadFailed";
+import { useLoadFailure } from "../lib/load-failure";
 import { PageHeader } from "../ui/PageHeader";
 import { ButtonLink } from "../ui/Button";
 import { Icon } from "../ui/Icon";
@@ -367,6 +368,7 @@ function Sample(props: { view: View }) {
 export function Quality(props: { onBack: () => void }) {
   const { t, tn, has } = useWords();
   const page = useQuery({ queryKey: ["quality"], queryFn: api.quality });
+  const failure = useLoadFailure(page);
   const view = page.data;
   const work = (kind: string) => (has(`task.${kind}`) ? t(`task.${kind}`) : t("task.other"));
   const weeks = view?.outcome.weeks ?? [];
@@ -421,9 +423,9 @@ export function Quality(props: { onBack: () => void }) {
         title={t("quality.open")}
         back={{ label: t("quality.crumb"), name: t("quality.back"), onClick: props.onBack }}
       />
-      {page.isPending ? (
+      {!failure.failed && page.isPending ? (
         <Skeleton />
-      ) : page.isError || !view ? (
+      ) : failure.failed || !view ? (
         <LoadFailed message={t("quality.load_failed")} onRetry={() => void page.refetch()} />
       ) : view.outcome.promises_found < view.min_promises ? (
         // Too few promises found to say anything: one card says so and what it waits for, in place of a page of zeros.

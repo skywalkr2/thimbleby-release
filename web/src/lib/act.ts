@@ -16,9 +16,25 @@ export type ActWrites = Pick<WriteOptions<unknown>, "key" | "touches" | "kinds" 
   fail?: { id: string; what: string };
 };
 
+/** The acts that change no record, each with the screens that show what it did. An answer to such an act carries only what another
+ * writer changed at the same moment (the assistant's own work), so the screens that show this act's own result are named here and
+ * read again whatever the answer names. A new act that records nothing joins this list, and `act` is given its entry. */
+export const NO_RECORD_ACTS = {
+  /** Signing out: the sign-in and source screens, and what Today and the status say of them. */
+  signOut: { also: ["sign-ins", "watch", "status", "today"] },
+  /** Signing in again, and starting to read what an account's sign-in left unread. */
+  signIn: { also: ["sign-ins", "watch", "mail-services", "status", "today"] },
+  /** Reading one source or all of an account's again ("Read now", a retry of a failed read). */
+  readSource: { also: ["watch", "sign-ins", "mail-services", "status", "today", "waiting"] },
+  /** Checking an AI account (its test, from its card, the first-run step or a Today line). */
+  checkAccount: { also: ["ai-accounts", "ai-endpoints", "status", "today", "setup"] },
+  /** Reading the week ahead again. */
+  readWeek: { also: ["week-ahead", "brief", "today"] },
+} as const satisfies Record<string, ActWrites>;
+
 /** Signing out changes no record, so an answer that names kinds (another writer's, at the same moment) must not leave the
  * sign-in and source screens unread: they are read again whatever the answer names. */
-export const SIGNED_OUT_READS: ActWrites = { also: ["sign-ins", "watch", "status", "today"] };
+export const SIGNED_OUT_READS: ActWrites = NO_RECORD_ACTS.signOut;
 
 /** A part of a screen whose actions are one at a time (a row on Today): inside it, an action pressed while another of the same part is
  * still out is ignored, so a second press never sends a change twice. The value names the part. */

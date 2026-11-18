@@ -5,6 +5,7 @@
 import { createContext, useContext, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import { FailureBanners } from "./NotSaved";
 import { OfflineBanner } from "./OfflineBanner";
+import { UpdateReadyBanner } from "./UpdateReadyBanner";
 
 const Claim = createContext<() => () => void>(() => () => undefined);
 const Claimed = createContext(false);
@@ -37,6 +38,7 @@ export function BannerFallback() {
   return useContext(Claimed) ? null : (
     <>
       <OfflineBanner />
+      <UpdateReadyBanner />
       <FailureBanners />
     </>
   );
@@ -47,6 +49,7 @@ export function BannerSlot(props: { className?: string; children?: ReactNode }) 
   return (
     <div className={props.className} data-banner-slot="">
       <OfflineBanner />
+      <UpdateReadyBanner />
       <FailureBanners />
       {props.children}
     </div>

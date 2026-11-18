@@ -4246,7 +4246,11 @@ class QueueLineView(BaseModel):
     problem_kind: str | None = Field(
         None,
         description="For a source_unread line: the kind of failure (auth, no_access, not_found, outage, or another "
-        "kind a connector reports), which the screen words as what to do.",
+        "kind a connector reports), which the screen words as what to do; `old_data` for a source whose own data is "
+        "older than its normal refresh.",
+    )
+    days_old: int | None = Field(
+        None, description="For a source_unread line of old data: how many days old the source's data is."
     )
     credential_kind: Literal["account", "sign_in"] | None = Field(
         None, description="For a credential line: an AI account's key or an add-on's sign-in."
@@ -6183,6 +6187,12 @@ class WatchSourceView(BaseModel):
     )
     read_at: str | None = Field(
         None, description="When it was last actually read; a try that found no network or failed doesn't count."
+    )
+    old_data_days: int | None = Field(
+        None,
+        description="Whole days old the source's own data is, when its latest read served data older than its "
+        "`data_fresh_hours`; none when it is fresh or the source says no time. Its last read is never worded as "
+        '"nothing new" while this is set.',
     )
     stale: bool | None = Field(
         None,

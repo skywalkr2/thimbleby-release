@@ -18,6 +18,7 @@ import { Actions } from "../ui/Actions";
 import { RowList } from "../ui/RowList";
 import { Row } from "../ui/Row";
 import { LoadFailed } from "../ui/LoadFailed";
+import { useLoadFailure } from "../lib/load-failure";
 type Review = (version: string, returnTo?: () => HTMLElement | null | undefined) => void;
 
 /** Words by who wrote them. The three kinds are never folded together. */
@@ -37,6 +38,7 @@ export function TextSection(props: { kind: string; id: string; field: string; he
   const { kind, id, field } = props;
   const base = useId();
   const text = useQuery({ queryKey: ["text", kind, id, field], queryFn: () => api.text(kind, id, field) });
+  const failure = useLoadFailure(text);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
@@ -78,7 +80,7 @@ export function TextSection(props: { kind: string; id: string; field: string; he
   const counts = data ? authorshipCounts(data.authorship) : null;
   const pending = (data?.versions ?? []).filter((v) => v.status === "pending");
 
-  if (props.quiet && !editing && !text.isError && (text.isPending || (!data?.text.trim() && pending.length === 0))) return null;
+  if (props.quiet && !editing && !failure.failed && (text.isPending || (!data?.text.trim() && pending.length === 0))) return null;
 
   return (
     <section className="text-section" aria-labelledby={titleId}>
@@ -91,8 +93,8 @@ export function TextSection(props: { kind: string; id: string; field: string; he
         )}
       </div>
       {props.help && !blank && <p className="hint">{props.help}</p>}
-      {text.isPending && <Skeleton />}
-      {text.isError && (
+      {text.isPending && !failure.failed && <Skeleton />}
+      {failure.failed && (
         <LoadFailed message={t("text.load_failed")} onRetry={() => void text.refetch()} />
       )}
       {data &&

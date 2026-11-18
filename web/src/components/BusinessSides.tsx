@@ -8,6 +8,7 @@ import { api, ApiError } from "../lib/api";
 import { problemText } from "../lib/problem";
 import { useToasts } from "../lib/toasts";
 import { insideLines } from "../lib/work-lines";
+import { useLoadFailure } from "../lib/load-failure";
 import { useWords } from "../lib/wording";
 import { SavedSide } from "./WalkthroughWork";
 import { SideServedBy } from "./SideServedBy";
@@ -28,6 +29,7 @@ export function BusinessSides() {
   const { t } = useWords();
   const client = useQueryClient();
   const state = useQuery({ queryKey: ["business"], queryFn: api.business });
+  const failure = useLoadFailure(state);
   const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects });
   const [problem, setProblem] = useState("");
   const [adding, setAdding] = useState<Kind | null>(null);
@@ -48,8 +50,8 @@ export function BusinessSides() {
           </Button>
         </Actions>
       </div>
-      {state.isPending && <Skeleton rows={3} />}
-      {state.isError && <LoadFailed message={t("settings.business.load_failed")} onRetry={() => void state.refetch()} />}
+      {state.isPending && !failure.failed && <Skeleton rows={3} />}
+      {failure.failed && <LoadFailed message={t("settings.business.load_failed")} onRetry={() => void state.refetch()} />}
       {sides.length > 0 && (
         <>
           <h3 id="business-sides" className={styles.sides}>
@@ -117,8 +119,9 @@ function AddSide(props: { kind: Kind; onClose: () => void }) {
         },
       });
       // The sources as they are now: a list that is still loading is waited for, so the question is never skipped by being early.
-      const sources = await client.fetchQuery({ queryKey: ["watch"], queryFn: api.watchSources, staleTime: 5000 }).catch(() => []);
-      if (sources.some((s) => s.enabled && (s.reads ?? []).length > 0)) {
+      // A read that fails is not "no connections": the question opens, and says it couldn't read them, with Try again.
+      const sources = await client.fetchQuery({ queryKey: ["watch"], queryFn: api.watchSources, staleTime: 5000 }).catch(() => null);
+      if (sources === null || sources.some((s) => s.enabled && (s.reads ?? []).length > 0)) {
         setAdded({ id: made.project, name: wanted });
         setBusy(false);
         return;

@@ -4,7 +4,7 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineConfig, devices } from "@playwright/test";
-import { daytimeAt, momentAt } from "./e2e/clock";
+import { daytimeAt, momentAt, mondayAt } from "./e2e/clock";
 import { namedProjects, selectServers } from "./playwright.select";
 
 // PW_PORT_OFFSET moves every port the tests use by that much, so two runs (two checkouts) can share a computer.
@@ -199,7 +199,7 @@ export const allProjects = [
       ...(s.base === "/" ? [{ name: `${s.name}-tables`, testMatch: /tables\.spec\.ts/, use, dependencies: [s.name] }] : []),
     ];
   }),
-  { name: "layout", testMatch: /(layout|handled|guards|internals|changed-rows|today-work|shared-rules|today-todos-46|states-phone|w1-today-lines|learned-review|read-back)\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${layout.port}/` } },
+  { name: "layout", testMatch: /(layout|sh1-shell|handled|guards|internals|changed-rows|today-work|shared-rules|today-todos-46|states-phone|w1-today-lines|learned-review|read-back)\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${layout.port}/` } },
   { name: "access", testMatch: /work-access\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${access.port}/` } },
   { name: "one-click", testMatch: /today-one-click\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${oneClick.port}/` } },
   { name: "schedule-review", testMatch: /schedule-review\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${scheduleReview.port}/` } },
@@ -379,7 +379,7 @@ export const allServers = [
       timeout: 60_000,
     }),
     on(sideFilter.port, {
-      command: `uv run python -m tests.e2e_server --port ${sideFilter.port} --base-path / --sides --plain-stages${clockFlag}`,
+      command: `uv run python -m tests.e2e_server --port ${sideFilter.port} --base-path / --sides --plain-stages --clock-at ${mondayAt}`,
       cwd: "..",
       url: `http://127.0.0.1:${sideFilter.port}/api/health`,
       reuseExistingServer: false,
@@ -442,14 +442,14 @@ export const allServers = [
       timeout: 60_000,
     }),
     on(reviewR3.port, {
-      command: `uv run python -m tests.e2e_server --port ${reviewR3.port} --base-path / --review-r3 --plain-stages --clock-at ${daytimeAt}`,
+      command: `uv run python -m tests.e2e_server --port ${reviewR3.port} --base-path / --review-r3 --plain-stages --clock-at ${mondayAt}`,
       cwd: "..",
       url: `http://127.0.0.1:${reviewR3.port}/api/health`,
       reuseExistingServer: false,
       timeout: 60_000,
     }),
     on(reviewR4.port, {
-      command: `uv run python -m tests.e2e_server --port ${reviewR4.port} --base-path / --review-r4 --plain-stages --clock-at ${daytimeAt}`,
+      command: `uv run python -m tests.e2e_server --port ${reviewR4.port} --base-path / --review-r4 --plain-stages --clock-at ${mondayAt}`,
       cwd: "..",
       url: `http://127.0.0.1:${reviewR4.port}/api/health`,
       reuseExistingServer: false,

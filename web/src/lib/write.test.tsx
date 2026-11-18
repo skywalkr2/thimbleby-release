@@ -7,7 +7,7 @@ import { fakeApi, renderApp } from "../test-utils";
 import { ApiError, answeredWrites } from "./api";
 import { clearIfUnchanged } from "./clear-if-unchanged";
 import { vi } from "vitest";
-import { ActScope, useAct } from "./act";
+import { ActScope, NO_RECORD_ACTS, useAct } from "./act";
 import { invalidateFor, noteOwnRefresh } from "./live";
 import { broadRefreshes, positionAnsweredSince, runWrite } from "./write";
 
@@ -404,3 +404,52 @@ test("an act that changes no record reads the screens it names, even when its an
   await waitFor(() => expect(fetches.signIns).toBe(2));
   await waitFor(() => expect(view.client.isFetching()).toBe(0));
 });
+
+// Every act that changes no record (S-0593): its answer carries only what another writer changed at the same moment, and the screens
+// that show the act's own result are read again all the same. One case per family in `NO_RECORD_ACTS`, each over the families its
+// screens read.
+const SCREENS_OF: Record<keyof typeof NO_RECORD_ACTS, string[]> = {
+  signOut: ["sign-ins", "watch", "status", "today"],
+  signIn: ["sign-ins", "watch", "mail-services", "status", "today"],
+  readSource: ["watch", "sign-ins", "mail-services", "status", "today", "waiting"],
+  checkAccount: ["ai-accounts", "ai-endpoints", "status", "today", "setup"],
+  readWeek: ["week-ahead", "brief", "today"],
+};
+
+for (const family of Object.keys(NO_RECORD_ACTS) as Array<keyof typeof NO_RECORD_ACTS>) {
+  test(`the ${family} act reads each of its screens again when its answer names only another writer's kinds`, async () => {
+    const fetches: Record<string, number> = {};
+    const names = SCREENS_OF[family];
+    function Screens() {
+      for (const name of names) {
+        // eslint-disable-next-line react-hooks/rules-of-hooks
+        useQuery({ queryKey: [name], queryFn: () => Promise.resolve((fetches[name] = (fetches[name] ?? 0) + 1)) });
+      }
+      return null;
+    }
+    let act: ReturnType<typeof useAct> = (() => Promise.resolve(undefined)) as unknown as ReturnType<typeof useAct>;
+    function Grab() {
+      act = useAct();
+      return null;
+    }
+    const view = renderApp(
+      <>
+        <Screens />
+        <Grab />
+      </>,
+    );
+    await waitFor(() => expect(names.every((n) => fetches[n] === 1)).toBe(true));
+    await act(
+      () => {
+        answeredWrites.seq += 1;
+        answeredWrites.entries.push({ seq: answeredWrites.seq, kinds: ["request"], position: 1474 });
+        return Promise.resolve(1);
+      },
+      undefined,
+      undefined,
+      NO_RECORD_ACTS[family],
+    );
+    await waitFor(() => expect(names.filter((n) => fetches[n] === 2)).toEqual(names));
+    await waitFor(() => expect(view.client.isFetching()).toBe(0));
+  });
+}

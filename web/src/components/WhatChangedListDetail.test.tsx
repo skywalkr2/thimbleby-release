@@ -28,7 +28,7 @@ function change(id: string, title: string, extra: Partial<S["ChangeItem"]> = {})
     source_title: title,
     changeset: {
       id: `CS-${id}`,
-      summary: `Summary of ${title}.`,
+      summary: "",
       status: "applied",
       reviewed: false,
       trust: "trusted",

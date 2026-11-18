@@ -25,7 +25,7 @@ function changeWith(made: S["MadeView"][]): S["ChangeItem"] {
     source_title: "Minutes of the call",
     changeset: {
       id: "CS-1",
-      summary: "Wrote up the call.",
+      summary: "",
       status: "applied",
       reviewed: false,
       trust: "trusted",

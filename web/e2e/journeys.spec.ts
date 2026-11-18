@@ -20,6 +20,9 @@ const problems: string[] = [];
 const requests = async (): Promise<Requests> => (await fetch(`${FAKE}/__e2e/ai-requests`)).json();
 
 test.describe.serial("journeys", () => {
+  // The journey changes its server's state (a fresh workspace, signed-in accounts, a restart), and a re-run would start from
+  // that used server and fail on its first line for that reason: a re-run proves nothing, so it takes none and shows its failure as it is.
+  test.describe.configure({ retries: 0 });
   test.beforeAll(async () => {
     info = await (await fetch(`${FAKE}/__e2e/info`)).json();
   });

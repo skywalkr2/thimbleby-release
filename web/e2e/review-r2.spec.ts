@@ -27,6 +27,10 @@ const auth = () => ({ Authorization: `Bearer ${info.token}` });
 const sidewaysScroll = (page: Page) => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
 
 test.describe.serial("review R2: setup and Settings", () => {
+  // These steps change their server's state (setup walked, accounts signed in or out, records added), and a re-run would start
+  // from that used server and fail on its first line for that reason: a re-run proves nothing, so it takes none and shows its
+  // failure as it is (S-0560).
+  test.describe.configure({ retries: 0 });
   test.use({ actionTimeout: 30_000 });
   test.beforeAll(async () => {
     info = await (await fetch(`${FAKE}/__e2e/info`)).json();

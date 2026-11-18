@@ -4,7 +4,7 @@
 // sentence. "Not this week" leaves a row out, with Undo; "Read the week again" asks for a new reading.
 import { useQuery } from "@tanstack/react-query";
 import { api, type S } from "../lib/api";
-import { useAct } from "../lib/act";
+import { NO_RECORD_ACTS, useAct } from "../lib/act";
 import { shortDay } from "../lib/dates";
 import { useMoney } from "../lib/money";
 import { shortTitle } from "../lib/title-dates";
@@ -53,7 +53,7 @@ export function WeekAhead(props: { headingLevel?: 2 | 3; leaveOutAgenda?: boolea
         <Head id="week-ahead-title" className={styles.title}>
           {t("week_ahead.title")}
         </Head>
-        <Button size="sm" variant="secondary" disabled={!data.read_again} onClick={() => void act(() => api.readWeekAhead())} data-week-ahead-again="">
+        <Button size="sm" variant="secondary" disabled={!data.read_again} onClick={() => void act(() => api.readWeekAhead(), undefined, undefined, NO_RECORD_ACTS.readWeek)} data-week-ahead-again="">
           {t("week_ahead.read_again")}
         </Button>
       </div>

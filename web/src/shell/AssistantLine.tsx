@@ -105,6 +105,7 @@ export function AssistantLine(props: { onOpenGuide: (step?: string) => void }) {
         data-tone={tone}
         data-alive={kind}
         data-busy={busy ? "" : undefined}
+        data-line-slot=""
         aria-label={t("alive.line_named", { name: t("alive.name"), state: busy ? doing : t(`alive.icon.${tone}`) })}
       >
         {busy ? <span className={styles.working} data-working="" aria-hidden="true" /> : tone === "ok" ? <span className={styles.dot} data-indicator="" aria-hidden="true" /> : <Icon name={ICON[tone]} size={16} />}

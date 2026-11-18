@@ -30,6 +30,7 @@ sources:
     color: teal          # the small mark beside its name on the schedule: blue, teal, green, orange, red, pink, purple or gray; left out, none
     enabled: false        # turn on once the calendar's private address is set
     every_minutes: 10
+    data_fresh_hours: 72  # data its own file or link says was made longer ago than this is told to you as old, never as "no changes"
     first_run: recent     # the first read hands in what happens within a day of now; the rest is only noted
     first_run_hours: 24
     settings:

@@ -77,6 +77,8 @@ for (const size of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) 
     });
     await openScreen(page, "work/changed");
     if (size.width < 700) await page.getByRole("button", { name: /A note about to-dos/ }).first().click();
+    // The card leads with the assistant's sentence; the list of what it did opens from its fold.
+    await page.getByRole("button", { name: /^What .+ did \(\d+\)$/ }).first().click();
     const lines = page.getByRole("region", { name: "What this rule does" });
     await expect(lines).toBeVisible();
     await expect(lines).toContainText("Applies to");

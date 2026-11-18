@@ -26,6 +26,8 @@ export function SearchBox(props: {
   opens?: "down" | "up";
   autoFocus?: boolean;
   className?: string;
+  /** Marks the header's own field, which the header measures to keep it wide enough. */
+  headerAsk?: boolean;
   /** The key that reaches the field, drawn in it while it is empty. */
   keyHint?: string;
 }) {
@@ -77,6 +79,7 @@ export function SearchBox(props: {
       ref={root}
       className={[styles.box, props.className ?? ""].filter(Boolean).join(" ")}
       data-opens={props.opens ?? "down"}
+      data-header-ask={props.headerAsk ? "" : undefined}
       onFocus={() => setOpen(true)}
       onBlur={(e) => {
         if (!root.current?.contains(e.relatedTarget as Node | null)) setOpen(false);

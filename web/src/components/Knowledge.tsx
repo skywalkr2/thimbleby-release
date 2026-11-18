@@ -14,6 +14,7 @@ import { useWords } from "../lib/wording";
 import { Button } from "../ui/Button";
 import { Drawer } from "../ui/Drawer";
 import { LoadFailed } from "../ui/LoadFailed";
+import { useLoadFailure } from "../lib/load-failure";
 import { Row } from "../ui/Row";
 import { Skeleton } from "../ui/Skeleton";
 import { Glossary } from "./Glossary";
@@ -47,7 +48,9 @@ export function Knowledge(props: { onOpenReview: () => void }) {
   const sections = sectionsOf(all, now, days);
   const flagged = review.data ? review.data.flagged.length : 0;
   const moved = review.data?.moved ?? 0;
-  const failed = entries.isError || rules.isError;
+  const entriesFailure = useLoadFailure(entries);
+  const rulesFailure = useLoadFailure(rules);
+  const failed = entriesFailure.failed || rulesFailure.failed;
   const loading = entries.isPending || rules.isPending;
   const plainWords = settings.item("language.known_terms");
   // Nothing at all: no lesson, rule, word or past entry, and none of the person's plain words.

@@ -57,6 +57,7 @@ import { Actions } from "../ui/Actions";
 import { NarrowRule } from "./NarrowRule";
 import { ReadBack } from "./ReadBack";
 import { RowList, DetailItem } from "../ui/RowList";
+import { Fold } from "../ui/Fold";
 import { ItemList, Item } from "../ui/ItemList";
 import { ExpandableRow, RowItem } from "../ui/Row";
 import { RowBody } from "../ui/RowBody";
@@ -839,23 +840,11 @@ export function ChangeRow(props: {
   const statusWord = t(props.history || item.changeset?.status === "undone" || item.changeset?.status === "partly_undone" ? stateWord(item, gated) : item.dismissed ? "changes.state.dismissed" : gated ? "changes.state.cost_go" : `changes.state.${item.state}`);
   const status = { tone: TONE[item.state], word: statusWord };
   const secondOpinion = cs?.second_opinion ? <span className="second-opinion">{t(`changes.second.${cs.second_opinion}`)}</span> : null;
-  const opened = (
-    <>
-          {/* The first line of why it stopped is on the row's own line under the title; the card's body holds only what follows it (the detail pane has no such line, so it holds the whole), so no sentence is said twice in one card. */}
-          {item.waiting && item.state !== "review" && (props.pane ? item.waiting : restOf(item.waiting)) && <p data-waiting-reason="">{props.pane ? item.waiting : restOf(item.waiting)}</p>}
-          {item.note && (
-            <div className="your-note">
-              <span className="what">{item.title?.kind === "answer" ? t("queue.title.answer") : t("changes.your_note")}</span>
-              <p>{item.note}</p>
-            </div>
-          )}
-          {(item.state === "review" || item.state === "done") && spentLine(item.spent_usd, item.range_usd) && (
-            <p className="hint">{spentLine(item.spent_usd, item.range_usd)}</p>
-          )}
-          {cs && <Because cs={cs} />}
-          {cs && cs.ops.length === 0 && <p className="hint">{t("changes.nothing_done")}</p>}
-          {cs && !props.history && cs.ops.filter((o) => o.status === "held").length > 1 && <ReleaseAll cs={cs} />}
-          {cs && cs.ops.length > 0 && (
+  // The assistant's own sentence leads the card, and the list of what it did folds behind it until opened; a change that
+  // holds a question or a held item, or was opened to be sent back, shows the list at once.
+  const account = cs && cs.ops.length > 0 ? cs.summary.trim() : "";
+  const foldOpen = !!props.sendBack || !!props.want || asks || !!cs?.ops.some((o) => o.status === "held");
+  const list = cs && cs.ops.length > 0 && (
             <ItemList pane={props.pane} aria-label={tn("changes.did", cs.ops.length)}>
               {(cs.groups ?? []).map((group) => (
                 <GroupRow key={`g-${group.id}`} group={group} cs={cs} history={props.history} />
@@ -870,7 +859,25 @@ export function ChangeRow(props: {
                   ),
                 )}
             </ItemList>
+  );
+  const opened = (
+    <>
+          {cs && cs.ops.length > 0 && account && <AssistantAccount summary={account} untrusted={cs.trust === "untrusted"} />}
+          {/* The first line of why it stopped is on the row's own line under the title; the card's body holds only what follows it (the detail pane has no such line, so it holds the whole), so no sentence is said twice in one card. */}
+          {item.waiting && item.state !== "review" && (props.pane ? item.waiting : restOf(item.waiting)) && <p data-waiting-reason="">{props.pane ? item.waiting : restOf(item.waiting)}</p>}
+          {item.note && (
+            <div className="your-note">
+              <span className="what">{item.title?.kind === "answer" ? t("queue.title.answer") : t("changes.your_note")}</span>
+              <p>{item.note}</p>
+            </div>
           )}
+          {(item.state === "review" || item.state === "done") && spentLine(item.spent_usd, item.range_usd) && (
+            <p className="hint">{spentLine(item.spent_usd, item.range_usd)}</p>
+          )}
+          {cs && <Because cs={cs} />}
+          {cs && cs.ops.length === 0 && <p className="hint">{t("changes.nothing_done")}</p>}
+          {cs && !props.history && cs.ops.filter((o) => o.status === "held").length > 1 && <ReleaseAll cs={cs} />}
+          {cs && cs.ops.length > 0 && (account && !foldOpen ? <Fold label={t("changes.account.fold", { n: cs.ops.length })}>{list}</Fold> : list)}
           {sendingBack && cs && <SendBackForm cs={cs.id} onDone={() => setSendingBack(false)} />}
           {choosing && <AccountChooser request={item.id} onDone={() => setChoosing(false)} />}
     </>
@@ -921,6 +928,21 @@ export function ChangeRow(props: {
       <OnTheRow item={item} />
       {open && <RowBody id={`b-${item.id}`}>{opened}</RowBody>}
     </ExpandableRow>
+  );
+}
+
+/** The assistant's own sentence about a change: what it did and what it could not confirm, said as its words under its name,
+ * and marked as from outside when the input was outside content. */
+function AssistantAccount(props: { summary: string; untrusted: boolean }) {
+  const { t } = useWords();
+  return (
+    <div className="assistant-account" data-assistant-account="">
+      <span className="what">
+        {t("changes.account.by")}
+        {props.untrusted && <span className="tag">{t("source.outside")}</span>}
+      </span>
+      <p>{props.summary}</p>
+    </div>
   );
 }
 

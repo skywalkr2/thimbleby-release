@@ -2,6 +2,7 @@
 // wide screen and a dialog below it, the stages board, and the phone's review mode.
 import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
+import { openScreen, screenReady } from "./open-screen";
 
 /** Opens Ask the way a person does: whatever is open (Ask from an earlier width) is closed first, then the header's search
  * field (on a phone, the bar's Search button first) and its Ask row. */
@@ -19,8 +20,7 @@ async function openAsk(page: Page) {
 
 /** Opens the app the way a bookmark does: the address names the screen, so the app starts on it. */
 async function signIn(page: Page, hash = "") {
-  await page.goto(hash ? `?token=e2e-token#${hash}` : "?token=e2e-token");
-  await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
+  await openScreen(page, hash);
 }
 
 const noSidewaysScroll = (page: Page) => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
@@ -173,6 +173,8 @@ test.describe("the stages board", () => {
       await signIn(page, "work/stages");
       await expect(page.getByRole("heading", { level: 1, name: "Stages" })).toBeVisible();
       await page.getByRole("radio", { name: "Board" }).check();
+      // The board is drawn from the same reads as the list: waits for the page's ready mark, not for a number of seconds.
+      await screenReady(page);
       const board = page.getByRole("group", { name: /, by stage$/ }).first();
       await expect(board).toBeVisible();
       await expect(board.getByRole("heading", { level: 3 }).first()).toBeVisible();

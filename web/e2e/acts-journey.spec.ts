@@ -5,7 +5,7 @@
 // which seeds the messages and the invitation, and the reply's words are the only thing the test makes up.
 import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
-import { screenReady } from "./open-screen";
+import { openScreen, screenReady } from "./open-screen";
 import { checkAccessibility, collectProblems } from "./journey-helpers";
 
 interface Handed {
@@ -34,8 +34,7 @@ interface Acts {
 const seeded = async (page: Page): Promise<Acts> => (await page.request.get("/__e2e/acts")).json();
 
 async function signIn(page: Page) {
-  await page.goto("?token=e2e-token");
-  await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
+  await openScreen(page);
 }
 
 /** Open a record's own page, as a link to it from anywhere in the app does. */

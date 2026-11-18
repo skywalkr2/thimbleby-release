@@ -3,25 +3,33 @@
 // wrong side. Each tick is saved at once as that connection's `sides` and undone by unticking it; ticking nothing is allowed.
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
-import { api, ApiError } from "../lib/api";
+import { api, ApiError, type S } from "../lib/api";
 import { useSides } from "../lib/sides";
 import { freshSettings, useAfterSave } from "../lib/settings-save";
+import { useLoadFailure } from "../lib/load-failure";
 import { useWords } from "../lib/wording";
 import { CheckboxGroup } from "../ui/CheckboxGroup";
+import { LoadFailed } from "../ui/LoadFailed";
+import { Skeleton } from "../ui/Skeleton";
 import { SOURCES } from "./SourceSides";
 import styles from "./SideServedBy.module.css";
 
 /** The connections that read mail or a calendar, on, as the ones a new side could be served by. */
 export function useReadingSources() {
-  const watch = useQuery({ queryKey: ["watch"], queryFn: api.watchSources });
-  return (watch.data ?? []).filter((s) => s.enabled && (s.reads ?? []).length > 0);
+  return readingOf(useQuery({ queryKey: ["watch"], queryFn: api.watchSources }).data);
+}
+
+function readingOf(list: S["WatchSourceView"][] | undefined) {
+  return (list ?? []).filter((s) => s.enabled && (s.reads ?? []).length > 0);
 }
 
 export function SideServedBy(props: { side: { id: string; name: string } }) {
   const { t, tn } = useWords();
   const client = useQueryClient();
   const afterSave = useAfterSave();
-  const reading = useReadingSources();
+  const watch = useQuery({ queryKey: ["watch"], queryFn: api.watchSources });
+  const failure = useLoadFailure(watch);
+  const reading = readingOf(watch.data);
   const { personal, sides } = useSides();
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const [wanted, setWanted] = useState<Record<string, boolean>>({});
@@ -30,6 +38,9 @@ export function SideServedBy(props: { side: { id: string; name: string } }) {
   const order = [...(personal ? [personal] : []), ...sides.map((s) => s.project)];
   const stored = (settings.data?.items.find((i) => i.key === SOURCES)?.value ?? []) as Array<{ id: string; sides?: string[] }>;
   const held = (id: string) => (stored.find((s) => s.id === id)?.sides ?? []).includes(props.side.id);
+  // The question is never dropped for a read that failed or has not answered: the person sees that, and can try again.
+  if (failure.failed) return <LoadFailed message={t("settings.business.served_load_failed")} onRetry={() => void watch.refetch()} />;
+  if (watch.isPending) return <Skeleton rows={2} />;
   if (reading.length === 0) return null;
 
   const save = async (id: string, on: boolean) => {

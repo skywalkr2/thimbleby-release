@@ -40,6 +40,7 @@ import { useNeedsYouNotices } from "./components/NeedsYouNotices";
 import shell from "./shell/Shell.module.css";
 import { Button } from "./ui/Button";
 import { BannerFallback, BannerHome } from "./ui/BannerSlot";
+import { useServedVersion } from "./lib/update-ready";
 import { ScreenBoundary } from "./ui/PartBoundary";
 import { Skeleton } from "./ui/Skeleton";
 import { lazyScreen } from "./lib/lazy-screen";
@@ -74,6 +75,7 @@ export function App(props: { rc: S["RuntimeConfig"] }) {
   // What the app is called is read again after any saved change, so a new name shows in the header at once, with no reload.
   const fresh = useQuery({ queryKey: ["runtime-config"], queryFn: api.runtimeConfig, initialData: props.rc, staleTime: Infinity });
   // A new accent color shows at once, with no reload: the page's brand colors follow what is saved.
+  useServedVersion(fresh.data.version);
   const brand = fresh.data.brand_color;
   useEffect(() => applyBrand(brand), [brand]);
   return (

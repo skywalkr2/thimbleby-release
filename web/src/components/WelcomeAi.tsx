@@ -39,6 +39,7 @@ import { SearchField } from "../ui/SearchField";
 import { CheckboxGroup } from "../ui/CheckboxGroup";
 import { Actions } from "../ui/Actions";
 import { RadioCard, RadioCards } from "../ui/RadioCard";
+import { NO_RECORD_ACTS } from "../lib/act";
 import { useWrite } from "../lib/write";
 type Kind = S["EndpointView"];
 type ModelInfo = S["AiModelView"];
@@ -535,7 +536,7 @@ export function WelcomeAi(props: {
     setTestProblem("");
     setResults(null);
     try {
-      const found = await write(() => api.testAi());
+      const found = await write(() => api.testAi(), NO_RECORD_ACTS.checkAccount);
       setResults(found);
       return found;
     } catch (err) {

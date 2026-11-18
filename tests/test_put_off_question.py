@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 
 import pytest
+import time_machine
 
 from engine import answer_hold, open_items, today_queue
 from engine.storage import Store, WriteContext
@@ -24,11 +25,13 @@ LATER = datetime(2026, 11, 19, 9, 0, tzinfo=UTC)
 
 @pytest.fixture
 def env(tmp_path):
-    ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
-    cfg = ws.config(env={})
-    store = Store(ws.db_path, cfg=cfg)
-    yield ws, cfg, store
-    store.close()
+    # The store's clock (what the applier reads as today) is the Tuesday these tests answer on, whatever day they run.
+    with time_machine.travel(NOW, tick=True):
+        ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
+        cfg = ws.config(env={})
+        store = Store(ws.db_path, cfg=cfg)
+        yield ws, cfg, store
+        store.close()
 
 
 def ask(store, cfg, **more) -> str:

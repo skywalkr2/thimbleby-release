@@ -15,6 +15,7 @@ import { useWords } from "../lib/wording";
 import { Button } from "../ui/Button";
 import { Skeleton } from "../ui/Skeleton";
 import { LoadFailed } from "../ui/LoadFailed";
+import { useLoadFailure } from "../lib/load-failure";
 import { restoreFocus } from "./ModalPanel";
 import { RestoreDialog } from "./RestoreDialog";
 import { WelcomeBackup } from "./WelcomeBackup";
@@ -29,6 +30,7 @@ export function BackupsPanel(props: { local: boolean }) {
   const client = useQueryClient();
   const write = useWrite();
   const found = useQuery({ queryKey: ["backups"], queryFn: api.backups });
+  const failure = useLoadFailure(found);
   const [busy, setBusy] = useState(false);
   // What Back up now did, said on the page: the places it reached, or why it didn't.
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
@@ -88,7 +90,7 @@ export function BackupsPanel(props: { local: boolean }) {
     }
   };
 
-  if (!found.data) return found.isError ? <LoadFailed message={t("settings.failed")} onRetry={() => void found.refetch()} /> : <Skeleton shape="form" rows={2} />;
+  if (!found.data) return failure.failed ? <LoadFailed message={t("settings.failed")} onRetry={() => void found.refetch()} /> : <Skeleton shape="form" rows={2} />;
   const view: S["BackupsView"] = found.data;
   const there = view.targets.length > 0;
   return (

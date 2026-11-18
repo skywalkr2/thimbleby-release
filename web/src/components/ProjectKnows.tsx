@@ -8,6 +8,7 @@ import { useAct } from "../lib/act";
 import type { ReactNode } from "react";
 import { api, type S } from "../lib/api";
 import { monthDay } from "../lib/dates";
+import { useLoadFailure } from "../lib/load-failure";
 import { recordView, viewHref } from "../lib/views";
 import { useWords } from "../lib/wording";
 import { useAccountNames } from "../lib/account-names";
@@ -188,6 +189,7 @@ function Unknown(props: { rows: S["KnowsUnknown"][] }) {
 export function ProjectKnows(props: { id: string; plain?: boolean }) {
   const { t } = useWords();
   const knows = useQuery({ queryKey: ["project-knows", props.id], queryFn: () => api.projectKnows(props.id) });
+  const failure = useLoadFailure(knows);
   const data = knows.data;
   // Nothing in any part: one line instead of a row of empty ones.
   const nothing = !!data && data.sources.length + data.facts.length + (props.plain ? 0 : data.terms.length + data.routing.length + data.unknown.length) === 0;
@@ -196,8 +198,8 @@ export function ProjectKnows(props: { id: string; plain?: boolean }) {
       <div className="heading">
         <h2 id="knows-title">{t("knows.title")}</h2>
       </div>
-      {knows.isPending && <Skeleton />}
-      {knows.isError && <LoadFailed message={t(props.plain ? "knows.load_failed.plain" : "knows.load_failed")} onRetry={() => void knows.refetch()} />}
+      {knows.isPending && !failure.failed && <Skeleton />}
+      {failure.failed && <LoadFailed message={t(props.plain ? "knows.load_failed.plain" : "knows.load_failed")} onRetry={() => void knows.refetch()} />}
       {data && (
         <>
           <Reading reading={data.reading} area={data.area} />

@@ -20,6 +20,7 @@ import styles from "./Handover.module.css";
 import { PageHeader } from "../ui/PageHeader";
 import { Actions } from "../ui/Actions";
 import { LoadFailed } from "../ui/LoadFailed";
+import { useLoadFailure } from "../lib/load-failure";
 type Side = S["HandoverSideView"];
 type Which = S["HandoverChoice"]["which"];
 
@@ -30,6 +31,7 @@ export function Handover(props: { onBack?: () => void }) {
   const { t } = useWords();
   const client = useQueryClient();
   const page = useQuery({ queryKey: ["sync", "handover"], queryFn: api.handover });
+  const pageFailure = useLoadFailure(page);
   const status = useQuery({ queryKey: ["status"], queryFn: api.status });
   const sync = useQuery({ queryKey: ["sync"], queryFn: api.sync });
   const restart = useRestart();
@@ -57,9 +59,9 @@ export function Handover(props: { onBack?: () => void }) {
         subtitle={view && !view.folder_set ? t("handover.intro_local") : t("handover.intro")}
         back={props.onBack ? { label: t("quality.back"), onClick: props.onBack } : undefined}
       />
-      {page.isPending ? (
+      {!pageFailure.failed && page.isPending ? (
         <Skeleton />
-      ) : page.isError || !view ? (
+      ) : pageFailure.failed || !view ? (
         <LoadFailed message={t("handover.failed")} onRetry={() => void page.refetch()} />
       ) : view.state === "clear" ? (
         <div className={styles.clear} data-handover-clear="">

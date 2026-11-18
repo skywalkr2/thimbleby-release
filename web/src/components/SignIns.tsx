@@ -6,10 +6,11 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Heading } from "react-aria-components";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { api, type S } from "../lib/api";
-import { SIGNED_OUT_READS, useAct } from "../lib/act";
+import { SIGNED_OUT_READS, NO_RECORD_ACTS, useAct } from "../lib/act";
 import { problemText } from "../lib/problem";
 import { useSignInWindow } from "../lib/sign-in-window";
 import { useToasts } from "../lib/toasts";
+import { useLoadFailure } from "../lib/load-failure";
 import { useWords } from "../lib/wording";
 import { LoadFailed } from "../ui/LoadFailed";
 import { ModalPanel, DialogFooter, restoreFocus } from "./ModalPanel";
@@ -43,8 +44,10 @@ export function SignIns(props: {
 }) {
   const { t } = useWords();
   const signIns = useQuery({ queryKey: ["sign-ins"], queryFn: api.signIns });
-  if (signIns.isPending) return <Skeleton rows={1} className="connections-accounts" />;
-  if (signIns.isError) return <LoadFailed message={t("sign_in.load_failed")} onRetry={() => void signIns.refetch()} />;
+  const failure = useLoadFailure(signIns);
+  if (signIns.isPending && !failure.failed) return <Skeleton rows={1} className="connections-accounts" />;
+  if (failure.failed) return <LoadFailed message={t("sign_in.load_failed")} onRetry={() => void signIns.refetch()} />;
+  if (signIns.data === undefined) return <Skeleton rows={1} className="connections-accounts" />;
   // Until an add-on signs in to a service there is nothing to list; the way to turn one on is offered instead.
   if (signIns.data.length === 0) {
     return (
@@ -200,6 +203,8 @@ export function SignInRow(props: { item: SignIn; accountsIn?: "row" | "cards"; o
     void act(
       () => api.startSignInSources(item.name),
       () => ({ message: t("sign_in.started_reading_toast", { list: notReading.join(", ") }) }),
+      undefined,
+      NO_RECORD_ACTS.signIn,
     );
 
   // "Choose what to read" opens at the account's own sources: the only account signed in, else the one the row stands for.
@@ -561,6 +566,8 @@ export function NotReadingLines() {
                 void act(
                   () => api.startSignInSources(item.name),
                   () => ({ message: t("sign_in.started_reading_toast", { list }) }),
+                  undefined,
+                  NO_RECORD_ACTS.signIn,
                 )
               }
             >

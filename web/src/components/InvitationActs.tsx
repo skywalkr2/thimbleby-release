@@ -5,7 +5,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { api } from "../lib/api";
-import { dayAndTime } from "../lib/dates";
+import { dayAndTime, momentOf } from "../lib/dates";
 import { useActOptions, useDraftAct } from "../lib/acts";
 import { useWords } from "../lib/wording";
 import { RowMenu, type MenuAction } from "./RowMenu";
@@ -72,10 +72,9 @@ export function useInvitationActs(entry: string, enabled: boolean): InvitationAc
   };
 }
 
-/** A local date and time as ISO text with its offset, from a `datetime-local` box. */
+/** A date and time as ISO text with its offset, from a `datetime-local` box, on the person's own clock. */
 function isoOf(local: string): string {
-  const when = new Date(local);
-  return Number.isNaN(when.getTime()) ? "" : when.toISOString();
+  return momentOf(local)?.toISOString() ?? "";
 }
 
 /** The free times to pick from (the first is chosen) or a start and end typed; the cursor starts in the list. */

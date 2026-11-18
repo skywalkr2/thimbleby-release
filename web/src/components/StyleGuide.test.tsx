@@ -69,7 +69,7 @@ test("the form parts, the record parts, the overlays and the status states of th
   expect(document.querySelector('[data-step-footer="inline"]')).not.toBeNull();
   expect(document.querySelector('[data-step-footer=""]')).toBeNull();
   // The status chip in its three states, each a word.
-  for (const word of ["Live", "Backup needed", "Offline"]) expect(screen.getAllByRole("button", { name: new RegExp(word) }).length).toBeGreaterThan(0);
+  for (const word of ["All good", "Backup needed", "Offline"]) expect(screen.getAllByRole("button", { name: new RegExp(word) }).length).toBeGreaterThan(0);
   // The sheet and the popover open and name themselves.
   await user.click(screen.getByRole("button", { name: "Open a sheet" }));
   expect((await screen.findByRole("dialog", { name: "More" })).closest("[data-overlay]")).toHaveAttribute("data-overlay", "sheet");

@@ -5,6 +5,7 @@
 // it has the server of Today's capacity, which no other scenario has added lines to.
 import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
+import { openScreen } from "./open-screen";
 
 const base = { untrusted: false, unpriced: 0, actions: [] as string[], questions: [] as string[], outcome: {}, count: 1 };
 const spine = { record: "ACT-1", owners: ["Robin Sample"], reporter: "Robin Sample", told: [] as string[] };
@@ -53,11 +54,7 @@ const lines = [
 ];
 
 async function signIn(page: Page) {
-  await page.goto("?token=e2e-token");
-  await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
-  await page.evaluate(() => {
-    window.location.hash = "today";
-  });
+  await openScreen(page, "today");
 }
 
 async function serve(page: Page, queue: () => unknown[]) {

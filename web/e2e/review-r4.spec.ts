@@ -2,7 +2,7 @@
 // reviewer's own steps through the screen they named and reads what the person sees there. The workspace is the reviewer's many-sides
 // state with a business's called-off meeting, overdue to-dos on two sides and on none, and two repeating entries of the person's own
 // (tests/e2e_review_r4.py).
-import { daytimeAt } from "./clock";
+import { mondayAt } from "./clock";
 import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
 import { pickSide } from "./side-pick";
@@ -65,7 +65,7 @@ test.describe("S-0369: Today offers preparation only for an entry the person cho
     await page.goto("?token=e2e-token#schedule");
     await expect(page.getByRole("heading", { level: 1, name: "Schedule" })).toBeVisible(LOADED);
     // Forty minutes after the pinned moment, on the workspace's clock (UTC).
-    const soon = new Date(new Date(daytimeAt).getTime() + 40 * 60_000);
+    const soon = new Date(new Date(mondayAt).getTime() + 40 * 60_000);
     const clock = `${String(soon.getUTCHours()).padStart(2, "0")}:${String(soon.getUTCMinutes()).padStart(2, "0")}`;
     const add = async (title: string, part?: string) => {
       await page.getByRole("button", { name: /^Add (to schedule|an event|a meeting)$|^Add$/ }).first().click();

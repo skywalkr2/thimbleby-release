@@ -9,6 +9,7 @@ import { useReachNames } from "../lib/reach";
 import { useWords } from "../lib/wording";
 import { Button } from "../ui/Button";
 import { LoadFailed } from "../ui/LoadFailed";
+import { useLoadFailure } from "../lib/load-failure";
 import { Row } from "../ui/Row";
 import { Skeleton } from "../ui/Skeleton";
 import { NarrowForm } from "./NarrowForm";
@@ -24,6 +25,7 @@ export function RuleReview(props: { onBack: () => void }) {
   const words = useWords();
   const { t, tn } = words;
   const review = useQuery({ queryKey: ["knowledge", "rules", "review"], queryFn: api.ruleReview });
+  const failure = useLoadFailure(review);
   const reach = useReachNames();
   const list = useRef<HTMLUListElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -43,7 +45,7 @@ export function RuleReview(props: { onBack: () => void }) {
         title={t("rules_review.title")}
         back={{ label: t("rules_review.back"), onClick: props.onBack }}
       />
-      {review.isError ? (
+      {failure.failed ? (
         <LoadFailed message={t("rules_review.load_failed")} onRetry={() => void review.refetch()} />
       ) : !found ? (
         <Skeleton />

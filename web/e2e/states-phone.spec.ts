@@ -121,12 +121,16 @@ test.describe("States of the list screens", () => {
     // the page again by itself, so the answer is switched in one step (no gap where a read could succeed before the press): the
     // reads that follow the failed one are held, the button is pressed, and then they are let through.
     let mode: "fail" | "hold" | "pass" = "fail";
+    let heldReads = 0;
     let letThrough: () => void = () => undefined;
     const gate = new Promise<void>((resolve) => (letThrough = resolve));
     await page.route("**/api/record*", async (route: Route) => {
       if (mode === "fail") await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ detail: "The folder is locked." }) });
       else {
-        if (mode === "hold") await gate;
+        if (mode === "hold") {
+          heldReads += 1;
+          await gate;
+        }
         await route.continue();
       }
     });
@@ -135,6 +139,11 @@ test.describe("States of the list screens", () => {
     await expect(alert).toBeVisible(LOADED);
     mode = "hold";
     await alert.getByRole("button", { name: "Try again" }).click();
+    // The read goes out and is held: the alert and its Try again stay where they are (S-0431), no skeleton takes their place.
+    await expect.poll(() => heldReads, LOADED).toBeGreaterThan(0);
+    await expect(page.locator("main [data-skeleton]")).toHaveCount(0);
+    await expect(alert).toBeVisible();
+    await expect(alert.getByRole("button", { name: "Try again" })).toBeVisible();
     mode = "pass";
     letThrough();
     await expect(page.getByRole("heading", { level: 1, name: person.name })).toBeVisible(LOADED);

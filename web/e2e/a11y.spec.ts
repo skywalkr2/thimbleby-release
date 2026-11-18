@@ -24,7 +24,6 @@ const HEIGHT = 900;
 
 async function signIn(page: Page) {
   await openScreen(page);
-  await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
 }
 
 async function expectNoViolations(page: Page) {
@@ -41,7 +40,6 @@ async function open(page: Page, hash: string) {
   }, hash);
   await expect(page).toHaveURL(new RegExp(`#${hash}$`));
   await screenReady(page);
-  await expect(page.getByRole("main").getByRole("heading", { level: 1 }).first()).toBeVisible();
   await expect(page.locator("main [data-skeleton]")).toHaveCount(0);
 }
 

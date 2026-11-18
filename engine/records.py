@@ -1290,6 +1290,15 @@ class WatchRun(Record):
         "headers skipped, added up by kind as `skipped` is.",
     )
     state: dict[str, Any] = Field(default_factory=dict, description="What the connector keeps between reads.")
+    generated_at: datetime | None = Field(
+        None,
+        description="When the source's own data was made, as the source said on this read; none when it says none.",
+    )
+    old_data: bool = Field(
+        False,
+        description="The source's own data was older than the source's `data_fresh_hours` when this read made it: "
+        'the read is not "no changes", and the read after it that finds fresh data files what was missed together.',
+    )
     looked_back_to: date | None = Field(
         None,
         description="For a source's first read that took it in quietly: the day before which its mail was not "

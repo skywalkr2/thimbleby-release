@@ -44,6 +44,7 @@ import { StateMark, needsYou, type StateTone } from "../ui/StateMark";
 import { Row } from "../ui/Row";
 import { RowList } from "../ui/RowList";
 import { LoadFailed } from "../ui/LoadFailed";
+import { useLoadFailure } from "../lib/load-failure";
 import { Skeleton } from "../ui/Skeleton";
 import { DialogFooter, ModalPanel, restoreFocus } from "./ModalPanel";
 import { RefreshedLines } from "./RefreshedLines";
@@ -89,6 +90,7 @@ export function AiAccounts(props: {
 }) {
   const { t, tn } = useWords();
   const accounts = useQuery({ queryKey: ["ai-accounts"], queryFn: api.aiAccounts });
+  const failure = useLoadFailure(accounts);
   const endpoints = useQuery({ queryKey: ["ai-endpoints"], queryFn: api.endpoints });
   // What each model can do; a list that didn't load leaves the rows without it.
   const skills = useQuery({ queryKey: ["ai-skills"], queryFn: api.aiSkills });
@@ -97,8 +99,8 @@ export function AiAccounts(props: {
   const offline = useConnection().offline;
   // Settings' own page shows rows in the place of the list while it loads, and a card with Try again when it didn't; a step
   // of the setup guide shows nothing, and says so quietly.
-  if (accounts.isPending) return props.compact ? null : <Skeleton shape="rows" rows={2} />;
-  if (accounts.isError)
+  if (!failure.failed && accounts.isPending) return props.compact ? null : <Skeleton shape="rows" rows={2} />;
+  if (failure.failed || !accounts.data)
     return props.compact ? <p className="hint">{t("ai_accounts.load_failed")}</p> : <LoadFailed message={t("ai_accounts.load_failed")} onRetry={() => void accounts.refetch()} />;
   const list = accounts.data;
   const Heading = props.level === 4 ? "h4" : props.level === 2 ? "h2" : "h3";

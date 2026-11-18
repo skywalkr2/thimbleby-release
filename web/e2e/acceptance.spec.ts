@@ -1,7 +1,7 @@
 // The milestone 2 acceptance scenario (the first schedule) in a real browser, with accessibility checks.
 // Names come from the fixture's cases and people, never written out here.
 import AxeBuilder from "@axe-core/playwright";
-import { expect, type Page } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
 import { test } from "./test";
 import { openScreen, screenReady } from "./open-screen";
 import { choicesOf, choose } from "./choose";
@@ -95,6 +95,13 @@ async function signIn(page: Page) {
   await expect(page.getByRole("heading", { level: 2, name: "Needs you", exact: true })).toBeVisible();
 }
 
+/** A change with the assistant's own sentence folds its list under "What <assistant> did (N)"; the steps read that list,
+ * so it is opened when it is closed. A change with no sentence has no fold, and its list is open already. */
+async function openFold(card: Locator) {
+  const fold = card.getByRole("button", { name: /^What .+ did \(\d+\)$/ }).first();
+  if ((await fold.count()) > 0 && (await fold.getAttribute("aria-expanded")) !== "true") await fold.click();
+}
+
 async function handIn(page: Page, c: Case) {
   // The result is a line of Today's queue as soon as the assistant has made it; the card itself is read on What changed.
   await go(page, "Today");
@@ -148,6 +155,7 @@ async function handIn(page: Page, c: Case) {
   if ((await expander.getAttribute("aria-expanded")) !== "true") await expander.click();
   const detail = page.locator("aside[data-detail-pane] [data-detail-item]");
   await expect(detail).toBeVisible();
+  await openFold(detail);
   // A row inside the pane (a held item among them) uses the pane's full width: its words are never squeezed beside its buttons.
   const paneWidth = (await detail.boundingBox())!.width;
   for (const child of await detail.locator("[data-item]").all()) {
@@ -292,6 +300,10 @@ async function railBox(page: Page): Promise<{ x: number; width: number }> {
 }
 
 test.describe.serial("acceptance scenario", () => {
+  // These steps change their server's state (setup walked, accounts signed in or out, records added), and a re-run would start
+  // from that used server and fail on its first line for that reason: a re-run proves nothing, so it takes none and shows its
+  // failure as it is (S-0560).
+  test.describe.configure({ retries: 0 });
   test.beforeAll(async ({ request, baseURL }) => {
     origin = new URL(baseURL!).origin;
     cases = await (await request.get(`${origin}/__e2e/cases`)).json();
@@ -914,6 +926,8 @@ test.describe.serial("acceptance scenario", () => {
     // Undoing many records at once is the one undo that asks first.
     await page.getByRole("dialog").getByRole("button", { name: "Undo everything" }).click();
     // The pill is drawn when every open screen has read again after the undo, which a busy computer takes longer over than a screen's own wait.
+    await expect(row.getByRole("button", { name: /^What .+ did \(\d+\)$/ }).or(row.locator("li[data-item]")).first()).toBeVisible({ timeout: 20_000 });
+    await openFold(row);
     await expect(row.locator("li[data-item] [data-pill]")).toHaveText(/Undone/i, { timeout: 20_000 });
 
     // The fact is gone: no screen lists facts yet, so the record route a record's page reads from no longer finds it.

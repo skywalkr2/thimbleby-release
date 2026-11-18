@@ -18,19 +18,21 @@ import { PageHeader } from "../ui/PageHeader";
 import { RowList } from "../ui/RowList";
 import { DefinitionList, Definition } from "../ui/DefinitionList";
 import { LoadFailed } from "../ui/LoadFailed";
+import { useLoadFailure } from "../lib/load-failure";
 type Page = S["SeriesPageView"];
 
 export function SeriesPage(props: { id: string; onBack: () => void }) {
   const { t } = useWords();
   const page = useQuery({ queryKey: ["series-page", props.id], queryFn: () => api.seriesPage(props.id) });
   const data = page.data;
+  const failure = useLoadFailure(page);
   return (
     <section className="panel-section record-page" aria-labelledby="series-title">
       <div>
         <BackLink label={t("record.back")} onClick={props.onBack} />
       </div>
-      {page.isPending && <Skeleton />}
-      {page.isError && (
+      {page.isPending && !failure.failed && <Skeleton />}
+      {failure.failed && (
         <LoadFailed message={t("record.load_failed")} onRetry={() => void page.refetch()} />
       )}
       {data && (

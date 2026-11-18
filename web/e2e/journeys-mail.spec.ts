@@ -20,6 +20,9 @@ const service = async (): Promise<SignInSeen> => (await fetch(`${FAKE}/__e2e/sig
 const changes = async (): Promise<MailActsSeen> => (await fetch(`${FAKE}/__e2e/mail-acts`)).json();
 
 test.describe.serial("journey: mail", () => {
+  // The journey changes its server's state (a fresh workspace, signed-in accounts, a restart), and a re-run would start from
+  // that used server and fail on its first line for that reason: a re-run proves nothing, so it takes none and shows its failure as it is.
+  test.describe.configure({ retries: 0 });
   test.beforeAll(async () => {
     info = await (await fetch(`${FAKE}/__e2e/info`)).json();
   });

@@ -21,6 +21,7 @@ import { IconButton } from "../ui/IconButton";
 import { FilterSheet } from "../ui/FilterSheet";
 import { ListDetail } from "../ui/ListDetail";
 import { LoadFailed } from "../ui/LoadFailed";
+import { useLoadFailure } from "../lib/load-failure";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { ViewTabs } from "../ui/ViewTabs";
 import { Skeleton } from "../ui/Skeleton";
@@ -347,7 +348,9 @@ export function Schedule() {
   const needDate = (needs.data?.actions ?? []).filter((a) => a.needs_date && onSide(a.side, filter.picked, a.views, !!a.project_name));
   const options = VIEWS.filter(fits).map((v) => ({ value: v, label: viewNames[v] }));
   // The page the entry would be added to could not be read: Add waits for it, with its reason beside it.
-  const dead = isTimeline ? timeline.isError && !tl : page.isError && !data;
+  const pageFailure = useLoadFailure(page);
+  const timelineFailure = useLoadFailure(timeline);
+  const dead = isTimeline ? timelineFailure.failed : pageFailure.failed;
   // The sides with an entry in the range on screen, in the person's order: the key to the colors of the entries drawn.
   const drawnSides = new Set([...days.flatMap((d) => [...d.all_day, ...d.timed]), ...onItsWay].map((e) => e.side).filter((x): x is string => !!x));
   const keySides: KeySide[] = filter.options.flatMap((o) => {
@@ -435,19 +438,19 @@ export function Schedule() {
         }
       >
         {isTimeline ? (
-          timeline.isPending ? (
+          !timelineFailure.failed && timeline.isPending ? (
             <Skeleton />
-          ) : timeline.isError || !tl ? (
+          ) : timelineFailure.failed || !tl ? (
             <LoadFailed message={t("schedule.timeline.load_failed")} onRetry={() => void timeline.refetch()} />
           ) : (
             <div className={styles.frame} data-swipe="" data-view={view} data-shown={shown} onTouchStart={swipeStart} onTouchEnd={swipeEnd} onTouchCancel={() => (touch.current = null)}>
               <Timeline data={tl} lanes={lanes} sideName={(side) => filter.options.find((o) => o.id === side)?.name} selected={picked} onOpen={open} colorOf={(e) => calendars.color(e.source)} nameOf={(e) => calendars.name(e.source)} />
             </div>
           )
-        ) : page.isPending ? (
+        ) : !pageFailure.failed && page.isPending ? (
           <ScheduleSkeleton view={view === "month" ? "month" : asList ? "list" : "grid"} days={range.shown.length} />
-        ) : page.isError || !data ? (
-          <LoadFailed message={t("schedule.load_failed")} detail={page.error instanceof ApiError && page.error.detail ? page.error.detail : null} onRetry={() => void page.refetch()} />
+        ) : pageFailure.failed || !data ? (
+          <LoadFailed message={t("schedule.load_failed")} detail={pageFailure.error instanceof ApiError && pageFailure.error.detail ? pageFailure.error.detail : null} onRetry={() => void page.refetch()} />
         ) : (
           <div className={styles.frame} data-swipe="" data-view={view} data-shown={shown} onTouchStart={swipeStart} onTouchEnd={swipeEnd} onTouchCancel={() => (touch.current = null)}>
             {page.isPlaceholderData ? (

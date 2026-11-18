@@ -84,6 +84,7 @@ import styles from "./RecordPage.module.css";
 import { whoTheyAre } from "../lib/people-who";
 import { Row } from "../ui/Row";
 import { RowList } from "../ui/RowList";
+import { useLoadFailure } from "../lib/load-failure";
 import { useWrite } from "../lib/write";
 /** How an entry repeats, in words: "Every week, until Dec 31". */
 function repeatLines(value: { every?: string; until?: string | null } | null, t: (key: string, vars?: Record<string, string | number>) => string, dayText: (iso: string) => string): string[] {
@@ -223,6 +224,7 @@ export function RecordPage(props: { kind: string; id: string; onBack: () => void
   // While what resolves the names is still on its way the page has no name yet, and no detail: an id is never shown.
   // A record that isn't there (removed, or an address with a wrong id) is said so; trying again can't bring it back.
   const gone = record.isError && record.error instanceof ApiError && record.error.status === 404;
+  const failure = useLoadFailure(record);
   const settled = !page.isPending && !people.isPending && !projects.isPending;
   const due = kind === "action" && typeof data?.fields.due === "string" ? data.fields.due : null;
   const name = data && settled ? plainTitle(page.data?.name || shown("title", data.fields.title)[0] || shown("name", data.fields.name)[0] || "", due) : "";
@@ -588,7 +590,7 @@ export function RecordPage(props: { kind: string; id: string; onBack: () => void
       {data && kind === "action" && page.data?.tie && <TieLine action={id} text={plainTitle(page.data.name || "", due)} tie={page.data.tie} />}
       {data && kind === "fact" && page.data?.fact_source && <FactSource source={page.data.fact_source} fact={id} version={data.version} />}
       {data && <LearnedLines records={[id]} />}
-      {record.isPending && <Skeleton />}
+      {record.isPending && !failure.failed && <Skeleton />}
       {record.isError && gone && isPerson && removal.data?.state === "removed" && (
         <EmptyState
           title={t("person.removed_title", { name: removal.data.name || t("person.removed_someone") })}
@@ -604,7 +606,7 @@ export function RecordPage(props: { kind: string; id: string; onBack: () => void
         <EmptyState card text={t("person.gone_text")} action={{ label: t("person.gone_back"), href: viewHref("records/people"), primary: true }} />
       )}
       {record.isError && gone && !isPerson && <EmptyState card text={t("record.not_found")} action={{ label: t("record.not_found.back", { list: t(GONE_BACK[kind]?.[1] ?? "nav.home") }), href: viewHref(GONE_BACK[kind]?.[0] ?? "today"), primary: true }} />}
-      {record.isError && !gone && <LoadFailed message={t("record.load_failed")} detail={record.error instanceof ApiError && record.error.detail ? record.error.detail : null} onRetry={() => void record.refetch()} />}
+      {failure.failed && !gone && <LoadFailed message={t("record.load_failed")} detail={failure.error instanceof ApiError && failure.error.detail ? failure.error.detail : null} onRetry={() => void record.refetch()} />}
       {data && tabbed && (
         <div data-slot="tabs">
         <TabStrip

@@ -5,6 +5,7 @@
 import type { ReactNode } from "react";
 import { ApiError } from "../lib/api";
 import { useConnection } from "../lib/connection";
+import { useLoadFailure } from "../lib/load-failure";
 import { LoadFailed } from "./LoadFailed";
 import { PartBoundary } from "./PartBoundary";
 import { Skeleton, type SkeletonRow } from "./Skeleton";
@@ -15,6 +16,8 @@ export interface QueryLike<T> {
   isError: boolean;
   error: unknown;
   data: T | undefined;
+  /** How many reads have failed so far; a query's own count, so a read again keeps the failed state. */
+  errorUpdateCount?: number;
   refetch: () => unknown;
 }
 
@@ -35,6 +38,7 @@ export function ListState<T>(props: {
 }) {
   const connection = useConnection();
   const { query } = props;
+  const failure = useLoadFailure(query);
   if (query.data !== undefined) {
     return (
       <>
@@ -43,8 +47,8 @@ export function ListState<T>(props: {
       </>
     );
   }
-  if (query.isError) {
-    return <LoadFailed message={props.failed} detail={detailOf(query.error)} onRetry={() => void query.refetch()} />;
+  if (failure.failed) {
+    return <LoadFailed message={props.failed} detail={detailOf(failure.error)} onRetry={() => void query.refetch()} />;
   }
   return (
     <>

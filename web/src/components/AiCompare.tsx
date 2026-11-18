@@ -17,6 +17,7 @@ import { BackLink } from "../ui/BackLink";
 import { Button } from "../ui/Button";
 import { Icon } from "../ui/Icon";
 import { LoadFailed } from "../ui/LoadFailed";
+import { useLoadFailure } from "../lib/load-failure";
 import { Skeleton } from "../ui/Skeleton";
 import styles from "./AiCompare.module.css";
 
@@ -37,6 +38,8 @@ export function AiCompare(props: { onBack: () => void; /** Opens where an accoun
     refetchInterval: (query) =>
       query.state.data?.accounts.some((a) => a.models.some((m) => m.measure === "waiting" || m.measure === "measuring")) ? 3000 : false,
   });
+  const accountsFailure = useLoadFailure(accounts);
+  const skillsFailure = useLoadFailure(skills);
   // Which column asked for a go above the amount the person set, and the header's own.
   const [asking, setAsking] = useState<string | null>(null);
   const [problem, setProblem] = useState("");
@@ -275,7 +278,7 @@ export function AiCompare(props: { onBack: () => void; /** Opens where an accoun
   return (
     <section className="panel-section" aria-labelledby="ai-compare-title">
       {header}
-      {accounts.isError || skills.isError ? (
+      {accountsFailure.failed || skillsFailure.failed ? (
         <LoadFailed message={t("ai_compare.load_failed")} onRetry={() => void skills.refetch()} />
       ) : !skills.data || !accounts.data ? (
         <Skeleton />

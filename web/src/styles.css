@@ -56,6 +56,8 @@ main p { max-width: var(--measure); }
 .your-note { border-left: 3px solid var(--accent); padding-left: var(--space-3); }
 .your-note p { white-space: pre-wrap; }
 .what { font-size: var(--text-sm); line-height: var(--lh-sm); color: var(--text-muted); font-weight: var(--weight-semibold); }
+.assistant-account { display: grid; gap: var(--space-1); min-width: 0; }
+.assistant-account p { margin: 0; overflow-wrap: anywhere; }
 .learned-inset { padding: 0; }
 .made { list-style: none; padding: 0 0 var(--space-3); margin: 0; font-size: var(--text-sm); }
 .learned-inset:empty { display: none; }

@@ -384,3 +384,28 @@ test("while the sides load, the add buttons wait and the list is a skeleton", as
   expect(screen.getByRole("button", { name: "Add a business" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Add a job" })).toBeDisabled();
 });
+
+test("a business added while the connections can't be read still asks which serve it, says they couldn't be read, and Try again lists them", async () => {
+  const user = userEvent.setup();
+  const item: S["WatchSourceView"] = { id: "inbox-a", label: "Inbox, alex@example.com", connector: "k", connector_label: "Mail", enabled: true, every_minutes: 15, items: 1, last: null, read_at: null, failures: 0, problem: null, reads: ["mail"] };
+  let failing = true;
+  fakeApi({
+    "GET setup/business": () => ({ business: false, name: "", personal: "PRJ-personal", sides: [], chosen: "me" }),
+    "GET projects": () => [project("PRJ-personal", "Personal")],
+    "GET watch": () => (failing ? new Refuse(503, "Busy.") : [item]),
+    "GET settings": () => ({ fingerprint: "fp-1", items: [{ key: "watch.sources", file: "watch", group: "", description: "", type: "other", options: [], value: [{ id: "inbox-a", settings: {}, sides: [] }], default: [], source: "file", locked: false, basic: false, editable: false }] }),
+    "POST setup/business": () => ({ project: "PRJ-new", name: "Quarry Studio", kind: "business", created: true, changeset: "CS-20" }),
+  });
+  renderApp(<BusinessSides />);
+  await user.click(await screen.findByRole("button", { name: "Add a business" }));
+  const dialog = await screen.findByRole("dialog", { name: "Add a business" });
+  await user.type(within(dialog).getByRole("textbox", { name: /^Business name/ }), "Quarry Studio");
+  await user.click(within(dialog).getByRole("button", { name: "Add the business" }));
+  // Never closed as though there were nothing to ask.
+  const served = await screen.findByRole("dialog", { name: "Which of your connections serve Quarry Studio?" });
+  const alert = await within(served).findByRole("alert", {}, { timeout: 5000 });
+  expect(alert).toHaveTextContent("Your connections couldn't be read just now");
+  failing = false;
+  await user.click(within(alert).getByRole("button", { name: /Try again/ }));
+  expect(await within(served).findByRole("checkbox", { name: /Inbox/ })).toBeTruthy();
+});

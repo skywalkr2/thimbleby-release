@@ -41,7 +41,7 @@ function clockOptions(): Intl.DateTimeFormatOptions {
 /** A formatter for moments, on the person's clock. */
 const onClock = (options: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat(undefined, { ...options, timeZone: clockZone });
 
-const dayFormat = new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric" });
+const dayFormat = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", weekday: "short", month: "short", day: "numeric" });
 /** Whether a moment is at or past the given hour of the person's day, on the person's clock. */
 export function isAfternoon(when: Date, fromHour: number): boolean {
   return onTheClock(when).minutes >= fromHour * 60;
@@ -52,19 +52,19 @@ export function isAfternoon(when: Date, fromHour: number): boolean {
 export function day(iso: string | null | undefined): string {
   if (!iso) return "";
   const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
-  return dayFormat.format(new Date(y, m - 1, d));
+  return dayFormat.format(new Date(Date.UTC(y, m - 1, d)));
 }
 
-const monthDayFormat = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
+const monthDayFormat = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", month: "short", day: "numeric" });
 
 /** The day of a date, or of a time as the server wrote it on the person's own clock, as a month and a day: "Oct 14". */
 export function monthDay(iso: string | null | undefined): string {
   if (!iso) return "";
   const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
-  return monthDayFormat.format(new Date(y, m - 1, d));
+  return monthDayFormat.format(new Date(Date.UTC(y, m - 1, d)));
 }
 
-const longDayFormat = new Intl.DateTimeFormat(undefined, { weekday: "long", month: "long", day: "numeric" });
+const longDayFormat = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", weekday: "long", month: "long", day: "numeric" });
 
 /** A date in full words, "Tuesday, October 13", for a heading. */
 export function longDay(when: Date): string {
@@ -131,7 +131,7 @@ export function whenText(iso: string | null | undefined): string {
   return Number.isNaN(parsed.getTime()) ? "" : dayAndTime(parsed.toISOString());
 }
 
-const weekdayFormat = new Intl.DateTimeFormat(undefined, { weekday: "short" });
+const weekdayFormat = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", weekday: "short" });
 
 /** The date on this computer's clock, as yyyy-mm-dd. */
 export function localDate(when: Date): string {
@@ -149,8 +149,8 @@ export function nextMonday(from: Date): string {
 export function sinceDay(iso: string | null | undefined, today: Date): string {
   if (!iso) return "";
   const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
-  const then = new Date(y, m - 1, d);
-  const ago = Math.round((new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime() - then.getTime()) / 86_400_000);
+  const then = new Date(Date.UTC(y, m - 1, d));
+  const ago = Math.round((Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()) - then.getTime()) / 86_400_000);
   if (ago <= 0) return "";
   return ago < 7 ? weekdayFormat.format(then) : monthDay(iso);
 }
@@ -164,7 +164,7 @@ export function addDays(iso: string, n: number): string {
 /** The time of day exactly as the server wrote it (the person's own clock), in the reader's time format. */
 export function wallTime(iso: string): string {
   const found = /T(\d{2}):(\d{2})/.exec(iso);
-  return found ? new Intl.DateTimeFormat(undefined, clockOptions()).format(new Date(2000, 0, 1, Number(found[1]), Number(found[2]))) : "";
+  return found ? new Intl.DateTimeFormat(undefined, { ...clockOptions(), timeZone: "UTC" }).format(new Date(Date.UTC(2000, 0, 1, Number(found[1]), Number(found[2])))) : "";
 }
 
 /** Whether a date-time carries an offset ("Z" or "+02:00"), so it is an instant and not a time already on the person's clock. */
@@ -200,20 +200,20 @@ export function noReset(iso: string | null | undefined): boolean {
 /** The weekday of a yyyy-mm-dd date, short, in the reader's language. */
 export function weekday(iso: string): string {
   const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
-  return weekdayFormat.format(new Date(y, m - 1, d));
+  return weekdayFormat.format(new Date(Date.UTC(y, m - 1, d)));
 }
 
-const fullDayFormat = new Intl.DateTimeFormat(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" });
-const monthDayLongFormat = new Intl.DateTimeFormat(undefined, { month: "long", day: "numeric" });
-const monthDayYearFormat = new Intl.DateTimeFormat(undefined, { month: "long", day: "numeric", year: "numeric" });
-const monthYearFormat = new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" });
+const fullDayFormat = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", weekday: "long", year: "numeric", month: "long", day: "numeric" });
+const monthDayLongFormat = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", month: "long", day: "numeric" });
+const monthDayYearFormat = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", month: "long", day: "numeric", year: "numeric" });
+const monthYearFormat = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", month: "long", year: "numeric" });
 
 const dateOf = (iso: string): Date => {
   const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
-  return new Date(y, m - 1, d);
+  return new Date(Date.UTC(y, m - 1, d));
 };
 
-const weekdayLongFormat = new Intl.DateTimeFormat(undefined, { weekday: "long" });
+const weekdayLongFormat = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", weekday: "long" });
 
 /** The weekday of a yyyy-mm-dd date in full, "Wednesday". */
 export function weekdayLong(iso: string): string {
@@ -240,14 +240,14 @@ export function monthDayYear(iso: string): string {
   return monthDayYearFormat.format(dateOf(iso));
 }
 
-const shortDayFormat = new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric" });
+const shortDayFormat = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", weekday: "short", month: "short", day: "numeric" });
 
 /** A day as weekday, month and day in short words, "Tue, Nov 3", for a heading on a phone. */
 export function shortDay(iso: string): string {
   return shortDayFormat.format(dateOf(iso));
 }
 
-const weekdayDayFormat = new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric" });
+const weekdayDayFormat = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", weekday: "short", day: "numeric" });
 
 /** A day as its short weekday and day of the month, "Sat 14", for a column heading where six days share the width. */
 export function weekdayDay(iso: string): string {
@@ -257,8 +257,8 @@ export function weekdayDay(iso: string): string {
 /** The first and last day of a range in short words with no year: "Nov 2" and "6" inside one month, "Nov 30" and "Dec 4" across two. */
 export function shortRange(first: string, last: string): { start: string; end: string } {
   const [a, b] = [dateOf(first), dateOf(last)];
-  const sameMonth = a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
-  return { start: monthDay(first), end: sameMonth ? String(b.getDate()) : monthDay(last) };
+  const sameMonth = a.getUTCFullYear() === b.getUTCFullYear() && a.getUTCMonth() === b.getUTCMonth();
+  return { start: monthDay(first), end: sameMonth ? String(b.getUTCDate()) : monthDay(last) };
 }
 
 /** The month of a day with its year, "October 2026", for the heading of a month. */
@@ -268,7 +268,7 @@ export function monthYear(iso: string): string {
 
 /** The day of the month, as a number, for a cell of a month. */
 export function dayOfMonth(iso: string): number {
-  return dateOf(iso).getDate();
+  return dateOf(iso).getUTCDate();
 }
 
 const formats = new Map<string, Intl.DateTimeFormat>();
@@ -277,7 +277,7 @@ function formatter(locale: string | undefined, options: Intl.DateTimeFormatOptio
   const key = `${locale ?? ""}|${JSON.stringify(options)}`;
   let found = formats.get(key);
   if (!found) {
-    found = new Intl.DateTimeFormat(locale, options);
+    found = new Intl.DateTimeFormat(locale, { ...options, timeZone: "UTC" });
     formats.set(key, found);
   }
   return found;
@@ -291,5 +291,5 @@ export function fieldDay(iso: string | null | undefined, locale?: string): strin
 /** A time of day written as HH:MM, in the reader's own clock (12-hour or 24-hour): "9:30 AM" or "09:30". */
 export function timeOfDay(hhmm: string | null | undefined, locale?: string): string {
   const found = /^(\d{2}):(\d{2})/.exec(hhmm ?? "");
-  return found ? formatter(locale, clockOptions()).format(new Date(2000, 0, 1, Number(found[1]), Number(found[2]))) : "";
+  return found ? formatter(locale, clockOptions()).format(new Date(Date.UTC(2000, 0, 1, Number(found[1]), Number(found[2])))) : "";
 }

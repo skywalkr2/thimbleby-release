@@ -4,6 +4,7 @@
 // Try again and Copy the report, and the report is sent once it answers.
 import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
+import { openScreen } from "./open-screen";
 import { checkAccessibility, collectProblems } from "./journey-helpers";
 
 interface Reports {
@@ -17,8 +18,7 @@ const reports = async (page: Page): Promise<Reports> => (await page.request.get(
 const answerWith = (page: Page, code: number) => page.request.post(`/__e2e/reports?code=${code}`);
 
 async function openReport(page: Page) {
-  await page.goto("?token=e2e-token");
-  await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
+  await openScreen(page);
   await page.getByRole("button", { name: "Help" }).click();
   await page.getByRole("menuitem", { name: "Report a problem" }).click();
   const dialog = page.getByRole("dialog", { name: "Report a problem" });
@@ -86,9 +86,9 @@ test.describe("Report a problem", () => {
   test("Escape closes it without sending, and no sideways scroll at a phone width", async ({ page }) => {
     const before = (await reports(page)).received.length;
     await page.setViewportSize({ width: 360, height: 740 });
-    await page.goto("?token=e2e-token");
-    await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
-    await page.getByRole("button", { name: /^(Help|More)/ }).first().click();
+    await openScreen(page);
+    // Exactly the bar's More (or the header's Help): a row's "More actions for ..." button also starts with the word.
+    await page.getByRole("button", { name: /^(Help|More)$/ }).first().click();
     await page.getByRole("button", { name: "Report a problem" }).or(page.getByRole("menuitem", { name: "Report a problem" })).click();
     const dialog = page.getByRole("dialog", { name: "Report a problem" });
     await expect(dialog).toBeVisible();
@@ -103,8 +103,7 @@ test.describe("Report a problem", () => {
     const problems: string[] = [];
     collectProblems(page, problems);
     const before = (await reports(page)).received.length;
-    await page.goto("?token=e2e-token");
-    await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
+    await openScreen(page);
     await page.getByRole("button", { name: "Help" }).click();
     await page.getByRole("menuitem", { name: "Your alpha numbers" }).click();
     const numbers = page.getByRole("dialog", { name: "Your alpha numbers" });

@@ -5,7 +5,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { api, ApiError, type S } from "../lib/api";
-import { useAct } from "../lib/act";
+import { NO_RECORD_ACTS, useAct } from "../lib/act";
 import { useConnection } from "../lib/connection";
 import { whenText as when } from "../lib/dates";
 import { problemText } from "../lib/problem";
@@ -51,6 +51,7 @@ import { Actions } from "../ui/Actions";
 import { FormBlock } from "../ui/FormBlock";
 import { StateMark, needsYou } from "../ui/StateMark";
 import { LoadFailed } from "../ui/LoadFailed";
+import { useLoadFailure } from "../lib/load-failure";
 import { GroupLabel } from "../ui/GroupLabel";
 type Source = S["WatchSourceView"];
 type Kind = S["WatchKindView"];
@@ -66,9 +67,11 @@ export interface AddRequest {
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
 /** How the last read went, in words. A failed read says it failed here; its reason is shown beside it. */
-export function lastReadText(source: Source, t: T): string {
+export function lastReadText(source: Source, t: T, tn?: (key: string, n: number, vars?: Record<string, string | number>) => string): string {
   const last = source.last;
   if (!last) return t("sources.never");
+  // Data older than the source's normal refresh is never worded as "nothing new".
+  if (last.outcome === "ok" && source.old_data_days && tn) return tn("sources.last.old_data", source.old_data_days);
   switch (last.outcome) {
     case "ok":
       // Only what there is: "2 new, 1 removed", never "0 changed".
@@ -204,6 +207,7 @@ export function Sources(props: {
     queryFn: api.watchSources,
     refetchInterval: (query) => (query.state.data?.some((s) => s.enabled && !s.last) ? 15_000 : false),
   });
+  const sourcesFailure = useLoadFailure(sources);
   const kinds = useQuery({ queryKey: ["watch-kinds"], queryFn: api.watchKinds });
   const signIns = useQuery({ queryKey: ["sign-ins"], queryFn: api.signIns });
   const cards = connectionCards(sources.data ?? [], signIns.data ?? []);
@@ -315,9 +319,9 @@ export function Sources(props: {
           />
         )}
       </Drawer>
-      {sources.isPending ? (
+      {!sourcesFailure.failed && sources.isPending ? (
         <ConnectionsSkeleton />
-      ) : sources.isError ? (
+      ) : sourcesFailure.failed ? (
         <LoadFailed
           message={t("sources.load_failed")}
           onRetry={() => {
@@ -372,7 +376,7 @@ export function Sources(props: {
           ))}
         </ul>
       )}
-      {!sources.isPending && !sources.isError && <SignIns
+      {!sources.isPending && !sourcesFailure.failed && <SignIns
         accountsIn="cards"
         onOpenAddons={() => props.onOpenAddons?.()}
         onChooseSource={(plugin, _kind, account) => {
@@ -458,7 +462,7 @@ function SourcePart(props: {
   const accountTold = source.account_state === "signed_out" || source.account_state === "expired" || (!!source.account && signInNeed(source) === "again");
   const problem = signInNeed(source) && accountTold ? null : problemOf(source, t, has);
   const lastWhen = source.read_at ? when(source.read_at) : "";
-  const lastWords = lastReadText(source, t);
+  const lastWords = lastReadText(source, t, tn);
   // Told from this connection's own state and its account's: a row that is not being read (its account is signed out, or
   // has to sign in again) never says Read, whatever its last read said.
   const status = partStatus(source, t, tn);
@@ -473,7 +477,9 @@ function SourcePart(props: {
         client.setQueryData<Source[]>(["watch"], (all) => all?.map((s) => (s.id === fresh.id ? fresh : s)));
         return fresh;
       },
-      (fresh) => ({ message: t("sources.read_toast", { label: fresh.label, result: problemOf(fresh, t, has) ?? lastReadText(fresh, t) }) }),
+      (fresh) => ({ message: t("sources.read_toast", { label: fresh.label, result: problemOf(fresh, t, has) ?? lastReadText(fresh, t, tn) }) }),
+      undefined,
+      NO_RECORD_ACTS.readSource,
     );
     setBusy(false);
   };

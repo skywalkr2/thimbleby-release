@@ -92,6 +92,7 @@ import { ValueLists } from "./ValueLists";
 import { Drawer } from "../ui/Drawer";
 import { Skeleton } from "../ui/Skeleton";
 import { LoadFailed } from "../ui/LoadFailed";
+import { useLoadFailure } from "../lib/load-failure";
 import { WelcomeAi } from "./WelcomeAi";
 import { restoreFocus } from "./ModalPanel";
 import { Button } from "../ui/Button";
@@ -311,6 +312,7 @@ export function Settings(props: {
   // What decides which sections are listed, and when a section that loads its own content is ready to take the cursor.
   const lists = useValueLists();
   const { settings, forms, keyed, sides, everything, listed } = useSettingsSections();
+  const settingsFailure = useLoadFailure(settings);
   const accounts = useQuery({
     queryKey: ["ai-accounts"],
     queryFn: api.aiAccounts,
@@ -1003,9 +1005,9 @@ export function Settings(props: {
               .join(" ")}
           </p>
         )}
-        {settings.isPending ? (
+        {!settingsFailure.failed && settings.isPending ? (
           <Skeleton shape="form" rows={3} />
-        ) : settings.isError ? (
+        ) : settingsFailure.failed ? (
           <LoadFailed message={t("settings.failed")} onRetry={() => void settings.refetch()} />
         ) : query.trim() ? (
           results()

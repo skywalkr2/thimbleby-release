@@ -49,6 +49,7 @@ import { SegmentedControl } from "../ui/SegmentedControl";
 import { FilteredEmpty } from "../ui/FilteredEmpty";
 import { ListState } from "../ui/ListState";
 import { LoadFailed } from "../ui/LoadFailed";
+import { useLoadFailure } from "../lib/load-failure";
 import { FollowUpTables, tableBar, tableHint } from "./FollowUpTable";
 import { SideFilter } from "./SideFilter";
 import { MessageStyle } from "./MessageStyle";
@@ -166,6 +167,7 @@ export function FollowUps(props: { compact?: boolean }) {
   const beside = useMediaQuery("(min-width: 1024px)") && !compact;
   // What waits to go out is the first part of To send, ahead of the messages: one list, one detail.
   const acts = useWaitingActs();
+  const actsFailure = useLoadFailure(acts);
   const actRows = !compact && !byProject && filter === "send" ? (acts.data ?? []) : [];
   // With nothing to follow up on any tab (and nothing waiting to go out), the choices between tabs and groupings change nothing, so
   // they are not drawn until there is something. The side choice is the screen's own and stays.
@@ -176,7 +178,7 @@ export function FollowUps(props: { compact?: boolean }) {
   const nothingAnywhere = followups.isSuccess && present.length === 0 && (compact || (!acts.isPending && (acts.data ?? []).length === 0));
   // What waits to go out leads the list, so no row is chosen as the first until it has been read: the messages below may be
   // here sooner, and the first row would then be one of them.
-  const actsComing = !compact && !byProject && filter === "send" && acts.isPending;
+  const actsComing = !compact && !byProject && filter === "send" && acts.isPending && !actsFailure.failed;
   // The pane opens on the first person's message when nothing waits to go out.
   const firstOther = actRows.length === 0 ? (shown[0]?.person ?? null) : null;
   const choice = useListChoice({
@@ -365,7 +367,7 @@ export function FollowUps(props: { compact?: boolean }) {
       )
         }
       </ListState>
-      {!compact && !byProject && filter === "send" && acts.isError && !followups.isError && (
+      {!compact && !byProject && filter === "send" && actsFailure.failed && !followups.isError && (
         <LoadFailed message={t("outgoing.load_failed")} onRetry={() => void acts.refetch()} />
       )}
       {!compact && !byProject && filter === "send" && acts.isSuccess && <SentActs />}

@@ -160,6 +160,7 @@ class Unread:
     since: str
     kind: str
     problem: str
+    days: int = 0  # for old data: how many days old it is
 
 
 #: The colors a calendar's mark can have, in the order the app gives them to calendars the person gave none.
@@ -241,6 +242,44 @@ def stale_since(store: Any, cfg: Any, source: Any, now: datetime) -> str | None:
     if now - datetime.fromisoformat(since) <= timedelta(hours=cfg.watch.stale_after_hours):
         return None
     return since
+
+
+def _is_old(source: Any, generated_at: str | None, now: datetime) -> bool:
+    """Whether the data a source says it was made at is older than its normal refresh (`data_fresh_hours`). A source
+    that says no time, or one that can't be read, is not old: nothing is known."""
+    if not generated_at:
+        return False
+    try:
+        made = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if made.tzinfo is None:
+        return False
+    return now - made > timedelta(hours=source.data_fresh_hours)
+
+
+@dataclass(frozen=True)
+class OldData:
+    """A source whose latest read served data older than its normal refresh: when the data was made and how many whole
+    days old it is now."""
+
+    generated_at: str
+    days: int
+
+
+def old_data(store: Any, cfg: Any, source: Any, now: datetime) -> OldData | None:
+    """The old-data state of a source that is on: its latest read served data stamped older than `data_fresh_hours`,
+    and it still is. None for a source that is off, one never read, one whose data says no time, and one that is fresh.
+    A source that is failing is the unread line's, not this one's."""
+    if not source.enabled:
+        return None
+    read = last_read(store, source.id)
+    if read is None or not read.data.get("old_data") or not read.data.get("generated_at"):
+        return None
+    made = str(read.data["generated_at"])
+    if not _is_old(source, made, now):
+        return None
+    return OldData(made, max(1, (now - datetime.fromisoformat(made)).days))
 
 
 def due(store: Any, cfg: Any, now: datetime) -> list[str]:
@@ -330,6 +369,9 @@ def _refresh(ws: Any, store: Any, cfg: Any, source_id: str, now: datetime | None
     read_before = any(
         r.data["outcome"] in ("ok", "baseline") for r in store.read().find("watch_run", {"source": source.id})
     )
+    old = _is_old(source, poll.generated_at, now)
+    # The first fresh read after one that served old data brings in what it missed together.
+    catching_up = bool(worked) and bool(worked[-1].data.get("old_data")) and not old
     from engine import capture
 
     # A capture folder holds the person's own words: everything in it is handed in, the first read included.
@@ -344,7 +386,7 @@ def _refresh(ws: Any, store: Any, cfg: Any, source_id: str, now: datetime | None
         # Mail the person put in a capture folder or sent to a capture address from their own address is their own
         # words; everything else the source read goes through the ordinary comparison, as outside content.
         rest = replace(poll, items=[i for i in poll.items if i.key not in mine])
-        result = _compare(ws, store, cfg, source, rest, now, baseline, recent, router)
+        result = _compare(ws, store, cfg, source, rest, now, baseline, recent, router, catching_up)
         taken = capture.compare(
             ws,
             store,
@@ -357,7 +399,7 @@ def _refresh(ws: Any, store: Any, cfg: Any, source_id: str, now: datetime | None
         result.new.extend(taken.new)
         result.changed.extend(taken.changed)
     else:
-        result = _compare(ws, store, cfg, source, poll, now, baseline, recent, router)
+        result = _compare(ws, store, cfg, source, poll, now, baseline, recent, router, catching_up)
     from engine import source_entries, source_intake
 
     source_entries.keep(store, cfg, source, poll.items, now)
@@ -380,6 +422,8 @@ def _refresh(ws: Any, store: Any, cfg: Any, source_id: str, now: datetime | None
         unreadable=unreadable_dicts(poll.unreadable),
         skipped=skipped_counts(poll.unreadable),
         state=poll.state,
+        generated_at=poll.generated_at,
+        old_data=old,
         looked_back_to=back_to.isoformat() if back_to else None,
         asks_full_read=bool(back_to),
     )
@@ -623,16 +667,22 @@ class MessageIndex:
         return False
 
 
-def _burst_keys(cfg: Any, source: Any, entries: list[_Entry]) -> set[str]:
+def _burst_keys(cfg: Any, source: Any, entries: list[_Entry], catching_up: bool = False) -> set[str]:
     """The keys of the items one read hands in as a burst (design 6.2): a page, feed or tracker (never mail, a calendar
     or a folder, whose items stay one input each) that hands in more than `watch.burst_items` open items at once. An
-    item a rule closes makes no run and isn't counted. Empty when the read is not a burst."""
+    item a rule closes makes no run and isn't counted. Empty when the read is not a burst. The read that brings back
+    fresh data after old data (`catching_up`) also files a calendar's events this way, so what was missed is one
+    catch-up item, not one input each."""
     if source.connector in versions.FOLDER_CONNECTORS or source.connector == "capture":
         return set()
     open_items = [
         e
         for e in entries
-        if e.handed and e.closed is None and e.item.message is None and e.item.event is None and e.replaces is None
+        if e.handed
+        and e.closed is None
+        and e.item.message is None
+        and (e.item.event is None or catching_up)
+        and e.replaces is None
     ]
     return {e.item.key for e in open_items} if len(open_items) > cfg.watch.burst_items else set()
 
@@ -647,6 +697,7 @@ def _hand_in_burst(
     home: str | None,
     personal_keys: set[str],
     save: Any,
+    catching_up: bool = False,
 ) -> list[str]:
     """File a burst as one input for each project (design 6.2): the source's own project when it has one, else the
     project the rules place the item under (the Personal project for an item a rule says is personal), else one input
@@ -665,7 +716,8 @@ def _hand_in_burst(
             name = " ".join(entry.item.title.split())[:200]
             head = f'Item {number} of {len(entries)} (watch: {source.id}; item: "{name}")'
             blocks.append(f"{head}\n\n{_input_text(source, entry.item, entry.change, entry.old, entry.replaces)}")
-        title = f"{len(entries)} changes in {source.label or source.id}"[:120]
+        what = "missed changes" if catching_up else "changes"
+        title = f"{len(entries)} {what} in {source.label or source.id}"[:120]
         whole = SourceItem(f"burst:{placed or ''}", title, "", author=None)
         extra = {"project": placed} if placed and not source.project else None
         with store.transaction() as tx:
@@ -700,6 +752,7 @@ def _compare(
     baseline: bool,
     recent: timedelta | None = None,
     router: Any = None,
+    catching_up: bool = False,
 ) -> Result:
     from engine import capture
 
@@ -790,7 +843,7 @@ def _compare(
         ws, store, cfg, source, router, unplaced
     )
     home = _personal_home(store, cfg)
-    grouped = _burst_keys(cfg, source, entries)
+    grouped = _burst_keys(cfg, source, entries, catching_up)
     burst: list[_Entry] = []
 
     def save(tx: Any, entry: _Entry) -> None:
@@ -832,7 +885,7 @@ def _compare(
                 filed = {**(filed or {}), "mail_kind": kinds[item.key]}
             request = _hand_in(ws, store, tx, cfg, source, item, entry.change, text, now, closed, extra=filed)
         (result.new if entry.change == "new" else result.changed).append(request)
-    result.new.extend(_hand_in_burst(ws, store, cfg, source, burst, now, home, personal_keys, save))
+    result.new.extend(_hand_in_burst(ws, store, cfg, source, burst, now, home, personal_keys, save, catching_up))
     gone_keys = [k for k in seen if k not in listed] if poll.complete else [k for k in poll.removed if k in seen]
     for key in gone_keys:
         snapshot = seen[key]

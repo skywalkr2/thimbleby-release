@@ -416,6 +416,17 @@ test("the search looks at every setting in every section by its key and descript
   expect(await screen.findByLabelText("The display name.")).toBeInTheDocument();
 });
 
+// S-0538: a feature's setting lives with the feature, not on a page of its own, and the search still finds it and says where it lives.
+test("the search finds how often mail is read where it lives, under Advanced's Mail, and says which section it is in", async () => {
+  const user = userEvent.setup();
+  api([...ITEMS, item("watch.mail_read_minutes", { basic: false, topic: "mail", type: "choice", options: ["5", "10", "15"], value: "10", default: "10", description: "How often mail is read." })]);
+  open();
+  await screen.findByLabelText("The display name.");
+  await user.type(screen.getByRole("searchbox", { name: "Search settings" }), "check mail");
+  expect(await screen.findByLabelText("Check mail every")).toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "Advanced" })).toContainElement(screen.getByLabelText("Check mail every"));
+});
+
 test("each type has its own control, with its default shown", async () => {
   api();
   open();

@@ -3,7 +3,7 @@
 // closes a review and undoes it, and the later ones read what is left.
 import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
-import { choose } from "./choose";
+import { choicesOf, choose } from "./choose";
 import { openScreen } from "./open-screen";
 
 test.describe.configure({ mode: "serial" });
@@ -141,4 +141,92 @@ test("a day alone in the add row is read as a day: the form opens with it and as
   const form = page.getByRole("dialog");
   await expect(form.getByRole("textbox", { name: "What to do" })).toHaveValue("");
   await expect(form.getByRole("textbox", { name: "Due (optional)" })).toHaveValue("next Tuesday");
+});
+
+// The longest a burst's reads are held together (`BURST_HOLD_MS` in `src/lib/live.ts`), written out here because the app's bundle isn't imported.
+const BURST_HOLD_MS = 200;
+
+/** Resolves once the number has stopped changing for a stretch longer than the burst's hold (the page's stream never goes idle, so the network can't say). */
+async function quiet(count: () => number): Promise<void> {
+  let last = -1;
+  await expect
+    .poll(
+      () => {
+        const now = count();
+        const same = now === last;
+        last = now;
+        return same;
+      },
+      { intervals: [BURST_HOLD_MS * 3] },
+    )
+    .toBe(true);
+}
+
+test("a line closed while the assistant works through 50 requests is gone within the usual wait, and the burst reads Today's queue a few times, not once per event (S-0599)", async ({ page }) => {
+  await openScreen(page, "today");
+  await showAll(page);
+  const held = (await queue(page)).find((l) => l.kind === "held");
+  expect(held).toBeTruthy();
+  const row = page.locator(`main [data-line-key="${held!.key}"]`);
+  await expect(row).toBeVisible();
+  let reads = 0;
+  await page.route(/\/api\/today\/queue(\?|$)/, (route) => {
+    reads += 1;
+    return route.continue();
+  });
+  // Let any read the page started on its own finish, then count only what the burst and the close cause.
+  await quiet(() => reads);
+  reads = 0;
+  const started = Date.now();
+  const burst = page.request.post("__e2e/request-burst", { data: { count: 50, gap_ms: 30 } });
+  await row.getByRole("button", { name: "Close it" }).click();
+  // The page's usual wait, not the burst's end: the line leaves while the events are still coming.
+  await expect(row).toHaveCount(0);
+  expect((await burst).ok()).toBe(true);
+  const seconds = Date.now() - started;
+  // Wait for what the last event started: the page's reads go quiet.
+  await quiet(() => reads);
+  await page.unroute(/\/api\/today\/queue(\?|$)/);
+  // One read for each held stretch of the burst, and a few for the close itself; before the join it was one per event (50).
+  expect(reads).toBeLessThanOrEqual(Math.ceil(seconds / BURST_HOLD_MS) + 3);
+  expect(reads).toBeLessThan(25);
+  const toasts = page.getByRole("region", { name: "Notifications" });
+  await toasts.getByRole("button", { name: "Undo" }).click();
+  await expect(toasts.getByText("Undone.")).toBeVisible();
+});
+
+type Watch = { id: string; every_minutes: number };
+
+async function watch(page: Page): Promise<Watch[]> {
+  return (await (await page.request.get("api/watch", { headers: AUTH })).json()) as Watch[];
+}
+
+test("an account's card says how often it is read, and Change picks another from a list and saves it on that account's connections only (S-0538)", async ({ page }) => {
+  await openScreen(page, "sources");
+  const lines = page.locator("[data-card-read-every]");
+  await expect(lines.first()).toContainText(/^Read every (minute|\d+ minutes)/);
+  const before = await watch(page);
+  const line = lines.first();
+  const current = Number(/(\d+) minutes/.exec(await line.innerText())?.[1] ?? 0);
+  const next = current === 30 ? 15 : 30;
+  await line.getByRole("button", { name: /^Change how often .* is read$/ }).click();
+  // A value is picked from a list, never typed.
+  const list = line.getByRole("combobox");
+  await expect(list).toBeVisible();
+  expect((await choicesOf(list)).map((c) => c.value)).toEqual(["5", "10", "15", "30", "60"]);
+  await choose(list, String(next));
+  await expect(line).toContainText(`Read every ${next} minutes`);
+  // Saved on the connections of that account, and on no other.
+  const after = await watch(page);
+  const changed = after.filter((s) => before.find((b) => b.id === s.id)?.every_minutes !== s.every_minutes);
+  expect(changed.length).toBeGreaterThan(0);
+  for (const s of changed) expect(s.every_minutes).toBe(next);
+  expect(changed.length).toBeLessThan(after.length);
+  // The card says the same after the page is opened again.
+  await openScreen(page, "sources");
+  await expect(page.locator("[data-card-read-every]").filter({ hasText: `Read every ${next} minutes` }).first()).toBeVisible();
+  // Put it back, so the later projects read the workspace as it was.
+  await page.locator("[data-card-read-every]").filter({ hasText: `Read every ${next} minutes` }).first().getByRole("button", { name: /^Change how often/ }).click();
+  await choose(page.locator("[data-card-read-every]").getByRole("combobox"), String(current));
+  await expect.poll(async () => (await watch(page)).map((s) => s.every_minutes).join()).toBe(before.map((s) => s.every_minutes).join());
 });

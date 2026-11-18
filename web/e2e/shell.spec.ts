@@ -17,7 +17,6 @@ async function assistantName(page: Page): Promise<string> {
 
 async function signIn(page: Page, hash = "") {
   await openScreen(page, hash);
-  await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
 }
 
 /** A save, an Undo and the reload after them are several requests; a computer that is busy takes longer than a screen's own wait. */
@@ -398,8 +397,21 @@ test.describe("screen use and the shell", () => {
           const apart = a.x + a.width <= b.x + 0.5 || b.x + b.width <= a.x + 0.5 || a.y + a.height <= b.y + 0.5 || b.y + b.height <= a.y + 0.5;
           expect(apart, `header controls ${i} and ${j} overlap`).toBe(true);
         }
-      // No assistant line, no "Quick links", and Missed something? is in the Help menu, not the header.
-      await expect(header.getByRole("button", { name: new RegExp(`^${await assistantName(page)}`) })).toHaveCount(0);
+      // The assistant's line is in the header only where it fits beside a search field at least 320px wide (S-0540), on the
+      // one row, inside the window and clear of every other control. No "Quick links", and Missed something? is in the Help
+      // menu, not the header.
+      const line = header.getByRole("button", { name: new RegExp(`^${await assistantName(page)}`) });
+      if ((await line.count()) > 0 && (await line.first().isVisible())) {
+        const l = (await line.first().boundingBox())!;
+        expect(l.y + l.height).toBeLessThanOrEqual(box.y + 56 + 1);
+        expect(l.x).toBeGreaterThanOrEqual(0);
+        expect(l.x + l.width).toBeLessThanOrEqual(width);
+        for (const b of boxes) {
+          const apart = l.x + l.width <= b.x + 0.5 || b.x + b.width <= l.x + 0.5 || l.y + l.height <= b.y + 0.5 || b.y + b.height <= l.y + 0.5;
+          expect(apart, "the assistant's line overlaps a header control").toBe(true);
+        }
+        expect((await header.getByRole("searchbox").boundingBox())!.width, `search field beside the line at ${width}px`).toBeGreaterThanOrEqual(320);
+      }
       await expect(header.getByRole("button", { name: "Quick links" })).toHaveCount(0);
       await expect(header.getByRole("button", { name: "Missed something?" })).toHaveCount(0);
       // Where Ask is a field the workspace's name is whole: it gives way only after Ask has.
@@ -416,12 +428,17 @@ test.describe("screen use and the shell", () => {
         expect(((await header.getByRole("link", { name: /^Go to Today/ }).boundingBox())!).width).toBeGreaterThanOrEqual(24);
         await header.evaluate((h) => h.querySelectorAll<HTMLElement>("a, button, a *, button *").forEach((e) => { e.style.letterSpacing = ""; }));
       }
-      // What is behind the chip: the assistant's state, with today's runs, what waits and the order the accounts are tried in.
+      // What is behind the chip: today's runs, what waits and the order the accounts are tried in. The assistant's state is in
+      // one place: its line in the header where that fits, otherwise its row in the popover (S-0540), never neither.
       const chip = header.getByRole("button", { name: /^App status: / });
       await chip.click();
       const popover = page.getByRole("dialog", { name: "Status" });
       await expect(popover).toBeVisible();
-      await expect(popover.locator('[data-state="alive"]')).toBeVisible();
+      await expect(async () => {
+        const inHeader = (await line.count()) > 0 && (await line.first().isVisible());
+        const inPopover = await popover.locator('[data-state="alive"]').isVisible();
+        expect(inHeader || inPopover, "the assistant's state is in the header line or the status popover").toBe(true);
+      }).toPass(SAVED);
       await expectNoViolations(page);
       await page.keyboard.press("Escape");
       await expect(popover).toHaveCount(0);
@@ -1019,8 +1036,7 @@ test.describe("signing in", () => {
   test("the link's token is traded for a session kept in the page's storage, never a cookie, and the address is clean", async ({ browser, baseURL }) => {
     const context = await browser.newContext({ baseURL, extraHTTPHeaders: {} });
     const page = await context.newPage();
-    await page.goto("?token=e2e-token");
-    await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
+    await openScreen(page);
     expect(page.url()).not.toContain("token=");
     expect(await context.cookies()).toEqual([]);
     const session = await page.evaluate(() => window.localStorage.getItem("cockpit.session"));
@@ -1028,7 +1044,7 @@ test.describe("signing in", () => {
     expect(session).not.toBe("e2e-token");
     // The page stays signed in on a reload that carries no token.
     await page.reload();
-    await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
+    await screenReady(page);
     // Another page's storage (another address or port has its own) holds no session, so the data is refused to it.
     const other = await browser.newContext({ baseURL, extraHTTPHeaders: {} });
     const stranger = await other.newPage();

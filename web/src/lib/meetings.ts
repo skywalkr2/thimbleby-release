@@ -3,7 +3,7 @@
 // that only starts with a capital is lowered to read after "for Thursday's".
 import { monthDay } from "./dates";
 
-const weekday = new Intl.DateTimeFormat(undefined, { weekday: "long" });
+const weekday = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", weekday: "long" });
 
 const lowerFirst = (title: string): string => (/^\p{Lu}[^\p{Lu}]*$/u.test(title) ? title.charAt(0).toLowerCase() + title.slice(1) : title);
 
@@ -19,7 +19,7 @@ export function meetingDay(on: string, today: Date = new Date()): string {
   const gap = daysFrom(today, on);
   if (gap >= 0 && gap < 7) {
     const [y, m, d] = on.slice(0, 10).split("-").map(Number);
-    return weekday.format(new Date(y, m - 1, d));
+    return weekday.format(new Date(Date.UTC(y, m - 1, d)));
   }
   return monthDay(on);
 }

@@ -12,6 +12,7 @@ folder off and on, for the step about having none.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import atexit
 import hashlib
 import json
@@ -627,6 +628,27 @@ def main() -> None:
         release.set()
         return JSONResponse({"released": True})
 
+    async def request_burst(request):
+        """Stand for the assistant working through many requests at once: write `count` finished requests, one every
+        `gap_ms`, each announced to the live stream as its own change, so a page can be tested under a burst."""
+        body = await request.json()
+        count, gap = int(body.get("count", 50)), int(body.get("gap_ms", 20)) / 1000
+        events = app.state.events
+        for _ in range(count):
+            data = {
+                "task": "e2e/burst",
+                "origin": "schedule",
+                "state": "done",
+                "waiting": "",
+                "created_at": store.clock(),
+                "dismissed": True,
+            }
+            with store.transaction() as tx:
+                tx.create("request", data, WriteContext(actor="engine", trust="trusted", op="e2e.burst"))
+            events.changed()
+            await asyncio.sleep(gap)
+        return JSONResponse({"written": count})
+
     async def server_now(_request):
         """The server's clock now, in milliseconds, so a page can follow it (web/e2e/test.ts)."""
         return JSONResponse({"now": time.time() * 1000})
@@ -831,6 +853,7 @@ def main() -> None:
             Route("/__e2e/capture", capture_fixture, methods=["GET", "POST"]),
             Route("/__e2e/now", server_now),
             Route("/__e2e/release", release_run, methods=["POST"]),
+            Route("/__e2e/request-burst", request_burst, methods=["POST"]),
             Route("/__e2e/cases", case_list),
             Route("/__e2e/ledger", ledger),
             Route("/__e2e/closed-by-assistant", closed_by_assistant, methods=["POST"]),

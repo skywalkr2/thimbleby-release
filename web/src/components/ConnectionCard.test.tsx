@@ -242,3 +242,20 @@ test("an account's card says what a stopped read of older mail took in and when 
   const blake = await screen.findByRole("region", { name: BLAKE });
   expect(blake.querySelector("[data-older-read]")).toBeNull();
 });
+
+// S-0538: how often an account is read is on its card, "Read every 15 minutes · Change", and a pick is saved at once as the interval of
+// each of the account's connections (the default for new ones is under Settings, Advanced, Mail).
+test("an account's card says how often it is read, and Change picks another from a list and saves it on its connections", async () => {
+  const user = userEvent.setup();
+  const calls = open([part("a1", ALEX), part("a2", ALEX, { label: `Calendar, ${ALEX}`, reads: ["calendar"] }), part("b", BLAKE)], { "POST settings": () => ({ changes: [], fingerprint: "fp-2", needs_restart: false }) });
+  const card = await screen.findByRole("region", { name: ALEX });
+  const line = card.querySelector("[data-card-read-every]") as HTMLElement;
+  expect(line).toHaveTextContent("Read every 15 minutes");
+  await user.click(within(line).getByRole("button", { name: `Change how often ${ALEX} is read` }));
+  await user.click(within(line).getByRole("combobox", { name: `How often ${ALEX} is read` }));
+  await user.click(await screen.findByRole("option", { name: "Read every 30 minutes" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST settings")).toBe(true));
+  const sent = calls.find((c) => c.route === "POST settings")!.body as { changes: Record<string, Array<{ id: string; every_minutes?: number }>> };
+  // Only this account's connections change; the other account's keeps what it had.
+  expect(sent.changes["watch.sources"].map((s) => [s.id, s.every_minutes])).toEqual([["a1", 30], ["a2", 30], ["b", undefined]]);
+});

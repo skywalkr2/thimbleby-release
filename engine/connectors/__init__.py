@@ -211,7 +211,12 @@ class Poll:
     with its reason; the read moves past them (a read that lists only changes moves its state past them too), they are
     recorded on the read, and the person is told, so one bad item never stops the rest being read. `capped`: True when
     this source will not hand in the rest of its first window, because the first read stopped for good at a limit; a
-    first read that queues its window and brings the rest in on later polls is not capped."""
+    first read that queues its window and brings the rest in on later polls is not capped. `generated_at`: when the
+    source's own data was made, as an ISO 8601 date-time with its offset, for a source that says (a copy of a calendar
+    a file holds, a service's last-modified time); left out when the source holds no such time, so a source that is
+    quiet is never taken for an old one. Data older than the source's normal refresh (`data_fresh_hours`) is told to
+    the person as old, never read as "no changes"; set it only to a time the source itself gives, never to the time of
+    the read."""
 
     items: list[SourceItem]
     state: dict[str, Any] = field(default_factory=dict)
@@ -219,6 +224,7 @@ class Poll:
     removed: list[str] = field(default_factory=list)
     unreadable: list[Unreadable] = field(default_factory=list)
     capped: bool = False
+    generated_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -288,6 +294,11 @@ def checked_poll(poll: Any) -> Poll:
         raise ValueError("a Poll's state is a dict")
     if not isinstance(poll.capped, bool):
         raise ValueError("a Poll's capped is True or False")
+    if poll.generated_at is not None:
+        try:
+            _aware(poll.generated_at)
+        except (TypeError, ValueError):
+            raise ValueError("a Poll's generated_at is a date-time with its offset, or None") from None
     if not all(isinstance(k, str) and k for k in poll.removed):
         raise ValueError("a Poll's removed lists keys")
     if poll.complete and poll.removed:
@@ -586,6 +597,7 @@ class FakeSettings(BaseModel):
         "`too_large`, where it fits), as a mail connector reports a message it can't take.",
     )
     crash: bool = Field(False, description="Stop every read with an error nothing expected.")
+    generated_at: str | None = Field(None, description="When the source's own data was made, as the source says it.")
 
 
 def _read_fake(settings: FakeSettings, state: dict[str, Any], context: ConnectorContext) -> Poll:
@@ -624,6 +636,7 @@ def _read_fake(settings: FakeSettings, state: dict[str, Any], context: Connector
         complete=True,
         unreadable=[Unreadable(u["key"], u["reason"], u.get("kind")) for u in settings.unreadable],
         capped=settings.capped,
+        generated_at=settings.generated_at,
     )
 
 

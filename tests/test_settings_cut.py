@@ -45,23 +45,37 @@ def _rows(items, page, more=False):
     )
 
 
-def test_the_settings_walk_counts_at_most_26_basic_and_30_advanced():
-    """Advanced is now the rarely changed settings wherever they sit: in a page's More settings fold, or under a
-    topic of Advanced that has no page."""
+#: The most settings a Settings page shows at first; the rest are under its folded "More settings" (S-0538).
+MOST_SHOWN_PER_PAGE = 7
+
+#: Where the settings of a feature live, by the front of their key: the pages or topics of Advanced they may sit on.
+#: A setting that changes only one feature lives where that feature lives, so a feature's own
+#: settings never crowd another page: a setting with one of these fronts anywhere else fails.
+FEATURE_HOMES: dict[str, set[str]] = {
+    "watch.": {"mail"},
+    "steward.meetings.": {"meetings"},
+    "steward.capacity.": {"meetings"},
+    "steward.clashes.": {"meetings"},
+    "steward.dates.": {"meetings"},
+    "dispatch.knowledge.": {"learns"},
+    "storage.backups.": {"backups"},
+    "storage.sync.": {"backups"},
+    "ai.": {"ai"},
+}
+
+
+def _home(s) -> str:
+    """The page of a setting, or its topic when it is in a fold or under Advanced."""
+    return s.topic or s.page
+
+
+def test_each_settings_page_shows_at_most_seven_at_first_and_the_rest_wait_under_more_settings():
+    """The per-page guard that replaces the total cap: what a person counts on one page, not across Settings."""
     shown = _shown()
-    without_business = sum(_rows(shown, page) for page in PAGES - {"business"})
-    with_business = without_business + _rows(shown, "business")
-    # Every page's rarely changed settings are in its own "More settings" fold; Advanced holds the topics with no page.
-    more = sum(_rows(shown, page, True) for page in PAGES | {"advanced"})
-    assert without_business <= 23 and with_business <= 26, (without_business, with_business)
-    assert more <= 30, more
-    # The name, the working hours, the quiet hours and the one notices switch make room: 22 rows (where reminders go
-    # is one; the clock, the time list's step and Today's rail rows are three more, and the once-a-day look for a new
-    # version is one), 23 with a business (the words
-    # that mean each side moved to Advanced, Filing), and 28 more behind the pages' folds and Advanced (the
-    # calendar's day start and end are two of them). How often mail and calendars are read is one merged row on Today
-    # (S-0536), the 23rd.
-    assert (without_business, with_business, more) == (23, 24, 30)
+    counts = {page: _rows(shown, page) for page in PAGES}
+    assert {page: n for page, n in counts.items() if n > MOST_SHOWN_PER_PAGE} == {}, counts
+    # Each page's rarely changed settings are in its own "More settings" fold, which has a topic; Advanced holds the
+    # topics with no page, and nothing there is shown at first.
     assert {s.topic for s in shown if s.advanced and s.page} == set(levels.TOPICS)
     assert all(s.topic is None for s in shown if s.page in PAGES and not s.advanced)
     assert all(s.topic for s in shown if s.advanced and s.page)
@@ -69,6 +83,35 @@ def test_the_settings_walk_counts_at_most_26_basic_and_30_advanced():
     assert {s.topic for s in shown if s.page == "advanced"} == set(levels.TOPICS) - set(levels.TOPIC_PAGES)
     for topic, page in levels.TOPIC_PAGES.items():
         assert {s.page for s in shown if s.topic == topic} == {page}, topic
+
+
+def test_a_setting_that_changes_only_one_feature_lives_where_that_feature_lives():
+    """The first rule: a feature's settings are with the feature, never on a page of another one (reading mail is not a
+    notice, so how often it is read is under Mail and not on Today)."""
+    misplaced = {
+        s.key: _home(s)
+        for s in _shown()
+        for front, homes in FEATURE_HOMES.items()
+        if s.key.startswith(front) and s.page is not None and _home(s) not in homes and s.key not in levels.OWN_PART
+    }
+    assert misplaced == {}
+    shown = {s.key: s for s in _shown()}
+    for key in ("watch.mail_read_minutes", "watch.calendar_read_minutes"):
+        assert shown[key].page != "today" and shown[key].topic == "mail", key
+
+
+def test_search_lists_every_shown_setting_wherever_it_lives_with_its_page_and_topic():
+    """The third rule's server side: every setting a person can reach is in the list the screen searches, with the
+    page and the topic that tell it where to open; the screen's search is tested in `Settings.test.tsx`."""
+    shown = _shown()
+    keys = [s.key for s in shown if s.page is not None]
+    assert len(keys) == len(set(keys))
+    for s in shown:
+        if s.page is None:
+            continue
+        assert s.description.strip(), s.key
+        assert s.page in PAGES | {"advanced"}, s.key
+        assert (s.topic is not None) == s.advanced, s.key
 
 
 def test_working_hours_the_brief_times_quiet_hours_and_where_reminders_go_are_one_row_each_and_keep_their_keys():

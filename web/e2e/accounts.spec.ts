@@ -45,6 +45,10 @@ const connections = (page: Page) => page.getByRole("list", { name: "Connections"
 const card = (page: Page, address: string) => page.locator(`[data-connection-card="${address}"]`);
 
 test.describe.serial("several accounts", () => {
+  // These steps change their server's state (setup walked, accounts signed in or out, records added), and a re-run would start
+  // from that used server and fail on its first line for that reason: a re-run proves nothing, so it takes none and shows its
+  // failure as it is (S-0560).
+  test.describe.configure({ retries: 0 });
   test.beforeAll(async () => {
     info = await (await fetch(`${FAKE}/__e2e/info`)).json();
     addresses = ((await (await fetch(`${FAKE}/__e2e/accounts`)).json()) as { accounts: Array<{ address: string }> }).accounts.map((a) => a.address);

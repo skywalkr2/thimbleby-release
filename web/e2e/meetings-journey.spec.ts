@@ -6,6 +6,7 @@
 // browser tests; it has not been run yet.
 import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
+import { openScreen } from "./open-screen";
 import { checkAccessibility, collectProblems } from "./journey-helpers";
 
 interface Seeded {
@@ -20,8 +21,7 @@ interface Seeded {
 const seeded = async (page: Page): Promise<Seeded> => (await page.request.get("/__e2e/meetings")).json();
 
 async function signIn(page: Page) {
-  await page.goto("?token=e2e-token");
-  await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
+  await openScreen(page);
 }
 
 const row = (page: Page, title: string) => page.getByRole("group", { name: title });

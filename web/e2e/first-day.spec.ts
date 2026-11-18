@@ -5,7 +5,7 @@
 // The server (`--first-day`) holds nothing but the business, an empty project in it and one run waiting for the first go.
 import { expect } from "@playwright/test";
 import { test } from "./test";
-import { screenReady } from "./open-screen";
+import { openScreen as openFirstScreen, screenReady } from "./open-screen";
 import { emptyRuns, openScreen, partsOnScreen, screens, setUpWithBusiness, SIDE, type FirstDay } from "./first-day-helpers";
 
 const WIDTHS = [390, 1440];
@@ -63,9 +63,7 @@ test.describe("the first day, read as a person reads it", () => {
   });
 
   test.beforeEach(async ({ page }) => {
-    await page.goto("?token=e2e-token");
-    await screenReady(page);
-    await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
+    await openFirstScreen(page);
     await page.setViewportSize({ width: 1440, height: 900 });
   });
 
