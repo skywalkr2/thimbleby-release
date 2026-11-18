@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import base64
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -172,10 +172,33 @@ class SourceItem:
 @dataclass(frozen=True)
 class Unreadable:
     """One thing a source holds that the connector couldn't read. `key`: how the service names it (or where it is in
-    the listing), never its content. `reason`: why, in plain words, without any of the item's own text."""
+    the listing), never its content. `reason`: why, in plain words, without any of the item's own text. `kind`: what
+    sort of fault it is where the core counts it apart (`"too_large"`: the item is over what can be read here), None
+    for any other reason."""
 
     key: str
     reason: str
+    kind: str | None = None
+
+
+#: The kinds of skipped item the core counts apart; any other reason is counted as `OTHER_SKIPPED`.
+SKIPPED_KINDS = ("too_large",)
+OTHER_SKIPPED = "other"
+
+
+def skipped_counts(unreadable: Sequence[Unreadable]) -> dict[str, int]:
+    """How many of the unreadable items each kind of fault accounts for: a kind the core knows by its name, any other
+    under `OTHER_SKIPPED`. Kinds with none are left out, so an empty answer says nothing was skipped."""
+    counts: dict[str, int] = {}
+    for item in unreadable:
+        name = item.kind if item.kind in SKIPPED_KINDS else OTHER_SKIPPED
+        counts[name] = counts.get(name, 0) + 1
+    return counts
+
+
+def unreadable_dicts(unreadable: Sequence[Unreadable]) -> list[dict[str, str]]:
+    """The unreadable items as a read records them: key and reason, and the kind where there is one."""
+    return [{"key": u.key, "reason": u.reason, **({"kind": u.kind} if u.kind else {})} for u in unreadable]
 
 
 @dataclass
@@ -257,6 +280,8 @@ def checked_poll(poll: Any) -> Poll:
         raise ValueError("only a read that lists changes (complete=False) names removed keys")
     if not all(isinstance(u, Unreadable) and u.key and u.reason for u in poll.unreadable):
         raise ValueError("a Poll's unreadable lists Unreadable items, each with a key and a reason")
+    if not all(u.kind is None or (isinstance(u.kind, str) and u.kind) for u in poll.unreadable):
+        raise ValueError("an Unreadable's kind is text, or None")
     keys = [i.key for i in poll.items]
     if len(keys) != len(set(keys)):
         raise ValueError("a Poll lists each key once")
@@ -543,8 +568,8 @@ class FakeSettings(BaseModel):
     capped: bool = Field(False, description="The read stopped at its cap, as a mail connector's first read can.")
     unreadable: list[dict[str, str]] = Field(
         default_factory=list,
-        description="Things the source listed but couldn't read, each with a key and a reason, as a mail connector "
-        "reports a message it can't take.",
+        description="Things the source listed but couldn't read, each with a key and a reason (and a kind, "
+        "`too_large`, where it fits), as a mail connector reports a message it can't take.",
     )
     crash: bool = Field(False, description="Stop every read with an error nothing expected.")
 
@@ -583,7 +608,7 @@ def _read_fake(settings: FakeSettings, state: dict[str, Any], context: Connector
         items,
         {"reads": reads, "capped": settings.capped},
         complete=True,
-        unreadable=[Unreadable(u["key"], u["reason"]) for u in settings.unreadable],
+        unreadable=[Unreadable(u["key"], u["reason"], u.get("kind")) for u in settings.unreadable],
     )
 
 
@@ -618,10 +643,10 @@ CORE: dict[str, Connector] = _core()
 class OlderMail:
     """How a core mail connector reads mail older than its first read took: `count(settings, since, before, limit,
     context)` says how many messages dated from `since` up to `before` there are (at most `limit`), reading none;
-    `read(...)` returns the newest `limit` of them."""
+    `read(...)` returns the newest `limit` of them, as a list or as a `Poll` (its `items` and `unreadable` are used)."""
 
     count: Callable[[Any, date, date, int, ConnectorContext], int]
-    read: Callable[[Any, date, date, int, ConnectorContext], list[SourceItem]]
+    read: Callable[[Any, date, date, int, ConnectorContext], list[SourceItem] | Poll]
 
 
 #: The core connectors that can be asked for older mail, by name. A plugin's connector that can be asked says so when it

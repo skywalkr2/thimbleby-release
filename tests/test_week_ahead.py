@@ -485,13 +485,18 @@ def test_a_row_for_a_record_that_has_since_gone_or_landed_on_today_is_not_shown(
 
 @pytest.fixture
 def client(tmp_path):
-    ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
-    without_first_go(ws.config_dir)
-    cfg = ws.config(env={"COCKPIT__WORKSPACE__USER__TIMEZONE": "UTC"}, flags={"server.base_path": "/"})
-    app = create_app(ws, cfg, TOKEN, ui_dist=tmp_path / "no-ui", start_worker=False)
-    with TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"}) as http:
-        yield http, app.state.store, app
-    set_responder(None)
+    """The routes on a Monday afternoon (NOW), so a day two days into the week is still ahead whatever day the suite
+    runs on."""
+    import time_machine
+
+    with time_machine.travel(NOW, tick=True):
+        ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
+        without_first_go(ws.config_dir)
+        cfg = ws.config(env={"COCKPIT__WORKSPACE__USER__TIMEZONE": "UTC"}, flags={"server.base_path": "/"})
+        app = create_app(ws, cfg, TOKEN, ui_dist=tmp_path / "no-ui", start_worker=False)
+        with TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"}) as http:
+            yield http, app.state.store, app
+        set_responder(None)
 
 
 def test_the_route_gives_the_card_and_each_row_names_the_record_to_open(client):

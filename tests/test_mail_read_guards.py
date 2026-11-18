@@ -57,18 +57,28 @@ class ServerWith(imaplib.IMAP4_SSL):
     def response(self, name):
         return name, [b"42"]
 
+    reported: dict[int, int] = {}
+    fetched: list[int] = []
+
     def uid(self, command, *args):
         if command == "SEARCH":
             low = int(args[1].split()[1].split(":")[0]) if args[1].startswith("UID") else 1
             return "OK", [b" ".join(str(u).encode() for u in self.messages if u >= low)]
-        return "OK", [(b"1 (BODY[] {10}", self.messages[int(args[0])]), b")"]
+        uid = int(args[0])
+        if args[1] == "(RFC822.SIZE)":
+            size = self.reported.get(uid, len(self.messages[uid]))
+            return "OK", [f"{uid} (UID {uid} RFC822.SIZE {size})".encode()]
+        self.fetched.append(uid)
+        return "OK", [(b"1 (BODY[] {10}", self.messages[uid]), b")"]
 
     def logout(self):
         pass
 
 
-def mailbox(monkeypatch, tmp_path, messages: dict[int, bytes], state=None, **settings):
+def mailbox(monkeypatch, tmp_path, messages: dict[int, bytes], state=None, reported=None, **settings):
     ServerWith.messages = messages
+    ServerWith.reported = reported or {}
+    ServerWith.fetched = []
     monkeypatch.setattr(imaplib, "IMAP4_SSL", ServerWith)
     monkeypatch.setenv("MAIL_PASSWORD", "x")
     config = MailboxSettings(host=N["mail_host"], user=N["mail_user"], password="env:MAIL_PASSWORD", **settings)
@@ -93,6 +103,48 @@ def test_one_message_that_cant_be_read_is_set_aside_with_its_reason_and_the_rest
     assert "broken@mail.example.com" not in json.dumps([u.reason for u in poll.unreadable]), "no mail content"
 
 
+def test_a_message_over_the_size_limit_is_not_fetched_and_is_counted_as_too_large_while_the_rest_are_read(
+    monkeypatch, tmp_path
+):
+    from engine.connectors import skipped_counts
+
+    huge = 60 * 1024 * 1024
+    poll = mailbox(
+        monkeypatch, tmp_path, {7: good(1), 8: good(2), 9: good(3)}, first_read=5, reported={8: huge, 9: huge}
+    )
+    assert [i.key for i in poll.items] == ["<good-1@mail.example.com>"]
+    assert [(u.key, u.reason, u.kind) for u in poll.unreadable] == [
+        ("message 8", "too large to read here", "too_large"),
+        ("message 9", "too large to read here", "too_large"),
+    ]
+    assert ServerWith.fetched == [7], "an oversized message's text is never fetched"
+    assert skipped_counts(poll.unreadable) == {"too_large": 2}
+    assert poll.state["last_uid"] == 9
+
+
+def test_the_size_limit_is_a_setting_and_a_message_within_it_is_read(monkeypatch, tmp_path):
+    poll = mailbox(monkeypatch, tmp_path, {7: good(1)}, first_read=5, reported={7: 3 * 1024 * 1024}, max_message_mb=4)
+    assert len(poll.items) == 1 and poll.unreadable == []
+    poll = mailbox(monkeypatch, tmp_path, {7: good(1)}, first_read=5, reported={7: 3 * 1024 * 1024}, max_message_mb=2)
+    assert poll.items == [] and [u.kind for u in poll.unreadable] == ["too_large"]
+
+
+def test_a_message_the_server_refuses_to_give_is_set_aside_and_the_rest_are_read(monkeypatch, tmp_path):
+    class Refusing(ServerWith):
+        def uid(self, command, *args):
+            if command == "FETCH" and args[0] == "8" and args[1] != "(RFC822.SIZE)":
+                raise imaplib.IMAP4.error("FETCH failed")
+            return super().uid(command, *args)
+
+    monkeypatch.setattr(imaplib, "IMAP4_SSL", Refusing)
+    ServerWith.messages = {7: good(1), 8: good(2), 9: good(3)}
+    ServerWith.reported = {}
+    monkeypatch.setenv("MAIL_PASSWORD", "x")
+    config = MailboxSettings(host=N["mail_host"], user=N["mail_user"], password="env:MAIL_PASSWORD", first_read=5)
+    poll = read_mailbox(config, {}, ConnectorContext(tmp_path))
+    assert len(poll.items) == 2 and [(u.key, u.kind) for u in poll.unreadable] == [("message 8", None)]
+
+
 def test_a_message_the_server_gave_no_text_for_is_recorded_not_dropped(monkeypatch, tmp_path):
     poll = mailbox(monkeypatch, tmp_path, {7: good(1), 8: b"", 9: good(2)}, first_read=5)
     assert len(poll.items) == 2 and [u.key for u in poll.unreadable] == ["message 8"]
@@ -113,7 +165,8 @@ def test_the_older_read_sets_a_bad_message_aside_too(monkeypatch, tmp_path):
     monkeypatch.setenv("MAIL_PASSWORD", "x")
     config = MailboxSettings(host=N["mail_host"], user=N["mail_user"], password="env:MAIL_PASSWORD")
     found = module.read_older(config, NOW.date(), NOW.date(), 10, ConnectorContext(tmp_path))
-    assert [i.key for i in found] == ["<good-1@mail.example.com>"]
+    assert [i.key for i in found.items] == ["<good-1@mail.example.com>"]
+    assert [u.key for u in found.unreadable] == ["message 8"]
 
 
 def test_a_repeated_message_id_in_one_read_keeps_both_messages(monkeypatch, tmp_path):

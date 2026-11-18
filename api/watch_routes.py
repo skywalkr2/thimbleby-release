@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import os
 from datetime import timedelta
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 
@@ -90,6 +90,18 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
             out.append(SourceSecretView(field=field, where=where, name=name))
         return out
 
+    def skipped_of(read: Any, intake: Any) -> dict[str, int]:
+        """What the latest read skipped plus what the first read's older-mail and header reads skipped, by kind."""
+        parts = [
+            (read.data.get("skipped") if read else None) or {},
+            (intake.data.get("older_skipped") if intake else None) or {},
+        ]
+        total: dict[str, int] = {}
+        for part in parts:
+            for kind, n in part.items():
+                total[kind] = total.get(kind, 0) + n
+        return total
+
     def view(source: object) -> WatchSourceView:
         known = watch.connectors(store)
         connector = known.get(source.connector)
@@ -155,11 +167,13 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
                         "unsorted",
                     )
                 },
+                skipped=dict(last.data.get("skipped") or {}),
                 started_at=str(last.data["started_at"]),
                 retry_at=str(last.data["retry_at"]) if last.data.get("retry_at") else None,
             )
             if last
             else None,
+            skipped=skipped_of(read, source_intake.intake_run(store.read(), source.id)),
             read_at=str(read.data["started_at"]) if read else None,
             stale=watch.stale_since(store, cfg, source, worker.now()) is not None,
             failures=failures,

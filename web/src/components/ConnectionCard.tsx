@@ -22,6 +22,7 @@ import { restoreFocus } from "./ModalPanel";
 import { RowMenu, type MenuAction } from "./RowMenu";
 import { SignOutConfirm, addonOfSignIn } from "./SignIns";
 import { ProblemDetails } from "./ProblemDetails";
+import { addSkipped, skippedWords } from "../lib/skipped";
 import { FullReadChoice } from "./FullReadChoice";
 import { SourceSides } from "./SourceSides";
 import styles from "./ConnectionCard.module.css";
@@ -41,7 +42,7 @@ export function ConnectionCardView(props: {
   privacy: ReactNode | null;
   onChooseSource: (plugin: string | null, kind?: string, account?: string) => void;
 }) {
-  const { t, has } = useWords();
+  const { t, tn, has } = useWords();
   const act = useAct();
   const client = useQueryClient();
   const { card } = props;
@@ -90,6 +91,8 @@ export function ConnectionCardView(props: {
   });
   const showSides = filter.offered && card.kind === "account" && card.sources.length > 0;
   const accountName = card.address ?? card.name;
+  // What the account's latest reads skipped, in plain words; nothing is said when none skipped anything.
+  const skipped = skippedWords(addSkipped(card.sources.map((s) => s.skipped)), tn);
   const signIn = card.signIn;
   const signedIn = card.signedIn;
   const menu: MenuAction[] = [];
@@ -251,6 +254,11 @@ export function ConnectionCardView(props: {
         </ul>
       ) : (
         <p className={styles.empty}>{t("connection.empty_account")}</p>
+      )}
+      {card.kind === "account" && skipped && (
+        <p className="hint" data-skipped="" role="status">
+          {skipped}
+        </p>
       )}
       {card.kind === "account" && <FullReadChoice sources={card.sources} account={accountName} />}
       {confirming && signIn && signedIn && (

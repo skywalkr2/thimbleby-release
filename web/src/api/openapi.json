@@ -13041,6 +13041,12 @@
       "FullReadOptionView": {
         "description": "One reach offered for reading mail in full, with what it takes in and about what it costs.",
         "properties": {
+          "capped": {
+            "default": false,
+            "description": "The count stopped at the most one read asks a source for, so there may be more: it reads as \"at least\" this many, and the cost as \"at least\" this much.",
+            "title": "Capped",
+            "type": "boolean"
+          },
           "count": {
             "description": "Items it takes in beyond what the first read took; 0 when the first read covers it.",
             "title": "Count",
@@ -16483,6 +16489,12 @@
             "description": "The oldest mail the source has returned, when it is later.",
             "title": "Available From"
           },
+          "capped": {
+            "default": false,
+            "description": "The count stopped at the most one look asks a source for, so there may be more: it reads as \"at least\" this many, and the cost as \"at least\" this much.",
+            "title": "Capped",
+            "type": "boolean"
+          },
           "count": {
             "description": "Items the look takes in (before: would take in); none that a rule closes.",
             "title": "Count",
@@ -16514,6 +16526,14 @@
             "description": "False when the source holds no mail as far back as asked: `available_from` is where its mail starts and nothing earlier can be taken in.",
             "title": "Reaches",
             "type": "boolean"
+          },
+          "skipped": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "After the look: how many messages it couldn't read, by kind (`too_large`, `other`). A kind with none is left out.",
+            "title": "Skipped",
+            "type": "object"
           },
           "started": {
             "default": false,
@@ -35860,6 +35880,14 @@
             "description": "For a throttled read: not read again before this time.",
             "title": "Retry At"
           },
+          "skipped": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "How many things this read skipped, by kind (`too_large`, `other`). A kind with none is left out.",
+            "title": "Skipped",
+            "type": "object"
+          },
           "started_at": {
             "title": "Started At",
             "type": "string"
@@ -36603,6 +36631,14 @@
             },
             "title": "Sides",
             "type": "array"
+          },
+          "skipped": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "How many things the source's latest read skipped, with what its older-mail and header reads skipped, by kind (`too_large`, `other`). A kind with none is left out, so empty says nothing was skipped.",
+            "title": "Skipped",
+            "type": "object"
           },
           "stale": {
             "anyOf": [

@@ -58,6 +58,14 @@ class MailboxSettings(BaseModel):
     max_per_read: int = Field(
         50, ge=1, le=500, description="The most messages one read takes.", json_schema_extra={"advanced": True}
     )
+    max_message_mb: int = Field(
+        40,
+        ge=1,
+        le=1000,
+        description="The largest message, in megabytes, that is read. A bigger one is left on the server and counted "
+        "as skipped.",
+        json_schema_extra={"advanced": True},
+    )
     timeout_seconds: float = Field(
         30,
         gt=0,
@@ -271,12 +279,35 @@ _UNREADABLE_WHY = {
     "no_id": "it has no Message-ID",
     "deep": "its parts are nested too deeply to read",
     "other": "it couldn't be read",
+    "too_large": "too large to read here",
 }
 
+_SIZED = re.compile(rb"RFC822\.SIZE\s+(\d+)", re.IGNORECASE)
 
-def _fetch(server: imaplib.IMAP4, uids: Sequence[int]) -> tuple[list[SourceItem], list[Unreadable]]:
+
+def _size(server: imaplib.IMAP4, uid: int) -> int | None:
+    """The size in bytes the server reports for one message, asked without fetching any text; None when the server gives
+    none, so the message is read as if it were within the limit."""
+    try:
+        status, parts = server.uid("FETCH", str(uid), "(RFC822.SIZE)")
+    except imaplib.IMAP4.error:
+        return None
+    if status != "OK":
+        return None
+    for part in parts or []:
+        line = part[0] if isinstance(part, tuple) and part else part
+        found = _SIZED.search(line) if isinstance(line, bytes) else None
+        if found:
+            return int(found.group(1))
+    return None
+
+
+def _fetch(
+    server: imaplib.IMAP4, uids: Sequence[int], max_bytes: int | None = None
+) -> tuple[list[SourceItem], list[Unreadable]]:
     """The messages with these UIDs as items, fetched without marking them read, and those that couldn't be read, each
-    named by its UID with its reason. One message that can't be read never stops the others. A Message-ID that an
+    named by its UID with its reason. A message the server says is over `max_bytes` is not fetched; it is set aside as
+    too large. One message that can't be read never stops the others. A Message-ID that an
     earlier message of the same read already has gets `#2`, `#3` and so on after it, so a later message is never
     taken for another one's change."""
     items: list[SourceItem] = []
@@ -284,7 +315,15 @@ def _fetch(server: imaplib.IMAP4, uids: Sequence[int]) -> tuple[list[SourceItem]
     used: dict[str, int] = {}
     for uid in uids:
         key = f"message {uid}"
-        status, parts = server.uid("FETCH", str(uid), "(BODY.PEEK[])")
+        size = _size(server, uid) if max_bytes else None
+        if size is not None and max_bytes and size > max_bytes:
+            unreadable.append(Unreadable(key, _UNREADABLE_WHY["too_large"], kind="too_large"))
+            continue
+        try:
+            status, parts = server.uid("FETCH", str(uid), "(BODY.PEEK[])")
+        except imaplib.IMAP4.error:  # the server refused this one message: only it is set aside
+            unreadable.append(Unreadable(key, _UNREADABLE_WHY["other"]))
+            continue
         raw = next((p[1] for p in parts or [] if isinstance(p, tuple) and len(p) > 1), None)
         if status != "OK" or not raw:
             unreadable.append(Unreadable(key, _UNREADABLE_WHY["empty"]))
@@ -322,7 +361,7 @@ def read_mailbox(settings: MailboxSettings, state: dict[str, Any], context: Conn
         if not last:
             uids = uids[-settings.first_read :] if settings.first_read else []
         uids = uids[: settings.max_per_read]
-        items, unreadable = _fetch(server, uids)
+        items, unreadable = _fetch(server, uids, settings.max_message_mb * 1024 * 1024)
         # The position moves past a message that couldn't be read, so the same one isn't tried on every pass.
         newest = max(uids, default=last)
         # A first read that returned as many messages as it may take stopped at its cap, not at the end of the mail.
@@ -366,13 +405,14 @@ def count_older(settings: MailboxSettings, since: date, before: date, limit: int
         _close(server)
 
 
-def read_older(
-    settings: MailboxSettings, since: date, before: date, limit: int, context: ConnectorContext
-) -> list[SourceItem]:
-    """The newest `limit` messages dated from `since` up to `before`, fetched without marking them read."""
+def read_older(settings: MailboxSettings, since: date, before: date, limit: int, context: ConnectorContext) -> Poll:
+    """The newest `limit` messages dated from `since` up to `before`, fetched without marking them read, with the ones
+    that couldn't be read (too large, say) set aside and named."""
     server = _open(settings)
     try:
-        return _fetch(server, _older_uids(server, settings, since, before)[-limit:])[0]
+        uids = _older_uids(server, settings, since, before)[-limit:]
+        items, unreadable = _fetch(server, uids, settings.max_message_mb * 1024 * 1024)
+        return Poll(items, complete=False, unreadable=unreadable)
     except (imaplib.IMAP4.abort, TimeoutError, OSError):
         raise ConnectorError("outage", "the mail server stopped answering") from None
     finally:

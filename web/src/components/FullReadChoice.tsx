@@ -7,6 +7,7 @@ import { useState } from "react";
 import { api, type S } from "../lib/api";
 import { useAct } from "../lib/act";
 import { useEstimate } from "../lib/money";
+import { skippedWords } from "../lib/skipped";
 import { useWords } from "../lib/wording";
 import { Button } from "../ui/Button";
 import { costWords } from "./LookBack";
@@ -37,6 +38,7 @@ function summed(views: S["FullReadView"][]): Option[] {
       estimate_usd: priced.length > 0 ? priced.reduce((n, x) => n + (x.estimate_usd ?? 0), 0) : null,
       unpriced: same.reduce((n, x) => n + x.unpriced, 0),
       reaches: same.every((x) => x.reaches),
+      capped: same.some((x) => x.capped),
     };
   });
 }
@@ -53,6 +55,12 @@ export function FullReadChoice(props: { sources: Source[]; account: string }) {
   if (open.length === 0) return null;
   const ready = views.every((v) => v.data !== undefined);
   const options = ready ? summed(views.map((v) => v.data as S["FullReadView"])) : [];
+  // What the read did, in words: what is being taken in, then what it skipped (nothing is said of skipping when none was).
+  const readWords = (r: S["LookBackView"], source: string): string => {
+    const head = r.taken === 0 ? t("walkthrough.mail.full_read.nothing") : r.started ? tn("coverage.look_back.done", r.taken, { source }) : t("coverage.look_back.done_held", { source });
+    const skipped = skippedWords(r.skipped, tn);
+    return skipped ? `${head} ${skipped}` : head;
+  };
   const confirm = async () => {
     if (picked === null) return;
     setBusy(true);
@@ -61,9 +69,7 @@ export function FullReadChoice(props: { sources: Source[]; account: string }) {
         () => api.answerFullRead(s.id, picked),
         picked === NOT_NOW
           ? undefined
-          : (r) => ({
-              message: r.taken === 0 ? t("walkthrough.mail.full_read.nothing") : r.started ? tn("coverage.look_back.done", r.taken, { source: s.label }) : t("coverage.look_back.done_held", { source: s.label }),
-            }),
+          : (r) => ({ message: readWords(r, s.label) }),
       );
       if (done === undefined) break;
     }
@@ -86,7 +92,7 @@ export function FullReadChoice(props: { sources: Source[]; account: string }) {
             <option value="">{t("walkthrough.mail.full_read.choose")}</option>
             {options.map((o) => {
               const cost = o.count === 0 ? "" : costWords(o, estimate, t);
-              const found = o.count === 0 ? t("walkthrough.mail.full_read.covered") : tn("walkthrough.mail.full_read.found", o.count, { cost });
+              const found = o.count === 0 ? t("walkthrough.mail.full_read.covered") : tn(o.capped ? "walkthrough.mail.full_read.found_capped" : "walkthrough.mail.full_read.found", o.count, { cost });
               return (
                 <option key={o.days} value={String(o.days)}>
                   {reachWords(o.days, tn)}: {found}

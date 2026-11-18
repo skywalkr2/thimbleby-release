@@ -16,9 +16,15 @@ from engine.connectors import ConnectorError
 
 LOCAL = {"localhost", "127.0.0.1", "::1"}
 DEFAULT_TIMEOUT = 20.0
-MAX_BYTES = 5 * 1024 * 1024
+#: The largest answer a service may send: a mail service's largest message, with its attachments, grown by about a
+#: third in transit (a 25 MB attachment arrives as about 34 MB).
+MAX_BYTES = 40 * 1024 * 1024
 #: A transport every client uses when none is given; tests set it to answer without a network.
 TRANSPORT: httpx.BaseTransport | None = None
+
+
+class AnswerTooLarge(ConnectorError):
+    """A service's answer bigger than the client takes: a connector may skip the one item it was for."""
 
 
 @dataclass(frozen=True)
@@ -82,7 +88,7 @@ class WebClient:
                     for chunk in response.iter_bytes():
                         body.extend(chunk)
                         if len(body) > self.max_bytes:
-                            raise ConnectorError("outage", f"the answer is larger than {self.max_bytes // 1024} KB")
+                            raise AnswerTooLarge("outage", f"the answer is larger than {self.max_bytes // 1024} KB")
                     return _checked(Response(response.status_code, dict(response.headers), bytes(body)))
             except httpx.ConnectError as err:
                 raise ConnectorError("offline", f"couldn't connect: {err}") from None

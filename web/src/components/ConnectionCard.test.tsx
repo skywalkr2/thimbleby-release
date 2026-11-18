@@ -223,3 +223,12 @@ test("an account added later is asked how far back to read it in full, in the sa
   const old = await screen.findByRole("region", { name: /old@example\.com/ });
   expect(within(old).queryByText("Read in full from:")).toBeNull();
 });
+
+test("an account's card says what its latest reads skipped in plain words, and says nothing about skipping when none did", async () => {
+  open([part("a", ALEX, { skipped: { too_large: 3 } }), part("b", BLAKE, { skipped: {} })]);
+  const alex = await screen.findByRole("region", { name: ALEX });
+  expect(within(alex).getByText("Skipped 3 messages that were too large.")).toBeInTheDocument();
+  const blake = await screen.findByRole("region", { name: BLAKE });
+  expect(blake.querySelector("[data-skipped]")).toBeNull();
+  expect(within(blake).queryByText(/skipped/i)).toBeNull();
+});

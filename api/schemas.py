@@ -4346,6 +4346,11 @@ class FullReadOptionView(BaseModel):
     estimate_usd: float | None = Field(None, description="About what they cost; None when no price is known.")
     unpriced: int = Field(0, description="How many of the items have no price.")
     reaches: bool = Field(True, description="False when the source holds no mail as far back as asked.")
+    capped: bool = Field(
+        False,
+        description="The count stopped at the most one read asks a source for, so there may be more: it reads as "
+        '"at least" this many, and the cost as "at least" this much.',
+    )
 
 
 class FullReadView(BaseModel):
@@ -4383,6 +4388,16 @@ class LookBackView(BaseModel):
     taken: int = Field(0, description="After the look: the requests made.")
     started: bool = Field(
         False, description="After the look: they started at once; False when they wait for the go or none was made."
+    )
+    capped: bool = Field(
+        False,
+        description="The count stopped at the most one look asks a source for, so there may be more: it reads as "
+        '"at least" this many, and the cost as "at least" this much.',
+    )
+    skipped: dict[str, int] = Field(
+        default_factory=dict,
+        description="After the look: how many messages it couldn't read, by kind (`too_large`, `other`). A kind with "
+        "none is left out.",
     )
 
 
@@ -5842,6 +5857,10 @@ class WatchRunView(BaseModel):
         description="When some of the read's mail wasn't sorted by the assistant: why, in plain words. That mail was "
         "handed in as work. None when all of it was sorted or placed by the rules.",
     )
+    skipped: dict[str, int] = Field(
+        default_factory=dict,
+        description="How many things this read skipped, by kind (`too_large`, `other`). A kind with none is left out.",
+    )
 
 
 class SourceSecretView(BaseModel):
@@ -5939,6 +5958,11 @@ class WatchSourceView(BaseModel):
         "serves no side.",
     )
     last: WatchRunView | None = None
+    skipped: dict[str, int] = Field(
+        default_factory=dict,
+        description="How many things the source's latest read skipped, with what its older-mail and header reads "
+        "skipped, by kind (`too_large`, `other`). A kind with none is left out, so empty says nothing was skipped.",
+    )
     read_at: str | None = Field(
         None, description="When it was last actually read; a try that found no network or failed doesn't count."
     )

@@ -144,6 +144,16 @@ EVENTS_WITH_KIND = {"record.changed", "stage.moved", "file.added", "text.accepte
 log = logging.getLogger(__name__)
 
 
+def _as_read(answer: Any, limit: int) -> Any:
+    """What an older-items or headers function gave, checked, as a `Poll` of at most `limit` items: a list of items, or
+    a `Poll` whose `items` and `unreadable` are used (its state, completeness and removals are ignored)."""
+    from engine.connectors import Poll, checked_poll
+
+    if isinstance(answer, Poll):
+        return checked_poll(Poll(list(answer.items)[:limit], complete=False, unreadable=list(answer.unreadable)))
+    return checked_poll(Poll(list(answer)[:limit], complete=False))
+
+
 def question_subject(plugin: str, title: str, text: str) -> str:
     """The key of a question an add-on files: its add-on, its title and its words with whitespace and case folded."""
     import hashlib
@@ -1175,7 +1185,7 @@ class PluginHost:
         """How to ask a plugin's connector for items older than its first read took, as the account a source reads
         with (the core's `OlderMail`), or None when the connector says it can't be asked. A call is contained like a
         poll: its `ConnectorError` passes through, anything else is noted on the plugin and becomes an outage."""
-        from engine.connectors import ConnectorError, OlderMail, Poll, checked_poll
+        from engine.connectors import ConnectorError, OlderMail
 
         if connector.older is None:
             return None
@@ -1191,11 +1201,9 @@ class PluginHost:
                         raise ValueError("older_count returns a whole number")
                     result: Any = min(found, limit)
                 else:
-                    items = list(connector.older(deepcopy(settings), since, before, limit, context))
-                    checked_poll(Poll(items, complete=False))
-                    result = items[:limit]
+                    result = _as_read(connector.older(deepcopy(settings), since, before, limit, context), limit)
                     if counting:
-                        result = len(result)
+                        result = len(result.items)
             except ConnectorError:
                 raise
             except Exception as err:
@@ -1214,21 +1222,20 @@ class PluginHost:
 
     def header_mail(self, connector: Any, account: str | None = None) -> Any:
         """How to ask a plugin's connector for message headers alone, as the account a source reads with:
-        `read(settings, since, before, limit, context) -> list[SourceItem]`, or None when the connector doesn't say it
-        can. A call is contained like a poll: its `ConnectorError` passes through, anything else is noted on the plugin
-        and becomes an outage."""
-        from engine.connectors import ConnectorError, Poll, checked_poll
+        `read(settings, since, before, limit, context) -> Poll` (the items and what it skipped), or None when the
+        connector doesn't say it can. A call is contained like a poll: its `ConnectorError` passes through, anything
+        else is noted on the plugin and becomes an outage."""
+        from engine.connectors import ConnectorError, Poll
 
         if getattr(connector, "headers", None) is None:
             return None
         plugin = connector.name.split("/", 1)[0]
         where = f"connector {connector.name} (headers)"
 
-        def read(settings: Any, since: Any, before: Any, limit: int, context: Any) -> list[Any]:
+        def read(settings: Any, since: Any, before: Any, limit: int, context: Any) -> Poll:
             context = self.connector_context(plugin, context.workspace_root, account)
             try:
-                items = list(connector.headers(deepcopy(settings), since, before, limit, context))
-                checked_poll(Poll(items, complete=False))
+                found = _as_read(connector.headers(deepcopy(settings), since, before, limit, context), limit)
             except ConnectorError:
                 raise
             except Exception as err:
@@ -1238,7 +1245,7 @@ class PluginHost:
                 if context.web is not None:
                     context.web.close()
             self.succeeded(plugin, where)
-            return items[:limit]
+            return found
 
         return read
 

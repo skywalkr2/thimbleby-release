@@ -32,13 +32,23 @@ import yaml
 from pydantic import ValidationError
 
 from engine import audience, entry_rules, version_choices, versions
-from engine.connectors import CORE, Connector, ConnectorContext, ConnectorError, SourceItem
+from engine.connectors import (
+    CORE,
+    Connector,
+    ConnectorContext,
+    ConnectorError,
+    SourceItem,
+    skipped_counts,
+    unreadable_dicts,
+)
 from engine.extract.attached import with_files_read
 from engine.html_text import as_text
 from engine.language_words import language_words
 from engine.names import People
+from engine.net import AnswerTooLarge
 from engine.own_accounts import own_names
 from engine.plain_errors import reason_of
+from engine.sides import word
 from engine.state_file import write_whole
 from engine.storage import StoreError, WriteContext
 from engine.triage import classify, classify_placed
@@ -341,7 +351,8 @@ def _refresh(ws: Any, store: Any, cfg: Any, source_id: str, now: datetime | None
         changed=len(result.changed),
         removed=len(result.removed),
         unsorted=result.note,
-        unreadable=[{"key": u.key, "reason": u.reason} for u in poll.unreadable],
+        unreadable=unreadable_dicts(poll.unreadable),
+        skipped=skipped_counts(poll.unreadable),
         state=poll.state,
         looked_back_to=back_to.isoformat() if back_to else None,
         asks_full_read=bool(back_to),
@@ -364,6 +375,9 @@ def _failed_read(store: Any, cfg: Any, source: Any, err: ConnectorError, now: da
     """Record a read that a connector refused, as the person is told of it: the kind of failure, the wait a throttled
     read asked for, and the problem in words (one question to the person at the configured count of failures)."""
     err.advice_key = _sign_in_advice(store, source.connector, err.advice_key)
+    if isinstance(err, AnswerTooLarge):
+        # An answer over the limit says so in the app's own words, never the service's text or the size.
+        err.detail = word(None, "read.failed.too_large")
     outcome = {"offline": "offline", "throttled": "throttled"}.get(err.kind, "failed")
     wait = err.retry_after if err.retry_after is not None else source.every_minutes * 60
     _record(
@@ -374,7 +388,7 @@ def _failed_read(store: Any, cfg: Any, source: Any, err: ConnectorError, now: da
         outcome,
         error_kind=err.kind if outcome == "failed" else None,
         error=err.detail or None,
-        error_own=bool(err.detail) and (source.connector in CORE or isinstance(err, AddonMissing)),
+        error_own=_own_words(source, err),
         error_advice=err.advice_key if outcome == "failed" else None,
         **({"retry_at": (now + timedelta(seconds=wait)).isoformat()} if outcome == "throttled" else {}),
     )
@@ -1398,10 +1412,16 @@ def _problem(what: str, advice: str) -> str:
     return f"{what} {advice}".strip()
 
 
+def _own_words(source: Any, err: ConnectorError) -> bool:
+    """Whether a failure's detail is in the app's own words (the app found the fault, a connector it ships wrote it, or
+    it is the answer-too-large notice), so a screen may say it as a sentence."""
+    return bool(err.detail) and (source.connector in CORE or isinstance(err, AddonMissing | AnswerTooLarge))
+
+
 def _maybe_ask(store: Any, cfg: Any, source: Any, err: ConnectorError) -> str:
     """The problem in words; at the configured count of failures in a row, one question to the person."""
     where = source.label or source.id
-    own = bool(err.detail) and (source.connector in CORE or isinstance(err, AddonMissing))
+    own = _own_words(source, err)
     what = f"{where} can't be read: {err.detail}" if own else f"{where} can't be read"
     problem = _problem(what, advice_for(err.kind, err.advice_key))
     if failures_in_a_row(store, source.id) != cfg.watch.failures_before_asking:

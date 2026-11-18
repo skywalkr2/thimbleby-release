@@ -163,3 +163,11 @@ desktop.copied: Copied
 sign_in.away.done: You're signed in
 sign_in.away.not_done: The sign-in didn't finish
 sign_in.away.back: You can close this tab and go back to Thimbleby, which shows what happened.
+read.failed.too_large: The mail service sent an answer too large to read here, so nothing was read this time. It is tried again on its schedule.
+full_read.failed.too_large: The mail service sent a message too large to read here. Try again later, or choose a shorter reach.
+full_read.failed.auth: The mail service asked you to sign in again. Sign in on this account, then try again.
+full_read.failed.no_access: The mail service didn't let Thimbleby read older mail. Check the account's access, then try again.
+full_read.failed.not_found: The mail service couldn't find the mail asked for. Try again.
+full_read.failed.outage: The mail service didn't send the older mail just now. Try again in a few minutes.
+full_read.failed.offline: You're offline, so older mail couldn't be read. Try again once you're connected.
+full_read.failed.throttled: The mail service is busy. Try again in a few minutes.

@@ -1276,7 +1276,18 @@ class WatchRun(Record):
     unreadable: list[dict[str, str]] = Field(
         default_factory=list,
         description="The things the read found but couldn't read, each with its `key` (how the service names it) and "
-        "the `reason` in plain words, never any of its own text. The read went past them and read the rest.",
+        "the `reason` in plain words, never any of its own text (and a `kind`, `too_large`, where it fits). The read "
+        "went past them and read the rest.",
+    )
+    skipped: dict[str, int] = Field(
+        default_factory=dict,
+        description="How many things this read skipped, by kind: `too_large` (over what can be read here) and `other`. "
+        "A kind with none is left out, so an empty answer says nothing was skipped.",
+    )
+    older_skipped: dict[str, int] = Field(
+        default_factory=dict,
+        description="For a source's first read that took it in quietly: what its reads of older mail and of a year of "
+        "headers skipped, added up by kind as `skipped` is.",
     )
     state: dict[str, Any] = Field(default_factory=dict, description="What the connector keeps between reads.")
     looked_back_to: date | None = Field(

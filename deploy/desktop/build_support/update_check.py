@@ -102,17 +102,37 @@ def serve_feed(installer: Path, system: str, port: int) -> tuple[ThreadingHTTPSe
     return server, f"{LOCAL}:{server.server_address[1]}/releases"
 
 
-def call(method: str, url: str, token: str, port: int) -> object:
-    """A request to the app as its own page makes it: the install token, and the page's own origin."""
+_SESSIONS: dict[tuple[int, str], str] = {}
+
+
+def _send(method: str, url: str, bearer: str, port: int) -> object:
     request = urllib.request.Request(
         url,
         method=method,
         data=b"" if method == "POST" else None,
-        headers={"Authorization": f"Bearer {token}", "Origin": f"{LOCAL}:{port}"},
+        headers={"Authorization": f"Bearer {bearer}", "Origin": f"{LOCAL}:{port}"},
     )
     with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=30) as answer:
         text = answer.read().decode()
     return json.loads(text) if text else None
+
+
+def session(port: int, token: str) -> str:
+    """The session the app gives for its install token, as its own page gets one (`POST /api/session`); every other
+    route takes the session, never the token."""
+    key = (port, token)
+    if key not in _SESSIONS:
+        opened = _send("POST", f"{LOCAL}:{port}/api/session", token, port)
+        if not isinstance(opened, dict) or not isinstance(opened.get("session"), str):
+            raise OSError("the app gave no session for its install token")
+        _SESSIONS[key] = opened["session"]
+    return _SESSIONS[key]
+
+
+def call(method: str, url: str, token: str, port: int) -> object:
+    """A request to the app as its own page makes it: the session its install token opens, and the page's own
+    origin."""
+    return _send(method, url, session(port, token), port)
 
 
 def wait_for_offer(port: int, token: str) -> dict:

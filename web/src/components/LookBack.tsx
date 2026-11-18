@@ -7,6 +7,7 @@ import { api, type S } from "../lib/api";
 import { useAct } from "../lib/act";
 import { day } from "../lib/dates";
 import { useEstimate } from "../lib/money";
+import { skippedWords } from "../lib/skipped";
 import { useWords } from "../lib/wording";
 import { Button } from "../ui/Button";
 import styles from "./Today.module.css";
@@ -61,7 +62,7 @@ export function LookBack(props: { source: Source; onClose: () => void }) {
             : found && found.count === 0
               ? t("coverage.look_back.none")
               : found
-                ? tn("coverage.look_back.found", found.count, { from: day(found.from_date), cost })
+                ? tn(found.capped ? "coverage.look_back.found_capped" : "coverage.look_back.found", found.count, { from: day(found.from_date), cost })
                 : ""}
         {found && !found.reaches && found.available_from ? ` ${t("coverage.look_back.only_from", { date: day(found.available_from) })}` : ""}
       </p>
@@ -81,19 +82,22 @@ type T = (key: string, vars?: Record<string, string | number>) => string;
 
 /** What the items would cost, in words: the estimate, the plan's allowance, or both. */
 export function costWords(
-  found: Pick<S["LookBackView"], "estimate_usd" | "unpriced">,
+  found: Pick<S["LookBackView"], "estimate_usd" | "unpriced"> & { capped?: boolean },
   estimate: (usd: number | null | undefined) => string | null,
   t: T,
 ): string {
   const amount = estimate(found.estimate_usd);
   if (amount === null) return t("coverage.look_back.cost.unpriced");
-  return t(found.unpriced > 0 ? "coverage.look_back.cost.mixed" : "coverage.look_back.cost.priced", { cost: amount });
+  const kind = found.unpriced > 0 ? "mixed" : "priced";
+  return t(`coverage.look_back.cost.${kind}${found.capped ? "_capped" : ""}`, { cost: amount });
 }
 
 /** What the look did: how many older items are being taken in, or that they wait for the go, and where the mail starts when
  * the source didn't reach as far as asked. */
-function doneWords(done: S["LookBackView"], label: string, t: T, tn: (key: string, n: number, vars?: Record<string, string | number>) => string): string {
+export function doneWords(done: S["LookBackView"], label: string, t: T, tn: (key: string, n: number, vars?: Record<string, string | number>) => string): string {
   const parts = [done.taken === 0 ? t("coverage.look_back.none") : done.started ? tn("coverage.look_back.done", done.taken, { source: label }) : t("coverage.look_back.done_held", { source: label })];
   if (!done.reaches && done.available_from) parts.push(t("coverage.look_back.only_from", { date: day(done.available_from) }));
+  const skipped = skippedWords(done.skipped, tn);
+  if (skipped) parts.push(skipped);
   return parts.join(" ");
 }

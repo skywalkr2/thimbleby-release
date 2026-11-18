@@ -3882,6 +3882,14 @@ class WatchFile(FileModel):
         description="The most older messages one look further back asks a mail source for. A look that would find "
         "more takes the newest of them and says where the mail it took starts.",
     )
+    full_read_max_items: int = Field(
+        5000,
+        ge=1,
+        le=100000,
+        description="The most older messages the full read after a first sign-in counts and reads for the reach the "
+        'person chose, in pages of the size one look further back asks for. A reach with more says "at least" '
+        "and reads the newest of them.",
+    )
     first_headers_days: int = Field(
         365,
         ge=0,

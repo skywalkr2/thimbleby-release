@@ -16,7 +16,7 @@ the same way, under the same go rules, and the date moves.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -329,6 +329,8 @@ class LookBack:
     reaches: bool = True  # the source holds mail as far back as asked
     started: bool = False  # taken in and started at once (False: held for the go, or nothing to take in)
     taken: int = 0
+    capped: bool = False  # the count stopped at the most one look asks for, so there may be more: "at least"
+    skipped: dict[str, int] = field(default_factory=dict)  # what the look couldn't read, by kind
 
 
 def _candidates(ws: Any, store: Any, cfg: Any, source: Any, accept: Callable[[dict[str, Any]], bool]) -> list[Any]:
@@ -397,7 +399,9 @@ def _remote_range(store: Any, source_id: str, asked: date, old: date, available:
     return asked, min(old, available) if available is not None else old
 
 
-def _remote_count(ws: Any, store: Any, cfg: Any, source: Any, since: date, before: date, now: datetime) -> int:
+def _remote_count(
+    ws: Any, store: Any, cfg: Any, source: Any, since: date, before: date, now: datetime, limit: int | None = None
+) -> int:
     """How many older messages the source would give for these days, within the setting's limit; 0 when it can't be
     asked or the days are empty. A core mailbox reads no message to say; a plugin's connector that gives no count is
     read for it."""
@@ -409,27 +413,91 @@ def _remote_count(ws: Any, store: Any, cfg: Any, source: Any, since: date, befor
     asking, model = asker
     settings = model.model_validate(source.settings)
     try:
-        return asking.count(settings, since, before, cfg.watch.look_back_max_items, _older_context(ws, cfg, now))
+        return asking.count(
+            settings, since, before, limit or cfg.watch.look_back_max_items, _older_context(ws, cfg, now)
+        )
     except ConnectorError as err:
-        raise StoreError(err.detail or "the source couldn't be asked for older mail") from None
+        raise StoreError(older_failure(err)) from None
 
 
-def _fetch_older(ws: Any, store: Any, cfg: Any, source: Any, since: date, before: date, now: datetime) -> int:
+def _item_day(item: Any) -> date | None:
+    """The day a message was received, None when it says none."""
+    received = getattr(getattr(item, "message", None), "received", None)
+    at = _when({"message": {"received": received}}) if received else None
+    return at.astimezone(UTC).date() if at is not None else None
+
+
+def _fetch_older(
+    ws: Any,
+    store: Any,
+    cfg: Any,
+    source: Any,
+    since: date,
+    before: date,
+    now: datetime,
+    limit: int | None = None,
+) -> tuple[int, dict[str, int]]:
     """Ask the source for its older mail of these days, within the setting's limit, and note it the way a first read
-    notes what it doesn't hand in. Returns how many messages came."""
-    from engine.connectors import ConnectorError, Poll
+    notes what it doesn't hand in. Returns how many messages the source gave (those it couldn't read among them) and
+    what it skipped, by kind. A message the source couldn't read never stops the rest."""
+    from engine.connectors import ConnectorError, Poll, skipped_counts
 
     asker = _asker(store, source)
     if asker is None or since >= before:
-        return 0
+        return 0, {}
     asking, model = asker
     settings = model.model_validate(source.settings)
-    try:
-        items = asking.read(settings, since, before, cfg.watch.look_back_max_items, _older_context(ws, cfg, now))
-    except ConnectorError as err:
-        raise StoreError(err.detail or "the source couldn't be asked for older mail") from None
-    watch._compare(ws, store, cfg, source, Poll(items, complete=False), now, True)
-    return len(items)
+    page = cfg.watch.look_back_max_items
+    ceiling = limit or page
+    seen: set[str] = set()
+    skipped: dict[str, int] = {}
+    end = before
+    size = page
+    while True:
+        try:
+            answer = asking.read(settings, since, end, size, _older_context(ws, cfg, now))
+        except ConnectorError as err:
+            raise StoreError(older_failure(err)) from None
+        items, unreadable = (answer.items, answer.unreadable) if isinstance(answer, Poll) else (answer, [])
+        new_items = [i for i in items if i.key not in seen]
+        new_unreadable = [u for u in unreadable if u.key not in seen]
+        seen.update(i.key for i in new_items)
+        seen.update(u.key for u in new_unreadable)
+        watch._compare(ws, store, cfg, source, Poll(list(new_items), complete=False), now, True)
+        watch._tell_unreadable(store, cfg, source, new_unreadable)
+        for kind, n in skipped_counts(new_unreadable).items():
+            skipped[kind] = skipped.get(kind, 0) + n
+        # A page that came back full may have more behind it. The next page ends on the day after its oldest message
+        # (that day again, since a page can stop part way through it). When that day is no earlier than this page's
+        # end, one day holds more than a page, so the same range is asked again for more, up to the ceiling; a short
+        # page or the ceiling ends the read.
+        if len(items) + len(unreadable) < size or len(seen) >= ceiling:
+            break
+        days = [d for d in map(_item_day, items) if d is not None]
+        following = min(days) + timedelta(days=1) if days else end
+        if new_items and following < end:
+            end, size = following, page
+        elif size >= ceiling:
+            break
+        else:
+            size = min(size * 2, ceiling)
+        if end <= since:
+            break
+    return len(seen), skipped
+
+
+def add_older_skipped(store: Any, source_id: str, counts: dict[str, int]) -> None:
+    """Add what a read of older mail or of headers skipped to the source's first read, where the account's row reads
+    it. Nothing is written for a read that skipped nothing, or for a source with no first read that took mail in."""
+    run = intake_run(store.read(), source_id)
+    if run is None or not counts:
+        return
+    with store.transaction() as tx:
+        current = tx.get("watch_run", run.id)
+        total = dict(current.data.get("older_skipped") or {})
+        for kind, n in counts.items():
+            total[kind] = total.get(kind, 0) + n
+        tx.update("watch_run", run.id, {"older_skipped": total}, _MOVED, read_version=current.version)
 
 
 def _source(cfg: Any, source_id: str) -> Any:
@@ -474,7 +542,8 @@ def look_back_preview(
     if not can_look_back(source, store):
         raise StoreError("this source can't be asked for older mail")
     found = _candidates(ws, store, cfg, source, _in_window(asked, old, now))
-    remote = _remote_count(ws, store, cfg, source, *_remote_range(store, source_id, asked, old, available), now)
+    limit = cfg.watch.full_read_max_items if exact else cfg.watch.look_back_max_items
+    remote = _remote_count(ws, store, cfg, source, *_remote_range(store, source_id, asked, old, available), now, limit)
     prices = [
         r.data["estimate_usd"]
         for r in store.read().list("request")
@@ -483,7 +552,8 @@ def look_back_preview(
     count = len(found) + remote
     result = LookBack(days, asked, count, available_from=available if available and available > asked else None)
     # The source was asked: fewer than the limit means it holds nothing older than it gave.
-    result.reaches = result.available_from is None or remote < cfg.watch.look_back_max_items
+    result.capped = remote >= limit
+    result.reaches = result.available_from is None or not result.capped
     if result.reaches:
         result.available_from = None
     if count and prices:
@@ -513,10 +583,14 @@ def look_further_back(
         raise StoreError("this source can't be asked for older mail")
     with watch._read_lock(ws, source_id):
         asked, old, new, available = _plan(store, cfg, source_id, days, exact)
-        fetched = _fetch_older(ws, store, cfg, source, *_remote_range(store, source_id, asked, old, available), now)
+        limit = cfg.watch.full_read_max_items if exact else cfg.watch.look_back_max_items
+        fetched, skipped = _fetch_older(
+            ws, store, cfg, source, *_remote_range(store, source_id, asked, old, available), now, limit
+        )
+        add_older_skipped(store, source_id, skipped)
         if fetched:
             asked, old, new, available = _plan(store, cfg, source_id, days, exact)
-        everything = fetched < cfg.watch.look_back_max_items  # the source gave all it holds of those days
+        everything = fetched < limit  # the source gave all it holds of those days
         if everything:
             new = asked
             available = None
@@ -525,6 +599,7 @@ def look_further_back(
             days, asked, len(found), available_from=available if available and available > asked else None
         )
         result.reaches = result.available_from is None
+        result.skipped = skipped
         keys = {snap.data["key"] for snap in found}
         made = _take(ws, store, cfg, source, now, router, lambda data: data["key"] in keys)
         result.taken = len(made)
@@ -556,6 +631,7 @@ class FullReadOption:
     estimate_usd: float | None = None
     unpriced: int = 0
     reaches: bool = True
+    capped: bool = False
 
 
 def full_read_pending(store: Any, cfg: Any, source: Any) -> bool:
@@ -594,7 +670,11 @@ def full_read_options(
             found.append(FullReadOption(reach))  # the first read already covers it: nothing more to take in
             continue
         preview = look_back_preview(ws, store, cfg, source_id, beyond, now, exact=True)
-        found.append(FullReadOption(reach, preview.count, preview.estimate_usd, preview.unpriced, preview.reaches))
+        found.append(
+            FullReadOption(
+                reach, preview.count, preview.estimate_usd, preview.unpriced, preview.reaches, preview.capped
+            )
+        )
     return found
 
 
@@ -605,6 +685,19 @@ def _record_full_read(store: Any, source_id: str, reach: int) -> None:
     with store.transaction() as tx:
         current = tx.get("watch_run", run.id)
         tx.update("watch_run", run.id, {"full_read": reach}, _MOVED, read_version=current.version)
+
+
+def older_failure(err: Any) -> str:
+    """What the person reads when older mail couldn't be read: plain words for the kind of failure, never the service's
+    own text."""
+    from engine.net import AnswerTooLarge
+    from engine.sides import word
+
+    key = "full_read.failed.too_large" if isinstance(err, AnswerTooLarge) else f"full_read.failed.{err.kind}"
+    try:
+        return word(None, key)
+    except KeyError:
+        return word(None, "full_read.failed.outage")
 
 
 def answer_full_read(

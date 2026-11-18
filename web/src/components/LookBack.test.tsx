@@ -37,6 +37,7 @@ const view = (over: Partial<S["LookBackView"]> = {}): S["LookBackView"] => ({
   estimate_usd: 0.4,
   unpriced: 0,
   reaches: true,
+  capped: false,
   available_from: null,
   taken: 0,
   started: false,

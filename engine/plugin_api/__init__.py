@@ -52,7 +52,7 @@ from engine.tasks import TaskKind
 from engine.texts import LongText, Unit
 from engine.tools import ToolBox, ToolError, ToolResult
 
-PLUGIN_API_VERSION = "0.3.100"
+PLUGIN_API_VERSION = "0.3.101"
 
 #: The earlier minor version this core still serves (one minor back). A pack whose range reaches the end of that minor
 #: stays on, marked "Built for an earlier version"; the window ends with the next minor release. Every name the core
@@ -2273,8 +2273,12 @@ class Registrar:
         what changed. An item can carry files (`SourceItem.files`, `ItemFile`: name, media type, bytes), such as a
         mail's attachments: the core reads them as text and adds it to the item's text, so the connector never parses
         a file and a change in a file is a change in the item. A thing the connector listed but couldn't read goes in
-        `Poll.unreadable` as `Unreadable(key, reason)` (never its own text): the read moves past it, the core records
-        it and tells the person, and the rest is read.
+        `Poll.unreadable` as `Unreadable(key, reason)` (never its own text; `kind="too_large"` marks an item over what
+        can be read, any other reason leaves `kind` None): the read moves past it, the core records it and tells the
+        person, and the rest is read. Every read records what it skipped, counted by kind, and says so on the screens.
+        A message that is too large to read is one item to skip, never a reason to fail the whole read: a single item
+        over the size limit raises `AnswerTooLarge`, a `ConnectorError` a connector may catch to skip that item as
+        `Unreadable(..., kind="too_large")`.
         Raise `ConnectorError(kind, detail)` with kind `auth`, `no_access`, `not_found`, `outage`, `offline` or
         `throttled` (with `retry_after=` seconds). The core compares, keeps snapshots and hands in what is new,
         changed or gone (for a read that lists only changes, the keys in `Poll.removed`); the connector never writes
@@ -2307,18 +2311,22 @@ class Registrar:
         poll already returned is the same item. Only then is "Look further back" offered for a source of the
         connector, on the source's menu: the person picks how many days, the core shows how many items and about what
         reading them costs, holds the work for the person's go like any other AI work, and never asks for more than
-        `watch.look_back_max_items` (it is `max_items`); an answer of fewer says the service holds nothing older. The
-        function runs with the source's own settings and account, reads only, and a failure is contained like a
-        poll's (`ConnectorError` kinds pass through). `older_count=fn`, with the same arguments, returns how many
-        items there are (at most `max_items`) without reading them, so the estimate costs no more than a count; left
-        out, the estimate calls `older` and counts what comes back.
+        `watch.look_back_max_items` (it is `max_items`); an answer of fewer (those in `Poll.unreadable` counted)
+        says the service holds nothing older. `fn` may return a `Poll` instead of the list: its `items` and
+        `unreadable` are used and its `state`, `complete` and `removed` are ignored, so one item it can't read is set
+        aside with its reason and the rest are taken in. The function runs with the source's own settings and
+        account, reads only, and a failure is contained like a poll's (`ConnectorError` kinds pass through).
+        `older_count=fn`, with the same arguments, returns how many items there are (at most `max_items`) without
+        reading them, so the estimate costs no more than a count; left out, the estimate calls `older` and counts
+        what comes back. A count that reaches `max_items` is shown as "at least" that many, with its cost.
 
         **Headers (a year of who writes to whom):** a mail connector that can list message headers alone passes
         `headers=fn`, with `fn(settings, since, before, max_items, context) -> list[SourceItem]` and the same arguments
         and rules as `older`: the newest `max_items` messages dated from the day `since` up to, not including, the day
         `before`, with the same keys as a poll's. Each item carries its `MessageDetails` (sender, received,
         participants, unread, bulk, categories and `where`) and a title (the subject), and no text and no files; any
-        text or files it carries are dropped. It is optional and additive: a connector without it works as before. Once,
+        text or files it carries are dropped. Like `older`, it may return a `Poll` whose `items` and `unreadable` are
+        used. It is optional and additive: a connector without it works as before. Once,
         after a mail source's first read, the core asks for the headers from `watch.first_headers_days` back (365) to
         the day that read began, at most `watch.first_headers_max_items` (5000), in the background, holding nothing and
         costing no AI work. Each header is kept as a record of its own that the contact tally and the first look at the
@@ -2856,7 +2864,7 @@ from engine.connectors import (  # noqa: E402 - part of the plugin API
     Unreadable,
 )
 from engine.extract.core import ExtractError  # noqa: E402 - part of the plugin API
-from engine.net import retry_after  # noqa: E402 - part of the plugin API
+from engine.net import AnswerTooLarge, retry_after  # noqa: E402 - part of the plugin API
 
 __all__ = [
     "Change",
@@ -2871,6 +2879,7 @@ __all__ = [
     "OutgoingAct",
     "OutgoingRecipient",
     "ConnectorError",
+    "AnswerTooLarge",
     "retry_after",
     "Poll",
     "Unreadable",

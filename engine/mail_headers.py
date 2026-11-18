@@ -49,15 +49,22 @@ def read_first(ws: Any, store: Any, cfg: Any, source: Any, now: datetime, before
     asking = asker(store, source)
     if asking is None or days <= 0:
         return None
-    from engine.connectors import ConnectorContext
+    from engine.connectors import ConnectorContext, Poll, skipped_counts
 
     until = before or (now.date() + timedelta(days=1))
     context = ConnectorContext(
         workspace_root=ws.root, now=now, timezone=cfg.workspace.user.timezone, hosted=cfg.server.mode == "hosted"
     )
     settings = _settings_of(store, source)
-    items = asking(settings, until - timedelta(days=days), until, limit, context)
-    return keep(store, source, items, now)
+    answer = asking(settings, until - timedelta(days=days), until, limit, context)
+    items, unreadable = (answer.items, answer.unreadable) if isinstance(answer, Poll) else (answer, [])
+    kept = keep(store, source, items, now)
+    if unreadable:
+        from engine import source_intake, watch
+
+        source_intake.add_older_skipped(store, source.id, skipped_counts(unreadable))
+        watch._tell_unreadable(store, cfg, source, unreadable)
+    return kept
 
 
 def _settings_of(store: Any, source: Any) -> Any:
