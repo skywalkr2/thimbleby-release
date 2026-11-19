@@ -224,6 +224,16 @@ shows only **Add the key** or **See why** when something needs you. Work that wo
 budgets pause work when they are used up. A model whose price the app doesn't know is never counted as free: its work waits for your go every time, until you give a price or say the account is flat (a subscription or a model on your own computer, where a run costs nothing more); on a flat account you can still choose to be asked first (Settings, Advanced, AI and spending). Which account does which kind of work is set by tiers: everyday work and harder work can use
 different accounts; Settings, under AI and spending, has Which model does what.
 
+What the app shows as an account's cost is its own figure: the tokens a run used times the model's price. For an account whose
+service offers a cost report, you can also see what the service actually charged. On the account's card, **Read what it
+charged** takes a billing key (often a separate key for the whole organization, which the app sends only to the service's own
+address), lets you pick the key this account runs with from the service's own list, and sets how often the report is read. The
+card, and Settings under AI and spending, then show each UTC day with the service's figure beside the app's own. A day the
+service hasn't reported says "not reported yet"; today says "so far"; a figure the service may still revise says so; without a
+picked key it says the figures include use outside the app. When the service charged well above the app's figure on days that
+have settled, Today has one line, **Check what the account charged**, with **Open** and **Not now**; a report that fails three
+times in a row is a line too. Your spending limits and the estimates keep using the app's own figure.
+
 When the AI work stops, Today says so, one line for each cause, never one for each item. The causes are: no AI account
 for a kind of work (the line says to choose one), no one set as the person the app is for ("Say who you are"), an account
 paused until its usage limit resets (with the time and how many items wait; they run by themselves then), credit run

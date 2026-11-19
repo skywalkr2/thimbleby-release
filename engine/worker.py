@@ -1198,6 +1198,18 @@ class Worker:
         self._model_watch.start()
         return self._model_watch
 
+    def read_costs_if_due(self) -> list[str]:
+        """Read what each account's provider charged, for the accounts that have a billing key and hours set and whose
+        last read is that old (design 6.16). The accounts are read one after the other in this pass; a failed read is
+        kept on its account and, three times running, is a Today line. Returns the accounts read."""
+        from engine.ai import cost_report
+
+        if self._changed_since_start() or not cost_report.due(self.store, self.cfg, self.now()):
+            return []
+        read = cost_report.run(self.ws, self.store, self.cfg, os.environ, now=self.now())
+        self.events.changed()
+        return read
+
     def measure_soon(self) -> threading.Thread | None:
         """Run the measurings the person asked for that are still waiting (an account's cases and pairs, added to the
         capability matrix), on one thread of their own so a long one never holds up other work. One cut short by a
@@ -1496,12 +1508,19 @@ class Worker:
     JOBS_WAIT_SECONDS = 60
 
     def _jobs_wait(self) -> float:
-        """How long the jobs loop rests: until the next pass, or sooner when a service's asked-for wait on a source runs
-        out first, so the source is read again when that time comes rather than up to a pass later."""
+        """How long the jobs loop rests: until the next pass, or sooner when a service's asked-for wait on a source
+        (its read, its older mail or the rest of its headers) runs out first, so the source is read again when that
+        time comes rather than up to a pass later."""
         try:
+            from engine import reading_lane
             from engine.watch import next_retry_in
 
-            left = next_retry_in(self.store, self.cfg, self.now())
+            now = self.now()
+            waits = (
+                next_retry_in(self.store, self.cfg, now),
+                reading_lane.next_wait_in(self.store.read(), self.cfg, now),
+            )
+            left = min((w for w in waits if w is not None), default=None)
         except Exception:  # the plain rest is the fallback; a failed look never stops the loop
             log.exception("looking for the next retry failed")
             return self.JOBS_WAIT_SECONDS
@@ -1532,6 +1551,11 @@ class Worker:
         except (Exception, SystemExit):  # the look is made again the next time round; nothing here may stop the thread
             log.exception("starting the look at newer models failed")
             self._problem("starting the look at newer models failed")
+        try:
+            self.read_costs_if_due()
+        except (Exception, SystemExit):  # asked again the next time round; nothing here may stop the thread
+            log.exception("reading what the providers charged failed")
+            self._problem("reading what the providers charged failed")
         try:
             self.look_for_update_if_due()
         except (Exception, SystemExit):  # the look is made again the next time round; nothing here may stop the thread

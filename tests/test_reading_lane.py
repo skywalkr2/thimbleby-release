@@ -69,6 +69,39 @@ def test_a_throttled_slice_resumes_at_its_time_with_no_try_counted_and_never_giv
         store.close()
 
 
+def test_the_background_pass_wakes_when_the_wait_on_an_older_read_runs_out_not_up_to_a_minute_later(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from engine.worker import Worker
+
+    throttled = ConnectorError("throttled", "HTTP 429", retry_after=12)
+    ws, cfg, store, _service = world(tmp_path, monkeypatch, {2: throttled})
+    rest = Worker.JOBS_WAIT_SECONDS
+
+    def wait_at(now):
+        return Worker._jobs_wait(SimpleNamespace(store=store, cfg=cfg, now=lambda: now, JOBS_WAIT_SECONDS=rest))
+
+    try:
+        assert reading_lane.next_wait_in(store.read(), cfg, NOW) is None
+        assert wait_at(NOW) == rest  # nothing waits on a service: the plain rest
+        source_intake.answer_full_read(ws, store, cfg, "m", 30, NOW)
+        drain(ws, store, cfg, NOW)
+        waiting = source_intake.older_read_waiting(store.read(), "m")
+        assert waiting["kind"] == "throttled"
+        until = datetime.fromisoformat(waiting["at"])
+        assert until == NOW + timedelta(seconds=12)
+        assert wait_at(NOW) == 12  # wakes when the service's wait is over, not a whole rest later
+        assert wait_at(until + timedelta(seconds=30)) == 5  # over already: a short floor, never a busy loop
+        drain(ws, store, cfg, until)
+        after = source_intake.older_read_waiting(store.read(), "m")
+        assert after is None or after["kind"] != "throttled"
+        assert wait_at(until) == rest  # the read carried on: nothing waits on the service any more
+    finally:
+        store.close()
+
+
 def test_an_outage_counts_toward_giving_up_but_a_throttle_between_outages_does_not(tmp_path, monkeypatch):
     outage = ConnectorError("outage", "HTTP 503")
     ws, cfg, store, _ = world(tmp_path, monkeypatch, {n: outage for n in range(1, 30)})

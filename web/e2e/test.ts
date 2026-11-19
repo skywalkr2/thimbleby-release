@@ -29,9 +29,29 @@ export async function followServer(context: BrowserContext, baseURL: string | un
   }, shift);
 }
 
-export const test = base.extend({
+/** What the app at `baseURL` is waiting for a restart for ("code" when its own files changed while it ran); none when it waits for none. */
+export async function waitingForRestart(baseURL: string): Promise<string[]> {
+  const answer = await fetch(new URL("/__e2e/now", baseURL));
+  return ((await answer.json()) as { restart_for?: string[] }).restart_for ?? [];
+}
+
+export const test = base.extend<{ restartSaid: void }>({
   context: async ({ context, baseURL }, use) => {
     await followServer(context, baseURL);
     await use(context);
   },
+  // An app whose own files or settings changed while it ran holds its background work for a restart (it reads no source and starts
+  // no run), and a test then fails on a wait that never ends. A failed test says so, so the hold is not hunted as a fault of the app.
+  restartSaid: [
+    async ({ baseURL }, use, testInfo) => {
+      await use();
+      if (!baseURL || testInfo.status === testInfo.expectedStatus) return;
+      const waiting = await waitingForRestart(baseURL).catch(() => []);
+      if (!waiting.length) return;
+      const said = `the app under test was waiting for a restart (${waiting.join(", ")} changed while it ran): its background work was held, so this failure may be that hold. Run it again with nothing changing under the app.`;
+      testInfo.annotations.push({ type: "held for a restart", description: said });
+      console.error(`[${testInfo.project.name}] ${testInfo.title}: ${said}`);
+    },
+    { auto: true },
+  ],
 });

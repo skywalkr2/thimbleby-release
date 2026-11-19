@@ -142,7 +142,7 @@ const KINDS: Line["kind"][] = [
   "decision", "question", "who_is", "owner", "held", "go", "first_go", "catch_up_go", "intake_go", "intake_review", "batches", "batch_item",
   "refused", "no_effect", "restart", "stuck", "handover", "failed", "paused", "borrow", "offline", "overdue", "promise", "reminder",
   "reminder_digest", "reply", "sent_check", "account_check", "switch_failed", "account_move", "sent_folder", "folder_rename", "model_watch",
-  "model_moved", "identity", "work_access", "credential", "no_account", "pack_tier", "backup", "extractor", "source_unread", "review",
+  "model_moved", "cost_gap", "cost_read_failed", "identity", "work_access", "credential", "no_account", "pack_tier", "backup", "extractor", "source_unread", "review",
   "rule_review", "learned", "catch_up", "send", "nudge", "escalate", "stale", "needs_date", "capacity", "clash", "tie", "guests", "attention",
   "unfiled", "moved", "since_yesterday", "away", "invitation", "meeting_prep", "meeting_capture", "quiet_promise", "date_reminder", "answer",
   "area", "pattern", "terms", "project_ending", "restore",

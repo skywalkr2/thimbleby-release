@@ -25,6 +25,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 from engine.storage import WriteContext
+from tests import e2e_stall_watch
 
 
 def age_runs(store: Any, source_ids: list[str], minutes: float) -> int:
@@ -49,6 +50,8 @@ def with_routes(create_app: Any) -> Any:
         token = os.environ.get("E2E_INSTALL_TOKEN", token)
         app = create_app(ws, cfg, token, **kwargs)
         app.state.sessions.pin(token)
+        # A silent stall in reading is written down when it happens (only when the run names a folder for it).
+        e2e_stall_watch.start(app.state.worker, app.state.store)
 
         async def age(request: Any) -> JSONResponse:
             data = await request.json()
@@ -59,8 +62,9 @@ def with_routes(create_app: Any) -> Any:
             return JSONResponse({"moved": age_runs(app.state.store, ids, minutes), "sources": ids})
 
         async def server_now(_request: Any) -> JSONResponse:
-            # The server's clock now, in milliseconds, so a page can follow it (web/e2e/test.ts).
-            return JSONResponse({"now": time.time() * 1000})
+            # The server's clock now, in milliseconds, so a page can follow it (web/e2e/test.ts), and what the app
+            # waits for a restart for ("code" when its own files changed while it ran): a failed test says so.
+            return JSONResponse({"now": time.time() * 1000, "restart_for": list(app.state.worker.restart_for)})
 
         @asynccontextmanager
         async def lifespan(_outer: Any) -> Any:

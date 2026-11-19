@@ -73,7 +73,7 @@ function HeldRow(props: RowProps & { "data-queue-line": string }) {
 type Line = S["QueueLineView"];
 
 /** The kinds of queue line that are a stop or a check on the assistant's own work, each drawn here with its one button. */
-export const HELD_KINDS: Line["kind"][] = ["restart", "stuck", "paused", "borrow", "credential", "no_account", "pack_tier", "offline", "handover", "account_check", "switch_failed", "account_move", "sent_folder", "folder_rename", "update", "updated", "model_watch", "model_moved", "identity", "work_access", "extractor", "source_unread", "slow_screen", "rule_review", "catch_up_go", "intake_go", "older_read"];
+export const HELD_KINDS: Line["kind"][] = ["restart", "stuck", "paused", "borrow", "credential", "no_account", "pack_tier", "offline", "handover", "account_check", "switch_failed", "account_move", "sent_folder", "folder_rename", "update", "updated", "model_watch", "model_moved", "cost_gap", "cost_read_failed", "identity", "work_access", "extractor", "source_unread", "slow_screen", "rule_review", "catch_up_go", "intake_go", "older_read"];
 
 export function isHeld(line: Line): boolean {
   return HELD_KINDS.includes(line.kind);
@@ -121,6 +121,10 @@ export function HeldLine(props: {
       return <ModelWatchLine line={line} />;
     case "model_moved":
       return <ModelMovedLine line={line} />;
+    case "cost_gap":
+      return <CostGapLine line={line} onOpen={props.onOpenAiAccounts} />;
+    case "cost_read_failed":
+      return <CostReadFailedLine line={line} onOpen={props.onOpenAiAccounts} />;
     case "identity":
       return <IdentityLine line={line} onOpenAiAccounts={props.onOpenAiAccounts} />;
     case "work_access":
@@ -588,6 +592,67 @@ function WorkAccessLine(props: { line: Line }) {
           {t("queue.work_access.allow")}
         </Button>
               </>
+      }
+    />
+  );
+}
+
+/** The days when an account's service charged well above the app's own figure. Open shows the comparison in Settings; Not now
+ * is remembered for exactly those days, so a new day in the gap brings the line back. */
+function CostGapLine(props: { line: Line; onOpen: () => void }) {
+  const { t, tn } = useWords();
+  const act = useAct();
+  const money = useMoney();
+  const nameOf = useAccountNames();
+  const { line } = props;
+  const account = nameOf(line.account ?? "");
+  const notNow = () =>
+    void act(
+      () => api.aiCostsNotNow(line.account ?? ""),
+      () => ({ message: t("queue.cost_gap.put_off", { account }) }),
+    );
+  return (
+    <HeldRow
+      as="section"
+      aria-label={t("queue.cost_gap.label")}
+      data-queue-line="cost_gap"
+      pill={<Pill tone="warn">{t("queue.cost_gap.label")}</Pill>}
+      title={t("queue.cost_gap", { account })}
+      meta={tn("queue.cost_gap.sub", line.count, { charged: money(line.provider_usd ?? 0), worked_out: money(line.app_usd ?? 0) })}
+      primary={
+        <Button size="sm" variant="primary" data-key="primary" aria-label={t("queue.cost_gap.open_named", { account })} onClick={props.onOpen}>
+          {t("queue.cost_gap.open")}
+        </Button>
+      }
+      menu={
+        <MenuButton
+          groups={[{ id: "cost-gap", entries: [{ id: "not-now", label: t("queue.cost_gap.not_now"), note: t("queue.cost_gap.not_now_note"), run: notNow }] }]}
+          trigger={<IconButton icon="more" size="sm" label={t("menu.more", { what: t("queue.cost_gap.what") })} tooltip={false} />}
+        />
+      }
+    />
+  );
+}
+
+/** An account's report of what its service charged that failed three reads in a row: why, and what to do. */
+function CostReadFailedLine(props: { line: Line; onOpen: () => void }) {
+  const { t, has } = useWords();
+  const nameOf = useAccountNames();
+  const { line } = props;
+  const account = nameOf(line.account ?? "");
+  const key = `queue.cost_read_failed.sub.${line.state ?? "other"}`;
+  return (
+    <HeldRow
+      as="section"
+      aria-label={t("queue.cost_read_failed.label")}
+      data-queue-line="cost_read_failed"
+      pill={<Pill tone="warn">{t("queue.cost_read_failed.label")}</Pill>}
+      title={t("queue.cost_read_failed", { account })}
+      meta={t(has(key) ? key : "queue.cost_read_failed.sub.other")}
+      primary={
+        <Button size="sm" variant="primary" data-key="primary" aria-label={t("queue.cost_read_failed.open_named", { account })} onClick={props.onOpen}>
+          {t("queue.cost_read_failed.open")}
+        </Button>
       }
     />
   );

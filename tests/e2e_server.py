@@ -39,6 +39,7 @@ from engine.evaluate import load_cases
 from engine.setup import keep_walkthrough, note_set_by_setup
 from engine.storage import WriteContext
 from engine.workspace import init_workspace
+from tests import e2e_costs
 from tests.conftest import DEMO_B, fixture_records
 from tests.e2e_just_me import seed_first_go, seed_just_me, the_person
 from tests.e2e_many_sides import seed_many_sides
@@ -328,7 +329,8 @@ def main() -> None:
         "--standin-account",
         action="store_true",
         help="add a second stand-in AI account whose person said Not now about reading work mail and notes, so Today "
-        "has the line that offers Allow",
+        "has the line that offers Allow, and an account whose service's cost report was already read, so Today has "
+        "the line about a gap and the account's card shows it beside the app's own figure",
     )
     parser.add_argument(
         "--fake-report",
@@ -573,6 +575,8 @@ def main() -> None:
             "allowed_data": ["open"],
             "work_data": "not_now",
         }
+        data["providers"][e2e_costs.ACCOUNT] = e2e_costs.provider(["open"])
+        os.environ.setdefault(e2e_costs.KEY_VARIABLE, "e2e-billing-key")
         path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
     # The browser tests never read the product's own catalog feed over the network. In the settings file, since the
     # Add-ons screen reads the saved settings.
@@ -620,6 +624,8 @@ def main() -> None:
     store = app.state.store
     if stress:
         seed_layout(store, cfg, stress)
+    if args.standin_account:
+        e2e_costs.seed_costs(store, cfg)
     folder_targets = list(cfg.storage.backups.targets)
     fake_channel = seed_outgoing(store, cfg) if args.fake_channel else None
     failed_read = seed_failed_read(store, cfg) if form is not None else None
@@ -676,8 +682,9 @@ def main() -> None:
         return JSONResponse({"written": count})
 
     async def server_now(_request):
-        """The server's clock now, in milliseconds, so a page can follow it (web/e2e/test.ts)."""
-        return JSONResponse({"now": time.time() * 1000})
+        """The server's clock now, in milliseconds, so a page can follow it (web/e2e/test.ts), and what the app waits
+        for a restart for ("code" when its own files changed while it ran): a failed test says so."""
+        return JSONResponse({"now": time.time() * 1000, "restart_for": list(app.state.worker.restart_for)})
 
     async def case_list(_request):
         return JSONResponse(cases)

@@ -111,6 +111,10 @@ class Line:
     its own: asks, costs_more, price_unknown, check_failed (`count` cases that didn't come out right, `check_failed`
     when the check couldn't finish) or check_cost (its check's `estimate_usd` is above the amount asked about); with
     `state` price, a tier's current model went up in price by `usd_per_day`),
+    cost_gap (days when what an account's provider charged is well above the app's own figure: `account`, `count` days,
+    `provider_usd` and `app_usd` over them; Open shows the comparison, Not now is POST
+    /api/ai/costs/{account}/not-now), cost_read_failed (an account's report of what its provider charged failed three
+    reads in a row: `account` and `state`, the kind of failure),
     model_moved (a tier moved on its own to a newer model of its family after a check passed: the new `account`, the
     earlier one in `text`, `usd_per_day` the change in cost; Keep clears it, Switch back restores the earlier model),
     credential (a key or sign-in that stops working on `due`, or already has: `credential_kind` is account or
@@ -284,6 +288,9 @@ class Line:
     sources: list[str] = field(default_factory=list)
     names: list[str] = field(default_factory=list)
     usd_per_day: float | None = None
+    #: For a cost_gap line: what the provider charged and what the app worked out, over its days, in US dollars.
+    provider_usd: float | None = None
+    app_usd: float | None = None
     reason: str | None = None
     candidates: dict[str, str] = field(default_factory=dict)
     at: str | None = None
@@ -572,6 +579,38 @@ def _model_lines(store: Any, cfg: Any) -> list[Line]:
                 estimate_usd=None if any(c is None for c in checks) else round(sum(checks), 4),
                 count=sum(int(c.get("count") or 0) for c in failed) or 1,
                 check_failed=any(c.get("state") == "unfinished" for c in failed) or None,
+            )
+        )
+    return lines
+
+
+def _cost_lines(store: Any, cfg: Any, now: datetime) -> list[Line]:
+    """Lines about what an account's provider charged: one for the days when it is well above the app's own figure, and
+    one for a report that has failed three reads in a row."""
+    from engine.ai import cost_report
+
+    lines: list[Line] = []
+    for found in cost_report.failing(store, cfg):
+        lines.append(
+            Line(
+                key=f"cost_read_failed:{found.account}",
+                group="risk",
+                kind="cost_read_failed",
+                account=found.account,
+                state=found.kind,
+                since=found.since.isoformat(),
+            )
+        )
+    for gap in cost_report.gaps(store, cfg, now):
+        lines.append(
+            Line(
+                key=f"cost_gap:{gap.account}",
+                group="decide",
+                kind="cost_gap",
+                account=gap.account,
+                count=len(gap.days),
+                provider_usd=gap.provider_usd,
+                app_usd=gap.app_usd,
             )
         )
     return lines
@@ -1163,6 +1202,7 @@ def _everything(
         )
 
     lines.extend(_model_lines(store, cfg))
+    lines.extend(_cost_lines(store, cfg, now))
     lines.extend(_folder_lines(ws, store, cfg))
     lines.extend(_restore_lines(ws, cfg))
     lines.extend(_update_lines(ws, cfg))
@@ -2386,6 +2426,8 @@ _KIND_ORDER = {
     "updated": -1.5,
     "model_watch": 2,
     "model_moved": 2,
+    "cost_gap": 3,
+    "cost_read_failed": 1,
     "identity": 0,
     "work_access": 1,
     "credential": 1,

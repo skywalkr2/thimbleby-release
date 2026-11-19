@@ -21,6 +21,12 @@ class Adapter(Protocol):
     such method doesn't offer it (the app's own count stands). `adds_overhead = True` says the adapter's program adds
     its own text to every request, so the account check measures that fixed overhead from its small call.
 
+    A third capability serves the account's real cost (design 6.16, "What a provider actually charged"):
+    `cost_report(day_from, day_to, ...)` returns a `CostReadout` of what the provider charged per UTC day, read with a
+    billing key the account holds apart from its own (`billing_secret`, given to `make_adapter`), and `billing_keys()`
+    lists the organization's keys to pick from. Only an adapter whose provider documents a report has them; nothing is
+    inferred from an address or a vendor's name, and the other accounts show the app's own figure only.
+
     Speech-to-text is the capability of `run` on a task whose `audio` is set: the answer is the words spoken. A model
     takes it only when its catalog entry says so (`ModelInfo.transcribes`) or its account lists it
     (`transcribe_models`); the router never gives a voice note to any other, and an adapter that cannot do it raises
@@ -43,10 +49,14 @@ ADAPTERS: dict[str, type[Any]] = {
 }
 
 
-def make_adapter(name: str, settings: Any, secret: str | None) -> Adapter:
+def make_adapter(name: str, settings: Any, secret: str | None, billing_secret: str | None = None) -> Adapter:
+    """The adapter for an account. `billing_secret` is the account's billing key; only an adapter that offers
+    `cost_report` is given it, and any other ignores it."""
     try:
         cls = ADAPTERS[name]
     except KeyError:
         known = ", ".join(sorted(ADAPTERS))
         raise ValueError(f"no adapter called {name!r} is installed (installed: {known})") from None
+    if billing_secret is not None and hasattr(cls, "cost_report"):
+        return cls(settings, secret, billing_secret=billing_secret)
     return cls(settings, secret)

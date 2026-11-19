@@ -165,9 +165,11 @@ const on = <T,>(group: number, server: T) => ({ group, server });
 const clockFlag = ` --clock-at ${momentAt}`;
 const atMoment = { env: { E2E_CLOCK_AT: momentAt } };
 
+// The app is told where the made-up services' helpers are: its stall watcher (tests/e2e_stall_watch.py, on only when
+// E2E_STALL_DIR names a folder) asks them what they were asked.
 const freshServer = (p: ReturnType<typeof pair>, flags: string) =>
   on(p.port, {
-    ...atMoment,
+    env: { ...atMoment.env, E2E_FAKE_ADDRESS: `http://127.0.0.1:${p.fakePort}` },
     command: `uv run python -m tests.e2e_fresh_server --port ${p.port} --state "${p.state}" --https-port ${p.httpsPort} ${flags}`,
     cwd: "..",
     url: `http://127.0.0.1:${p.port}/api/health`,
@@ -213,7 +215,7 @@ export const allProjects = [
     ];
   }),
   { name: "layout", testMatch: /(layout|sh1-shell|handled|guards|internals|changed-rows|today-work|shared-rules|today-todos-46|states-phone|w1-today-lines|learned-review|read-back)\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${layout.port}/` } },
-  { name: "access", testMatch: /work-access\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${access.port}/` } },
+  { name: "access", testMatch: /(work-access|ai-costs)\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${access.port}/` } },
   { name: "one-click", testMatch: /today-one-click\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${oneClick.port}/` } },
   { name: "schedule-review", testMatch: /schedule-review\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${scheduleReview.port}/` } },
   { name: "capacity", testMatch: /today-(capacity|review)\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${capacity.port}/` } },

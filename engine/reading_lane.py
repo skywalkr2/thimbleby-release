@@ -50,6 +50,21 @@ def account_wait(view: Any, cfg: Any, account: str, now: datetime) -> datetime |
     return until
 
 
+def next_wait_in(view: Any, cfg: Any, now: datetime) -> float | None:
+    """Seconds until the earliest wait a service asked for on a read of older mail or of the rest of the headers runs
+    out, 0 when one has run out and the read hasn't carried on since; None when no such read waits on a service."""
+    soonest: float | None = None
+    for source in cfg.watch.sources:
+        for waiting in (
+            source_intake.older_read_waiting(view, source.id),
+            mail_headers.sweep_waiting(view, source.id),
+        ):
+            if waiting and waiting.get("kind") == "throttled" and waiting.get("at"):
+                left = max(0.0, (datetime.fromisoformat(str(waiting["at"])) - now).total_seconds())
+                soonest = left if soonest is None else min(soonest, left)
+    return soonest
+
+
 def run_slices(
     ws: Any, store: Any, cfg: Any, now: datetime, router: Any = None, stop: threading.Event | None = None
 ) -> tuple[list[str], bool]:

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import date, datetime
+from decimal import Decimal
 from functools import lru_cache
 from typing import Any, Literal
 
@@ -164,6 +166,40 @@ class AiResult:
     refused: bool = False
     refusal: str | None = None  # the provider's own reason, if it gave one
     cost_usd: float | None = None  # what the provider itself reports the call cost, when it does
+
+
+@dataclass(frozen=True)
+class ProviderCostDay:
+    """What a provider charged for one UTC day (design 6.16, "What a provider actually charged").
+
+    `amount` is in the currency's whole units. `scope` is `key` when the report was narrowed to the key an account runs
+    with, `organization` otherwise. `open` says the provider may still revise the day (today, or a day it still
+    revises after the month closes)."""
+
+    day: date
+    amount: Decimal
+    currency: str
+    scope: Literal["key", "organization"]
+    read_at: datetime
+    open: bool
+
+
+@dataclass(frozen=True)
+class CostReadout:
+    """One read of a provider's cost report: the days it gave, and whether the read stopped at its page limit before
+    the report ended (`partial`: the days are real but the report may hold more)."""
+
+    days: list[ProviderCostDay]
+    partial: bool = False
+
+
+@dataclass(frozen=True)
+class BillingKey:
+    """One of an organization's API keys, as its provider shows it, for picking the key an account runs with."""
+
+    id: str
+    name: str
+    hint: str
 
 
 @dataclass

@@ -6,6 +6,7 @@ import copy
 import logging
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -26,6 +27,9 @@ from api.schemas import (
     AiBorrowAnswer,
     AiBorrowed,
     AiCheckSize,
+    AiCostAccount,
+    AiCostDay,
+    AiCostsView,
     AiKindFit,
     AiMeasureEstimate,
     AiMeasureIn,
@@ -50,6 +54,10 @@ from api.schemas import (
     AiWorkKindView,
     BackupFolderAdd,
     BackupFolderRemove,
+    BillingChange,
+    BillingKeyChoice,
+    BillingKeysRequest,
+    BillingKeysView,
     BusinessIn,
     BusinessState,
     BusinessView,
@@ -1669,7 +1677,7 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
     def ai_accounts() -> list[AiAccountView]:
         """The AI accounts in the settings, as they are on disk now; never a key."""
 
-        from engine.ai import check_cost
+        from engine.ai import check_cost, cost_report
         from engine.ai.account_state import AccountState, account_states
         from engine.ai.catalog import Catalogs
         from engine.secrets import SecretError, describe_secret, resolve_secret
@@ -1691,6 +1699,7 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
         found = []
         for name, p in ai.providers.items():
             state, where = key_state(p.auth)
+            billing_state = key_state(p.billing_auth)[0]
             now_state = states.get(name, AccountState())
             found.append(
                 AiAccountView(
@@ -1728,6 +1737,10 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
                     identity_level=p.identity_level,
                     accepted_unchecked=p.accepted_unchecked,
                     check_usd=check_cost.cost(current(), name, catalogs, ws),
+                    cost_report_offered=cost_report.offers_report(current(), name),
+                    billing_key_state=billing_state,
+                    billing_key_id=p.billing_key_id,
+                    cost_report_hours=p.cost_report_hours,
                 )
             )
         return found
@@ -2222,6 +2235,170 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
         events.changed()
         return Ok(ok=account)
 
+    @r.get("/ai/costs")
+    def ai_costs() -> AiCostsView:
+        """What each account's service charged, beside the app's own figure, per UTC day, for the accounts whose report
+        is on (a billing key and hours set). A day not reported yet has no figure; it is never 0."""
+        from engine.ai import cost_report
+
+        now = worker.now()
+        cfg_now = current()
+        kept = cost_report.read(store)["accounts"]
+        found = []
+        with store.read_scope():
+            for name, p in cfg_now.ai.providers.items():
+                if not cost_report.is_on(cfg_now, name):
+                    continue
+                row = kept.get(name) or {}
+                rows = cost_report.compare(store, cfg_now, name, now)
+                failing = next((f.kind for f in cost_report.failing(store, cfg_now) if f.account == name), None)
+                found.append(
+                    AiCostAccount(
+                        name=name,
+                        label=p.label,
+                        scope=next((d.scope for d in rows if d.scope), None),  # type: ignore[arg-type]
+                        read_at=datetime.fromisoformat(row["read_at"]) if row.get("read_at") else None,
+                        partial=bool(row.get("partial")),
+                        failing=failing,
+                        days=[
+                            AiCostDay(
+                                day=d.day,
+                                reported=d.reported,
+                                amount=float(d.amount) if d.amount is not None else None,
+                                currency=d.currency,
+                                read_at=d.read_at,
+                                open=d.open,
+                                app_usd=d.app_usd,
+                                by_task=d.by_task,
+                                gap=d.gap,
+                            )
+                            for d in rows
+                        ],
+                    )
+                )
+        return AiCostsView(accounts=found)
+
+    @r.post("/ai/costs/{account}/not-now")
+    def ai_costs_not_now(account: str) -> Ok:
+        """Put off the Today line about a gap, for exactly the days it counts now."""
+        from engine.ai import cost_report
+
+        with store.read_scope():
+            done = cost_report.not_now(store, current(), account, worker.now())
+        if not done:
+            raise HTTPException(status_code=404, detail="There is no gap to put off for this account.")
+        events.changed()
+        return Ok(ok=account)
+
+    def billing_secret_of(name: str, key: str | None, key_ref: str | None) -> tuple[str | None, str | None]:
+        """The billing key to use now (a pasted one, the one a reference points at, or the saved one) and a problem in
+        plain words when there is none or it can't be found."""
+        from engine.secrets import SecretError, resolve_secret
+
+        if key and key_ref:
+            raise HTTPException(status_code=400, detail="Paste a key or give where it is, not both.")
+        if key and not local:
+            raise HTTPException(status_code=400, detail=HOSTED_KEY)
+        if key:
+            return key.strip(), None
+        try:
+            found = resolve_secret(key_ref.strip() if key_ref else current().ai.providers[name].billing_auth)
+        except SecretError as err:
+            return None, str(err)
+        return found, None if found else "Add the billing key first."
+
+    def adapter_for_billing(name: str, secret: str | None, key_id: str | None = None) -> tuple[Any, Any]:
+        from engine.ai.adapters import make_adapter
+        from engine.secrets import SecretError, resolve_secret
+
+        provider = current().ai.providers.get(name)
+        if provider is None:
+            raise HTTPException(status_code=404, detail=f"There is no account called {name}.")
+        settings = provider.model_copy(update={"billing_key_id": key_id or None})
+        try:
+            own = resolve_secret(provider.auth)
+        except SecretError:
+            own = None
+        return settings, make_adapter(provider.adapter, settings, own, secret)
+
+    @r.post("/ai/accounts/{name}/billing-keys")
+    def ai_billing_keys(name: str, body: BillingKeysRequest) -> BillingKeysView:
+        """The organization's keys, read with the billing key (pasted, by reference or the saved one), to pick the one
+        this account runs with. Nothing is saved."""
+        from engine.ai import cost_report
+        from engine.ai.task import AiError
+
+        secret, problem = billing_secret_of(name, body.key, body.key_ref)
+        if secret is None:
+            return BillingKeysView(problem=problem)
+        _, adapter = adapter_for_billing(name, secret)
+        if not hasattr(adapter, "billing_keys"):
+            return BillingKeysView(problem="This kind of account has no report to read.")
+        try:
+            keys = adapter.billing_keys()
+        except AiError as err:
+            return BillingKeysView(problem=cost_report.problem_text(err.kind))
+        return BillingKeysView(keys=[BillingKeyChoice(id=k.id, name=k.name, hint=k.hint) for k in keys])
+
+    @r.post("/ai/accounts/{name}/billing")
+    def ai_billing_change(name: str, body: BillingChange) -> SettingsSaved:
+        """Add or change the billing key, the key picked from the service's list and the hours between reads, with
+        Undo. A new key (or reference) first has one small report read with it: a key that is wrong, or lacks the
+        right, is said at once and nothing is saved. Hours above zero need a billing key."""
+        from engine.ai import cost_report
+
+        provider = current().ai.providers.get(name)
+        if provider is None:
+            raise HTTPException(status_code=404, detail=f"There is no account called {name}.")
+        changes: dict[str, Any] = {}
+        reset: list[str] = []
+        pending: tuple[str, str] | None = None
+        new_key = bool(body.key or body.key_ref)
+        secret: str | None = None
+        if new_key:
+            secret, problem = billing_secret_of(name, body.key, body.key_ref)
+            if secret is None:
+                raise HTTPException(status_code=400, detail=problem)
+            if body.key:
+                kept_as = setup.unused_secret_name(ws, setup.secret_name(name, "billing"))
+                changes[f"ai.providers.{name}.billing_auth"] = setup.secret_reference(ws, kept_as)
+                pending = (kept_as, body.key)
+            else:
+                changes[f"ai.providers.{name}.billing_auth"] = (body.key_ref or "").strip()
+        if body.key_id is not None:
+            if body.key_id.strip():
+                changes[f"ai.providers.{name}.billing_key_id"] = body.key_id.strip()
+            else:
+                reset.append(f"ai.providers.{name}.billing_key_id")
+        if body.hours is not None:
+            if body.hours:
+                changes[f"ai.providers.{name}.cost_report_hours"] = body.hours
+            else:
+                reset.append(f"ai.providers.{name}.cost_report_hours")
+        if not changes and not reset:
+            raise HTTPException(status_code=400, detail="Nothing to change.")
+        has_key = new_key or bool(provider.billing_auth)
+        if body.hours and not has_key:
+            raise HTTPException(status_code=400, detail="Add the billing key before asking for the report.")
+        if new_key or body.key_id is not None:
+            if secret is None:
+                secret, problem = billing_secret_of(name, None, None)
+            if secret is not None:
+                settings, _ = adapter_for_billing(name, secret, body.key_id or provider.billing_key_id)
+                problem = cost_report.check(settings, secret, None)
+                if problem:
+                    raise HTTPException(status_code=400, detail=problem)
+        if pending is not None:
+            setup.keep_secret(ws, *pending, owner=f"ai:{name}")
+        try:
+            done = save(changes, reset, body.fingerprint, allow=("ai.providers.",))
+        except HTTPException:
+            if pending is not None:
+                setup.secret_path(ws, pending[0]).unlink(missing_ok=True)
+            raise
+        worker.poke()
+        return saved(done)
+
     switch_estimates: dict[tuple[Any, ...], tuple[float | None, int]] = {}
 
     def account_plan(name: str, body: AiAccountChange) -> tuple[dict[str, Any], list[str], tuple[str, str] | None]:
@@ -2479,6 +2656,9 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
             if kept != list(tier.fallback):
                 changes[f"ai.tiers.{tier_name}.fallback"] = kept
         done = save(changes, reset, body.fingerprint, allow=("ai.providers.", "ai.tiers."))
+        from engine.ai import cost_report
+
+        cost_report.forget(store, name)
         return saved(done, let_go(f"ai:{name}", ai.providers[name].model_dump(mode="json")))
 
     @r.post("/ai/accounts")

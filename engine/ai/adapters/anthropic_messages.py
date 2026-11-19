@@ -9,13 +9,27 @@ from __future__ import annotations
 
 import base64
 import time
-from datetime import UTC, datetime
+from collections.abc import Callable
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
 from engine.ai.adapters.openai_compatible import _int, _retry_after, transport_error
-from engine.ai.task import AiError, AiResult, AiTask, ErrorKind, ModelInfo, says_no_credit, says_retired
+from engine.ai.task import (
+    AiError,
+    AiResult,
+    AiTask,
+    BillingKey,
+    CostReadout,
+    ErrorKind,
+    ModelInfo,
+    ProviderCostDay,
+    says_no_credit,
+    says_retired,
+)
 
 #: The interface's version header, which every request carries.
 API_VERSION = "2023-06-01"
@@ -33,6 +47,21 @@ ERROR_TYPES: dict[str, ErrorKind] = {
 }
 #: What a status means when the body carries no error type this adapter knows.
 STATUS_KINDS: dict[int, ErrorKind] = {401: "auth", 403: "auth", 402: "quota", 429: "rate_limited", 529: "rate_limited"}
+#: The host the cost report and the organization's key list are read from, and nowhere else: the billing key is sent
+#: only here, so an account whose address is another host (a proxy) never reads a report.
+REPORT_HOST = "api.anthropic.com"
+COST_PATH = "/v1/organizations/analytics/cost"
+KEYS_PATH = "/v1/organizations/api_keys"
+#: The report's beta header, as its documentation gives it.
+COST_BETA = "analytics-usage-cost-2026-08-24"
+#: The most days one request of the report may span.
+COST_WINDOW_DAYS = 31
+#: The most rows asked for in one page of the report.
+COST_PAGE_ROWS = 1000
+#: The longest wait a throttled request honors in one go; a longer requested wait is raised to the caller instead.
+COST_MAX_WAIT = 60.0
+#: How many days after a month closes the provider may still revise that month's figures.
+REVISED_DAYS_AFTER_MONTH = 7
 #: Stop reasons that mean the answer was cut off before it was complete.
 CUT_OFF_STOPS = frozenset({"max_tokens", "model_context_window_exceeded"})
 
@@ -43,7 +72,14 @@ class AnthropicMessagesAdapter:
     #: `AiTask.model_info` (the router from its kept catalog, the smoke test from one read of the list).
     reads_capabilities = True
 
-    def __init__(self, settings: Any, secret: str | None = None, *, transport: httpx.BaseTransport | None = None):
+    def __init__(
+        self,
+        settings: Any,
+        secret: str | None = None,
+        *,
+        billing_secret: str | None = None,
+        transport: httpx.BaseTransport | None = None,
+    ):
         if not settings.base_url:
             raise AiError("other", "this account has no base_url")
         self.settings = settings
@@ -56,6 +92,9 @@ class AnthropicMessagesAdapter:
         self._client = httpx.Client(
             base_url=base, headers=headers, timeout=settings.timeout_seconds, transport=transport
         )
+        self._billing_secret = billing_secret
+        self._transport = transport
+        self._billing_client: httpx.Client | None = None
 
     def run(self, task: AiTask, model: str) -> AiResult:
         if task.audio is not None:
@@ -190,6 +229,183 @@ class AnthropicMessagesAdapter:
         except (ValueError, AttributeError):
             raise AiError("invalid_output", "the model list wasn't in the expected format") from None
         return (items if isinstance(items, list) else []), more
+
+    # ---- what the provider charged ------------------------------------------------------------------------------
+
+    def _billing(self) -> httpx.Client:
+        """The client for the report host, made once, with the billing key. Refused (with the reason in plain words)
+        when the account has no billing key or its address is not the report's own host."""
+        if not self._billing_secret:
+            raise AiError("no_key", "this account has no billing key")
+        if urlsplit(self.settings.base_url).hostname != REPORT_HOST:
+            raise AiError(
+                "other",
+                "this account reaches its service through another address, and the billing key is sent only to the "
+                "service's own address",
+            )
+        if self._billing_client is None:
+            self._billing_client = httpx.Client(
+                base_url=f"https://{REPORT_HOST}",
+                headers={
+                    "x-api-key": self._billing_secret,
+                    "anthropic-version": API_VERSION,
+                    "anthropic-beta": COST_BETA,
+                },
+                timeout=self.settings.timeout_seconds,
+                transport=self._transport,
+            )
+        return self._billing_client
+
+    def _billing_get(self, path: str, params: list[tuple[str, str]]) -> httpx.Response:
+        try:
+            return self._billing().get(path, params=params)
+        except httpx.TimeoutException as err:
+            raise AiError("timeout", str(err)) from None
+        except httpx.TransportError as err:
+            raise transport_error(err, f"https://{REPORT_HOST}") from None
+
+    def billing_keys(self) -> list[BillingKey]:
+        """The organization's API keys (id, name and the hint the provider shows), read with the billing key, for the
+        person to pick the key this account runs with. Archived keys are left out. Reads at most five pages."""
+        found: list[BillingKey] = []
+        after: str | None = None
+        for _ in range(5):
+            params = [("limit", "100")] + ([("after_id", after)] if after else [])
+            response = self._billing_get(KEYS_PATH, params)
+            if response.status_code >= 400:
+                raise classify_http_error(response)
+            try:
+                body = response.json()
+                items = body["data"]
+                last = body.get("last_id")
+                more = body.get("has_more") is True and isinstance(last, str) and bool(last)
+            except (ValueError, KeyError, TypeError, AttributeError):
+                raise AiError("invalid_output", "the list of keys wasn't in the expected format") from None
+            for item in items if isinstance(items, list) else []:
+                if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+                    continue
+                if item.get("status") == "archived":
+                    continue
+                name = item.get("name") if isinstance(item.get("name"), str) else ""
+                hint = item.get("partial_key_hint") if isinstance(item.get("partial_key_hint"), str) else ""
+                found.append(BillingKey(id=item["id"], name=name, hint=hint))
+            if not more or last == after:
+                break
+            after = last
+        return found
+
+    def cost_report(
+        self,
+        day_from: date,
+        day_to: date,
+        *,
+        pages: int = 20,
+        sleep: Callable[[float], None] = time.sleep,
+        now: datetime | None = None,
+    ) -> CostReadout:
+        """What the provider charged for each UTC day from `day_from` to `day_to` (both included), one
+        `ProviderCostDay` per day and currency. Narrowed to the key picked on the account when there is one (scope
+        `key`), else the whole organization.
+
+        Reads in windows of at most 31 days. `pages` bounds every request of the read together (a restart after an
+        expired cursor and a try after a throttle count too); reaching it ends the read `partial`. A throttle's wait is
+        honored with `sleep` when it is short, and raised (`rate_limited`, with the wait) when it is longer; a cursor
+        the provider expired (410) restarts that window from its first page."""
+        read_at = now or datetime.now(UTC)
+        key_id = getattr(self.settings, "billing_key_id", None)
+        scope = "key" if key_id else "organization"
+        totals: dict[tuple[date, str], Decimal] = {}
+        budget = max(1, pages)
+        partial = False
+        start = day_from
+        while start <= day_to and not partial:
+            end = min(day_to, start + timedelta(days=COST_WINDOW_DAYS - 1))
+            budget, partial = self._read_window(start, end, key_id, budget, sleep, totals)
+            start = end + timedelta(days=1)
+        days = [
+            ProviderCostDay(
+                day=day,
+                amount=amount,
+                currency=currency,
+                scope=scope,
+                read_at=read_at,
+                open=_still_open(day, read_at),
+            )
+            for (day, currency), amount in sorted(totals.items())
+        ]
+        return CostReadout(days=days, partial=partial)
+
+    def _read_window(
+        self,
+        start: date,
+        end: date,
+        key_id: str | None,
+        budget: int,
+        sleep: Callable[[float], None],
+        totals: dict[tuple[date, str], Decimal],
+    ) -> tuple[int, bool]:
+        """One window of the report, page after page. Returns the requests left and whether the budget ran out."""
+        base = [
+            ("starting_at", f"{start.isoformat()}T00:00:00Z"),
+            ("ending_at", f"{(end + timedelta(days=1)).isoformat()}T00:00:00Z"),
+            ("time_bucket_width", "1d"),
+            ("limit", str(COST_PAGE_ROWS)),
+        ]
+        if key_id:
+            base.append(("api_key_ids[]", key_id))
+        page: str | None = None
+        rows: dict[tuple[date, str], Decimal] = {}
+        while True:
+            if budget <= 0:
+                totals.update(rows)
+                return 0, True
+            budget -= 1
+            response = self._billing_get(COST_PATH, base + ([("page", page)] if page else []))
+            if response.status_code == 410:  # the cursor expired: this window starts again from its first page
+                page, rows = None, {}
+                continue
+            if response.status_code == 429:
+                err = classify_http_error(response)
+                if err.retry_after is None or err.retry_after > COST_MAX_WAIT:
+                    raise err
+                sleep(err.retry_after)
+                continue
+            if response.status_code >= 400:
+                raise classify_http_error(response)
+            try:
+                body = response.json()
+                data = body["data"]
+                more = body.get("has_more") is True
+                next_page = body.get("next_page")
+                if not isinstance(data, list):
+                    raise TypeError("data is not a list")
+                for row in data:
+                    _add_row(rows, row)
+            except (ValueError, KeyError, TypeError, AttributeError, InvalidOperation):
+                raise AiError("invalid_output", "the cost report wasn't in the expected format") from None
+            if not more or not isinstance(next_page, str) or not next_page or next_page == page:
+                totals.update(rows)
+                return budget, False
+            page = next_page
+
+
+def _add_row(into: dict[tuple[date, str], Decimal], row: Any) -> None:
+    """Add one report row to the day it starts on (UTC). The row's amount is a decimal string in cents."""
+    cost = row["cost"]
+    day = datetime.fromisoformat(str(row["starting_at"]).replace("Z", "+00:00")).astimezone(UTC).date()
+    currency = str(cost.get("currency") or "USD").upper()
+    amount = Decimal(str(cost["amount"])) / 100
+    into[(day, currency)] = into.get((day, currency), Decimal(0)) + amount
+
+
+def _still_open(day: date, read_at: datetime) -> bool:
+    """Whether the provider may still revise the day: today or later, or a day of a month that closed less than a
+    week before the read."""
+    read_day = read_at.astimezone(UTC).date()
+    if day >= read_day:
+        return True
+    first_of_next = date(day.year + (day.month == 12), day.month % 12 + 1, 1)
+    return read_day < first_of_next + timedelta(days=REVISED_DAYS_AFTER_MONTH)
 
 
 def _released(value: Any) -> str | None:

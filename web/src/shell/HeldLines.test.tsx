@@ -1190,3 +1190,49 @@ test("a report that could not be drafted says so and can be tried again", async 
   await user.click(within(row).getByRole("button", { name: "Draft a report" }));
   expect(await within(row).findByRole("alert")).toHaveTextContent("The report could not be drafted. Try again.");
 });
+
+const costGap = (over: Partial<S["QueueLineView"]> = {}) =>
+  line("cost_gap", { key: "cost_gap:main", group: "decide", account: "main", count: 3, provider_usd: 14.5, app_usd: 9.25, ...over });
+
+test("a gap between what a service charged and what the app worked out is one line with both figures, Open, and Not now in the menu", async () => {
+  const user = userEvent.setup();
+  let lines = [costGap()];
+  const { calls, onOpenAiAccounts } = show(lines, {
+    "GET today/queue": () => lines,
+    "POST ai/costs/main/not-now": () => {
+      lines = [];
+      return { ok: "main" };
+    },
+  });
+  const row = await screen.findByRole("region", { name: "Check a charge" });
+  expect(row).toHaveTextContent("Check what main charged");
+  expect(row).toHaveTextContent("Over 3 days it charged $14.50");
+  expect(row).toHaveTextContent("worked out $9.25");
+  expect(within(row).getAllByRole("button").map((b) => b.textContent)).toContain("Open");
+  expect(within(row).queryByRole("button", { name: "Not now" })).toBeNull(); // one primary action; the other is in its menu
+  await user.click(within(row).getByRole("button", { name: "Open what main charged" }));
+  expect(onOpenAiAccounts).toHaveBeenCalledTimes(1);
+  await user.click(within(row).getByRole("button", { name: "More actions for what an account charged" }));
+  await user.click(await screen.findByRole("menuitem", { name: "Not now" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST ai/costs/main/not-now")).toBe(true));
+});
+
+test("one day in the gap reads in the singular", async () => {
+  show([costGap({ count: 1 })]);
+  expect(await screen.findByRole("region", { name: "Check a charge" })).toHaveTextContent("On 1 day it charged $14.50");
+});
+
+test.each([
+  ["auth", "didn't accept the billing key"],
+  ["no_key", "billing key can't be found"],
+  ["provider_down", "isn't answering"],
+  ["other", "can't be read for this account"],
+])("a report that failed three reads in a row says why (%s) and Open goes to the account", async (state, words) => {
+  const user = userEvent.setup();
+  const { onOpenAiAccounts } = show([line("cost_read_failed", { key: "cost_read_failed:main", account: "main", state: state as S["QueueLineView"]["state"] })]);
+  const row = await screen.findByRole("region", { name: "Check an account" });
+  expect(row).toHaveTextContent("Couldn't read what main charged");
+  expect(row).toHaveTextContent(words);
+  await user.click(within(row).getByRole("button", { name: "Open main to fix how its charges are read" }));
+  expect(onOpenAiAccounts).toHaveBeenCalledTimes(1);
+});

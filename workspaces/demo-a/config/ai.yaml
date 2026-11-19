@@ -95,6 +95,11 @@ models: {follow_newest: true, check_every_days: 7, use_days: 7}   # a tier moves
 catalog_refresh_hours: 24
 borrow_other_tier: ask      # ask: Today asks before another kind of work's account fills in for a paused one; never: the work waits
 credential_warn_days: 1     # Today says this many days before a key or sign-in with a known end date stops working
+cost_report_days: 35      # how many UTC days each read of what a provider charged covers, and how long they are kept
+cost_report_pages: 20     # the most requests one such read may make; reaching it marks the read partial
+cost_gap_settle_days: 2   # a day is compared with the provider's figure only once it is this many days old
+cost_gap_percent: 20      # Today says to check a day when the provider charged this much more than the app worked out ...
+cost_gap_usd: 1.0         # ... and more than this many US dollars more
 content_levels:
   health: Health or medical details about people in project material.
 routing:

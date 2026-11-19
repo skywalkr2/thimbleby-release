@@ -955,6 +955,16 @@ export const api = {
     call<S["AiMoved"]>("POST", `ai/accounts/${id(name)}/move`, { fingerprint } satisfies S["FingerprintIn"]),
   /** Puts the move off for good: the line never comes back unasked. */
   moveAccountNotNow: (name: string) => call<S["Ok"]>("POST", `ai/accounts/${id(name)}/move/not-now`),
+  /** What each account's service charged beside the app's own figure, per UTC day, for the accounts whose report is on. */
+  aiCosts: () => call<S["AiCostsView"]>("GET", "ai/costs"),
+  /** Puts off the Today line about a gap for exactly the days it counts now. */
+  aiCostsNotNow: (account: string) => call<S["Ok"]>("POST", `ai/costs/${id(account)}/not-now`),
+  /** The organization's keys, read with a billing key (pasted, by reference or the saved one), to pick the account's own from. */
+  billingKeys: (name: string, body: S["BillingKeysRequest"]) =>
+    call<S["BillingKeysView"]>("POST", `ai/accounts/${id(name)}/billing-keys`, body),
+  /** Adds or changes the billing key, the picked key and the hours between reads; one small read first, nothing saved when it fails. */
+  changeBilling: (name: string, body: S["BillingChange"]) =>
+    call<S["SettingsSaved"]>("POST", `ai/accounts/${id(name)}/billing`, body),
   /** Puts off a line about an account's models (newer or price) until a different one appears. */
   modelWatchNotNow: (account: string, state: string) =>
     call<S["Ok"]>("POST", `ai/model-watch/${id(account)}/${id(state)}/not-now`),

@@ -760,6 +760,8 @@ const KIND_ICONS: Record<QueueLine["kind"], IconName> = {
   account_move: "gear",
   model_watch: "gear",
   model_moved: "gear",
+  cost_gap: "gear",
+  cost_read_failed: "gear",
   identity: "gear",
   work_access: "gear",
   credential: "gear",

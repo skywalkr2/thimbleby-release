@@ -69,6 +69,7 @@ import { parseAmount, useWriteAmount } from "../lib/money";
 import { Marked } from "./Marked";
 import { useWords } from "../lib/wording";
 import { AiAccounts } from "./AiAccounts";
+import { AiCostsSpending } from "./AiCosts";
 import { ReginaldOn } from "./ReginaldOn";
 import { AiChoices } from "./AiRouting";
 import { MergedRow } from "./MergedRow";
@@ -924,6 +925,7 @@ export function Settings(props: {
           {setup.data?.steps.some((s) => s.id === "ai" && s.done) && <ReginaldOn hideWhenOn />}
           <AiChoices />
           {form("ai")}
+          <AiCostsSpending />
           {moreSettings("ai")}
         </>
       );

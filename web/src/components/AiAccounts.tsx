@@ -49,6 +49,7 @@ import { Skeleton } from "../ui/Skeleton";
 import { DialogFooter, ModalPanel, restoreFocus } from "./ModalPanel";
 import { RefreshedLines } from "./RefreshedLines";
 import { RowMenu, type MenuAction } from "./RowMenu";
+import { AccountCosts } from "./AiCosts";
 import styles from "./AiAccounts.module.css";
 import { DateField } from "../ui/DateField";
 import { FormField } from "../ui/FormField";
@@ -848,6 +849,7 @@ function AccountRow(props: {
           )}
         </div>
       )}
+      {!props.compact && <AccountCosts account={account} local={props.local} />}
       <div className={styles.forms} hidden={!extras}>
         <RefreshedLines lines={refreshed.lines} time={refreshed.time} />
         {mode === "name" && (

@@ -830,6 +830,28 @@ class ProviderSettings(ConfigModel):
     auth: str | None = Field(
         None, description=SecretHint("A secret reference (env:NAME or file:/path), never the secret itself.")
     )
+    billing_auth: str | None = Field(
+        None,
+        description=SecretHint(
+            "A secret reference (env:NAME or file:/path), never the secret itself, for the key that lets the app read "
+            "what this account's service charged. It is often a different key from the one that runs models, and it "
+            "is sent only to the service's own report address, never to another address."
+        ),
+    )
+    billing_key_id: str | None = Field(
+        None,
+        description="The key this account runs with, picked from the list its service gives when the billing key is "
+        "added, so the report is narrowed to this account's own use. Empty: the report covers the whole organization, "
+        "including use outside this app, and every figure says so.",
+    )
+    cost_report_hours: int = Field(
+        0,
+        ge=0,
+        le=24,
+        description="How many hours apart this account's service is asked what it actually charged, to show beside the "
+        "app's own figure for each day. 0 turns it off. It needs the billing key, and nothing is read without both. "
+        "The service's own figures lag by hours, so shorter than that only rereads the same numbers.",
+    )
     models: dict[str, str] = Field(default_factory=dict, description="Short names for this account's models.")
     flat_rate: bool | None = Field(
         None,
@@ -849,6 +871,12 @@ class ProviderSettings(ConfigModel):
                     name, _, rest = str(key).partition(":")
                     raise ValueError(f"put a space after the colon: write '{name}: {rest}', not '{key}'")
         return value
+
+    @model_validator(mode="after")
+    def _cost_report_needs_its_key(self) -> ProviderSettings:
+        if self.cost_report_hours and not self.billing_auth:
+            raise ValueError("reading what the service charged needs the billing key; add it or set the hours to 0")
+        return self
 
     allowed_data: list[DataLevel] = Field(
         default_factory=lambda: ["open"], description="The most sensitive material this account may see."
@@ -1276,6 +1304,41 @@ class AiFile(FileModel):
     )
     catalog_refresh_hours: float = Field(
         24, ge=0, description="How often each account's model list and prices are fetched again from the provider."
+    )
+    cost_report_days: int = Field(
+        35,
+        ge=1,
+        le=370,
+        description="How many UTC days back each read of what an account's service charged covers, and how long the "
+        "days are kept on this computer. The service revises a month's figures for about a week after it closes, so "
+        "keep this above 31.",
+    )
+    cost_report_pages: int = Field(
+        20,
+        ge=1,
+        le=200,
+        description="The most requests one read of what a service charged may make. A read that reaches it is marked "
+        "partial and is never shown as a total, so a service that never stops paging can't keep the read going.",
+    )
+    cost_gap_settle_days: int = Field(
+        2,
+        ge=0,
+        le=31,
+        description="How many days old a day must be before what the service charged is compared with the app's own "
+        "figure for it, because the service's figures lag by hours and up to a day.",
+    )
+    cost_gap_percent: float = Field(
+        20,
+        ge=0,
+        description="How far above the app's own figure, in percent, what the service charged for a day must be, and "
+        "above the amount below as well, before Today says to check it.",
+    )
+    cost_gap_usd: float = Field(
+        1.0,
+        ge=0,
+        description="How far above the app's own figure, in US dollars, what the service charged for a day must be, "
+        "and above the percentage as well, before Today says to check it.",
+        json_schema_extra=MONEY,
     )
     rate_limits: RateLimitSettings = Field(
         default_factory=RateLimitSettings, description="Waiting and trying again when an account says to slow down."

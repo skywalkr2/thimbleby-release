@@ -1,0 +1,86 @@
+{
+  "_note": "A recorded, fictional cost report (invented key ids, amounts and dates). Rows carry `amount` as a decimal string in cents with six places, the way the provider's documentation shows it. The key list's shape follows the provider's documentation of its key list (read 2026-11-19): a `data` list of {id, name, partial_key_hint, status} with has_more and last_id, paged by after_id and limit.",
+  "page_one": {
+    "data": [
+      {
+        "starting_at": "2026-11-15T00:00:00Z",
+        "ending_at": "2026-11-16T00:00:00Z",
+        "group": null,
+        "cost": {
+          "amount": "41280.000000",
+          "currency": "USD",
+          "list_amount": "41280.000000",
+          "requests": 120
+        }
+      },
+      {
+        "starting_at": "2026-11-16T00:00:00Z",
+        "ending_at": "2026-11-17T00:00:00Z",
+        "group": null,
+        "cost": {
+          "amount": "250.500000",
+          "currency": "USD",
+          "list_amount": "250.500000",
+          "requests": 3
+        }
+      }
+    ],
+    "data_refreshed_at": "2026-11-19T08:00:00Z",
+    "has_more": true,
+    "next_page": "cursor-two"
+  },
+  "page_two": {
+    "data": [
+      {
+        "starting_at": "2026-11-17T00:00:00Z",
+        "ending_at": "2026-11-18T00:00:00Z",
+        "group": null,
+        "cost": {
+          "amount": "100.000000",
+          "currency": "USD",
+          "list_amount": "100.000000",
+          "requests": 1
+        }
+      },
+      {
+        "starting_at": "2026-11-17T00:00:00Z",
+        "ending_at": "2026-11-18T00:00:00Z",
+        "group": null,
+        "cost": {
+          "amount": "50.000000",
+          "currency": "USD",
+          "list_amount": "50.000000",
+          "requests": 1
+        }
+      }
+    ],
+    "data_refreshed_at": "2026-11-19T08:00:00Z",
+    "has_more": false,
+    "next_page": null
+  },
+  "keys": {
+    "data": [
+      {
+        "id": "apikey_example_one",
+        "name": "Example runs",
+        "partial_key_hint": "sk-example-...abcd",
+        "status": "active"
+      },
+      {
+        "id": "apikey_example_two",
+        "name": "Example old",
+        "partial_key_hint": "sk-example-...wxyz",
+        "status": "archived"
+      },
+      {
+        "id": "apikey_example_three",
+        "name": "Example tests",
+        "partial_key_hint": "sk-example-...mnop",
+        "status": "active"
+      }
+    ],
+    "has_more": false,
+    "last_id": "apikey_example_three"
+  },
+  "proxy_base_url": "https://gateway.example.com"
+}

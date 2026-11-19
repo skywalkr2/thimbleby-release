@@ -3784,9 +3784,13 @@ class QueueLineView(BaseModel):
     price_unknown, check_failed with `count` cases and `check_failed` when the check couldn't finish, or check_cost
     with the check's `estimate_usd`); Switch is the settings' own switch with its check and Not now is POST
     /api/ai/model-watch/{account}/{state}/not-now; with `state` price, a tier's current model went up in price by
-    `usd_per_day`; `model_moved` is a tier (`tier`) moved on its own to a newer model of its family after a check passed
-    (the new `account`, the earlier one in `text`, `usd_per_day` the change in cost; Switch back and Keep are the
-    switch routes above); `identity` is a command-line agent
+    `usd_per_day`; `cost_gap` is an account (`account`) whose provider charged well above the app's own figure on
+    `count` settled days (`provider_usd` against `app_usd` over them; Open shows the comparison in Settings, Not now is
+    POST /api/ai/costs/{account}/not-now); `cost_read_failed` is an account whose report of what its provider charged
+    failed three reads in a row (`account`, `state` the kind of failure: auth, no_key, quota, rate_limited,
+    provider_down, timeout, offline, invalid_output or other); `model_moved` is a tier (`tier`) moved on its own to a
+    newer model of its family after a check passed (the new `account`, the earlier one in `text`, `usd_per_day` the
+    change in cost; Switch back and Keep are the switch routes above); `identity` is a command-line agent
     account (`account`) whose sign-in changed (`state` changed: the sign-in found now in `text`, the recorded one in
     `subject`; Keep is POST /api/ai/accounts/{account}/identity/keep, Sign in again opens the account) or isn't set
     for the level of the work waiting on it (`state` level: `text` the sign-in, none when unknown, `names` the levels
@@ -3908,6 +3912,8 @@ class QueueLineView(BaseModel):
         "folder_rename",
         "model_watch",
         "model_moved",
+        "cost_gap",
+        "cost_read_failed",
         "identity",
         "work_access",
         "credential",
@@ -4200,11 +4206,22 @@ class QueueLineView(BaseModel):
             "connected",
             "no_agenda",
             "manual",
+            "auth",
+            "no_key",
+            "quota",
+            "rate_limited",
+            "provider_down",
+            "timeout",
+            "offline",
+            "invalid_output",
+            "other",
         ]
         | None
     ) = Field(
         None,
         description="For a date_reminder line: the kind of day, deadline, renewal, expiry, warranty or bill. For a "
+        "cost_read_failed line: why the reads failed (auth, no_key, quota, rate_limited, provider_down, timeout, "
+        "offline, invalid_output or other). For a "
         "clash line: overlap (the two meetings overlap) or travel (they are in different places with "
         "less than the configured travel time between them). For a model_watch line: newer (a newer model of a tier's "
         "family exists) or price (a tier's current model went up in price). For a handover line: diverged (this "
@@ -4320,6 +4337,12 @@ class QueueLineView(BaseModel):
         None,
         description="For a model_watch or model_moved line: what the change costs per day at the current use, in US "
         "dollars (below zero: less); none when a price isn't known.",
+    )
+    provider_usd: float | None = Field(
+        None, description="For a cost_gap line: what the provider charged over its days, in US dollars."
+    )
+    app_usd: float | None = Field(
+        None, description="For a cost_gap line: what the app worked out for the same days, in US dollars."
     )
     reason: str | None = Field(
         None,
@@ -5504,6 +5527,18 @@ class AiAccountView(BaseModel):
         description="About what one connection check of it costs, from the prices in the settings or kept from earlier "
         "runs; none when its price isn't known.",
     )
+    cost_report_offered: bool | None = Field(
+        None,
+        description="Its adapter can read what its service charged (a billing key and hours turn it on); false for an "
+        "account that shows the app's own figure only.",
+    )
+    billing_key_state: Literal["saved", "missing", "none"] | None = Field(
+        None, description="The billing key, as `key_state` says it for the account's own key; never a key."
+    )
+    billing_key_id: str | None = Field(
+        None, description="The key picked from the service's list as the one this account runs with; none: all of it."
+    )
+    cost_report_hours: int | None = Field(None, description="How many hours apart the report is read; 0 or none: off.")
 
 
 SettingLayer = Literal["default", "file", "env", "flag"]
@@ -5781,6 +5816,75 @@ class AiCheckSize(BaseModel):
     calls: int = Field(description="How many small calls the check makes.")
     input_tokens: int = Field(description="About how many tokens they read together.")
     output_tokens: int = Field(description="About how many tokens they write together.")
+
+
+class AiCostDay(BaseModel):
+    """One UTC day of an account: what its service charged beside what the app worked out."""
+
+    day: date = Field(description="The UTC day (the screen draws it in the person's time zone, marked as a UTC day).")
+    reported: bool = Field(description="The service has reported this day; false shows 'not reported yet', never 0.")
+    amount: float | None = Field(None, description="What the service charged, in `currency`'s whole units.")
+    currency: str | None = None
+    read_at: datetime | None = Field(None, description="When the figure was read.")
+    open: bool = Field(description="The service may still revise it (today, or a month it hasn't settled).")
+    app_usd: float = Field(description="What the app worked out for the same UTC day, in US dollars.")
+    by_task: dict[str, float] = Field(
+        default_factory=dict, description="The app's figure split by kind of work; the service's has no such split."
+    )
+    gap: bool = Field(False, description="Today's line about a gap counts this day.")
+
+
+class AiCostAccount(BaseModel):
+    """One account whose service's report is read."""
+
+    name: str
+    label: str = ""
+    scope: Literal["key", "organization"] | None = Field(
+        None, description="key: narrowed to the key it runs with. organization: includes use outside this app."
+    )
+    read_at: datetime | None = Field(None, description="When the report was last read; none before the first read.")
+    partial: bool = Field(False, description="The last read stopped at its page limit: the days may be incomplete.")
+    failing: str | None = Field(None, description="The kind of failure when the last reads failed, else none.")
+    days: list[AiCostDay] = Field(default_factory=list, description="Newest first.")
+
+
+class AiCostsView(BaseModel):
+    """What each account's service charged beside the app's own figure, per UTC day."""
+
+    accounts: list[AiCostAccount]
+
+
+class BillingKeyChoice(BaseModel):
+    id: str
+    name: str
+    hint: str = Field(description="The part of the key the service shows, to tell keys apart.")
+
+
+class BillingKeysRequest(BaseModel):
+    """The billing key to list the organization's keys with: pasted or by reference; left out, the saved one."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str | None = None
+    key_ref: str | None = None
+
+
+class BillingKeysView(BaseModel):
+    keys: list[BillingKeyChoice] = Field(default_factory=list)
+    problem: str | None = Field(None, description="Why the list couldn't be read, in plain words.")
+
+
+class BillingChange(BaseModel):
+    """Add or change what an account's billing report needs. One small report is read first; nothing is saved when it
+    fails."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str | None = Field(None, description="A pasted billing key; kept on this computer.")
+    key_ref: str | None = Field(None, description="Or where it is: env:NAME or file:/path.")
+    key_id: str | None = Field(None, description="The picked key of the service's list; empty: the whole organization.")
+    hours: int | None = Field(None, ge=0, le=24, description="How many hours apart it is read; 0 turns it off.")
+    fingerprint: str
 
 
 class AiSwitchEstimate(BaseModel):
