@@ -3,12 +3,13 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { S } from "../lib/api";
 import { whenText } from "../lib/dates";
-import { Refuse, fakeApi, renderApp, snapshotOf } from "../test-utils";
+import { inHours, Refuse, fakeApi, renderApp, snapshotOf } from "../test-utils";
 import { Sources, signedOutOf } from "./Sources";
 
 type Source = S["WatchSourceView"];
 type Run = NonNullable<Source["last"]>;
 
+const LATER = inHours(2);
 const run = (extra: Partial<Run> = {}): Run => ({
   outcome: "ok",
   started_at: "2026-03-04T10:30:00+00:00",
@@ -230,6 +231,14 @@ test("a read of old data says how old it is and never says nothing is new", asyn
   expect(stale).not.toHaveTextContent("Nothing new");
 });
 
+test.each([
+  ["seconds", 40_000, /Not read yet: the service asked to wait\. It is tried again in a minute or so/],
+  ["minutes", 150_000, /Not read yet: the service asked to wait\. It is tried again in a few minutes/],
+])("a source the service asked to wait on for %s says so in words, not by a time of day (H5-07)", async (_name, ms, said) => {
+  open([source("slowed", { last: run({ outcome: "throttled", retry_at: new Date(Date.now() + ms).toISOString() }) })]);
+  expect((await row("Source slowed")).textContent).toMatch(said);
+});
+
 test("every outcome has its own words", async () => {
   open([
     source("quiet", { last: run() }),
@@ -241,7 +250,7 @@ test("every outcome has its own words", async () => {
       problem: "It can't be read: refused. Sign in again.",
     }),
     source("fresh", { last: null, read_at: null }),
-    source("slowed", { last: run({ outcome: "throttled", retry_at: "2026-10-11T15:00:00Z" }) }),
+    source("slowed", { last: run({ outcome: "throttled", retry_at: LATER }) }),
     source("slowed-plain", { last: run({ outcome: "throttled" }) }),
   ]);
   expect(await row("Source quiet")).toHaveTextContent("Nothing new");
@@ -254,7 +263,7 @@ test("every outcome has its own words", async () => {
   expect(await row("Source fresh")).toHaveTextContent("Not read yet");
   // A throttled read says why it waits and until when, never that it couldn't be read.
   const slowed = await row("Source slowed");
-  expect(slowed).toHaveTextContent(`Not read yet: the service asked to wait until ${whenText("2026-10-11T15:00:00Z")}. It is tried again then`);
+  expect(slowed).toHaveTextContent(`Not read yet: the service asked to wait until ${whenText(LATER)}. It is tried again then`);
   expect(slowed).not.toHaveTextContent("Couldn't be read");
   expect(await row("Source slowed-plain")).toHaveTextContent("Not read yet: the service asked to wait. It is tried again by itself");
 });

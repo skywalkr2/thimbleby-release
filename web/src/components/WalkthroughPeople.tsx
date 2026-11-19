@@ -7,6 +7,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError, type S } from "../lib/api";
+import { waitWhen } from "../lib/olderRead";
 import { useAct } from "../lib/act";
 import { useDraftState } from "../lib/draft";
 import { useEstimate } from "../lib/money";
@@ -25,6 +26,8 @@ import { Row } from "../ui/Row";
 import { RowList } from "../ui/RowList";
 import { useContinue } from "../lib/walkthrough-continue";
 import { clearIfUnchanged } from "../lib/clear-if-unchanged";
+/** How often the look's state is read again while it waits for mail or works. */
+const LOOK_EVERY_MS = 3000;
 const RELATIONS = [
   "partner",
   "parent",
@@ -129,7 +132,12 @@ function Suggestions(props: { places: Place[]; sided: boolean }) {
   const client = useQueryClient();
   const act = useAct();
   const estimate = useEstimate();
-  const found = useQuery({ queryKey: ["people-suggestions"], queryFn: api.peopleSuggestions });
+  // While the look is waiting for mail or working, the step looks again every few seconds, so what it offers shows as it arrives.
+  const found = useQuery({
+    queryKey: ["people-suggestions"],
+    queryFn: api.peopleSuggestions,
+    refetchInterval: (q) => (q.state.data && q.state.data.people.length === 0 && (q.state.data.state === "not_yet" || q.state.data.state === "working") ? LOOK_EVERY_MS : false),
+  });
   const [ticked, setTicked] = useState<string[]>([]);
   const [target, setTarget] = useState(PERSONAL_KEY);
   const [problem, setProblem] = useState("");
@@ -199,7 +207,11 @@ function Suggestions(props: { places: Place[]; sided: boolean }) {
           </div>
         ) : (
           <p className="hint" data-people-look-state={allAdded ? "added" : state}>
-            {t(allAdded ? "walkthrough.people.suggest.all_added" : `walkthrough.people.suggest.state.${state}`)}
+            {allAdded
+              ? t("walkthrough.people.suggest.all_added")
+              : state === "not_yet" && found.data.until
+                ? t("walkthrough.people.suggest.state.not_yet_until", { when: waitWhen(found.data.until, t) })
+                : t(`walkthrough.people.suggest.state.${state}`)}
           </p>
         )
       ) : (

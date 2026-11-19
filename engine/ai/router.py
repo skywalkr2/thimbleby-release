@@ -52,19 +52,24 @@ class Independence:
 class RunPrice:
     """What one run of a task costs on the account it would use: `full` with every input token at the full price, and
     `warm` when the account's cache already holds the packet's stable part (instructions and stable text), which it
-    charges at the cached price. `warm` equals `full` when the account lists no cached price."""
+    charges at the cached price. `warm` equals `full` when the account lists no cached price. `seen` is the share of the
+    account's recorded runs that were served from its cache (0 with no history): the ceiling counts that share of the
+    runs after the first at the warm price, so an account whose cache is in use is not priced as if it never were."""
 
     full: float
     warm: float
+    seen: float = 0.0
 
     def runs(self, count: float) -> tuple[float, float]:
         """What `count` runs of this task cost, as (likely, at most): the first at the full price and the rest warm,
-        and every run at the full price. A count that is an expected number (a share of the messages) may have a
-        fraction; less than one run costs its share of one."""
+        and every run at the full price less what the recorded runs show the cache saves (`seen`). A count that is an
+        expected number (a share of the messages) may have a fraction; less than one run costs its share of one."""
         if count <= 0:
             return 0.0, 0.0
         likely = count * self.full if count <= 1 else self.full + (count - 1) * self.warm
-        return likely, count * self.full
+        if count <= 1 or self.seen <= 0:
+            return likely, count * self.full
+        return likely, self.full + (count - 1) * (self.full - self.seen * (self.full - self.warm))
 
 
 @dataclass(frozen=True)
@@ -664,7 +669,22 @@ class Router:
             return RunPrice(full, full)
         stable = round(estimate_tokens(len(task.instructions) + len(task.stable)) * self.calibration(choice).ratio)
         saving = stable * (info.input_per_million - cached) / 1e6
-        return RunPrice(full, max(0.0, full - saving))
+        return RunPrice(full, max(0.0, full - saving), self.cache_use(choice.provider))
+
+    def cache_use(self, provider: str) -> float:
+        """The share of the account's latest recorded runs (`ai.estimates.cache_history_runs`) whose service reported
+        input served from its cache; 0 when none is recorded or the service reports none."""
+        runs = [
+            r.data
+            for r in self.store.read().list("run")
+            if r.data.get("provider") == provider
+            and r.data.get("outcome") == "ok"
+            and r.data.get("input_tokens") is not None
+        ]
+        runs = runs[-self.cfg.ai.estimates.cache_history_runs :]
+        if not runs:
+            return 0.0
+        return sum(1 for r in runs if (r.get("cached_input_tokens") or 0) > 0) / len(runs)
 
     def price_state(
         self,

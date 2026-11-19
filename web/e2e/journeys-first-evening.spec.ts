@@ -153,6 +153,8 @@ test.describe.serial("journey: a first evening", () => {
     await page.keyboard.press("Escape");
     expect(page.url()).not.toMatch(/code=|state=|sign_in=/);
     await main.getByRole("button", { name: "Continue" }).click();
+    // The account's "Read in full from" is unanswered, so Continue asks first (H5-12); going on without choosing goes on.
+    await page.getByRole("button", { name: "Go on without choosing" }).click();
 
     // 4. After Mail and calendar the first reading is waited for on screen, then People follows by itself.
     await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible({ timeout: 120_000 });

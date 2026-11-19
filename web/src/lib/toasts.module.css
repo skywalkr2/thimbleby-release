@@ -1,5 +1,6 @@
 /* One toast at a time, with an icon, at the bottom centre of the window whatever the navigation does (design 7.6, 7.12): on a
-   phone above the bottom bar, and with a dialog or a drawer open, or a setup step's footer showing, at the top, so it is never over the buttons at the foot of
+   phone above the bottom bar; with a setup step's footer showing, just above that footer (its height is `--step-footer-h`), so it is
+   never over the buttons or the page's title; and with a dialog or a drawer open, at the top, so it is never over the buttons at the foot of
    one. The page keeps room under its last row for the toast's height and scrolls a focused row clear of it. */
 .region {
   position: fixed; left: 50%; transform: translateX(-50%); z-index: 70;
@@ -7,7 +8,8 @@
   pointer-events: none;
 }
 :global([data-narrow]) .region { bottom: calc(var(--bottombar-h) + var(--space-3) + env(safe-area-inset-bottom, 0px)); }
-:global(body:has([data-modal-open], [data-step-footer=""])) .region { bottom: auto; top: var(--space-4); }
+:global(body:has([data-step-footer=""])) .region { bottom: calc(var(--step-footer-h, 0px) + var(--space-3)); }
+:global(body:has([data-modal-open])) .region { bottom: auto; top: var(--space-4); }
 .stack { display: grid; gap: var(--space-2); }
 .toast {
   pointer-events: auto; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-3);

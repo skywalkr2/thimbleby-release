@@ -72,13 +72,22 @@ propose_round_minutes: 15   # the first free time offered starts at the next mul
 look_back_choices: [30, 90, 365]   # days a mail source can be asked to look further back, shown as a list
 full_read_choices: [14, 30, 90]   # days back a first sign-in offers to read mail in full, each with its estimate; none is chosen for the person
 look_back_max_items: 100   # the most older messages one look further back asks a mail source for
-full_read_max_items: 5000   # the most older messages a first sign-in's full read counts and reads, in pages of look_back_max_items
+full_read_max_items: 5000   # the most older messages a first sign-in's full read counts and reads, in pages of full_read_page_items
+full_read_page_items: 500   # how many messages one page of the full read asks for; the read goes a page at a time in the background
 full_read_count_minutes: 15   # how long the full-read choice keeps the counts the mail service gave before asking again
 older_read_throttle_minutes: 15   # a read of older mail the service slowed down carries on after this long when the service gave no time
 older_read_retry_minutes: 10   # a read of older mail that stopped on a failure carries on after this long
 older_read_tries: 3   # carries-on in a row, without getting further, before Today offers to read the rest
 first_headers_days: 365   # days back a mail account's headers are read once at first sign-in, with no assistant work (0: not read)
 first_headers_max_items: 5000   # the most headers that first read asks for
+first_headers_sample_items: 300   # the newest headers read at sign-in; the rest of the days back are read later, in the background
+gate_default_per_second: 2.0   # requests a second to one account's service when its add-on declares no pace
+gate_floor_per_second: 0.1   # the slowest pace an account is held to after the service asked to wait
+gate_wait_seconds: 5.0   # the longest a request waits for its turn before it stops as slowed down
+gate_throttle_seconds: 60   # how long an account is held when the service asks to wait and gives no time
+gate_recover_minutes: 5.0   # quiet minutes before a slowed account's pace is raised once (0: not raised)
+gate_recover_factor: 1.5   # what a slowed pace is multiplied by each time it is raised
+check_reading_headers: 20   # the newest headers the Check reading button asks an account for, to show its requests, refusals and waits
 arrival_reads_per_day: 2   # how many times a day a parcel with no arrival day has its carrier's page read
 arrival_max_parcels: 10   # the most parcels whose carrier page is read in one pass
 arrival_page_max_chars: 6000   # the most characters of a carrier's page the assistant reads

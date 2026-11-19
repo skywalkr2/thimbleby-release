@@ -1600,7 +1600,8 @@ class SetupPersonIn(PersonIn):
 class PeopleSuggestionsView(BaseModel):
     """The people the assistant offers in the people step, most mail first. With none, `state` says where its look at
     who the person deals with stands: no_account (no assistant is set up for it), not_yet (no mail has been read),
-    working (it is reading), waiting (it waits for the person's go) or looked (it read and offered no one)."""
+    working (it is reading), waiting (it waits for the person's go) or looked (it read and offered no one). With
+    `not_yet`, `until` says when the mail service lets a waiting read go on."""
 
     people: list[PersonSuggestion]
     state: Literal["no_account", "not_yet", "working", "waiting", "looked"]
@@ -1610,6 +1611,11 @@ class PeopleSuggestionsView(BaseModel):
     read_version: int | None = Field(None, description="With `request`: the version of that request, sent with the go.")
     estimate_usd: float | None = Field(
         None, description="With `request`: about what the look costs; none when no price is known."
+    )
+    until: str | None = Field(
+        None,
+        description="With state `not_yet`: when a first read the mail service asked to wait on can go on; none when "
+        "no read waits for the service.",
     )
 
 
@@ -1999,6 +2005,11 @@ class RuntimeConfig(BaseModel):
     )
     group_rows: int = Field(
         5, description="On a heavy day, the lines each group of Today shows before Show more (ui.today.group_rows)."
+    )
+    short_wait_minutes: int = Field(
+        5,
+        description="A wait shorter than this many minutes is said in words, a longer one by the time of day "
+        "(ui.short_wait_minutes).",
     )
     time_format: Literal["auto", "12h", "24h"] = Field(
         "auto",
@@ -4535,6 +4546,11 @@ class FullReadOptionView(BaseModel):
         description='The count is the source\'s own rough figure, not an exact count: it reads as "about" this many, '
         'and the cost as "about" this much.',
     )
+    unknown: bool = Field(
+        False,
+        description="The service could not say how many there are (it asked to wait, failed or could not be reached): "
+        "no number is shown and the read goes on all the same.",
+    )
 
 
 class FullReadView(BaseModel):
@@ -4543,12 +4559,52 @@ class FullReadView(BaseModel):
 
     options: list[FullReadOptionView]
     answered: int | None = Field(None, description='The reach the person chose in days; 0 for "not now".')
+    day_stop_usd: float | None = Field(
+        None,
+        description="The most the assistant starts in a day (the budget's daily limit): a cost above it can't be spent "
+        "in one day, and the choice says so.",
+    )
 
 
 class FullReadIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     days: int = Field(ge=0, description='One of the offered reaches, or 0 for "not now".')
+
+
+class ReadingCheckRefusalView(BaseModel):
+    """One refusing answer the account's gate saw during a reading check: its status and reason code (never the
+    service's own words), the wait the service asked for and when it ends."""
+
+    status: int | None = Field(None, description="The answer's status code, when it had one.")
+    reason: str = Field(description="The refusal's reason as a code, such as `throttled` or `throttled:rate_limit`.")
+    wait_seconds: float | None = Field(None, description="The wait the service asked for; None when it gave none.")
+    at: datetime = Field(description="When the answer came.")
+    until: datetime | None = Field(None, description="When the wait ends.")
+
+
+class ReadingCheckView(BaseModel):
+    """What a reading check of one account found: the gate's own counts from before the short read to after it."""
+
+    account: str = Field(description="The account's address.")
+    asked: int = Field(description="How many of its newest headers the check asked for.")
+    read: int = Field(description="How many the account gave.")
+    ended: str = Field(
+        description="`read` when the account answered, else the kind of the error that stopped the check "
+        "(`throttled`, `offline`, `outage`, `auth`, `no_access`, `not_found`)."
+    )
+    requests: int = Field(description="Requests sent to the account's service, whatever the answer.")
+    held: int = Field(
+        description="Requests the gate stopped before sending (it was waiting, or the turn was too far off)."
+    )
+    refusals: list[ReadingCheckRefusalView] = Field(description="The refusing answers, oldest first.")
+    waiting_until: datetime | None = Field(
+        None, description="When the account's gate opens again, when it is still holding requests."
+    )
+    pace_per_second: float | None = Field(None, description="The pace the gate settled on, in requests a second.")
+    declared_per_second: float | None = Field(None, description="The pace the gate started at.")
+    paced_seconds: float = Field(0, description="Seconds requests waited for their turn at the pace.")
+    log_line: str = Field(description="The same as one line of codes and numbers, to copy.")
 
 
 class LookBackView(BaseModel):
@@ -4602,7 +4658,8 @@ class LookBackView(BaseModel):
     stopped: str | None = Field(
         None,
         description="After the look: the service slowed the read down or failed partway (`throttled`, `outage`, "
-        "`offline`, or another kind the person has to deal with). What was read is kept; the date moved only over "
+        "`offline`, or another kind the person has to deal with; `queued` for a full read saved to be read in the "
+        "background, `reading` for a slice that left more to read). What was read is kept; the date moved only over "
         "the days read whole.",
     )
     continues_at: datetime | None = Field(
@@ -4614,16 +4671,29 @@ class LookBackView(BaseModel):
         False,
         description="After a look that stopped: it ran out of tries and waits for the person to carry on from Today.",
     )
+    unknown: bool = Field(
+        False,
+        description="The service could not say how many there are (it asked to wait, failed or could not be reached): "
+        "no number is shown and the read goes on all the same.",
+    )
 
 
 class OlderReadView(BaseModel):
     """A read of older mail that stopped partway and waits to carry on from where it stopped."""
 
-    kind: str = Field(description="Why it stopped: throttled, outage or offline.")
+    kind: str = Field(
+        description="Why it waits: throttled, outage or offline when it stopped; queued before its first page and "
+        "reading between slices."
+    )
     at: datetime | None = Field(None, description="When it carries on by itself; none once it gave up.")
     gave_up: bool = Field(False, description="It ran out of tries: Today offers to read the rest.")
     taken: int = Field(0, description="Items taken in so far by the read that stopped.")
     tries: int = Field(0, description="Stops in a row without getting further.")
+    about: int | None = Field(
+        None,
+        description="About how many items the read will take in altogether, as the service said when the person "
+        "chose the reach; none when it did not say.",
+    )
 
 
 class FirstGoSorting(BaseModel):
@@ -5137,13 +5207,21 @@ class ReadingView(BaseModel):
         None,
         description="For none: mail was left out or none is read (no_mail), or there is no AI account (no_ai).",
     )
-    stage: Literal["fetching", "sorting", "looking"] | None = Field(
+    stage: Literal["fetching", "sorting", "looking", "waiting"] | None = Field(
         None,
-        description="For working: reading the mail and calendar (fetching), sorting what it found (sorting), or "
-        "looking at who the person writes to (looking).",
+        description="For working: reading the mail and calendar (fetching), sorting what it found (sorting), "
+        "looking at who the person writes to (looking), or waiting for the mail service, which asked to slow down "
+        "(waiting, with `until`).",
     )
     sources: int = Field(0, description="How many mail and calendar sources are read.")
     read: int = Field(0, description="How many of them were read once.")
+    waiting: int = Field(0, description="How many of them wait for the mail service, which asked to slow down.")
+    until: str | None = Field(None, description="When the earliest waiting source can be read again.")
+    pending: list[str] = Field(
+        default_factory=list,
+        description="The names of the sources still being read, while there are few enough to name; empty when "
+        "there are more (the counts say it then).",
+    )
     found: int = Field(0, description="How many items the first reads took in.")
 
 

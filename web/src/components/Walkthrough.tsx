@@ -72,6 +72,9 @@ export function Walkthrough(
   const [busy, setBusy] = useState(false);
   // The confirmation of leaving the screen's step out, while it is open.
   const [confirming, setConfirming] = useState(false);
+  // The screen's own question before Continue goes on (see `ContinueSpec.confirmFirst`): its key, and whether it was answered yes.
+  const [asking, setAsking] = useState<string | null>(null);
+  const asked = useRef(false);
   // Whether the person moved forward to the screen they are on (a finished reading then moves on by itself) or came to it by
   // going back or picking it in the list.
   const forward = useRef(false);
@@ -87,7 +90,7 @@ export function Walkthrough(
   const register: ContinueSlot = useCallback((spec) => {
     const before = slot.current;
     slot.current = spec;
-    if (!before !== !spec || before?.disabled !== spec?.disabled || before?.why !== spec?.why || before?.label !== spec?.label || before?.inline !== spec?.inline || before?.quiet !== spec?.quiet) redraw();
+    if (!before !== !spec || before?.disabled !== spec?.disabled || before?.why !== spec?.why || before?.label !== spec?.label || before?.inline !== spec?.inline || before?.quiet !== spec?.quiet || before?.note !== spec?.note || before?.confirmFirst !== spec?.confirmFirst) redraw();
   }, []);
   const data = setup.data;
   // The screen the server named when this opened stays until the person moves: finishing a step must not move them on.
@@ -218,6 +221,11 @@ export function Walkthrough(
       return;
     }
     const spec = slot.current;
+    if (spec?.confirmFirst && !asked.current) {
+      setAsking(spec.confirmFirst);
+      return;
+    }
+    asked.current = false;
     if (spec) {
       setBusy(true);
       setProblem("");
@@ -329,6 +337,7 @@ export function Walkthrough(
             current === "welcome" ? undefined : (
             <StepFooter
               footRef={foot}
+              note={slot.current?.note}
               back={previous ? <Button onClick={() => go(previous)}>{t("walkthrough.back")}</Button> : undefined}
               later={
                 current !== "done" && here === "todo" && STEP_OF[current] ? (
@@ -389,6 +398,19 @@ export function Walkthrough(
             <p className="problem-note" role="alert">
               {problem}
             </p>
+          )}
+          {asking && (
+            <SkipConfirm
+              step={asking}
+              confirmLabel={t(`walkthrough.skip.${asking}.confirm`)}
+              cancelLabel={t(`walkthrough.skip.${asking}.cancel`)}
+              onCancel={() => setAsking(null)}
+              onConfirm={() => {
+                asked.current = true;
+                setAsking(null);
+                void carryOn();
+              }}
+            />
           )}
           {confirming && STEP_OF[current] && <SkipConfirm step={STEP_OF[current] as string} busy={busy} onCancel={() => setConfirming(false)} onConfirm={() => void skip()} />}
         </WizardStep>

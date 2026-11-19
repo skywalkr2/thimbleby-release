@@ -6,7 +6,7 @@ import { useWords } from "../lib/wording";
 import { Button } from "../ui/Button";
 import { DialogFooter, ModalPanel } from "./ModalPanel";
 
-export function SkipConfirm(props: { step: string; busy?: boolean; onCancel: () => void; onConfirm: () => void }) {
+export function SkipConfirm(props: { step: string; busy?: boolean; onCancel: () => void; onConfirm: () => void; confirmLabel?: string; cancelLabel?: string }) {
   const { t } = useWords();
   const titleId = useId();
   return (
@@ -20,10 +20,10 @@ export function SkipConfirm(props: { step: string; busy?: boolean; onCancel: () 
       </p>
       <DialogFooter>
         <Button autoFocus onClick={props.onCancel}>
-          {t("walkthrough.skip.cancel")}
+          {props.cancelLabel ?? t("walkthrough.skip.cancel")}
         </Button>
         <Button variant="primary" loading={props.busy} onClick={props.onConfirm}>
-          {t("walkthrough.skip.confirm")}
+          {props.confirmLabel ?? t("walkthrough.skip.confirm")}
         </Button>
       </DialogFooter>
     </ModalPanel>

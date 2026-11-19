@@ -124,7 +124,7 @@ const tooWide = (found: Awaited<ReturnType<typeof overflow>>) => found.page > fo
 test.describe("no screen is wider than the window", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("?token=e2e-token");
-    await expect(page.getByRole("heading", { level: 2, name: "Needs you", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 2, name: "Needs you", exact: true })).toBeVisible(LOADED);
     // The assistant's work on a note: a Today line to review, whose items the details pane shows.
     const handed = await page.request.post("api/handin", { data: { note: strings["web-02"] } });
     expect(handed.ok()).toBe(true);

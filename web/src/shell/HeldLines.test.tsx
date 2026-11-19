@@ -366,7 +366,7 @@ test("a read of older mail that gave up is one line that says what was taken in,
     "GET today/queue": () => (carried ? [] : [line("older_read", { key: "older_read:m", group: "risk", source: "m", subject: "Your inbox", count: 412, problem_kind: "outage" })]),
     "POST watch/m/older-read/continue": () => {
       carried = true;
-      return { days: 0, from_date: "2026-10-19", count: 0, reaches: true, unpriced: 0, capped: false, estimate: false, expected: 0, expected_estimate: false, gave: 0, short: false, gave_up: false, taken: 0, started: false };
+      return { days: 0, from_date: "2026-10-19", count: 0, reaches: true, unpriced: 0, capped: false, estimate: false, unknown: false, expected: 0, expected_estimate: false, gave: 0, short: false, gave_up: false, taken: 0, started: false };
     },
   });
   const row = await screen.findByRole("region", { name: "Needs you" });

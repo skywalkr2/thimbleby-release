@@ -83,3 +83,17 @@ test("a step left out is settled: with every step skipped there is no line, and 
   await user.click(screen.getByRole("button", { name: "Continue setup" }));
   expect(onOpenGuide).toHaveBeenLastCalledWith("backup");
 });
+
+test("hiding the line says so with Undo, and Undo brings it back and forgets the choice", async () => {
+  api([step("workspace", { done: true }), step("ai")]);
+  open();
+  const user = userEvent.setup();
+  await screen.findByRole("region", { name: /^Finish setting up/ });
+  await user.click(screen.getByRole("button", { name: "More actions for setup" }));
+  await user.click(await screen.findByRole("menuitem", { name: "Hide" }));
+  expect(screen.queryByRole("button", { name: "Continue setup" })).toBeNull();
+  expect(window.localStorage.getItem("start-here-hidden:Test")).toBe("1");
+  await user.click(await screen.findByRole("button", { name: "Undo" }));
+  expect(await screen.findByRole("button", { name: "Continue setup" })).toBeInTheDocument();
+  expect(window.localStorage.getItem("start-here-hidden:Test")).toBeNull();
+});

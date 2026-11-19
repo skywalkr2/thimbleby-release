@@ -69,6 +69,7 @@ class SignIn:
     default_redirects: tuple[str, ...] = ()  # the callback addresses the add-on's own registration allows
     sources: tuple[dict[str, Any], ...] = ()  # sources started when the person signs in: connector, label, settings
     acting_scopes: tuple[str, ...] = ()  # the extra scopes acting needs, asked only when the person turns acting on
+    requests_per_second: float | None = None  # the pace the add-on starts at; none: the cautious default setting
 
 
 def address_allowed(redirect: str, allowed: tuple[str, ...]) -> bool:

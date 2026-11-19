@@ -3,6 +3,7 @@
 // counted among the things that need the person. Hiding it is remembered in this browser only.
 import { useState, type ReactNode } from "react";
 import { useNextSetupStep } from "../lib/setup-next";
+import { useToasts } from "../lib/toasts";
 import { useWords } from "../lib/wording";
 import { Button } from "../ui/Button";
 import { IconButton } from "../ui/IconButton";
@@ -30,11 +31,20 @@ function remember(workspace: string) {
   }
 }
 
+function forget(workspace: string) {
+  try {
+    window.localStorage.removeItem(`${KEY}:${workspace}`);
+  } catch {
+    // Storage can be blocked; nothing was remembered then.
+  }
+}
+
 /** The group: its header carries how far setup is and the button to continue it; `children` are the gaps in setup, one row each.
  * It is left out when nothing is in it: no gap, and setup finished or hidden. */
 export function SetupGroup(props: { workspace: string; onOpenGuide: (step: string) => void; gaps: number; /** Drawn as a card of its own (under the list's card), not as a group of a list. */ card?: boolean; children?: ReactNode }) {
   const { t } = useWords();
   const [gone, setGone] = useState(() => hidden(props.workspace));
+  const { push } = useToasts();
   // The count is worked out from the steps the server serves, the ones that count: done is done, never skipped or still to do.
   // The group stays while any of them is not done, a skipped one included, so what was passed by is one click away.
   const next = useNextSetupStep();
@@ -63,6 +73,13 @@ export function SetupGroup(props: { workspace: string; onOpenGuide: (step: strin
                       run: () => {
                         remember(props.workspace);
                         setGone(true);
+                        push({
+                          message: t("setup_line.hidden"),
+                          undo: () => {
+                            forget(props.workspace);
+                            setGone(false);
+                          },
+                        });
                       },
                     },
                   ],

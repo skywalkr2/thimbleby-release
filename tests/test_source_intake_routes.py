@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.app import create_app
+from engine import reading_lane, source_intake
 from tests.test_source_intake import (  # noqa: F401  (the fixture is used by every test here)
     item,
     mail,
@@ -118,8 +119,13 @@ def test_the_preview_counts_and_prices_and_the_look_back_takes_in_the_older_mail
     assert year["count"] == 2 and year["estimate_usd"] > ninety["estimate_usd"]
     # The source holds nothing older than its mail, so the answer doesn't name a later day.
     assert (year["reaches"], year["available_from"]) == (True, None)
-    done = client.post("/api/watch/m/look-back", json={"days": 90}).json()
-    assert (done["taken"], done["started"], done["reaches"]) == (1, False, True)  # over the amount to confirm: held
+    asked = client.post("/api/watch/m/look-back", json={"days": 90}).json()
+    # The answer returns at once with the choice recorded; nothing was read in the request.
+    assert (asked["taken"], asked["stopped"]) == (0, "queued")
+    assert source_intake.older_read_waiting(store.read(), "m")["kind"] == "queued"
+    assert [x["count"] for x in kinds(client, "intake_go")] == [2], "only the first read's mail waits for the go"
+    reading_lane.run_slices(ws, store, cfg, now() + timedelta(seconds=1))  # the worker's lane reads it
+    assert source_intake.older_read_waiting(store.read(), "m") is None
     (line,) = kinds(client, "intake_go")
     assert line["count"] == 3, "one line for the source, with what was already waiting"
     (shown,) = client.get("/api/watch").json()

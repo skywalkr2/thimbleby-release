@@ -435,10 +435,9 @@ class Reading:
     sources: int = 0
     read: int = 0
     found: int = 0
-
-
-#: The outcomes of a read that settle a source's first reading: it was read, or it couldn't be and says so on Mail.
-_READ_OUTCOMES = ("ok", "baseline", "failed")
+    waiting: int = 0
+    until: str | None = None
+    pending: list[str] = field(default_factory=list)
 
 
 def reading(ws: Any, cfg: Any, store: Any, found: list[Step], now: Any = None) -> Reading:
@@ -461,15 +460,24 @@ def reading(ws: Any, cfg: Any, store: Any, found: list[Step], now: Any = None) -
     if not sources:
         return Reading("none", why="no_mail")
     view = store.read()
-    read = [
-        s for s in sources if any(r.data["outcome"] in _READ_OUTCOMES for r in view.find("watch_run", {"source": s.id}))
-    ]
+    moment = now or datetime.now(UTC)
+    still, waiting = person_look.first_read_standing(view, sources, moment)
     # What was really taken in: the items handed in from the sources, whichever read took them (the first read, a full
     # read that stopped partway, or a later one), never a count a read only meant to take.
     ids = {s.id for s in sources}
     taken = sum(1 for item in view.list("source") if (item.data.get("watched") or {}).get("source") in ids)
-    base = {"sources": len(sources), "read": len(read), "found": taken}
-    if len(read) < len(sources):
+    base: dict[str, Any] = {
+        "sources": len(sources),
+        "read": len(sources) - len(still) - len(waiting),
+        "found": taken,
+        "waiting": len(waiting),
+        "until": min((u for _, u in waiting), default=None),
+        # What is still being read, by name, while the list is short enough to say.
+        "pending": [s.label or s.id for s in still] if len(still) <= cfg.ui.walkthrough.reading_names else [],
+    }
+    if base["until"] is not None:
+        base["until"] = base["until"].isoformat()
+    if still:
         return Reading("working", stage="fetching", **base)
     sorting = any(
         r.data["state"] in ("queued", "running")
@@ -482,8 +490,11 @@ def reading(ws: Any, cfg: Any, store: Any, found: list[Step], now: Any = None) -
     looking = any(
         r.data["task"] == person_look.TASK and r.data["state"] in ("queued", "running") for r in view.list("request")
     )
-    if looking or (person_is_set(store, cfg) and person_look.due(store, cfg, now or datetime.now(UTC))):
+    if looking or (person_is_set(store, cfg) and person_look.due(store, cfg, moment, ws)):
         return Reading("working", stage="looking", **base)
+    if waiting:
+        # A source the service asked to wait on is waiting, with its time: the person goes on, and the read carries on.
+        return Reading("working", stage="waiting", **base)
     return Reading("done", **base)
 
 

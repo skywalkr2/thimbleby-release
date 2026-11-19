@@ -100,11 +100,15 @@ def test_the_full_read_is_offered_and_answered_for_every_mail_source_of_the_acco
             assert client.post(f"/api/watch/{source}/read").status_code == 200
         shown = {s["id"]: s for s in client.get("/api/watch").json()}
         assert shown["m"]["full_read_open"] and shown["s"]["full_read_open"], "the sent mail is asked too"
-        took = {}
         for source in ("m", "s"):
             answered = client.post(f"/api/watch/{source}/full-read", json={"days": 30})
-            assert answered.status_code == 200
-            took[source] = answered.json()["taken"]
+            assert answered.status_code == 200 and answered.json()["stopped"] == "queued"
+        from tests.test_reading_lane import drain
+
+        before = {s["id"]: s["items"] for s in client.get("/api/watch").json()}
+        drain(ws, app.state.store, cfg, datetime.now(UTC) + timedelta(seconds=5))
+        after_read = {s["id"]: s["items"] for s in client.get("/api/watch").json()}
+        took = {k: after_read[k] - before[k] for k in ("m", "s")}
         assert took == {"m": 3, "s": 2}, "each source reads its own older mail"
         after = {s["id"]: s for s in client.get("/api/watch").json()}
         assert not after["m"]["full_read_open"] and not after["s"]["full_read_open"]
@@ -127,6 +131,9 @@ def test_a_source_read_for_the_first_time_after_the_answer_takes_the_accounts_an
         assert not shown["s"]["full_read_open"], (
             "the account's one answer covers the sent mail, which asks nothing again"
         )
+        from tests.test_reading_lane import drain
+
+        drain(ws, app.state.store, cfg, datetime.now(UTC) + timedelta(seconds=5))
         sent = [x for x in client.get("/api/watch").json() if x["id"] == "s"][0]
         assert sent["items"] == 2 + 2, "its older mail was taken in without a second press"
 
@@ -164,7 +171,7 @@ def test_a_look_that_takes_in_far_fewer_than_its_count_says_so_and_a_fair_one_do
     ws, cfg, store = make(tmp_path / "few", estimate=True, claimed=201)
     try:
         refresh(ws, store, cfg, "m", NOW)
-        done = source_intake.answer_full_read(ws, store, cfg, "m", 30, NOW)
+        done = source_intake.read_full_now(ws, store, cfg, "m", 30, NOW)
         assert (done.short, done.expected, done.expected_estimate, done.gave) == (True, 201, True, 3)
     finally:
         store.close()
@@ -172,7 +179,7 @@ def test_a_look_that_takes_in_far_fewer_than_its_count_says_so_and_a_fair_one_do
     ws, cfg, store = make(tmp_path / "fair")
     try:
         refresh(ws, store, cfg, "m", NOW)
-        done = source_intake.answer_full_read(ws, store, cfg, "m", 30, NOW)
+        done = source_intake.read_full_now(ws, store, cfg, "m", 30, NOW)
         assert (done.short, done.expected, done.gave) == (False, 3, 3)
     finally:
         store.close()
@@ -180,7 +187,7 @@ def test_a_look_that_takes_in_far_fewer_than_its_count_says_so_and_a_fair_one_do
     ws, cfg, store = make(tmp_path / "third", claimed=9)
     try:
         refresh(ws, store, cfg, "m", NOW)
-        assert source_intake.answer_full_read(ws, store, cfg, "m", 30, NOW).short is False
+        assert source_intake.read_full_now(ws, store, cfg, "m", 30, NOW).short is False
     finally:
         store.close()
 

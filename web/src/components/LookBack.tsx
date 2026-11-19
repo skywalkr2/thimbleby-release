@@ -100,11 +100,15 @@ export function costWords(
   estimate: (usd: number | null | undefined) => string | null,
   t: T,
   money?: (usd: number) => string,
+  dayStop?: number,
 ): string {
   const amount = estimate(found.estimate_usd);
   if (amount === null) return t("coverage.look_back.cost.unpriced");
   const kind = found.unpriced > 0 ? "mixed" : "priced";
   const most = atMost(found, money);
+  if (most !== null && money && dayStop && dayStop > 0 && found.estimate_max_usd != null && found.estimate_max_usd > dayStop) {
+    return t(`coverage.look_back.cost.${kind}_max_day`, { cost: amount, most, stop: money(dayStop) });
+  }
   if (most !== null) return t(`coverage.look_back.cost.${kind}_max`, { cost: amount, most });
   return t(`coverage.look_back.cost.${kind}${found.capped ? "_capped" : ""}`, { cost: amount });
 }

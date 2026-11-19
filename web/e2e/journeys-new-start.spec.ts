@@ -241,6 +241,8 @@ test.describe.serial("journey: new start", () => {
     });
     expect(scriptedSent.ok).toBe(true);
     await main.getByRole("button", { name: "Continue" }).click();
+    // The account's "Read in full from" is unanswered, so Continue asks first (H5-12); going on without choosing goes on.
+    await page.getByRole("button", { name: "Go on without choosing" }).click();
 
     // 5. After Mail and calendar the first reading is waited for on screen, and People follows it by itself, with the assistant's
     // offers. The assistant was turned on in the AI step, so its first reading is not held for a go on Today.

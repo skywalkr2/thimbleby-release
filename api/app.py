@@ -464,6 +464,7 @@ def create_app(
             heavy_day_from=cfg.ui.today.heavy_day_from,
             group_rows=cfg.ui.today.group_rows,
             twin_window_minutes=cfg.ui.twin_window_minutes,
+            short_wait_minutes=cfg.ui.short_wait_minutes,
             time_format=cfg.ui.time_format,
             time_step=cfg.ui.time_step,
             shortcuts=cfg.ui.shortcuts,

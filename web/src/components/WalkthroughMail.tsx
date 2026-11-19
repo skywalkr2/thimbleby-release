@@ -11,6 +11,7 @@ import { useSortingCostWords } from "../lib/sorting-cost";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError, type S } from "../lib/api";
+import { stillReading } from "../lib/olderRead";
 import { serviceReachLines, waitsForRestart } from "../lib/packs";
 import { problemText } from "../lib/problem";
 import { useRestart } from "../lib/restart";
@@ -120,6 +121,8 @@ const midSentence = (name: string, at: number) => (at > 0 && /^[A-Z][a-z]/.test(
 const SORTING = "watch.sorting";
 /** The name the confirmed "I'll say later" of the account question is kept under, beside the setup's skips. */
 const SIDES_LATER = "mail_sides";
+/** How often the accounts are looked at again while any of them is still being read. */
+const WATCH_EVERY_MS = 4000;
 
 /** Whether the assistant sorts what the rules can't, from sender, subject and category only: a setting the running app
  *  takes in at once, saved like any other, with its read-back and Undo. */
@@ -203,7 +206,7 @@ export function WalkthroughMail(props: {
   const packs = useQuery({ queryKey: ["packs"], queryFn: api.packs });
   const signIns = useQuery({ queryKey: ["sign-ins"], queryFn: api.signIns });
   const status = useQuery({ queryKey: ["status"], queryFn: api.status });
-  const sources = useQuery({ queryKey: ["watch"], queryFn: api.watchSources });
+  const sources = useQuery({ queryKey: ["watch"], queryFn: api.watchSources, refetchInterval: (q) => (stillReading(q.state.data ?? []) ? WATCH_EVERY_MS : false) });
   const business = useQuery({ queryKey: ["business"], queryFn: api.business });
   const mailServices = useQuery({ queryKey: ["mail-services"], queryFn: api.mailServices });
   const setupView = useQuery({ queryKey: ["setup"], queryFn: api.setup });
@@ -290,7 +293,11 @@ export function WalkthroughMail(props: {
     await client.invalidateQueries({ queryKey: ["setup"] });
   };
   const waitingOnSides = unanswered.length > 0 && !later;
-  useContinue(any ? { run: async () => true, disabled: waitingOnSides, why: waitingOnSides ? t(unanswered.length === 1 ? "walkthrough.mail.account_for.needed_one" : "walkthrough.mail.account_for.needed_other", { account: unanswered[0], n: unanswered.length }) : undefined } : null);
+  // While anything is still being read the mail keeps coming in, and the next screen shows where it is; an account whose "Read in full from"
+  // is still unanswered makes Continue ask first, so going on is never the same as skipping the question by accident.
+  const readingOn = stillReading(sources.data ?? []);
+  const unansweredRead = (sources.data ?? []).some((s) => s.full_read_open);
+  useContinue(any ? { run: async () => true, note: readingOn ? t("walkthrough.mail.keeps_coming") : undefined, confirmFirst: unansweredRead && !waitingOnSides ? "mail_full_read" : undefined, disabled: waitingOnSides, why: waitingOnSides ? t(unanswered.length === 1 ? "walkthrough.mail.account_for.needed_one" : "walkthrough.mail.account_for.needed_other", { account: unanswered[0], n: unanswered.length }) : undefined } : null);
   // A result that appears while the screen is open (the sign-in just finished) takes the cursor to its first field.
   useEffect(() => {
     const was = shown.current;

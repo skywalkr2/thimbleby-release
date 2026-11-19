@@ -98,6 +98,7 @@ export function rcFixture(extra: Partial<S["RuntimeConfig"]> = {}): S["RuntimeCo
     heavy_day_from: 30,
     group_rows: 5,
     twin_window_minutes: 10,
+    short_wait_minutes: 5,
     time_format: "auto",
     time_step: 15,
     version: "9.8.7",
@@ -106,6 +107,9 @@ export function rcFixture(extra: Partial<S["RuntimeConfig"]> = {}): S["RuntimeCo
     ...extra,
   };
 }
+
+/** A moment at :42 past an hour, at least `hours` hours from now: a wait long enough to be said by the time of day. */
+export const inHours = (hours: number): string => new Date(Math.ceil((Date.now() + hours * 3_600_000) / 3_600_000) * 3_600_000 + 42 * 60_000).toISOString();
 
 /** The walkthrough screen each core setup step is on, as the server sorts them; any other step is an optional extra. */
 const SCREEN_OF: Record<string, S["SetupStepView"]["group"]> = {
@@ -161,7 +165,7 @@ export function setupView(
     local: over.local ?? true,
     first_go_waiting: over.first_go_waiting ?? 0,
     first_go_given: over.first_go_given ?? true,
-    reading: { state: "none", why: "no_mail", sources: 0, read: 0, found: 0, ...over.reading },
+    reading: { state: "none", why: "no_mail", sources: 0, read: 0, found: 0, waiting: 0, ...over.reading },
     people_by_hand: over.people_by_hand ?? false,
     sides_later: over.sides_later ?? false,
     walkthrough: { open: false, step: "you", closed: false, finished: false, ...over.walkthrough },

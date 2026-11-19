@@ -56,7 +56,7 @@ def world(tmp_path, monkeypatch, script, page=3):
     service = Service(script)
     monkeypatch.setitem(connectors._OLDER, "fake", OlderMail(service.count, service.read))
     ws, cfg, store = make_core(tmp_path, [mail(f"m{d}", d) for d in (1, 2, 3)], settings_extra={"capped": False})
-    cfg.watch.look_back_max_items = page
+    cfg.watch.look_back_max_items = cfg.watch.full_read_page_items = page
     cfg.watch.full_read_max_items = 100
     cfg.ai.budgets.first_go = False
     refresh(ws, store, cfg, "m", NOW)
@@ -82,7 +82,7 @@ def test_a_read_the_service_slows_down_keeps_every_message_it_took_and_carries_o
     ws, cfg, store, service = world(tmp_path, monkeypatch, {2: ConnectorError("throttled", "HTTP 429", retry_after=90)})
     try:
         first_look = source_intake.back_to_of(store.read(), "m")
-        stopped = source_intake.answer_full_read(ws, store, cfg, "m", 30, NOW)
+        stopped = source_intake.read_full_now(ws, store, cfg, "m", 30, NOW)
         # What the first page gave is kept: taken in, held for the go like a finished read's.
         assert stopped is not None and stopped.stopped == "throttled" and stopped.taken == 3
         assert len(older_keys(store)) == 3 and handed_in(store) >= older_keys(store)
@@ -116,19 +116,19 @@ def test_a_throttled_read_with_no_retry_time_carries_on_after_the_setting(tmp_pa
     ws, cfg, store, _ = world(tmp_path, monkeypatch, {2: ConnectorError("throttled", "HTTP 429")})
     try:
         cfg.watch.older_read_throttle_minutes = 7
-        stopped = source_intake.answer_full_read(ws, store, cfg, "m", 30, NOW)
+        stopped = source_intake.read_full_now(ws, store, cfg, "m", 30, NOW)
         assert datetime.fromisoformat(stopped.continues_at) == NOW + timedelta(minutes=7)
     finally:
         store.close()
 
 
-def test_a_service_that_keeps_asking_to_wait_without_giving_more_is_not_asked_without_end(tmp_path, monkeypatch):
-    throttled = ConnectorError("throttled", "HTTP 429", retry_after=60)
-    ws, cfg, store, service = world(tmp_path, monkeypatch, {n: throttled for n in range(2, 50)})
+def test_a_service_that_keeps_failing_without_giving_more_is_not_asked_without_end(tmp_path, monkeypatch):
+    outage = ConnectorError("outage", "HTTP 503")
+    ws, cfg, store, service = world(tmp_path, monkeypatch, {n: outage for n in range(2, 50)})
     try:
         cfg.watch.older_read_tries = 2
         at = NOW
-        done = source_intake.answer_full_read(ws, store, cfg, "m", 30, at)
+        done = source_intake.read_full_now(ws, store, cfg, "m", 30, at)
         for _ in range(2):
             assert done.continues_at and not done.gave_up
             at = datetime.fromisoformat(done.continues_at)
@@ -146,7 +146,7 @@ def test_the_worker_carries_a_stopped_read_on_when_its_time_has_come_and_not_bef
 
     ws, cfg, store, _ = world(tmp_path, monkeypatch, {2: ConnectorError("throttled", "HTTP 429", retry_after=60)})
     try:
-        source_intake.answer_full_read(ws, store, cfg, "m", 30, NOW)
+        source_intake.read_full_now(ws, store, cfg, "m", 30, NOW)
         kept = len(older_keys(store))
         assert source_intake.older_read_due(store.read(), cfg, NOW + timedelta(seconds=59)) == []
         assert source_intake.older_read_due(store.read(), cfg, NOW + timedelta(seconds=60)) == ["m"]
@@ -156,8 +156,11 @@ def test_the_worker_carries_a_stopped_read_on_when_its_time_has_come_and_not_bef
         assert len(older_keys(store)) == kept, "too early"
         clock[0] = NOW + timedelta(seconds=61)
         worker.run_due_watches()
-        assert len(older_keys(store)) > kept
+        assert len(older_keys(store)) > kept, "one slice at its time"
+        for _ in range(10):  # the rest is read a slice (a page) at a time
+            worker.run_due_watches()
         assert not source_intake.intake_run(store.read(), "m").data.get("older_read")
+        assert older_keys(store) == {f"o{d}" for d in DAYS}
     finally:
         store.close()
 
@@ -170,7 +173,7 @@ def test_a_failure_carries_on_after_the_wait_up_to_the_tries_then_today_offers_t
     try:
         cfg.watch.older_read_retry_minutes = 5
         cfg.watch.older_read_tries = 3
-        stopped = source_intake.answer_full_read(ws, store, cfg, "m", 30, NOW)
+        stopped = source_intake.read_full_now(ws, store, cfg, "m", 30, NOW)
         assert stopped.stopped == "outage" and datetime.fromisoformat(stopped.continues_at) == NOW + timedelta(
             minutes=5
         )
@@ -198,7 +201,7 @@ def test_a_failure_carries_on_after_the_wait_up_to_the_tries_then_today_offers_t
 def test_a_sign_in_problem_keeps_what_was_read_and_is_not_carried_on(tmp_path, monkeypatch, kind):
     ws, cfg, store, _ = world(tmp_path, monkeypatch, {2: ConnectorError(kind, "HTTP 401")})
     try:
-        stopped = source_intake.answer_full_read(ws, store, cfg, "m", 30, NOW)
+        stopped = source_intake.read_full_now(ws, store, cfg, "m", 30, NOW)
         assert stopped.stopped == kind and stopped.continues_at is None and stopped.taken == 3
         assert source_intake.older_read_waiting(store.read(), "m") is None
         assert [x for x in queue(ws, store, cfg, NOW) if x.kind == "older_read"] == []
@@ -207,15 +210,17 @@ def test_a_sign_in_problem_keeps_what_was_read_and_is_not_carried_on(tmp_path, m
         store.close()
 
 
-def test_a_failure_on_the_very_first_page_keeps_the_plain_words_and_the_question_open(tmp_path, monkeypatch):
+def test_a_failure_on_the_very_first_page_that_needs_the_person_keeps_the_plain_words_and_the_question_open(
+    tmp_path, monkeypatch
+):
     from engine.sides import words_sheet
     from engine.storage import StoreError
 
-    ws, cfg, store, _ = world(tmp_path, monkeypatch, {1: ConnectorError("throttled", "HTTP 429", retry_after=60)})
+    ws, cfg, store, _ = world(tmp_path, monkeypatch, {1: ConnectorError("auth", "the sign-in was withdrawn")})
     try:
         with pytest.raises(StoreError) as raised:
-            source_intake.answer_full_read(ws, store, cfg, "m", 30, NOW)
-        assert str(raised.value) == words_sheet()["full_read.failed.throttled"]
+            source_intake.read_full_now(ws, store, cfg, "m", 30, NOW)
+        assert str(raised.value) == words_sheet()["full_read.failed.auth"]
         run = source_intake.intake_run(store.read(), "m")
         assert run.data.get("full_read") is None and not run.data.get("older_read")
         assert older_keys(store) == set()
@@ -229,7 +234,7 @@ def test_setups_reading_step_counts_what_was_taken_in_after_a_stopped_full_read(
     try:
         first = len(handed_in(store))
         assert _reading(ws, cfg, store).found == first == 3
-        source_intake.answer_full_read(ws, store, cfg, "m", 30, NOW)
+        source_intake.read_full_now(ws, store, cfg, "m", 30, NOW)
         stopped = _reading(ws, cfg, store)
         # Only what was really taken in: the first read's three and the first page of the full read, never the pages
         # the service refused.
@@ -263,25 +268,38 @@ def test_the_routes_show_where_a_read_stopped_and_the_button_on_today_carries_it
     store.close()
     path = ws.config_dir / "watch.yaml"
     watching = yaml.safe_load(path.read_text())
-    watching.update(look_back_max_items=3, full_read_max_items=100, older_read_tries=1)
+    watching.update(look_back_max_items=3, full_read_page_items=3, full_read_max_items=100, older_read_tries=1)
     path.write_text(yaml.safe_dump(watching))
     app = create_app(ws, ws.config(env={}), "t", ui_dist=tmp_path / "no-ui", start_worker=False)
     with TestClient(app, headers={"Authorization": "Bearer t"}) as client:
         assert client.post("/api/watch/m/read").status_code == 200
+        calls = service.calls
         answered = client.post("/api/watch/m/full-read", json={"days": 30}).json()
-        assert answered["stopped"] == "outage" and answered["taken"] == 3 and answered["continues_at"]
+        assert answered["stopped"] == "queued" and answered["taken"] == 0 and service.calls == calls, "answered at once"
+        row = client.get("/api/watch").json()[0]
+        assert row["older_read"]["kind"] == "queued" and row["older_read"]["taken"] == 0
+        assert row["full_read_open"] is None, "the question is not asked again"
+        # The worker's lane reads a slice at a time: the first page is taken in, the second fails.
+        config, live = ws.config(env={}), app.state.store
+        from engine import reading_lane
+
+        at = datetime.now(UTC) + timedelta(seconds=1)
+        reading_lane.run_slices(ws, live, config, at)
+        reading_lane.run_slices(ws, live, config, at)
         row = client.get("/api/watch").json()[0]
         assert row["older_read"]["kind"] == "outage" and row["older_read"]["taken"] == 3
-        assert row["full_read_open"] is None, "the question is not asked again after a stop"
         # The carry-on at its time fails again; with one try allowed it gives up and Today offers the rest.
         service.script[3] = ConnectorError("outage", "HTTP 503")
         later = datetime.fromisoformat(row["older_read"]["at"]) + timedelta(seconds=1)
-        gave = source_intake.continue_older_read(ws, app.state.store, ws.config(env={}), "m", later)
-        assert gave.gave_up and gave.continues_at is None
+        reading_lane.run_slices(ws, live, config, later)
         (line,) = [x for x in client.get("/api/today/queue").json() if x["kind"] == "older_read"]
         assert line["source"] == "m" and line["subject"] == "Inbox" and line["count"] == 3
         service.script.clear()
+        # The button asks the worker to carry on at once and returns at once.
+        calls = service.calls
         done = client.post("/api/watch/m/older-read/continue")
-        assert done.status_code == 200 and done.json()["stopped"] is None
+        assert done.status_code == 200 and done.json()["stopped"] == "queued" and service.calls == calls
+        for _ in range(10):
+            reading_lane.run_slices(ws, live, config, later)
         assert client.get("/api/watch").json()[0]["older_read"] is None
         assert [x for x in client.get("/api/today/queue").json() if x["kind"] == "older_read"] == []

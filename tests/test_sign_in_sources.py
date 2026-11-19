@@ -349,3 +349,17 @@ def test_settings_lists_the_two_intervals_as_lists_to_pick_from(signing):  # noq
             assert shown[key].editable and shown[key].default == 10 and shown[key].description
     finally:
         store.close()
+
+
+def test_the_name_read_of_an_account_being_added_goes_through_no_accounts_gate(signing):  # noqa: F811
+    """With one account signed in, a request made before the next account's address is known must not wait behind the
+    first account's gate: a limit on one account would leave the other unnamed, with no sources."""
+    from engine import sign_in as flow
+
+    ws, cfg, store, _ = signing
+    sign_in = store.plugins.sign_ins()["p18/service"]
+    keys = ws.root / ".thimbleby" / "keys" / "p18"
+    flow.keep(keys, sign_in, {"access_token": "a", "expires_at": 9e9, "refresh_token": "r"}, "first@example.com")
+    host = store.plugins
+    assert host.connector_context("p18", ws.root).web.gates is not None
+    assert host.connector_context("p18", ws.root, paced=False).web.gates is None

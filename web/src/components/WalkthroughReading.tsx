@@ -4,6 +4,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import { api } from "../lib/api";
+import { waitWhen } from "../lib/olderRead";
+import { listOf } from "../lib/packs";
 import { useContinue } from "../lib/walkthrough-continue";
 import { useWords } from "../lib/wording";
 import { Icon } from "../ui/Icon";
@@ -51,11 +53,24 @@ export function WalkthroughReading(props: {
     );
   }
   const stage = reading.stage ?? "fetching";
+  // What is still being read is named while the list is short ("Still reading: Your sent mail, Work account"), else counted.
+  const pending = reading.pending ?? [];
+  const fetching =
+    pending.length > 0
+      ? t("walkthrough.reading.still", { list: listOf(pending, t("walkthrough.mail.reads_join").trim()) })
+      : t("walkthrough.reading.fetching", { read: reading.read, sources: reading.sources });
+  // A source the mail service asked to wait on is waiting, with its time: not stuck, and the person can go on.
+  const waiting = reading.waiting > 0 && reading.until ? tn("walkthrough.reading.waiting_some", reading.waiting, { when: waitWhen(reading.until, t) }) : "";
   return (
     <div data-reading="working" data-stage={stage}>
       <p className="what" role="status">
-        {stage === "fetching" ? t("walkthrough.reading.fetching", { read: reading.read, sources: reading.sources }) : t(`walkthrough.reading.${stage}`)}
+        {stage === "fetching" ? fetching : stage === "waiting" ? waiting : t(`walkthrough.reading.${stage}`)}
       </p>
+      {stage === "fetching" && waiting && (
+        <p className="hint" data-reading-waiting="">
+          {waiting}
+        </p>
+      )}
       {reading.found > 0 && <p className="hint">{tn("walkthrough.reading.found", reading.found)}</p>}
       <p className="hint">{t("walkthrough.reading.how_long")}</p>
     </div>

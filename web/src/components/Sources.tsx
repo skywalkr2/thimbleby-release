@@ -7,6 +7,7 @@ import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 
 import { api, ApiError, type S } from "../lib/api";
 import { NO_RECORD_ACTS, useAct } from "../lib/act";
 import { useConnection } from "../lib/connection";
+import { isShortWait, waitWhen } from "../lib/olderRead";
 import { whenText as when } from "../lib/dates";
 import { problemText } from "../lib/problem";
 import { ProblemDetails } from "./ProblemDetails";
@@ -90,6 +91,7 @@ export function lastReadText(source: Source, t: T, tn?: (key: string, n: number,
       return t("sources.last.offline");
     case "throttled":
       // Why it waits and until when: the service asked to wait, and the read is tried again by itself.
+      if (last.retry_at && isShortWait(last.retry_at)) return t("sources.last.throttled_soon", { when: waitWhen(last.retry_at, t) });
       return last.retry_at && when(last.retry_at) ? t("sources.last.throttled_until", { when: when(last.retry_at) }) : t("sources.last.throttled");
     default:
       return t("sources.last.failed");

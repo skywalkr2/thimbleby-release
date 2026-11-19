@@ -1043,7 +1043,7 @@ class Worker:
             cfg = load_config(self.ws.config_dir, env=dict(os.environ))
         except ConfigError:
             cfg = self.cfg
-        made = person_look.queue(self.store, cfg, self.now())
+        made = person_look.queue(self.store, cfg, self.now(), self.ws)
         if made:
             self.events.changed()
         return made
@@ -1442,7 +1442,6 @@ class Worker:
     def run_due_watches(self) -> int:
         """Read every watched source that is due, once each however long the computer was asleep. Returns how many
         were read."""
-        from engine import source_intake
         from engine.set_aside import purge_due
         from engine.watch import due, record_crash, refresh
 
@@ -1451,20 +1450,6 @@ class Worker:
         now = self.now()
         if purge_due(self.ws, self.store, self.cfg, now):
             self.events.changed()
-        # A read of older mail that stopped carries on from where it stopped, on this same loop, once its time has come.
-        try:
-            for source in source_intake.older_read_due(self.store.read(), self.cfg, now):
-                if self._stop.is_set():
-                    break
-                done = source_intake.continue_older_read(
-                    self.ws, self.store, self.cfg, source, now, self.router_factory()
-                )
-                if done is not None and done.taken:
-                    self.poke()
-                if done is not None:
-                    self.events.changed()
-        except (Exception, SystemExit):  # it stays waiting and is tried again the next time round
-            log.exception("carrying on a read of older mail failed")
         sources = due(self.store, self.cfg, now)
         handed = 0
         for source in sources:
@@ -1481,6 +1466,21 @@ class Worker:
                     log.exception("Couldn't record the failed read of %s", source)
                 continue
             handed += len(result.new) + len(result.changed) + len(result.removed) + len(result.taken_in)
+        # Older mail comes last in an account's order, after its first reads and polls: one slice for each account in
+        # turn, then the pass ends, and comes round again at once while some account has more due.
+        try:
+            from engine import reading_lane
+
+            sliced, more = reading_lane.run_slices(
+                self.ws, self.store, self.cfg, now, self.router_factory(), self._stop
+            )
+            if sliced:
+                self.events.changed()
+                self.poke()
+            if more and not self._stop.is_set():
+                self._read_now.set()
+        except (Exception, SystemExit):  # it stays waiting and is tried again the next time round
+            log.exception("reading older mail failed")
         if sources:
             self.events.changed()
         if handed:
@@ -1490,8 +1490,25 @@ class Worker:
     def _jobs_loop(self) -> None:
         while not self._stop.is_set():
             self._guarded("jobs", "scheduled jobs", self._jobs_pass)
-            self._read_now.wait(timeout=60)
+            self._read_now.wait(timeout=self._jobs_wait())
             self._read_now.clear()
+
+    JOBS_WAIT_SECONDS = 60
+
+    def _jobs_wait(self) -> float:
+        """How long the jobs loop rests: until the next pass, or sooner when a service's asked-for wait on a source runs
+        out first, so the source is read again when that time comes rather than up to a pass later."""
+        try:
+            from engine.watch import next_retry_in
+
+            left = next_retry_in(self.store, self.cfg, self.now())
+        except Exception:  # the plain rest is the fallback; a failed look never stops the loop
+            log.exception("looking for the next retry failed")
+            return self.JOBS_WAIT_SECONDS
+        if left is None:
+            return self.JOBS_WAIT_SECONDS
+        # A small floor keeps a source whose time has come but whose read keeps failing from spinning the loop.
+        return min(self.JOBS_WAIT_SECONDS, max(left, 5.0))
 
     def _jobs_pass(self) -> None:
         self.note_running()

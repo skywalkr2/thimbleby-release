@@ -90,6 +90,8 @@ test.describe.serial("journey: one sent message in three mailboxes", () => {
     expect(Math.round(barBox.y + barBox.height)).toBe(page.viewportSize()!.height);
     expect(lineBox.y + lineBox.height).toBeLessThanOrEqual(barBox.y + 1);
     await main.getByRole("button", { name: "Continue" }).click();
+    // The account's "Read in full from" is unanswered, so Continue asks first (H5-12); going on without choosing goes on.
+    await page.getByRole("button", { name: "Go on without choosing" }).click();
     // The first reading of the three accounts is waited for on screen, then People follows by itself.
     await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible({ timeout: 120_000 });
     await leaveOut(page, main);

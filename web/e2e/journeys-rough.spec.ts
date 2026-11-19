@@ -202,9 +202,15 @@ test.describe.serial("rough paths: a fresh install, pressing only Continue and s
     await expect(main.locator("[data-mail-result]")).toContainText("Example mail is connected.", { timeout: 90_000 });
     seen.offline.push(...(await page.evaluate(() => (window as unknown as { __offline: string[] }).__offline)));
     await main.getByRole("button", { name: "Continue" }).click();
+    // While the account's "Read in full from" is still open, Continue asks first (H5-12), and going on without choosing is the skip.
+    // Whether it is still open depends on how far the first read got (a small mailbox can settle it before Continue is pressed), so
+    // the walk waits for either the question or the next step, and answers the question when it is asked.
+    const heading = main.getByRole("heading", { level: 2 });
+    const goOn = page.getByRole("button", { name: "Go on without choosing" });
+    await expect(goOn.or(heading.filter({ hasNotText: "Mail and calendar" }))).toBeVisible(LOADED);
+    if (await goOn.isVisible()) await goOn.click();
 
     // The step after mail. Whatever it is, the step list is read on it and on every step after it, and Continue is pressed.
-    const heading = main.getByRole("heading", { level: 2 });
     await expect(heading).not.toHaveText("Mail and calendar", LOADED);
     seen.afterMail = (await heading.innerText()).trim();
     seen.railNames = (await page.locator("nav button[data-screen]").allInnerTexts()).map((t) => t.split("\n")[0].trim());

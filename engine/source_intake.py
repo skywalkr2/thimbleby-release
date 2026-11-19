@@ -392,6 +392,7 @@ class LookBack:
     stopped: str | None = None  # after a look the service slowed down or failed partway: the kind of stop
     continues_at: str | None = None  # when the rest is read by itself; None when it waits for the person or ended
     gave_up: bool = False  # the read ran out of tries and waits for the person to continue it
+    unknown: bool = False  # the source could not say how many there are: no number is shown, and the read goes on
 
 
 def _candidates(ws: Any, store: Any, cfg: Any, source: Any, accept: Callable[[dict[str, Any]], bool]) -> list[Any]:
@@ -462,10 +463,12 @@ def _remote_range(store: Any, source_id: str, asked: date, old: date, available:
 
 def _remote_count(
     ws: Any, store: Any, cfg: Any, source: Any, since: date, before: date, now: datetime, limit: int | None = None
-) -> OlderCount:
+) -> OlderCount | None:
     """How many older messages the source would give for these days, within the setting's limit, and whether that is
-    only its estimate; 0 when it can't be asked or the days are empty. A core mailbox reads no message to say; a
-    plugin's connector that gives no count is read for it."""
+    only its estimate; 0 when it can't be asked or the days are empty; None when the source could not say (any
+    `ConnectorError`: a wait, an outage, a sign-in). A count that can't be had never blocks or fails a read: the read
+    goes on with no number. A core mailbox reads no message to say; a plugin's connector that gives no count is read
+    for it."""
     from engine.connectors import ConnectorError
 
     asker = _asker(store, source)
@@ -477,8 +480,8 @@ def _remote_count(
         found = asking.count(
             settings, since, before, limit or cfg.watch.look_back_max_items, _older_context(ws, cfg, now)
         )
-    except ConnectorError as err:
-        raise StoreError(older_failure(err)) from None
+    except ConnectorError:
+        return None
     return found if isinstance(found, OlderCount) else OlderCount(found)
 
 
@@ -499,6 +502,7 @@ class Fetched:
     skipped: dict[str, int] = field(default_factory=dict)
     stop: Any = None
     end: date | None = None
+    more: bool = False  # the slice ended after its pages with more of the range still to read, from `end` on
 
 
 def _fetch_older(
@@ -511,10 +515,14 @@ def _fetch_older(
     now: datetime,
     limit: int | None = None,
     carrying_on: bool = False,
+    page: int | None = None,
+    pages: int | None = None,
 ) -> Fetched:
     """Ask the source for its older mail of these days, within the setting's limit, and note it the way a first read
-    notes what it doesn't hand in. A message the source couldn't read never stops the rest. When the service slows the
-    read down or fails after some pages, what was read stays and the answer says where it stopped (`stop`, `end`); a
+    notes what it doesn't hand in. `page` is the size of a page (the look further back's setting by default); `pages`
+    ends a slice after that many pages that moved on, with `more` set when the range is not finished. A message the
+    source couldn't read never stops the rest. When the service slows the read down or fails after some pages, what
+    was read stays and the answer says where it stopped (`stop`, `end`); a
     failure before any page was read raises, unless the read is carrying on from an earlier stop."""
     from engine.connectors import ConnectorError, Poll, skipped_counts
 
@@ -523,22 +531,25 @@ def _fetch_older(
         return Fetched(0)
     asking, model = asker
     settings = model.model_validate(source.settings)
-    page = cfg.watch.look_back_max_items
-    ceiling = limit or page
+    ceiling = limit or page or cfg.watch.look_back_max_items
+    page = min(page or cfg.watch.look_back_max_items, ceiling)
     seen: set[str] = set()
     skipped: dict[str, int] = {}
     end = before
     size = page
+    moved = 0
     while True:
         try:
             answer = asking.read(settings, since, end, size, _older_context(ws, cfg, now))
         except ConnectorError as err:
-            if not seen and not carrying_on:
+            # Before anything was read, a stop the person must deal with (a sign-in, a missing folder) is said at once;
+            # a service that asked to wait, was down or couldn't be reached keeps the choice and carries on later.
+            if not seen and not carrying_on and err.kind not in CONTINUES:
                 raise StoreError(older_failure(err)) from None
             return Fetched(len(seen), skipped, err, end)
         items, unreadable = (answer.items, answer.unreadable) if isinstance(answer, Poll) else (answer, [])
         stopped = answer.stopped if isinstance(answer, Poll) else None
-        if stopped is not None and not (seen or items or unreadable or carrying_on):
+        if stopped is not None and not (seen or items or unreadable or carrying_on) and stopped.kind not in CONTINUES:
             raise StoreError(older_failure(stopped))
         new_items = [i for i in items if i.key not in seen]
         new_unreadable = [u for u in unreadable if u.key not in seen]
@@ -564,6 +575,9 @@ def _fetch_older(
         following = min(days) + timedelta(days=1) if days else end
         if new_items and following < end:
             end, size = following, page
+            moved += 1
+            if pages is not None and moved >= pages and end > since:
+                return Fetched(len(seen), skipped, None, end, more=True)
         elif size >= ceiling:
             break
         else:
@@ -647,12 +661,13 @@ def look_back_preview(
     found = _candidates(ws, store, cfg, source, _in_window(asked, old, now))
     limit = cfg.watch.full_read_max_items if exact else cfg.watch.look_back_max_items
     counted = _remote_count(ws, store, cfg, source, *_remote_range(store, source_id, asked, old, available), now, limit)
-    remote = counted.count
+    remote = counted.count if counted is not None else 0
     count = len(found) + remote
     result = LookBack(days, asked, count, available_from=available if available and available > asked else None)
+    result.unknown = counted is None
     # The source was asked: fewer than the limit means it holds nothing older than it gave.
     result.capped = remote >= limit
-    result.estimate = counted.estimate and remote > 0
+    result.estimate = counted is not None and counted.estimate and remote > 0
     result.reaches = result.available_from is None or not result.capped
     if result.reaches:
         result.available_from = None
@@ -693,8 +708,47 @@ def look_further_back(
         # Asked only of a source that counts without reading: one that reads to count would read everything twice.
         asker = _asker(store, source)
         counts = asker is not None and asker[0].counts
-        said = _remote_count(ws, store, cfg, source, *reach, now, limit) if counts else OlderCount(0)
+        said = (_remote_count(ws, store, cfg, source, *reach, now, limit) if counts else None) or OlderCount(0)
         return _read_older(ws, store, cfg, source, asked, reach, limit, said, now, router, reach_days, None, days)
+
+
+def queue_look_further_back(
+    ws: Any, store: Any, cfg: Any, source_id: str, days: int, now: datetime | None = None
+) -> LookBack:
+    """The look further back as the source's menu asks for it: the choice is recorded with the read still to do, on the
+    source's first read, and the worker's lane reads it in slices (`reading_lane.run_slices`), so the answer returns at
+    once and nothing is asked of the service here. A read already waiting is extended to the earlier day. Returns the
+    queued look (`stopped` is "queued")."""
+    now = now or datetime.now(UTC)
+    source = _source(cfg, source_id)
+    if not can_look_back(source, store):
+        raise StoreError("this source can't be asked for older mail")
+    asked, old, _new, available = _plan(store, cfg, source_id, days)
+    since, before = _remote_range(store, source_id, asked, old, available)
+    run = intake_run(store.read(), source_id)
+    if run is None:
+        raise StoreError("this source was not taken in with a look back, so there is nothing further to look at")
+    queued = {
+        "since": since.isoformat(),
+        "before": before.isoformat(),
+        "left": cfg.watch.look_back_max_items,
+        "kind": "queued",
+        "stopped_at": now.isoformat(),
+        "tries": 0,
+        "taken": 0,
+        "reach": None,
+        "at": now.isoformat(),
+        "gave_up": False,
+    }
+    with store.transaction() as tx:
+        current = tx.get("watch_run", run.id)
+        waiting_read = current.data.get("older_read")
+        if waiting_read:
+            queued = {**waiting_read, "since": min(str(waiting_read["since"]), queued["since"])}
+        tx.update("watch_run", run.id, {"older_read": queued}, _MOVED, read_version=current.version)
+    result = LookBack(days=days, from_date=asked, reaches=True)
+    result.stopped, result.continues_at = "queued", str(queued["at"]) if queued.get("at") else None
+    return result
 
 
 def _read_older(
@@ -711,16 +765,21 @@ def _read_older(
     reach_days: int | None,
     carried: dict[str, Any] | None,
     days: int = 0,
+    pages: int | None = None,
 ) -> LookBack:
-    """Read the range, take in what was read and move the date it was looked back to. `carried` is the earlier stop of
-    a read being carried on. Called with the source's read lock held."""
+    """Read the range (or, with `pages`, one slice of it), take in what was read and move the date it was looked back
+    to. `carried` is the earlier stop of a read being carried on. A full read (`reach_days`) asks in the larger pages of
+    `watch.full_read_page_items`. Called with the source's read lock held."""
     source_id = source.id
     forget_full_read_counts(ws, source_id)
-    fetched = _fetch_older(ws, store, cfg, source, *reach, now, limit, carrying_on=carried is not None)
+    page = cfg.watch.full_read_page_items if reach_days is not None else None
+    fetched = _fetch_older(
+        ws, store, cfg, source, *reach, now, limit, carrying_on=carried is not None, page=page, pages=pages
+    )
     add_older_skipped(store, source_id, fetched.skipped)
     asked, old, new, available = _plan_from(store, source_id, asked)
     stop = fetched.stop
-    if stop is None:
+    if stop is None and not fetched.more:
         everything = fetched.count < limit  # the source gave all it holds of those days
         if everything:
             new = asked
@@ -735,7 +794,11 @@ def _read_older(
     result.skipped = fetched.skipped
     result.expected, result.expected_estimate, result.gave = said.count, said.estimate, fetched.count
     result.short = (
-        said.count > 0 and fetched.count * SHORT_FRACTION < said.count and said.count < limit and stop is None
+        said.count > 0
+        and fetched.count * SHORT_FRACTION < said.count
+        and said.count < limit
+        and stop is None
+        and not fetched.more
     )
     keys = {snap.data["key"] for snap in found}
     made = _take(ws, store, cfg, source, now, router, lambda data: data["key"] in keys)
@@ -749,6 +812,8 @@ def _read_older(
         with store.transaction() as tx:
             current = tx.get("watch_run", run.id)
             changes: dict[str, Any] = {"older_read": carry}
+            if carry is None:
+                changes["older_finished_at"] = now.isoformat()  # the read ended: the look at people may look again
             if new < old:
                 changes["looked_back_to"] = new.isoformat()
             tx.update("watch_run", run.id, changes, _MOVED, read_version=current.version)
@@ -756,6 +821,8 @@ def _read_older(
         result.stopped = stop.kind
         result.continues_at = carry["at"] if carry and carry.get("at") else None
         result.gave_up = bool(carry and carry.get("gave_up"))
+    elif fetched.more:
+        result.stopped = "reading"
     counted, total, unpriced = total_waiting(ws, store, cfg, source_id, router)
     result.estimate_usd, result.unpriced = total, unpriced
     return result
@@ -772,26 +839,51 @@ def _carry(
     reach_days: int | None,
     taken: int,
 ) -> dict[str, Any] | None:
-    """Where a read that stopped carries on, kept on the source's first read: the days still to read, what is left of
-    the limit, why it stopped, when it continues and how many times it has stopped in a row without getting further.
-    None when the read finished, or stopped for a reason the person has to deal with."""
-    if stop is None or stop.kind not in CONTINUES or fetched.end is None or isinstance(stop, AnswerTooLarge):
+    """Where a read that stopped, or that ended a slice with more to read, carries on, kept on the source's first read:
+    the days still to read, what is left of the limit, why it stopped, when it continues and how many times it has
+    stopped in a row without getting further (a wait for the service never counts). None when the read finished, or
+    stopped for a reason the person has to deal with."""
+    if stop is None and not fetched.more:
+        return None
+    if stop is not None and (stop.kind not in CONTINUES or isinstance(stop, AnswerTooLarge)):
+        return None
+    if fetched.end is None:
         return None
     before = carried or {}
     progressed = taken > 0  # new items taken in: a page of messages already taken is no progress
-    # Stops in a row that got no further, whatever their kind: a service that keeps asking to wait is never asked again
-    # and again without end, and after the last try the person decides.
-    tries = 1 if progressed else int(before.get("tries", 0)) + 1
+    if stop is None:
+        # A slice that ended with more to read: the next slice is due at once, and nothing was tried and failed.
+        tries, kind = 0, "reading"
+    elif stop.kind == "throttled":
+        # A wait is a wait, never a try: it adds nothing to the stops in a row, and a read that is only ever asked to
+        # wait is never given up on.
+        tries, kind = (0 if progressed else int(before.get("tries", 0))), "throttled"
+    else:
+        # Stops in a row that got no further: after the last try the person decides.
+        tries, kind = (1 if progressed else int(before.get("tries", 0)) + 1), stop.kind
     base: dict[str, Any] = {
         "since": since.isoformat(),
         "before": fetched.end.isoformat(),
         "left": max(1, limit - fetched.count),
-        "kind": stop.kind,
+        "kind": kind,
+        # The refusing answer, kept as the service gave it (its status, the error kind and short reason code, its wait).
+        **(
+            {
+                "status": stop.status,
+                "reason": f"{stop.kind}:{stop.reason}" if stop.reason else stop.kind,
+                "wait_seconds": stop.retry_after,
+            }
+            if stop is not None
+            else {}
+        ),
         "stopped_at": now.isoformat(),
         "tries": tries,
         "taken": int(before.get("taken", 0)) + taken,
         "reach": reach_days if reach_days is not None else before.get("reach"),
+        **({"about": before["about"]} if before.get("about") else {}),
     }
+    if stop is None:
+        return {**base, "at": now.isoformat(), "gave_up": False}
     if tries > cfg.watch.older_read_tries:
         return {**base, "at": None, "gave_up": True}
     if stop.kind == "throttled":
@@ -818,11 +910,19 @@ def older_read_due(view: Any, cfg: Any, now: datetime) -> list[str]:
 
 
 def continue_older_read(
-    ws: Any, store: Any, cfg: Any, source_id: str, now: datetime | None = None, router: Any = None, force: bool = False
+    ws: Any,
+    store: Any,
+    cfg: Any,
+    source_id: str,
+    now: datetime | None = None,
+    router: Any = None,
+    force: bool = False,
+    pages: int | None = None,
 ) -> LookBack | None:
     """Carry on a read of older mail from where it stopped, under the source's read lock (nothing is done when it is
     being read already), when its time has come, or at once when the person asks (`force`, also after it gave up).
-    Returns what that pass did, or None when there was nothing to carry on."""
+    `pages` reads one slice of that many pages and leaves the rest due at once (the worker's lane); none reads to the
+    end. Returns what that pass did, or None when there was nothing to carry on."""
     now = now or datetime.now(UTC)
     source = _source(cfg, source_id)
     lock = watch._read_lock(ws, source_id)
@@ -851,6 +951,7 @@ def continue_older_read(
             router,
             waiting_read.get("reach"),
             waiting_read,
+            pages=pages,
         )
     finally:
         lock.release()
@@ -872,6 +973,7 @@ class FullReadOption:
     reaches: bool = True
     capped: bool = False
     estimate: bool = False
+    unknown: bool = False  # the service could not say how many there are: no number, and the read goes on all the same
 
 
 def full_read_pending(store: Any, cfg: Any, source: Any) -> bool:
@@ -942,6 +1044,15 @@ def forget_full_read_counts(ws: Any, source_id: str) -> None:
             del _KEPT_COUNTS[key]
 
 
+def _kept_count(ws: Any, cfg: Any, source_id: str, beyond: int) -> int | None:
+    """What the service said it holds for a reach, as the choice showed it (kept for a few minutes); None when no count
+    is kept. Never asks the service."""
+    key = (str(ws.root), source_id, beyond, f"{repr(_source(cfg, source_id).settings)}|{cfg.watch.full_read_max_items}")
+    with _KEPT_LOCK:
+        kept = _KEPT_COUNTS.get(key)
+    return kept[1].count if kept is not None and not kept[1].unknown and kept[1].count > 0 else None
+
+
 def full_read_options(
     ws: Any, store: Any, cfg: Any, source_id: str, now: datetime | None = None, router: Any = None
 ) -> list[FullReadOption]:
@@ -954,10 +1065,15 @@ def full_read_options(
     source = _source(cfg, source_id)
     settings = repr(source.settings)
     found = []
+    blind = False
     for reach in cfg.watch.full_read_choices:
         beyond = _days_beyond_first_read(store, source_id, reach, now)
         if beyond < 1:
             found.append(FullReadOption(reach))  # the first read already covers it: nothing more to take in
+            continue
+        if blind:
+            # The service could not say for an earlier reach: it is not asked again for each of the rest.
+            found.append(FullReadOption(reach, unknown=True))
             continue
         key = (str(ws.root), source_id, beyond, f"{settings}|{cfg.watch.full_read_max_items}")
         with _KEPT_LOCK:
@@ -975,9 +1091,13 @@ def full_read_options(
             preview.reaches,
             preview.capped,
             preview.estimate,
+            preview.unknown,
         )
-        with _KEPT_LOCK:
-            _KEPT_COUNTS[key] = (now, option)
+        if preview.unknown:
+            blind = True  # not kept: the next ask may get a count
+        else:
+            with _KEPT_LOCK:
+                _KEPT_COUNTS[key] = (now, option)
         found.append(option)
     return found
 
@@ -1008,8 +1128,73 @@ def answer_full_read(
     ws: Any, store: Any, cfg: Any, source_id: str, reach: int, now: datetime | None = None, router: Any = None
 ) -> LookBack | None:
     """The person's answer to the full-read question: 0 is "not now" (nothing is read, and it isn't asked again for this
-    sign-in); a reach is read through the look further back, which holds the work for the person's go like any other.
-    Returns what the look did, or None for "not now" or a reach the first read already covers."""
+    sign-in); a reach is recorded and queued for the worker's lane, which reads it in the background in slices, so the
+    answer returns at once and never waits for the service (no count is asked, no page read). The read then holds its
+    work for the person's go like any other. Returns the queued read (`stopped` is "queued"), or None for "not now" or a
+    reach the first read already covers."""
+    now = now or datetime.now(UTC)
+    source = _source(cfg, source_id)
+    if reach == 0:
+        _record_full_read(store, source_id, 0)
+        return None
+    if reach not in cfg.watch.full_read_choices:
+        raise StoreError(f"{reach} days is not one of the choices")
+    beyond = _days_beyond_first_read(store, source_id, reach, now)
+    if beyond < 1:
+        _record_full_read(store, source_id, reach)
+        return None
+    if not can_look_back(source, store):
+        raise StoreError("this source can't be asked for older mail")
+    asked, old, _new, available = _plan(store, cfg, source_id, beyond, exact=True)
+    since, before = _remote_range(store, source_id, asked, old, available)
+    run = intake_run(store.read(), source_id)
+    about = _kept_count(ws, cfg, source_id, beyond)
+    queued = {
+        **({"about": about} if about else {}),
+        "since": since.isoformat(),
+        "before": before.isoformat(),
+        "left": cfg.watch.full_read_max_items,
+        "kind": "queued",
+        "stopped_at": now.isoformat(),
+        "tries": 0,
+        "taken": 0,
+        "reach": reach,
+        "at": now.isoformat(),
+        "gave_up": False,
+    }
+    with store.transaction() as tx:
+        current = tx.get("watch_run", run.id)
+        changes: dict[str, Any] = {"full_read": reach}
+        if not current.data.get("older_read"):
+            changes["older_read"] = queued
+        tx.update("watch_run", run.id, changes, _MOVED, read_version=current.version)
+    forget_full_read_counts(ws, source_id)
+    result = LookBack(days=beyond, from_date=asked, reaches=True)
+    result.stopped, result.continues_at = "queued", now.isoformat()
+    return result
+
+
+def resume_older_read(store: Any, source_id: str, now: datetime | None = None) -> bool:
+    """The person asked to carry on a read of older mail that gave up: it is due at once with a new round of tries, and
+    the worker's lane reads it. Returns whether one was waiting."""
+    now = now or datetime.now(UTC)
+    waiting_read = older_read_waiting(store.read(), source_id)
+    run = intake_run(store.read(), source_id)
+    if waiting_read is None or run is None:
+        return False
+    with store.transaction() as tx:
+        current = tx.get("watch_run", run.id)
+        kept = dict(current.data.get("older_read") or {})
+        kept.update(tries=0, gave_up=False, at=now.isoformat())
+        tx.update("watch_run", run.id, {"older_read": kept}, _MOVED, read_version=current.version)
+    return True
+
+
+def read_full_now(
+    ws: Any, store: Any, cfg: Any, source_id: str, reach: int, now: datetime | None = None, router: Any = None
+) -> LookBack | None:
+    """`answer_full_read` that also reads the whole reach before returning, in this thread, through the look further
+    back. The product never calls it (a press is answered by the lane); it is for tests of what a read does."""
     now = now or datetime.now(UTC)
     source = _source(cfg, source_id)
     if reach == 0:

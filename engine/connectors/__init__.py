@@ -244,6 +244,12 @@ class OlderCount:
 DETAIL_MAX = 4000
 
 
+def _reason_code(reason: str | None) -> str | None:
+    import re
+
+    return reason if isinstance(reason, str) and re.fullmatch(r"[A-Za-z0-9_.\-]{1,40}", reason) else None
+
+
 class ConnectorError(Exception):
     """Why a read failed. `kind`: auth (sign in again), no_access, not_found, outage (the service is failing),
     offline (no network here: never counted as a failure), or throttled (the service asked to wait: `retry_after`
@@ -251,7 +257,9 @@ class ConnectorError(Exception):
     it from an answer, `status`, `headers` and `body` (its text, at most 20 KB) are the service's own, and `json()`
     parses the body, so a connector can read the service's error code and raise a better kind itself. `advice_key`
     names, in the screen's wording sheet, a sentence that says what the person should do about it (it replaces the
-    kind's usual advice); leave it out to use the kind's."""
+    kind's usual advice); leave it out to use the kind's. `reason` is the service's short error code, if the connector
+    read one (letters, digits, `_`, `-` and `.`, at most 40; anything else is dropped, never the service's free text);
+    it is kept on the run record beside the status and the wait."""
 
     def __init__(
         self,
@@ -263,9 +271,11 @@ class ConnectorError(Exception):
         headers: dict[str, str] | None = None,
         body: str | None = None,
         advice_key: str | None = None,
+        reason: str | None = None,
     ):
         self.kind = kind
         self.advice_key = advice_key
+        self.reason = _reason_code(reason)
         self.detail = detail[:DETAIL_MAX]
         self.retry_after = retry_after
         self.status = status

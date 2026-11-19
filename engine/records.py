@@ -1250,6 +1250,15 @@ class WatchRun(Record):
         "asked to wait."
     )
     retry_at: datetime | None = Field(None, description="For a throttled read: not read again before this time.")
+    refused_status: int | None = Field(
+        None, description="For a throttled or failed read the service refused: the status code it answered, if it did."
+    )
+    refused_reason: str | None = Field(
+        None,
+        description="For a throttled or failed read: the kind of error, and the add-on's short reason code after a "
+        "colon when it gave one (never the service's own words).",
+    )
+    wait_seconds: float | None = Field(None, description="For a throttled read: the wait the service asked for.")
     error_kind: str | None = Field(
         None,
         description="For a failed read: auth, no_access, not_found, outage, addon (its add-on isn't running), or "
@@ -1314,12 +1323,32 @@ class WatchRun(Record):
         None,
         description="For a source's first read that took it in quietly: where a read of older mail stopped when the "
         "service slowed it down or failed partway, so it carries on from there. `since` and `before` are the days "
-        "still to read, `left` how many messages the read may still take, `kind` why it stopped (throttled, outage or "
-        "offline), `stopped_at` when it stopped, `at` when it continues (none once it gave up), `tries` the stops in a "
-        "row without progress, "
-        "`gave_up` that it ran out of tries and waits for the person, `taken` the items taken in so far and "
-        "`reach` the days the person chose for a full read (none for a look further back). None when no read is "
+        "still to read, `left` how many messages the read may still take, `kind` why it waits (throttled, outage or "
+        "offline after a stop; queued before its first page, reading between slices), `stopped_at` when it stopped, "
+        "`at` when it continues (none once it gave up), `tries` the stops in a row without progress, "
+        "`gave_up` that it ran out of tries and waits for the person, `taken` the items taken in so far, "
+        "`about` about how many there will be when the service said, and `reach` the days the person chose for a "
+        "full read (none for a look further back). None when no read is "
         "waiting to continue.",
+    )
+    header_sweep: dict[str, Any] | None = Field(
+        None,
+        description="For a mail source's first read: the rest of its message headers still to read, in the background "
+        "lane, after the sample read at sign-in. `since` and `before` are the days still to read, `left` how many "
+        "headers it may still take, `size` the page it asks for, `kind` why it waits (queued, reading between pages, "
+        "or throttled, outage, offline after a stop), `at` when it continues (none once it gave up), `tries` the stops "
+        "in a row without progress, `gave_up` that it ran out of tries, `taken` the headers read so far. None when "
+        "nothing is waiting. It is never the source's read: a stop here changes no read's outcome.",
+    )
+    header_sweep_finished_at: datetime | None = Field(
+        None,
+        description="For a mail source's first read: when the sweep of the rest of its headers last ended. The look at "
+        "who the person deals with looks again after it.",
+    )
+    older_finished_at: datetime | None = Field(
+        None,
+        description="For a source's first read that took it in quietly: when a read of older mail last ran to its end "
+        "or stopped for the person to deal with. The look at who the person deals with looks again after it.",
     )
     asks_full_read: bool = Field(
         False,
@@ -1857,6 +1886,11 @@ class Request(Record):
         description="For a reading of the person's items for areas of their life: the ids of the items its packet "
         "listed; for a look at who they deal with: the addresses its packet listed. The reading is checked against "
         "these, and the same items or addresses are not asked about again while they stand.",
+    )
+    asked_counts: dict[str, list[int]] | None = Field(
+        None,
+        description="For a look at who they deal with: for each address in `asked_about`, the messages from them and "
+        "to them its packet showed. An address is asked about again only when these counts have changed.",
     )
     attempts: int = Field(0, description="How many times the assistant has started on it.")
     retries: int = Field(

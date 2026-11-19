@@ -197,8 +197,8 @@ def test_a_connector_that_fails_asking_for_older_items_is_contained(tmp_path):
     try:
         refresh(ws, store, cfg, "m", NOW)
         cfg.watch.sources[0].settings["older"] = [{"key": "x"}]  # an entry the connector can't read
-        with pytest.raises(StoreError):
-            source_intake.look_back_preview(ws, store, cfg, "m", 30, NOW)
+        # A count that can't be had never fails the choice: the preview says it has no number.
+        assert source_intake.look_back_preview(ws, store, cfg, "m", 30, NOW).unknown is True
     finally:
         store.close()
 

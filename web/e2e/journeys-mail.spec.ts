@@ -133,6 +133,8 @@ test.describe.serial("journey: mail", () => {
 
     // Backups and People are left for later, and Done names what was skipped.
     await main.getByRole("button", { name: "Continue" }).click();
+    // The account's "Read in full from" is unanswered, so Continue asks first (H5-12); going on without choosing goes on.
+    await page.getByRole("button", { name: "Go on without choosing" }).click();
     await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible({ timeout: 120_000 });
     await leaveOut(page, main);
     await expect(main.getByRole("heading", { level: 2, name: "Backups" })).toBeVisible();
@@ -447,6 +449,8 @@ test.describe.serial("journey: mail", () => {
       await expect(page.locator("form[data-add-connection]")).toHaveCount(0);
       const form = await choose();
       const box = form.getByRole("textbox", { name: /folder/i });
+      // The form's own default arrives from the server after it opens; typing waits for it, as a person sees the field filled first.
+      await expect(box).not.toHaveValue("", { timeout: 30_000 });
       await box.fill(folder);
       await expect(box).toHaveValue(folder);
       await form.getByRole("button", { name: "Add connection" }).click();

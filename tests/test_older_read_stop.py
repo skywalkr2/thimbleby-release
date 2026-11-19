@@ -52,7 +52,7 @@ def test_an_older_read_that_hands_in_items_and_a_stop_keeps_them_and_carries_on_
     slow = ConnectorError("throttled", "HTTP 429", retry_after=90)
     ws, cfg, store, service = slowed(tmp_path, monkeypatch, {1: (5, slow)})
     try:
-        stopped = source_intake.answer_full_read(ws, store, cfg, "m", 30, NOW)
+        stopped = source_intake.read_full_now(ws, store, cfg, "m", 30, NOW)
         assert stopped.stopped == "throttled" and stopped.taken == 5
         assert older_keys(store) == {f"o{d}" for d in DAYS[:5]} and handed_in(store) >= older_keys(store)
         waiting = source_intake.older_read_waiting(store.read(), "m")
@@ -69,12 +69,13 @@ def test_an_older_read_that_hands_in_items_and_a_stop_keeps_them_and_carries_on_
 
 
 def test_tries_that_take_nothing_new_give_up_after_the_setting(tmp_path, monkeypatch):
-    slow = ConnectorError("throttled", "HTTP 429", retry_after=60)
+    # An outage counts as a try (a wait the service asks for never does: tests/test_reading_lane.py).
+    slow = ConnectorError("outage", "HTTP 503")
     ws, cfg, store, service = slowed(tmp_path, monkeypatch, {n: (3, slow) for n in range(1, 40)}, same_page=True)
     try:
         cfg.watch.older_read_tries = 3
         at = NOW
-        done = source_intake.answer_full_read(ws, store, cfg, "m", 30, at)
+        done = source_intake.read_full_now(ws, store, cfg, "m", 30, at)
         assert done.taken == 3 and not done.gave_up
         rounds = 0
         while not done.gave_up:
@@ -103,14 +104,32 @@ def test_a_page_of_messages_already_taken_is_no_progress_but_a_new_one_is(taken,
     assert carry["tries"] == tries and carry["taken"] == 7 + taken
 
 
-def test_a_stop_before_anything_was_read_is_the_same_failure_as_raising_it(tmp_path, monkeypatch):
-    from engine.storage import StoreError
-
+def test_a_slow_down_before_anything_was_read_keeps_the_choice_and_carries_on_when_the_service_allows(
+    tmp_path, monkeypatch
+):
+    # A wait the service asks for on the very first page is scheduled like one partway through: nothing is taken,
+    # the choice is kept, and the read carries on at the time the service gave.
     slow = ConnectorError("throttled", "HTTP 429", retry_after=60)
     ws, cfg, store, _ = slowed(tmp_path, monkeypatch, {1: (0, slow)})
     try:
+        done = source_intake.read_full_now(ws, store, cfg, "m", 30, NOW)
+        assert done is not None and done.stopped == "throttled" and done.taken == 0
+        waiting = source_intake.older_read_waiting(store.read(), "m")
+        assert waiting is not None and waiting["kind"] == "throttled" and not waiting["gave_up"]
+        assert waiting["at"] == (NOW + timedelta(seconds=60)).isoformat()
+        assert older_keys(store) == set()
+    finally:
+        store.close()
+
+
+def test_a_stop_the_person_must_deal_with_before_anything_was_read_is_said_at_once(tmp_path, monkeypatch):
+    from engine.storage import StoreError
+
+    signed_out = ConnectorError("auth", "the sign-in was withdrawn")
+    ws, cfg, store, _ = slowed(tmp_path, monkeypatch, {1: (0, signed_out)})
+    try:
         with pytest.raises(StoreError):
-            source_intake.answer_full_read(ws, store, cfg, "m", 30, NOW)
+            source_intake.read_full_now(ws, store, cfg, "m", 30, NOW)
         assert older_keys(store) == set() and not source_intake.older_read_waiting(store.read(), "m")
     finally:
         store.close()
@@ -138,7 +157,7 @@ def test_the_plugin_host_keeps_the_stop_of_an_older_or_headers_read_and_refuses_
     assert raised.value.kind == "outage" and "stopped" in str(raised.value)
 
 
-def test_a_headers_read_that_stops_keeps_its_headers_and_the_stop_is_told_like_a_failed_read(tmp_path):
+def test_a_headers_read_that_stops_keeps_its_headers_and_waits_in_the_lane_without_becoming_the_sources_read(tmp_path):
     from tests import test_first_headers as fh
 
     stopping = fh.WITH_HEADERS.replace(
@@ -160,6 +179,10 @@ def test_a_headers_read_that_stops_keeps_its_headers_and_the_stop_is_told_like_a
         fh.refresh(ws, store, cfg, "m", NOW)
         assert len(fh.kept(store)) == 3, "what the headers read gave is kept"
         runs = store.read().find("watch_run", {"source": "m"})
-        assert runs[-1].data["outcome"] == "throttled" and runs[-1].data["retry_at"]
+        assert [r.data["outcome"] for r in runs] == ["baseline"], "a stopped header read is not the source's read"
+        from engine import mail_headers
+
+        waiting = mail_headers.sweep_waiting(store.read(), "m")
+        assert waiting["kind"] == "throttled" and waiting["at"] == (NOW + timedelta(seconds=60)).isoformat()
     finally:
         store.close()

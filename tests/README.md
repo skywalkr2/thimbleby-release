@@ -42,3 +42,12 @@ uv run python -m tests.e2e_server --port 8810 --base-path / --many-sides
 ```
 
 Tests: `uv run pytest tests/test_fake_accounts.py tests/test_e2e_many_sides_seed.py tests/test_fake_services.py -n0`.
+
+## The quota mode (S-0664, the stand-in part)
+
+Off by default. `tests.fake_services` flags `--quota-rate N` (requests a second for each account), `--quota-penalty S`
+(seconds every request of the account is refused after a refusal; a request inside it extends it), `--quota-form 429|403`
+(a 429, or a 403 whose body has the reason code `rateLimitExceeded`) and `--quota-wait header|body-delay|message`
+(a Retry-After header, a `retryDelay` in the body's `details`, or only a time in the body's message). `POST /__e2e/quota`
+takes `{"rate", "penalty", "form", "wait"}` (rate 0 turns it off). `GET /__e2e/requests?account=N` (from 1; none for all)
+lists each counted request: time, endpoint, answer (`ok` or `refused`). It counts the mail and calendar endpoints.

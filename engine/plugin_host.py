@@ -144,6 +144,12 @@ EVENTS_WITH_KIND = {"record.changed", "stage.moved", "file.added", "text.accepte
 log = logging.getLogger(__name__)
 
 
+def _note_throttle(context: Any, err: Any) -> None:
+    """Close the account's gates for a `throttled` a connector raised or handed back (`Poll.stopped`)."""
+    if err is not None and context.web is not None:
+        context.web.note_throttle(err)
+
+
 def _as_read(answer: Any, limit: int) -> Any:
     """What an older-items or headers function gave, checked, as a `Poll` of at most `limit` items: a list of items, or
     a `Poll` whose `items`, `unreadable` and `stopped` are used (its state, completeness and removals are ignored)."""
@@ -893,7 +899,9 @@ class PluginHost:
 
         if sign_in.account is None:
             return None
-        context = self.connector_context(sign_in.plugin, workspace_root)
+        # The account is not known yet, so the request is paced by no account's gate: another account's closed gate
+        # would otherwise hold the name read of the one being added.
+        context = self.connector_context(sign_in.plugin, workspace_root, paced=False)
         context = replace(context, access_token=lambda _name: tokens["access_token"])
         where = f"account name for {sign_in.name}"
         try:
@@ -1025,17 +1033,25 @@ class PluginHost:
         except ExtractError as err:
             raise StoreError(f"{record.data['name']} can't be read: {err.reason}") from None
 
-    def connector_context(self, plugin: str, workspace_root: Any, account: str | None = None) -> Any:
+    def connector_context(
+        self, plugin: str, workspace_root: Any, account: str | None = None, paced: bool = True
+    ) -> Any:
         """What a plugin's connector gets: a web client for its declared hosts, and its declared secrets. `account` is
         the address of the account the source reading it uses: its tokens come from that account, and
-        `context.account` says which. With none named, the one account signed in is used."""
+        `context.account` says which. With none named, the one account signed in is used. `paced` False sends nothing
+        through any account's gate: for a request made before the account it belongs to is known."""
         from engine.connectors import ConnectorContext
         from engine.net import WebClient
 
         requires = self.manifests[plugin].requires
-        web = WebClient(list(requires.network)) if requires.network else None
-        declared = set(requires.secrets)
         keys = private_dir(Path(workspace_root)) / "keys" / plugin
+        gates = (
+            self._gates(plugin, account or self._only_account(plugin, set(self._sign_ins_of(plugin)), keys), keys)
+            if paced
+            else None
+        )
+        web = WebClient(list(requires.network), gates=gates) if requires.network else None
+        declared = set(requires.secrets)
 
         def secret(name: str) -> str | None:
             from engine.plugin_api import PluginMisuse
@@ -1084,6 +1100,43 @@ class PluginHost:
             account=account or self._only_account(plugin, own_sign_ins, keys),
         )
 
+    def _sign_ins_of(self, plugin: str) -> dict[str, Any]:
+        return self.registrars[plugin].sign_ins if plugin in self.registrars else {}
+
+    def _gates(self, plugin: str, account: str | None, keys: Path, sign_in: Any = None) -> Any:
+        """The gates a web client for this plugin's account passes (`engine/gate.py`): one per host, shared by every
+        client built for the same sign-in, account and host. None when the plugin has no sign-in or no account is known
+        (nothing to pace per account)."""
+        from engine.gate import Gates, GateSettings
+        from engine.sign_in import list_accounts
+
+        own = self._sign_ins_of(plugin)
+        if not own or not account:
+            return None
+        if sign_in is None:
+            for name in sorted(own):
+                if any(a.address == account for a in list_accounts(keys, own[name])):
+                    sign_in = own[name]
+                    break
+        if sign_in is None:
+            return None
+        return Gates(
+            sign_in.name,
+            account,
+            GateSettings.from_watch(self.cfg.watch),
+            declared_per_second=sign_in.requests_per_second,
+        )
+
+    def account_gates(self, connector: str, account: str | None, workspace_root: Any) -> list[Any]:
+        """The gates an account's reads have made so far (`engine/gate.py`), whatever host they reached; empty when the
+        connector's plugin has no sign-in or the account is unknown. The reading check reads their own counts."""
+        plugin = connector.split("/", 1)[0] if "/" in connector else connector
+        if not account or plugin not in self.registrars:
+            return []
+        keys = private_dir(Path(workspace_root)) / "keys" / plugin
+        gates = self._gates(plugin, account, keys)
+        return gates.all() if gates is not None else []
+
     def channel_context(self, channel: str, account: str | None, workspace_root: Any) -> Any:
         """What a channel's `send`, `status` and `undo` get for one act: a web client for the plugin's declared hosts
         and, when the act's account is one of the plugin's own sign-ins' accounts, its current token and granted scopes.
@@ -1097,11 +1150,14 @@ class PluginHost:
         if plugin is None or plugin not in self.manifests:
             return ChannelContext(account=account, log=logging.getLogger(f"engine.channels.{channel}"))
         requires = self.manifests[plugin].requires
-        web = WebClient(list(requires.network)) if requires.network else None
         own = self.registrars[plugin].sign_ins if plugin in self.registrars else {}
         kind = act_accounts.kind_of(account) if account else None
         address = act_accounts.name_of(account) if account else ""
         sign_in = own.get(kind) if kind else None
+        gates = None
+        if sign_in is not None and address:
+            gates = self._gates(plugin, address, private_dir(Path(workspace_root)) / "keys" / plugin, sign_in)
+        web = WebClient(list(requires.network), gates=gates) if requires.network else None
         scopes: frozenset[str] = frozenset()
         token: Callable[[], str | None] = _no_token
         if sign_in is not None and address:
@@ -1148,7 +1204,8 @@ class PluginHost:
             poll = checked_poll(connector.poll(settings, deepcopy(state), context))
             if poll.stopped is not None:
                 raise ValueError("a Poll from poll() can't carry `stopped`: only older and headers may")
-        except ConnectorError:
+        except ConnectorError as err:
+            _note_throttle(context, err)
             raise
         except Exception as err:
             self.failed(plugin, where, err)
@@ -1208,9 +1265,11 @@ class PluginHost:
                     result: Any = OlderCount(min(number, limit), estimate) if estimate else min(number, limit)
                 else:
                     result = _as_read(connector.older(deepcopy(settings), since, before, limit, context), limit)
+                    _note_throttle(context, getattr(result, "stopped", None))
                     if counting:
                         result = len(result.items)
-            except ConnectorError:
+            except ConnectorError as err:
+                _note_throttle(context, err)
                 raise
             except Exception as err:
                 self.failed(plugin, where, err)
@@ -1243,7 +1302,9 @@ class PluginHost:
             context = self.connector_context(plugin, context.workspace_root, account)
             try:
                 found = _as_read(connector.headers(deepcopy(settings), since, before, limit, context), limit)
-            except ConnectorError:
+                _note_throttle(context, found.stopped)
+            except ConnectorError as err:
+                _note_throttle(context, err)
                 raise
             except Exception as err:
                 self.failed(plugin, where, err)

@@ -125,6 +125,14 @@ def workspace(tmp_path: Path, demo: Path) -> Workspace:
 
 
 @pytest.fixture(autouse=True)
+def _no_held_accounts() -> None:
+    """The gates that pace an account's requests are kept for the whole process; each test starts with none held."""
+    from engine import gate
+
+    gate.reset()
+
+
+@pytest.fixture(autouse=True)
 def _no_temp_folder_notice(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests work in temporary folders on purpose; the command's "this folder is emptied" notice is tested directly."""
     monkeypatch.setattr("engine.cli.system_temp_roots", lambda: ())

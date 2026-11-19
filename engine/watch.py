@@ -44,6 +44,7 @@ from engine.connectors import (
     unreadable_dicts,
 )
 from engine.extract.attached import with_files_read
+from engine.gate import reason_code
 from engine.html_text import as_text
 from engine.language_words import language_words
 from engine.names import People
@@ -290,13 +291,31 @@ def due(store: Any, cfg: Any, now: datetime) -> list[str]:
             continue
         last = last_run(store, source.id)
         started = datetime.fromisoformat(str(last.data["started_at"])) if last else None
-        if started is not None and now - started < timedelta(minutes=interval_minutes(store, cfg, source)):
-            continue
         retry_at = last.data.get("retry_at") if last else None
-        if retry_at and now < datetime.fromisoformat(str(retry_at)):
-            continue  # the service asked to wait
+        if retry_at:
+            # The service asked to wait: the source is read again when that time comes, not a whole interval later.
+            if now < datetime.fromisoformat(str(retry_at)):
+                continue
+        elif started is not None and now - started < timedelta(minutes=interval_minutes(store, cfg, source)):
+            continue
         found.append(source.id)
     return found
+
+
+def next_retry_in(store: Any, cfg: Any, now: datetime) -> float | None:
+    """Seconds until the earliest wait a service asked for runs out on a source that is on, 0 when one has run out
+    already and the source hasn't been read since; None when no source is waiting."""
+    soonest: float | None = None
+    for source in cfg.watch.sources:
+        if not source.enabled:
+            continue
+        last = last_run(store, source.id)
+        retry_at = last.data.get("retry_at") if last else None
+        if not retry_at:
+            continue
+        left = max(0.0, (datetime.fromisoformat(str(retry_at)) - now).total_seconds())
+        soonest = left if soonest is None else min(soonest, left)
+    return soonest
 
 
 def failures_in_a_row(store: Any, source: str) -> int:
@@ -432,13 +451,20 @@ def _refresh(ws: Any, store: Any, cfg: Any, source_id: str, now: datetime | None
     _close_question(store, source.id)
     _tell_unreadable(store, cfg, source, poll.unreadable)
     if baseline:
-        # A mail account's first read is followed once by its year of headers (no assistant work, nothing handed in).
+        # A mail account's first read is followed by a sample of its newest headers (no assistant work, nothing handed
+        # in); the rest of the year is read later in the account's lane.
         from engine import mail_headers
 
         mail_headers.read_after_first(ws, store, cfg, source, now, clock, back_to)
     _after_mail(ws, store, cfg, now)
     result.outcome = "baseline" if baseline else "ok"
     return result
+
+
+def refusal(err: ConnectorError) -> dict[str, Any]:
+    """What a refusing answer is kept as: its status code and its reason, the error's kind and the add-on's short
+    reason code if it gave one, never the service's own words."""
+    return {"refused_status": err.status, "refused_reason": reason_code(err)}
 
 
 def _failed_read(store: Any, cfg: Any, source: Any, err: ConnectorError, now: datetime, clock: float) -> Result:
@@ -450,6 +476,14 @@ def _failed_read(store: Any, cfg: Any, source: Any, err: ConnectorError, now: da
         err.detail = word(None, "read.failed.too_large")
     outcome = {"offline": "offline", "throttled": "throttled"}.get(err.kind, "failed")
     wait = err.retry_after if err.retry_after is not None else interval_minutes(store, cfg, source) * 60
+    refused = refusal(err)
+    log.info(
+        "read of %s refused: %s, status %s, wait %s",
+        source.id,
+        refused["refused_reason"],
+        refused["refused_status"],
+        err.retry_after,
+    )
     _record(
         store,
         source.id,
@@ -460,6 +494,8 @@ def _failed_read(store: Any, cfg: Any, source: Any, err: ConnectorError, now: da
         error=err.detail or None,
         error_own=_own_words(source, err),
         error_advice=err.advice_key if outcome == "failed" else None,
+        **refused,
+        **({"wait_seconds": err.retry_after} if outcome == "throttled" and err.retry_after is not None else {}),
         **({"retry_at": (now + timedelta(seconds=wait)).isoformat()} if outcome == "throttled" else {}),
     )
     problem = None

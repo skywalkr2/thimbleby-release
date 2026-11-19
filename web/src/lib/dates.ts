@@ -20,13 +20,18 @@ export function setClockZone(zone: string | null | undefined): void {
 export type TimeFormat = "auto" | "12h" | "24h";
 let timeFormatSetting: TimeFormat = "auto";
 let timeStepSetting = 15;
+let shortWaitSetting = 5;
 
 /** How times of day are written (`ui.time_format`) and how far apart a time box lists them (`ui.time_step`); set from the runtime
  * configuration, like the clock's zone. A value that is none of the known ones leaves the setting as it was. */
-export function setTimePrefs(prefs: { format?: string | null; step?: number | null }): void {
+export function setTimePrefs(prefs: { format?: string | null; step?: number | null; shortWait?: number | null }): void {
+  if (prefs.shortWait && prefs.shortWait > 0) shortWaitSetting = Math.floor(prefs.shortWait);
   if (prefs.format === "auto" || prefs.format === "12h" || prefs.format === "24h") timeFormatSetting = prefs.format;
   if (prefs.step && prefs.step > 0) timeStepSetting = Math.floor(prefs.step);
 }
+
+/** The minutes below which a wait is said in words (`ui.short_wait_minutes`). */
+export const shortWaitMinutes = (): number => shortWaitSetting;
 
 /** The minutes between the times a time box lists. */
 export const timeStep = (): number => timeStepSetting;

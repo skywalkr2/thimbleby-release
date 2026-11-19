@@ -98,6 +98,9 @@ const evening = pair(8760, 8761, 8762);
 // The setup and Settings fixes of the re-sweep (X94 to X104): the app with the add-ons on, beside the fake services, in a
 // workspace the journey makes as a person does (AI step, folder chooser, backup folder, Add connection, Esc).
 const settingsFixes = pair(8772, 8773, 8774);
+// The frame's own checks (H5-06, H5-11): a fresh install, walked as far as a message (taking a business back out, with Undo) shows
+// on a setup step, then Today, so the message's place and the page's height are measured on a real step and a real screen.
+const frame = pair(8709, 8710, 8711);
 // A person with three accounts of one mail and calendar service: the app with the mail add-on on, beside fake services that play
 // three people (`--accounts 3`), signed in one after the other through the service's own page.
 const accounts = pair(8768, 8769, 8770);
@@ -121,6 +124,14 @@ const re3 = pair(8712, 8713, 8714);
 // slows a read of older mail down partway; setup is walked from a fresh install through a sign-out and a sign-in again.
 const re4 = pair(8600, 8601, 8602);
 
+// Two accounts on a real-sized mailbox each, under a rate limit that refuses like a real mail service (batch G6, S-0668): setup is
+// walked from a fresh install with both signed in and a month read in full, and what the service was asked is checked against its
+// own penalty windows.
+const re5 = pair(8603, 8604, 8605);
+/** Seconds the made-up mail service refuses an account's every request after a refusal; the journey reads it to check the windows. */
+const QUOTA_PENALTY = 6;
+process.env.JOURNEY_RE5_QUOTA_PENALTY = String(QUOTA_PENALTY);
+
 // The closing tests of batch R3 (Today, notes and to-dos): the many-sides workspace with notes, long and many to-dos, today's
 // entries past and to come, and four items that share a word, so each is read as the reviewer read it.
 const reviewR3 = { port: 8730 + offset };
@@ -136,12 +147,14 @@ process.env.JOURNEY_MAIL_FAKE_PORT = String(mail.fakePort);
 process.env.JOURNEY_NEW_START_FAKE_PORT = String(newStart.fakePort);
 process.env.JOURNEY_EVENING_FAKE_PORT = String(evening.fakePort);
 process.env.JOURNEY_SETTINGS_FAKE_PORT = String(settingsFixes.fakePort);
+process.env.JOURNEY_FRAME_FAKE_PORT = String(frame.fakePort);
 process.env.JOURNEY_ACCOUNTS_FAKE_PORT = String(accounts.fakePort);
 process.env.JOURNEY_ROUGH_FAKE_PORT = String(rough.fakePort);
 process.env.JOURNEY_R2_FAKE_PORT = String(reviewR2.fakePort);
 process.env.JOURNEY_THREE_FAKE_PORT = String(threeMailboxes.fakePort);
 process.env.JOURNEY_RE3_FAKE_PORT = String(re3.fakePort);
 process.env.JOURNEY_RE4_FAKE_PORT = String(re4.fakePort);
+process.env.JOURNEY_RE5_FAKE_PORT = String(re5.fakePort);
 
 const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || undefined;
 
@@ -238,7 +251,7 @@ export const allProjects = [
   { name: "long-names", testMatch: /long-names\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${manySides.port}/` } },
   {
     name: "accounts",
-    testMatch: /accounts\.spec\.ts/,
+    testMatch: /(^|\/)accounts\.spec\.ts$/,
     use: { baseURL: `http://127.0.0.1:${accounts.port}/`, ignoreHTTPSErrors: true },
   },
   {
@@ -252,6 +265,11 @@ export const allProjects = [
     use: { baseURL: `http://127.0.0.1:${settingsFixes.port}/`, ignoreHTTPSErrors: true },
   },
   {
+    name: "frame",
+    testMatch: /toast-and-scroll\.spec\.ts/,
+    use: { baseURL: `http://127.0.0.1:${frame.port}/`, ignoreHTTPSErrors: true },
+  },
+  {
     name: "journeys-three-mailboxes",
     testMatch: /journeys-three-mailboxes\.spec\.ts/,
     use: { baseURL: `http://127.0.0.1:${threeMailboxes.port}/`, ignoreHTTPSErrors: true },
@@ -260,6 +278,11 @@ export const allProjects = [
     name: "journeys-real-size",
     testMatch: /journeys-real-size\.spec\.ts/,
     use: { baseURL: `http://127.0.0.1:${re4.port}/`, ignoreHTTPSErrors: true },
+  },
+  {
+    name: "journeys-two-accounts",
+    testMatch: /journeys-two-accounts\.spec\.ts/,
+    use: { baseURL: `http://127.0.0.1:${re5.port}/`, ignoreHTTPSErrors: true },
   },
   {
     name: "review-re3",
@@ -465,8 +488,10 @@ export const allServers = [
     }),
     freshServer(threeMailboxes, "--mail"),
     fakeServices(threeMailboxes, "--accounts 3 --sent-mail"),
-    freshServer(re4, "--mail"),
+    freshServer(re4, "--mail --small-pages"),
     fakeServices(re4, "--accounts 1 --big-mailbox"),
+    freshServer(re5, "--mail --small-pages"),
+    fakeServices(re5, `--accounts 2 --big-mailbox --quota-rate 1 --quota-penalty ${QUOTA_PENALTY}`),
     freshServer(re3, "--mail --no-sent-mail"),
     fakeServices(re3, "--accounts 2 --account-links"),
     freshServer(reviewR2, "--mail --no-sent-mail"),
@@ -486,6 +511,8 @@ export const allServers = [
     fakeServices(rough, "--catalog journey_mail --sent-mail"),
     freshServer(settingsFixes, "--add-ons"),
     fakeServices(settingsFixes),
+    freshServer(frame, ""),
+    fakeServices(frame),
     // A first evening: the same start as the new-start journey, with the fake services' evening mail and model list.
     freshServer(evening, "--add-ons --catalog-by-environment --log --no-sent-mail"),
     fakeServices(evening, "--catalog journey_mail --evening"),

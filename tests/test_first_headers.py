@@ -188,13 +188,13 @@ def test_the_tally_reads_the_headers_and_counts_a_message_once_when_a_snapshot_s
     assert found["c0@example.com"].from_them + found["c1@example.com"].from_them == 3  # the first read's messages only
 
 
-def test_a_connector_error_is_recorded_and_told_once_and_never_retried(tmp_path):
+def test_a_headers_error_is_never_recorded_as_the_sources_read_and_a_sign_in_error_is_not_retried(tmp_path):
     ws, cfg, store, log = make(tmp_path, fail="auth")
     try:
         result = refresh(ws, store, cfg, "m", NOW)
         assert result.outcome == "baseline" and kept(store) == []
         runs = store.read().find("watch_run", {"source": "m"})
-        assert [r.data["outcome"] for r in runs] == ["baseline", "failed"] and runs[-1].data["error_kind"] == "auth"
+        assert [r.data["outcome"] for r in runs] == ["baseline"], "the headers' failure is not a read of the source"
         assert len(store.read().list("request")) == 3  # the first read still took its mail in
         refresh(ws, store, cfg, "m", NOW + timedelta(hours=1))
         assert len(calls(log)) == 1

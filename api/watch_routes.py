@@ -28,6 +28,8 @@ from api.schemas import (
     LookBackIn,
     LookBackView,
     OlderReadView,
+    ReadingCheckRefusalView,
+    ReadingCheckView,
     ReadVersion,
     RecordRef,
     SetAsideDone,
@@ -51,7 +53,18 @@ from api.schemas import (
     WatchRunView,
     WatchSourceView,
 )
-from engine import closes, handled, set_aside, setup, sides, sign_in_sources, source_intake, version_choices, watch
+from engine import (
+    closes,
+    handled,
+    reading_check,
+    set_aside,
+    setup,
+    sides,
+    sign_in_sources,
+    source_intake,
+    version_choices,
+    watch,
+)
 from engine import settings as settings_screens
 from engine.config import Config, ConfigError, load_config
 from engine.connectors import declared_reads, reads
@@ -279,16 +292,16 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
 
     @r.post("/watch/{source_id}/look-back")
     def look_back(source_id: str, body: LookBackIn) -> LookBackView:
-        """Look further back: the older mail the source already returned is taken in the same quiet way as its first
-        read, under the same go rules, and the day it was looked back to moves."""
+        """Look further back: the choice is recorded and the answer returns at once. The older mail is read in the
+        background lane, in slices, taken in the same quiet way as the first read, under the same go rules, and the
+        day it was looked back to moves as it is read."""
         need_source(source_id)
         try:
-            found = source_intake.look_further_back(ws, store, current(), source_id, body.days)
+            found = source_intake.queue_look_further_back(ws, store, current(), source_id, body.days, worker.now())
         except StoreError as err:
             raise HTTPException(status_code=409, detail=str(err)) from None
-        if found.taken:
-            worker.poke()
-            events.changed()
+        events.changed()
+        worker.read_sources_now()
         return look_back_view(found)
 
     @r.get("/watch/{source_id}/full-read")
@@ -304,6 +317,7 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
         return FullReadView(
             options=[FullReadOptionView(**vars(o)) for o in options],
             answered=run.data.get("full_read") if run else None,
+            day_stop_usd=current().ai.budgets.per_day_usd,
         )
 
     @r.post("/watch/{source_id}/full-read")
@@ -312,31 +326,45 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
         "not now". Either way the question is answered."""
         need_source(source_id)
         try:
-            found = source_intake.answer_full_read(ws, store, current(), source_id, body.days)
+            found = source_intake.answer_full_read(ws, store, current(), source_id, body.days, worker.now())
         except StoreError as err:
             raise HTTPException(status_code=409, detail=str(err)) from None
-        if found is not None and found.taken:
-            worker.poke()
+        # The reading is the worker's, in the background: the answer returns at once with the choice recorded.
         events.changed()
         if found is None:
             return LookBackView(days=0, from_date=worker.now().date(), count=0, reaches=True)
+        worker.read_sources_now()
         return look_back_view(found)
 
     @r.post("/watch/{source_id}/older-read/continue")
     def older_read_continue(source_id: str) -> LookBackView:
-        """Carry on a read of older mail that stopped, from where it stopped, now rather than at its time. Nothing is
-        read twice: a read that is under way, or none waiting, does nothing."""
+        """Carry on a read of older mail that stopped, now rather than at its time, with a new round of tries. The
+        reading is the worker's, in the background; nothing is read here, and none waiting does nothing."""
         need_source(source_id)
+        now = worker.now()
+        queued = source_intake.resume_older_read(store, source_id, now)
+        events.changed()
+        found = LookBackView(days=0, from_date=now.date(), count=0, reaches=True)
+        if queued:
+            found.stopped, found.continues_at = "queued", now.isoformat()
+            worker.read_sources_now()
+        return found
+
+    @r.post("/watch/{source_id}/check-reading")
+    def check_reading(source_id: str) -> ReadingCheckView:
+        """A short, paced read of the source's account (its newest headers, through the account's gate), and what the
+        gate counted: requests sent, refusals, waits and the pace. Nothing is kept and nothing is recorded as a read."""
+        need_source(source_id)
+        source = next(s for s in cfg.watch.sources if s.id == source_id)
         try:
-            found = source_intake.continue_older_read(ws, store, current(), source_id, worker.now(), force=True)
+            found = reading_check.run(ws, store, current(), source, worker.now())
         except StoreError as err:
             raise HTTPException(status_code=409, detail=str(err)) from None
-        events.changed()
-        if found is None:
-            return LookBackView(days=0, from_date=worker.now().date(), count=0, reaches=True)
-        if found.taken:
-            worker.poke()
-        return look_back_view(found)
+        return ReadingCheckView(
+            **{k: v for k, v in vars(found).items() if k != "refusals"},
+            refusals=[ReadingCheckRefusalView(**vars(x)) for x in found.refusals],
+            log_line=reading_check.log_line(found),
+        )
 
     @r.get("/auto-closed")
     def auto_closed() -> list[AutoClosedView]:

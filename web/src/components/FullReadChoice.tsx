@@ -44,6 +44,7 @@ function summed(views: S["FullReadView"][]): Option[] {
       reaches: same.every((x) => x.reaches),
       capped: same.some((x) => x.capped),
       estimate: same.some((x) => x.estimate),
+      unknown: same.some((x) => x.unknown),
     };
   });
 }
@@ -71,6 +72,7 @@ export function FullReadChoice(props: { sources: Source[]; account: string }) {
   });
   if (open.length === 0) return null;
   const ready = views.every((v) => v.data !== undefined);
+  const dayStop = ready ? Math.max(...views.map((v) => (v.data as S["FullReadView"]).day_stop_usd ?? 0)) : 0;
   const options = ready ? summed(views.map((v) => v.data as S["FullReadView"])) : [];
   // What the read did for one source, in words: what is being taken in, then what it skipped (nothing is said of skipping when
   // none was), then, when the service gave far fewer than it said it held, how many it gave of how many.
@@ -112,8 +114,8 @@ export function FullReadChoice(props: { sources: Source[]; account: string }) {
           <Select className={styles.pick} aria-label={t("walkthrough.mail.full_read.name", { account: props.account })} value={picked === null ? "" : String(picked)} disabled={busy} onChange={(e) => setPicked(e.target.value === "" ? null : Number(e.target.value))}>
             <option value="">{t("walkthrough.mail.full_read.choose")}</option>
             {options.map((o) => {
-              const cost = o.count === 0 ? "" : costWords(o, estimate, t, money);
-              const found = o.count === 0 ? t("walkthrough.mail.full_read.covered") : tn(o.capped ? "walkthrough.mail.full_read.found_capped" : o.estimate ? "walkthrough.mail.full_read.found_about" : "walkthrough.mail.full_read.found", o.count, { cost });
+              const cost = o.count === 0 ? "" : costWords(o, estimate, t, money, dayStop);
+              const found = o.unknown && o.count === 0 ? t("walkthrough.mail.full_read.found_unknown") : o.count === 0 ? t("walkthrough.mail.full_read.covered") : tn(o.capped ? "walkthrough.mail.full_read.found_capped" : o.estimate ? "walkthrough.mail.full_read.found_about" : "walkthrough.mail.full_read.found", o.count, { cost });
               return (
                 <option key={o.days} value={String(o.days)}>
                   {reachWords(o.days, tn)}: {found}

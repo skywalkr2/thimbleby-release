@@ -119,6 +119,8 @@ test.describe.serial("review RE3: what each account is for, and what Handled for
     await expect(second.getByText("Not assigned")).toBeVisible();
     await expect(next).toBeEnabled();
     await next.click();
+    // The account's "Read in full from" is unanswered, so Continue asks first (H5-12); going on without choosing goes on.
+    await page.getByRole("button", { name: "Go on without choosing" }).click();
     // The rest of setup, as the other journeys walk it.
     await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible({ timeout: 120_000 });
     await leaveOut(page, main);

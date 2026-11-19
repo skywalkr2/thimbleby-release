@@ -130,6 +130,11 @@ def main() -> None:
     parser.add_argument("--https-port", type=int, default=0)
     parser.add_argument("--mail", action="store_true")
     parser.add_argument("--add-ons", action="store_true")
+    parser.add_argument(
+        "--small-pages",
+        action="store_true",
+        help="the full read asks in pages of 40 messages, so a read of a real-sized mailbox has several pages",
+    )
     parser.add_argument("--catalog-by-environment", action="store_true")
     parser.add_argument("--log", action="store_true")
     parser.add_argument("--test-routes", action="store_true")
@@ -153,6 +158,8 @@ def main() -> None:
     python = Path(sys.executable)
     if args.no_sent_mail:
         os.environ["JOURNEY_SENT_MAIL"] = "0"
+    if args.small_pages:
+        os.environ["COCKPIT__WATCH__FULL_READ_PAGE_ITEMS"] = "40"
     if args.https_port:
         address = trust_services(state, args.https_port)
         if args.add_ons:

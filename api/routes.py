@@ -11,7 +11,7 @@ import json
 import logging
 import os
 from dataclasses import asdict
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
@@ -2745,9 +2745,11 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
         ]
         state = person_look.look_state(ws, store, now) if not people else "looked"
         held = person_look.held_for_go(store) if state == "waiting" else None
+        until = person_look.waiting_until(ws, store, now, datetime.now(UTC)) if state == "not_yet" else None
         return PeopleSuggestionsView(
             people=people,
             state=state,
+            until=until.isoformat() if until else None,
             request=held.id if held else None,
             read_version=held.version if held else None,
             estimate_usd=held.data.get("estimate_usd") if held else None,

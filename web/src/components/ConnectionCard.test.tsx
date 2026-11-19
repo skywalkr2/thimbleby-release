@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import type { S } from "../lib/api";
 import { announceSignIn } from "../lib/sign-in-window";
 import { ConnectionProvider } from "../lib/connection";
-import { fakeApi, renderApp } from "../test-utils";
+import { Refuse, inHours, fakeApi, renderApp } from "../test-utils";
 import { Sources } from "./Sources";
 
 // One account's card on Connections (design 7.9): who it is, how it stands, the sides it is for with Change, its one button when
@@ -152,6 +152,67 @@ test("signing an account out is in its menu and asks first", async () => {
   await waitFor(() => expect(calls.some((c) => c.route.startsWith("DELETE sign-ins/pack/account"))).toBe(true));
 });
 
+const CHECK: S["ReadingCheckView"] = {
+  account: ALEX,
+  asked: 20,
+  read: 0,
+  ended: "throttled",
+  requests: 2,
+  held: 1,
+  refusals: [{ status: 429, reason: "throttled", wait_seconds: 10, at: "2026-11-19T19:42:00Z", until: "2026-11-19T19:42:10Z" }],
+  waiting_until: "2026-11-19T19:42:10Z",
+  pace_per_second: 1,
+  declared_per_second: 2,
+  paced_seconds: 0.5,
+  log_line: "check-reading requests=2 held=1 refusals=1 read=0/20 ended=throttled",
+};
+
+test("Check reading is in the account's menu and shows what was sent, refused and waited, the pace, and a line to copy (S-0668)", async () => {
+  const user = userEvent.setup();
+  const calls = open([part("a", ALEX)], { "POST watch/a/check-reading": () => CHECK });
+  const card = await screen.findByRole("region", { name: ALEX });
+  await user.click(within(card).getByRole("button", { name: `More actions for ${ALEX}` }));
+  await user.click(await screen.findByRole("menuitem", { name: "Check reading" }));
+  const drawer = await screen.findByRole("dialog", { name: `Check reading: ${ALEX}` });
+  const lines = (await within(drawer).findByRole("list")).textContent ?? "";
+  // The counts, the refusal with its status and reason code, the wait with its length and end, what was held, and the pace.
+  expect(lines).toContain("2 requests sent");
+  expect(lines).toContain("1 request refused");
+  expect(lines).toMatch(/status 429, throttled/);
+  expect(lines).toMatch(/Asked to wait 10 seconds, until /);
+  expect(lines).toContain("1 request was stopped before it was sent.");
+  expect(lines).toMatch(/Nothing more is sent until /);
+  expect(lines).toContain("Pace settled on: 1 a second, from 2 a second to start with.");
+  // Never the service's own words, only codes.
+  expect(drawer.textContent).not.toMatch(/Rate limit exceeded|TooManyRequests|HTTP 429/);
+  expect(calls.filter((c) => c.route === "POST watch/a/check-reading")).toHaveLength(1);
+  expect(drawer.querySelector("[data-reading-check-line]")).toHaveTextContent(CHECK.log_line);
+  await user.click(within(drawer).getByRole("button", { name: "Copy as a log line" }));
+  expect(await within(drawer).findByRole("status")).toHaveTextContent(/Copied the line|Select the line above/);
+});
+
+test("an account that reads no mail has no Check reading", async () => {
+  const user = userEvent.setup();
+  open([part("c", ALEX, { reads: ["calendar"], label: `Calendar, ${ALEX}` })]);
+  const card = await screen.findByRole("region", { name: ALEX });
+  await user.click(within(card).getByRole("button", { name: `More actions for ${ALEX}` }));
+  expect(await screen.findByRole("menuitem", { name: "Sign out" })).toBeInTheDocument();
+  expect(screen.queryByRole("menuitem", { name: "Check reading" })).toBeNull();
+});
+
+test("a check that cannot run says so and that nothing was changed, and Check again asks once more", async () => {
+  const user = userEvent.setup();
+  let asked = 0;
+  open([part("a", ALEX)], { "POST watch/a/check-reading": () => (++asked === 1 ? new Refuse(409, "no") : CHECK) });
+  const card = await screen.findByRole("region", { name: ALEX });
+  await user.click(within(card).getByRole("button", { name: `More actions for ${ALEX}` }));
+  await user.click(await screen.findByRole("menuitem", { name: "Check reading" }));
+  const drawer = await screen.findByRole("dialog", { name: `Check reading: ${ALEX}` });
+  expect(await within(drawer).findByRole("alert")).toHaveTextContent("The check could not run. Nothing was changed.");
+  await user.click(within(drawer).getByRole("button", { name: "Check again" }));
+  expect(await within(drawer).findByText("2 requests sent")).toBeInTheDocument();
+});
+
 const unread = (id: string, account: string, over: Partial<Source> = {}) => part(id, account, { last: null, read_at: null, ...over });
 
 test("an account whose connections have none been read says so once, with Read now, and its rows do not repeat it", async () => {
@@ -234,7 +295,7 @@ test("an account's card says what its latest reads skipped in plain words, and s
 });
 
 test("an account's card says what a stopped read of older mail took in and when the rest continues, and says nothing when none waits", async () => {
-  const at = "2026-10-19T15:42:00+00:00";
+  const at = inHours(2);
   open([part("a", ALEX, { label: "Your inbox", older_read: { kind: "throttled", at, gave_up: false, taken: 412, tries: 1 } }), part("b", BLAKE, {})]);
   const alex = await screen.findByRole("region", { name: ALEX });
   const said = alex.querySelector("[data-older-read]");
@@ -258,4 +319,15 @@ test("an account's card says how often it is read, and Change picks another from
   const sent = calls.find((c) => c.route === "POST settings")!.body as { changes: Record<string, Array<{ id: string; every_minutes?: number }>> };
   // Only this account's connections change; the other account's keeps what it had.
   expect(sent.changes["watch.sources"].map((s) => [s.id, s.every_minutes])).toEqual([["a1", 30], ["a2", 30], ["b", undefined]]);
+});
+
+test.each([
+  ["seconds", 40_000, "in a minute or so"],
+  ["minutes", 150_000, "in a few minutes"],
+  ["longer", 2 * 3_600_000, "around"],
+])("an account's card says a wait of %s as %s (H5-07)", async (_name, ms, words) => {
+  const at = new Date(Date.now() + ms).toISOString();
+  open([part("a", ALEX, { label: "Your inbox", older_read: { kind: "throttled", at, gave_up: false, taken: 412, tries: 1 } })]);
+  const alex = await screen.findByRole("region", { name: ALEX });
+  expect(alex.querySelector("[data-older-read]")?.textContent).toContain(`The rest continues ${words}`);
 });

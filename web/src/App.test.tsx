@@ -32,6 +32,7 @@ const rc = (extra: Partial<S["RuntimeConfig"]> = {}): S["RuntimeConfig"] => ({
   group_rows: 5,
   twin_window_minutes: 10,
   time_format: "auto",
+  short_wait_minutes: 5,
   time_step: 15,
   version: "9.8.7",
   wording: {},

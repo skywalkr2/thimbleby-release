@@ -366,3 +366,25 @@ def test_the_version_is_at_least_the_one_that_added_accounts():
     from engine.plugin_api import PLUGIN_API_VERSION
 
     assert tuple(int(n) for n in PLUGIN_API_VERSION.split(".")) >= (0, 3, 82)
+
+
+def test_every_client_built_for_one_account_shares_its_gate_and_another_account_has_its_own(world):
+    from engine import gate
+
+    ws, c, api = world
+    sign_in(c, api, "alice")
+    sign_in(c, api, "bob")
+    cfg = load_config(ws.config_dir, env={})
+    store = Store(ws.db_path, cfg=cfg)
+    try:
+        host = "api.example.com"
+        mine = store.plugins.connector_context("p18", ws.root, account=ALICE).web
+        again = store.plugins.connector_context("p18", ws.root, account=ALICE).web
+        bobs = store.plugins.connector_context("p18", ws.root, account=BOB).web
+        assert mine.gates.for_host(host) is again.gates.for_host(host)
+        assert mine.gates.for_host(host) is not bobs.gates.for_host(host)
+        mine.gates.for_host(host).close(30)
+        assert again.gates.for_host(host).closed_for() > 0 and bobs.gates.for_host(host).closed_for() == 0
+    finally:
+        store.close()
+        gate.reset()

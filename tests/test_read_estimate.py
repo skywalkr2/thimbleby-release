@@ -163,3 +163,33 @@ def test_a_go_whose_likely_figure_is_under_the_amount_but_whose_most_is_over_sti
         assert len(held) == cost.count and all(source_intake.waits_on_go(r.data) for r in held)
     finally:
         store.close()
+
+
+def test_the_most_counts_the_cache_hits_the_accounts_recorded_runs_show_and_is_as_before_with_no_history(tmp_path):
+    ws, cfg, store = sorted_source(tmp_path, kept=6)
+    router, task, sorting, _reading = figures(ws, store, cfg)
+    assert sorting.seen == 0.0  # no recorded runs with a token count: the ceiling is the no-cache figure
+    assert sorting.runs(10)[1] == pytest.approx(10 * sorting.full)
+    choice = router.account_for(task, tier=_tier_of(cfg, task, "internal"), data_level="internal")
+    with store.transaction() as tx:  # four recorded runs, three of them served from the cache
+        for n in range(4):
+            tx.create(
+                "run",
+                {
+                    "task": task.kind,
+                    "provider": choice.provider,
+                    "model": choice.model_id,
+                    "tier": choice.tier,
+                    "started_at": NOW.isoformat(),
+                    "input_tokens": 1000,
+                    "output_tokens": 10,
+                    "cached_input_tokens": 800 if n else 0,
+                    "outcome": "ok",
+                },
+                _CTX,
+            )
+    seen = Router(cfg, store, env={}).run_price(task, tier=choice.tier, data_level="internal")
+    assert seen.seen == pytest.approx(0.75)
+    likely, at_most = seen.runs(10)
+    assert likely < at_most < 10 * seen.full
+    assert at_most == pytest.approx(seen.full + 9 * (seen.full - 0.75 * (seen.full - seen.warm)))

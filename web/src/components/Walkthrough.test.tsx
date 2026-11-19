@@ -1,3 +1,4 @@
+import { clockTime } from "../lib/dates";
 import "@testing-library/jest-dom/vitest";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -8,7 +9,9 @@ import { RestartProvider } from "../lib/restart";
 import { announceSignIn } from "../lib/sign-in-window";
 import { useToasts } from "../lib/toasts";
 import { App } from "../App";
-import { Refuse, fakeApi, rcFixture, renderApp, setupStep as step, setupView, statusFixture, snapshotOf, optionsOf } from "../test-utils";
+import { Refuse, fakeApi, rcFixture, renderApp, setupStep as step, setupView, statusFixture, snapshotOf, optionsOf, inHours } from "../test-utils";
+
+const RETRY = inHours(2);
 import { Walkthrough } from "./Walkthrough";
 
 /** Made-up addresses are built from this, so no address is written out whole. */
@@ -1763,6 +1766,15 @@ describe("each screen", () => {
       expect(screen.getByRole("button", { name: "Paste a list" })).toBeInTheDocument();
     });
 
+    test("with no offer and a first read waiting for the mail service, People says until when (S-0667)", async () => {
+      const until = inHours(2);
+      personalOnly({ "GET setup/people-suggestions": () => ({ people: [], state: "not_yet", until }) });
+      open();
+      const list = await screen.findByRole("region", { name: "People you write to" });
+      expect(list).toHaveTextContent("waiting for the mail service");
+      expect(list).toHaveTextContent(clockTime(until));
+    });
+
     test("a first look that waits for the go shows its estimate and a button that starts it, with the way to add by hand still there", async () => {
       const user = userEvent.setup();
       const calls = personalOnly({
@@ -2618,7 +2630,7 @@ describe("Mail and calendar", () => {
 
   /** Two sign-ins of one service, each with an inbox and a calendar, and a job and a business beside Personal. Ticks save
    * through the settings route, which keeps the list of sources. */
-  function twoAccounts(accounts: string[] = ["sam@example.com", "pat@example.com"], expired?: string, level?: "restricted") {
+  function twoAccounts(accounts: string[] = ["sam@example.com", "pat@example.com"], expired?: string, level?: "restricted", edit: (s: S["WatchSourceView"]) => S["WatchSourceView"] = (x) => x) {
     service("on", { signed: true });
     const state = {
       sources: accounts.flatMap((_, i) => [
@@ -2651,7 +2663,8 @@ describe("Mail and calendar", () => {
         accounts.flatMap((address, i) => [
           source(`i${i}`, "Your inbox", { account: address, ...(level ? { data_level: level } : {}), ...(address === expired ? { account_state: "expired" } : {}) }),
           source(`c${i}`, "Your calendar", { reads: ["calendar"], account: address, ...(level ? { data_level: level } : {}), ...(address === expired ? { account_state: "expired" } : {}) }),
-        ]),
+        ]).map(edit),
+      "GET watch/i0/full-read": () => ({ options: [] }),
       "GET setup/business": () => stateWith([side("PRJ-2", "job", EMPLOYER), side("PRJ-3", "business", SHOP)]),
       "GET settings": () => ({
         fingerprint: "fp-1",
@@ -2751,6 +2764,35 @@ describe("Mail and calendar", () => {
     // The question is on the row, asked there once, and nowhere above the rows.
     expect(within(mine[0]).getByRole("group", { name: "What is this account for?" })).toBeInTheDocument();
     expect(screen.getAllByRole("group")).toHaveLength(1);
+  });
+
+  test("while anything is still being read a line beside Continue says the mail keeps coming in, and an account's card says what its read is doing, the second as the first (S-0667, H5-08, H5-10, H5-12)", async () => {
+    const { state } = twoAccounts(["sam@example.com", "pat@example.com"], undefined, undefined, (x) =>
+      x.account === "pat@example.com" && x.reads?.[0] === "mail" ? { ...x, read_at: null, last: { started_at: "2026-11-19T19:00:00Z", outcome: "throttled", retry_at: RETRY, new: 0, changed: 0, removed: 0, skipped: {} } } : { ...x, read_at: "2026-11-19T18:00:00Z" },
+    );
+    state.later = true;
+    open();
+    const rows = await screen.findByRole("list", { name: "The accounts being read" });
+    const [sam, pat] = within(rows).getAllByRole("listitem");
+    expect(sam).not.toHaveTextContent(/first look/);
+    expect(pat).toHaveTextContent(`Waiting around ${clockTime(RETRY)} for the first look`);
+    expect(await screen.findByText("Your mail keeps coming in while you go on. The next screen shows where it is.")).toBeInTheDocument();
+  });
+
+  test("an account whose full-read question is unanswered makes Continue ask first, and going on without choosing goes on (S-0667, H5-12)", async () => {
+    const user = userEvent.setup();
+    const { state } = twoAccounts(["sam@example.com"], undefined, undefined, (x) => ({ ...x, read_at: "2026-11-19T18:00:00Z", full_read_open: x.id === "i0" ? true : undefined }));
+    state.later = true;
+    open();
+    await screen.findByRole("list", { name: "The accounts being read" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    expect(await screen.findByRole("heading", { name: "Go on without choosing how far back to read?" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Choose how far back" }));
+    expect(screen.queryByRole("heading", { name: "Go on without choosing how far back to read?" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await user.click(await screen.findByRole("button", { name: "Go on without choosing" }));
+    await waitFor(() => expect(screen.queryByRole("list", { name: "The accounts being read" })).toBeNull());
   });
 
   test("two accounts: the reading is one row per account, with its address and what is read there", async () => {
@@ -3578,6 +3620,40 @@ describe("Reginald is turned on in the AI step, the first reading is waited for,
     expect(screen.getByRole("navigation", { name: "Setup steps" })).toHaveTextContent("First reading");
     // The way on is the step's one filled button, not a plain one.
     expect(screen.getByRole("button", { name: "Go on while it works" }).className).toMatch(/primary/);
+    await user.click(screen.getByRole("button", { name: "Go on while it works" }));
+    expect(await screen.findByRole("heading", { level: 2, name: "People" })).toBeInTheDocument();
+  });
+
+  test("First reading names what is still being read, or counts when the list is long, and a source the service asked to wait on is waiting with its time and lets the person go on (S-0667, H5-14)", async () => {
+    const first = { state: "working" as const, stage: "fetching" as const, sources: 6, read: 5, pending: ["Your sent mail, Pat"] };
+    fakeApi(routes({}, DONE_AI, { step: "reading" }, { reading: first }));
+    const view = open();
+    expect(await screen.findByText("Still reading: Your sent mail, Pat.")).toBeInTheDocument();
+    expect(screen.queryByText(/5 of 6/)).toBeNull();
+    view.unmount();
+    fakeApi(routes({}, DONE_AI, { step: "reading" }, { reading: { ...first, read: 3, pending: [] } }));
+    open();
+    expect(await screen.findByText("3 of your 6 mailboxes and calendars are read.")).toBeInTheDocument();
+    expect(screen.queryByText(/Still reading/)).toBeNull();
+  });
+
+  test.each([
+    ["seconds", 40_000, "read again in a minute or so\\."],
+    ["minutes", 150_000, "read again in a few minutes\\."],
+  ])("the Mail step says a wait of %s in words, not by a time of day (H5-07)", async (_name, ms, said) => {
+    const until = new Date(Date.now() + ms).toISOString();
+    fakeApi(routes({}, DONE_AI, { step: "reading" }, { reading: { state: "working", stage: "waiting", sources: 2, read: 1, waiting: 1, until, pending: [] } }));
+    open();
+    expect((await screen.findByText(/1 is waiting: the mail service asked to slow down/)).textContent).toMatch(new RegExp(said));
+  });
+
+  test("a first read the service asked to wait on says it waits and until when, and Go on while it works is still the way on (S-0667)", async () => {
+    const user = userEvent.setup();
+    const until = inHours(2);
+    fakeApi(routes({}, DONE_AI, { step: "reading" }, { reading: { state: "working", stage: "waiting", sources: 2, read: 1, waiting: 1, until, pending: [] } }));
+    open();
+    const line = await screen.findByText(/1 is waiting: the mail service asked to slow down, so it is read again around/);
+    expect(line).toHaveTextContent(clockTime(until));
     await user.click(screen.getByRole("button", { name: "Go on while it works" }));
     expect(await screen.findByRole("heading", { level: 2, name: "People" })).toBeInTheDocument();
   });

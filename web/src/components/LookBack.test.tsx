@@ -43,6 +43,7 @@ const view = (over: Partial<S["LookBackView"]> = {}): S["LookBackView"] => ({
   reaches: true,
   capped: false,
   estimate: false,
+  unknown: false,
   expected: 0,
   expected_estimate: false,
   gave: 0,
@@ -203,4 +204,15 @@ test("a cost is written 'about X, at most Y', and 'at most' is left out when the
   expect(costWords({ estimate_usd: 5.2, estimate_max_usd: 5.2, unpriced: 0 }, estimate, t, money)).toBe("About $5.20 in all.");
   expect(costWords({ estimate_usd: 5.201, estimate_max_usd: 5.204, unpriced: 0 }, estimate, t, money)).toBe("About $5.20 in all.");
   expect(costWords({ estimate_usd: 1.4, estimate_max_usd: 5.2, unpriced: 0, capped: true }, estimate, t, money)).not.toContain("at most");
+});
+
+test("a most above the day's stop names the stop, and a most under it does not", () => {
+  const { result } = renderHook(() => ({ t: useWords().t, estimate: useEstimate(), money: useMoney() }), {
+    wrapper: ({ children }: { children: ReactNode }) => <WordingProvider>{children}</WordingProvider>,
+  });
+  const { t, estimate, money } = result.current;
+  expect(costWords({ estimate_usd: 0.72, estimate_max_usd: 5.94, unpriced: 0 }, estimate, t, money, 2)).toBe(
+    "About $0.72 in all, at most $5.94. No more than $2.00 is spent in a day.",
+  );
+  expect(costWords({ estimate_usd: 0.72, estimate_max_usd: 1.5, unpriced: 0 }, estimate, t, money, 2)).toBe("About $0.72 in all, at most $1.50.");
 });

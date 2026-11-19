@@ -16,6 +16,10 @@ export interface ContinueSpec {
   /** The screen has a primary button of its own (Start, Hand something in, Copy), so Continue is drawn plain: two primary
    * buttons would leave the person unsure which one to press, and Continue would let them skip what the screen offers. */
   quiet?: boolean;
+  /** A line beside Continue (the mail keeps coming in while the person goes on). */
+  note?: string;
+  /** Continue asks first, as a skip does: the key of the confirmation's words (`walkthrough.skip.<key>.*`), shown before it goes on. */
+  confirmFirst?: string;
   /** The screen draws its own Continue higher up, so the walkthrough's own at the foot is left out (there is always one). */
   inline?: boolean;
 }

@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from engine.connectors import ConnectorError
+from engine.gate import reason_code
 
 LOCAL = {"localhost", "127.0.0.1", "::1"}
 DEFAULT_TIMEOUT = 20.0
@@ -61,8 +62,12 @@ class WebClient:
         timeout: float = DEFAULT_TIMEOUT,
         max_bytes: int = MAX_BYTES,
         transport: httpx.BaseTransport | None = None,
+        gates: Any = None,
     ):
         self.allowed = list(allowed)
+        #: The gates of the account this client reads as (`engine.gate.Gates`), or None for a client with no account.
+        self.gates = gates
+        self._hosts_used: set[str] = set()
         self.max_bytes = max_bytes
         self._client = httpx.Client(timeout=timeout, follow_redirects=False, transport=transport or TRANSPORT)
 
@@ -78,6 +83,9 @@ class WebClient:
         """One request. A redirect is followed only to an allowed host, at most five times."""
         for _ in range(6):
             self._check(url)
+            gate = self._gate(url)
+            if gate is not None:
+                gate.acquire()
             try:
                 with self._client.stream(method, url, **kwargs) as response:
                     if response.is_redirect and response.headers.get("location"):
@@ -90,6 +98,10 @@ class WebClient:
                         if len(body) > self.max_bytes:
                             raise AnswerTooLarge("outage", f"the answer is larger than {self.max_bytes // 1024} KB")
                     return _checked(Response(response.status_code, dict(response.headers), bytes(body)))
+            except ConnectorError as err:
+                if gate is not None and err.kind == "throttled":
+                    gate.close(err.retry_after, err.status, reason_code(err))
+                raise
             except httpx.ConnectError as err:
                 raise ConnectorError("offline", f"couldn't connect: {err}") from None
             except httpx.TimeoutException:
@@ -97,6 +109,20 @@ class WebClient:
             except httpx.HTTPError as err:
                 raise ConnectorError("outage", str(err)) from None
         raise ConnectorError("outage", "too many redirects")
+
+    def _gate(self, url: str) -> Any:
+        if self.gates is None:
+            return None
+        host = (urlsplit(url).hostname or "").lower()
+        self._hosts_used.add(host)
+        return self.gates.for_host(host)
+
+    def note_throttle(self, err: ConnectorError) -> None:
+        """A connector raised `throttled` from an answer this client gave it (a refusal with another status, say): the
+        gates of the hosts this client reached close for the wait, as for a 429 the client saw itself."""
+        if self.gates is not None and err.kind == "throttled" and err.reason != "gate":
+            for host in self._hosts_used:
+                self.gates.for_host(host).close(err.retry_after, err.status, reason_code(err))
 
     def get(self, url: str, **kwargs: Any) -> Response:
         return self.request("GET", url, **kwargs)

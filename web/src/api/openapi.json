@@ -13206,6 +13206,12 @@
             "title": "Reaches",
             "type": "boolean"
           },
+          "unknown": {
+            "default": false,
+            "description": "The service could not say how many there are (it asked to wait, failed or could not be reached): no number is shown and the read goes on all the same.",
+            "title": "Unknown",
+            "type": "boolean"
+          },
           "unpriced": {
             "default": 0,
             "description": "How many of the items have no price.",
@@ -13234,6 +13240,18 @@
             ],
             "description": "The reach the person chose in days; 0 for \"not now\".",
             "title": "Answered"
+          },
+          "day_stop_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The most the assistant starts in a day (the budget's daily limit): a cost above it can't be spent in one day, and the choice says so.",
+            "title": "Day Stop Usd"
           },
           "options": {
             "items": {
@@ -16833,7 +16851,7 @@
                 "type": "null"
               }
             ],
-            "description": "After the look: the service slowed the read down or failed partway (`throttled`, `outage`, `offline`, or another kind the person has to deal with). What was read is kept; the date moved only over the days read whole.",
+            "description": "After the look: the service slowed the read down or failed partway (`throttled`, `outage`, `offline`, or another kind the person has to deal with; `queued` for a full read saved to be read in the background, `reading` for a slice that left more to read). What was read is kept; the date moved only over the days read whole.",
             "title": "Stopped"
           },
           "taken": {
@@ -16841,6 +16859,12 @@
             "description": "After the look: the requests made.",
             "title": "Taken",
             "type": "integer"
+          },
+          "unknown": {
+            "default": false,
+            "description": "The service could not say how many there are (it asked to wait, failed or could not be reached): no number is shown and the read goes on all the same.",
+            "title": "Unknown",
+            "type": "boolean"
           },
           "unpriced": {
             "default": 0,
@@ -18848,6 +18872,18 @@
       "OlderReadView": {
         "description": "A read of older mail that stopped partway and waits to carry on from where it stopped.",
         "properties": {
+          "about": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "About how many items the read will take in altogether, as the service said when the person chose the reach; none when it did not say.",
+            "title": "About"
+          },
           "at": {
             "anyOf": [
               {
@@ -18868,7 +18904,7 @@
             "type": "boolean"
           },
           "kind": {
-            "description": "Why it stopped: throttled, outage or offline.",
+            "description": "Why it waits: throttled, outage or offline when it stopped; queued before its first page and reading between slices.",
             "title": "Kind",
             "type": "string"
           },
@@ -21664,7 +21700,7 @@
         "type": "object"
       },
       "PeopleSuggestionsView": {
-        "description": "The people the assistant offers in the people step, most mail first. With none, `state` says where its look at\nwho the person deals with stands: no_account (no assistant is set up for it), not_yet (no mail has been read),\nworking (it is reading), waiting (it waits for the person's go) or looked (it read and offered no one).",
+        "description": "The people the assistant offers in the people step, most mail first. With none, `state` says where its look at\nwho the person deals with stands: no_account (no assistant is set up for it), not_yet (no mail has been read),\nworking (it is reading), waiting (it waits for the person's go) or looked (it read and offered no one). With\n`not_yet`, `until` says when the mail service lets a waiting read go on.",
         "properties": {
           "estimate_usd": {
             "anyOf": [
@@ -21719,6 +21755,18 @@
             ],
             "title": "State",
             "type": "string"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With state `not_yet`: when a first read the mail service asked to wait on can go on; none when no read waits for the service.",
+            "title": "Until"
           }
         },
         "required": [
@@ -27996,6 +28044,168 @@
         "title": "ReaderChoice",
         "type": "object"
       },
+      "ReadingCheckRefusalView": {
+        "description": "One refusing answer the account's gate saw during a reading check: its status and reason code (never the\nservice's own words), the wait the service asked for and when it ends.",
+        "properties": {
+          "at": {
+            "description": "When the answer came.",
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "reason": {
+            "description": "The refusal's reason as a code, such as `throttled` or `throttled:rate_limit`.",
+            "title": "Reason",
+            "type": "string"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The answer's status code, when it had one.",
+            "title": "Status"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the wait ends.",
+            "title": "Until"
+          },
+          "wait_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The wait the service asked for; None when it gave none.",
+            "title": "Wait Seconds"
+          }
+        },
+        "required": [
+          "reason",
+          "at"
+        ],
+        "title": "ReadingCheckRefusalView",
+        "type": "object"
+      },
+      "ReadingCheckView": {
+        "description": "What a reading check of one account found: the gate's own counts from before the short read to after it.",
+        "properties": {
+          "account": {
+            "description": "The account's address.",
+            "title": "Account",
+            "type": "string"
+          },
+          "asked": {
+            "description": "How many of its newest headers the check asked for.",
+            "title": "Asked",
+            "type": "integer"
+          },
+          "declared_per_second": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The pace the gate started at.",
+            "title": "Declared Per Second"
+          },
+          "ended": {
+            "description": "`read` when the account answered, else the kind of the error that stopped the check (`throttled`, `offline`, `outage`, `auth`, `no_access`, `not_found`).",
+            "title": "Ended",
+            "type": "string"
+          },
+          "held": {
+            "description": "Requests the gate stopped before sending (it was waiting, or the turn was too far off).",
+            "title": "Held",
+            "type": "integer"
+          },
+          "log_line": {
+            "description": "The same as one line of codes and numbers, to copy.",
+            "title": "Log Line",
+            "type": "string"
+          },
+          "pace_per_second": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The pace the gate settled on, in requests a second.",
+            "title": "Pace Per Second"
+          },
+          "paced_seconds": {
+            "default": 0,
+            "description": "Seconds requests waited for their turn at the pace.",
+            "title": "Paced Seconds",
+            "type": "number"
+          },
+          "read": {
+            "description": "How many the account gave.",
+            "title": "Read",
+            "type": "integer"
+          },
+          "refusals": {
+            "description": "The refusing answers, oldest first.",
+            "items": {
+              "$ref": "#/components/schemas/ReadingCheckRefusalView"
+            },
+            "title": "Refusals",
+            "type": "array"
+          },
+          "requests": {
+            "description": "Requests sent to the account's service, whatever the answer.",
+            "title": "Requests",
+            "type": "integer"
+          },
+          "waiting_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the account's gate opens again, when it is still holding requests.",
+            "title": "Waiting Until"
+          }
+        },
+        "required": [
+          "account",
+          "asked",
+          "read",
+          "ended",
+          "requests",
+          "held",
+          "refusals",
+          "log_line"
+        ],
+        "title": "ReadingCheckView",
+        "type": "object"
+      },
       "ReadingView": {
         "description": "Reginald's first reading after Mail and calendar, for the setup screen that waits for it.",
         "properties": {
@@ -28004,6 +28214,14 @@
             "description": "How many items the first reads took in.",
             "title": "Found",
             "type": "integer"
+          },
+          "pending": {
+            "description": "The names of the sources still being read, while there are few enough to name; empty when there are more (the counts say it then).",
+            "items": {
+              "type": "string"
+            },
+            "title": "Pending",
+            "type": "array"
           },
           "read": {
             "default": 0,
@@ -28023,7 +28241,8 @@
                 "enum": [
                   "fetching",
                   "sorting",
-                  "looking"
+                  "looking",
+                  "waiting"
                 ],
                 "type": "string"
               },
@@ -28031,7 +28250,7 @@
                 "type": "null"
               }
             ],
-            "description": "For working: reading the mail and calendar (fetching), sorting what it found (sorting), or looking at who the person writes to (looking).",
+            "description": "For working: reading the mail and calendar (fetching), sorting what it found (sorting), looking at who the person writes to (looking), or waiting for the mail service, which asked to slow down (waiting, with `until`).",
             "title": "Stage"
           },
           "state": {
@@ -28043,6 +28262,24 @@
             ],
             "title": "State",
             "type": "string"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the earliest waiting source can be read again.",
+            "title": "Until"
+          },
+          "waiting": {
+            "default": 0,
+            "description": "How many of them wait for the mail service, which asked to slow down.",
+            "title": "Waiting",
+            "type": "integer"
           },
           "why": {
             "anyOf": [
@@ -29753,6 +29990,12 @@
           },
           "request_timeout_seconds": {
             "title": "Request Timeout Seconds",
+            "type": "integer"
+          },
+          "short_wait_minutes": {
+            "default": 5,
+            "description": "A wait shorter than this many minutes is said in words, a longer one by the time of day (ui.short_wait_minutes).",
+            "title": "Short Wait Minutes",
             "type": "integer"
           },
           "shortcuts": {
@@ -32109,9 +32352,11 @@
             "$ref": "#/components/schemas/ReadingView",
             "default": {
               "found": 0,
+              "pending": [],
               "read": 0,
               "sources": 0,
-              "state": "none"
+              "state": "none",
+              "waiting": 0
             },
             "description": "Reginald's first reading after Mail and calendar: what the waiting screen shows."
           },
@@ -55856,6 +56101,46 @@
         "summary": "Watch Remove"
       }
     },
+    "/api/watch/{source_id}/check-reading": {
+      "post": {
+        "description": "A short, paced read of the source's account (its newest headers, through the account's gate), and what the\ngate counted: requests sent, refusals, waits and the pace. Nothing is kept and nothing is recorded as a read.",
+        "operationId": "check_reading_api_watch__source_id__check_reading_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadingCheckView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Check Reading"
+      }
+    },
     "/api/watch/{source_id}/folders": {
       "get": {
         "description": "The folders of a mailbox source, and which the server marks as sent mail, for offering the sent folder as a\nsource of its own. Reads the mailbox; nothing there changes. An add-on's mail can't be asked for its folders:\nit gets the usual names for sent mail, the likeliest first, and the person may name another.",
@@ -56163,7 +56448,7 @@
         "summary": "Look Back Preview"
       },
       "post": {
-        "description": "Look further back: the older mail the source already returned is taken in the same quiet way as its first\nread, under the same go rules, and the day it was looked back to moves.",
+        "description": "Look further back: the choice is recorded and the answer returns at once. The older mail is read in the\nbackground lane, in slices, taken in the same quiet way as the first read, under the same go rules, and the\nday it was looked back to moves as it is read.",
         "operationId": "look_back_api_watch__source_id__look_back_post",
         "parameters": [
           {
@@ -56213,7 +56498,7 @@
     },
     "/api/watch/{source_id}/older-read/continue": {
       "post": {
-        "description": "Carry on a read of older mail that stopped, from where it stopped, now rather than at its time. Nothing is\nread twice: a read that is under way, or none waiting, does nothing.",
+        "description": "Carry on a read of older mail that stopped, now rather than at its time, with a new round of tries. The\nreading is the worker's, in the background; nothing is read here, and none waiting does nothing.",
         "operationId": "older_read_continue_api_watch__source_id__older_read_continue_post",
         "parameters": [
           {

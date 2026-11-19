@@ -87,6 +87,8 @@ def test_the_first_read_queues_one_look_that_waits_for_the_go_and_nothing_runs_w
     ws, cfg, store = env
     assert person_look.queue(store, cfg, NOW) is None  # nothing is read yet
     refresh(ws, store, cfg, "m", NOW)
+    assert person_look.queue(store, cfg, NOW) is None  # the other account's first read is not in: the look waits
+    refresh(ws, store, cfg, "m2", NOW)
     request = person_look.queue(store, cfg, NOW)
     assert request is not None
     assert person_look.queue(store, cfg, NOW + timedelta(hours=1)) is None  # one at a time
@@ -103,6 +105,7 @@ def test_the_first_read_queues_one_look_that_waits_for_the_go_and_nothing_runs_w
 
 def test_another_accounts_first_read_inside_the_week_brings_one_more_look_for_its_new_people_only(env):
     ws, cfg, store = env
+    cfg.watch.sources[1].enabled = False  # the second account is not signed in yet
     refresh(ws, store, cfg, "m", NOW)
     first = person_look.queue(store, cfg, NOW)
     approve_look = lambda r: approve_stage_request(store, r, store.read().get("request", r).version)  # noqa: E731
@@ -110,6 +113,7 @@ def test_another_accounts_first_read_inside_the_week_brings_one_more_look_for_it
     approve_look(first)
     run_look(ws, cfg, store, first)
     assert person_look.queue(store, cfg, NOW + timedelta(days=1)) is None  # nothing new, and it is not a week
+    cfg.watch.sources[1].enabled = True
     refresh(ws, store, cfg, "m2", NOW + timedelta(days=1))
     second = person_look.queue(store, cfg, NOW + timedelta(days=1))
     assert second is not None and second != first
@@ -137,7 +141,7 @@ def test_the_choice_offers_three_estimates_and_chooses_none(env):
 def test_the_chosen_reach_is_read_through_the_look_further_back_deleted_and_archived_mail_included(env):
     ws, cfg, store = env
     refresh(ws, store, cfg, "m", NOW)
-    done = source_intake.answer_full_read(ws, store, cfg, "m", 30, NOW)
+    done = source_intake.read_full_now(ws, store, cfg, "m", 30, NOW)
     assert done is not None and done.taken == 3 and not done.started  # held for the go like any AI work
     view = store.read()
     older = [r for r in view.list("request") if r.data.get("intake") == "m" and r.data["state"] == "needs_you"]
@@ -196,6 +200,7 @@ def test_the_people_step_shows_the_waiting_look_with_its_estimate_and_what_to_se
     with TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"}) as client:
         live = app.state.store
         refresh(ws, live, cfg, "m", NOW)
+        refresh(ws, live, cfg, "m2", NOW)
         request = person_look.queue(live, cfg, NOW)
         run_look(ws, cfg, live, request)
         shown = client.get("/api/setup/people-suggestions").json()

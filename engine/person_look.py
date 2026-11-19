@@ -70,14 +70,29 @@ def _already_decided(view: Any) -> set[str]:
     return names - {""}
 
 
-def _asked_before(view: Any, own: str | None) -> set[str]:
-    """The addresses an earlier look read and finished with (offered or not): the assistant is not asked about the same
-    address every week. A look closed with no call, or one that failed, asked about nothing; `own` is the look being
-    asked for now, whose own addresses count for nothing here."""
-    found: set[str] = set()
+def _asked_before(view: Any, own: str | None) -> set[tuple[str, tuple[int, int] | None]]:
+    """What an earlier look read and finished with (offered or not), as each address with the counts it showed then
+    (messages from them, to them; none for a look made before counts were kept): the assistant is not asked about the
+    same address again until its counts change. A look closed with no call, or one that failed, asked about nothing;
+    `own` is the look being asked for now, whose own addresses count for nothing here."""
+    found: set[tuple[str, tuple[int, int] | None]] = set()
     for r in view.list("request"):
         if r.data["task"] == TASK and r.id != own and r.data["state"] in ("done", "review"):
-            found.update(str(a).lower() for a in r.data.get("asked_about") or [])
+            counts = r.data.get("asked_counts") or {}
+            for a in r.data.get("asked_about") or []:
+                seen = counts.get(str(a).lower())
+                found.add((str(a).lower(), (int(seen[0]), int(seen[1])) if seen else None))
+    return found
+
+
+def _counts_of(lines: list[str]) -> dict[str, list[int]]:
+    """The counts each tally line shows for its address: `[from them, to them]`."""
+    found: dict[str, list[int]] = {}
+    for line in lines:
+        counts = re.search(r"(\d+) from them, (\d+) to them", line)
+        address = line.split(" | ")[0].strip().lower()
+        if counts and "@" in address:
+            found[address] = [int(counts.group(1)), int(counts.group(2))]
     return found
 
 
@@ -102,17 +117,20 @@ def shown_contacts(store: Any, cfg: Any, own: str | None = None) -> list[tuple[c
     """The tally entries a run is shown with the id of the person on file for each, the most dealt with first: not kept
     apart, with at least `person_look_min_messages` messages, at most `person_look_entries`. Someone on file is shown
     (it is who routing may name); someone not on file is left out when a glossary entry already names them or the
-    person discarded one, or an earlier look already read their address (`own` is the look being made now)."""
+    person discarded one, or an earlier look already read their address with the counts it has now (`own` is the look
+    being made now)."""
     settings = cfg.dispatch.knowledge
     on_file = _on_file(store)
     decided = _already_decided(store.read())
-    offered = _offered_addresses(store.read()) | _asked_before(store.read(), own)
+    offered = _offered_addresses(store.read())
+    asked = _asked_before(store.read(), own)
     found: list[tuple[contact_tally.Contact, str | None]] = []
     for c in contact_tally.tally(store, cfg):
         if c.apart is not None or c.total < settings.person_look_min_messages:
             continue
         person = on_file.get(c.address)
-        if person is None and (_norm(c.name) in decided or c.address in offered):
+        unchanged = (c.address, None) in asked or (c.address, (c.from_them, c.to_them)) in asked
+        if person is None and (_norm(c.name) in decided or c.address in offered or unchanged):
             continue
         found.append((c, person))
     return found[: settings.person_look_entries]
@@ -266,22 +284,96 @@ def last_look(view: Any) -> datetime | None:
     return max(moments, default=None)
 
 
-def due(store: Any, cfg: Any, now: datetime) -> bool:
-    """Whether a look is due: it is on, none is open, the last was queued at least `person_look_every_days` ago (or none
-    ever was, which is the look after the first read), and there is something to look at."""
+#: The outcomes of a read that settle a source's first reading: it was read, or it couldn't be and says so on Mail.
+READ_OUTCOMES = ("ok", "baseline", "failed")
+
+
+def read_sources_of(store: Any, cfg: Any, ws: Any = None) -> list[Any]:
+    """The mail and calendar sources whose first read the look waits for: the enabled ones that read, and (given the
+    workspace) whose account is not signed out or expired."""
+    from engine import setup
+    from engine.connectors import CORE, declared_reads, reads
+
+    said = declared_reads({**CORE, **store.plugins.connectors()})
+    if ws is not None:
+        return setup.read_sources(ws, cfg, store, said)
+    return [s for s in cfg.watch.sources if s.enabled and reads(s.connector, said)]
+
+
+def first_read_standing(view: Any, sources: list[Any], now: datetime) -> tuple[list[Any], list[tuple[Any, datetime]]]:
+    """Where the first reads stand: the sources not read once, as `(pending, waiting)`. A source whose latest try was
+    answered with a wait the service asked for, and whose time has not come, is waiting (with that time), never
+    pending: it is not a failure and it is not being read."""
+    pending: list[Any] = []
+    waiting: list[tuple[Any, datetime]] = []
+    for source in sources:
+        runs = view.find("watch_run", {"source": source.id})
+        if any(r.data["outcome"] in READ_OUTCOMES for r in runs):
+            continue
+        last = runs[-1] if runs else None
+        until = (
+            _clock(last.data.get("retry_at"), UTC) if last is not None and last.data["outcome"] == "throttled" else None
+        )
+        if until is not None and until > now:
+            waiting.append((source, until))
+        else:
+            pending.append(source)
+    return pending, waiting
+
+
+def first_reads_in(store: Any, cfg: Any, now: datetime, ws: Any = None) -> bool:
+    """Whether every mail and calendar source was read once (or could not be and says so on Mail). A source waiting
+    for the service is not read yet."""
+    pending, waiting = first_read_standing(store.read(), read_sources_of(store, cfg, ws), now)
+    return not pending and not waiting
+
+
+def header_sample_in(store: Any, cfg: Any) -> bool:
+    """Whether the small sample of mail headers a first sign-in takes is in, so the look has something to count. The
+    sample is read right after each source's first read (`mail_headers.read_after_first`), so it is in whenever the
+    first reads are; the rest of the year comes later and brings its own look (`header_sweep_finished_since`)."""
+    return True
+
+
+def header_sweep_finished_since(view: Any, moment: datetime) -> bool:
+    """Whether the sweep of the rest of a mail source's headers ended after `moment`."""
+    for run in view.list("watch_run"):
+        ended = _clock(run.data.get("header_sweep_finished_at"), moment.tzinfo or UTC)
+        if ended is not None and ended > moment:
+            return True
+    return False
+
+
+def settled_since(view: Any, moment: datetime) -> bool:
+    """Whether a read finished after `moment` that can change the tally: a mail source's first read, an older read
+    that ran to its end (or stopped for the person), or the header sweep."""
+    if first_read_since(view, moment):
+        return True
+    for run in view.list("watch_run"):
+        finished = _clock(run.data.get("older_finished_at"), moment.tzinfo or UTC)
+        if finished is not None and finished > moment:
+            return True
+    return header_sweep_finished_since(view, moment)
+
+
+def due(store: Any, cfg: Any, now: datetime, ws: Any = None) -> bool:
+    """Whether a look is due: it is on, none is open, every first read is in (and the header sample), and the last was
+    queued at least `person_look_every_days` ago (or none ever was, which is the look after the first reads), with
+    something to look at. Inside the week another look is due when a read finished since the last one (a first read,
+    an older read or the header sweep) and the tally shows an address new or with other counts than any look read."""
     settings = cfg.dispatch.knowledge
     if not settings.person_look:
         return False
     view = store.read()
     if any(r.data["task"] == TASK and r.data["state"] in OPEN_STATES for r in view.list("request")):
         return False
+    if not first_reads_in(store, cfg, now, ws) or not header_sample_in(store, cfg):
+        return False
     last = last_look(view)
     if last is not None:
         stamp = last if last.tzinfo else last.replace(tzinfo=now.tzinfo)
         if now - stamp < timedelta(days=settings.person_look_every_days):
-            # Inside the week only a mail account's first read since the last look brings another, and only for
-            # addresses no look has read yet.
-            return first_read_since(view, stamp) and bool(tally_lines(store, cfg))
+            return settled_since(view, stamp) and bool(tally_lines(store, cfg))
     return has_something_to_look_at(store, cfg)
 
 
@@ -296,12 +388,12 @@ def first_read_since(view: Any, moment: datetime) -> bool:
     return False
 
 
-def queue(store: Any, cfg: Any, now: datetime) -> str | None:
+def queue(store: Any, cfg: Any, now: datetime, ws: Any = None) -> str | None:
     """Queue the look when it is due and the person is set, as a scheduled request. Returns its id, or None. It then
     goes through the request path: its estimate, the person's go above the configured amount, its budget."""
     from engine.dispatcher import person_is_set
 
-    if not person_is_set(store, cfg) or not due(store, cfg, now):
+    if not person_is_set(store, cfg) or not due(store, cfg, now, ws):
         return None
     return _create(store, cfg, now)
 
@@ -317,6 +409,9 @@ def addresses_of(lines: list[str]) -> list[str]:
 
 
 def _create(store: Any, cfg: Any, now: datetime) -> str:
+    lines = tally_lines(store, cfg)
+    asked = addresses_of(lines)
+    counts = _counts_of(lines)
     with store.transaction() as tx:
         made = tx.create(
             "request",
@@ -326,7 +421,8 @@ def _create(store: Any, cfg: Any, now: datetime) -> str:
                 "state": "queued",
                 "waiting": "With the assistant, starting now",
                 "sensitivity": _level(store, cfg),
-                "asked_about": addresses_of(tally_lines(store, cfg)),
+                "asked_about": asked,
+                "asked_counts": {a: counts[a] for a in asked if a in counts},
                 "created_at": now.isoformat(),
             },
             _ENGINE,
@@ -351,7 +447,7 @@ def close(store: Any, request_id: str, why: str) -> None:
             tx.update(
                 "request",
                 request_id,
-                {"state": "done", "waiting": why, "cause": None, "asked_about": None},
+                {"state": "done", "waiting": why, "cause": None, "asked_about": None, "asked_counts": None},
                 _DONE,
                 read_version=current.version,
             )
@@ -584,6 +680,13 @@ def look_state(ws: Any, store: Any, cfg: Any) -> str:
     if any(r.data["state"] in ("done", "review") for r in requests):
         return "looked"
     return "not_yet"
+
+
+def waiting_until(ws: Any, store: Any, cfg: Any, now: datetime) -> datetime | None:
+    """When the mail the look waits for can be read again, when a first read was asked to wait and the time has not
+    come: the earliest such time; None when no first read waits for the service."""
+    _, waiting = first_read_standing(store.read(), read_sources_of(store, cfg, ws), now)
+    return min((until for _, until in waiting), default=None)
 
 
 # ---- the packet ------------------------------------------------------------------------------------------------------

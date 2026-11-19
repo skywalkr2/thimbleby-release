@@ -3,7 +3,7 @@
 // explanation, never a column of its own. The footer is fixed at the bottom of the window, its buttons on the edges of the step's column: Back, then "I'll do this later", then
 // the one primary button; on a phone it is a bar across the bottom. The rail marks a finished step with a check in a circle and a
 // skipped one with its words, and says which step is open by its bar and weight, not by a fill.
-import type { ReactNode, Ref } from "react";
+import { useCallback, useEffect, useRef, type ReactNode, type Ref } from "react";
 import { GroupLabel } from "./GroupLabel";
 import { Icon } from "./Icon";
 import styles from "./Wizard.module.css";
@@ -113,12 +113,42 @@ export function WizardStep(props: {
  * `inFlow` shows them where they stand in the page instead (a sample of the footer): it covers nothing, so a toast does
  * not move out of its way.
  */
-export function StepFooter(props: { back?: ReactNode; later?: ReactNode; primary?: ReactNode; footRef?: Ref<HTMLDivElement>; inFlow?: boolean }) {
+export function StepFooter(props: { back?: ReactNode; later?: ReactNode; primary?: ReactNode; note?: ReactNode; footRef?: Ref<HTMLDivElement>; inFlow?: boolean }) {
+  const own = useRef<HTMLDivElement | null>(null);
+  const { footRef, inFlow } = props;
+  // A fixed footer tells the page its height (`--step-footer-h`), so a message rises above it instead of covering the title.
+  useEffect(() => {
+    const el = own.current;
+    if (inFlow || !el) return;
+    const root = document.documentElement;
+    const measure = () => root.style.setProperty("--step-footer-h", `${Math.ceil(el.getBoundingClientRect().height)}px`);
+    measure();
+    if (typeof ResizeObserver === "undefined") return () => root.style.removeProperty("--step-footer-h");
+    const watch = new ResizeObserver(measure);
+    watch.observe(el);
+    return () => {
+      watch.disconnect();
+      root.style.removeProperty("--step-footer-h");
+    };
+  }, [inFlow]);
+  const setRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      own.current = el;
+      if (typeof footRef === "function") footRef(el);
+      else if (footRef) (footRef as { current: HTMLDivElement | null }).current = el;
+    },
+    [footRef],
+  );
   return (
-    <div className={props.inFlow ? `${styles.footer} ${styles.footerInFlow}` : styles.footer} ref={props.footRef} data-step-footer={props.inFlow ? "inline" : ""}>
+    <div className={props.inFlow ? `${styles.footer} ${styles.footerInFlow}` : styles.footer} ref={setRef} data-step-footer={props.inFlow ? "inline" : ""}>
       <div className={styles.footerInner}>
         {/* The buttons stand in the step's own column, so they line up with its left and right edges. */}
         <div className={styles.footerButtons}>
+          {props.note && (
+            <p className={`hint ${styles.footerNote}`} data-continue-note="" role="status">
+              {props.note}
+            </p>
+          )}
           {props.back}
           <span className={styles.grow} />
           {props.later}

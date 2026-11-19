@@ -27,6 +27,7 @@ import { OlderReadWaiting } from "./OlderReadWaiting";
 import { FullReadChoice } from "./FullReadChoice";
 import { SourceSides } from "./SourceSides";
 import { AccountReadEvery } from "./AccountReadEvery";
+import { ReadingCheck } from "./ReadingCheck";
 import styles from "./ConnectionCard.module.css";
 
 type Source = S["WatchSourceView"];
@@ -75,6 +76,7 @@ export function ConnectionCardView(props: {
   const [editing, setEditing] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  const [checking, setChecking] = useState(false);
   const changeRef = useRef<HTMLButtonElement>(null);
   const editorId = useId();
   // The account as the header reads it; a card that reads nothing (or nothing is on) has a quiet state of its own.
@@ -100,8 +102,11 @@ export function ConnectionCardView(props: {
   const signIn = card.signIn;
   const signedIn = card.signedIn;
   const menu: MenuAction[] = [];
+  // The check asks the account for its newest messages, so it is offered where the account reads mail.
+  const mailSource = card.sources.find((s) => (s.reads ?? []).includes("mail"));
   if (signIn && signedIn) {
     menu.push({ id: "choose", label: t("sign_in.choose_source"), run: () => props.onChooseSource(addonOfSignIn(signIn.name), undefined, card.address ?? undefined), disabled: offline });
+    if (mailSource) menu.push({ id: "check-reading", label: t("connection.check_reading"), run: () => setChecking(true), disabled: offline });
     menu.push({ id: "sign-out", label: t("sign_in.sign_out"), run: () => setConfirming(true), disabled: signingOut || offline });
   }
   const signOut = async () => {
@@ -267,6 +272,7 @@ export function ConnectionCardView(props: {
       )}
       {card.kind === "account" && <OlderReadWaiting sources={card.sources} />}
       {card.kind === "account" && <FullReadChoice sources={card.sources} account={accountName} />}
+      {checking && mailSource && <ReadingCheck sourceId={mailSource.id} account={accountName} onClose={() => setChecking(false)} />}
       {confirming && signIn && signedIn && (
         <SignOutConfirm
           label={signIn.label}

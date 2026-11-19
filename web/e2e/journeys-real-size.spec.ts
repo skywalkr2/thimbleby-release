@@ -163,18 +163,23 @@ test.describe.serial("journey: real-sized mailbox", () => {
       .toBe(0);
     await expect(fullRead).toHaveCount(0, { timeout: 180_000 });
     await expect(page.getByRole("region", { name: "Notifications" })).not.toContainText("That didn't work");
-    // The line says what happened in the person's words: when the rest continues, and none of the service's own words, and no failure.
+    // Read it returned at once: the line says the older mail is being read in the background, in the person's words, with none of the
+    // service's own words and no failure.
     const toasts = page.getByRole("region", { name: "Notifications" });
-    await expect(toasts).toContainText(/\d{1,2}:\d{2}/, LOADED);
+    await expect(toasts).toContainText("Reading the older mail in the background.", LOADED);
     const said = await toasts.innerText();
     expect(said).not.toMatch(INTERNAL);
     expect(said).not.toMatch(NOTHING_KEPT);
-    // What the page held was kept, and the rest waits for its time.
+    // The worker reads it a page at a time: what a page held was kept, and when the service slows a later page down the rest waits for
+    // its time, which the account's row says (a wait is never a failure).
     await expect.poll(async () => (await inbox()).older_read?.kind, LOADED).toBe("throttled");
     const stopped = await inbox();
     expect(stopped.older_read!.taken).toBeGreaterThan(0);
     expect(stopped.older_read!.gave_up).toBe(false);
     expect(stopped.items - first.items).toBe(stopped.older_read!.taken);
+    // The service's wait is RETRY_AFTER seconds, a short one, which the row says in words and not as a time of day (H5-07).
+    await expect(account.locator(`[data-older-read="${first.id}"]`)).toContainText("continues in a minute or so", LOADED);
+    expect(await account.locator(`[data-older-read="${first.id}"]`).innerText()).not.toMatch(INTERNAL);
     expect((await mailbox()).slowed).toBe(1);
 
     // 6. Signing out of the account, in the Mail step, while the rest of the read waits: the step is back at its start, and nothing
@@ -220,7 +225,7 @@ test.describe.serial("journey: real-sized mailbox", () => {
           if (await working.count()) {
             const text = (await working.innerText().catch(() => "")).replace(/\s+/g, " ");
             shown.push(text);
-            const of = /(\d+) of (\d+) done/.exec(text);
+            const of = /(\d+) of your (\d+) mailboxes and calendars are read/.exec(text);
             if (of) expect(Number(of[2])).toBe(sources.length);
             expect(text).not.toMatch(INTERNAL);
           }
@@ -240,8 +245,16 @@ test.describe.serial("journey: real-sized mailbox", () => {
     }
     expect((await inbox()).items).toBe(first.items + inWindow);
 
-    // 10. People: the assistant's offers are there, from the mail read.
+    // 10. People: the step is never empty (S-0667): it shows offers, or says what it waits for, with its time when it waits for the
+    // mail service; then the assistant's offers are there, from the mail read.
     const offers = main.locator("[data-people-suggestions]");
+    await expect(offers.getByRole("checkbox").or(offers.locator("[data-people-look-state]")).first()).toBeVisible(LOADED);
+    const saying = offers.locator("[data-people-look-state]");
+    if (await saying.count()) {
+      const words = (await saying.first().innerText()).trim();
+      expect(words.length).toBeGreaterThan(0);
+      if (/waiting for the mail service/.test(words)) expect(words).toMatch(/\d{1,2}:\d{2}/);
+    }
     await expect(offers.getByRole("checkbox").first()).toBeVisible({ timeout: 120_000 });
     expect(await offers.innerText()).not.toMatch(INTERNAL);
     await visit(page);

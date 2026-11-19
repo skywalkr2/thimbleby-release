@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { expect, test } from "vitest";
 import type { S } from "../lib/api";
 import { clockTime } from "../lib/dates";
-import { fakeApi, Refuse, renderApp } from "../test-utils";
+import { inHours, fakeApi, Refuse, renderApp } from "../test-utils";
 import { FullReadChoice } from "./FullReadChoice";
 
 function source(over: Partial<S["WatchSourceView"]> = {}): S["WatchSourceView"] {
@@ -29,12 +29,12 @@ function source(over: Partial<S["WatchSourceView"]> = {}): S["WatchSourceView"] 
 const offered: S["FullReadView"] = {
   answered: null,
   options: [
-    { days: 14, count: 0, estimate_usd: null, unpriced: 0, reaches: true, capped: false, estimate: false },
-    { days: 30, count: 12, estimate_usd: 0.4, unpriced: 0, reaches: true, capped: false, estimate: false },
-    { days: 90, count: 40, estimate_usd: 1.2, unpriced: 0, reaches: true, capped: false, estimate: false },
+    { days: 14, count: 0, estimate_usd: null, unpriced: 0, reaches: true, capped: false, estimate: false, unknown: false },
+    { days: 30, count: 12, estimate_usd: 0.4, unpriced: 0, reaches: true, capped: false, estimate: false, unknown: false },
+    { days: 90, count: 40, estimate_usd: 1.2, unpriced: 0, reaches: true, capped: false, estimate: false, unknown: false },
   ],
 };
-const done = (taken: number): S["LookBackView"] => ({ days: 30, from_date: "2026-09-19", count: taken, unpriced: 0, reaches: true, capped: false, estimate: false, expected: 0, expected_estimate: false, gave: 0, short: false, gave_up: false, taken, started: false });
+const done = (taken: number): S["LookBackView"] => ({ days: 30, from_date: "2026-09-19", count: taken, unpriced: 0, reaches: true, capped: false, estimate: false, unknown: false, expected: 0, expected_estimate: false, gave: 0, short: false, gave_up: false, taken, started: false });
 
 const pickerOf = () => screen.findByRole("combobox", { name: "Read in full from: person@example.com" });
 
@@ -68,6 +68,26 @@ test("choosing a reach sends it and says the work waits for the go", async () =>
   expect(await screen.findByText("12 older items from Inbox are taken in. They wait for your go on Today before the assistant reads them.")).toBeInTheDocument();
 });
 
+test("a count the mail service can't give shows no number, and Read it is still there", async () => {
+  const user = userEvent.setup();
+  const blind = { options: offered.options.map((o) => (o.days > 14 ? { ...o, count: 0, unknown: true } : o)), answered: null };
+  const queued = { ...done(0), stopped: "queued", continues_at: "2026-09-19T09:00:00Z" };
+  const calls = fakeApi({ "GET watch/m/full-read": () => blind, "POST watch/m/full-read": () => queued, "GET watch": () => [] });
+  renderApp(<FullReadChoice sources={[source()]} account="person@example.com" />);
+  await user.click(await pickerOf());
+  expect((await screen.findAllByRole("option")).map((o) => o.textContent)).toEqual([
+    "Choose…",
+    expect.stringContaining("2 weeks: No more mail to read."),
+    expect.stringContaining("1 month: More mail. The mail service can't say how many yet."),
+    expect.stringContaining("3 months: More mail. The mail service can't say how many yet."),
+    "Not now",
+  ]);
+  await user.click(screen.getByRole("option", { name: /1 month/ }));
+  await user.click(screen.getByRole("button", { name: "Read it" }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST watch/m/full-read")?.body).toEqual({ days: 30 }));
+  expect(await screen.findByText("Reading the older mail in the background.")).toBeInTheDocument();
+});
+
 test("Not now sends 0 and reads nothing", async () => {
   const user = userEvent.setup();
   const calls = fakeApi({ "GET watch/m/full-read": () => offered, "POST watch/m/full-read": () => done(0), "GET watch": () => [] });
@@ -90,8 +110,8 @@ test("a reach whose count stopped at the cap says at least, with its cost, and a
   const capped: S["FullReadView"] = {
     answered: null,
     options: [
-      { days: 30, count: 40, estimate_usd: 0.12, unpriced: 0, reaches: true, capped: false, estimate: false },
-      { days: 90, count: 100, estimate_usd: 0.31, unpriced: 0, reaches: false, capped: true, estimate: false },
+      { days: 30, count: 40, estimate_usd: 0.12, unpriced: 0, reaches: true, capped: false, estimate: false, unknown: false },
+      { days: 90, count: 100, estimate_usd: 0.31, unpriced: 0, reaches: false, capped: true, estimate: false, unknown: false },
     ],
   };
   fakeApi({ "GET watch/m/full-read": () => capped });
@@ -126,7 +146,7 @@ test("a read that skipped nothing says nothing about skipping", async () => {
 
 test("a count the service only estimated says about, in the list of reaches", async () => {
   const user = userEvent.setup();
-  const guessed: S["FullReadView"] = { answered: null, options: [{ days: 30, count: 201, estimate_usd: 0.62, unpriced: 0, reaches: true, capped: false, estimate: true }] };
+  const guessed: S["FullReadView"] = { answered: null, options: [{ days: 30, count: 201, estimate_usd: 0.62, unpriced: 0, reaches: true, capped: false, estimate: true, unknown: false }] };
   fakeApi({ "GET watch/m/full-read": () => guessed });
   renderApp(<FullReadChoice sources={[source()]} account="person@example.com" />);
   await user.click(await pickerOf());
@@ -164,7 +184,7 @@ test("a look that took in far fewer than its count says how many of how many, wi
   expect(await screen.findByText("Taking in 2 older items from Inbox. Took in 2 of about 201: the service gave no more.")).toBeInTheDocument();
 });
 
-const AT = "2026-10-19T15:42:00+00:00";
+const AT = inHours(2);
 
 async function readWith(answer: S["LookBackView"]) {
   const user = userEvent.setup();

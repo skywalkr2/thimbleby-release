@@ -121,6 +121,7 @@ class State:
         self.older_asked: list[
             dict[str, str]
         ] = []  # each read of older mail: folder, days asked and how it was answered
+        self.quota: Quota | None = None  # the per-account limit; None (the default) means no limit
         self.failing_account = 0  # the number (from 1) of the account whose reads fail; 0 for none
         #: "expired": the sign-in is refused; "retrying": try again later; "refused": its own long refusal text.
         self.failing_how = "expired"
@@ -442,6 +443,72 @@ def signed_in(state: State, request: Request) -> bool:
 
 def unauthorized() -> JSONResponse:
     return JSONResponse({"error": {"code": "InvalidAuthenticationToken"}}, status_code=401)
+
+
+# ---- the quota mode: a per-account limit like a real mail service's ---------------------------------------------
+
+QUOTA_FORMS = ("429", "403")
+QUOTA_WAITS = ("header", "body-delay", "message")
+
+
+class Quota:
+    """A per-account limit on every mail and calendar request. More than `rate` requests inside a sliding second are
+    refused; the refusal starts a penalty in which every request of that account is refused, and a request inside the
+    penalty extends it by `penalty` seconds. `form` is how the refusal looks ("429", or "403" with a rate-limit reason
+    code) and `wait` where the time to wait is given ("header": Retry-After; "body-delay": a structured delay in the
+    body; "message": only a time inside the body's message). `clock` gives the time in seconds and is replaced by a
+    test that times a window."""
+
+    def __init__(self, rate: int, penalty: float, form: str = "429", wait: str = "header", clock=time.time):
+        if form not in QUOTA_FORMS or wait not in QUOTA_WAITS:
+            raise ValueError("unknown quota form or wait")
+        self.rate, self.penalty, self.form, self.wait, self.clock = rate, penalty, form, wait, clock
+        self.recent: dict[int, list[float]] = {}  # accepted requests of the last second, by account
+        self.until: dict[int, float] = {}  # when each account's penalty ends
+        self.log: dict[int, list[dict[str, Any]]] = {}
+
+    def check(self, account: int, endpoint: str) -> Response | None:
+        """Count one request: None when it is let through, else the refusal. Either way it is logged."""
+        now = self.clock()
+        window = [t for t in self.recent.get(account, []) if t > now - 1]
+        if now < self.until.get(account, 0) or len(window) >= self.rate:
+            self.until[account] = now + self.penalty
+            self.recent[account] = window
+            self.log.setdefault(account, []).append({"time": now, "endpoint": endpoint, "answer": "refused"})
+            return self.refusal(self.until[account] - now, self.until[account])
+        self.recent[account] = [*window, now]
+        self.log.setdefault(account, []).append({"time": now, "endpoint": endpoint, "answer": "ok"})
+        return None
+
+    def refusal(self, wait: float, until: float) -> Response:
+        seconds = max(1, int(wait + 0.999))
+        error: dict[str, Any] = {"code": "TooManyRequests" if self.form == "429" else "rateLimitExceeded"}
+        if self.form == "403":
+            error["errors"] = [{"reason": "rateLimitExceeded", "domain": "usageLimits"}]
+        headers: dict[str, str] = {}
+        if self.wait == "header":
+            headers["Retry-After"] = str(seconds)
+            error["message"] = "Rate limit exceeded."
+        elif self.wait == "body-delay":
+            error["message"] = "Rate limit exceeded."
+            error["details"] = [{"retryDelay": f"{seconds}s"}]
+        else:
+            stamp_at = datetime.fromtimestamp(until, UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            error["message"] = f"Rate limit exceeded. Retry after {stamp_at}."
+        return JSONResponse({"error": error}, status_code=int(self.form), headers=headers)
+
+
+def with_quota(state: State, endpoint: Callable, name: str) -> Callable:
+    """Wrap one mail or calendar endpoint so the quota (when one is set) counts its requests, per account."""
+
+    async def limited(request: Request):
+        if state.quota is not None and signed_in(state, request):
+            refused = state.quota.check(account_of(state, request), name)
+            if refused is not None:
+                return refused
+        return await endpoint(request)
+
+    return limited
 
 
 # ---- the mail and calendar service -----------------------------------------------------------------------------------
@@ -1451,6 +1518,31 @@ def helper_routes(state: State, base: str) -> list[Route]:
         state.slow = {"ends_before": str(body["ends_before"]), "retry_after": int(body["retry_after"])}
         return JSONResponse({"armed": True})
 
+    async def set_quota(request: Request) -> JSONResponse:
+        """Set the per-account limit: `rate` requests a second, `penalty` seconds of refusing after a refusal, `form`
+        ("429" or "403") and `wait` ("header", "body-delay" or "message"). A `rate` of 0 or none turns it off and clears
+        the log."""
+        body = await request.json()
+        if not body.get("rate"):
+            state.quota = None
+            return JSONResponse({"quota": False})
+        state.quota = Quota(
+            int(body["rate"]),
+            float(body.get("penalty", 10)),
+            str(body.get("form", "429")),
+            str(body.get("wait", "header")),
+        )
+        return JSONResponse({"quota": True})
+
+    async def quota_requests(request: Request) -> JSONResponse:
+        """Each request the quota counted for an account (`account` from 1; none for every account): its time, endpoint
+        and answer ("ok" or "refused")."""
+        log = state.quota.log if state.quota is not None else {}
+        asked = request.query_params.get("account")
+        if asked is not None:
+            return JSONResponse({"requests": log.get(int(asked) - 1, [])})
+        return JSONResponse({"requests": [{"account": a + 1, **r} for a, rows in sorted(log.items()) for r in rows]})
+
     async def big_mailbox_info(request: Request) -> JSONResponse:
         """What the real-sized mailbox holds in each folder, how many reads were told to slow down, and (when `folder`,
         `since` and `before` are asked) how many messages of that folder were received from the day `since` up to, not
@@ -1476,6 +1568,8 @@ def helper_routes(state: State, base: str) -> list[Route]:
     return [
         Route("/__e2e/info", info),
         Route("/__e2e/slow-down", slow_down, methods=["POST"]),
+        Route("/__e2e/quota", set_quota, methods=["POST"]),
+        Route("/__e2e/requests", quota_requests),
         Route("/__e2e/big-mailbox", big_mailbox_info),
         Route("/__e2e/script", script, methods=["POST"]),
         Route("/__e2e/ai-requests", requests),
@@ -1506,7 +1600,13 @@ SECURE_SERVICES: Services = {
 
 def build_app(state: State, port: int, services: Services | None = None, helpers: bool = True) -> Starlette:
     routes = [
-        Route(f"{prefix}{r.path}", r.endpoint, methods=sorted(r.methods or []))
+        Route(
+            f"{prefix}{r.path}",
+            with_quota(state, r.endpoint, f"{prefix}{r.path}")
+            if prefix in ("/mail/v1", "/calendar/v1")
+            else r.endpoint,
+            methods=sorted(r.methods or []),
+        )
         for prefix, make in (SERVICES if services is None else services).items()
         for r in make(state)
     ]
@@ -1593,6 +1693,25 @@ def _configure(argv: list[str] | None):
         help="every folder holds a real-sized mailbox over two months (hundreds of messages), and a test can arm a "
         "rate limit on a read of older mail (POST /__e2e/slow-down)",
     )
+    parser.add_argument(
+        "--quota-rate",
+        type=int,
+        default=0,
+        help="the quota mode: each account may make this many mail and calendar requests a second, else it is refused "
+        "(0, the default, is no limit; POST /__e2e/quota sets it too)",
+    )
+    parser.add_argument(
+        "--quota-penalty", type=float, default=10, help="seconds every request is refused after a refusal"
+    )
+    parser.add_argument(
+        "--quota-form", choices=QUOTA_FORMS, default="429", help="a 429, or a 403 with a rate-limit reason"
+    )
+    parser.add_argument(
+        "--quota-wait",
+        choices=QUOTA_WAITS,
+        default="header",
+        help="where the wait is given: Retry-After, a delay in the body, or only a time in its message",
+    )
     parser.add_argument("--failing-account", type=int, default=0, help="the account (from 1) whose reads fail")
     parser.add_argument("--failing-how", choices=("expired", "retrying", "refused"), default="expired")
     args = parser.parse_args(argv)
@@ -1606,6 +1725,8 @@ def _configure(argv: list[str] | None):
     state.account_links = args.account_links
     state.spread_week = args.spread_week
     state.big_mailbox = args.big_mailbox
+    if args.quota_rate:
+        state.quota = Quota(args.quota_rate, args.quota_penalty, args.quota_form, args.quota_wait)
     state.failing_account = args.failing_account
     state.failing_how = args.failing_how
     return args, state

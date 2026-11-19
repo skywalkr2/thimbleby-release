@@ -52,7 +52,7 @@ from engine.tasks import TaskKind
 from engine.texts import LongText, Unit
 from engine.tools import ToolBox, ToolError, ToolResult
 
-PLUGIN_API_VERSION = "0.3.103"
+PLUGIN_API_VERSION = "0.3.104"
 
 #: The earlier minor version this core still serves (one minor back). A pack whose range reaches the end of that minor
 #: stays on, marked "Built for an earlier version"; the window ends with the next minor release. Every name the core
@@ -2323,9 +2323,11 @@ class Registrar:
         that slows the read down partway returns the `Poll` it has with `Poll.stopped` set to the `ConnectorError`
         (say `ConnectorError("throttled", ..., retry_after=60)`) instead of raising, which would throw away what it
         read: the core keeps the items, notes the stop and asks again after the wait (a throttled stop's
-        `retry_after`, else the setting's) for the days older than the oldest item it holds. A try counts as getting
-        further only when it took in something new; after `watch.older_read_tries` tries that took nothing new the
-        read gives up and Today offers to read the rest. A `Poll` from `poll` that carries `stopped` is refused.
+        `retry_after`, else the setting's) for the days older than the oldest item it holds. A throttled stop is a wait,
+        never a try: it is asked again after the wait however often it is told to wait. Any other stop counts as a
+        try that got further only when it took in something new; after `watch.older_read_tries` tries that took
+        nothing new the read gives up and Today offers to read the rest. A `Poll` from `poll` that carries `stopped` is
+        refused.
         `older_count=fn`, with the same arguments, returns how many items there are (at most `max_items`) without
         reading them, so the estimate costs no more than a count; left out, the estimate calls `older` and counts
         what comes back. A count that reaches `max_items` is shown as "at least" that many, with its cost. A service
@@ -2340,14 +2342,14 @@ class Registrar:
         `before`, with the same keys as a poll's. Each item carries its `MessageDetails` (sender, received,
         participants, unread, bulk, categories and `where`) and a title (the subject), and no text and no files; any
         text or files it carries are dropped. Like `older`, it may return a `Poll` whose `items` and `unreadable` are
-        used; its `stopped` keeps the items it holds and is then recorded and told as an error is. It is optional and
-        additive: a connector without it works as before. Once,
-        after a mail source's first read, the core asks for the headers from `watch.first_headers_days` back (365) to
-        the day that read began, at most `watch.first_headers_max_items` (5000), in the background, holding nothing and
-        costing no AI work. Each header is kept as a record of its own that the contact tally and the first look at the
-        person's habits read; it never becomes an input, a request or anything the assistant sorts, and forgetting a
-        person and retention reach it. A `ConnectorError` is recorded and told once like a failed read, and is not
-        tried again."""
+        used; its `stopped` keeps the items it holds. It is optional and additive: a connector without it works
+        as before. After a mail source's first read, the core asks for the newest `watch.first_headers_sample_items`
+        (300) headers at once, and the rest of the days back (`watch.first_headers_days`, 365; at most
+        `watch.first_headers_max_items`, 5000) later, in pages, in the account's background lane through its gate,
+        holding nothing and costing no AI work. A stop or a wait during the later pages is a wait, never a try, and
+        carries on at its time; it is never recorded as the source's read. Each header is kept as a record of its own
+        that the contact tally and the first look at the person's habits read; it never becomes an input, a request
+        or anything the assistant sorts, and forgetting a person and retention reach it."""
         self._name(name)
         if name in self.connectors or not callable(poll):
             raise RegistrationRefused("connector", "duplicate connector or invalid poll function")
@@ -2520,6 +2522,7 @@ class Registrar:
         default_redirects: Sequence[str] = (),
         sources: Sequence[dict[str, Any]] = (),
         acting_scopes: tuple[str, ...] | list[str] = (),
+        requests_per_second: float | None = None,
     ) -> None:
         """A sign-in to a service through its own sign-in page, as the person (listed in `provides.sign_ins`):
         OAuth 2.0 authorization code with PKCE. `authorize_url` and `token_url` are the service's HTTPS addresses, on
@@ -2601,8 +2604,23 @@ class Registrar:
         holds is their own mail, so the promises they made in it are found and a reply they sent ends the one they
         owed), and shows no button for it. It is started once the workspace knows who the person is, so a sign-in made
         before that gets it then. Each account gets its own; one the person removed isn't brought back by a new
-        sign-in, and "Start reading" brings it back."""
+        sign-in, and "Start reading" brings it back.
+
+        **The pace:** every request the core's web client makes for one account of this sign-in and one host passes one
+        shared gate, whichever part of the app asks. `requests_per_second` is the pace the add-on starts at (a number
+        above 0, at most 100; left out, the cautious `watch.gate_default_per_second`). When the service asks to wait
+        (the client raises `throttled`, or the connector raises it from another answer, or hands it back as
+        `Poll.stopped`), the gate holds every request for that account and host until the time given, sends nothing
+        meanwhile and raises `throttled` with the time left (`err.reason == "gate"`); each wait halves the pace, to
+        `watch.gate_floor_per_second`, and quiet time raises it again to this one. `ConnectorError(..., reason=)` takes
+        the service's short error code, kept on the run record."""
         self._name(name)
+        if requests_per_second is not None and (
+            isinstance(requests_per_second, bool)
+            or not isinstance(requests_per_second, (int, float))
+            or not 0 < requests_per_second <= 100
+        ):
+            raise RegistrationRefused("sign_in", "requests_per_second is a number above 0, at most 100")
         if name in self.sign_ins or not str(label).strip() or not scopes:
             raise RegistrationRefused("sign_in", "duplicate sign-in, or a sign-in without a label or scopes")
         if not all(isinstance(s, str) and s.strip() for s in scopes):
@@ -2690,6 +2708,7 @@ class Registrar:
             own_app_steps=tuple(steps),
             default_redirects=tuple(str(a) for a in default_redirects),
             sources=tuple(started),
+            requests_per_second=float(requests_per_second) if requests_per_second is not None else None,
         )
 
     def triage_matcher(self, name: str, *, match: Callable) -> None:

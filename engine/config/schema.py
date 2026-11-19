@@ -1200,6 +1200,13 @@ class EstimateSettings(ConfigModel):
         "says how much it read moves the account's estimate toward what was really used, by the average of this many "
         "runs.",
     )
+    cache_history_runs: int = Field(
+        20,
+        ge=1,
+        le=200,
+        description="How many of an account's latest runs show whether its cache is in use: the most a big read could "
+        "cost counts the cache's price for the share of those runs it served, and the full price for the rest.",
+    )
     context_margin: float = Field(
         0.1,
         ge=0,
@@ -2797,6 +2804,13 @@ class WalkthroughSettings(ConfigModel):
         description="How many people the new-start walkthrough's people step suggests from the person's mail: the "
         "ones their sent mail went to most, else the ones who wrote to them most. Zero turns the suggestions off.",
     )
+    reading_names: int = Field(
+        3,
+        ge=1,
+        le=20,
+        description='How many unread mailboxes and calendars the first reading screen names ("Still reading: Your '
+        'sent mail, ..."). With more still to read it says how many of all of them are read instead.',
+    )
     not_people_addresses: list[str] = Field(
         default_factory=lambda: [
             "info",
@@ -3283,6 +3297,13 @@ class UiFile(FileModel):
         le=120,
         description="The minutes between the times offered in a time box's list (a time can still be typed to the "
         "minute).",
+    )
+    short_wait_minutes: int = Field(
+        5,
+        ge=1,
+        le=120,
+        description="A wait shorter than this many minutes is said in words (in a minute or so, in a few minutes) "
+        "wherever the screens say when a read carries on; a longer one names the time of day.",
     )
 
     @field_validator("shortcuts")
@@ -3935,8 +3956,17 @@ class WatchFile(FileModel):
         ge=1,
         le=100000,
         description="The most older messages the full read after a first sign-in counts and reads for the reach the "
-        'person chose, in pages of the size one look further back asks for. A reach with more says "at least" '
+        'person chose, in pages of `full_read_page_items`. A reach with more says "at least" '
         "and reads the newest of them.",
+    )
+    full_read_page_items: int = Field(
+        500,
+        ge=1,
+        le=1000,
+        description="How many messages one page of the full read after a first sign-in asks the mail service for. "
+        "Each page after the first starts on the day the one before ended on, so a larger page repeats a smaller "
+        "share of what was already read. The read goes one page at a time in the background, taking turns with the "
+        "person's other accounts.",
     )
     full_read_count_minutes: int = Field(
         15,
@@ -3981,6 +4011,62 @@ class WatchFile(FileModel):
         le=50000,
         description="The most message headers that first read asks a mail source for. A year with more takes the "
         "newest.",
+    )
+    first_headers_sample_items: int = Field(
+        300,
+        ge=0,
+        le=5000,
+        description="At sign-in, how many of a mail account's newest message headers are read straight after its first "
+        "read, so the first look at your habits has something to go on. The rest of the days back are read later, in "
+        "the background, at the pace the mail service allows. 0: none at sign-in, all of it later.",
+    )
+    gate_default_per_second: float = Field(
+        2.0,
+        gt=0,
+        le=100,
+        description="How many requests a second the app makes to one account's service when the add-on declared no "
+        "pace of its own. Every part of the account (inbox, sent mail, counts, retries) shares it.",
+    )
+    gate_floor_per_second: float = Field(
+        0.1,
+        gt=0,
+        le=100,
+        description="The slowest pace an account is held to, in requests a second: each time the service asks to wait, "
+        "the pace halves until it reaches this.",
+    )
+    gate_wait_seconds: float = Field(
+        5.0,
+        ge=0,
+        le=300,
+        description="The longest a request waits for its turn at an account's pace. A request whose turn is further "
+        "off stops as slowed down, with the time left, and is tried again later.",
+    )
+    gate_throttle_seconds: int = Field(
+        60,
+        ge=1,
+        le=86400,
+        description="How long every request to an account's service is held when the service asks to wait and says "
+        "nothing of how long. When it says how long, that is used.",
+    )
+    gate_recover_minutes: float = Field(
+        5.0,
+        ge=0,
+        le=1440,
+        description="After this many quiet minutes (no request asked to wait), an account's slowed pace is raised "
+        "once, up to the pace it started at. 0 never raises it again until the app restarts.",
+    )
+    gate_recover_factor: float = Field(
+        1.5,
+        ge=1,
+        le=10,
+        description="How much an account's slowed pace is multiplied by each time quiet minutes raise it.",
+    )
+    check_reading_headers: int = Field(
+        20,
+        ge=1,
+        le=200,
+        description="How many of an account's newest message headers the Check reading button on its menu asks for, "
+        "one after another at the account's pace, to show the requests sent, refusals and waits. Nothing is kept.",
     )
     arrival_reads_per_day: int = Field(
         2,

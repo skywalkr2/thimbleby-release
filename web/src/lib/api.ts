@@ -239,6 +239,7 @@ export const api = {
   /** The note that the app was updated has been seen: it leaves Today. */
   updateSeen: () => call<S["Ok"]>("POST", "update/updated/seen"),
   readSource: (src: string) => call<S["WatchSourceView"]>("POST", `watch/${id(src)}/read`),
+  checkReading: (src: string) => call<S["ReadingCheckView"]>("POST", `watch/${id(src)}/check-reading`),
   handInRecent: (src: string) => call<S["WatchSourceView"]>("POST", `watch/${id(src)}/recent`),
   autoClosed: () => call<S["AutoClosedView"][]>("GET", "auto-closed"),
   silentCloses: () => call<S["SilentClosesView"]>("GET", "silent-closes"),

@@ -175,6 +175,8 @@ test.describe.serial("review R2: setup and Settings", () => {
     await expect(main.locator("[data-signed-out]")).toHaveCount(0);
     await expect.poll(async () => (await mine())[0], { timeout: 20_000 }).toMatchObject({ last: { outcome: expect.stringMatching(/^(ok|baseline)$/) }, failures: 0 });
     await main.getByRole("button", { name: "Continue" }).click();
+    // The account's "Read in full from" is unanswered, so Continue asks first (H5-12); going on without choosing goes on.
+    await page.getByRole("button", { name: "Go on without choosing" }).click();
 
     // After Mail and calendar the first reading is waited for, then People follows by itself.
     await expect(main.getByRole("heading", { level: 2, name: "People" })).toBeVisible({ timeout: 120_000 });
