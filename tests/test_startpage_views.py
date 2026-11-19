@@ -25,6 +25,18 @@ def test_the_failed_view_names_the_version_still_running_the_reason_and_three_ch
         assert f'id="{button}"' in html
 
 
+def test_the_view_for_work_that_is_not_back_yet_shows_try_again_and_quit_and_hides_the_way_on_to_the_app():
+    """H5-28, H2: the screen while the copy of the work can't be put back after a rolled-back update."""
+    html = startpage.page(WORDS, "0.1.0", view="unrestored", reason=WORDS["desktop.update.unrestored.text"])
+    assert 'data-view="unrestored"' in html and "Still on 0.1.0" in html
+    assert html.count(">Quit</button>") == 1 and 'id="failed-quit"' in html and 'api().choose("quit")' in html
+    assert 'body[data-view="unrestored"] #failed-open { display:none; }' in html
+    assert 'body[data-view="unrestored"] #failed-quit { display:inline-block; }' in html
+    assert "#failed-quit { display:none; }" in html  # and Quit is not on the failed-update screen
+    for button in ("failed-copy", "failed-again"):
+        assert f'id="{button}"' in html
+
+
 def test_an_unknown_view_is_refused():
     with pytest.raises(ValueError):
         startpage.page(WORDS, view="other")

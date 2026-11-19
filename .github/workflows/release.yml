@@ -52,6 +52,17 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: uv sync
+      - name: A tag needs the key that signs the release's list of files
+        # Before anything is built: the app offers and installs only a release whose list of files is signed, so a tag
+        # with no key would make a release nobody is offered. The key is the repository secret RELEASE_SIGNING_KEY.
+        if: github.ref_type == 'tag'
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          if [ -z "$RELEASE_SIGNING_KEY" ]; then
+            echo "::error::The secret RELEASE_SIGNING_KEY is not set, so this release's list of files can't be signed."
+            exit 1
+          fi
       - name: Read this version's notes from the change log
         # Before anything is built, so a tag whose version has no section in CHANGELOG.md stops here.
         if: github.ref_type == 'tag'
@@ -87,7 +98,9 @@ jobs:
           FEEDBACK_TO: ${{ vars.FEEDBACK_TO }}
           PACK_CATALOG: ${{ vars.PACK_CATALOG }}
           PACK_CATALOG_KEY: ${{ vars.PACK_CATALOG_KEY }}
+          RELEASE_KEY: ${{ vars.RELEASE_KEY }}
         run: |
+          if [ -n "$RELEASE_KEY" ]; then sed -i "s|^release_key:.*|release_key: \"$RELEASE_KEY\"|" catalog/product.yaml; fi
           if [ -n "$FEEDBACK_TO" ]; then sed -i "s|^feedback_to:.*|feedback_to: \"$FEEDBACK_TO\"|" catalog/product.yaml; fi
           if [ -n "$PACK_CATALOG" ]; then sed -i "s|^pack_catalog:.*|pack_catalog: \"$PACK_CATALOG\"|" catalog/product.yaml; fi
           if [ -n "$PACK_CATALOG_KEY" ]; then sed -i "s|^pack_catalog_key:.*|pack_catalog_key: \"$PACK_CATALOG_KEY\"|" catalog/product.yaml; fi
@@ -322,14 +335,82 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  # For a tag: the installers and their checksums join the draft release, so its downloads live with the release.
-  attach:
+  # The release's list of files (each installer's name, size and SHA-256), made once every installer is built, and
+  # signed with the key kept as the repository secret RELEASE_SIGNING_KEY. The app carries the public key and offers or
+  # installs an update only when this signature verifies. A tag with no key fails here; a run by hand with no key
+  # makes the list unsigned and says so.
+  manifest:
     needs: [package, desktop]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+      - run: uv sync
+      - name: Fetch the installers the builds kept
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: Thimbleby-*-unsigned
+          path: installers
+      - name: Fetch the catalog facts this build was made with
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: desktop-build-inputs
+          path: build-inputs
+      - name: List the installers with their sizes and checksums
+        env:
+          TAGGED: ${{ github.ref_type == 'tag' }}
+        run: |
+          set -e
+          if [ "$TAGGED" = "true" ]; then VERSION="$GITHUB_REF_NAME"; else VERSION="$(uv run python -c "import importlib.metadata as m; print(m.version('thimbleby'))")"; fi
+          mkdir -p manifest
+          uv run python deploy/desktop/build_support/release_manifest.py make --version "$VERSION" --dir installers --out manifest/RELEASE-MANIFEST.json
+          cat manifest/RELEASE-MANIFEST.json
+      - name: Sign the list
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+          TAGGED: ${{ github.ref_type == 'tag' }}
+        run: |
+          set -e
+          if [ -z "$RELEASE_SIGNING_KEY" ]; then
+            if [ "$TAGGED" = "true" ]; then
+              echo "::error::The secret RELEASE_SIGNING_KEY is not set, so this release's list of files can't be signed."
+              exit 1
+            fi
+            echo "::notice::No signing key (the secret RELEASE_SIGNING_KEY) and no tag: the list of files is not signed. The app would not offer these installers as an update."
+            exit 0
+          fi
+          PUBLIC="$(sed -n 's/^release_key: *"\(.*\)" *$/\1/p' build-inputs/catalog/product.yaml)"
+          if [ -z "$PUBLIC" ] && [ "$TAGGED" = "true" ]; then
+            echo "::error::The build carries no public key (release_key in catalog/product.yaml, or the variable RELEASE_KEY), so the app could not check this release."
+            exit 1
+          fi
+          uv run python deploy/desktop/build_support/release_manifest.py sign --manifest manifest/RELEASE-MANIFEST.json --out manifest/RELEASE-MANIFEST.json.sig --public "$PUBLIC"
+      - name: Keep the list and its signature
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Thimbleby-release-manifest
+          path: manifest
+          if-no-files-found: error
+          retention-days: 14
+
+  # For a tag: the installers, their checksums and the signed list of them join the draft release, so its downloads live
+  # with the release.
+  attach:
+    needs: [package, desktop, manifest]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
+      - name: Fetch the signed list of the installers
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: Thimbleby-release-manifest
+          path: manifest
       - name: Fetch the installers the builds kept
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -346,4 +427,6 @@ jobs:
             mv "$dir/SHA256SUMS.txt" "installers/SHA256SUMS-${target}.txt"
             files+=("$dir"/* "installers/SHA256SUMS-${target}.txt")
           done
+          test -s manifest/RELEASE-MANIFEST.json.sig
+          files+=(manifest/RELEASE-MANIFEST.json manifest/RELEASE-MANIFEST.json.sig)
           gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber "${files[@]}"

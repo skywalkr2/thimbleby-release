@@ -1,9 +1,12 @@
 """One real update of the built app on this system (S-0625): the installed app updates itself to the built installer.
 
-It installs the built installer into a throwaway place with an empty home, as the fresh-install check does, and serves
-a release feed from this computer (a loopback address; nothing leaves it) that lists the same installer as a much newer
-version. The app is told where its feed is by the setting `updates.feed_address` (an environment variable here), so it
-runs the code a person's click runs and nothing else is special:
+It installs the built installer into a throwaway place with an empty home, as the fresh-install check does, and writes
+an earlier version number into that installed copy's own package facts, so it is an older install of the same program.
+It serves a release feed from this computer (a loopback address; nothing leaves it) that lists the installer under the
+version it really is, with the release's list of files signed by a key made for this run. The app is told where its
+feed is and which key to trust by the settings `updates.feed_address` and `updates.trusted_keys` (environment variables
+here), so it runs the code a person's click runs and nothing else is special. The new version must be the one the feed
+named: any other would be put back as a failed update.
   1. the app looks at the feed and Today offers the update (the row's install is POST /api/update/<version>/install);
   2. the check puts a marker in the workspace's database, then makes the same request the row's button makes;
   3. the app copies the work, downloads the installer from the feed, checks its SHA-256, hands over and ends; the script
@@ -33,6 +36,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import release_manifest
 from fresh_install_check import install_windows, keep_log, mount_mac, put_mac, start_app, wait_exit
 from session_check import capture, page_drawn, pause, running_pids, wait_drawn
 
@@ -40,20 +44,61 @@ from engine.desktop import places
 from engine.launcher import InstanceLock, ask_state, ask_to_show, wait_ready
 from engine.legacy_names import private_dir
 
-#: The version the feed claims for the installer: far above any real one, so the running app sees it as newer.
+#: The version the feed states for the installer when the caller names none.
 FEED_VERSION = "999.0.0"
+#: The version written into the installed copy before it is started, so the built installer is newer than it.
+EARLIER_VERSION = "0.0.1"
 OFFER_SECONDS = 300
 UPDATE_SECONDS = 900
 LOCAL = "http://127.0.0.1"
 
 
-def serve_feed(installer: Path, system: str, port: int) -> tuple[ThreadingHTTPServer, str]:
-    """A release feed and the installer's download, on this computer only. Returns the server and the feed's address."""
+def make_older(app: Path) -> str:
+    """Write `EARLIER_VERSION` into the installed copy's package facts (the `METADATA` of its own distribution) and
+    return the version it had: the copy then is an older install, and the built installer a real newer version."""
+    found = ""
+    seen: set[Path] = set()
+    for facts in app.rglob("*.dist-info/METADATA"):
+        real = facts.resolve()
+        if real in seen:
+            continue
+        seen.add(real)
+        text = real.read_text(encoding="utf-8")
+        if not re.search(r"(?mi)^Name: thimbleby\s*$", text):
+            continue
+        version = re.search(r"(?m)^Version: (\S+)[ \t]*$", text)
+        if version is None:
+            continue
+        found = version.group(1)
+        real.write_text(text.replace(version.group(0), f"Version: {EARLIER_VERSION}", 1), encoding="utf-8")
+    if not found:
+        raise SystemExit(f"The installed app's own version was not found under {app}.")
+    return found
+
+
+def serve_feed(
+    installer: Path, system: str, port: int, version: str = FEED_VERSION
+) -> tuple[ThreadingHTTPServer, str, str]:
+    """A release feed, the installer's download and the release's signed list of files, on this computer only. The
+    list is signed with a key made here for this one run and never kept; the app is told to trust its public half by
+    the setting `updates.trusted_keys`. Returns the server, the feed's address and that public key."""
+    import base64
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
     suffix = ".dmg" if system == "Darwin" else ".exe"
-    name = f"Thimbleby-{FEED_VERSION}-{'macos-arm64' if system == 'Darwin' else 'windows-x64-setup'}{suffix}"
+    name = f"Thimbleby-{version}-{'macos-arm64' if system == 'Darwin' else 'windows-x64-setup'}{suffix}"
     with installer.open("rb") as payload:
         digest = hashlib.file_digest(payload, "sha256").hexdigest()
     size = installer.stat().st_size
+    key = Ed25519PrivateKey.generate()
+    listing = {"format": release_manifest.FORMAT, "version": version}
+    listing["files"] = [{"name": name, "size": size, "sha256": digest}]
+    manifest = (json.dumps(listing, indent=2) + "\n").encode("ascii")
+    signed = {
+        release_manifest.MANIFEST_NAME: manifest,
+        release_manifest.SIGNATURE_NAME: base64.b64encode(key.sign(manifest)) + b"\n",
+    }
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -61,24 +106,39 @@ def serve_feed(installer: Path, system: str, port: int) -> tuple[ThreadingHTTPSe
                 body = json.dumps(
                     [
                         {
-                            "tag_name": f"v{FEED_VERSION}",
+                            "tag_name": f"v{version}",
                             "prerelease": False,
                             "draft": False,
                             "published_at": "2026-01-01T00:00:00Z",
-                            "html_url": f"https://releases.example.com/tag/v{FEED_VERSION}",
+                            "html_url": f"https://releases.example.com/tag/v{version}",
                             "body": "- Installed by the release build's update check",
                             "assets": [
                                 {
                                     "name": name,
                                     "browser_download_url": f"{LOCAL}:{self.server.server_address[1]}/download/{name}",
                                     "digest": f"sha256:{digest}",
-                                }
+                                },
+                                *(
+                                    {
+                                        "name": listed,
+                                        "browser_download_url": f"{LOCAL}:{self.server.server_address[1]}"
+                                        f"/download/{listed}",
+                                    }
+                                    for listed in signed
+                                ),
                             ],
                         }
                     ]
                 ).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            elif self.path.removeprefix("/download/") in signed:
+                body = signed[self.path.removeprefix("/download/")]
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -99,7 +159,7 @@ def serve_feed(installer: Path, system: str, port: int) -> tuple[ThreadingHTTPSe
 
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     threading.Thread(target=server.serve_forever, name="release-feed", daemon=True).start()
-    return server, f"{LOCAL}:{server.server_address[1]}/releases"
+    return server, f"{LOCAL}:{server.server_address[1]}/releases", release_manifest.public_text(key)
 
 
 _SESSIONS: dict[tuple[int, str], str] = {}
@@ -306,23 +366,26 @@ def main(installer: str, pictures_folder: str, port: int = 8794, feed_port: int 
     home.mkdir()
     place = scratch / "installed"
     place.mkdir()
-    server, feed = serve_feed(Path(installer), system, feed_port)
     env = {
         "HOME": str(home),
         "USERPROFILE": str(home),
         "LOCALAPPDATA": str(home / "AppData" / "Local"),
         "THIMBLEBY__SERVER__PORT": str(port),
-        "THIMBLEBY__UPDATES__FEED_ADDRESS": feed,
     }
     workspace, logs = places({**os.environ, **env}, home, system)
     mounted: Path | None = None
+    server: ThreadingHTTPServer | None = None
     try:
         if system == "Darwin":
             mounted = mount_mac(Path(installer), scratch)
             app = put_mac(mounted, place)
         else:
             app = install_windows(Path(installer), place / "Thimbleby")
-        print(f"installed at {app}")
+        built = make_older(Path(app) if Path(app).is_dir() else Path(app).parent)
+        print(f"installed at {app}, as version {EARLIER_VERSION}; the installer is version {built}")
+        server, feed, trusted = serve_feed(Path(installer), system, feed_port, built)
+        env["THIMBLEBY__UPDATES__FEED_ADDRESS"] = feed
+        env["THIMBLEBY__UPDATES__TRUSTED_KEYS"] = json.dumps([trusted])
         start_app(system, app, env)
         if not wait_ready(f"{LOCAL}:{port}/api/health", timeout=180, interval=0.5, request_timeout=2):
             raise SystemExit("The installed app did not answer.")
@@ -373,7 +436,8 @@ def main(installer: str, pictures_folder: str, port: int = 8794, feed_port: int 
         print("update: passed")
     finally:
         keep_log(logs, pictures / "app-log-update")
-        server.shutdown()
+        if server is not None:
+            server.shutdown()
         if mounted is not None:
             subprocess.run(["hdiutil", "detach", str(mounted.parent), "-force", "-quiet"], check=False)
         shutil.rmtree(scratch, ignore_errors=True)

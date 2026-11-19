@@ -23,7 +23,11 @@ PyInstaller (one folder, windowed), **starts the frozen app on an empty home fol
 must make its workspace, serve the screens on this computer only, refuse a visit with no sign-in link, and let a second start
 only bring the first forward), and only then makes the disk image or the installer. Each uploads its installer and
 `SHA256SUMS.txt` as a download of the run (14 days). Nothing is published, no one is told, and nothing is installed for a
-tester. Hashes detect changed bytes; they do not say who made the file.
+tester. Hashes detect changed bytes; they do not say who made the file. That is the job of the release's list: once every
+installer is built, the `manifest` job writes `RELEASE-MANIFEST.json` (the version and each installer's name, size and SHA-256)
+and signs it with the key in the repository secret `RELEASE_SIGNING_KEY` (`build_support/release_manifest.py`). The app offers
+or installs an update only when that signature verifies against the public key it carries. A tag with no key fails; a run by
+hand with no key keeps the list unsigned and says so on the run's page.
 
 **To make one by hand:** Actions tab, *release*, *Run workflow*, pick the branch. With no tag the version is the package's own
 (`pyproject.toml`); with a tag it must equal the tag without the `v` (`v0.1.0`, `v0.1.0rc1`, `v0.1.0.post1`; numbers up to

@@ -202,10 +202,40 @@ def test_one_release_workflow_builds_the_package_and_the_three_installers_from_a
     release = next(step for step in steps if "gh release create" in step.get("run", ""))
     assert release["if"] == "github.ref_type == 'tag'" and "--draft" in release["run"]
     attach = flow["jobs"]["attach"]
-    assert attach["if"] == "github.ref_type == 'tag'" and attach["needs"] == ["package", "desktop"]
+    assert attach["if"] == "github.ref_type == 'tag'" and attach["needs"] == ["package", "desktop", "manifest"]
     assert not any("release create" in step.get("run", "") or "edit" in step.get("run", "") for step in attach["steps"])
     assert not any("gh release" in step.get("run", "") for step in flow["jobs"]["desktop"]["steps"])
     assert any("smoke_frozen.py" in step.get("run", "") for step in flow["jobs"]["desktop"]["steps"])
+
+
+def test_the_release_signs_its_list_of_files_and_a_tag_with_no_key_fails_while_a_run_by_hand_says_it_is_unsigned():
+    """H5-28, signed releases: the list of installers is made once all are built, signed with a key
+    read from a repository secret, and attached with them; a tag never makes a release the app could not check."""
+    flow = workflow()
+    package = flow["jobs"]["package"]["steps"]
+    names = [step.get("name", "") for step in package]
+    early = next(step for step in package if "A tag needs the key" in step.get("name", ""))
+    assert early["if"] == "github.ref_type == 'tag'" and "exit 1" in early["run"]
+    assert early["env"] == {"RELEASE_SIGNING_KEY": "${{ secrets.RELEASE_SIGNING_KEY }}"}
+    assert names.index(early["name"]) < names.index("Build the package")  # before anything is built
+    job = flow["jobs"]["manifest"]
+    assert job["needs"] == ["package", "desktop"] and "if" not in job and "permissions" not in job
+    made = next(step for step in job["steps"] if "release_manifest.py make" in step.get("run", ""))
+    sign = next(step for step in job["steps"] if "release_manifest.py sign" in step.get("run", ""))
+    assert job["steps"].index(made) < job["steps"].index(sign)
+    assert sign["env"]["RELEASE_SIGNING_KEY"] == "${{ secrets.RELEASE_SIGNING_KEY }}"
+    missing, signing = sign["run"].split("PUBLIC=", 1)
+    assert 'if [ "$TAGGED" = "true" ]; then' in missing and "exit 1" in missing  # a tag with no key fails
+    assert "::notice::" in missing and "not signed" in missing and "exit 0" in missing  # a run by hand says so
+    assert '--public "$PUBLIC"' in signing  # the key must be the pair of the one the app carries
+    # The key is never printed, passed as an argument or written to a file by the workflow.
+    text = (REPO / ".github" / "workflows" / "release.yml").read_text()
+    assert text.count("secrets.RELEASE_SIGNING_KEY") == 2 and 'echo "$RELEASE_SIGNING_KEY"' not in text
+    attach = next(step for step in flow["jobs"]["attach"]["steps"] if "gh release upload" in step.get("run", ""))
+    assert "test -s manifest/RELEASE-MANIFEST.json.sig" in attach["run"]
+    assert "manifest/RELEASE-MANIFEST.json manifest/RELEASE-MANIFEST.json.sig" in attach["run"]
+    replace = next(step for step in package if "release_key:" in step.get("run", ""))
+    assert replace["env"]["RELEASE_KEY"] == "${{ vars.RELEASE_KEY }}"  # the public half is a variable, never a secret
 
 
 def test_every_action_in_the_workflow_is_pinned_by_commit_hash():
@@ -628,23 +658,63 @@ def test_each_runner_updates_the_installed_app_to_the_built_installer_through_a_
 
 
 def test_the_update_checks_local_feed_is_read_as_a_newer_release_whose_installer_downloads_and_checks(tmp_path):
+    """The feed the release build serves from the runner is taken as a real one is: the release is offered only
+    because its list of files is signed with the key made for that run, which the app is told to trust."""
     import update_check
 
     from engine import app_update, update_offer
 
     installer = tmp_path / "Thimbleby-setup.exe"
     installer.write_bytes(b"installer bytes" * 1000)
-    server, feed = update_check.serve_feed(installer, "Windows", 0)
+    server, feed, trusted = update_check.serve_feed(installer, "Windows", 0)
     try:
         import urllib.request
 
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        feed_text = opener.open(feed).read()
-        chosen = update_offer.choose(feed_text, "0.1.0", True, "Windows")
-        assert chosen is not None
-        release, _ = chosen
-        assert release.version == update_check.FEED_VERSION
-        got = app_update.download(release.download_url, release.sha256, tmp_path / "dl", "Windows")
+
+        class Local:
+            def get(self, url, **_more):
+                return type("Answer", (), {"content": opener.open(url).read()})()
+
+            def close(self):
+                pass
+
+        def fetch(url):
+            return opener.open(url).read()
+
+        def look(keys):
+            return update_offer.look(
+                tmp_path / "private", feed, current="0.1.0", web_for=lambda _u: Local(), system="Windows", keys=keys,
+                fetch=fetch,
+            )  # fmt: skip
+
+        assert look([]) is None  # without the run's key the app is offered nothing
+        found = look([trusted])
+        assert found is not None and found.version == update_check.FEED_VERSION
+        assert found.size == installer.stat().st_size
+        got = app_update.download(
+            found.download_url, found.sha256, tmp_path / "dl", "Windows", expected_size=found.size
+        )
         assert got.read_bytes() == installer.read_bytes()
     finally:
         server.shutdown()
+
+
+def test_the_update_check_makes_the_installed_copy_an_older_version_so_the_new_one_is_the_one_the_feed_names(tmp_path):
+    """The new version answers for an update only when it is the version the update was for, so the check's feed
+    states the installer's real version and the installed copy is the one given an earlier number."""
+    import update_check
+
+    facts = tmp_path / "Thimbleby" / "_internal" / "thimbleby-0.3.0.dist-info" / "METADATA"
+    other = tmp_path / "Thimbleby" / "_internal" / "other-1.0.dist-info" / "METADATA"
+    for path, name, version in ((facts, "thimbleby", "0.3.0"), (other, "other", "1.0")):
+        path.parent.mkdir(parents=True)
+        path.write_text(f"Metadata-Version: 2.4\nName: {name}\nVersion: {version}\nSummary: x\n")
+    assert update_check.make_older(tmp_path / "Thimbleby") == "0.3.0"
+    assert f"Version: {update_check.EARLIER_VERSION}\nSummary: x\n" in facts.read_text()
+    assert "Version: 1.0\n" in other.read_text()
+    with pytest.raises(SystemExit):
+        update_check.make_older(tmp_path / "empty")
+    script = (BUILD / "update_check.py").read_text()
+    assert "serve_feed(Path(installer), system, feed_port, built)" in script
+    assert "THIMBLEBY__UPDATES__TRUSTED_KEYS" in script

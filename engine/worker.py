@@ -1300,7 +1300,11 @@ class Worker:
         def run() -> None:
             try:
                 update_offer.look(
-                    self.ws.private_dir, address, include_prereleases=settings.include_prereleases, now=now
+                    self.ws.private_dir,
+                    address,
+                    include_prereleases=settings.include_prereleases,
+                    now=now,
+                    keys=update_offer.trusted_keys(settings),
                 )
             except Exception:  # the look is made again the next time it is due; nothing here may stop the app
                 log.exception("looking for a newer version failed")

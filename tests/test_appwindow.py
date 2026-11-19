@@ -518,6 +518,26 @@ def test_the_update_window_shows_its_steps_and_the_failed_screen_waits_for_the_p
     assert [name for name, _, _ in window.calls].count("load_html") == 3  # the update view, then the screen twice
 
 
+def test_the_screen_for_work_that_is_not_back_yet_offers_try_again_and_quit_and_no_way_on_to_the_app():
+    """H5-28, H2: while the copy of the work can't be put back, the only answers are trying again and quitting."""
+    shell, window, _ = make(version="0.1.0")
+    result = []
+
+    def work():
+        threading.Timer(0.1, lambda: PageApi(shell).choose("again")).start()
+        result.append(shell.restore_failed("0.1.0", "It couldn't be put back.", "details"))
+        threading.Timer(0.1, lambda: PageApi(shell).choose("open")).start()  # not offered there: never a way on
+        result.append(shell.restore_failed("0.1.0", "It couldn't be put back.", "details"))
+        threading.Timer(0.1, lambda: PageApi(shell).choose("quit")).start()
+        result.append(shell.restore_failed("0.1.0", "It couldn't be put back.", "details"))
+        shell.quit()
+        return 0
+
+    shell.run(work)
+    assert result == ["again", "", ""] and shell.details == "details"
+    assert [name for name, _, _ in window.calls].count("load_html") == 3  # the screen, each time it was asked
+
+
 def test_a_choice_the_page_does_not_offer_is_ignored():
     shell, _, _ = make()
     PageApi(shell).choose("delete everything")

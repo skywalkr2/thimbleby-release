@@ -146,6 +146,8 @@ desktop.update.step.open: Opening the new version
 desktop.update.progress: "{done} of {total} MB"
 desktop.update.failed.title: "Still on {version}"
 desktop.update.failed.text: The update didn't finish, so nothing changed.
+desktop.update.unrestored.title: Your work isn't back yet
+desktop.update.unrestored.text: The update didn't finish, and the copy of your work made before it couldn't be put back. Thimbleby stays closed until it is, and nothing has been deleted. Try again, or quit, free up some room on this computer and open Thimbleby again.
 desktop.update.menu: "Update to {version} and restart"
 desktop.update.reason.not_installed: This copy of Thimbleby isn't the installed app, so it can't update itself. Download the new version instead.
 desktop.update.reason.copy: Your work couldn't be copied first, so the update was stopped before it changed anything.
@@ -153,6 +155,8 @@ desktop.update.reason.offline: The update couldn't be downloaded because this co
 desktop.update.reason.download: The download stopped before it finished. Check the connection and try again.
 desktop.update.reason.disk_full: There isn't enough room on this computer to update. Free up some space and try again.
 desktop.update.reason.mismatch: The downloaded file isn't the one that was published, so it wasn't installed.
+desktop.update.reason.unsafe: The update's files couldn't be kept where only you can reach them, so it was stopped before it changed anything.
+desktop.update.reason.wrong_version: The version that opened wasn't the one you were offered, so the old one was put back with your work as it was.
 desktop.update.reason.unreadable: The downloaded file couldn't be opened.
 desktop.update.reason.folder: Thimbleby's folder can't be changed by this account, so the update couldn't be put in place.
 desktop.update.reason.install: The new version couldn't be installed, so the old one was put back.

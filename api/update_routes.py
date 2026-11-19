@@ -21,7 +21,7 @@ def build_update_router(
     r = APIRouter(prefix="/api/update")
 
     def known(version: str) -> None:
-        found = update_offer.offer(ws.private_dir)
+        found = update_offer.offer_for(ws, cfg)
         if found is None or found.version != version:
             raise HTTPException(status_code=404, detail="That version isn't on offer any more.")
 

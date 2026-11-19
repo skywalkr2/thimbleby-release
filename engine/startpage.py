@@ -19,8 +19,9 @@ PAGE = Path(__file__).resolve().parent / "defaults" / "starting.html"
 STEPS = ("desktop.step.workspace", "desktop.step.app", "desktop.step.screens")
 #: The steps the window lists while the app updates itself, in order, by wording key (`engine.app_update.STEPS`).
 UPDATE_STEPS = tuple(f"desktop.update.step.{name}" for name in ("copy", "download", "check", "install", "open"))
-#: What the window can show: the starting steps, an update's steps, or the failed-update screen.
-VIEWS = ("start", "update", "failed")
+#: What the window can show: the starting steps, an update's steps, the failed-update screen, or the screen that says
+#: the copy of the work isn't back yet (Try again and Quit only).
+VIEWS = ("start", "update", "failed", "unrestored")
 #: Error numbers that mean the disk has no room, and that something else holds the address the app needs.
 _FULL = {errno.ENOSPC, errno.EDQUOT}
 _HELD = {errno.EADDRINUSE, errno.EACCES, 10048, 10013}
@@ -77,6 +78,11 @@ def page(
             words["desktop.update.failed.title"].format(version=version),
             words["desktop.update.failed.text"],
         )
+    elif view == "unrestored":
+        heading, subtitle = (
+            words["desktop.update.unrestored.title"],
+            words["desktop.update.failed.title"].format(version=version),
+        )
     marks = {
         "mark_day": _inline(brand / "mark-day.svg", "d"),
         "mark_night": _inline(brand / "mark-night.svg", "n"),
@@ -93,6 +99,7 @@ def page(
         "update_count": str(len(UPDATE_STEPS)),
         "failed_reason": html.escape(reason),
         "open_app": html.escape(words.get("desktop.open", "")),
+        "quit_app": html.escape(words.get("desktop.quit", "")),
         "copy_details": html.escape(words["desktop.copy_details"]),
         "try_again": html.escape(words["desktop.try_again"]),
         "earlier_use": html.escape(words.get("desktop.earlier.use", "")),

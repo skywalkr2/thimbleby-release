@@ -38,6 +38,11 @@ body[data-view="update"] #progress { display:none; }
 body[data-view="update"] #updating { display:block; }
 body[data-view="failed"] #progress { display:none; }
 body[data-view="failed"] #failed { display:block; }
+body[data-view="unrestored"] #progress { display:none; }
+body[data-view="unrestored"] #failed { display:block; }
+#failed-quit { display:none; }
+body[data-view="unrestored"] #failed-open { display:none; }
+body[data-view="unrestored"] #failed-quit { display:inline-block; }
 li.now { color:var(--text); }
 li .d { margin-left:auto; color:var(--muted); font-size:13px; }
 </style>
@@ -63,6 +68,7 @@ li .d { margin-left:auto; color:var(--muted); font-size:13px; }
     <div class="foot">
       <button type="button" id="failed-copy">{{copy_details}}</button><span class="spacer"></span>
       <button type="button" id="failed-open">{{open_app}}</button>
+      <button type="button" id="failed-quit">{{quit_app}}</button>
       <button type="button" class="primary" id="failed-again">{{try_again}}</button>
     </div>
   </section>
@@ -135,6 +141,7 @@ function resume(title, sub) {
 }
 document.getElementById("failed-again").onclick = function () { if (api()) api().choose("again"); };
 document.getElementById("failed-open").onclick = function () { if (api()) api().choose("open"); };
+document.getElementById("failed-quit").onclick = function () { if (api()) api().choose("quit"); };
 document.getElementById("failed-copy").onclick = function () { if (api()) api().copy_details(); };
 document.getElementById("use").onclick = function () { if (api()) api().choose("use"); };
 document.getElementById("fresh").onclick = function () { if (api()) api().choose("fresh"); };

@@ -165,7 +165,9 @@ def start(
         if time.monotonic() < next_look[0]:
             return
         next_look[0] = time.monotonic() + 30
-        found = update_offer.offer(ws.private_dir) if ws.config(env=env).updates.check else None
+        now = ws.config(env=env)
+        keys = update_offer.trusted_keys(now.updates)
+        found = update_offer.offer(ws.private_dir, None, keys) if now.updates.check else None
         shell.set_update(found.version if found is not None else None)
 
     next_look = [0.0]

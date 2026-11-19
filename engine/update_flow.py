@@ -3,7 +3,8 @@
 `install` runs the update steps (`engine.app_update`) with the starting window showing their progress; a step that
 fails turns the window into the failed-update screen (one reason, Try again, Open Thimbleby, Copy details). `settle`
 runs at the start of the app: when the script outside the app put the old version back, it puts the database copy back
-too and shows the same screen; when the new version is the one running, it tells the script so.
+too and shows the same screen; while that copy can't be put back the app stays closed (Try again, Quit, Copy details);
+when the version the update was for is the one running, it tells the script so.
 """
 
 from __future__ import annotations
@@ -50,7 +51,7 @@ def install(
 ) -> bool:
     """Update to `version` from the starting window. True when the hand-over has started, so the caller ends the app;
     False when the person chose to go on with the version they have (or quit)."""
-    offer = update_offer.offer(ws.private_dir)
+    offer = update_offer.offer_for(ws, cfg)
     running = current or update_offer.current_version()
     here = install_at if install_at is not None else app_update.own_install()
     shell.show_update(running)
@@ -86,6 +87,24 @@ def install(
                 return False
 
 
+def _put_back(ws: Any, shell: Any, shown: str) -> str | None:
+    """Put the copy of the work back, as often as the person says to try. Returns what to add to the details once it
+    is back (empty when there was no copy to put back), or none when the person quit with it still not back: the note
+    that it is needed stays, the workspace is not opened, and the next start tries again."""
+    while True:
+        try:
+            done = updating.restore(ws)
+        except updating.UpdateError as err:
+            log.warning("the copy of the work couldn't be put back: %s", err)
+            details = f"Update didn't finish, still on {shown}\n{err}\n{_log_tail(ws)}"
+            choice = shell.restore_failed(shown, shell.words["desktop.update.unrestored.text"], details)
+            if choice != "again":
+                return None
+            continue
+        app_update.clear_restore(ws)
+        return "\nThe copy of the work made before updating was put back." if done else ""
+
+
 def settle(
     ws: Any,
     cfg: Any,
@@ -97,28 +116,38 @@ def settle(
     environ: Mapping[str, str] | None = None,
 ) -> bool:
     """At the start of the app, before the workspace is opened: deal with what the last update left. True when the app
-    goes on starting; False when the person chose to try the update again and it has been handed over, or quit."""
+    goes on starting; False when the person chose to try the update again and it has been handed over, or quit.
+
+    A rolled-back update whose copy of the work has to be put back is noted on its own (`app_update.mark_restore`)
+    before anything else, and the note stays until the copy is back: while it can't be put back the screen offers Try
+    again and Quit only, and the workspace is never opened."""
     running = current or update_offer.current_version()
     found = app_update.read_result(ws)
-    if found is None:
-        app_update.drop_stale_plan(ws)
-        return True
-    if found.get("status") != "failed":
-        return True
+    failed = found is not None and found.get("status") == "failed"
+    pending = app_update.restore_needed(ws)
+    shown = str((found or {}).get("from") or (pending or {}).get("from") or running)
+    if failed and found.get("restore") and pending is None:
+        app_update.mark_restore(ws, shown)
+        pending = app_update.restore_needed(ws)
     extra = ""
-    if found.get("restore"):
-        try:
-            if updating.restore(ws):
-                extra = "\nThe copy of the work made before updating was put back."
-        except updating.UpdateError as err:
-            extra = f"\n{err}"
+    if pending is not None:
+        back = _put_back(ws, shell, shown)
+        if back is None:
+            if not shell.quit_event.is_set():
+                shell.quit()
+            return False
+        extra = back
+    if found is None or not failed:
+        app_update.drop_stale_plan(ws)
+        if pending is not None:
+            shell.resume_starting()
+        return True
     kind = str(found.get("reason") or "other")
-    shown = str(found.get("from") or running)
     details = f"Update didn't finish ({kind}), still on {shown}{extra}\n{_log_tail(ws)}"
     app_update.clear(ws)
     choice = shell.update_failed(shown, reason(shell.words, kind), details)
     if choice == "again":
-        offer = update_offer.offer(ws.private_dir)
+        offer = update_offer.offer_for(ws, cfg)
         if offer is not None and install(
             ws, cfg, shell, offer.version, current=running, steps=steps, install_at=install_at, environ=environ
         ):

@@ -12,6 +12,15 @@ from packaging.version import InvalidVersion, Version
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
 
+def address_ok(url: str) -> bool:
+    """Whether a release's file may be fetched from this address: https, or plain http on this computer only, with no
+    sign-in in it and no white space."""
+    parts = urlsplit(url)
+    if not parts.hostname or any(c.isspace() for c in url) or parts.username or parts.password:
+        return False
+    return parts.scheme == "https" or (parts.scheme == "http" and parts.hostname in LOOPBACK)
+
+
 @dataclass(frozen=True)
 class Release:
     version: str

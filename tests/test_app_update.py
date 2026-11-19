@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import json
+import os
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -63,6 +65,20 @@ def windows_install(tmp_path):
     folder.mkdir(parents=True)
     (folder / "Thimbleby.exe").write_bytes(b"old")
     return Install("Windows", folder, folder / "Thimbleby.exe")
+
+
+def helper_folder(ws):
+    return ws.private_dir / app_update.HELPER_FOLDER
+
+
+def staged(ws, install, run=None):
+    """The new Mac app put beside the installed one and checked, as the step before the hand-over leaves it."""
+    scratch = app_update.private_folder(helper_folder(ws), fresh=True)
+    return app_update.stage_mac(Path("x.dmg"), install, run or FakeRun(), scratch=scratch)
+
+
+def mode(path):
+    return path.stat().st_mode & 0o777
 
 
 # ---- which copy can update itself ----------------------------------------------------------------------------------
@@ -183,8 +199,7 @@ def test_a_redirect_is_followed_to_another_secure_address_and_never_to_a_plain_o
 
 
 def test_a_file_from_an_earlier_try_that_still_matches_is_used_and_another_is_cleared(tmp_path):
-    folder = tmp_path / "dl"
-    folder.mkdir()
+    folder = app_update.private_folder(tmp_path / "dl")
     (folder / "Thimbleby-0.2.0-macos-arm64.dmg").write_bytes(BODY)
     (folder / "older.dmg").write_bytes(b"older")
 
@@ -192,8 +207,7 @@ def test_a_file_from_an_earlier_try_that_still_matches_is_used_and_another_is_cl
         raise AssertionError("the file was already there")
 
     assert app_update.download(URL, SHA, folder, "Darwin", client=client(never)).read_bytes() == BODY
-    folder2 = tmp_path / "dl2"
-    folder2.mkdir()
+    folder2 = app_update.private_folder(tmp_path / "dl2")
     (folder2 / "older.dmg").write_bytes(b"older")
     app_update.download(URL, SHA, folder2, "Darwin", client=serving())
     assert [p.name for p in folder2.iterdir()] == ["Thimbleby-0.2.0-macos-arm64.dmg"]
@@ -280,7 +294,9 @@ def test_the_image_is_opened_read_only_the_new_app_is_copied_beside_the_old_and_
     assert steps == [["hdiutil", "attach"], ["ditto"], ["hdiutil", "detach"]]
     assert "-readonly" in run.calls[0] and "-nobrowse" in run.calls[0]
     assert (install.executable).read_bytes() == b"old"  # the installed app is untouched
-    assert list(scratch.iterdir()) == []  # the mount folder is gone
+    # The mount folder is gone; what is left is what the script checks the new app against.
+    assert sorted(p.name for p in scratch.iterdir()) == [app_update.STAGED_FILE, app_update.SUMS_FILE]
+    assert (scratch / app_update.SUMS_FILE).read_text() == app_update.tree_facts(staged)[0]
 
 
 @pytest.mark.parametrize(
@@ -355,7 +371,7 @@ def test_the_hand_over_writes_its_plan_and_script_and_starts_the_script_detached
     script = app_update.hand_over(
         ws,
         install,
-        app_update.new_bundle_path(install),
+        staged(ws, install),
         from_version="0.1.0",
         version="0.2.0",
         page=PAGE,
@@ -372,6 +388,14 @@ def test_the_hand_over_writes_its_plan_and_script_and_starts_the_script_detached
     assert "--env THIMBLEBY__SERVER__PORT=8793" in text and "HOME=/x" not in text  # only the app's own settings pass
     plan = app_update.read_plan(ws)
     assert plan["from"] == "0.1.0" and plan["version"] == "0.2.0" and plan["notes"] == ["Faster start"]
+    # The plan and the script carry one id for this attempt, new each time (H5-28, H3).
+    assert len(plan["attempt"]) == 32 and f"ATTEMPT={plan['attempt']}" in text
+    # The script is given what the new app was checked against (H5-28, H1).
+    sums, files, links = app_update.tree_facts(app_update.new_bundle_path(install))
+    assert f"SUMS={helper_folder(ws) / app_update.SUMS_FILE}" in text
+    assert f"FILES={files}" in text and f"LINKS={links}" in text
+    assert (helper_folder(ws) / app_update.SUMS_FILE).read_text() == sums
+    assert mode(helper_folder(ws)) == 0o700
 
 
 def test_the_hand_over_on_windows_runs_powershell_with_the_setup_program(ws, tmp_path):
@@ -379,19 +403,35 @@ def test_the_hand_over_on_windows_runs_powershell_with_the_setup_program(ws, tmp
     setup = tmp_path / "setup.exe"
     script = app_update.hand_over(
         ws, install, setup, from_version="0.1.0", version="0.2.0", page=None, notes=[], settings=SETTINGS,
-        spawn=started.append, pid=7, now=NOW,
+        spawn=started.append, pid=7, now=NOW, sha256=SHA.upper(),
     )  # fmt: skip
     assert started[0][0] == "powershell.exe" and started[0][-2:] == ["-File", str(script)]
-    assert str(setup) in script.read_text() and "Wait-Process" in script.read_text()
+    text = script.read_text()
+    assert str(setup) in text and "Wait-Process" in text
+    assert f"$Sha = '{SHA}'" in text and f"$Attempt = '{app_update.read_plan(ws)['attempt']}'" in text
+
+
+def test_nothing_is_handed_over_without_what_the_script_checks_it_against(ws, tmp_path):
+    """H5-28, H1: a new Mac app whose files were never checked, and a setup with no checksum, start no script."""
+    started = []
+    for install, more in ((mac_install(tmp_path), {}), (windows_install(tmp_path), {"sha256": None})):
+        with pytest.raises(UpdateFailed) as caught:
+            app_update.hand_over(
+                ws, install, tmp_path / "n", from_version="0.1.0", version="0.2.0", page=None, notes=[],
+                settings=SETTINGS, spawn=started.append, pid=1, now=NOW, **more,
+            )  # fmt: skip
+        assert caught.value.kind == "unsafe"
+    assert started == [] and app_update.read_plan(ws) is None
 
 
 def test_a_hand_over_that_cannot_start_leaves_no_plan_and_says_so(ws, tmp_path):
     def cannot(_argv):
         raise OSError(errno.EACCES, "denied")
 
+    install = mac_install(tmp_path)
     with pytest.raises(UpdateFailed) as caught:
         app_update.hand_over(
-            ws, mac_install(tmp_path), tmp_path / "n", from_version="0.1.0", version="0.2.0", page=None, notes=[],
+            ws, install, staged(ws, install), from_version="0.1.0", version="0.2.0", page=None, notes=[],
             settings=SETTINGS, spawn=cannot, pid=1, now=NOW,
         )  # fmt: skip
     assert caught.value.kind == "install" and app_update.read_plan(ws) is None
@@ -400,8 +440,8 @@ def test_a_hand_over_that_cannot_start_leaves_no_plan_and_says_so(ws, tmp_path):
 def test_a_new_hand_over_clears_the_result_of_the_one_before(ws, tmp_path):
     (ws.private_dir / app_update.RESULT_FILE).write_text('{"status":"failed"}')
     app_update.hand_over(
-        ws, mac_install(tmp_path), tmp_path / "n", from_version="0.1.0", version="0.2.0", page=None, notes=[],
-        settings=SETTINGS, spawn=lambda _a: None, pid=1, now=NOW,
+        ws, windows_install(tmp_path), tmp_path / "n", from_version="0.1.0", version="0.2.0", page=None, notes=[],
+        settings=SETTINGS, spawn=lambda _a: None, pid=1, now=NOW, sha256=SHA,
     )  # fmt: skip
     assert app_update.read_result(ws) is None
 
@@ -445,8 +485,13 @@ class Recorder:
         self._maybe("hand_over")
         return self.tmp / "script"
 
+    def check(self, installer, sha):
+        self.calls.append("check")
+
     def steps(self):
-        return Steps(backup=self.backup, download=self.download, stage=self.stage, hand_over=self.hand_over)
+        return Steps(
+            backup=self.backup, download=self.download, stage=self.stage, hand_over=self.hand_over, check=self.check
+        )
 
     def say(self, step, fraction, detail):
         self.progress.append((step, fraction, detail))
@@ -475,7 +520,8 @@ def test_every_step_runs_in_order_and_progress_reports_each_one(ws, tmp_path):
 def test_on_windows_the_setup_program_is_the_file_itself_and_nothing_is_staged(ws, tmp_path):
     recorder = Recorder(tmp_path, system="Windows")
     run_all(ws, tmp_path, recorder, install=windows_install(tmp_path))
-    assert recorder.calls == ["backup", "download", "backup", "hand_over"]
+    # The setup's checksum is taken once more as the last thing before the script is given the file to run.
+    assert recorder.calls == ["backup", "download", "backup", "check", "hand_over"]
 
 
 @pytest.mark.parametrize(
@@ -527,6 +573,7 @@ def test_the_real_steps_with_a_mock_network_and_a_fake_runner_hand_over_a_mac_up
         environ={},
     )
     assert started and started[0][0] == "/bin/sh"
+    assert mode(ws.private_dir / app_update.DOWNLOAD_FOLDER) == 0o700 and mode(helper_folder(ws)) == 0o700
     assert (app_update.new_bundle_path(install) / "Contents" / "MacOS" / "Thimbleby").read_bytes() == b"new"
     assert install.executable.read_bytes() == b"old"  # the script swaps them; the app never does
     assert updating.note(ws)["version"] == "0.1.0"
@@ -539,19 +586,62 @@ def test_the_new_version_writes_the_result_the_script_waits_for_and_clears_what_
     assert app_update.record_started(ws, "0.2.0") is False  # no hand-over was waiting
     (ws.private_dir / app_update.DOWNLOAD_FOLDER).mkdir()
     (ws.private_dir / app_update.DOWNLOAD_FOLDER / "x.dmg").write_bytes(b"x")
-    app_update.hand_over(
-        ws, mac_install(tmp_path), tmp_path / "n", from_version="0.1.0", version="0.2.0",
-        page=PAGE, notes=["Faster start"], settings=SETTINGS,
-        spawn=lambda _a: None, pid=1, now=NOW,
-    )  # fmt: skip
+    hand_over_windows(ws, tmp_path)
+    attempt = app_update.read_plan(ws)["attempt"]
     assert app_update.record_started(ws, "0.2.0", NOW) is True
     raw = (ws.private_dir / app_update.RESULT_FILE).read_text()
-    assert '"status":"ok"' in raw  # the exact form the scripts look for
+    # The exact form the scripts look for: the status, and this attempt's id.
+    assert '"status":"ok"' in raw and f'"attempt":"{attempt}"' in raw
     assert app_update.read_plan(ws) is None and not (ws.private_dir / app_update.DOWNLOAD_FOLDER).exists()
     done = app_update.updated(ws)
     assert (done["version"], done["from"], done["notes"]) == ("0.2.0", "0.1.0", ["Faster start"])
     app_update.mark_seen(ws)
     assert app_update.updated(ws) is None  # shown once
+
+
+def hand_over_windows(ws, tmp_path, version="0.2.0"):
+    folder = tmp_path / "Programs" / "Thimbleby"
+    return app_update.hand_over(
+        ws, Install("Windows", folder, folder / "Thimbleby.exe"), tmp_path / "setup.exe", from_version="0.1.0",
+        version=version,
+        page=PAGE, notes=["Faster start"], settings=SETTINGS, spawn=lambda _a: None, pid=1, now=NOW, sha256=SHA,
+    )  # fmt: skip
+
+
+def test_a_version_that_is_not_the_one_the_update_was_for_never_says_the_update_worked(ws, tmp_path):
+    """H5-28, H3, the review's sequence: a hand-over to 0.2.0 waits, and another version starts and reports in (the
+    old one opened again, or an installer that held something else). Before, any version's start wrote `ok`."""
+    (ws.private_dir / app_update.DOWNLOAD_FOLDER).mkdir()
+    hand_over_windows(ws, tmp_path)
+    attempt = app_update.read_plan(ws)["attempt"]
+    for other in ("0.1.0", "0.3.0", "0+unknown"):
+        assert app_update.record_started(ws, other, NOW) is False
+        found = app_update.read_result(ws)
+        assert (found["status"], found["attempt"], found["version"], found["expected"]) == (
+            "wrong", attempt, other, "0.2.0",
+        )  # fmt: skip
+        assert '"status":"ok"' not in (ws.private_dir / app_update.RESULT_FILE).read_text()
+        assert app_update.read_plan(ws)["attempt"] == attempt  # the plan stays: the script is still deciding
+        assert (ws.private_dir / app_update.DOWNLOAD_FOLDER).exists()
+        assert app_update.updated(ws) is None  # Today never says the app was updated
+    assert app_update.record_started(ws, "0.2.0", NOW) is True  # the version it was for still can
+
+
+def test_each_attempt_has_its_own_id_and_the_same_version_written_another_way_is_the_same_version(ws, tmp_path):
+    hand_over_windows(ws, tmp_path, "0.2")
+    first = app_update.read_plan(ws)["attempt"]
+    assert app_update.record_started(ws, "0.2.0", NOW) is True
+    hand_over_windows(ws, tmp_path, "0.2")
+    assert app_update.read_plan(ws)["attempt"] != first
+
+
+def test_a_plan_written_by_a_version_from_before_attempts_had_ids_is_still_answered_by_the_right_version(ws):
+    """The version being updated from wrote the plan and its script; that script looks for `ok` alone."""
+    plan = {"version": "0.2.0", "from": "0.1.0", "page": None, "notes": [], "at": NOW.isoformat()}
+    (ws.private_dir / app_update.PLAN_FILE).write_text(json.dumps(plan))
+    assert app_update.record_started(ws, "0.1.0", NOW) is False
+    assert app_update.record_started(ws, "0.2.0", NOW) is True
+    assert '"status":"ok"' in (ws.private_dir / app_update.RESULT_FILE).read_text()
 
 
 def test_a_result_the_windows_script_wrote_with_a_byte_order_mark_still_reads(ws):
@@ -562,13 +652,16 @@ def test_a_result_the_windows_script_wrote_with_a_byte_order_mark_still_reads(ws
 
 
 def test_a_plan_no_result_ever_followed_is_dropped_only_once_it_is_too_old_for_its_script_to_be_running(ws, tmp_path):
-    app_update.hand_over(
-        ws, mac_install(tmp_path), tmp_path / "n", from_version="0.1.0", version="0.2.0", page=None, notes=[],
-        settings=SETTINGS, spawn=lambda _a: None, pid=1, now=NOW,
-    )  # fmt: skip
+    hand_over_windows(ws, tmp_path)
     assert app_update.drop_stale_plan(ws, NOW + timedelta(minutes=5)) is False
     assert app_update.drop_stale_plan(ws, NOW + timedelta(hours=1)) is True
     assert app_update.read_plan(ws) is None
+    # A plan only another version ever answered is dropped the same way, with that answer.
+    hand_over_windows(ws, tmp_path)
+    assert app_update.record_started(ws, "0.1.0", NOW) is False
+    assert app_update.drop_stale_plan(ws, NOW + timedelta(minutes=5)) is False
+    assert app_update.drop_stale_plan(ws, NOW + timedelta(hours=1)) is True
+    assert app_update.read_plan(ws) is None and app_update.read_result(ws) is None
 
 
 def test_the_copy_put_back_after_a_failed_update_is_the_one_taken_first(ws):
@@ -645,3 +738,147 @@ def test_the_windows_hand_over_gets_a_hidden_console_of_its_own_never_none(tmp_p
     detached = 0x00000008
     assert len(started) == 2 and started[0] & app_update.CREATE_BREAKAWAY_FROM_JOB
     assert all(flags & app_update.CREATE_NO_WINDOW and not flags & detached for flags in started)
+
+
+# ---- what is checked is the thing that is used (H5-28, H1) -----------------------------------------------------------
+
+
+def test_the_folders_an_update_keeps_its_files_in_are_private_and_a_link_or_another_accounts_folder_is_refused(
+    tmp_path, monkeypatch
+):
+    made = app_update.private_folder(tmp_path / "private" / app_update.DOWNLOAD_FOLDER)
+    assert mode(made) == 0o700
+    (made / "kept").write_text("x")
+    assert app_update.private_folder(made) == made and (made / "kept").exists()  # a private folder is used again
+    assert list(app_update.private_folder(made, fresh=True).iterdir()) == []  # unless a new one is asked for
+
+    # A folder left open to others can't vouch for what it holds: it is emptied and made private.
+    loose = tmp_path / "loose"
+    loose.mkdir()
+    loose.chmod(0o755)
+    (loose / "Thimbleby-0.2.0-macos-arm64.dmg").write_bytes(BODY)
+    got = app_update.download(URL, SHA, loose, "Darwin", client=serving())
+    assert mode(loose) == 0o700 and got.read_bytes() == BODY
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(elsewhere, target_is_directory=True)
+    plain = tmp_path / "a-file"
+    plain.write_text("x")
+    for bad in (link, plain):
+        with pytest.raises(UpdateFailed) as caught:
+            app_update.private_folder(bad)
+        assert caught.value.kind == "unsafe"
+    with pytest.raises(UpdateFailed):
+        app_update.download(URL, SHA, link, "Darwin", client=serving())
+    assert list(elsewhere.iterdir()) == []  # nothing was written through the link
+
+    monkeypatch.setattr(app_update.os, "getuid", lambda: os.stat(made).st_uid + 1)
+    with pytest.raises(UpdateFailed) as caught:
+        app_update.private_folder(made)
+    assert caught.value.kind == "unsafe"
+
+
+def swapping(real, change):
+    """A step that does its work and then has the file it returned changed by someone else."""
+
+    def step(*args, **kwargs):
+        got = real(*args, **kwargs)
+        change(got)
+        return got
+
+    return step
+
+
+def test_a_windows_setup_swapped_after_its_checksum_was_checked_is_never_handed_over_to_run(ws, tmp_path):
+    """The review's sequence: the download is checked, then the file is replaced before the script runs it."""
+    backups, started, path = [], [], ws.private_dir / app_update.DOWNLOAD_FOLDER / "Thimbleby-0.2.0-setup.exe"
+
+    def backup(_ws, _version):
+        backups.append(1)
+        if len(backups) == 2:  # after the download and its check, before the hand-over
+            path.write_bytes(b"another program" * 100)
+
+    exe = URL.replace("macos-arm64.dmg", "setup.exe")
+    with pytest.raises(UpdateFailed) as caught:
+        app_update.run(
+            ws,
+            Offer("0.2.0", "2026-11-16", [], PAGE, exe, SHA, len(BODY)),
+            SETTINGS,
+            install=windows_install(tmp_path),
+            from_version="0.1.0",
+            progress=lambda *_a: None,
+            steps=Steps(backup=backup, client=serving(), spawn=started.append),
+        )
+    assert caught.value.kind == "mismatch" and backups == [1, 1]
+    assert started == [] and app_update.read_plan(ws) is None and not path.exists()
+    assert not (helper_folder(ws) / "hand-over.ps1").exists()
+
+
+def test_a_disk_image_swapped_after_its_checksum_was_checked_is_never_opened(ws, tmp_path):
+    install, run, started = mac_install(tmp_path), FakeRun(), []
+    with pytest.raises(UpdateFailed) as caught:
+        app_update.run(
+            ws,
+            offer(),
+            SETTINGS,
+            install=install,
+            from_version="0.1.0",
+            progress=lambda *_a: None,
+            steps=Steps(
+                download=swapping(app_update.download, lambda got: got.write_bytes(b"another image")),
+                client=serving(),
+                run=run,
+                spawn=started.append,
+            ),
+        )
+    assert caught.value.kind == "mismatch"
+    assert run.calls == [] and started == []  # the image was never opened, nothing was staged or handed over
+    assert not app_update.new_bundle_path(install).exists() and app_update.read_plan(ws) is None
+
+
+@pytest.mark.parametrize("change", ["swapped", "added", "linked"])
+def test_a_staged_app_that_is_not_what_the_disk_image_holds_is_removed_and_never_handed_over(ws, tmp_path, change):
+    """The copy beside the installed app is compared, file by file and link by link, with the image it came from."""
+
+    class Tampering(FakeRun):
+        def __call__(self, argv, timeout):
+            done = super().__call__(argv, timeout)
+            if argv[0] == "ditto":
+                staged_at = Path(argv[2])
+                if change == "swapped":
+                    (staged_at / "Contents" / "MacOS" / "Thimbleby").write_bytes(b"not it")
+                elif change == "added":
+                    (staged_at / "Contents" / "MacOS" / "helper").write_bytes(b"extra")
+                else:
+                    (staged_at / "Contents" / "Frameworks").symlink_to("/tmp")
+            return done
+
+    install = mac_install(tmp_path)
+    with pytest.raises(UpdateFailed) as caught:
+        staged(ws, install, Tampering())
+    assert caught.value.kind == "mismatch"
+    assert not app_update.new_bundle_path(install).exists()
+    assert not (helper_folder(ws) / app_update.SUMS_FILE).exists()
+    with pytest.raises(UpdateFailed):  # and with no checked copy there is no hand-over
+        app_update.hand_over(
+            ws, install, app_update.new_bundle_path(install), from_version="0.1.0", version="0.2.0", page=None,
+            notes=[], settings=SETTINGS, spawn=lambda _a: None, pid=1, now=NOW,
+        )  # fmt: skip
+
+
+def test_a_link_left_where_the_new_app_is_staged_is_removed_not_written_through(ws, tmp_path):
+    install = mac_install(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    app_update.new_bundle_path(install).symlink_to(elsewhere, target_is_directory=True)
+    got = staged(ws, install)
+    assert not got.is_symlink() and list(elsewhere.iterdir()) == []
+
+
+def test_a_download_whose_size_is_not_the_signed_lists_is_a_mismatch(tmp_path):
+    with pytest.raises(UpdateFailed) as caught:
+        app_update.download(URL, SHA, tmp_path / "dl", "Darwin", client=serving(), expected_size=len(BODY) + 1)
+    assert caught.value.kind == "mismatch" and list((tmp_path / "dl").iterdir()) == []
+    assert app_update.download(URL, SHA, tmp_path / "dl", "Darwin", client=serving(), expected_size=len(BODY))

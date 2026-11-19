@@ -6,13 +6,19 @@ failure:
 
 1. `copy_work`: a consistent copy of the workspace's database (`engine.updating`), taken first and again just before the
    hand-over, so what changed while the download ran is in it too;
-2. `download`: the installer the release feed names for this system, streamed to a file in the private folder, its
-   SHA-256 checked against the feed's before anything else happens (a mismatch deletes the file and stops here);
-3. the Mac: `stage_mac` opens the disk image read-only and puts the new app beside the installed one; Windows: the
-   setup program is the file itself, and `check_folder` makes sure its folder can be changed;
-4. `hand_over`: writes the plan, starts the small script outside the app (`engine.update_scripts`) and returns; the
-   caller then ends the app. The script swaps the programs, opens the new version, waits for it to write `ok` to the
-   result file, and puts the old version back if anything fails.
+2. `download`: the installer the release feed names for this system, streamed to a file in a folder only this
+   account can reach (`private_folder`), its SHA-256 checked against the one the release's signed list states before
+   anything else happens (a mismatch deletes the file and stops here);
+3. the file's SHA-256 is checked again just before it is used (`check_installer`). The Mac: `stage_mac` opens the disk
+   image read-only, puts the new app beside the installed one and checks every file of the copy against the image's;
+   the list of those checksums goes to the script, which checks the copy again before the swap. Windows: the setup
+   program is the file itself, `check_folder` makes sure its folder can be changed, and the script checks the file's
+   SHA-256 again before it runs it;
+4. `hand_over`: writes the plan (with the version expected and an id for this attempt), starts the small script
+   outside the app (`engine.update_scripts`) and returns; the caller then ends the app. The script swaps the programs,
+   opens the new version, waits for it to write `ok` with this attempt's id to the result file, and puts the old
+   version back if anything fails. Only the version the plan names answers `ok` (`record_started`); another version
+   answers `wrong`, which is a failed update.
 
 Any failure before the hand-over is an `UpdateFailed` with one reason; nothing has changed by then. A failure after it
 is the script's: it writes the failed result, and the next start of the old version (`engine.update_flow`) puts the
@@ -26,7 +32,9 @@ import hashlib
 import json
 import os
 import platform
+import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -38,11 +46,18 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from engine import update_scripts
-from engine.release_check import LOOPBACK
+from engine.release_check import address_ok as _address_ok
 from engine.state_file import write_whole
 
 PLAN_FILE = "update-plan.json"
 RESULT_FILE = "update-result.json"
+#: Kept while the copy of the work still has to be put back after a rolled-back update; the workspace isn't opened
+#: while it is there.
+RESTORE_FILE = "update-restore.json"
+#: In the helper folder: the checksums of the staged Mac app's files (the `shasum` format), and how many files and
+#: which links it has.
+SUMS_FILE = "staged.sha256"
+STAGED_FILE = "staged.json"
 DOWNLOAD_FOLDER = "update-download"
 HELPER_FOLDER = "update-helper"
 #: The installer's kind for each system.
@@ -64,6 +79,8 @@ KINDS = (
     "download",
     "disk_full",
     "mismatch",
+    "unsafe",
+    "wrong_version",
     "unreadable",
     "folder",
     "install",
@@ -155,22 +172,55 @@ def clear(ws: Any, *names: str) -> None:
         _file(ws, name).unlink(missing_ok=True)
 
 
+def restore_needed(ws: Any) -> dict[str, Any] | None:
+    """What says the copy of the work still has to be put back, or none."""
+    return _read(_file(ws, RESTORE_FILE))
+
+
+def mark_restore(ws: Any, from_version: str, now: datetime | None = None) -> None:
+    """Note, before anything else is done with a rolled-back update, that the copy of the work has to be put back.
+    The note outlives the result shown: only `clear_restore` removes it."""
+    body = {"from": from_version, "at": (now or datetime.now(UTC)).isoformat()}
+    write_whole(_file(ws, RESTORE_FILE), json.dumps(body, separators=(",", ":")))
+
+
+def clear_restore(ws: Any) -> None:
+    _file(ws, RESTORE_FILE).unlink(missing_ok=True)
+
+
+def _same_version(one: object, other: object) -> bool:
+    from packaging.version import InvalidVersion, Version
+
+    try:
+        return Version(str(one)) == Version(str(other))
+    except InvalidVersion:
+        return str(one) == str(other)
+
+
 def record_started(ws: Any, version: str, now: datetime | None = None) -> bool:
-    """The new version is running: write the result the script waits for, and clear what the update left on disk. False
-    when no hand-over was waiting for it."""
+    """The app is running while a hand-over waits for the new version. When this is the version the plan names, write
+    the result the script waits for (with the plan's attempt id) and clear what the update left on disk. Any other
+    version writes `wrong` with that id and leaves the plan: the script puts the old version back. False when no
+    hand-over was waiting, or this isn't the version it was waiting for."""
     plan = read_plan(ws)
     if plan is None:
         return False
     stamp = (now or datetime.now(UTC)).isoformat()
+    right = _same_version(plan.get("version"), version)
     body = {
-        "status": "ok",
+        "status": "ok" if right else "wrong",
+        "attempt": plan.get("attempt"),
         "version": version,
         "from": plan.get("from"),
         "at": stamp,
         "page": plan.get("page"),
         "notes": plan.get("notes") or [],
     }
+    if not right:
+        body["expected"] = plan.get("version")
     write_whole(_file(ws, RESULT_FILE), json.dumps(body, separators=(",", ":")))
+    if not right:
+        return False
     clear(ws, PLAN_FILE)
     shutil.rmtree(_file(ws, DOWNLOAD_FOLDER), ignore_errors=True)
     return True
@@ -191,10 +241,12 @@ def mark_seen(ws: Any) -> None:
 
 
 def drop_stale_plan(ws: Any, now: datetime | None = None) -> bool:
-    """Remove a plan that no result ever followed and that is too old for its script to be still running."""
+    """Remove a plan that no result ever followed (or only another version's `wrong`) and that is too old for its
+    script to be still running."""
     path = _file(ws, PLAN_FILE)
     plan = read_plan(ws)
-    if plan is None or read_result(ws) is not None:
+    found = read_result(ws)
+    if plan is None or (found is not None and found.get("status") != "wrong"):
         return False
     try:
         made = datetime.fromisoformat(str(plan.get("at")))
@@ -203,6 +255,7 @@ def drop_stale_plan(ws: Any, now: datetime | None = None) -> bool:
     if ((now or datetime.now(UTC)) - made).total_seconds() < STALE_PLAN_SECONDS:
         return False
     path.unlink(missing_ok=True)
+    clear(ws, RESULT_FILE)
     return True
 
 
@@ -225,11 +278,44 @@ def copy_work(ws: Any, version: str, backup: Callable[[Any, str], Any] | None = 
 # ---- step 2: the download ------------------------------------------------------------------------------------------
 
 
-def _address_ok(url: str) -> bool:
-    parts = urlsplit(url)
-    if not parts.hostname or any(c.isspace() for c in url) or parts.username or parts.password:
-        return False
-    return parts.scheme == "https" or (parts.scheme == "http" and parts.hostname in LOOPBACK)
+def private_folder(path: Path, *, fresh: bool = False) -> Path:
+    """A folder only this account can reach (mode 0o700), for files that are checked and then used by path. A link in
+    its place, or a folder another account owns, is refused. `fresh` empties a folder left by an earlier try; without
+    it, a folder left open to others is emptied and made again all the same, since what it holds can't be trusted."""
+    try:
+        try:
+            found = path.lstat()
+        except FileNotFoundError:
+            found = None
+        if found is not None:
+            junction = getattr(os.path, "isjunction", lambda _p: False)(path)
+            if stat.S_ISLNK(found.st_mode) or junction or not stat.S_ISDIR(found.st_mode):
+                raise UpdateFailed("unsafe", f"{path.name} is not a folder of its own")
+            if hasattr(os, "getuid") and found.st_uid != os.getuid():
+                raise UpdateFailed("unsafe", f"{path.name} belongs to another account")
+            open_to_others = os.name == "posix" and stat.S_IMODE(found.st_mode) != 0o700
+            if fresh or open_to_others:
+                shutil.rmtree(path)
+                found = None
+        if found is None:
+            path.mkdir(mode=0o700, parents=True)
+            if os.name == "posix":
+                os.chmod(path, 0o700)
+    except OSError as err:
+        raise UpdateFailed("copy", f"{path.name} couldn't be prepared: {err.__class__.__name__}") from None
+    return path
+
+
+def check_installer(path: Path, sha256: str) -> None:
+    """The installer's SHA-256 checked again, just before the file is opened or handed over to be run: a file that
+    changed since the download is a mismatch, and it is removed."""
+    try:
+        found = _hash_file(path) if path.is_file() and not path.is_symlink() else ""
+    except OSError:
+        found = ""
+    if found != sha256.lower():
+        path.unlink(missing_ok=True)
+        raise UpdateFailed("mismatch", "the file changed after it was downloaded and checked")
 
 
 def installer_name(url: str, system: str) -> str:
@@ -254,23 +340,27 @@ def download(
     client: Any = None,
     progress: Callable[[int, int | None], None] | None = None,
     free: Callable[[Path], int] | None = None,
+    expected_size: int | None = None,
 ) -> Path:
-    """The installer, downloaded into `folder` and checked against its SHA-256. A file left by an earlier try that
-    still matches is used as it is. A short or interrupted download, a refused one, a full disk and a mismatch each
-    raise `UpdateFailed` with their own kind, and no file that failed the check is left. `client` is an httpx client;
-    a redirect is followed only to another https address (or one on this computer)."""
+    """The installer, downloaded into `folder` (made private, `private_folder`) and checked against its SHA-256 (and
+    its size, when the release's list states one). A file left by an earlier try that still matches is used as it is.
+    A short or interrupted download, a refused one, a full disk and a mismatch each raise `UpdateFailed` with their
+    own kind, and no file that failed the check is left. `client` is an httpx client; a redirect is followed only to
+    another https address (or one on this computer)."""
     import httpx
 
     if not _address_ok(url) or not (len(sha256) == 64 and all(c in "0123456789abcdefABCDEF" for c in sha256)):
         raise UpdateFailed("download", "the release names no usable download")
     wanted = sha256.lower()
     target = folder / installer_name(url, system)
+    private_folder(folder)
     try:
-        folder.mkdir(parents=True, exist_ok=True)
-        if target.is_file() and _hash_file(target) == wanted:
+        if target.is_file() and not target.is_symlink() and _hash_file(target) == wanted:
             return target
         for stale in folder.iterdir():
-            if stale.is_file():
+            if stale.is_dir() and not stale.is_symlink():
+                shutil.rmtree(stale)
+            else:
                 stale.unlink()
     except OSError as err:
         raise UpdateFailed("copy", f"the download folder couldn't be prepared: {err.__class__.__name__}") from None
@@ -291,6 +381,8 @@ def download(
                 if response.status_code >= 400:
                     raise UpdateFailed("download", f"the release host answered {response.status_code}")
                 total = int(response.headers["content-length"]) if response.headers.get("content-length") else None
+                if total is not None and expected_size is not None and total != expected_size:
+                    raise UpdateFailed("mismatch", "the file's size is not the one the release lists")
                 if total is not None:
                     if total > MAX_BYTES:
                         raise UpdateFailed("download", "the installer is larger than an app may be")
@@ -327,7 +419,7 @@ def download(
     finally:
         if own:
             client.close()
-    if digest.hexdigest() != wanted:
+    if digest.hexdigest() != wanted or (expected_size is not None and size != expected_size):
         part.unlink(missing_ok=True)
         raise UpdateFailed("mismatch", "the file's SHA-256 is not the one the release lists")
     try:
@@ -371,6 +463,31 @@ def check_folder(install: Install) -> None:
         raise UpdateFailed("folder", f"{parent} can't be changed by this account")
 
 
+def tree_facts(root: Path) -> tuple[str, int, str]:
+    """What an app's folder holds, in the form the Mac script checks again before the swap: its files' SHA-256s as
+    the lines `shasum -c` reads (sorted, each path from `./`), how many files there are, and the SHA-256 of its links
+    (each link's path and where it points, a line each, sorted by path). Anything that is neither a file, a folder nor
+    a link, and a name the list couldn't state on one line, is refused."""
+    files: list[tuple[bytes, str]] = []
+    links: list[tuple[bytes, bytes]] = []
+    for base, folders, names in os.walk(root):
+        for name in [*folders, *names]:
+            path = Path(base) / name
+            shown = "./" + path.relative_to(root).as_posix()
+            if "\n" in shown or "\r" in shown or "\\" in shown:
+                raise UpdateFailed("unreadable", "the app holds a file whose name can't be listed")
+            mode = path.lstat().st_mode
+            if stat.S_ISLNK(mode):
+                links.append((os.fsencode(shown), os.fsencode(os.readlink(path))))
+            elif stat.S_ISREG(mode):
+                files.append((os.fsencode(shown), _hash_file(path)))
+            elif not stat.S_ISDIR(mode):
+                raise UpdateFailed("unreadable", "the app holds something that is neither a file nor a folder")
+    sums = "".join(f"{digest}  {os.fsdecode(shown)}\n" for shown, digest in sorted(files))
+    listed = b"".join(shown + b"\n" + target + b"\n" for shown, target in sorted(links))
+    return sums, len(files), hashlib.sha256(listed).hexdigest()
+
+
 def stage_mac(
     image: Path,
     install: Install,
@@ -379,10 +496,16 @@ def stage_mac(
     scratch: Path,
     free: Callable[[Path], int] | None = None,
     wait: float = 900.0,
+    sha256: str | None = None,
 ) -> Path:
     """Open the disk image read-only, copy the new app beside the installed one, and close the image again whatever
-    happens. Returns the new app's path. The copy keeps the app's signature and attributes (the system's `ditto`)."""
+    happens. Returns the new app's path. The copy keeps the app's signature and attributes (the system's `ditto`).
+    With `sha256`, the image is checked against it once more just before it is opened. The copy must hold exactly the
+    files and links the image's app does; their checksums are written to `scratch` (`SUMS_FILE`, `STAGED_FILE`) for
+    the script, which checks the copy again before the swap. `scratch` is a private folder (`private_folder`)."""
     check_folder(install)
+    if sha256 is not None:
+        check_installer(image, sha256)
     mount = Path(tempfile.mkdtemp(prefix="mount-", dir=scratch))
     staged = new_bundle_path(install)
     try:
@@ -409,7 +532,15 @@ def stage_mac(
         room = (free or (lambda p: shutil.disk_usage(p).free))(install.folder.parent)
         if room < needed * 1.2:
             raise UpdateFailed("disk_full", f"{room} bytes free, {int(needed * 1.2)} needed")
+        try:
+            wanted = tree_facts(source)
+        except OSError as err:
+            raise UpdateFailed("unreadable", f"the disk image couldn't be read: {err.__class__.__name__}") from None
+        if staged.is_symlink():
+            staged.unlink()
         shutil.rmtree(staged, ignore_errors=True)
+        if staged.exists():
+            raise UpdateFailed("install", "what an earlier update left beside the app couldn't be removed")
         code, said = run(["ditto", str(source), str(staged)], wait)
         if code != 0:
             shutil.rmtree(staged, ignore_errors=True)
@@ -417,6 +548,16 @@ def stage_mac(
         if not (staged / "Contents" / "MacOS" / install.executable.name).is_file():
             shutil.rmtree(staged, ignore_errors=True)
             raise UpdateFailed("install", "the copied app is incomplete")
+        try:
+            same = not staged.is_symlink() and tree_facts(staged) == wanted
+        except (OSError, UpdateFailed):
+            same = False
+        if not same:
+            shutil.rmtree(staged, ignore_errors=True)
+            raise UpdateFailed("mismatch", "the copied app is not what the disk image holds")
+        write_whole(scratch / SUMS_FILE, wanted[0], mode=0o600)
+        facts = {"files": wanted[1], "links": wanted[2]}
+        write_whole(scratch / STAGED_FILE, json.dumps(facts, separators=(",", ":")), mode=0o600)
         return staged
     finally:
         code, _ = run(["hdiutil", "detach", str(mount)], 60)
@@ -524,9 +665,21 @@ def hand_over(
     spawn: Callable[[Sequence[str]], Any] = spawn_detached,
     pid: int | None = None,
     now: datetime | None = None,
+    sha256: str | None = None,
 ) -> Path:
-    """Write the plan and the script and start the script. The caller ends the app next. Returns the script's path."""
-    folder = _file(ws, HELPER_FOLDER)
+    """Write the plan and the script and start the script. The caller ends the app next. Returns the script's path.
+    The script is given what it checks again before it uses `new`: on Windows the setup's `sha256`, on the Mac the
+    checksums `stage_mac` left in the helper folder. Without them there is no hand-over."""
+    folder = private_folder(_file(ws, HELPER_FOLDER))
+    mac = install.system == "Darwin"
+    attempt = secrets.token_hex(16)
+    staged: dict[str, Any] = {}
+    if mac:
+        staged = _read(folder / STAGED_FILE) or {}
+        if not (folder / SUMS_FILE).is_file() or type(staged.get("files")) is not int:
+            raise UpdateFailed("unsafe", "the new app's files were not checked, so it was not handed over")
+    elif not sha256:
+        raise UpdateFailed("unsafe", "the setup's checksum is not known, so it was not handed over")
     hand = update_scripts.Hand(
         pid=pid if pid is not None else os.getpid(),
         app=str(install.folder),
@@ -540,15 +693,19 @@ def hand_over(
         answer_wait=settings.answer_wait_seconds,
         install_wait=settings.install_wait_seconds,
         setup_log=str(folder / "setup.log"),
+        attempt=attempt,
+        sha256=(sha256 or "").lower(),
+        sums=str(folder / SUMS_FILE) if mac else "",
+        files=int(staged.get("files") or 0),
+        links=str(staged.get("links") or ""),
     )
-    mac = install.system == "Darwin"
     script = folder / (update_scripts.SH_NAME if mac else update_scripts.PS_NAME)
     try:
-        folder.mkdir(parents=True, exist_ok=True)
         write_whole(script, update_scripts.mac_script(hand) if mac else update_scripts.windows_script(hand))
         clear(ws, RESULT_FILE)
         plan = {
             "version": version,
+            "attempt": attempt,
             "from": from_version,
             "page": page,
             "notes": list(notes),
@@ -570,7 +727,7 @@ def hand_over(
                 str(script),
             ]
         started_alive(spawn(argv), argv)
-    except OSError as err:
+    except (OSError, ValueError) as err:
         clear(ws, PLAN_FILE)
         raise UpdateFailed("install", f"the hand-over couldn't be started: {err.__class__.__name__}: {err}") from None
     return script
@@ -587,6 +744,7 @@ class Steps:
     download: Callable[..., Path] = download
     stage: Callable[..., Path] = stage_mac
     hand_over: Callable[..., Path] = hand_over
+    check: Callable[[Path, str], None] = check_installer
     run: Run = default_run
     client: Any = None
     free: Callable[[Path], int] | None = None
@@ -617,6 +775,8 @@ def run(
         raise UpdateFailed("download", "the release lists no installer for this system")
     progress("copy", None, "")
     copy_work(ws, from_version, steps.backup)
+    # Made new for each try, so nothing an earlier one left (a script, a list of checksums) is used again.
+    scratch = private_folder(_file(ws, HELPER_FOLDER), fresh=True)
     progress("download", 0.0, "")
 
     def moved(done: int, total: int | None) -> None:
@@ -634,17 +794,18 @@ def run(
         client=steps.client,
         progress=moved,
         free=steps.free,
+        expected_size=getattr(offer, "size", None),
     )
     progress("check", None, "")
     progress("install", None, "")
     if install.system == "Darwin":
-        scratch = _file(ws, HELPER_FOLDER)
-        scratch.mkdir(parents=True, exist_ok=True)
-        new = steps.stage(installer, install, steps.run, scratch=scratch, free=steps.free)
+        new = steps.stage(installer, install, steps.run, scratch=scratch, free=steps.free, sha256=offer.sha256)
     else:
         check_folder(install)
         new = installer
     copy_work(ws, from_version, steps.backup)  # again, so what changed during the download is in it
+    if install.system != "Darwin":
+        steps.check(installer, offer.sha256)  # the last thing before the script is given the file to run
     steps.hand_over(
         ws,
         install,
@@ -656,5 +817,6 @@ def run(
         settings=settings,
         environ=environ,
         spawn=steps.spawn,
+        sha256=offer.sha256,
     )
     progress("open", None, "")

@@ -7,8 +7,10 @@ the caller knows how it was installed.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import shutil
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -100,24 +102,64 @@ def check(ws: Workspace) -> None:
 
 def restore(ws: Workspace) -> bool:
     """Put the database back as the update's copy had it. The database as it is now is kept beside it, never deleted.
-    Returns False when there is no copy to put back."""
+    Returns False when there is no copy to put back. The live database is never missing, at any moment: the copy is
+    written whole to a file beside it first, and takes its place in one step. A restore that stops part-way raises
+    `UpdateError` and can be run again."""
     copy = backup_database(_folder(ws))
     if not copy.is_file():
         return False
     live = ws.db_path
+    incoming = live.with_name(f".{live.name}.restoring")
     try:
+        if _same_bytes(copy, live) and not Path(f"{live}-wal").exists():
+            return True  # already put back by a run that stopped just after: nothing to keep or replace again
+        _copy_whole(copy, incoming)
         if live.exists():
-            os.replace(live, live.with_name(KEPT))
+            _keep(live, live.with_name(KEPT))
+        # The journal files belong to the database being replaced: read with the copy, they would damage it.
         for extra in ("-wal", "-shm"):
             Path(f"{live}{extra}").unlink(missing_ok=True)
-        data = copy.read_bytes()
-        write_whole_bytes(live, data)
-    except OSError as err:
+        os.replace(incoming, live)
+    except (OSError, sqlite3.Error) as err:
+        incoming.unlink(missing_ok=True)
         raise UpdateError(f"The copy made before updating couldn't be put back ({err.__class__.__name__}).") from None
     return True
 
 
-def write_whole_bytes(path: Path, data: bytes) -> None:
-    temporary = path.with_name(f".{path.name}.restoring")
-    temporary.write_bytes(data)
-    os.replace(temporary, path)
+def _same_bytes(one: Path, other: Path) -> bool:
+    if not other.is_file() or one.stat().st_size != other.stat().st_size:
+        return False
+    with one.open("rb") as a, other.open("rb") as b:
+        return hashlib.file_digest(a, "sha256").digest() == hashlib.file_digest(b, "sha256").digest()
+
+
+def _copy_whole(source: Path, target: Path) -> None:
+    """Copy a file under another name and make sure it is on the disk before it is used."""
+    with source.open("rb") as read, target.open("wb") as write:
+        shutil.copyfileobj(read, write)
+        write.flush()
+        os.fsync(write.fileno())
+
+
+def _keep(live: Path, kept: Path) -> None:
+    """Keep the database as it is now under another name, whole. What its journal still holds is written into it first,
+    so the kept file stands alone; a database that can't be opened is kept as its files are."""
+    folded = False
+    try:
+        conn = sqlite3.connect(live)
+        try:
+            folded = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        folded = False
+    saving = kept.with_name(f".{kept.name}.saving")
+    _copy_whole(live, saving)
+    journal = Path(f"{live}-wal")
+    if folded or not journal.exists():
+        if folded:
+            for extra in ("-wal", "-shm"):
+                Path(f"{kept}{extra}").unlink(missing_ok=True)
+    else:
+        _copy_whole(journal, Path(f"{kept}-wal"))
+    os.replace(saving, kept)

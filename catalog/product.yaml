@@ -13,3 +13,7 @@ pack_catalog_key: ""
 # Where the app looks for a newer version of itself (the public release repository's list of releases, as the release
 # host's API serves it); the release build may replace it. Read once a day, with nothing in the request but the address.
 release_feed: "https://api.github.com/repos/skywalkr2/thimbleby-release/releases"
+# The public key (base64 text) that the release build signs each release's list of files with. The app offers and
+# installs a newer version only when that list's signature verifies against this key (or one the person added in
+# updates.trusted_keys). Empty in a build with no key: no newer version is offered.
+release_key: "UQklkarE5d67QjQ52IGuTOWASmZRJ465OnIxpJNcRFE="

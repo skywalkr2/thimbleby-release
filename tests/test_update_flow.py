@@ -16,6 +16,7 @@ from engine import app_update, update_flow, update_offer, updating
 from engine.app_update import Install, Steps, UpdateFailed
 from engine.sides import words_sheet
 from engine.workspace import init_workspace
+from tests import release_signing
 from tests.conftest import DEMO_B
 
 URL = "https" + "://releases.example.com/v0.2.0/Thimbleby-0.2.0-macos-arm64.dmg"
@@ -26,19 +27,16 @@ SHA = "a" * 64
 def ws(tmp_path):
     made = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
     made.private_dir.mkdir(exist_ok=True)
-    update_offer._write(
-        made.private_dir,
-        {
-            "found": {
-                "version": "0.2.0",
-                "date": "2026-11-16",
-                "notes": ["Faster start"],
-                "page": "https" + "://releases.example.com/tag/v0.2.0",
-                "download_url": URL,
-                "sha256": SHA,
-            }
-        },
-    )
+    release_signing.trust(made)  # the release kept below carries its list of files, signed with the test run's key
+    found = {
+        "version": "0.2.0",
+        "date": "2026-11-16",
+        "notes": ["Faster start"],
+        "page": "https" + "://releases.example.com/tag/v0.2.0",
+        "download_url": URL,
+        "sha256": SHA,
+    }
+    update_offer._write(made.private_dir, {"found": release_signing.signed_found(found)})
     return made
 
 
@@ -66,6 +64,14 @@ class FakeShell:
         self.calls.append(("failed", version, reason))
         self.details = details
         return self.answers.pop(0) if self.answers else ""
+
+    def restore_failed(self, version, reason, details):
+        self.calls.append(("unrestored", version, reason))
+        self.details = details
+        answer = self.answers.pop(0) if self.answers else ""
+        if callable(answer):  # something the person does before pressing Try again
+            answer = answer()
+        return "again" if answer == "again" else ""
 
     def resume_starting(self):
         self.calls.append(("resume",))
@@ -137,6 +143,20 @@ def test_a_version_that_is_no_longer_on_offer_is_a_failed_update_not_a_silent_re
     shell, (recorded, log) = FakeShell(answers=["open"]), steps()
     assert update_flow.install(ws, cfg, shell, "9.9.9", current="0.1.0", steps=recorded, install_at=MAC) is False
     assert log == [] and any(c[0] == "failed" for c in shell.calls)
+
+
+def test_a_release_whose_signed_list_no_longer_checks_is_not_installed_and_no_step_runs(ws, cfg):
+    """H5-28: the signature is checked again when the person clicks, with the keys trusted at that moment; a kept
+    release it doesn't hold for is no offer, so nothing is copied, downloaded or handed over."""
+    release_signing.trust(ws, release_signing.OTHER_PUBLIC)
+    shell, (recorded, log) = FakeShell(answers=["open"]), steps()
+    assert update_flow.install(ws, cfg, shell, "0.2.0", current="0.1.0", steps=recorded, install_at=MAC) is False
+    assert log == [] and any(c[0] == "failed" for c in shell.calls)
+    assert "isn't on offer any more" in shell.details
+    release_signing.trust(ws)
+    shell, (recorded, log) = FakeShell(), steps()
+    assert update_flow.install(ws, cfg, shell, "0.2.0", current="0.1.0", steps=recorded, install_at=MAC) is True
+    assert "hand_over" in log
 
 
 def test_a_copy_that_is_not_the_installed_app_says_so_in_words(ws, cfg):
@@ -226,19 +246,159 @@ def test_a_finished_update_is_left_for_today_to_say_and_never_shows_the_failed_s
     assert app_update.read_result(ws)["status"] == "ok"
 
 
-def test_a_restore_that_cannot_be_done_is_said_in_the_details_and_the_screen_still_shows(ws, cfg):
+def test_with_no_copy_to_put_back_the_failed_screen_still_shows_and_nothing_is_left_waiting(ws, cfg):
     write_result(ws, status="failed", reason="no_answer", restore=True, **{"from": "0.1.0"})  # no copy was ever made
     shell = FakeShell(answers=["open"])
     assert update_flow.settle(ws, cfg, shell, current="0.1.0") is True
-    assert any(c[0] == "failed" for c in shell.calls)
+    assert any(c[0] == "failed" for c in shell.calls) and not any(c[0] == "unrestored" for c in shell.calls)
+    assert app_update.restore_needed(ws) is None
+
+
+# ---- a failed restore is never forgotten (H5-28, H2) -----------------------------------------------------------------
+
+
+def rolled_back(ws):
+    """A rolled-back update whose copy of the work has to be put back, and a disk that refuses it."""
+    marker(ws, "before")
+    app_update.copy_work(ws, "0.1.0")
+    marker(ws, "after the new version ran")
+    write_result(ws, status="failed", reason="no_answer", restore=True, **{"from": "0.1.0"})
+
+
+def refuse_restores(monkeypatch):
+    """The copy can't be put back (as a full disk refuses it); returns the switch that lets it through again."""
+    real, refusing = updating.restore, [True]
+
+    def restore(ws):
+        if refusing[0]:
+            raise updating.UpdateError("The copy made before updating couldn't be put back (OSError).")
+        return real(ws)
+
+    monkeypatch.setattr(updating, "restore", restore)
+    return lambda: refusing.clear() or refusing.append(False)
+
+
+def test_a_restore_that_fails_keeps_the_app_closed_and_is_tried_again_at_every_start_until_it_works(
+    ws, cfg, monkeypatch
+):
+    """The review's sequence: the update is rolled back, putting the work back fails, the person quits. Before, the
+    plan and result were cleared and the next start opened the workspace on the new version's database."""
+    rolled_back(ws)
+    allow = refuse_restores(monkeypatch)
+    shell = FakeShell(answers=[""])  # Quit
+    assert update_flow.settle(ws, cfg, shell, current="0.1.0") is False  # the workspace is not opened
+    [shown] = [c for c in shell.calls if c[0] == "unrestored"]
+    assert shown[1] == "0.1.0" and "couldn't be put back" in shown[2] and "nothing has been deleted" in shown[2]
+    assert ("quit",) in shell.calls and ("resume",) not in shell.calls
+    assert not any(c[0] == "failed" for c in shell.calls)  # no way on to the app from here
+    assert "couldn't be put back (OSError)" in shell.details
+    assert app_update.restore_needed(ws)["from"] == "0.1.0"
+    assert marker(ws) == "after the new version ran"  # untouched, and still not opened
+
+    # The next start, and the one after: still refused, still closed, even with the update's result gone.
+    app_update.clear(ws)
+    for _ in range(2):
+        again = FakeShell(answers=[""])
+        assert update_flow.settle(ws, cfg, again, current="0.1.0") is False
+        assert [c[0] for c in again.calls] == ["unrestored", "quit"]
+        assert app_update.restore_needed(ws) is not None
+
+    # Once it can be put back, it is, before the app goes on.
+    allow()
+    last = FakeShell()
+    assert update_flow.settle(ws, cfg, last, current="0.1.0") is True
+    assert marker(ws) == "before" and app_update.restore_needed(ws) is None
+    assert not any(c[0] == "unrestored" for c in last.calls)
+
+
+def test_try_again_on_that_screen_puts_the_work_back_and_then_shows_why_the_update_failed(ws, cfg, monkeypatch):
+    rolled_back(ws)
+    allow = refuse_restores(monkeypatch)
+    shell = FakeShell(answers=["again", lambda: allow() or "again", "open"])
+    assert update_flow.settle(ws, cfg, shell, current="0.1.0") is True
+    assert [c[0] for c in shell.calls] == ["unrestored", "unrestored", "failed", "resume"]
+    assert marker(ws) == "before" and app_update.restore_needed(ws) is None
+    assert "copy of the work made before updating was put back" in shell.details
+    assert app_update.read_result(ws) is None  # the failed update itself is shown once
+
+
+def test_the_need_to_put_the_work_back_is_noted_before_the_restore_is_tried(ws, cfg, monkeypatch):
+    """A start that stops in the middle of the restore (the power goes) leaves the note, not a cleared result."""
+    rolled_back(ws)
+
+    def stopped(_ws):
+        assert app_update.restore_needed(ws) is not None
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(updating, "restore", stopped)
+    with pytest.raises(KeyboardInterrupt):
+        update_flow.settle(ws, cfg, FakeShell(), current="0.1.0")
+    assert app_update.restore_needed(ws) is not None and app_update.read_result(ws) is not None
+
+
+def test_a_restore_never_leaves_the_live_database_missing_and_can_be_run_again(ws, monkeypatch):
+    """`updating.restore` used to move the live database aside first: a failure after that left none at all."""
+    marker(ws, "before")
+    app_update.copy_work(ws, "0.1.0")
+    marker(ws, "after")
+    real_replace, seen = updating.os.replace, []
+
+    def replace(source, target):
+        if Path(target) == ws.db_path:
+            seen.append(ws.db_path.is_file())  # the live database is there at the moment it is replaced
+            raise OSError(28, "No space left on device")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(updating.os, "replace", replace)
+    with pytest.raises(updating.UpdateError):
+        updating.restore(ws)
+    assert seen == [True] and marker(ws) == "after"  # still the database it was, whole
+    assert not list(ws.db_path.parent.glob(".*.restoring"))
+    monkeypatch.setattr(updating.os, "replace", real_replace)
+    assert updating.restore(ws) is True and marker(ws) == "before"
+    kept = sqlite3.connect(ws.db_path.with_name(updating.KEPT))
+    try:
+        assert kept.execute("SELECT v FROM marker").fetchone()[0] == "after"  # what the new version left is kept
+    finally:
+        kept.close()
+    assert updating.restore(ws) is True  # run once more: nothing to do, and the kept database is not overwritten
+    kept = sqlite3.connect(ws.db_path.with_name(updating.KEPT))
+    try:
+        assert kept.execute("SELECT v FROM marker").fetchone()[0] == "after"
+    finally:
+        kept.close()
+
+
+def test_the_database_kept_aside_holds_what_was_still_in_its_journal(ws):
+    marker(ws, "before")
+    app_update.copy_work(ws, "0.1.0")
+    conn = sqlite3.connect(ws.db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA wal_autocheckpoint=0")
+    conn.execute("UPDATE marker SET v = 'written to the journal only'")
+    conn.commit()
+    import shutil
+
+    # The database as a stopped program leaves it: its last writes still in the journal file beside it.
+    for extra in ("", "-wal"):
+        shutil.copy(f"{ws.db_path}{extra}", f"{ws.db_path}.crashed{extra}")
+    conn.close()
+    for extra in ("", "-wal"):
+        shutil.move(f"{ws.db_path}.crashed{extra}", f"{ws.db_path}{extra}")
+    assert updating.restore(ws) is True and marker(ws) == "before"
+    kept = sqlite3.connect(ws.db_path.with_name(updating.KEPT))
+    try:
+        assert kept.execute("SELECT v FROM marker").fetchone()[0] == "written to the journal only"
+    finally:
+        kept.close()
 
 
 def test_the_new_version_tells_the_waiting_script_it_runs_only_when_a_hand_over_waits(ws, tmp_path):
     assert update_flow.started(ws, "0.2.0") is False
     app_update.hand_over(
         ws,
-        MAC,
-        tmp_path / "n",
+        Install("Windows", tmp_path / "Thimbleby", tmp_path / "Thimbleby" / "Thimbleby.exe"),
+        tmp_path / "setup.exe",
         from_version="0.1.0",
         version="0.2.0",
         page=None,
@@ -246,7 +406,11 @@ def test_the_new_version_tells_the_waiting_script_it_runs_only_when_a_hand_over_
         settings=SimpleNamespace(close_wait_seconds=30, answer_wait_seconds=60, install_wait_seconds=60),
         spawn=lambda _a: None,
         pid=1,
+        sha256=SHA,
     )
+    # The version that was updated from, opened again while the script waits, is not the update's success (H5-28, H3).
+    assert update_flow.started(ws, "0.1.0") is False
+    assert app_update.read_result(ws)["status"] == "wrong" and app_update.read_plan(ws) is not None
     assert update_flow.started(ws, "0.2.0") is True
     assert app_update.read_result(ws)["status"] == "ok"
 

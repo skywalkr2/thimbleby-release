@@ -5115,6 +5115,13 @@ class UpdatesFile(FileModel):
         description="Where to look for a newer version, when it isn't the address built into the app. An address that "
         "starts with https, or one on this computer. Leave it empty to use the built-in one.",
     )
+    trusted_keys: list[str] = Field(
+        default_factory=list,
+        description="More public keys (base64 text) that may sign a release's list of files, beside the one built "
+        "into the app. A new version is offered and installed only when its list is signed by one of them. Add one "
+        "only for releases you build yourself.",
+        json_schema_extra={"advanced": True},
+    )
     takeover_wait_seconds: int = Field(
         20,
         ge=5,
@@ -5142,6 +5149,16 @@ class UpdatesFile(FileModel):
         description="How many seconds the new version has to open after an update before the old version is put back. "
         "A slow disk needs longer.",
     )
+
+    @field_validator("trusted_keys")
+    @classmethod
+    def _keys(cls, value: list[str]) -> list[str]:
+        from engine.catalog_signature import is_public_key
+
+        for key in value:
+            if not is_public_key(key):
+                raise ValueError("a release key is an Ed25519 public key written as base64 text")
+        return value
 
 
 FILES: dict[str, type[FileModel]] = {

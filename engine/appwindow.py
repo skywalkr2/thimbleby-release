@@ -194,8 +194,8 @@ class PageApi:
 
     def choose(self, answer: str) -> None:
         """The person's answer to the question the starting window asks: "use" or "fresh", or on the failed-update
-        screen "again" or "open"."""
-        if answer in ("use", "fresh", "again", "open"):
+        screen "again" or "open", or "quit" where the app can't go on."""
+        if answer in ("use", "fresh", "again", "open", "quit"):
             self._shell.answer = answer
             self._shell.answer_event.set()
 
@@ -423,6 +423,17 @@ class AppShell:
         if self.quit_event.is_set() or self.answer not in ("again", "open"):
             return ""
         return self.answer
+
+    def restore_failed(self, version: str, reason: str, details: str) -> str:
+        """Turn the window into the screen that says the copy of the work isn't back yet, and wait for the person:
+        "again", or "" when they quit. There is no going on to the app from here."""
+        self.details = details
+        self.answer, _ = "", self.answer_event.clear()
+        self.quiet = False
+        self.main.call(self.window.load_html, startpage.page(self.words, version, view="unrestored", reason=reason))
+        self.main.call(self._show)
+        self.answer_event.wait()
+        return "again" if self.answer == "again" and not self.quit_event.is_set() else ""
 
     def resume_starting(self) -> None:
         """Back to the starting page, after the failed-update screen."""
