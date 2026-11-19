@@ -1532,9 +1532,13 @@ export function WelcomeAi(props: {
                 </>
               )}
               {guide && verdict.state === "works" && (
-                <CheckboxGroup legend={t("welcome.ai.allow.title")} className="allow-question" data-allow-question="">
-                  <p className="hint">{t("welcome.ai.allow.private")}</p>
-                  {/* Which account it is, and what the app can't tell, are one fold away: the question stays short. */}
+                <CheckboxGroup legend={t("welcome.ai.allow.title")} hint={t("welcome.ai.allow.private")} className="allow-question" data-allow-question="">
+                  <RadioCards>
+                  {(["allow", "not_now"] as const).map((answer) => (
+                    <RadioCard key={answer} name="ai-work-data" value={answer} checked={workData === answer} onChange={() => chooseWorkData(answer)} title={<>{t(`welcome.ai.allow.${answer}`)}</>} description={<>{t(`welcome.ai.allow.${answer}_note`)}</>} mark />
+                  ))}
+                  </RadioCards>
+                  {/* Which account it is, and what the app can't tell, are one fold away, after the answers: the question stays short. */}
                   <details className="more-options" data-allow-account="">
                     <summary>{t("welcome.ai.allow.more")}</summary>
                     <p className="hint">
@@ -1544,11 +1548,6 @@ export function WelcomeAi(props: {
                     </p>
                     {!verdict.identity && verdict.unknown && isBuiltin(kind) && <p className="hint" data-allow-unknown="">{t("welcome.ai.allow.unknown")}</p>}
                   </details>
-                  <RadioCards>
-                  {(["allow", "not_now"] as const).map((answer) => (
-                    <RadioCard key={answer} name="ai-work-data" value={answer} checked={workData === answer} onChange={() => chooseWorkData(answer)} title={<>{t(`welcome.ai.allow.${answer}`)}</>} description={<>{t(`welcome.ai.allow.${answer}_note`)}</>} />
-                  ))}
-                  </RadioCards>
                 </CheckboxGroup>
               )}
               {!guide && levelFields}

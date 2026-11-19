@@ -29632,6 +29632,30 @@
             "description": "The accent color as #rrggbb; none uses the app's own.",
             "title": "Brand Color"
           },
+          "build_commit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The commit the installer build was made from; none for a source run.",
+            "title": "Build Commit"
+          },
+          "build_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The installer build's number, stamped when it was built; none for a copy run from source.",
+            "title": "Build Number"
+          },
           "demo": {
             "default": false,
             "description": "The workspace holds made-up example data; every screen says so.",
@@ -29780,6 +29804,12 @@
           },
           "toast_seconds": {
             "title": "Toast Seconds",
+            "type": "number"
+          },
+          "toast_undo_seconds": {
+            "default": 10,
+            "description": "How long a message with Undo stays on screen in seconds; zero keeps it until closed (ui.toast_undo_seconds).",
+            "title": "Toast Undo Seconds",
             "type": "number"
           },
           "twin_window_minutes": {

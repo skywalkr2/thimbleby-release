@@ -99,7 +99,7 @@ def start(
     """Make the workspace when it isn't there, then run the app on it in the shell's window until the person quits.
 
     A second open of the app, while the first runs, only asks the first to bring its window forward."""
-    from engine import cli, launcher, update_flow
+    from engine import build_info, cli, launcher, update_flow
     from engine.handover import open_or_hold
     from engine.legacy_names import private_dir
     from engine.local_guards import local_address_problem
@@ -196,6 +196,7 @@ def start(
         token=ws.install_token,
         ready=lambda: update_flow.started(ws),
         poll=look_at_update,
+        identity=build_info.current().identity(),
     )
 
 
@@ -222,20 +223,38 @@ def run(
                 return 1
 
 
-def already_running(root: Path) -> bool:
-    """A second open of the app: when another copy runs on this workspace, ask it to bring its window forward, before
-    this copy makes any window of its own (a window, even hidden, would keep this copy running)."""
-    from engine import launcher
+#: What a second open found: no other copy ("none", this one goes on), the running copy shown ("shown"), or an older
+#: copy that was asked to finish and didn't ("stuck", the person is told how to quit it).
+NONE, SHOWN, STUCK = "none", "shown", "stuck"
+
+
+def already_running(root: Path, environ: Mapping[str, str] | None = None) -> str:
+    """A second open of the app: when another copy runs on this workspace, before this copy makes any window of its own
+    (a window, even hidden, would keep this copy running):
+
+    - a copy that is newer than the running one asks it to finish, and goes on to serve once it has (`NONE`), or is
+      `STUCK` when the older one doesn't finish in `updates.takeover_wait_seconds`;
+    - the same or an older copy asks the running one to bring its window forward (`SHOWN`)."""
+    from engine import build_info, launcher
     from engine.legacy_names import private_dir
     from engine.workspace import resolve
 
     folder = private_dir(root)
     if not launcher.is_running(folder):
         launcher.note(f"no copy holds {folder}; starting")
-        return False
+        return NONE
+    ws = resolve(root)
+    token = ws.install_token()
+    lock = launcher.InstanceLock(folder)
+    running = build_info.from_published(lock.identity())
+    mine = build_info.current()
+    if lock.control_port() is not None and build_info.is_newer(mine, running):
+        launcher.note(f"another copy holds {folder} and is older ({running}); asking it to finish")
+        wait = ws.config(env=dict(environ) if environ is not None else None).updates.takeover_wait_seconds
+        return NONE if launcher.stop_running(folder, token, wait=wait) else STUCK
     launcher.note(f"another copy holds {folder}")
-    launcher.show_running(folder, resolve(root).install_token())
-    return True
+    launcher.show_running(folder, token)
+    return SHOWN
 
 
 def main(
@@ -254,7 +273,8 @@ def main(
     from engine import launcher
 
     launcher.NOTE_FILE = logs / LOG_FILE
-    if already_running(root):
+    found = already_running(root, environ)
+    if found == SHOWN:
         return 0
     system = platform.system()
     words = {k: str(v) for k, v in words_sheet().items() if k.startswith("desktop.")}
@@ -284,4 +304,16 @@ def main(
 
     shell.on("login", toggle_login)
     shell.on("update", check_for_update)
-    return shell.run(lambda: run(root, logs, shell, environ=environ))
+
+    def go() -> int:
+        # An older copy that wouldn't finish: say how to quit it, and look again each time the person says to.
+        while found == STUCK:
+            if not shell.problem("older_running", ""):
+                return 1
+            if (found_now := already_running(root, environ)) == SHOWN:
+                return 0
+            if found_now == NONE:
+                break
+        return run(root, logs, shell, environ=environ)
+
+    return shell.run(go)

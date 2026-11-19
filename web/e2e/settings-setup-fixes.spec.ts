@@ -19,6 +19,47 @@ const go = (page: Page, hash: string) =>
     window.location.hash = to;
   }, hash);
 
+// S-0661 (H5-01): after an account works, the private-data question starts its own section with clear space above it, its two
+// answers follow it directly, the account fold comes after them, neither answer is chosen, and nothing scrolls sideways.
+async function aiQuestionIsItsOwnSection(page: Page, main: ReturnType<Page["locator"]>) {
+  const original = page.viewportSize();
+  for (const width of [1440, 390]) {
+    for (const scheme of ["light", "dark"] as const) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.emulateMedia({ colorScheme: scheme });
+      const question = main.locator("[data-allow-question]");
+      await expect(question).toBeVisible(LOADED);
+      const boxes = await page.evaluate(() => {
+        const q = document.querySelector("[data-allow-question]") as HTMLElement;
+        const top = (el: Element | null) => (el ? el.getBoundingClientRect().top : NaN);
+        const bottom = (el: Element | null) => (el ? el.getBoundingClientRect().bottom : NaN);
+        const before = q.previousElementSibling as HTMLElement | null;
+        const cards = q.querySelector("[data-radio-cards]");
+        const fold = q.querySelector("[data-allow-account]");
+        const hint = q.querySelector("legend + p");
+        return {
+          gap: top(q) - (before ? bottom(before) : 0),
+          hintTop: top(hint),
+          cardsTop: top(cards),
+          foldTop: top(fold),
+          sideways: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          chosen: q.querySelectorAll("input:checked").length,
+          marks: q.querySelectorAll("[data-marked]").length,
+        };
+      });
+      const label = `${width}px ${scheme}`;
+      expect(boxes.gap, `space above the question at ${label}`).toBeGreaterThanOrEqual(24);
+      expect(boxes.hintTop, `help line before the answers at ${label}`).toBeLessThan(boxes.cardsTop);
+      expect(boxes.cardsTop, `answers before the account fold at ${label}`).toBeLessThan(boxes.foldTop);
+      expect(boxes.chosen, `nothing chosen yet at ${label}`).toBe(0);
+      expect(boxes.marks, `both answers show they are choices at ${label}`).toBe(2);
+      expect(boxes.sideways, `no sideways scroll at ${label}`).toBeLessThanOrEqual(0);
+    }
+  }
+  await page.emulateMedia({ colorScheme: null });
+  if (original) await page.setViewportSize(original);
+}
+
 test.describe.serial("setup and settings fixes", () => {
   // These steps change their server's state (setup walked, accounts signed in or out, records added), and a re-run would start
   // from that used server and fail on its first line for that reason: a re-run proves nothing, so it takes none and shows its
@@ -65,6 +106,7 @@ test.describe.serial("setup and settings fixes", () => {
     await main.getByRole("textbox", { name: "Service address" }).fill(info.ai_base_url);
     await main.getByRole("textbox", { name: "Service address" }).blur();
     await expect(main.getByText("Works. Ready to use.")).toBeVisible();
+    await aiQuestionIsItsOwnSection(page, main);
     await main.getByRole("radio", { name: /^Yes/ }).check();
     await main.getByRole("button", { name: "Continue" }).click();
     await turnOnAndGoOn(main);

@@ -83,10 +83,18 @@ class InstanceLock:
         self.file = handle
         return True
 
-    def publish(self, port: int, readiness_path: str, control_port: int | None = None) -> None:
+    def publish(
+        self,
+        port: int,
+        readiness_path: str,
+        control_port: int | None = None,
+        identity: dict[str, Any] | None = None,
+    ) -> None:
         if self.file is None:
             raise RuntimeError("Only the lock owner can publish connection details")
-        details = {"port": port, "readiness_path": readiness_path}
+        details: dict[str, Any] = {"port": port, "readiness_path": readiness_path}
+        if identity:
+            details["identity"] = identity
         if control_port is not None:
             details["control_port"] = control_port
         from engine.state_file import write_whole
@@ -104,6 +112,14 @@ class InstanceLock:
         try:
             port = self._published().get("control_port")
             return port if type(port) is int and 1 <= port <= 65535 else None
+        except (OSError, ValueError, AttributeError):
+            return None
+
+    def identity(self) -> dict[str, Any] | None:
+        """What the running instance said about its own build (version, build number, commit), when it said any."""
+        try:
+            found = self._published().get("identity")
+            return found if isinstance(found, dict) else None
         except (OSError, ValueError, AttributeError):
             return None
 
@@ -545,6 +561,33 @@ def is_running(data_folder: str | Path) -> bool:
     return True
 
 
+def stop_running(
+    data_folder: str | Path,
+    token: str,
+    *,
+    wait: float,
+    clock: Callable[[], float] = time.monotonic,
+    pause: Callable[[float], None] = time.sleep,
+) -> bool:
+    """Ask the running instance to quit as the menu's Quit does, then wait up to `wait` seconds for it to let go of the
+    folder. True when the folder is free; False when it couldn't be asked, or didn't finish in time."""
+    control = InstanceLock(data_folder).control_port()
+    if control is None or not ask_to_show(control, token, what="quit"):
+        note("the running copy could not be asked to quit")
+        return False
+    freed = wait_ready(
+        "http://127.0.0.1/",
+        timeout=wait,
+        interval=0.25,
+        request_timeout=1,
+        probe=lambda _url, _wait: not is_running(data_folder),
+        clock=clock,
+        pause=pause,
+    )
+    note("the running copy quit" if freed else f"the running copy did not quit within {wait} seconds")
+    return freed
+
+
 def show_running(data_folder: str | Path, token: str, *, timeout: float = 15) -> None:
     """A second open: wait for the running instance to answer, then ask it to bring its window forward."""
     lock = InstanceLock(data_folder)
@@ -592,6 +635,7 @@ def launch(
     token: Callable[[], str] = lambda: "",
     ready: Callable[[], None] = lambda: None,
     poll: Callable[[], None] = lambda: None,
+    identity: dict[str, Any] | None = None,
 ) -> None:
     """Run the app until the person quits: the server, the window's address and the loop that reacts to the menu.
 
@@ -601,7 +645,8 @@ def launch(
     A second launch asks the running instance to show its window and returns. restart_requested, when given, is set
     by the app itself when the person chose Restart in it: the restart then runs as the menu's would. quit_requested,
     when given, is set by the app when it has nothing left to run (the person deleted the workspace): the loop then
-    ends as Quit would. ready is called once the server answers (a new version after an update says so there), and poll
+    ends as Quit would. identity, when given, is published beside the address so a newer copy opened later can tell
+    which build this is. ready is called once the server answers (a new version after an update says so there), and poll
     about twice a second while the app runs (a cheap look at something the item shows); neither may stop the app.
 
     Restart replaces the ASGI app in this process, behind the same listening server (`SwappableApp`); it does not
@@ -633,7 +678,7 @@ def launch(
     control = ControlServer(token, shell.bring_forward, shell.quit_from_menu, shell.window_state)
     try:
         controller.start()
-        lock.publish(port, readiness_path, control.start())
+        lock.publish(port, readiness_path, control.start(), identity)
         note(f"published to {lock.details} (there: {lock.details.exists()})")
         if not wait_ready(health, timeout=startup_timeout, alive=controller.alive):
             raise RuntimeError("The local server failed readiness") from controller.error

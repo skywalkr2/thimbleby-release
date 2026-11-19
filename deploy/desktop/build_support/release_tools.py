@@ -7,6 +7,7 @@ import os
 import platform
 import re
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 from build_model import release_versions
@@ -45,6 +46,16 @@ def release_notes(changelog: str, version: str) -> str:
     return text + "\n"
 
 
+def write_build_stamp(path: Path, env: Mapping[str, str]) -> bool:
+    """Stamp the build's number and commit where the app reads them (`engine/build_info.py`), from the build service's
+    run number and commit. A build with neither (one made by hand on a computer) is left unstamped, which About says."""
+    number, commit = env.get("GITHUB_RUN_NUMBER", ""), env.get("GITHUB_SHA", "")
+    if not number.isdigit() or int(number) < 1 or not re.fullmatch(r"[0-9a-f]{7,40}", commit):
+        return False
+    path.write_text(f"number: {int(number)}\ncommit: {commit[:7]}\n", encoding="utf-8")
+    return True
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("step", choices=("prepare", "notes", "dmg", "wizard-art", "hashes"))
@@ -57,6 +68,7 @@ def main() -> None:
         version, numeric = release_versions(tag)
         with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as output:
             output.write(f"APP_VERSION={version}\nWINDOWS_VERSION={numeric}\n")
+        write_build_stamp(root / "catalog" / "build.yaml", os.environ)
     elif args.step == "notes":
         # Runs before anything is built, so a tag with no section in the change log stops there.
         try:

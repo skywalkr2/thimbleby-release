@@ -15,6 +15,7 @@ import {
   type Ref,
 } from "react";
 import { api, ApiError, type S } from "../lib/api";
+import { useBuildLabel } from "../lib/build-label";
 import { useToasts } from "../lib/toasts";
 import { useListsPage, useValueLists } from "../lib/lists";
 import { problemText } from "../lib/problem";
@@ -242,7 +243,9 @@ export function SettingsFrame(props: {
   const { t } = useWords();
   const { listed } = useSettingsSections();
   const phone = useIsNarrow();
-  const version = useQuery({ queryKey: ["runtime-config"], queryFn: api.runtimeConfig, staleTime: Infinity }).data?.version;
+  const buildLabel = useBuildLabel();
+  const runtime = useQuery({ queryKey: ["runtime-config"], queryFn: api.runtimeConfig, staleTime: Infinity }).data;
+  const version = runtime ? buildLabel(runtime) : undefined;
   // A search handed on from another page's box: the cursor goes to this page's box as it is drawn, not when the page has
   // loaded, so what the person types next is never lost.
   useLayoutEffect(() => {
@@ -259,7 +262,7 @@ export function SettingsFrame(props: {
       <p className="settings-intro">{t("settings.intro")}</p>
       {version && (
         <p className="hint" data-app-version="">
-          {t("settings.version", { version })}
+          {version}
         </p>
       )}
       <div className="settings-layout">

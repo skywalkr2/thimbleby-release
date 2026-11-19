@@ -52,7 +52,7 @@ from engine.tasks import TaskKind
 from engine.texts import LongText, Unit
 from engine.tools import ToolBox, ToolError, ToolResult
 
-PLUGIN_API_VERSION = "0.3.102"
+PLUGIN_API_VERSION = "0.3.103"
 
 #: The earlier minor version this core still serves (one minor back). A pack whose range reaches the end of that minor
 #: stays on, marked "Built for an earlier version"; the window ends with the next minor release. Every name the core
@@ -2319,7 +2319,13 @@ class Registrar:
         says the service holds nothing older. `fn` may return a `Poll` instead of the list: its `items` and
         `unreadable` are used and its `state`, `complete` and `removed` are ignored, so one item it can't read is set
         aside with its reason and the rest are taken in. The function runs with the source's own settings and
-        account, reads only, and a failure is contained like a poll's (`ConnectorError` kinds pass through).
+        account, reads only, and a failure is contained like a poll's (`ConnectorError` kinds pass through). A service
+        that slows the read down partway returns the `Poll` it has with `Poll.stopped` set to the `ConnectorError`
+        (say `ConnectorError("throttled", ..., retry_after=60)`) instead of raising, which would throw away what it
+        read: the core keeps the items, notes the stop and asks again after the wait (a throttled stop's
+        `retry_after`, else the setting's) for the days older than the oldest item it holds. A try counts as getting
+        further only when it took in something new; after `watch.older_read_tries` tries that took nothing new the
+        read gives up and Today offers to read the rest. A `Poll` from `poll` that carries `stopped` is refused.
         `older_count=fn`, with the same arguments, returns how many items there are (at most `max_items`) without
         reading them, so the estimate costs no more than a count; left out, the estimate calls `older` and counts
         what comes back. A count that reaches `max_items` is shown as "at least" that many, with its cost. A service
@@ -2334,7 +2340,8 @@ class Registrar:
         `before`, with the same keys as a poll's. Each item carries its `MessageDetails` (sender, received,
         participants, unread, bulk, categories and `where`) and a title (the subject), and no text and no files; any
         text or files it carries are dropped. Like `older`, it may return a `Poll` whose `items` and `unreadable` are
-        used. It is optional and additive: a connector without it works as before. Once,
+        used; its `stopped` keeps the items it holds and is then recorded and told as an error is. It is optional and
+        additive: a connector without it works as before. Once,
         after a mail source's first read, the core asks for the headers from `watch.first_headers_days` back (365) to
         the day that read began, at most `watch.first_headers_max_items` (5000), in the background, holding nothing and
         costing no AI work. Each header is kept as a record of its own that the contact tally and the first look at the

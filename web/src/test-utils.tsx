@@ -90,6 +90,7 @@ export function rcFixture(extra: Partial<S["RuntimeConfig"]> = {}): S["RuntimeCo
     pm: null,
     shortcuts: { undo: "u", hand_in: "n", help: "?", ask: "/" },
     toast_seconds: 0,
+    toast_undo_seconds: 0,
     request_timeout_seconds: 30,
     long_request_timeout_seconds: 300,
     title_words: 12,

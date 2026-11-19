@@ -2047,7 +2047,13 @@ test("offline, the settings' fields and Add an account are held, and the page sa
 test("Settings says which version of the app this is, from what the server reports", async () => {
   api(ITEMS, { "GET runtime-config": () => rcFixture({ version: "9.8.7" }) });
   open();
-  expect(await screen.findByText("Version 9.8.7")).toBeInTheDocument();
+  expect(await screen.findByText("Version 9.8.7, run from source, not an installed build")).toBeInTheDocument();
+});
+
+test("Settings names the build by its number and commit when the installer stamped them", async () => {
+  api(ITEMS, { "GET runtime-config": () => rcFixture({ version: "9.8.7", build_number: 52, build_commit: "630a595" }) });
+  open();
+  expect(await screen.findByText("Version 9.8.7, build 52 (630a595)")).toBeInTheDocument();
 });
 
 test("Today holds the working-hours hold as one clear switch with a one-line explanation, on by default, and turning it off is one click (S-0527)", async () => {

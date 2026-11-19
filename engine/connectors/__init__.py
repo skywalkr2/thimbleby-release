@@ -216,7 +216,10 @@ class Poll:
     a file holds, a service's last-modified time); left out when the source holds no such time, so a source that is
     quiet is never taken for an old one. Data older than the source's normal refresh (`data_fresh_hours`) is told to
     the person as old, never read as "no changes"; set it only to a time the source itself gives, never to the time of
-    the read."""
+    the read. `stopped`: for the `older` and `headers` functions only, a `ConnectorError` that cut the read short after
+    `items` were read: the core keeps the items, notes the stop (a throttled one carries on after its `retry_after`
+    seconds, other kinds after the setting's wait) and asks again for what is older than the oldest item it holds,
+    where raising would throw the items away. A `Poll` from `poll` that carries it is refused."""
 
     items: list[SourceItem]
     state: dict[str, Any] = field(default_factory=dict)
@@ -225,6 +228,7 @@ class Poll:
     unreadable: list[Unreadable] = field(default_factory=list)
     capped: bool = False
     generated_at: str | None = None
+    stopped: ConnectorError | None = None
 
 
 @dataclass(frozen=True)
@@ -290,6 +294,8 @@ def checked_poll(poll: Any) -> Poll:
             raise ValueError("a SourceItem has a key, a title and its text, all text")
         _check_details(item)
         _check_files(item)
+    if poll.stopped is not None and not isinstance(poll.stopped, ConnectorError):
+        raise ValueError("a Poll's stopped is a ConnectorError, or None")
     if not isinstance(poll.state, dict):
         raise ValueError("a Poll's state is a dict")
     if not isinstance(poll.capped, bool):

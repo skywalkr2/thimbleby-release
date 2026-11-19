@@ -3,6 +3,7 @@ given the base path, the sign-in link and the health address, and a failure is w
 
 from pathlib import Path
 
+import pytest
 from starlette.testclient import TestClient
 
 from engine import desktop
@@ -288,3 +289,144 @@ def test_with_no_earlier_work_nothing_is_asked(tmp_path, monkeypatch):
     shell = Shell()
     run_start(root, shell, tmp_path)
     assert shell.asked == []
+
+
+# ---- a newly installed build takes over from an older copy still running (S-0662) ------------------------------------
+
+
+def _running_copy(root, tmp_path, monkeypatch, *, identity, finishes):
+    """A copy running on the workspace, as another process would be: it holds the lock, publishes its address and
+    identity, and listens for the quit request (which lets go of the folder only when `finishes`)."""
+    import engine.launcher as launcher
+    from engine.legacy_names import private_dir
+
+    desktop.start(root, Shell(), launch=lambda *a, **k: None, environ=env_for(tmp_path))  # makes the workspace
+    lock = launcher.InstanceLock(private_dir(root))
+    assert lock.acquire()
+    quit_asked = []
+
+    def on_quit():
+        quit_asked.append(True)
+        if finishes:
+            lock.release()
+
+    control = launcher.ControlServer(resolve(root).install_token, lambda: quit_asked.append("show"), on_quit)
+    lock.publish(8123, "/api/health", control.start(), identity)
+    shown = []
+    monkeypatch.setattr(launcher, "show_running", lambda folder, token: shown.append(token))
+    return lock, control, quit_asked, shown
+
+
+def _this_build(monkeypatch, version="0.1.0", number=52):
+    from engine import build_info
+
+    monkeypatch.setattr(build_info, "current", lambda catalog=None: build_info.Build(version, number, "abc1234"))
+
+
+def test_a_newer_build_asks_an_older_running_copy_to_finish_and_then_serves(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    root = tmp_path / "share" / "thimbleby" / desktop.WORKSPACE_FOLDER
+    older = {"version": "0.1.0", "build": 51, "commit": "def5678"}
+    lock, control, quit_asked, shown = _running_copy(root, tmp_path, monkeypatch, identity=older, finishes=True)
+    try:
+        _this_build(monkeypatch, number=52)
+        assert desktop.already_running(root, env_for(tmp_path)) == desktop.NONE
+        assert quit_asked == [True] and shown == []
+    finally:
+        control.stop()
+        lock.release()
+
+
+def test_a_copy_that_published_no_identity_is_older_than_any_stamped_build(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    root = tmp_path / "share" / "thimbleby" / desktop.WORKSPACE_FOLDER
+    lock, control, quit_asked, shown = _running_copy(root, tmp_path, monkeypatch, identity=None, finishes=True)
+    try:
+        _this_build(monkeypatch, number=52)
+        assert desktop.already_running(root, env_for(tmp_path)) == desktop.NONE and quit_asked == [True]
+    finally:
+        control.stop()
+        lock.release()
+
+
+@pytest.mark.parametrize("running_number", [52, 53])
+def test_the_same_or_an_older_build_shows_the_running_copy_and_asks_it_nothing_else(
+    tmp_path, monkeypatch, running_number
+):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    root = tmp_path / "share" / "thimbleby" / desktop.WORKSPACE_FOLDER
+    running = {"version": "0.1.0", "build": running_number, "commit": "def5678"}
+    lock, control, quit_asked, shown = _running_copy(root, tmp_path, monkeypatch, identity=running, finishes=True)
+    try:
+        _this_build(monkeypatch, number=52)
+        assert desktop.already_running(root, env_for(tmp_path)) == desktop.SHOWN
+        assert quit_asked == [] and shown == [resolve(root).install_token()]
+    finally:
+        control.stop()
+        lock.release()
+
+
+def test_an_older_copy_that_does_not_finish_in_its_time_is_stuck_and_the_window_says_how_to_quit_it(
+    tmp_path, monkeypatch
+):
+    import engine.launcher as launcher
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    root = tmp_path / "share" / "thimbleby" / desktop.WORKSPACE_FOLDER
+    older = {"version": "0.1.0", "build": 51, "commit": "def5678"}
+    lock, control, quit_asked, shown = _running_copy(root, tmp_path, monkeypatch, identity=older, finishes=False)
+    try:
+        _this_build(monkeypatch, number=52)
+        waited = []
+        real = launcher.stop_running
+        monkeypatch.setattr(
+            launcher,
+            "stop_running",
+            lambda folder, token, wait: (
+                waited.append(wait)
+                or real(folder, token, wait=wait, clock=iter([0, 1, 2, 99, 100, 101]).__next__, pause=lambda s: None)
+            ),
+        )
+        assert desktop.already_running(root, env_for(tmp_path)) == desktop.STUCK
+        assert quit_asked == [True] and waited == [20]  # updates.takeover_wait_seconds
+
+        shell = Shell()
+        made = {}
+
+        class Entry(Shell):
+            def __init__(self, words, **options):
+                super().__init__(words)
+                shell.words = self.words
+
+            def run(self, work):
+                made["code"] = work()
+                return made["code"]
+
+            def problem(self, kind, details):
+                shell.problems.append((kind, details))
+                return False
+
+        assert desktop.main(env_for(tmp_path), tmp_path / "home", argv=[], make_shell=Entry) == 1
+        assert [kind for kind, _ in shell.problems] == ["older_running"]
+        from engine import startpage
+
+        title, text = startpage.message(shell.words, "older_running")
+        assert "older" in title.lower() and "Quit" in text and shown == []
+    finally:
+        control.stop()
+        lock.release()
+
+
+def test_a_running_copy_of_the_same_build_is_never_asked_to_quit_by_a_source_run(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    root = tmp_path / "share" / "thimbleby" / desktop.WORKSPACE_FOLDER
+    running = {"version": "0.1.0", "build": 51, "commit": "def5678"}
+    lock, control, quit_asked, shown = _running_copy(root, tmp_path, monkeypatch, identity=running, finishes=True)
+    try:
+        from engine import build_info
+
+        monkeypatch.setattr(build_info, "current", lambda catalog=None: build_info.Build("0.1.0"))
+        assert desktop.already_running(root, env_for(tmp_path)) == desktop.SHOWN and quit_asked == []
+    finally:
+        control.stop()
+        lock.release()

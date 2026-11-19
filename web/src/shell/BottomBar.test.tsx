@@ -11,7 +11,7 @@ function show(handlers: Partial<Record<"onHandIn" | "onAsk" | "onHelp" | "onFeed
   renderApp(
     <BottomBar
       current="today"
-      version="9.8.7"
+      version="Version 9.8.7, build 52 (630a595)"
       onHandIn={handlers.onHandIn ?? noop}
       onOpenRecord={noop}
       onAsk={handlers.onAsk ?? noop}
@@ -38,7 +38,7 @@ test("the bar has Today, To-dos, a tonal plus for handing something in, Schedule
 test("the tab of the screen that is open is the current one, and More is current on a screen that has no tab", () => {
   fakeApi({ "GET panels": () => [], "GET changes": () => [], "GET followups": () => [] });
   const noop = () => undefined;
-  renderApp(<BottomBar current="work/open" version="9.8.7" onHandIn={noop} onHelp={noop} onFeedback={noop} onOpenGuide={noop} />);
+  renderApp(<BottomBar current="work/open" version="Version 9.8.7, build 52 (630a595)" onHandIn={noop} onHelp={noop} onFeedback={noop} onOpenGuide={noop} />);
   const bar = screen.getByRole("navigation", { name: "Views" });
   expect(within(bar).getByRole("link", { name: "To-dos" })).toHaveAttribute("aria-current", "page");
   expect(within(bar).getByRole("link", { name: "Today" })).not.toHaveAttribute("aria-current");
@@ -70,7 +70,7 @@ test("More has the work screens, the saved items and Settings in sections, with 
   expect(within(sheet).queryByRole("button", { name: "Show keyboard shortcuts" })).toBeNull();
   expect(within(sheet).getByRole("button", { name: "Setup guide" })).toBeInTheDocument();
   expect(within(sheet).getByRole("button", { name: "Write feedback" })).toBeInTheDocument();
-  expect(within(sheet).getByText("Version 9.8.7")).toBeInTheDocument();
+  expect(within(sheet).getByText("Version 9.8.7, build 52 (630a595)")).toBeInTheDocument();
   expect(within(sheet).getByRole("radiogroup", { name: "Theme" })).toBeInTheDocument();
   expect(within(sheet).getByRole("radiogroup", { name: "Spacing" })).toBeInTheDocument();
   expect(onHelp).not.toHaveBeenCalled();
@@ -86,7 +86,7 @@ test("with no side besides Personal the phone's More sheet says Keeping track, n
     "GET projects": () => [project("PRJ-personal", "Personal")],
   });
   const noop = () => undefined;
-  renderApp(<BottomBar current="today" version="9.8.7" onHandIn={noop} onOpenRecord={noop} onAsk={noop} onHelp={noop} onFeedback={noop} onOpenGuide={noop} />);
+  renderApp(<BottomBar current="today" version="Version 9.8.7, build 52 (630a595)" onHandIn={noop} onOpenRecord={noop} onAsk={noop} onHelp={noop} onFeedback={noop} onOpenGuide={noop} />);
   const bar = screen.getByRole("navigation", { name: "Views" });
   await user.click(within(bar).getByRole("button", { name: "More" }));
   const sheet = await screen.findByRole("dialog", { name: "More" });

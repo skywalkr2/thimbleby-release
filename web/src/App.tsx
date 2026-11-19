@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, type S } from "./lib/api";
+import { useBuildLabel } from "./lib/build-label";
 import { useShortcuts } from "./lib/keys";
 import { ConnectionProvider } from "./lib/connection";
 import { useLive } from "./lib/live";
@@ -108,6 +109,7 @@ const ASK_PANE_QUERY = "(min-width: 1440px)";
 
 function Shell(props: { rc: S["RuntimeConfig"]; live: ReturnType<typeof useLive> }) {
   const { rc, live } = props;
+  const buildLabel = useBuildLabel();
   const { t } = useWords();
   const { undoLast, push } = useToasts();
   const handedBack = useSignInReturn();
@@ -536,7 +538,7 @@ function Shell(props: { rc: S["RuntimeConfig"]; live: ReturnType<typeof useLive>
       {narrow && (
         <BottomBar
           current={navView}
-          version={rc.version}
+          version={buildLabel(rc)}
           onHandIn={() => setHandIn(true)}
           onOpenRecord={openRecord}
           onAsk={(question) => setAsk(question ? { question } : {})}

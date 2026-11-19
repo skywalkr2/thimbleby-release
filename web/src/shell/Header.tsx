@@ -10,6 +10,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { Button as AriaButton } from "react-aria-components";
 import { api, type S } from "../lib/api";
+import { useBuildLabel } from "../lib/build-label";
 import type { LiveState } from "../lib/live";
 import { setDensity, setTheme, useAppearance, type Density, type Theme } from "../lib/theme";
 import { viewHref } from "../lib/views";
@@ -78,7 +79,7 @@ export function useHelpGroups(handlers: { onHelp: () => void; onOpenGuide: () =>
         ...(handlers.onReport ? [{ id: "report", label: t("report.open"), icon: "alert" as const, run: handlers.onReport }] : []),
       ],
     },
-    { id: "version", entries: [{ id: "version", label: t("app.version", { version }), disabled: true }] },
+    { id: "version", entries: [{ id: "version", label: version, disabled: true }] },
   ];
 }
 
@@ -158,7 +159,7 @@ export function useLineFits(row: RefObject<HTMLElement | null>, enabled: boolean
 }
 
 export function Header(props: {
-  rc: Pick<S["RuntimeConfig"], "workspace_name" | "assistant_name" | "demo" | "logo" | "api_base" | "version">;
+  rc: Pick<S["RuntimeConfig"], "workspace_name" | "assistant_name" | "demo" | "logo" | "api_base" | "version" | "build_number" | "build_commit">;
   live: { state: LiveState; lastUpdate: Date | null; refresh: () => void };
   narrow: boolean;
   shortcuts: Record<string, string>;
@@ -180,9 +181,10 @@ export function Header(props: {
 }) {
   const { t } = useWords();
   const { rc } = props;
+  const buildLabel = useBuildLabel();
   const person = usePersonName(rc.workspace_name);
   const userMenu = useUserMenuGroups(person, { onOpenSettings: props.onOpenSettings, onOpenQuality: props.onOpenQuality }, rc.workspace_name);
-  const helpGroups = useHelpGroups({ onHelp: props.onHelp, onOpenGuide: () => props.onOpenGuide(), onFeedback: props.onFeedback, onReport: props.onReport, onAlpha: props.onAlpha }, rc.version);
+  const helpGroups = useHelpGroups({ onHelp: props.onHelp, onOpenGuide: () => props.onOpenGuide(), onFeedback: props.onFeedback, onReport: props.onReport, onAlpha: props.onAlpha }, buildLabel(rc));
   // Below 1440px the assistant's state is in the status chip's popover, as on a phone.
   const tight = useMediaQuery("(max-width: 1439px)");
   // One status on screen: when the assistant is not fine the status chip says it (its own states, a restart to finish, the network), so

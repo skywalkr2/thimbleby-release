@@ -1968,9 +1968,21 @@ class RuntimeConfig(BaseModel):
     )
     workspace_name: str
     version: str
+    build_number: int | None = Field(
+        None,
+        description="The installer build's number, stamped when it was built; none for a copy run from source.",
+    )
+    build_commit: str | None = Field(
+        None, description="The commit the installer build was made from; none for a source run."
+    )
     pm: str | None
     narrow_below_px: int
     toast_seconds: float
+    toast_undo_seconds: float = Field(
+        10,
+        description="How long a message with Undo stays on screen in seconds; zero keeps it until closed "
+        "(ui.toast_undo_seconds).",
+    )
     request_timeout_seconds: int
     long_request_timeout_seconds: int
     title_words: int = Field(12, description="The most words a row's title holds before it is cut (ui.title_words).")

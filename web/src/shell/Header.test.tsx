@@ -180,8 +180,8 @@ test("Help is a menu: shortcuts, the setup guide, Missed one, feedback and the v
   const onOpenGuide = vi.fn();
   show({ handlers: { onHelp, onFeedback, onOpenGuide } });
   await user.click(screen.getByRole("button", { name: "Help" }));
-  expect(screen.getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Show keyboard shortcuts", "Setup guide", "Report something Helper missed", "Write feedback", "Version 9.8.7"]);
-  expect(screen.getByRole("menuitem", { name: "Version 9.8.7" })).toHaveAttribute("aria-disabled", "true");
+  expect(screen.getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Show keyboard shortcuts", "Setup guide", "Report something Helper missed", "Write feedback", "Version 9.8.7, run from source, not an installed build"]);
+  expect(screen.getByRole("menuitem", { name: "Version 9.8.7, run from source, not an installed build" })).toHaveAttribute("aria-disabled", "true");
   await user.click(screen.getByRole("menuitem", { name: "Show keyboard shortcuts" }));
   expect(onHelp).toHaveBeenCalledTimes(1);
   await user.click(screen.getByRole("button", { name: "Help" }));

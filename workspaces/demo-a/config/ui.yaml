@@ -3,6 +3,7 @@ wording: {}   # overrides for the wording sheet by key; plugins name their own k
 shortcuts: {next: j, previous: k, primary: a, send_back: s, copy: c, edit: e, move: m, undo: u, hand_in: n, help: "?", ask: /, next_pane: "]", previous_pane: "[", show_new: "N"}
 narrow_below_px: 700   # below this width: the phone layout, with a bottom bar
 toast_seconds: 0
+toast_undo_seconds: 0   # how long a message with Undo stays; 0 keeps it until closed
 title_words: 12   # how many words a row's title holds before it is cut at a word
 request_timeout_seconds: 30   # how long a screen waits for the app to answer before it says so
 long_request_timeout_seconds: 300   # the same, for the few actions that take a while on purpose

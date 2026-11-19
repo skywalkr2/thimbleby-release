@@ -23,6 +23,7 @@ const rc = (extra: Partial<S["RuntimeConfig"]> = {}): S["RuntimeConfig"] => ({
   pm: null,
   shortcuts: { undo: "u", hand_in: "n", help: "?", ask: "/" },
   toast_seconds: 0,
+  toast_undo_seconds: 0,
   request_timeout_seconds: 30,
   long_request_timeout_seconds: 300,
   title_words: 12,
@@ -44,7 +45,7 @@ test("the Help menu says the version and opens Write feedback, and focus comes b
   const user = userEvent.setup();
   const help = screen.getByRole("button", { name: "Help" });
   await user.click(help);
-  expect(screen.getByRole("menuitem", { name: "Version 9.8.7" })).toHaveAttribute("aria-disabled", "true");
+  expect(screen.getByRole("menuitem", { name: "Version 9.8.7, run from source, not an installed build" })).toHaveAttribute("aria-disabled", "true");
   await user.click(screen.getByRole("menuitem", { name: "Write feedback" }));
   const dialog = screen.getByRole("dialog", { name: "Write feedback" });
   await user.type(screen.getByLabelText("What happened, or what would help?"), "Hello");

@@ -205,7 +205,10 @@ def channel_folders(
 
 def read(poll: Callable[..., Poll], settings: Any, state: dict[str, Any] | None, context: ConnectorContext) -> Poll:
     """Run a connector's `poll` and check its answer as the watcher does. A ConnectorError passes through."""
-    return checked_poll(poll(settings, dict(state or {}), context))
+    answer = checked_poll(poll(settings, dict(state or {}), context))
+    if answer.stopped is not None:
+        raise ValueError("a Poll from poll() can't carry `stopped`: only older and headers may")
+    return answer
 
 
 # ---- a throwaway workspace with the plugin loaded --------------------------------------------------------------------

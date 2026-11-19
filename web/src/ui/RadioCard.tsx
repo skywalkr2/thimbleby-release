@@ -11,13 +11,16 @@ export interface RadioCardProps extends Omit<ComponentPropsWithRef<"input">, "ty
   description?: ReactNode;
   /** A small mark before the title: "Recommended". */
   tag?: ReactNode;
+  /** Draw a round mark at the card's start, filled when chosen, so the card reads as a choice before any is picked. */
+  mark?: boolean;
 }
 
 export function RadioCard(props: RadioCardProps) {
-  const { title, description, tag, className, ...rest } = props;
+  const { title, description, tag, mark, className, ...rest } = props;
   return (
-    <label className={[styles.card, className ?? ""].filter(Boolean).join(" ")} data-radio-card="" data-chosen={rest.checked ? "" : undefined} data-disabled={rest.disabled ? "" : undefined}>
+    <label className={[styles.card, className ?? ""].filter(Boolean).join(" ")} data-radio-card="" data-chosen={rest.checked ? "" : undefined} data-marked={mark ? "" : undefined} data-disabled={rest.disabled ? "" : undefined}>
       <input {...rest} type="radio" className={styles.input} />
+      {mark && <span className={styles.mark} aria-hidden="true" />}
       <span className={styles.body}>
         {tag && (
           <>

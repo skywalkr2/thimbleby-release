@@ -71,7 +71,7 @@ from api.view_routes import build_view_router
 from api.waiting_routes import build_waiting_router
 from api.watch_routes import build_watch_router
 from api.week_ahead_routes import build_week_ahead_router
-from engine import __version__, problems, report_send, slow_screens
+from engine import __version__, build_info, problems, report_send, slow_screens
 from engine.ai.router import Router
 from engine.brand import LOGO_TYPES, logo_path
 from engine.config import Config
@@ -443,6 +443,7 @@ def create_app(
     def runtime_config() -> RuntimeConfig:
         """What the UI needs before anything else: where it is served, what to call things, and its settings."""
         prefix = "" if base_path == "/" else base_path
+        build = build_info.current()
         return RuntimeConfig(
             base_path=base_path,
             api_base=f"{prefix}/api",
@@ -450,9 +451,12 @@ def create_app(
             assistant_named=bool(cfg.workspace.assistant_name.strip()),
             workspace_name=cfg.workspace.name,
             version=__version__,
+            build_number=build.number,
+            build_commit=build.commit or None,
             pm=cfg.workspace.user.person,
             narrow_below_px=cfg.ui.narrow_below_px,
             toast_seconds=cfg.ui.toast_seconds,
+            toast_undo_seconds=cfg.ui.toast_undo_seconds,
             request_timeout_seconds=cfg.ui.request_timeout_seconds,
             long_request_timeout_seconds=cfg.ui.long_request_timeout_seconds,
             title_words=cfg.ui.title_words,

@@ -3171,8 +3171,15 @@ class UiFile(FileModel):
     toast_seconds: float = Field(
         7,
         ge=0,
-        description="How long a plain message stays on screen; a message with Undo or another button stays until "
-        "dismissed or replaced, and 0 keeps every message until dismissed.",
+        description="How long a plain message stays on screen, in seconds; 0 keeps every plain message until "
+        "dismissed. A message with another button stays until dismissed or replaced.",
+    )
+    toast_undo_seconds: float = Field(
+        10,
+        ge=0,
+        description="How long a message with Undo stays on screen, in seconds, never while the pointer or the keyboard "
+        "is on it; 0 keeps it until dismissed or replaced. The change stays listed in What changed, where it can "
+        "still be undone.",
     )
     request_timeout_seconds: int = Field(
         30,
@@ -4948,6 +4955,13 @@ class UpdatesFile(FileModel):
         "",
         description="Where to look for a newer version, when it isn't the address built into the app. An address that "
         "starts with https, or one on this computer. Leave it empty to use the built-in one.",
+    )
+    takeover_wait_seconds: int = Field(
+        20,
+        ge=5,
+        le=600,
+        description="How many seconds a newly opened, newer copy of the app waits for an older copy still running to "
+        "close before it tells you how to quit the older one yourself.",
     )
     close_wait_seconds: int = Field(
         180,

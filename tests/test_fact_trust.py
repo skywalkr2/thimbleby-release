@@ -14,6 +14,7 @@ from engine.config.schema import FreshnessDaysSettings
 from engine.fact_use import limit_days
 from engine.names import People
 from engine.ops import CHANGESET
+from engine.repeats import local_today
 from engine.storage import WriteContext
 from tests.conftest import DEMO_B, fixture_records
 from tests.test_fact_basis import LINE, OTHER, PM, fact, from_outside
@@ -30,15 +31,24 @@ PROJECT = fixture_records(DEMO_B, "project")[0]["id"]
 PM_NAME = next(p["full_name"] for p in fixture_records(DEMO_B, "person") if p["id"] == PM)
 
 
-def today(store) -> date:
-    return datetime.fromisoformat(store.clock()).date()
+def today(store, cfg=None) -> date:
+    """The day the freshness check counts from: the workspace's own day (the applier's `local_day` in its zone), never
+    the UTC day, which differs from it each evening before midnight in the workspace's zone."""
+    if cfg is None:
+        return datetime.fromisoformat(store.clock()).date()
+    return local_today(store, cfg)
 
 
-def make_fact(store, text, *, days_old=0, **more) -> str:
+def make_fact(store, text, *, days_old=0, cfg=None, **more) -> str:
     with store.transaction() as tx:
         return tx.create(
             "fact",
-            {"text": text, "basis": "person", "as_of": (today(store) - timedelta(days=days_old)).isoformat(), **more},
+            {
+                "text": text,
+                "basis": "person",
+                "as_of": (today(store, cfg) - timedelta(days=days_old)).isoformat(),
+                **more,
+            },
             _ASSISTANT,
         ).id
 
@@ -147,7 +157,7 @@ def test_an_act_made_and_stored_keeps_the_facts_it_states(app):  # noqa: F811
 def test_a_fact_past_its_limit_in_a_draft_for_someone_else_is_held_with_a_check_this_line(app):  # noqa: F811
     _, store, cfg, _ = app
     limit = cfg.steward.facts.freshness_days.other
-    old = make_fact(store, "The cover proof is approved.", days_old=limit + 1)
+    old = make_fact(store, "The cover proof is approved.", days_old=limit + 1, cfg=cfg)
     ctx, cs, problems = checked(store, cfg, draft(OTHER["full_name"], facts=[old]))
     (late,) = named(problems, "stale-fact")
     assert late.severity == "return" and late.message.startswith("Check this")
@@ -158,8 +168,8 @@ def test_a_fact_past_its_limit_in_a_draft_for_someone_else_is_held_with_a_check_
 def test_a_fresh_fact_passes_and_one_at_the_limit_is_not_yet_old(app):  # noqa: F811
     _, store, cfg, _ = app
     limit = cfg.steward.facts.freshness_days.other
-    fresh = make_fact(store, "The cover proof is approved.", days_old=1)
-    edge = make_fact(store, "The spine width is set.", days_old=limit)
+    fresh = make_fact(store, "The cover proof is approved.", days_old=1, cfg=cfg)
+    edge = make_fact(store, "The spine width is set.", days_old=limit, cfg=cfg)
     assert named(checked(store, cfg, draft(OTHER["full_name"], facts=[fresh, edge]))[2], "stale-fact") == []
 
 
@@ -168,9 +178,14 @@ def test_the_limit_is_per_kind_and_a_limit_of_zero_never_holds(app):  # noqa: F8
     days = cfg.steward.facts.freshness_days.deadline + 1
     assert cfg.steward.facts.freshness_days.deadline < cfg.steward.facts.freshness_days.other
     deadline = make_fact(
-        store, "The proof is due Friday.", days_old=days, on=(today(store)).isoformat(), on_kind="deadline"
+        store,
+        "The proof is due Friday.",
+        days_old=days,
+        cfg=cfg,
+        on=(today(store, cfg)).isoformat(),
+        on_kind="deadline",
     )
-    other = make_fact(store, "The cover proof is approved.", days_old=days)
+    other = make_fact(store, "The cover proof is approved.", days_old=days, cfg=cfg)
     (late,) = named(checked(store, cfg, draft(OTHER["full_name"], facts=[deadline, other]))[2], "stale-fact")
     assert "The proof is due Friday." in late.message
     cfg.steward.facts.freshness_days.deadline = 0
@@ -179,7 +194,7 @@ def test_the_limit_is_per_kind_and_a_limit_of_zero_never_holds(app):  # noqa: F8
 
 def test_a_stale_fact_in_a_draft_to_the_person_themselves_is_returned_but_never_held(app):  # noqa: F811
     _, store, cfg, _ = app
-    old = make_fact(store, "The cover proof is approved.", days_old=cfg.steward.facts.freshness_days.other + 1)
+    old = make_fact(store, "The cover proof is approved.", days_old=cfg.steward.facts.freshness_days.other + 1, cfg=cfg)
     ctx, cs, problems = checked(store, cfg, draft(PM_NAME, facts=[old]))
     (late,) = named(problems, "stale-fact")
     assert not _held_after_return(cs.ops[0], [late], ctx)
@@ -187,7 +202,7 @@ def test_a_stale_fact_in_a_draft_to_the_person_themselves_is_returned_but_never_
 
 def test_the_severity_is_a_setting_and_every_kind_has_a_limit_with_a_description(app):  # noqa: F811
     _, store, cfg, _ = app
-    old = make_fact(store, "The cover proof is approved.", days_old=cfg.steward.facts.freshness_days.other + 1)
+    old = make_fact(store, "The cover proof is approved.", days_old=cfg.steward.facts.freshness_days.other + 1, cfg=cfg)
     cfg.checks.lints["stale-fact"] = "off"
     assert named(checked(store, cfg, draft(OTHER["full_name"], facts=[old]))[2], "stale-fact") == []
     for name, field in FreshnessDaysSettings.model_fields.items():

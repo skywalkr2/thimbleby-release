@@ -39,3 +39,6 @@ cockpit.db-*
 
 # Shipped files copied in by the wheel build
 engine/_shipped/
+
+# Written by the release build's prepare step: this build's number and commit (`engine/build_info.py`).
+/catalog/build.yaml

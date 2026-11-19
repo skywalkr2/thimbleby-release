@@ -153,7 +153,7 @@ export function BottomBar(props: {
             )}
             <button type="button" className={styles.link} disabled>
               <span className={styles.spacer} aria-hidden="true" />
-              {t("app.version", { version: props.version })}
+              {props.version}
             </button>
           </div>
           {/* Scrolling shows where the list goes on: a fade at the sheet's bottom edge until its end. */}

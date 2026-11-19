@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 import { ToastProvider, useToasts } from "./toasts";
@@ -206,12 +206,12 @@ test("a repeated message without its own wording says how many times", async () 
   expect(within(region()).getByText("Reviewed and filed. (2 times)")).toBeInTheDocument();
 });
 
-test("a toast with Undo or another action stays past its time until it is dismissed, and a note with no action still goes", async () => {
+test("a toast with another button stays past any time until it is dismissed, and a note with no button still goes", async () => {
   vi.useFakeTimers();
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener: () => undefined, removeEventListener: () => undefined }));
   render(
-    <ToastProvider seconds={2}>
-      <Pusher undo={() => undefined} />
+    <ToastProvider seconds={2} undoSeconds={5}>
+      <Pusher />
     </ToastProvider>,
   );
   act(() => screen.getByRole("button", { name: "fixed" }).click());
@@ -219,19 +219,79 @@ test("a toast with Undo or another action stays past its time until it is dismis
     vi.advanceTimersByTime(60000);
   });
   expect(within(region()).getByText("Fixed")).toBeInTheDocument();
-  act(() => screen.getByRole("button", { name: "push" }).click());
-  act(() => {
-    vi.advanceTimersByTime(60000);
-  });
-  expect(within(region()).getByRole("button", { name: "Undo" })).toBeInTheDocument();
   act(() => within(region()).getByRole("button", { name: "Dismiss" }).click());
-  expect(within(region()).queryAllByRole("button", { name: "Dismiss" })).toHaveLength(0);
   act(() => screen.getByRole("button", { name: "plain" }).click());
   expect(within(region()).getByText("Plain")).toBeInTheDocument();
   act(() => {
     vi.advanceTimersByTime(60000);
   });
   expect(within(region()).queryByText("Plain")).toBeNull();
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+
+function undoToast(undoSeconds: number) {
+  vi.useFakeTimers();
+  vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener: () => undefined, removeEventListener: () => undefined }));
+  render(
+    <ToastProvider seconds={2} undoSeconds={undoSeconds}>
+      <Pusher undo={() => undefined} />
+    </ToastProvider>,
+  );
+  act(() => screen.getByRole("button", { name: "push" }).click());
+}
+
+const shown = () => within(region()).queryByRole("button", { name: "Undo" });
+
+test("a toast with Undo goes after the Undo time, which is its own and longer than a note's", () => {
+  undoToast(5);
+  act(() => {
+    vi.advanceTimersByTime(4000);
+  });
+  expect(shown()).toBeInTheDocument();
+  act(() => {
+    vi.advanceTimersByTime(1200);
+  });
+  expect(shown()).toBeNull();
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+
+test("a toast with Undo waits while the pointer or the cursor is on it, then goes after the time again", () => {
+  undoToast(5);
+  const toast = region().querySelector("[data-toast]") as HTMLElement;
+  act(() => {
+    fireEvent.mouseEnter(toast);
+  });
+  act(() => {
+    vi.advanceTimersByTime(60000);
+  });
+  expect(shown()).toBeInTheDocument();
+  act(() => {
+    within(region()).getByRole("button", { name: "Undo" }).focus();
+    fireEvent.mouseLeave(toast);
+  });
+  act(() => {
+    vi.advanceTimersByTime(60000);
+  });
+  expect(shown()).toBeInTheDocument();
+  act(() => {
+    within(region()).getByRole("button", { name: "Undo" }).blur();
+  });
+  act(() => {
+    vi.advanceTimersByTime(5200);
+  });
+  expect(shown()).toBeNull();
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+
+test("a toast with Undo is kept until it is closed when the Undo time is 0", () => {
+  undoToast(0);
+  act(() => {
+    vi.advanceTimersByTime(600000);
+  });
+  expect(shown()).toBeInTheDocument();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });

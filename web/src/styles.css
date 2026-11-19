@@ -692,3 +692,6 @@ pre.file-preview { margin: 0; max-height: 18rem; overflow: auto; white-space: pr
 /* A record's page drawn inside a list's detail pane: the pane's width, not the window's, is what it has, so it is one column with its details first. */
 .record-page[data-embedded] .record-grid { grid-template-columns: minmax(0, 1fr); }
 .record-page[data-embedded] .record-grid .record-side { order: -1; position: static; }
+
+/* The AI step's question starts its own section: clear space above it, set off from the account's result by a hairline. */
+fieldset.allow-question[data-ui="group"] { margin-top: var(--space-6); padding-top: var(--space-4); border-top: 1px solid var(--border); }

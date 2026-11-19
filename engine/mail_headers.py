@@ -70,6 +70,8 @@ def read_first(ws: Any, store: Any, cfg: Any, source: Any, now: datetime, before
 
         source_intake.add_older_skipped(store, source.id, skipped_counts(unreadable))
         watch._tell_unreadable(store, cfg, source, unreadable)
+    if isinstance(answer, Poll) and answer.stopped is not None:
+        raise answer.stopped  # what was read is kept; the stop is recorded and told like any failed read
     return kept
 
 

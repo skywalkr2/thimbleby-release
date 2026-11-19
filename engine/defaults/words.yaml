@@ -121,6 +121,8 @@ desktop.problem.disk_full.title: Your disk is full
 desktop.problem.disk_full.text: Thimbleby needs about 50 MB free to start.
 desktop.problem.elsewhere.title: Thimbleby is open on another computer
 desktop.problem.elsewhere.text: Your workspace is in a synced folder, and the copy there is using it. Close it there, then try again.
+desktop.problem.older_running.title: An older Thimbleby is still open
+desktop.problem.older_running.text: A newer Thimbleby was opened, and the older one did not close when asked. Choose Quit on the older one's icon (in the menu bar on a Mac, in the tray by the clock on Windows), then choose Try again. Restarting the computer also closes it.
 desktop.problem.held.title: Thimbleby couldn't start
 desktop.problem.held.text: Something else on this computer stops Thimbleby from starting. Restarting the computer usually fixes it.
 desktop.problem.other.title: Thimbleby couldn't start

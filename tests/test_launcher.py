@@ -544,3 +544,37 @@ def test_ready_is_called_once_the_server_answers_and_a_failing_side_call_never_s
 
     launch(tmp_path, FakeShell(), ready=broken, poll=broken)  # noted, and the app still starts and ends
     assert launcher._quietly(broken, "poll") is None
+
+
+def test_the_owner_publishes_which_build_it_is_and_a_copy_before_the_stamp_publishes_none(tmp_path):
+    owner = InstanceLock(tmp_path)
+    assert owner.acquire()
+    try:
+        owner.publish(8765, "/api/health", 50123)
+        assert InstanceLock(tmp_path).identity() is None and InstanceLock(tmp_path).connection() == (
+            8765,
+            "/api/health",
+        )
+        owner.publish(8765, "/api/health", 50123, {"version": "0.1.0", "build": 52, "commit": "630a595"})
+        assert InstanceLock(tmp_path).identity() == {"version": "0.1.0", "build": 52, "commit": "630a595"}
+        assert InstanceLock(tmp_path).control_port() == 50123
+    finally:
+        owner.release()
+
+
+def test_stopping_a_running_copy_waits_for_it_to_let_go_and_gives_up_after_its_time(tmp_path):
+    owner = InstanceLock(tmp_path)
+    assert owner.acquire()
+    quits = []
+    control = launcher.ControlServer(lambda: "tok", lambda: None, lambda: quits.append(True))
+    try:
+        owner.publish(8765, "/api/health", control.start())
+        ticks = iter(range(0, 1000))
+        assert not launcher.stop_running(tmp_path, "tok", wait=3, clock=lambda: next(ticks), pause=lambda s: None)
+        assert quits == [True]
+        assert not launcher.stop_running(tmp_path, "wrong", wait=3, pause=lambda s: None) and quits == [True]
+        control.on_quit = owner.release
+        assert launcher.stop_running(tmp_path, "tok", wait=3, pause=lambda s: None)
+    finally:
+        control.stop()
+        owner.release()

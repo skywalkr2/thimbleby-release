@@ -78,7 +78,7 @@ function start(rc: S["RuntimeConfig"]) {
     <StrictMode>
       <QueryClientProvider client={client}>
         <LiveWording rc={rc}>
-          <ToastProvider seconds={rc.toast_seconds}>
+          <ToastProvider seconds={rc.toast_seconds} undoSeconds={rc.toast_undo_seconds}>
             <OwnRequestsProvider>
               <ScreenBoundary>
                 <App rc={rc} />

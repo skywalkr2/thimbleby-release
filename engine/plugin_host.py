@@ -146,11 +146,13 @@ log = logging.getLogger(__name__)
 
 def _as_read(answer: Any, limit: int) -> Any:
     """What an older-items or headers function gave, checked, as a `Poll` of at most `limit` items: a list of items, or
-    a `Poll` whose `items` and `unreadable` are used (its state, completeness and removals are ignored)."""
+    a `Poll` whose `items`, `unreadable` and `stopped` are used (its state, completeness and removals are ignored)."""
     from engine.connectors import Poll, checked_poll
 
     if isinstance(answer, Poll):
-        return checked_poll(Poll(list(answer.items)[:limit], complete=False, unreadable=list(answer.unreadable)))
+        return checked_poll(
+            Poll(list(answer.items)[:limit], complete=False, unreadable=list(answer.unreadable), stopped=answer.stopped)
+        )
     return checked_poll(Poll(list(answer)[:limit], complete=False))
 
 
@@ -1144,6 +1146,8 @@ class PluginHost:
         context = self.connector_context(plugin, context.workspace_root, account)
         try:
             poll = checked_poll(connector.poll(settings, deepcopy(state), context))
+            if poll.stopped is not None:
+                raise ValueError("a Poll from poll() can't carry `stopped`: only older and headers may")
         except ConnectorError:
             raise
         except Exception as err:

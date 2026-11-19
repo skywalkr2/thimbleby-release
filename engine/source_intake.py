@@ -537,6 +537,9 @@ def _fetch_older(
                 raise StoreError(older_failure(err)) from None
             return Fetched(len(seen), skipped, err, end)
         items, unreadable = (answer.items, answer.unreadable) if isinstance(answer, Poll) else (answer, [])
+        stopped = answer.stopped if isinstance(answer, Poll) else None
+        if stopped is not None and not (seen or items or unreadable or carrying_on):
+            raise StoreError(older_failure(stopped))
         new_items = [i for i in items if i.key not in seen]
         new_unreadable = [u for u in unreadable if u.key not in seen]
         seen.update(i.key for i in new_items)
@@ -545,6 +548,12 @@ def _fetch_older(
         watch._tell_unreadable(store, cfg, source, new_unreadable)
         for kind, n in skipped_counts(new_unreadable).items():
             skipped[kind] = skipped.get(kind, 0) + n
+        if stopped is not None:
+            # The read was slowed down or failed partway through the page: what it gave stays, and the days from the
+            # oldest item's day on were not read whole, so the next try starts on that day again.
+            days = [d for d in map(_item_day, items) if d is not None]
+            following = min(days) + timedelta(days=1) if days else end
+            return Fetched(len(seen), skipped, stopped, following if new_items and following < end else end)
         # A page that came back full may have more behind it. The next page ends on the day after its oldest message
         # (that day again, since a page can stop part way through it). When that day is no earlier than this page's
         # end, one day holds more than a page, so the same range is asked again for more, up to the ceiling; a short
@@ -769,7 +778,7 @@ def _carry(
     if stop is None or stop.kind not in CONTINUES or fetched.end is None or isinstance(stop, AnswerTooLarge):
         return None
     before = carried or {}
-    progressed = fetched.count > 0
+    progressed = taken > 0  # new items taken in: a page of messages already taken is no progress
     # Stops in a row that got no further, whatever their kind: a service that keeps asking to wait is never asked again
     # and again without end, and after the last try the person decides.
     tries = 1 if progressed else int(before.get("tries", 0)) + 1

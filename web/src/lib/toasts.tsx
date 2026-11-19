@@ -2,7 +2,7 @@
 // the newest replaces the one before it (the older one's Undo stays reachable from the keyboard, which undoes the last
 // action), with an icon, at the bottom centre of the window whatever the navigation does. The last undo is also
 // reachable from the keyboard (also after the toast has gone with a move to another screen), and F6 moves the cursor to the toast, where Escape puts it away. A toast stays until
-// dismissed when the configured time is 0, and waits while the pointer or the cursor is on it. The same message pushed
+// dismissed when its configured time is 0 (a toast with Undo has a time of its own), and waits while the pointer or the cursor is on it. The same message pushed
 // again is one toast with a count.
 import { undoEnded, undoStarted } from "./queue-hold";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -106,7 +106,7 @@ const MAX_SHOWN = 1;
 /** A toast pushed within this many milliseconds of a move to another screen is about that move, and stays. */
 const NEW_TOAST_MS = 400;
 
-export function ToastProvider(props: { seconds: number; children: ReactNode }) {
+export function ToastProvider(props: { seconds: number; undoSeconds?: number; children: ReactNode }) {
   const { t } = useWords();
   const [toasts, setToasts] = useState<Toast[]>([]);
   const next = useRef(1);
@@ -309,6 +309,7 @@ export function ToastProvider(props: { seconds: number; children: ReactNode }) {
               key={toast.id}
               toast={toast}
               seconds={props.seconds}
+              undoSeconds={props.undoSeconds ?? 0}
               onDismiss={() => dismiss(toast.id)}
               onEscape={() => away(toast.id)}
               onUndo={toast.undoTokens.length > 0 ? () => { const token = toast.undoTokens[toast.undoTokens.length - 1]; const run = undos.current.find((u) => u.token === token)?.run; if (run) void runUndo(token, run); } : undefined}
@@ -320,22 +321,25 @@ export function ToastProvider(props: { seconds: number; children: ReactNode }) {
   );
 }
 
-function ToastView(props: { toast: Toast; seconds: number; onDismiss: () => void; onEscape: () => void; onUndo?: () => void }) {
+function ToastView(props: { toast: Toast; seconds: number; undoSeconds: number; onDismiss: () => void; onEscape: () => void; onUndo?: () => void }) {
   const { t } = useWords();
   const [over, setOver] = useState(false);
   const [within, setWithin] = useState(false);
-  const { seconds, onDismiss } = props;
+  const { onDismiss } = props;
   const { count } = props.toast;
   const held = over || within;
-  // A message that offers something to do (Undo or another action) stays until it is dismissed or replaced, so it can be
-  // reached by keyboard or after a pause; a plain note goes after the setting's time. Reduced motion means no animation,
-  // not longer messages, and the time starts again when the message is pushed once more.
-  const offers = (props.toast.undoTokens.length > 0 && !props.toast.undoInRow) || !!props.toast.action || (props.toast.more ?? []).length > 0;
+  // A message with another button stays until it is dismissed or replaced, so it can be reached by keyboard or after a pause.
+  // A message whose only offer is Undo goes after its own, longer time (0 keeps it); a plain note goes after the setting's
+  // time. Neither goes while the pointer or the cursor is on it. Reduced motion means no animation, not longer messages,
+  // and the time starts again when the message is pushed once more.
+  const hasButton = !!props.toast.action || (props.toast.more ?? []).length > 0;
+  const undoOffer = props.toast.undoTokens.length > 0 && !props.toast.undoInRow;
+  const seconds = hasButton ? 0 : undoOffer ? props.undoSeconds : props.seconds;
   useEffect(() => {
-    if (held || offers || seconds <= 0) return;
+    if (held || seconds <= 0) return;
     const timer = window.setTimeout(onDismiss, seconds * 1000);
     return () => window.clearTimeout(timer);
-  }, [held, offers, seconds, onDismiss, count]);
+  }, [held, seconds, onDismiss, count]);
   const actions = [props.toast.action, ...(props.toast.more ?? [])].filter((a): a is NonNullable<typeof a> => !!a);
   const message =
     count > 1 ? (props.toast.many ? props.toast.many(count) : t("toast.repeated", { message: props.toast.message, n: count })) : props.toast.message;
