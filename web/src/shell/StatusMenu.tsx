@@ -35,7 +35,11 @@ type T = (key: string, vars?: Record<string, string | number>) => string;
 /** The assistant's cost so far, with the limit it is near said in words; nothing until a run has cost something. */
 function spendText(sp: S["SpendStatus"], t: T, total: (usd: number) => string): { text: string; near: boolean } | null {
   if (sp.today_usd <= 0 && sp.month_usd <= 0) return null;
-  const line = t("spend.line", { today: total(sp.today_usd), month: total(sp.month_usd) });
+  const counted = t("spend.line", { today: total(sp.today_usd), month: total(sp.month_usd) });
+  // A call that got no answer counts its estimate: the line says how much of the totals that is.
+  const today = (sp.maybe_today_usd ?? 0) > 0;
+  const maybe = (today ? sp.maybe_today_usd : sp.maybe_month_usd) ?? 0;
+  const line = maybe > 0 ? t(today ? "spend.with_maybe_today" : "spend.with_maybe_month", { line: counted, maybe: total(maybe) }) : counted;
   if (!sp.warn) return { text: line, near: false };
   const both = sp.warn_today && sp.warn_month;
   const near = t(both ? "spend.near_both" : sp.warn_today ? "spend.near_day" : "spend.near_month");

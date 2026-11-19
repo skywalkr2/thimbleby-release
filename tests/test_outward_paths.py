@@ -92,7 +92,7 @@ def test_a_message_that_only_says_assistant_in_an_ordinary_sentence_is_not_held(
 
 def test_a_calendar_entrys_title_may_not_name_the_assistant(env):
     for name in names(env):
-        why = refused(env, drafted(env, calendar(env, target={"title": f"{name}'s sync"})), name)
+        why = refused(env, drafted(env, calendar(env, target={"title": f"Sync per {name}"})), name)
         assert "(title)" not in why, "an event with no other part says only whom or what it is for"
     clean = drafted(env, calendar(env))
     env.yes(clean)
@@ -106,14 +106,14 @@ def test_a_calendar_entrys_note_may_not_name_the_assistant(env):
 
 def test_a_files_folder_and_content_may_not_name_the_assistant(env):
     for name in names(env):
-        refused(env, drafted(env, file_act(env, target={"folder": f"shared/{name}"})), name)
+        refused(env, drafted(env, file_act(env, target={"folder": f"shared/by {name}"})), name)
         refused(env, drafted(env, file_act(env, parts={"text": f"Written by {name}"})), name)
 
 
 def test_what_was_approved_clean_is_stopped_at_the_send_step_when_a_rename_makes_it_name_the_assistant(env):
     word = "dock"
-    message = env.ready(parts={"subject": "The proofs", "body": f"Meet at the {word}."})
-    event = drafted(env, calendar(env, target={"title": f"Lunch at the {word}"}))
+    message = env.ready(parts={"subject": "The proofs", "body": f"Notes from {word}."})
+    event = drafted(env, calendar(env, target={"title": f"Lunch per {word}"}))
     env.yes(event)
     with env.store.transaction() as tx:
         tx.create(

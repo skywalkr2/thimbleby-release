@@ -839,6 +839,11 @@ undefined,
                     {s.withheld}
                   </p>
                 )}
+                {s.mention && (
+                  <p className="hint" role="note" data-mention="">
+                    {s.mention}
+                  </p>
+                )}
                 <SendFrom section={s} />
                 <label className="hint" htmlFor={`msg-${s.person}`}>
                   {t("followups.message_label", { name: s.name })}
@@ -1120,6 +1125,11 @@ undefined,
         {nudge.withheld && (
           <p className="hint" role="alert">
             {nudge.withheld}
+          </p>
+        )}
+        {nudge.mention && (
+          <p className="hint" role="note" data-mention="">
+            {nudge.mention}
           </p>
         )}
         <SendFrom section={s} />

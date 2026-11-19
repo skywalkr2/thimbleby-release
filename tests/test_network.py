@@ -47,6 +47,31 @@ def test_the_web_client_reaches_only_allowed_hosts_over_https():
     assert plain.value.kind == "no_access"
 
 
+def test_a_token_request_redirected_to_another_allowed_host_never_carries_its_body_or_headers_there():
+    # A 307 or 308 would resend the sign-in code, refresh token or key; only the host it was meant for gets it.
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.host, request.content, request.headers.get("authorization")))
+        if request.url.host == API and request.url.path == "/token":
+            return httpx.Response(307, headers={"location": f"https://{OTHER}/token"})
+        if request.url.host == API and request.url.path == "/moved":
+            return httpx.Response(308, headers={"location": "/token-here"})
+        return httpx.Response(200, content=b"ok")
+
+    client = WebClient([API, OTHER], transport=httpx.MockTransport(handler))
+    with pytest.raises(ConnectorError) as refused:
+        client.post(
+            f"https://{API}/token", data={"refresh_token": "kept-secret"}, headers={"Authorization": "Bearer k"}
+        )
+    assert refused.value.kind == "no_access"
+    assert [host for _, host, _, _ in seen] == [API]  # the other host was never asked
+    seen.clear()
+    # the same host keeps the method and the body, as a 308 says
+    assert client.post(f"https://{API}/moved", data={"a": "1"}).text == "ok"
+    assert [(m, h, body) for m, h, body, _ in seen] == [("POST", API, b"a=1"), ("POST", API, b"a=1")]
+
+
 def test_failures_become_connector_error_kinds():
     routes = {
         f"GET https://{API}/a": (401, b"", None),

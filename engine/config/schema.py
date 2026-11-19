@@ -1062,13 +1062,15 @@ class TaskBudget(ConfigModel):
     per_day_usd: float | None = Field(
         None,
         ge=0,
-        description="Stop starting new work of this kind for the day above this total.",
+        description="The most work of this kind may cost in a day. Nothing of this kind starts when its estimate, with "
+        "what was already spent and what is still running, would pass it.",
         json_schema_extra=MONEY,
     )
     per_month_usd: float | None = Field(
         None,
         ge=0,
-        description="Stop starting new work of this kind for the month above this total.",
+        description="The most work of this kind may cost in a month. Nothing of this kind starts when its estimate, "
+        "with what was already spent and what is still running, would pass it.",
         json_schema_extra=MONEY,
     )
 
@@ -1107,13 +1109,15 @@ class Budgets(ConfigModel):
     per_day_usd: float = Field(
         2.0,
         ge=0,
-        description="Stop starting anything new for the day above this total.",
+        description="The most the assistant may spend in a day. Nothing starts when its estimate, with what was "
+        "already spent and what is still running, would pass it.",
         json_schema_extra=MONEY,
     )
     per_month_usd: float = Field(
         30.0,
         ge=0,
-        description="Stop starting anything new for the month above this total.",
+        description="The most the assistant may spend in a month. Nothing starts when its estimate, with what "
+        "was already spent and what is still running, would pass it.",
         json_schema_extra=MONEY,
     )
     warn_at: float = Field(0.8, gt=0, le=1, description="Warn when this share of a budget is used.")
@@ -1690,7 +1694,7 @@ class KnowledgeSettings(ConfigModel):
         ge=1,
         le=90,
         description="How many days pass between one look at who you deal with and the next.",
-        json_schema_extra={"internal": True},
+        json_schema_extra={"choices": "look_days"},
     )
     person_look_entries: int = Field(
         40,
@@ -2113,6 +2117,12 @@ class MessageSettings(ConfigModel):
         "Held back: {where} names {name}. Take the name out before this goes to anyone.",
         description="Why a message for someone else is not offered to copy: {where} says which part names the "
         "assistant and {name} is the name it holds.",
+    )
+    mentioned_name: str = Field(
+        "This mentions {name}, your assistant's name. Check it means someone else before this goes out.",
+        description="The warning shown on a draft for someone else that mentions a name the assistant goes by (or "
+        "went by) without attributing anything to it: {where} says which part mentions it and {name} is the name. "
+        "The draft can still be sent.",
     )
     folded_note: str = Field(
         "Also came up: {text} (\u201c{quote}\u201d)",

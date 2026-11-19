@@ -454,3 +454,63 @@ test("when only the organizations fail to load, the organizations section says s
   expect(await screen.findByText("The organizations couldn't be loaded.")).toBeInTheDocument();
   expect(screen.queryByText(/No organizations yet/)).toBeNull();
 });
+
+// S-0655: how often the assistant looks at who the person deals with is a line under People's title, with its own dialog.
+describe("the weekly look's line under People's title (S-0655)", () => {
+  const LOOK = "dispatch.knowledge.person_look_every_days";
+  const settingsView = (value: number): S["SettingsView"] =>
+    ({
+      fingerprint: "fp-1",
+      items: [
+        {
+          key: LOOK,
+          file: "dispatch",
+          group: "dispatch.knowledge",
+          description: "How many days pass between one look at who you deal with and the next.",
+          type: "choice",
+          options: ["1", "2", "3", "7", "14", "30"],
+          value,
+          default: 7,
+          source: "default",
+          locked: false,
+          basic: false,
+          editable: true,
+          page: "advanced",
+          topic: "learns",
+        },
+      ],
+    }) as unknown as S["SettingsView"];
+  const cost: S["PersonLookCostView"] = { kind: "money", every_days: 7, looks_a_week: 1, per_look_usd: 0.1, per_week_usd: 0.1 };
+
+  test("says how often it looks, names the assistant or not, and Change opens a list with what the looks cost a week at each choice", async () => {
+    const user = userEvent.setup();
+    const calls = api([person("P-1", "Ana Person")], {
+      "GET settings": () => settingsView(7),
+      "GET knowledge/person-look-cost": () => cost,
+      "POST settings": () => ({ changes: [{ key: LOOK, before: 7, after: 14, is_default: false }], fingerprint: "fp-2", needs_restart: false }),
+    });
+    renderApp(<People />);
+    const line = await screen.findByText(/Helper looks at who you deal with every week\./);
+    expect(line.closest("[data-person-look-line]")).not.toBeNull();
+    await user.click(within(line.closest("p")!).getByRole("button", { name: "Change" }));
+    const dialog = await screen.findByRole("dialog", { name: "How often it looks at who you deal with" });
+    expect(await within(dialog).findByText("About $0.10 a week (1 look a week).")).toBeInTheDocument();
+    await user.selectOptions(within(dialog).getByRole("combobox", { name: "How often it looks" }), "Every 2 weeks");
+    expect(within(dialog).getByText("About $0.05 a week (0.5 looks a week).")).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(calls.some((c) => c.route === "POST settings")).toBe(true));
+    expect((calls.find((c) => c.route === "POST settings")!.body as { changes: Record<string, number> }).changes).toEqual({ [LOOK]: 14 });
+  });
+
+  test("while the assistant has no name the line doesn't use one, and a plan with no price says so instead of an amount", async () => {
+    const user = userEvent.setup();
+    api([person("P-1", "Ana Person")], {
+      "GET settings": () => settingsView(1),
+      "GET knowledge/person-look-cost": () => ({ ...cost, kind: "runs", per_look_usd: null, per_week_usd: null, every_days: 1, looks_a_week: 7 }),
+    });
+    renderApp(<People />, {}, { unnamed: true });
+    expect(await screen.findByText("Your assistant looks at who you deal with every day.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Change" }));
+    expect(await screen.findByText("Included in your plan, so no money a week (7 looks a week).")).toBeInTheDocument();
+  });
+});

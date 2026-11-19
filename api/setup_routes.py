@@ -127,6 +127,7 @@ from engine import (
 from engine import set_aside as set_aside_mail
 from engine import settings as config_screens
 from engine import sorting_rules as sorting
+from engine.ai.spending import BudgetReached
 from engine.config import Config, ConfigError, load_config
 from engine.config.current import load_config_now
 from engine.config.schema import WatchSource, WorkspaceFile
@@ -2095,7 +2096,11 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
             raise HTTPException(status_code=400, detail=err.plain) from None
         if name not in now.ai.providers:
             raise HTTPException(status_code=404, detail=f"There is no account called {name}.")
-        results = account_test(now, os.environ, name, tier=tier, model=model, store=store)
+        try:
+            results = account_test(now, os.environ, name, tier=tier, model=model, store=store)
+        except BudgetReached as err:
+            # The check's calls are paid for out of the spending limits, which have no room for them: nothing was sent.
+            raise HTTPException(status_code=409, detail=str(err)) from None
         remember(ws, now, results)
         lift_pauses(ws, results)
         release_identity_waits()
@@ -2890,9 +2895,13 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
             listed, _ = setup.list_models(kind, base_url, key) if base_url else ([], None)
             return dict(listed)
 
-        found = key_check.check_account(
-            now, os.environ, provider, key, use=body.use, store=store, listed=listing, entry=kind
-        )
+        try:
+            found = key_check.check_account(
+                now, os.environ, provider, key, use=body.use, store=store, listed=listing, entry=kind
+            )
+        except BudgetReached as err:
+            # The check's calls are paid for out of the spending limits, which have no room for them: nothing was sent.
+            return AiAccountChecked(ok=False, reason="failed", message=str(err))
         return AiAccountChecked(
             ok=found.ok,
             reason=found.reason,
@@ -2942,7 +2951,11 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
         except ConfigError as err:
             log.warning("The settings couldn't be loaded: %s", err)
             raise HTTPException(status_code=400, detail=err.plain) from None
-        results = smoke_test(current, os.environ, store=store)
+        try:
+            results = smoke_test(current, os.environ, store=store)
+        except BudgetReached as err:
+            # The check's calls are paid for out of the spending limits, which have no room for them: nothing was sent.
+            raise HTTPException(status_code=409, detail=str(err)) from None
         record(ws, results, current)
         remember(ws, current, results)
         lift_pauses(ws, results)

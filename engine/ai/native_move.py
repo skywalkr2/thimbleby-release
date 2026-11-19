@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 
 from engine.ai.adapters import ADAPTERS, GENERIC_ADAPTER, make_adapter
 from engine.ai.smoke import SmokeResult, smoke_test
+from engine.ai.spending import BudgetReached
 from engine.config import Config
 from engine.config.schema import ProviderSettings, TierSettings
 from engine.legacy_names import private_dir
@@ -181,7 +182,10 @@ def check(
     the exact parameters. Only a check where every call answered passes; one that found no network, or couldn't run,
     doesn't, and says why."""
     moved = moved_config(cfg, name, planned(cfg.ai.providers[name], entry))
-    results = smoke_test(moved, env, adapter_factory or make_adapter, store)
+    try:
+        results = smoke_test(moved, env, adapter_factory or make_adapter, store)
+    except BudgetReached as err:  # the spending limits have no room for the check's calls: nothing was sent
+        return Checked(False, str(err), [], moved)
     bad = next((r for r in results if not r.ok), None)
     if not results:
         return Checked(False, "the account has no model to check", results, moved)

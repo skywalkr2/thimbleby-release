@@ -718,6 +718,14 @@ class SpendStatus(BaseModel):
     warn: bool = Field(description="Either total has reached the configured share of its limit.")
     warn_today: bool = Field(description="Today's total has reached that share of the daily limit.")
     warn_month: bool = Field(description="This month's total has reached that share of the monthly limit.")
+    maybe_today_usd: float = Field(
+        0.0,
+        description="Of today's total, the estimates of calls that got no answer and may have been charged; 0 with "
+        "none.",
+    )
+    maybe_month_usd: float = Field(
+        0.0, description="Of this month's total, the estimates of calls that got no answer and may have been charged."
+    )
 
 
 class AssistantAccountRuns(BaseModel):
@@ -1158,6 +1166,11 @@ class ChangeItem(BaseModel):
         description="What its AI work has cost so far, leaving out runs an outage cut off; none when nothing priced "
         "ran.",
     )
+    maybe_charged_usd: float | None = Field(
+        None,
+        description="Of `spent_usd`, the estimates of calls that got no answer and may have been charged; none when "
+        "there is none.",
+    )
     refused: bool = Field(
         False, description="The account declined it under its own policy; it can be sent to another account."
     )
@@ -1469,6 +1482,11 @@ class NudgeView(BaseModel):
         None,
         description="Why the message is not offered to copy: it still names the assistant. `text` is empty then.",
     )
+    mention: str | None = Field(
+        None,
+        description="A warning shown with the message when it mentions a name the assistant goes by without "
+        "attributing anything to it; the message can still be copied and sent.",
+    )
 
 
 class FollowupSection(BaseModel):
@@ -1486,6 +1504,11 @@ class FollowupSection(BaseModel):
         None,
         description="Why the message is not offered to copy: it still names the assistant, which what goes to "
         "someone else never does. `message` is empty then.",
+    )
+    mention: str | None = Field(
+        None,
+        description="A warning shown with the message when it mentions a name the assistant goes by without "
+        "attributing anything to it (it may be someone else's name); the message can still be copied and sent.",
     )
     limited_out: list[LimitedOutView] = Field(
         default_factory=list,
@@ -4751,6 +4774,19 @@ class SortingCostView(BaseModel):
     measured: bool = Field(description="The typical day was counted from mail already read, not set by the person.")
 
 
+class PersonLookCostView(BaseModel):
+    """About what the weekly look at who the person deals with costs a week, on the account that would do it."""
+
+    kind: Literal["money", "runs", "unknown", "none"] = Field(
+        description="money: a priced account, an amount a week; runs: a plan, looks a week and no money; unknown: an "
+        "account whose price isn't known; none: no account takes the work, so nothing is looked at."
+    )
+    every_days: int = Field(description="The days between one look and the next, as set.")
+    looks_a_week: float = Field(description="How many looks that is a week.")
+    per_look_usd: float | None = Field(None, description="What one look costs, for a priced account.")
+    per_week_usd: float | None = Field(None, description="What the looks of a week cost, for a priced account.")
+
+
 class InboxView(BaseModel):
     items: list[ArrivedView]
     left_out: int = Field(description="Messages in the same hours that a triage rule closed (newsletters, say).")
@@ -5255,6 +5291,11 @@ class ReadingView(BaseModel):
         "there are more (the counts say it then).",
     )
     found: int = Field(0, description="How many items the first reads took in.")
+    restart_waits: int = Field(
+        0,
+        description="How many of its requests are held until the person restarts the app; above 0 the step says so, "
+        "with Restart now.",
+    )
 
 
 class SetupView(BaseModel):
@@ -8913,6 +8954,11 @@ class ActView(BaseModel):
     approved_at: datetime | None = None
     withheld: str | None = Field(
         None, description="Why the content isn't offered to approve or send: a part still names the assistant."
+    )
+    mention: str | None = Field(
+        None,
+        description="A warning shown with the content when a part mentions a name the assistant goes by without "
+        "attributing anything to it (it may be someone else's name); the content can still be approved and sent.",
     )
     failure: ActFailureView | None = None
     why: list[str] = Field(default_factory=list, description="Codes for why it is stale or uncertain.")

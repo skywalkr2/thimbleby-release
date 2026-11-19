@@ -29,6 +29,12 @@ def is_loopback(host: str) -> bool:
         return False
 
 
+def local_origin(host: str, port: int) -> str:
+    """The address a browser opens for a server listening on `host` and `port`: an IPv6 literal goes in brackets
+    (`http://[::1]:8765`), as a URL needs, while the socket keeps the bare host."""
+    return f"http://{_bracketed(host)}:{port}"
+
+
 def local_address_problem(server: ServerFile) -> str | None:
     """Plain words saying why local mode can't listen on the configured address, or None when it can."""
     if server.mode != "local" or is_loopback(server.host):

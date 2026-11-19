@@ -125,3 +125,47 @@ def test_the_route_returns_the_figure(tmp_path):
     finally:
         created.state.store.close()
     assert body["kind"] == "runs" and body["messages"] == 6 and body["measured"] is True
+
+
+# ---- what the weekly look at who the person deals with costs (S-0655) ----------------------------------------------
+
+
+def week(ws, store, cfg):
+    from engine import person_look
+
+    return person_look.cost_of_a_week(ws, store, cfg, Router(cfg, store, env={}), NOW)
+
+
+def priced_for_the_look(cfg, flat=False):
+    priced(cfg, flat)
+    for tier in cfg.ai.tiers.values():
+        if tier.use and "/" in tier.use:
+            cfg.ai.prices[tier.use] = Price(input_per_million=3.0, output_per_million=6.0)
+
+
+def test_the_looks_cost_a_week_is_one_looks_estimate_times_the_looks_the_interval_makes(tmp_path):
+    ws, cfg, store = make(tmp_path, [])
+    priced_for_the_look(cfg)
+    cfg.dispatch.knowledge.person_look_every_days = 7
+    weekly = week(ws, store, cfg)
+    assert weekly.kind == "money" and weekly.per_look_usd > 0
+    assert (weekly.looks_a_week, weekly.per_week_usd) == (1.0, pytest.approx(weekly.per_look_usd))
+    cfg.dispatch.knowledge.person_look_every_days = 1
+    daily = week(ws, store, cfg)
+    assert daily.per_look_usd == pytest.approx(weekly.per_look_usd)
+    assert (daily.looks_a_week, daily.per_week_usd) == (7.0, pytest.approx(weekly.per_look_usd * 7))
+    cfg.dispatch.knowledge.person_look_every_days = 14
+    assert week(ws, store, cfg).per_week_usd == pytest.approx(weekly.per_look_usd / 2)
+
+
+def test_the_looks_cost_says_a_plan_has_no_money_and_an_unpriced_account_is_unknown_and_no_account_is_none(tmp_path):
+    ws, cfg, store = make(tmp_path, [])
+    priced_for_the_look(cfg, flat=True)
+    assert (week(ws, store, cfg).kind, week(ws, store, cfg).per_week_usd) == ("runs", None)
+    ws, cfg, store = make(tmp_path / "b", [])
+    cfg.ai.providers["stub"].flat_rate = False
+    assert week(ws, store, cfg).kind == "unknown"
+    cfg.ai.tiers["routine"].use = ""
+    for tier in cfg.ai.tiers.values():
+        tier.use = ""
+    assert week(ws, store, cfg).kind == "none"

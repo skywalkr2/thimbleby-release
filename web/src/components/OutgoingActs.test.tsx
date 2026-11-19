@@ -109,6 +109,18 @@ describe("the detail", () => {
     expect(await screen.findByText(/Helper isn't allowed to act on Work mail yet, so you carry this out yourself/)).toBeInTheDocument();
   });
 
+  test("a draft that only mentions the assistant's name shows the warning above its content and can still be approved (H5-19)", async () => {
+    const warning = "This mentions Helper, your assistant's name. Check it means someone else before this goes out.";
+    show([actFixture({ action: "reply", parts: { subject: "Meeting", body: "Helper, can we meet on Monday?" }, mention: warning })]);
+    const pane = await screen.findByRole("complementary", { name: "Reply to Ana Example" });
+    const note = within(pane).getByText(warning);
+    expect(note.closest('[role="alert"]')).toBeNull();
+    const send = within(pane).getByRole("button", { name: "Approve and send" });
+    expect(send).toBeEnabled();
+    // The warning comes before the send button on the draft.
+    expect(note.compareDocumentPosition(send) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   test("while the assistant has no name the reason doesn't use one", async () => {
     show([mailbox("archive", 1, { channel: "copy", channel_label: "Copy", copied_because: "acting_off", account_label: "Work mail" })], {}, { unnamed: true });
     expect(await screen.findByText(/Your assistant isn't allowed to act on Work mail yet/)).toBeInTheDocument();

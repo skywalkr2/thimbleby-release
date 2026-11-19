@@ -416,6 +416,12 @@ def name_problem(view: Any, cfg: Any, data: Mapping[str, Any]) -> str | None:
     return outward.outgoing_problem(view, cfg, part_labels(view, cfg, data))
 
 
+def name_mention(view: Any, cfg: Any, data: Mapping[str, Any]) -> str | None:
+    """A warning for the act's content when a part mentions a name the assistant goes by without attributing
+    anything to it; the content can still be sent. None when there is nothing to say."""
+    return outward.outgoing_mention(view, cfg, part_labels(view, cfg, data))
+
+
 def highest(levels: list[str | None]) -> str:
     """The most sensitive of some data levels; internal when there are none."""
     known = [lv for lv in levels if lv in LEVELS]

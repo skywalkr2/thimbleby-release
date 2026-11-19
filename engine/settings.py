@@ -433,6 +433,11 @@ def _read_minutes() -> list[str]:
     return _choices_of("read_minutes")
 
 
+def _look_days() -> list[str]:
+    """How many days can pass between one look at who the person deals with and the next, from the shipped list."""
+    return _choices_of("look_days")
+
+
 def _owner_formats() -> list[str]:
     """The ways an action's owner can be shown, from the shipped list."""
     return _choices_of("owner_formats")
@@ -471,6 +476,7 @@ CHOICE_LISTS = {
     "date_time_formats": _date_time_formats,
     "owner_formats": _owner_formats,
     "read_minutes": _read_minutes,
+    "look_days": _look_days,
     "media_types": _media_types,
     "attention_kinds": _attention_kinds,
 }

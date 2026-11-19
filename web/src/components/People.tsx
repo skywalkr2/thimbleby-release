@@ -27,6 +27,7 @@ import { Organizations } from "./Organizations";
 import { Teams } from "./Teams";
 import styles from "./People.module.css";
 import { PersonDrawer, heldReach } from "./PersonForm";
+import { PersonLookLine } from "./PersonLookLine";
 import { RecordConversation } from "./RecordConversation";
 import { SideFilter } from "./SideFilter";
 import { RowMenu } from "./RowMenu";
@@ -113,6 +114,7 @@ export function People() {
           </Button>
         }
       />
+      <PersonLookLine />
       <ListDetail
         title={selected?.name ?? ""}
         onClose={() => setChosen(null)}

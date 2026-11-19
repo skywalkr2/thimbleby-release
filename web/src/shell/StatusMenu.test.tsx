@@ -131,6 +131,22 @@ test("the spend line shows today's and this month's cost, and says which limit i
   expect(within(dialog).getByText("AI today $1.70 · this month $5.00 · near today's limit")).toBeInTheDocument();
 });
 
+test("the spend line says how much of a total may have been charged for calls that got no answer", async () => {
+  const user = userEvent.setup();
+  show(statusFixture({}, { backup: { configured: true, age_hours: 1 }, spend: { today_usd: 0.5, month_usd: 5, maybe_today_usd: 0.08, maybe_month_usd: 0.2 } }));
+  const dialog = await open(user);
+  expect(
+    within(dialog).getByText("AI today $0.50 · this month $5.00 · $0.08 of today's may have been charged: a call got no answer, so its estimate is counted"),
+  ).toBeInTheDocument();
+});
+
+test("with none today, the spend line says how much of the month's may have been charged", async () => {
+  const user = userEvent.setup();
+  show(statusFixture({}, { backup: { configured: true, age_hours: 1 }, spend: { today_usd: 0, month_usd: 5, maybe_today_usd: 0, maybe_month_usd: 0.2 } }));
+  const dialog = await open(user);
+  expect(within(dialog).getByText(/\$0\.20 of this month's may have been charged/)).toBeInTheDocument();
+});
+
 test("spend is hidden until a run has cost something", async () => {
   const user = userEvent.setup();
   show(statusFixture());

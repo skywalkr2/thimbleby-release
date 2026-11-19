@@ -253,3 +253,11 @@ def test_demo_refuses_to_start_on_another_address_and_says_why(tmp_path, capsys)
     path.write_text(yaml.safe_dump(settings))
     assert main(["demo", str(folder), "--no-open"]) == 1
     assert "hosted mode" in capsys.readouterr().err
+
+
+def test_an_ipv6_loopback_listen_address_gives_a_bracketed_address_to_open():
+    from engine.local_guards import local_origin
+
+    assert local_origin("::1", 8765) == "http://[::1]:8765"
+    assert local_origin("127.0.0.1", 8765) == "http://127.0.0.1:8765"
+    assert local_origin("[::1]", 8765) == "http://[::1]:8765"

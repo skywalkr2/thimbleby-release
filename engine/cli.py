@@ -22,7 +22,7 @@ from engine.config import ConfigError
 from engine.folder_names import DEFAULT_FOLDER, FORMER_FOLDER
 from engine.folder_rename import apply_agreed
 from engine.legacy_names import PERSON_DIR, person_file, workspace_from_env
-from engine.local_guards import local_address_problem
+from engine.local_guards import local_address_problem, local_origin
 from engine.shipped import DEMOS, demo
 from engine.state_file import write_whole
 from engine.storage import Store, StoreError
@@ -737,7 +737,7 @@ def cmd_open(args: argparse.Namespace) -> int:
     ws = resolve(args.workspace)
     cfg = ws.config()
     prefix = "" if cfg.server.base_path == "/" else cfg.server.base_path
-    url = f"http://{cfg.server.host}:{cfg.server.port}{prefix}/?token={ws.install_token()}"
+    url = f"{local_origin(cfg.server.host, cfg.server.port)}{prefix}/?token={ws.install_token()}"
     print(f"Open {url}")
     if not args.print_only:
         webbrowser.open(url)
@@ -859,7 +859,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
             print(notice, file=sys.stderr)
     token = ws.new_install_token()  # new at each start; it opens a session and nothing else
     prefix = "" if cfg.server.base_path == "/" else cfg.server.base_path
-    url = f"http://{cfg.server.host}:{cfg.server.port}{prefix}/?token={token}"
+    url = f"{local_origin(cfg.server.host, cfg.server.port)}{prefix}/?token={token}"
     print(f"Open {url}")
     if cfg.server.open_browser and not os.environ.pop(RESTARTED, ""):
         threading.Timer(1.0, webbrowser.open, args=(url,)).start()
@@ -1061,12 +1061,16 @@ def cmd_takeover(args: argparse.Namespace) -> int:
 def cmd_ai(args: argparse.Namespace) -> int:
     from engine.ai.checked import remember
     from engine.ai.smoke import lift_pauses, record, smoke_test, tier_summary
+    from engine.ai.spending import BudgetReached
 
     ws = resolve(args.workspace)
     cfg = ws.config()
     store = Store(ws.db_path)
     try:
         results = smoke_test(cfg, os.environ, store=store)
+    except BudgetReached as err:
+        print(err)  # the spending limits have no room for the check's calls: nothing was sent
+        return 1
     finally:
         store.close()
     for r in results:

@@ -65,13 +65,13 @@ def test_runs_on_a_service_that_lists_no_prices_count_against_the_daily_limit(cf
     main.models[short] = "fit-2"
     cfg.ai.prices.clear()
     cfg.ai.tiers["routine"].fallback = []
-    cfg.ai.budgets.per_day_usd = 0.02
+    cfg.ai.budgets.per_day_usd = 0.03
     router, _ = router_with(cfg, store, {"main": lambda r: httpx.Response(200, json=ok_body())})
     router.catalogs.model = lambda provider, model_id, fetch: ModelInfo()  # the service's list carries no prices
     assert router.estimate(TASK) is not None
     router.call(TASK, request_id="REQ-1")  # 1,000 in and 500 out at $5/$25 per million: about $0.0175
     run = store.read().list("run")[-1].data
     assert run["cost_usd"] == pytest.approx(0.0175)
-    router.call(TASK, request_id="REQ-2")
+    # The limit is a ceiling: a second run like the first would take the day past it, so it never starts.
     with pytest.raises(BudgetReached):
-        router.call(TASK, request_id="REQ-3")
+        router.call(TASK, request_id="REQ-2")

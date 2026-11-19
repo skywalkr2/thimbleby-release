@@ -236,8 +236,17 @@ def usable_for_chat(info: ModelInfo | None) -> bool:
 class AiError(Exception):
     """A provider call failed. `kind` comes only from the call itself (status, transport), never from model text."""
 
-    def __init__(self, kind: ErrorKind, detail: str = "", *, retry_after: float | None = None, hint: str | None = None):
+    def __init__(
+        self,
+        kind: ErrorKind,
+        detail: str = "",
+        *,
+        retry_after: float | None = None,
+        hint: str | None = None,
+        sent: bool = True,
+    ):
         self.kind = kind
+        self.sent = sent  # False when the failure came before anything could be sent (a program that didn't start)
         self.detail = detail[:2000]
         self.retry_after = retry_after
         self.hint = hint  # what the person can do about it, from the account's settings (a sign-in command)

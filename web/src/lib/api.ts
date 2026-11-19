@@ -892,6 +892,7 @@ export const api = {
   bringBackSignInApp: (name: string) => call<S["SignInView"]>("POST", `sign-ins/${named(name)}/app/bring-back`),
 
   settings: () => call<S["SettingsView"]>("GET", "settings"),
+  personLookCost: () => call<S["PersonLookCostView"]>("GET", "knowledge/person-look-cost"),
   saveSettings: (body: S["SettingsSave"]) => call<S["SettingsSaved"]>("POST", "settings", body),
   setup: () => call<S["SetupView"]>("GET", "setup"),
   /** Keeps where the walkthrough stands on the server: its screen, that it was closed, or that it was finished. */

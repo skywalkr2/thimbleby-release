@@ -46,6 +46,7 @@ from engine import (
     watch,
     week_plan,
 )
+from engine.ai.spending import ACCOUNT_CHECK
 from engine.blocked import standing_hold
 from engine.firm_due import firm_due
 from engine.followups import ROUTING, sections
@@ -1291,7 +1292,10 @@ def _everything(
     ]
     if unserved and (cfg.ai.providers or not cfg.workspace.demo) and not first_run.not_reached(ws, "ai"):
         # An assistant that never had an account is a setup gap; one that worked and then lost its account has stopped.
-        worked = any(run.data.get("outcome") == "ok" for run in store.read().list("run"))
+        worked = any(
+            run.data.get("outcome") == "ok" and run.data.get("task") != ACCOUNT_CHECK
+            for run in store.read().list("run")
+        )
         lines.append(
             Line(
                 key="no_account",

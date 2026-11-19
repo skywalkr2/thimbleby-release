@@ -539,6 +539,41 @@ test.describe.serial("acceptance scenario", () => {
     await expect(page.getByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening)/ })).toBeVisible();
   });
 
+  test("S-0655: People says how often the assistant looks at who the person deals with, Change picks it from a list and shows the cost, and Settings search finds it", async ({ page }) => {
+    await signIn(page);
+    await go(page, "People");
+    await screenReady(page);
+    const line = page.locator("[data-person-look-line]");
+    await expect(line).toContainText(/looks at who you deal with every week\./);
+    // The line is under the page's title, before the list.
+    const title = await page.getByRole("heading", { level: 1, name: "People" }).boundingBox();
+    const lineBox = await line.boundingBox();
+    expect(lineBox!.y).toBeGreaterThan(title!.y);
+    await line.getByRole("button", { name: "Change" }).click();
+    const dialog = page.getByRole("dialog", { name: "How often it looks at who you deal with" });
+    await expect(dialog).toBeVisible();
+    // The interval is a list to pick from, and the dialog says about what the looks cost a week.
+    await dialog.getByRole("combobox", { name: "How often it looks" }).click();
+    await page.getByRole("option", { name: "Every 2 weeks" }).click();
+    await expect(dialog.locator("[data-person-look-cost]")).toContainText(/(a week|isn't known yet)/);
+    await dialog.getByRole("button", { name: "Save" }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(line).toContainText(/every 2 weeks\./);
+    // Settings search finds the same setting, and says which section it is in.
+    await go(page, "Settings");
+    await screenReady(page);
+    await page.getByRole("searchbox", { name: "Search settings" }).fill("who you deal with");
+    await expect(page.getByRole("combobox", { name: "Days between looks at who you deal with" })).toBeVisible();
+    // Put it back, as the next scenarios expect.
+    await go(page, "People");
+    await screenReady(page);
+    await line.getByRole("button", { name: "Change" }).click();
+    await page.getByRole("dialog", { name: "How often it looks at who you deal with" }).getByRole("combobox", { name: "How often it looks" }).click();
+    await page.getByRole("option", { name: "Every week" }).click();
+    await page.getByRole("dialog", { name: "How often it looks at who you deal with" }).getByRole("button", { name: "Save" }).click();
+    await expect(line).toContainText(/every week\./);
+  });
+
   test("a demo workspace says so on every screen, and feedback is a mail draft the person sends", async ({ page }) => {
     await signIn(page);
     const header = page.getByRole("banner");

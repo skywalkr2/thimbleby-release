@@ -16,6 +16,15 @@ read_minutes:
   - "30"
   - "60"
 
+# How many days can pass between one look at who the person deals with and the next.
+look_days:
+  - "1"
+  - "2"
+  - "3"
+  - "7"
+  - "14"
+  - "30"
+
 # The kinds of file a person may add, by media type.
 media_types:
   - application/pdf

@@ -159,7 +159,9 @@ def redirect_uri(server: Any) -> str:
     """Where the service sends the person back: the app's public address (its scheme and host) or this computer's
     loopback address, then the base path and the callback route."""
     prefix = "" if server.base_path == "/" else server.base_path
-    origin = server.public_url.rstrip("/") if server.public_url else f"http://{server.host}:{server.port}"
+    from engine.local_guards import local_origin
+
+    origin = server.public_url.rstrip("/") if server.public_url else local_origin(server.host, server.port)
     if prefix and origin.endswith(prefix):
         origin = origin[: -len(prefix)]
     return origin + prefix + CALLBACK_PATH

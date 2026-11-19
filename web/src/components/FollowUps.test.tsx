@@ -134,6 +134,17 @@ test("a message that still names the assistant shows why it is held back and can
   expect(posts(calls)).toHaveLength(0);
 });
 
+test("a message that only mentions the assistant's name shows a warning and can still be copied (H5-19)", async () => {
+  const user = userEvent.setup();
+  const warning = "This mentions Helper, your assistant's name. Check it means someone else before this goes out.";
+  const calls = fakeApi({ ...markSentRoutes, "GET followups": () => [sections[0], { ...sections[1], mention: warning }, sections[2]] });
+  renderApp(<FollowUps />);
+  await user.click(await screen.findByRole("button", { name: /^Robin Sample/ }));
+  expect((await screen.findByText(warning)).closest('[role="alert"]')).toBeNull();
+  expect(underBox()).toBeEnabled();
+  expect(posts(calls)).toHaveLength(0);
+});
+
 test("a to-do the person is outside the limit of is left out of their message, and the detail says so", async () => {
   const user = userEvent.setup();
   const limited = [{ kind: "action" as const, id: "ACT-7", text: "Check the print run", limited_to: "Pat Example, Lee Sample" }];

@@ -141,6 +141,7 @@ from api.schemas import (
     PersonForget,
     PersonForgotten,
     PersonIn,
+    PersonLookCostView,
     PersonPatch,
     PersonRemoval,
     PersonSuggestion,
@@ -247,6 +248,7 @@ from engine.dispatcher import (
     grant_first_go,
     is_waiting_for_network,
     looks_good,
+    maybe_charged_on,
     reopened_nothing_to_do,
     retry,
     send_back,
@@ -1563,6 +1565,23 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
             measured=found.measured,
         )
 
+    @r.get("/knowledge/person-look-cost")
+    def person_look_cost() -> PersonLookCostView:
+        """About what the weekly look at who the person deals with costs a week, shown in the dialog of the line under
+        People's title that sets how often it looks."""
+        from engine import person_look
+        from engine.ai.router import Router
+
+        live = current()
+        found = person_look.cost_of_a_week(ws, store, live, Router(live, store, env=os.environ), worker.now())
+        return PersonLookCostView(
+            kind=found.kind,  # type: ignore[arg-type]
+            every_days=live.dispatch.knowledge.person_look_every_days,
+            looks_a_week=round(found.looks_a_week, 2),
+            per_look_usd=found.per_look_usd,
+            per_week_usd=found.per_week_usd,
+        )
+
     @r.post("/runs/first-go")
     def first_go() -> FirstGoStarted:
         """The person's first go: the mail handed in unsorted while it was pending is sorted first (the go covers that
@@ -1610,6 +1629,8 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
                 warn=spent.warn,
                 warn_today=spent.warn_today,
                 warn_month=spent.warn_month,
+                maybe_today_usd=round(spent.maybe_today_usd, 4),
+                maybe_month_usd=round(spent.maybe_month_usd, 4),
             ),
             backup=BackupStatus(
                 configured=b.configured,
@@ -1983,6 +2004,7 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
                     range_usd=d.get("range_usd"),
                     range_account=_account_name(cfg, d.get("range_account")),
                     spent_usd=spent_on(runs.get(req.id, [])),
+                    maybe_charged_usd=maybe_charged_on(runs.get(req.id, [])),
                     refused=d["state"] == "needs_you" and _last_refused(req.id),
                     cause=_cause_view(d),
                     follows=d.get("follows"),
@@ -3572,10 +3594,11 @@ def _op_view(
     )
 
 
-def _nudge_view(n: Any, withheld: str | None = None) -> NudgeView:
+def _nudge_view(n: Any, withheld: str | None = None, mention: str | None = None) -> NudgeView:
     return NudgeView(
         text="" if withheld else n.text,
         withheld=withheld,
+        mention=mention,
         round=n.round,
         question_ids=n.question_ids,
         action_ids=n.action_ids,
@@ -3593,7 +3616,7 @@ def _section(
 ) -> FollowupSection:
     from engine import send_accounts
     from engine.followups import message_where
-    from engine.outward import outgoing_problem
+    from engine.outward import outgoing_mention, outgoing_problem
 
     where = message_where(cfg, s.name)
     held = None if s.is_pm else outgoing_problem(store.read(), cfg, {where: s.message})
@@ -3601,6 +3624,10 @@ def _section(
     mailboxes = send_accounts.sending_accounts(store, cfg)
     came_through = send_accounts.conversation_account(store, cfg, person.data) if person is not None else None
     nudge_held = None if s.is_pm or s.nudge is None else outgoing_problem(store.read(), cfg, {where: s.nudge.text})
+    mention = None if s.is_pm or held else outgoing_mention(store.read(), cfg, {where: s.message})
+    nudge_mention = (
+        None if s.is_pm or s.nudge is None or nudge_held else outgoing_mention(store.read(), cfg, {where: s.nudge.text})
+    )
 
     def question_views(rows: list[dict[str, Any]]) -> list[FollowupQuestion]:
         return [_followup_question(q, people, question_origin, store.read()) for q in rows]
@@ -3655,10 +3682,11 @@ def _section(
         actions=actions,
         message="" if held else s.message,
         withheld=held,
+        mention=mention,
         limited_out=[LimitedOutView(**x) for x in s.limited],
         to_send=s.to_send,
         ready_since=s.ready_since,
-        nudge=_nudge_view(s.nudge, nudge_held) if s.nudge is not None else None,
+        nudge=_nudge_view(s.nudge, nudge_held, nudge_mention) if s.nudge is not None else None,
         send_from=mailboxes,
         send_from_default=came_through or (mailboxes[0] if mailboxes else None),
     )

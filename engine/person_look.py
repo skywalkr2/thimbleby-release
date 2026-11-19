@@ -20,7 +20,7 @@ estimated first, held for the person's go above the configured amount, with its 
 from __future__ import annotations
 
 import re
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -692,7 +692,7 @@ def waiting_until(ws: Any, store: Any, cfg: Any, now: datetime) -> datetime | No
 # ---- the packet ------------------------------------------------------------------------------------------------------
 
 
-def build(ws: Any, store: Any, cfg: Any, req: Any, kind: Any, today: date) -> Any:
+def build(ws: Any, store: Any, cfg: Any, req: Any, kind: Any, today: date, sample: list[str] | None = None) -> Any:
     """The packet for one look. Stable first: the instructions, the op reference, the practice, what has been learned
     and the people on file. Then the request: the tally's lines and the repeating entries, marked as from outside."""
     from engine.cleaning import Cleaned
@@ -702,8 +702,8 @@ def build(ws: Any, store: Any, cfg: Any, req: Any, kind: Any, today: date) -> An
     from engine.packet import Packet, PacketRefused, _guidance, _learned, _people, _task
     from engine.prompts import render
 
-    contacts = tally_lines(store, cfg, req.id)
-    series = series_lines(store, cfg)
+    contacts = tally_lines(store, cfg, req.id) if sample is None else sample
+    series = series_lines(store, cfg) if sample is None else []
     if not contacts and not series:
         raise PacketRefused("there is nothing about who the person deals with to look at")
     habits = (
@@ -758,3 +758,56 @@ def build(ws: Any, store: Any, cfg: Any, req: Any, kind: Any, today: date) -> An
         data_level=_data_level(store, req.data),
         knowledge=learned.log,
     )
+
+
+# ---- what it costs --------------------------------------------------------------------------------------------------
+
+#: A line standing in for one entry of the tally while there is none yet (an invented, ordinary one), and how many such
+#: entries a look shown nothing real is priced on.
+_SAMPLE_LINE = "a.sender@example.com | A Sender | 6 from them, 3 to them | 2026-01-05 to 2026-01-26 | sides: none"
+_SAMPLE_ENTRIES = 10
+
+
+@dataclass(frozen=True)
+class WeeklyCost:
+    """What the look costs: `kind` is money (a priced account), runs (a plan: no money per run), unknown (an account
+    with no known price) or none (no account takes the work). `per_look_usd` is one look and `per_week_usd` what
+    the looks of a week add up to at the configured interval; `looks_a_week` is how many that is."""
+
+    kind: str
+    per_look_usd: float | None
+    per_week_usd: float | None
+    looks_a_week: float
+
+
+def cost_of_a_week(ws: Any, store: Any, cfg: Any, router: Any, now: datetime | None = None) -> WeeklyCost:
+    """About what the look costs a week, from the estimate for one look (its packet as built now, or for a sample of
+    the tally's size while nothing is there yet) on the account it would use first, times the looks a week the
+    configured interval makes."""
+    from types import SimpleNamespace
+
+    from engine.ai import pricing
+    from engine.ai.calibration import estimate_tokens
+    from engine.packet import PacketRefused
+
+    now = now or datetime.now(UTC)
+    today = now.astimezone(zone(cfg)).date()
+    looks = 7 / cfg.dispatch.knowledge.person_look_every_days
+    kind = store.plugins.task_kind(TASK)
+    stand_in = SimpleNamespace(id="", data={})
+    try:
+        packet = build(ws, store, cfg, stand_in, kind, today)
+    except PacketRefused:
+        packet = build(ws, store, cfg, stand_in, kind, today, sample=[_SAMPLE_LINE] * min(_SAMPLE_ENTRIES, 50))
+    level = _level(store, cfg)
+    first = router.first_choice_for(TASK, level)
+    if first is None:
+        return WeeklyCost("none", None, None, looks)
+    if pricing.is_flat(cfg, first.provider):
+        return WeeklyCost("runs", None, None, looks)
+    task = packet.task
+    tokens = estimate_tokens(len(task.instructions) + len(task.stable) + len(task.request))
+    price = router.estimate_for(TASK, tokens, data_level=level)
+    if price is None:
+        return WeeklyCost("unknown", None, None, looks)
+    return WeeklyCost("money", price, price * looks, looks)

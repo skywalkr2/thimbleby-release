@@ -72,6 +72,9 @@ ADVANCED: dict[str, str] = {
     "dispatch.knowledge.check_on_switch": "learns",
     "ui.followups.question_after_days": "followups",
     "steward.people.snooze_days": "followups",
+    # How often the assistant looks at who the person deals with is shown on People, under its title, and kept with
+    # what it learns.
+    "dispatch.knowledge.person_look_every_days": "learns",
     "steward.brief.morning_from": "notices",
     "steward.brief.evening_from": "notices",
     "steward.brief.weekly_day": "notices",

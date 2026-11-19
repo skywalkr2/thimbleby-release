@@ -141,7 +141,7 @@ class CliAgentAdapter:
         if system and self.agent.system_option:
             args += [part.replace("{system}", str(system_file)) for part in self.agent.system_option]
         if shutil.which(args[0], path=self._env(home).get("PATH")) is None and not Path(args[0]).is_file():
-            raise AiError("provider_down", f"the agent program {args[0]} isn't installed on this computer")
+            raise AiError("provider_down", f"the agent program {args[0]} isn't installed on this computer", sent=False)
         started = time.monotonic()
         try:
             done = self._runner(  # noqa: S603 - the account's own program, arguments as a list, no shell
@@ -158,7 +158,7 @@ class CliAgentAdapter:
         except subprocess.TimeoutExpired:
             raise AiError("timeout", f"the agent didn't finish in {self.settings.timeout_seconds} seconds") from None
         except OSError as err:
-            raise AiError("provider_down", f"the agent program couldn't start: {err}") from None
+            raise AiError("provider_down", f"the agent program couldn't start: {err}", sent=False) from None
         return done, time.monotonic() - started
 
     def _error_report(self, done: subprocess.CompletedProcess) -> str:

@@ -38,7 +38,7 @@ What you can do now:
 - **Use it by keyboard, in a narrow window, with a screen reader.** No screen scrolls sideways, and status is never shown
   by color alone.
 
-Known limits: the Mac installers need macOS 15 or later; the installers aren't signed; there are no automatic updates yet
-(run the install step again with the newer file); and there's no hosted version.
+Known limits: the Mac installers need macOS 15 or later; the installers aren't signed; a new version is offered on Today and from
+the menu but never installed unasked (a command-line install runs the install step again with the newer file); and there's no hosted version.
 
 Found something wrong? Open an issue here with the bug form.

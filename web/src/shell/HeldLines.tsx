@@ -152,7 +152,8 @@ export function HeldLine(props: {
   }
 }
 
-function RestartLine(props: { line: Line }) {
+/** The line for work held until the app restarts, with Restart now: Today's, and the first reading's step shows the same one. */
+export function RestartLine(props: { line: Pick<Line, "count"> }) {
   const { t, tn } = useWords();
   const status = useQuery({ queryKey: ["status"], queryFn: api.status });
   const restart = useRestart();

@@ -802,6 +802,17 @@ def spent_on(runs: Any) -> float | None:
     return sum(priced) if priced else None
 
 
+def maybe_charged_on(runs: Any) -> float | None:
+    """Of what a request's AI work has cost (`spent_on`), the estimates of calls that got no answer and may have been
+    charged; None when there is none."""
+    found = [
+        run.data["cost_usd"]
+        for run in runs
+        if run.data.get("cost_basis") == "maybe_charged" and run.data.get("cost_usd") and _counts(run)
+    ]
+    return sum(found) if found else None
+
+
 def request_range(
     cfg: Config, router: Router, task: AiTask, tier: str, stronger: str | None, **where: Any
 ) -> tuple[float | None, float | None]:
@@ -1070,7 +1081,18 @@ def _rounds(
         if draft is not None:
             try:
                 text, stop = _drafted(
-                    router, task, result, request_id, tier, data_level, use, content, independent, offline_known
+                    router,
+                    task,
+                    result,
+                    request_id,
+                    tier,
+                    data_level,
+                    use,
+                    content,
+                    independent,
+                    offline_known,
+                    spend_limit=budget.limit(store) if budget is not None else None,
+                    unpriced_ok=unpriced_ok,
                 )
             except NetworkOffline:
                 return _Outcome(run_id=out.run_id, stop=OFFLINE_WAITING, cause={"kind": "offline"})
@@ -1247,10 +1269,14 @@ def _drafted(
     content: frozenset[str],
     independent: Independence | None = None,
     offline_known: bool = False,
+    *,
+    spend_limit: float | None = None,
+    unpriced_ok: bool = True,
 ) -> tuple[str, str | None]:
     """A draft's text from a prose answer: one surrounding code fence removed, and an answer cut off at the output
     limit continued once. Returns the text and, when it can't be finished, why the person is needed. A continuation
-    that finds no network, or does no work, raises that error: the request waits, as for any call."""
+    that finds no network, or does no work, raises that error: the request waits, as for any call. The continuation
+    is held to what is left of the request's allowed amount (`spend_limit`), as every other call of the request is."""
     text = _unfenced(result.text)
     if not text.strip():
         return "", "The assistant's draft came back empty."
@@ -1268,6 +1294,8 @@ def _drafted(
                 content=content,
                 independent=independent,
                 offline_known=offline_known,
+                spend_limit=spend_limit,
+                unpriced_ok=unpriced_ok,
             )
         except (AiError, BudgetReached, NoProvider) as err:
             if isinstance(err, NetworkOffline) or (isinstance(err, AiError) and err.kind == "no_work"):

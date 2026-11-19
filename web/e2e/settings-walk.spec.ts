@@ -121,12 +121,12 @@ const BASIC_ROWS = 21;
 // The rarely changed settings sit in each page's closed "More settings" fold, and under the topics of Advanced that have no
 // page. The chat or phone app's address and the pick list of the app it belongs to are two parts of one card, neither a
 // `.setting`, so they are two rows more than the `.setting` rows. The synced folder and its sharing choice live in their own
-// section rather than as settings rows. How often mail and calendars are read is one row under Advanced, Mail (S-0538). With no side beside Personal, the words that mean each side are not listed.
-const MORE_ROWS = 28;
+// section rather than as settings rows. How often mail and calendars are read is one row under Advanced, Mail (S-0538), and how often the assistant looks at who you deal with is one under Advanced, what it learns (S-0655). With no side beside Personal, the words that mean each side are not listed.
+const MORE_ROWS = 29;
 const SHOWN = ".setting:not(details.more-settings .setting)";
 const FOLDED = "details.more-settings .setting";
 
-test("the settings walk counts 21 shown and 28 more rows, each labelled in plain words once, with a hint in plain words", async ({ page }) => {
+test("the settings walk counts 21 shown and 29 more rows, each labelled in plain words once, with a hint in plain words", async ({ page }) => {
   test.setTimeout(240_000);
   await page.setViewportSize({ width: 1280, height: 900 });
   await openScreen(page, "settings/you");

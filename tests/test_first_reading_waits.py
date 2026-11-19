@@ -227,3 +227,28 @@ def test_the_background_pass_wakes_when_a_services_wait_runs_out_not_up_to_a_min
     assert wait_at(NOW + timedelta(seconds=30)) == 5  # over already: a short floor, never a busy loop
     throttle(store, source.id, NOW, NOW + timedelta(minutes=10))
     assert wait_at(NOW) == rest  # a long wait never makes the rest longer
+
+
+def test_first_reading_says_requests_held_for_a_restart_wait(env):
+    """H5-18: work held until the person restarts the app is counted on the step, so it never sits on "working"
+    without saying why."""
+    from engine.worker import RESTART_NEEDED
+
+    ws, cfg, store = env
+    refresh(ws, store, cfg, "m", NOW)
+    refresh(ws, store, cfg, "m2", NOW)
+    assert setup.reading(ws, cfg, store, _found(ws, cfg, store), NOW).restart_waits == 0
+    with store.transaction() as tx:
+        tx.create(
+            "request",
+            {
+                "task": "notes",
+                "origin": "input",
+                "state": "queued",
+                "waiting": RESTART_NEEDED,
+                "created_at": NOW.isoformat(),
+            },
+            _ENGINE,
+        )
+    shown = setup.reading(ws, cfg, store, _found(ws, cfg, store), NOW)
+    assert (shown.state, shown.stage, shown.restart_waits) == ("working", "sorting", 1)

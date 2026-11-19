@@ -175,6 +175,7 @@ def build_act_router(ws: Workspace, cfg: Config, store: Store, events: Events, w
             approved_by=approval["by"] if approval else None,
             approved_at=approval["at"] if approval else None,
             withheld=acts.name_problem(view, cfg, data),
+            mention=acts.name_mention(view, cfg, data),
             failure=ActFailureView(**failure) if failure else None,
             why=list(data.get("why") or []),
             changes=changes_of(view, data),

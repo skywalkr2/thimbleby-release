@@ -2152,11 +2152,12 @@ One call to an AI provider. The engine writes it after each call, for usage and 
 | `output_tokens` | int \| None | `None` | Tokens received, when the provider reports them. |
 | `cached_input_tokens` | int \| None | `None` | Tokens sent that were read from the provider's cache. |
 | `cost_usd` | float \| None | `None` | What the call cost in US dollars; none when it can't be told. |
+| `cost_basis` | Literal['estimated', 'maybe_charged'] \| None | `None` | How the cost is known when it isn't the service's own figure or worked out from the tokens it reported. estimated: an answer came back with no figure, so the cost is the estimate. maybe_charged: the call may have reached the service and no answer came back (it timed out, the connection was lost, or the computer slept), so its estimate is counted until the service's own figures say otherwise. |
 | `seconds` | float | `0.0` | How long the call took, in seconds. |
 | `outcome` | Literal['ok', 'invalid_output', 'error', 'refused'] | required | ok: an answer came back. invalid_output: the answer wasn't in the expected shape. error: the call failed. refused: the provider said it refused the work under its own policy (its reason is in error_detail). |
 | `independence` | Literal['other_account', 'same_account'] \| None | `None` | For a check: other_account, run on an account that didn't write the work; same_account, on one that did, as a fresh run the person accepted. None for other work. |
 | `error_kind` | str \| None | `None` | How the call failed, from the runner's own error; none if ok. |
-| `no_work` | bool | `False` | The run did no work: the program only printed a banner, or the call was cut off by the computer sleeping. It is no try, never sent back as a mistake, and counts for nothing in spending or in how well an account is doing. |
+| `no_work` | bool | `False` | The run did no work: the program only printed a banner, or the call was cut off by the computer sleeping. It is no try, never sent back as a mistake, and counts for nothing in a request's own amount or in how well an account is doing. One cut off by sleep still counts its estimate toward the spending limits, as maybe charged. |
 | `error_detail` | str \| None | `None` | The error's own text, for diagnosing a failure. |
 | `started_at` | datetime | required | When the call started. |
 | `knowledge` | RunKnowledge \| None | see below | What it was given from what was learned, and searched. |

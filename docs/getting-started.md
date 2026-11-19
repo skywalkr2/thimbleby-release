@@ -5,37 +5,54 @@ turned it into actions and questions you can look over. It takes about 10 to 20 
 on your own material until you press **Start** on Today's Start line at the very end, and you see the estimate first. The one thing before that
 which costs anything is the check of your AI account, which you start yourself and which shows its cost beforehand (in the walkthrough's AI account step).
 
-You do three things in order: install the app, start your own workspace, and follow the setup walkthrough that opens by
-itself.
+You do three things in order: install the app, open it (which starts your own workspace), and follow the setup
+walkthrough that opens by itself.
 
 ## 1. Install
 
 You need an AI account of your own with your AI service (a key for it, or a program on your computer that is already
 signed in). The app does not come with one, and no AI service is chosen for you.
 
-**From a package file** (no source code and no Node needed). Install **uv** first, the Python package tool; its own
-documentation shows how, and it fetches the right Python for you. Then, in a terminal, in the folder where you saved the
-package file and the install script for your computer:
+**The installer** (no terminal, no Python, no Node). Download the one for your computer from the Releases page:
+
+- a Mac with an Apple chip: `Thimbleby-<version>-macos-arm64.dmg` (macOS 15 or later);
+- a Mac with an Intel chip: `Thimbleby-<version>-macos-x86_64.dmg` (macOS 15 or later);
+- Windows: `Thimbleby-<version>-windows-x64-setup.exe` (installed for you alone, no administrator password).
+
+The installers are unsigned, so the system asks you to confirm the first open, once. On a Mac, opening it says Apple could
+not verify it: open **System Settings › Privacy & Security**, scroll to the line about Thimbleby, and click **Open Anyway**,
+then **Open**. On Windows, the setup says "Windows protected your PC": click **More info**, then **Run anyway**.
+`docs/install.md` has the same steps and the details. Then open the app. It opens in its own window, not in a browser, and
+the setup walkthrough starts in it. Installing costs nothing and changes nothing outside the app's own folders.
+
+### Install from the command line instead
+
+For people who prefer a terminal, or use Linux. You need **uv**, the Python package tool; its own documentation shows how,
+and it fetches the right Python for you. Then, in a terminal, in the folder where you saved the package file and the
+install script for your computer:
 
 ```sh
 sh install.sh thimbleby-<version>-py3-none-any.whl                                  # macOS, Linux
 powershell -ExecutionPolicy Bypass -File install.ps1 thimbleby-<version>-py3-none-any.whl   # Windows
 ```
 
-**From a checkout of the source.** You need Python 3.12 or newer with uv, and Node 22.12 or newer with npm:
+Or, from a checkout of the source, with Python 3.12 or newer with uv, and Node 22.12 or newer with npm:
 
 ```sh
 uv sync
 npm --prefix web ci && npm --prefix web run build
 ```
 
-(`docs/install.md` has the details, updating, and restoring from a backup.) Installing costs nothing and changes nothing
-outside the app's own folders.
+(`docs/install.md` has the details, updating, and restoring from a backup.)
 
-## 2. Start your own workspace
+## 2. Open it and start your own workspace
 
-A workspace is one folder that holds your work. Keep it in your home folder, not in a temporary folder: the system empties
-temporary folders when the computer restarts, and your setup would go with them.
+A workspace is one folder that holds your work. The first time you open the installed app, it makes your workspace in the
+system's app-data folder and opens the setup walkthrough in its window. Nothing else is needed. Closing the window leaves the
+app running; its menu-bar item (Mac) or tray item (Windows) opens it again, restarts it or quits it.
+
+**If you installed from the command line**, keep the workspace in your home folder, not in a temporary folder: the system
+empties temporary folders when the computer restarts, and your setup would go with them.
 
 ```sh
 thimbleby
@@ -46,10 +63,15 @@ Linux that also makes `thimbleby` work in any folder from then on. The first tim
 workspace in a folder called `Thimbleby` in your home folder (a workspace an earlier version made in `Cockpit` is kept in use) and opens it in your browser, where the walkthrough starts.
 Every time after, the same command reopens the workspace you used last. It runs on your own computer, reachable only
 from it. If the browser doesn't open, copy the link it prints. Leave the terminal window open while you work: closing it
-stops the app. To update later: `thimbleby update`.
+stops the app.
 
-To keep a workspace somewhere else, or have more than one: `thimbleby init <folder>`, then `thimbleby serve -w <folder>`.
-After that, `thimbleby` alone reopens whichever you used last.
+To keep a workspace somewhere else, or have more than one (command line): `thimbleby init <folder>`, then
+`thimbleby serve -w <folder>`. After that, `thimbleby` alone reopens whichever you used last.
+
+**Updating.** The installed app looks for a newer version once a day and offers it as a line on Today; **Check for a new
+version** in its menu-bar or tray item looks at once. Choosing the update copies your work first, installs, and opens the new
+version. A command-line install updates with `thimbleby update` (a checkout) or by running the install step again with the
+newer package file (a package install).
 
 Nothing is spent so far, and nothing has left your computer.
 
@@ -130,9 +152,9 @@ server (with an app password) or a calendar's private address.
 *If it fails:*
 - If the install is refused, the row shows the app's own words (a release that does not match its checksum, or one that
   cannot be reached). Try again, or press **How to get it** for the add-on's instructions.
-- If the app says it cannot restart itself, close the terminal's program with Ctrl+C and run the same `thimbleby serve`
-  command again. The walkthrough opens at this screen.
-- If the app does not come back within a minute, do the same.
+- If the app says it cannot restart itself, or does not come back within a minute: in the installed app, choose **Quit** in
+  its menu-bar or tray item, then open the app again. On a command-line install, close the terminal's program with Ctrl+C
+  and run the same `thimbleby serve` command again. The walkthrough opens at this screen.
 - If signing in is refused, a message says so when you come back. Press **Sign in** again. If your service shows a warning
   page for this app, the screen says what that means for you.
 
@@ -183,13 +205,13 @@ You can also press **Hand something in** (or the `n` key) at any time to paste a
 
 ## If something does not work
 
-- **The page does not open:** copy the link `thimbleby` printed into your browser. It only works on this computer.
-- **The terminal says the workspace folder is not empty:** `thimbleby init` makes a new folder; give it a path that does not
+- **The page does not open (command-line install):** copy the link `thimbleby` printed into your browser. It only works on this computer. The installed app opens in its own window; choose **Open** in its menu-bar or tray item.
+- **On a command-line install, the terminal says the workspace folder is not empty:** `thimbleby init` makes a new folder; give it a path that does not
   exist yet.
 - **Setup has a step that stays "Not done yet":** open that screen. It says what is missing, and the step is done once the
   workspace shows it.
-- **You want to start over:** make a new workspace with `thimbleby init` in another folder. The old one is untouched.
-- **The page says you're not signed in:** with the app running, `thimbleby open` opens it again, signed in.
-- **You want everything gone:** `thimbleby erase` lists exactly what a workspace holds (its records, history and backups) and deletes it after you confirm.
-- **You want to try an add-on on made-up data first:** `thimbleby demo` makes a sandbox of made-up people and projects. It is
+- **You want to start over:** from the command line, make a new workspace with `thimbleby init` in another folder. The old one is untouched.
+- **The page says you're not signed in (a browser on a command-line install):** with the app running, `thimbleby open` opens it again, signed in.
+- **You want everything gone:** on the command line, `thimbleby erase` lists exactly what a workspace holds (its records, history and backups) and deletes it after you confirm.
+- **You want to try an add-on on made-up data first:** on the command line, `thimbleby demo` makes a sandbox of made-up people and projects. It is
   a place to try things, not a place to start your real work.

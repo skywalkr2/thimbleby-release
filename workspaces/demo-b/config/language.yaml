@@ -200,6 +200,7 @@ messages:
   resourced_label: "Put where the change came from in a history line instead of the assistant's name"
   stale_fact: "Check this: {fact} was true as of {as_of}, {days} days ago, and facts of this kind are trusted for {limit} days. Confirm it still holds before this goes to anyone."
   withheld_name: "Held back: {where} names {name}. Take the name out before this goes to anyone."
+  mentioned_name: "This mentions {name}, your assistant's name. Check it means someone else before this goes out."
   nudge_second_ask: "Is there someone else I should ask, or a date I can plan around?"
   date_format: "%a, %b %d"
   date_time_format: "%a, %b %d, %Y, %I:%M %p"

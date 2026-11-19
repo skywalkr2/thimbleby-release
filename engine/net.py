@@ -49,6 +49,10 @@ def host_allowed(host: str, allowed: list[str]) -> bool:
     return any(fnmatch.fnmatch(host, pattern.lower()) for pattern in allowed)
 
 
+def _origin(url: httpx.URL) -> tuple[str, str, int | None]:
+    return (url.scheme, url.host, url.port)
+
+
 class WebClient:
     """GET, POST, PUT, PATCH and DELETE to allowed hosts only. Raises ConnectorError: offline (no connection could be
     made), outage (timeouts, server errors), auth (401), no_access (403), not_found (404), throttled (429, or 503 with a
@@ -89,8 +93,16 @@ class WebClient:
             try:
                 with self._client.stream(method, url, **kwargs) as response:
                     if response.is_redirect and response.headers.get("location"):
-                        url = str(response.url.join(response.headers["location"]))
-                        method, kwargs = ("GET", {}) if response.status_code in (301, 302, 303) else (method, kwargs)
+                        target = response.url.join(response.headers["location"])
+                        keeps_body = response.status_code not in (301, 302, 303)
+                        if keeps_body and _origin(target) != _origin(response.url):
+                            # A 307 or 308 resends the body and headers (a sign-in code, a refresh token, a key); they
+                            # were meant for this host only, so another host is never sent them, allowed or not.
+                            raise ConnectorError(
+                                "no_access", "the service sent the request on to another address, which isn't followed"
+                            )
+                        url = str(target)
+                        method, kwargs = (method, kwargs) if keeps_body else ("GET", {})
                         continue
                     body = bytearray()
                     for chunk in response.iter_bytes():

@@ -9,17 +9,17 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from engine.ai import pricing
+from engine.ai import pricing, spending
 from engine.ai.adapters import Adapter, make_adapter
 from engine.ai.borrow import Borrowed, borrowed_path, chain
 from engine.ai.calibration import Calibration, estimate_tokens, learn_from_run, lookup, scaled
 from engine.ai.catalog import Catalogs
 from engine.ai.checked import folder_of
 from engine.ai.pauses import NO_RESET, Pauses, pauses_path, waiting_text
+from engine.ai.spending import BudgetReached, Hold
 from engine.ai.task import AiError, AiResult, AiTask, CountNotOffered, ModelInfo, work_in_words
 from engine.config import Config
 from engine.legacy_names import private_dir
-from engine.money import usd
 from engine.secrets import SecretError, resolve_secret
 from engine.storage import Store, WriteContext
 
@@ -160,8 +160,14 @@ class NetworkOffline(AiError):
         super().__init__("offline", detail)
 
 
-class BudgetReached(Exception):
-    """A spending limit stops new runs. The message says which and until when."""
+__all__ = ["BudgetReached"]
+
+
+@dataclass
+class _Held:
+    """What the call now running on one account holds of the spending limits, until its run is recorded."""
+
+    hold: Hold | None = None
 
 
 def choices(
@@ -438,35 +444,55 @@ class Router:
             settings = self.cfg.ai.providers[choice.provider]
             started = self.now()
             clock = time.monotonic()
+            held = _Held()
             try:
-                secret = resolve_secret(settings.auth, self.env)
-                adapter = self.adapter_factory(settings.adapter, settings, secret)
-                # Wait out a rate limit only on the last account in line; otherwise the next one is faster.
-                last_in_line = position == len(options) - 1
-                result = self._run_paced(adapter, task, choice, request_id, last_in_line, independent)
-            except SecretError as err:
-                last = AiError("no_key", str(err))
-                self._record(task, request_id, choice, started, time.monotonic() - clock, None, last, independent)
-                continue
-            except AiError as err:
-                if err.kind in CUT_OFF_BY and self._slept(started, clock):
-                    # The computer slept during the call: it was cut off with no answer, so it did no work.
-                    err = AiError("no_work", err.detail)
-                last = err
-                if err.kind == "offline":
-                    offline += 1
-                if not (err.kind == "offline" and offline_known):
-                    self._record(task, request_id, choice, started, time.monotonic() - clock, None, err, independent)
-                until = self._pause_until(err, position == len(options) - 1)
-                if until is not None:
-                    self.pauses.pause(choice.provider, until)
-                    paused[choice.provider] = until
-                if err.kind in FALLBACK_ON:
+                try:
+                    secret = resolve_secret(settings.auth, self.env)
+                    adapter = self.adapter_factory(settings.adapter, settings, secret)
+                    # Wait out a rate limit only on the last account in line; otherwise the next one is faster.
+                    last_in_line = position == len(options) - 1
+                    result = self._run_paced(adapter, task, choice, request_id, last_in_line, independent, held)
+                except SecretError as err:
+                    last = AiError("no_key", str(err))
+                    self._record(
+                        task, request_id, choice, started, time.monotonic() - clock, None, last, independent, held.hold
+                    )
                     continue
-                raise
-            run_id = self._record(
-                task, request_id, choice, started, time.monotonic() - clock, result, None, independent
-            )
+                except AiError as err:
+                    # A call that timed out or lost its connection may have reached the service: its estimate counts.
+                    reached = err.kind in spending.MAY_HAVE_REACHED and err.sent
+                    if err.kind in CUT_OFF_BY and self._slept(started, clock):
+                        # The computer slept during the call: it was cut off with no answer, so it did no work.
+                        err = AiError("no_work", err.detail)
+                    last = err
+                    if err.kind == "offline":
+                        offline += 1
+                    if not (err.kind == "offline" and offline_known):
+                        self._record(
+                            task,
+                            request_id,
+                            choice,
+                            started,
+                            time.monotonic() - clock,
+                            None,
+                            err,
+                            independent,
+                            held.hold,
+                            reached=reached,
+                        )
+                    until = self._pause_until(err, position == len(options) - 1)
+                    if until is not None:
+                        self.pauses.pause(choice.provider, until)
+                        paused[choice.provider] = until
+                    if err.kind in FALLBACK_ON:
+                        continue
+                    raise
+                run_id = self._record(
+                    task, request_id, choice, started, time.monotonic() - clock, result, None, independent, held.hold
+                )
+            finally:
+                # Whatever ended the call, nothing stays held: a recorded run gave its amount back already.
+                spending.release(held.hold)
             if self.pauses.until(choice.provider) is not None:
                 # An answer proves the limit has lifted, whatever reset time was written down earlier.
                 self.pauses.clear(choice.provider)
@@ -585,11 +611,18 @@ class Router:
         request_id: str | None,
         wait: bool,
         independent: Independence | None = None,
+        held: _Held | None = None,
     ) -> AiResult:
-        """Run on one account, waiting and trying again while it says to slow down, within the configured limits."""
+        """Run on one account, waiting and trying again while it says to slow down, within the configured limits.
+        Every try is admitted against the spending limits first, with the run's estimate held while it runs (`held`
+        carries it back to the caller, which records the run): a try the limits have no room for raises
+        `BudgetReached`, also after a wait."""
         limits = self.cfg.ai.rate_limits
+        held = held if held is not None else _Held()
+        estimate = self._price_of(task, choice)
         for attempt in range(limits.tries if wait else 1):
             started, clock = self.now(), time.monotonic()
+            held.hold = spending.admit(self.store, self.cfg.ai.budgets, task.kind, estimate, started)
             try:
                 return adapter.run(self._for_model(adapter, task, choice), choice.model_id)
             except AiError as err:
@@ -601,7 +634,11 @@ class Router:
                     or pause > limits.max_wait_seconds
                 ):
                     raise
-                self._record(task, request_id, choice, started, time.monotonic() - clock, None, err, independent)
+                # The account said to wait: nothing was charged, so the try's amount is given back with its run.
+                self._record(
+                    task, request_id, choice, started, time.monotonic() - clock, None, err, independent, held.hold
+                )
+                held.hold = None
                 if self.on_wait is not None:
                     self.on_wait(pause)
                 self.sleep(pause)
@@ -610,17 +647,8 @@ class Router:
     # ---- budgets and runs --------------------------------------------------------------------------------------------
 
     def spent(self) -> tuple[float, float]:
-        """USD spent today and this month (UTC), from recorded runs."""
-        now = self.now()
-        day = month = 0.0
-        for run in self.store.read().list("run"):
-            cost = run.data.get("cost_usd") or 0.0
-            at = datetime.fromisoformat(run.data["started_at"])
-            if (at.year, at.month) == (now.year, now.month):
-                month += cost
-                if at.date() == now.date():
-                    day += cost
-        return day, month
+        """USD spent today and this month (UTC): the recorded runs, plus what the calls still running hold."""
+        return spending.totals(self.store, self.now())
 
     def estimate(
         self,
@@ -843,39 +871,13 @@ class Router:
         return settings(self.cfg, self.store.plugins.tasks.get(kind), kind).expected_output
 
     def spent_on(self, kind: str) -> tuple[float, float]:
-        """USD spent today and this month (UTC) on one kind of work."""
-        now = self.now()
-        day = month = 0.0
-        for run in self.store.read().list("run"):
-            if run.data.get("task") != kind:
-                continue
-            cost = run.data.get("cost_usd") or 0.0
-            at = datetime.fromisoformat(run.data["started_at"])
-            if (at.year, at.month) == (now.year, now.month):
-                month += cost
-                if at.date() == now.date():
-                    day += cost
-        return day, month
+        """USD spent today and this month (UTC) on one kind of work, with what its running calls hold."""
+        return spending.totals(self.store, self.now(), kind)
 
     def _check_budget(self, kind: str | None = None) -> None:
-        budgets = self.cfg.ai.budgets
-        limits = budgets.per_task.get(kind) if kind else None
-        if limits is not None:
-            day, month = self.spent_on(kind)
-            if limits.per_month_usd is not None and month >= limits.per_month_usd:
-                raise BudgetReached(
-                    f"Paused: this month's budget for this kind of work ({usd(limits.per_month_usd)}) is used up."
-                )
-            if limits.per_day_usd is not None and day >= limits.per_day_usd:
-                raise BudgetReached(
-                    f"Paused until tomorrow: today's budget for this kind of work ({usd(limits.per_day_usd)}) "
-                    "is used up."
-                )
-        day, month = self.spent()
-        if month >= budgets.per_month_usd:
-            raise BudgetReached(f"Paused: this month's AI budget ({usd(budgets.per_month_usd)}) is used up.")
-        if day >= budgets.per_day_usd:
-            raise BudgetReached(f"Paused until tomorrow: today's AI budget ({usd(budgets.per_day_usd)}) is used up.")
+        """Refuse before anything is chosen when a limit is already used up. The call itself is admitted, with its
+        estimate, on the account it runs on (`_run_paced`)."""
+        spending.check(self.store, self.cfg.ai.budgets, kind, self.now())
 
     def _that_transcribe(self, options: list[Choice]) -> list[Choice]:
         """Keep only the accounts whose model is listed as turning speech into text, by the model's catalog entry or
@@ -1038,7 +1040,20 @@ class Router:
         result: AiResult | None,
         error: AiError | None,
         independent: Independence | None = None,
+        hold: Hold | None = None,
+        *,
+        reached: bool = False,
     ) -> str:
+        """Record the call as a run and give back what it held. Its cost is the service's own figure or worked out
+        from the tokens it reported; an answer that gave neither costs its estimate, marked as estimated; a call with
+        no answer that may have reached the service (`reached`) costs its estimate, marked as maybe charged."""
+        cost, basis = self._cost(choice, result), None
+        estimate = hold.usd if hold is not None and hold.usd > 0 else None
+        if cost is None and estimate is not None:
+            if result is not None:
+                cost, basis = estimate, spending.ESTIMATED
+            elif reached:
+                cost, basis = estimate, spending.MAYBE_CHARGED
         data: dict[str, Any] = {
             "request": request_id,
             "task": task.kind,
@@ -1050,7 +1065,8 @@ class Router:
             "input_tokens": result.input_tokens if result else None,
             "output_tokens": result.output_tokens if result else None,
             "cached_input_tokens": result.cached_input_tokens if result else None,
-            "cost_usd": self._cost(choice, result),
+            "cost_usd": cost,
+            "cost_basis": basis,
             "seconds": round(seconds, 3),
             "outcome": _outcome(result, error),
             "independence": (
@@ -1064,7 +1080,6 @@ class Router:
             "started_at": started.isoformat(),
             "knowledge": task.knowledge,
         }
-        with self.store.transaction() as tx:
-            run_id = tx.create("run", data, _SYSTEM).id
+        run_id = spending.settle(self.store, hold, data, _SYSTEM)
         self._learn(choice, task, result)
         return run_id

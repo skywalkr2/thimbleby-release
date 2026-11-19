@@ -9,7 +9,9 @@ A measuring spends the person's own money, so it counts like any other work. Eac
 person's store as a run of the kind `TASK` (`Meter.count`), which the daily and monthly totals add up like every other
 run. The limits apply before it starts (`limit_reached`: a limit already used up refuses it; `Left`: an estimate above
 what is left today needs the person's go, as one above the amount to ask about does) and before each case
-(`Meter.stops`): a case that began is finished, the cases after it are not made, what was measured is kept and the
+(`Meter.stops`): each case is admitted through the same spending boundary as every other call
+(`engine/ai/spending.py`), with about what one case costs held while it runs, so a case the limits have no room for
+is not made. A case that began is finished, the cases after it are not made, what was measured is kept and the
 measuring is kept as failed, saying which limit stopped it.
 
 A measuring that was asked for is kept on this computer, in the workspace's private folder, so a restart finishes what
@@ -27,7 +29,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from engine.ai import pricing
+from engine.ai import pricing, spending
 from engine.ai.router import LEVELS
 from engine.config import Config, load_config
 from engine.state_file import changing, write_whole
@@ -175,25 +177,51 @@ class Meter:
     scratch copy with a store of its own, so what each case cost (`RunResult.cost_usd`, from its recorded calls) is
     written here as runs in the person's store, where the totals the limits read are added up."""
 
-    def __init__(self, store: Store, cfg: Config, now: Callable[[], datetime] | None = None) -> None:
+    def __init__(
+        self,
+        store: Store,
+        cfg: Config,
+        now: Callable[[], datetime] | None = None,
+        per_case: float | None = None,
+    ) -> None:
         self.store, self.cfg = store, cfg
         self.now = now or (lambda: datetime.now(UTC))
         self.reason: str | None = None  # which limit stopped it, once one has
+        #: About what one case costs, held while it runs: the plan's figure, else the dearest case counted so far.
+        self.per_case = per_case
+        self._dearest = 0.0
+        self._hold: spending.Hold | None = None
 
     def stops(self) -> bool:
-        """Whether a limit is used up, so the next case isn't made. Once one has stopped it, it stays stopped."""
+        """Whether the limits have no room for the next case, so it isn't made: a limit is used up, or about what one
+        case costs doesn't fit in what is left. A case that may run holds that amount until it is counted. Once a
+        limit has stopped it, it stays stopped."""
+        self.release()
         if self.reason is None:
-            self.reason = limit_reached(self.store, self.cfg, self.now())
+            amount = self.per_case if self.per_case is not None else self._dearest
+            try:
+                self._hold = spending.admit(self.store, self.cfg.ai.budgets, TASK, amount, self.now())
+            except spending.BudgetReached as err:
+                self.reason = LIMIT_MONTH if err.period == "month" else LIMIT_DAY
         return self.reason is not None
+
+    def release(self) -> None:
+        """Give back what the case now running holds: called when it is counted, and when a measuring ends."""
+        spending.release(self._hold)
+        self._hold = None
 
     def count(self, result: Any) -> None:
         """Record what one finished case cost, as a run on each account it called (its cost shared among them, as the
-        capability matrix shares it). A case that made no call, or whose cost isn't known, adds nothing to count."""
+        capability matrix shares it), and give back what it held. A case that made no call, or whose cost isn't
+        known, adds nothing to count."""
         if not result.accounts or not (result.cost_usd or 0.0) > 0.0:
+            self.release()
             return
+        self._dearest = max(self._dearest, result.cost_usd)
         share = result.cost_usd / len(result.accounts)
         at = self.now().isoformat()
-        with self.store.transaction() as tx:
+        with spending.settling(), self.store.transaction() as tx:
+            self.release()
             for ref in result.accounts:
                 provider, _, model = ref.partition("/")
                 tx.create(
@@ -227,7 +255,10 @@ def metered(run: Callable[..., Any], store: Store, cfg: Config) -> Callable[...,
 
     def with_meter(*args: Any, **kwargs: Any) -> Any:
         meter = Meter(store, cfg)
-        report = run(*args, meter=meter, **kwargs)
+        try:
+            report = run(*args, meter=meter, **kwargs)
+        finally:
+            meter.release()
         if meter.reason is not None:
             # A limit cut the check short: the report says so, in the words other work gets at that limit.
             report.stopped_by = limit_words(cfg, meter.reason)
@@ -307,6 +338,17 @@ def _set(ws: Any, ref: str, state: str | None, why: str | None = None) -> None:
         _write(ws, data)
 
 
+def _per_case(cfg: Config, ws: Any, ref: str, env: Mapping[str, str]) -> float | None:
+    """About what one case of a model's measuring costs, from its plan; None when it can't be priced."""
+    account, _, model = ref.partition("/")
+    try:
+        plan = estimate(cfg, ws, account, model or None, env)
+    except Exception:  # a plan that can't be made prices nothing: the cases then hold what the dearest one cost
+        return None
+    made = plan.cases * plan.runs
+    return plan.usd / made if plan.usd is not None and made else None
+
+
 def run_waiting(
     ws: Any,
     env: Mapping[str, str] | None = None,
@@ -328,8 +370,11 @@ def run_waiting(
         _set(ws, ref, MEASURING)
         try:
             cfg = load_config(ws.config_dir, env=dict(env))
-            meter = Meter(store, cfg, now)
-            report = run(ref, cfg, ws, env, most_private(cfg, ref.partition("/")[0]), meter=meter)
+            meter = Meter(store, cfg, now, _per_case(cfg, ws, ref, env))
+            try:
+                report = run(ref, cfg, ws, env, most_private(cfg, ref.partition("/")[0]), meter=meter)
+            finally:
+                meter.release()
             if meter.reason is not None:
                 _set(ws, ref, FAILED, meter.reason)
             elif any(not r.not_run for r in report.results):

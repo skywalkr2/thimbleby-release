@@ -191,7 +191,8 @@ def build(ws: Any, store: Any, cfg: Any, req: Any, kind: Any, today: date) -> An
         f"Today is {today.isoformat()} ({today.strftime('%A')}).",
         f'<untrusted source="note">\n{neutralize(note)}\n</untrusted>',
         learned.per_input,
-        f"# The parcel\n{facts}",
+        # The carrier, tracking number and order came from a message, so they are outside material too.
+        f'# The parcel\n<untrusted source="parcel">\n{neutralize(facts)}\n</untrusted>' if facts else "",
     ]
     request = "\n\n".join(p for p in parts if p)
     task = replace(_task(cfg, store, kind, instructions, stable, request), knowledge=learned.log.model_dump())

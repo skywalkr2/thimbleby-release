@@ -8,6 +8,7 @@ import { waitWhen } from "../lib/olderRead";
 import { listOf } from "../lib/packs";
 import { useContinue } from "../lib/walkthrough-continue";
 import { useWords } from "../lib/wording";
+import { RestartLine } from "../shell/HeldLines";
 import { Icon } from "../ui/Icon";
 import { Skeleton } from "../ui/Skeleton";
 
@@ -63,6 +64,11 @@ export function WalkthroughReading(props: {
   const waiting = reading.waiting > 0 && reading.until ? tn("walkthrough.reading.waiting_some", reading.waiting, { when: waitWhen(reading.until, t) }) : "";
   return (
     <div data-reading="working" data-stage={stage}>
+      {(reading.restart_waits ?? 0) > 0 && (
+        <div data-reading-restart="">
+          <RestartLine line={{ count: reading.restart_waits }} />
+        </div>
+      )}
       <p className="what" role="status">
         {stage === "fetching" ? fetching : stage === "waiting" ? waiting : t(`walkthrough.reading.${stage}`)}
       </p>

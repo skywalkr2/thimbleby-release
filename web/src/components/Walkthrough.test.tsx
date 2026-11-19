@@ -3624,6 +3624,24 @@ describe("Reginald is turned on in the AI step, the first reading is waited for,
     expect(await screen.findByRole("heading", { level: 2, name: "People" })).toBeInTheDocument();
   });
 
+  test("First reading says work waits for a restart, with Restart now as Today has it, and nothing when none waits (H5-18)", async () => {
+    const user = userEvent.setup();
+    const calls = fakeApi({
+      ...routes({}, DONE_AI, { step: "reading" }, { reading: { state: "working", stage: "sorting", sources: 2, read: 2, restart_waits: 2 } }),
+      "GET status": () => statusFixture({ can_restart: true }),
+      "POST restart": () => ({ restarting: true }),
+    });
+    const view = open();
+    expect(await screen.findByText("Restart to resume 2 waiting tasks")).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Restart now" }));
+    await waitFor(() => expect(calls.some((c) => c.route === "POST restart")).toBe(true));
+    view.unmount();
+    fakeApi(routes({}, DONE_AI, { step: "reading" }, { reading: { state: "working", stage: "sorting", sources: 2, read: 2 } }));
+    open();
+    expect(await screen.findByText("Sorting what it found.")).toBeInTheDocument();
+    expect(screen.queryByText(/Restart to resume/)).toBeNull();
+  });
+
   test("First reading names what is still being read, or counts when the list is long, and a source the service asked to wait on is waiting with its time and lets the person go on (S-0667, H5-14)", async () => {
     const first = { state: "working" as const, stage: "fetching" as const, sources: 6, read: 5, pending: ["Your sent mail, Pat"] };
     fakeApi(routes({}, DONE_AI, { step: "reading" }, { reading: first }));

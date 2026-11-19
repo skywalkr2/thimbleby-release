@@ -243,6 +243,26 @@ def test_a_yes_goes_stale_when_the_draft_a_recipients_address_or_the_template_ch
     assert sent_act.recipients[0].address == "moved.recipient@example.com"
 
 
+def test_an_address_changed_after_the_send_is_claimed_never_reaches_the_channel(env, monkeypatch):
+    # Between the claim (`act.sending`, which checks the yes once more) and the hand-over to the channel, another change
+    # moves the recipient's address: what goes out is still what the yes covered.
+    act_id = env.ready()
+    approved_address = env.address[env.ana]
+    real_op = env.publisher._op
+
+    def op_then_move(op, label):
+        done = real_op(op, label)
+        if op.get("op") == "act.sending":
+            env.set_address(env.ana, "moved.after.claim@example.com")
+        return done
+
+    monkeypatch.setattr(env.publisher, "_op", op_then_move)
+
+    assert env.publisher.send(act_id).status == "sent"
+    ((sent_act, _),) = env.fake.delivered
+    assert [r.address for r in sent_act.recipients] == [approved_address]
+
+
 def test_a_timeout_retry_or_restart_never_sends_twice(env):
     env.use(FakeChannel(mode="timeout_after_send"))
     act_id = env.ready()
@@ -619,7 +639,7 @@ def test_an_acts_records_survive_export_and_import(env, tmp_path):
 def test_the_name_check_refuses_a_part_that_names_the_assistant(env):
     name = env.cfg.workspace.assistant_name
     where = env.cfg.language.messages.withheld_where.format(name=env.name(env.ana))
-    named = env.draft(parts={"body": f"Hello, it is {name} here."})
+    named = env.draft(parts={"body": f"Reported by {name}."})
 
     with pytest.raises(StoreError) as refused:
         env.yes(named)
@@ -630,7 +650,7 @@ def test_the_name_check_refuses_a_part_that_names_the_assistant(env):
     )
 
     # a name the assistant went by since the yes is caught at send, and nothing is sent
-    clean = env.ready(parts={"body": "Meet at the dock."})
+    clean = env.ready(parts={"body": "Notes from the dock."})
     with env.store.transaction() as tx:
         tx.create(
             "setting_change",
@@ -647,6 +667,21 @@ def test_the_name_check_refuses_a_part_that_names_the_assistant(env):
     with pytest.raises(StoreError, match="Held back"):
         env.publisher.send(clean)
     assert env.fake.calls == [] and env.act(clean)["status"] == "approved"
+
+
+def test_a_part_that_only_mentions_the_assistants_name_is_approved_with_a_warning(env):
+    """H5-19: a colleague may share the name; the draft carries a warning and goes through the yes and the send."""
+    name = env.cfg.workspace.assistant_name
+    where = env.cfg.language.messages.withheld_where.format(name=env.name(env.ana))
+    mention = env.draft(parts={"body": f"Can we meet on Monday, {name}?"})
+    assert acts.name_mention(
+        env.store.read(), env.cfg, env.act(mention)
+    ) == env.cfg.language.messages.mentioned_name.format(where=where, name=name)
+    assert acts.name_problem(env.store.read(), env.cfg, env.act(mention)) is None
+    env.yes(mention)
+    assert env.act(mention)["status"] == "approved"
+    env.publisher.send(mention)
+    assert env.act(mention)["status"] == "sent"
 
 
 def test_an_act_may_not_address_someone_outside_the_limit_of_what_it_draws_on(env):

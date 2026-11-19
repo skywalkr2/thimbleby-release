@@ -871,8 +871,8 @@ export function ChangeRow(props: {
               <p>{item.note}</p>
             </div>
           )}
-          {(item.state === "review" || item.state === "done") && spentLine(item.spent_usd, item.range_usd) && (
-            <p className="hint">{spentLine(item.spent_usd, item.range_usd)}</p>
+          {(item.state === "review" || item.state === "done") && spentLine(item.spent_usd, item.range_usd, item.maybe_charged_usd) && (
+            <p className="hint">{spentLine(item.spent_usd, item.range_usd, item.maybe_charged_usd)}</p>
           )}
           {cs && <Because cs={cs} />}
           {cs && cs.ops.length === 0 && <p className="hint">{t("changes.nothing_done")}</p>}

@@ -38,6 +38,11 @@ test("one writer serves every formatter: totals, estimates, small prices, amount
   expect(r.amount(2)).toBe("$2");
   expect(r.amount(0.1)).toBe("$0.10");
   expect(r.spent(0.5, [0.4, 0.6])).toBe("Cost $0.50, estimated at $0.40 to $0.60");
+  // A call that got no answer counts its estimate: the cost line says how much of the cost that is, and nothing without one.
+  expect(r.spent(0.5, [0.4, 0.6], 0.08)).toBe("Cost $0.50, estimated at $0.40 to $0.60 · $0.08 of it may have been charged: a call got no answer, so its estimate is counted");
+  expect(r.spent(0.5, null, 0.08)).toBe("Cost $0.50 · $0.08 of it may have been charged: a call got no answer, so its estimate is counted");
+  expect(r.spent(0.5, null, 0)).toBe("Cost $0.50");
+  expect(r.spent(0.5, null, null)).toBe("Cost $0.50");
 });
 
 test("the sign and the words around an amount are the sheet's, so a workspace can word them its own way", () => {

@@ -427,7 +427,8 @@ def give_first_go(ws: Any) -> None:
 class Reading:
     """Reginald's first reading after Mail and calendar, for the screen that waits for it. `state` is none (nothing to
     wait for: `why` says mail was left out or there is no AI account), working (`stage` says what it is doing) or
-    done. `sources` is how many mail and calendar sources are read and `read` how many were read once."""
+    done. `sources` is how many mail and calendar sources are read and `read` how many were read once;
+    `restart_waits` is how many of its requests are held until the person restarts the app."""
 
     state: str
     why: str | None = None
@@ -438,6 +439,7 @@ class Reading:
     waiting: int = 0
     until: str | None = None
     pending: list[str] = field(default_factory=list)
+    restart_waits: int = 0
 
 
 def reading(ws: Any, cfg: Any, store: Any, found: list[Step], now: Any = None) -> Reading:
@@ -477,6 +479,14 @@ def reading(ws: Any, cfg: Any, store: Any, found: list[Step], now: Any = None) -
     }
     if base["until"] is not None:
         base["until"] = base["until"].isoformat()
+    # Work held until the person restarts the app never moves by itself: the step says so, as Today does.
+    from engine.worker import held_for_restart
+
+    base["restart_waits"] = sum(
+        1
+        for r in view.list("request")
+        if r.data.get("state") == "queued" and not r.data.get("dismissed") and held_for_restart(r.data.get("waiting"))
+    )
     if still:
         return Reading("working", stage="fetching", **base)
     sorting = any(

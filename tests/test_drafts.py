@@ -417,3 +417,33 @@ def test_the_packet_knows_who_started_the_run_and_a_note_not_from_the_person_is_
     assert '<untrusted source="note">\nMake it shorter.' in asked[0].request
     store.close()
     set_responder(None)
+
+
+def test_a_drafts_continuation_is_held_to_what_is_left_of_the_requests_amount():
+    # The continuation of a cut-off draft is another call of the request: it carries the request's remaining amount
+    # and its answer about unpriced models, as every other call does.
+    from engine.ai.task import AiTask
+    from engine.dispatcher import _drafted
+
+    calls = []
+
+    class Recording:
+        def call(self, task, **kw):
+            calls.append(kw)
+            return prose("fore dawn.\n"), None, "run-2"
+
+    task = AiTask(kind="draft", instructions="", stable="", request="Write it.", output_schema={}, output="text")
+    text, stop = _drafted(
+        Recording(),
+        task,
+        prose("The ferry left be", truncated=True),
+        "request-1",
+        "routine",
+        "normal",
+        None,
+        frozenset(),
+        spend_limit=0.03,
+        unpriced_ok=False,
+    )
+    assert (text, stop) == ("The ferry left before dawn.\n", None)
+    assert calls[0]["spend_limit"] == 0.03 and calls[0]["unpriced_ok"] is False

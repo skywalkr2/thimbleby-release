@@ -9,7 +9,8 @@ guards use them:
 - `SourceLabels`: a history row shown to a reader says where the change came from (the input and its day, or the
   person for their own words), never who made it;
 - `outgoing_problem` and `check_outgoing`: what goes out (a message to copy, a draft for someone else) is refused
-  while it still holds a name, and the reason says where;
+  while it still holds a name where it attributes something (a bare mention is a warning, `outgoing_mention`, shown
+  on the draft), and the reason says where;
 - `sweep`: lines written before the guard, or before a rename, are re-sourced from the ledger's evidence with their
   dates kept, as one change of the core's own with Undo;
 - `sweep_ids`: op labels written before a screen could name a record by its title are re-made from the record; record
@@ -97,12 +98,15 @@ _BEFORE = r"(?:\b(?:by|from|per|reported by|source:?)\s+)"
 _AFTER = r"(?=(?:'s|\u2019s)?\s*(?:,\s*\d|\d{1,2}/\d{1,2}|(?:pm\s+)?judge?ment\b))"
 
 
-def _pattern(names: Iterable[str]) -> re.Pattern[str] | None:
+def _pattern(names: Iterable[str], attribution_only: bool = False) -> re.Pattern[str] | None:
+    """The pattern the names are found by. A name the person gave counts anywhere as a whole word; an ordinary word
+    ("assistant") only where it attributes something. With `attribution_only`, every name counts only where it
+    attributes something (what goes to another person: a bare mention is a warning there, not a refusal)."""
     words = sorted({n for n in names if n}, key=len, reverse=True)
     if not words:
         return None
-    specific = [re.escape(w) for w in words if w.casefold() not in GENERIC_NAMES]
-    generic = [re.escape(w) for w in words if w.casefold() in GENERIC_NAMES]
+    specific = [re.escape(w) for w in words if attribution_only is False and w.casefold() not in GENERIC_NAMES]
+    generic = [re.escape(w) for w in words if attribution_only or w.casefold() in GENERIC_NAMES]
     parts = []
     if specific:
         parts.append(r"(?<!\w)(?P<s>" + "|".join(specific) + r")(?!\w)")
@@ -117,11 +121,12 @@ def _matched(found: re.Match[str]) -> str:
     return next(found.group(k) for k in ("s", "g1", "g2") if k in found.groupdict() and found.group(k))
 
 
-def name_in(text: str, names: Iterable[str]) -> str | None:
+def name_in(text: str, names: Iterable[str], attribution_only: bool = False) -> str | None:
     """The first of the names that `text` holds, as the name is written in `names`: a name the person gave anywhere as
-    a whole word, and an ordinary word ("assistant") only where it attributes something. Case is ignored."""
+    a whole word, and an ordinary word ("assistant") only where it attributes something (with `attribution_only`,
+    every name only where it attributes something). Case is ignored."""
     names = list(names)
-    pattern = _pattern(names)
+    pattern = _pattern(names, attribution_only)
     found = pattern.search(text) if pattern is not None and isinstance(text, str) else None
     if found is None:
         return None
@@ -129,15 +134,15 @@ def name_in(text: str, names: Iterable[str]) -> str | None:
     return next((n for n in names if n.casefold() == word.casefold()), word)
 
 
-def names_in(value: Any, names: Iterable[str]) -> str | None:
+def names_in(value: Any, names: Iterable[str], attribution_only: bool = False) -> str | None:
     """The first of the names that any text inside `value` (a string, or lists and maps of them) holds."""
     names = list(names)
     if isinstance(value, str):
-        return name_in(value, names)
+        return name_in(value, names, attribution_only)
     if isinstance(value, Mapping):
         value = list(value.values())
     if isinstance(value, (list, tuple)):
-        return next((found for item in value if (found := names_in(item, names))), None)
+        return next((found for item in value if (found := names_in(item, names, attribution_only))), None)
     return None
 
 
@@ -166,9 +171,21 @@ def outgoing_problem(view: Any, cfg: Any, parts: Mapping[str, str]) -> str | Non
     understands) to its text, and the first that holds one of the names is the reason, in the wording sheet's words."""
     names = assistant_names(view, cfg.workspace.assistant_name)
     for where, text in parts.items():
-        found = name_in(text or "", names)
+        found = name_in(text or "", names, attribution_only=True)
         if found is not None:
             return cfg.language.messages.withheld_name.format(where=where, name=found)
+    return None
+
+
+def outgoing_mention(view: Any, cfg: Any, parts: Mapping[str, str]) -> str | None:
+    """A warning for content going to someone else that mentions a name the person gave the assistant without
+    attributing anything to it (a colleague may share the name): shown on the draft, and the content can still be sent.
+    An ordinary word ("assistant") never warns. None when there is nothing to say."""
+    names = [n for n in assistant_names(view, cfg.workspace.assistant_name) if n.casefold() not in GENERIC_NAMES]
+    for where, text in parts.items():
+        found = name_in(text or "", names)
+        if found is not None:
+            return cfg.language.messages.mentioned_name.format(where=where, name=found)
     return None
 
 

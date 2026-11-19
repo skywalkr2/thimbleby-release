@@ -184,10 +184,10 @@ def test_the_send_step_refuses_what_still_names_the_assistant_and_says_where(api
     assert sections[owner]["message"] and sections[owner].get("withheld") is None
     rec = store.read().get("action", target["id"])
     with store.transaction() as tx:  # written before the guard existed, or before a rename
-        tx.update("action", target["id"], {"text": f"{target['text']} ({name})"}, _TEST, read_version=rec.version)
+        tx.update("action", target["id"], {"text": f"{target['text']} (per {name})"}, _TEST, read_version=rec.version)
     shown = {s["person"]: s for s in client.get(f"{base}/followups").json()}[owner]
     assert shown["message"] == "" and name in shown["withheld"]
-    refused = client.post(f"{base}/followups/{owner}/mark-sent", json={"text": f"Hello {name}"})
+    refused = client.post(f"{base}/followups/{owner}/mark-sent", json={"text": f"Hello, from {name}"})
     assert refused.status_code == 409 and name in refused.json()["detail"]
     with pytest.raises(StoreError) as caught:
         outward.check_outgoing(store.read(), cfg, {"the message to Ana": f"From {name}"})
@@ -316,3 +316,77 @@ def test_the_sweep_replaces_a_whole_attribution_with_the_source_not_only_the_nam
 
     fixed = _resourced(f"Status set at risk ({DEFAULT_NAME} PM judgment, 10/6)", [DEFAULT_NAME], "the Oct 6 sync notes")
     assert fixed == "Status set at risk (the Oct 6 sync notes)"
+
+
+def _earlier_name(store, name):
+    """A name the assistant went by before, kept in the settings history."""
+    with store.transaction() as tx:
+        tx.create(
+            "setting_change",
+            {
+                "key": outward.NAME_KEY,
+                "before": name,
+                "after": DEFAULT_NAME,
+                "was_default": False,
+                "is_default": False,
+                "at": NOW.isoformat(),
+            },
+            _TEST,
+        )
+
+
+def test_outgoing_content_is_refused_only_where_it_attributes_something_to_the_assistant(env):
+    """H5-19: a name after per, from, by or reported by, and "<name>'s judgment", is refused; a bare mention (a
+    colleague who shares the name) is a warning on the draft, never a refusal, for the current name and an earlier
+    one alike."""
+    _, cfg, store = env
+    _earlier_name(store, "Wilbur")
+    view = store.read()
+    where = "the message to Ana"
+    for name in (name_of(cfg), "Wilbur"):
+        for attributed in (
+            f"Per {name}, the date moved",
+            f"Heard from {name}",
+            f"Drafted by {name}",
+            f"Reported by {name}",
+            f"{name}'s judgment is that it slips",
+            f"{name}, 10/6",
+        ):
+            with pytest.raises(StoreError) as refused:
+                outward.check_outgoing(view, cfg, {where: attributed})
+            assert where in str(refused.value) and name in str(refused.value), attributed
+        for bare in (
+            f"Can we meet on Monday, {name}?",
+            f"I spoke with {name} about the meeting",
+            f"{name}'s desk is free",
+        ):
+            outward.check_outgoing(view, cfg, {where: bare})
+            assert outward.outgoing_problem(view, cfg, {where: bare}) is None
+            warning = outward.outgoing_mention(view, cfg, {where: bare})
+            assert warning == cfg.language.messages.mentioned_name.format(where=where, name=name), bare
+    # Nothing to say when the name isn't there, and an ordinary word ("assistant") never warns.
+    assert outward.outgoing_mention(view, cfg, {where: f"Hire an executive {outward.GENERIC_DEFAULT.lower()}"}) is None
+    assert outward.outgoing_mention(view, cfg, {where: "Nothing here"}) is None
+
+
+def test_a_draft_to_a_colleague_with_the_assistants_name_can_be_approved_and_shows_the_warning(api):
+    """H5-19, through the person's path: the follow-up message to someone who shares the name is offered with a
+    warning (not withheld), and marking it sent works; an attribution in it is still held back."""
+    client, base, store, cfg, _ = api
+    name = name_of(cfg)
+    owner = OPEN[0]["owners"][0]["person"]
+    rec = store.read().get("action", OPEN[0]["id"])
+    with store.transaction() as tx:
+        tx.update("action", rec.id, {"text": f"Ask {name} about the meeting"}, _TEST, read_version=rec.version)
+    shown = {s["person"]: s for s in client.get(f"{base}/followups").json()}[owner]
+    assert shown["message"] and shown.get("withheld") is None
+    assert shown["mention"] == cfg.language.messages.mentioned_name.format(
+        where=cfg.language.messages.withheld_where.format(name=shown["name"]), name=name
+    )
+    sent = client.post(f"{base}/followups/{owner}/mark-sent", json={"text": f"Hello, can we meet on Monday, {name}?"})
+    assert sent.status_code == 200
+    rec = store.read().get("action", OPEN[0]["id"])
+    with store.transaction() as tx:
+        tx.update("action", rec.id, {"text": f"Ask the team (per {name})"}, _TEST, read_version=rec.version)
+    held = {s["person"]: s for s in client.get(f"{base}/followups").json()}[owner]
+    assert held["message"] == "" and name in held["withheld"] and held.get("mention") is None

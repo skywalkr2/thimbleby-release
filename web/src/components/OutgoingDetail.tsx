@@ -123,6 +123,11 @@ export function OutgoingDetail(props: {
           {act.withheld}
         </p>
       )}
+      {!blocked && act.mention && (
+        <p className="hint" role="note" data-mention="">
+          {act.mention}
+        </p>
+      )}
 
       {act.copied_because === "acting_off" && (
         <p className="hint" role="note">

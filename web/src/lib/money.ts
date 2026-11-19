@@ -108,12 +108,17 @@ export function useEstimate() {
 export function useSpent() {
   const { t } = useWords();
   const money = useMoney();
-  return (spent: number | null | undefined, range: number[] | null | undefined) => {
+  return (spent: number | null | undefined, range: number[] | null | undefined, maybe?: number | null) => {
     if (spent == null) return null;
     const [low, high] = range ?? [];
-    if (low == null) return t("cost.spent", { spent: money(spent) });
-    if (high == null || money(high) === money(low)) return t("cost.spent_estimated", { spent: money(spent), low: money(low) });
-    return t("cost.spent_range", { spent: money(spent), low: money(low), high: money(high) });
+    const line =
+      low == null
+        ? t("cost.spent", { spent: money(spent) })
+        : high == null || money(high) === money(low)
+          ? t("cost.spent_estimated", { spent: money(spent), low: money(low) })
+          : t("cost.spent_range", { spent: money(spent), low: money(low), high: money(high) });
+    // A call that got no answer counts its estimate: the line says how much of the cost that is.
+    return maybe != null && maybe > 0 ? t("cost.with_maybe", { line, maybe: money(maybe) }) : line;
   };
 }
 

@@ -138,6 +138,10 @@ class Publisher:
         if now_print != covered["fingerprint"]:
             self._stale(act_id, acts.what_changed(covered["covers"], now_parts))
             return SendResult(act_id, "stale")
+        # What goes out is fixed here, right after the yes was checked, and nothing resolves a recipient again: a change
+        # landing before the claim fails `act.sending`'s own check of the fingerprint, and one landing after it never
+        # reaches the channel.
+        outgoing = acts.outgoing(view, act_id, data)
         if (why := acts.acting_problem(self.cfg, self.store.plugins, data)) is not None:
             raise StoreError(why)
         outward.check_outgoing(view, self.cfg, acts.part_labels(view, self.cfg, data))
@@ -160,7 +164,7 @@ class Publisher:
             },
             "An act is being sent",
         )
-        outgoing = acts.outgoing(self.store.read(), act_id, data)
+
         try:
             with self._context(channel, data.get("account")) as context:
                 answer = call_channel(channel.send, (outgoing, key), context)

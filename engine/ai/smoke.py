@@ -13,10 +13,11 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any
 from urllib.parse import urlsplit
 
-from engine.ai import learning_check
+from engine.ai import check_cost, learning_check, spending
 from engine.ai.adapters import make_adapter
 from engine.ai.calibration import SAMPLE_INSTRUCTIONS, SAMPLE_REQUEST, estimate_tokens
 from engine.ai.task import (
@@ -35,7 +36,7 @@ from engine.ai.task import (
 from engine.config import Config, load_config
 from engine.secrets import SecretError, describe_secret, resolve_secret
 from engine.state_file import write_whole
-from engine.storage import Store
+from engine.storage import Store, WriteContext
 from engine.workspace import Workspace
 
 STATUS_FILE = "ai-test.json"
@@ -79,6 +80,146 @@ def _params_for_tier(cfg: Config, tier: str) -> list[tuple[Any, ...]]:
     return [(*use, effort) if effort else use for use in uses or [("smoke", 0.0, 256)]]
 
 
+#: What a check's model calls are recorded as: the kind of work, and the tier, so every report of the runs names them.
+CHECK_TASK = CHECK_TIER = spending.ACCOUNT_CHECK
+_SYSTEM = WriteContext(actor="engine", trust="trusted", op="run.record")
+
+
+class _Spending:
+    """Passes a check's model calls through the spending boundary (`engine/ai/spending.py`), like any other paid call.
+    The whole check is admitted before its first call, with about what its calls cost held while it runs; each call
+    that was answered, or that may have reached the service and got no answer, is recorded as a run of the kind
+    `CHECK_TASK` with its cost, and its share of what is held is given back. Without a store nothing is counted."""
+
+    def __init__(self, cfg: Config, store: Any, now: Callable[[], datetime] | None = None):
+        self.cfg, self.store = cfg, store
+        self.now = now or (lambda: datetime.now(UTC))
+        self.hold: spending.Hold | None = None
+        self._catalogs: Any = None
+
+    def prices(self, provider: str, settings: Any, model_key: str, model_id: str) -> tuple[float, float] | None:
+        """The model's price per million tokens read and written: the settings', then the kept catalog's (nothing is
+        fetched), then the price the app ships for its kind of service. None when none is known."""
+        price = self.cfg.ai.prices.get(f"{provider}/{model_key}")
+        if price is not None:
+            return price.input_per_million, price.output_per_million
+        if self._catalogs is None:
+            from engine.ai.catalog import Catalogs
+            from engine.legacy_names import private_dir
+
+            self._catalogs = Catalogs(
+                private_dir(self.store.path.parent) / "ai-catalog.json", self.cfg.ai.catalog_refresh_hours
+            )
+        info = self._catalogs.model(provider, model_id, lambda: {})
+        if info is not None and info.input_per_million is not None and info.output_per_million is not None:
+            return info.input_per_million, info.output_per_million
+        from engine.ai.shipped_prices import price_for
+
+        known = price_for(getattr(settings, "kind", None), model_id)
+        return (known["input"], known["output"]) if known is not None else None
+
+    def of_call(self, provider: str, settings: Any, model_key: str, model_id: str, calls: int = 1) -> float | None:
+        """About what `calls` of the check's small calls cost on this model, as the estimate shown before a check
+        counts them; None when its price isn't known."""
+        found = self.prices(provider, settings, model_key, model_id)
+        if found is None:
+            return None
+        read, write = found
+        return calls * (check_cost.CALL_INPUT_TOKENS * read + check_cost.CALL_OUTPUT_TOKENS * write) / 1e6
+
+    def admit(self, refs: list[tuple[str, int]]) -> None:
+        """Admit the whole check: `refs` is every "account/model" it calls with how many small calls it makes there.
+        Raises `BudgetReached` when the limits have no room for it; nothing is sent then."""
+        if self.store is None:
+            return
+        total = 0.0
+        for ref, calls in refs:
+            provider, _, model_key = ref.partition("/")
+            settings = self.cfg.ai.providers[provider]
+            total += self.of_call(provider, settings, model_key, settings.models.get(model_key, model_key), calls) or 0
+        self.hold = spending.admit(self.store, self.cfg.ai.budgets, CHECK_TASK, total, self.now())
+
+    def close(self) -> None:
+        spending.release(self.hold)
+        self.hold = None
+
+    def call(self, ref: str, settings: Any, model_id: str, task: AiTask, run: Callable[[], Any], calls: int = 1) -> Any:
+        """Make one of the check's model calls and count it. The answer, or the call's own error, comes back as it
+        was."""
+        if self.store is None:
+            return run()
+        provider, _, model_key = ref.partition("/")
+        estimate = self.of_call(provider, settings, model_key, model_id, calls)
+        started, clock = self.now(), time.monotonic()
+        try:
+            reply = run()
+        except AiError as err:
+            reached = err.kind in spending.MAY_HAVE_REACHED and err.sent
+            if reached and estimate:
+                self._record(provider, model_id, task, started, clock, estimate, None, err, estimate)
+            else:
+                spending.reduce(self.hold, estimate or 0.0)
+            raise
+        except BaseException:
+            spending.reduce(self.hold, estimate or 0.0)
+            raise
+        cost, basis = reply.cost_usd, None
+        found = self.prices(provider, settings, model_key, model_id)
+        if cost is None and found is not None and reply.input_tokens is not None and reply.output_tokens is not None:
+            cost = (reply.input_tokens * found[0] + reply.output_tokens * found[1]) / 1e6
+        if cost is None and estimate:
+            cost, basis = estimate, spending.ESTIMATED
+        self._record(provider, model_id, task, started, clock, estimate, reply, None, cost, basis)
+        return reply
+
+    def _record(
+        self,
+        provider: str,
+        model_id: str,
+        task: AiTask,
+        started: datetime,
+        clock: float,
+        estimate: float | None,
+        reply: Any,
+        err: AiError | None,
+        cost: float | None,
+        basis: str | None = spending.MAYBE_CHARGED,
+    ) -> None:
+        data = {
+            "request": None,
+            "task": CHECK_TASK,
+            "provider": provider,
+            "model": (reply.model_served if reply is not None else None) or model_id,
+            "tier": CHECK_TIER,
+            "input_chars": task.size,
+            "output_chars": len(reply.text) if reply is not None else 0,
+            "input_tokens": reply.input_tokens if reply is not None else None,
+            "output_tokens": reply.output_tokens if reply is not None else None,
+            "cached_input_tokens": reply.cached_input_tokens if reply is not None else None,
+            "cost_usd": cost,
+            "cost_basis": basis,
+            "seconds": round(time.monotonic() - clock, 3),
+            "outcome": "ok" if reply is not None else "error",
+            "error_kind": err.kind if err is not None else None,
+            "error_detail": err.detail if err is not None else None,
+            "started_at": started.isoformat(),
+        }
+        spending.settle(self.store, self.hold, data, _SYSTEM, part=estimate or 0.0)
+
+
+def check_calls(cfg: Config) -> list[tuple[str, int]]:
+    """Every "account/model" a whole check calls, with how many small calls it makes there: one per kind of work and
+    tier, and the round-trip that tests learning once per account and model."""
+    found: dict[str, int] = {}
+    for tier_name, tier in cfg.ai.tiers.items():
+        for ref in [tier.use, *tier.fallback] if tier.use else []:
+            first = ref not in found
+            found[ref] = found.get(ref, 0) + len(_params_for_tier(cfg, tier_name))
+            if first:
+                found[ref] += check_cost.EXTRA_CALLS
+    return list(found.items())
+
+
 def smoke_test(
     cfg: Config,
     env: Mapping[str, str],
@@ -87,7 +228,24 @@ def smoke_test(
 ) -> list[SmokeResult]:
     """One small call per tier, account and kind of work with its exact parameters, the lockdown check for a
     command-line agent, and the learning round-trip, each account's once. With a `store`, the round-trip's proposal is
-    also tried against the app's own checks."""
+    also tried against the app's own checks, and the check's calls count in the person's spending: the whole check is
+    admitted against the spending limits before anything is sent (`BudgetReached` when they have no room for it), and
+    each call is recorded as a run."""
+    counted = _Spending(cfg, store)
+    counted.admit(check_calls(cfg))
+    try:
+        return _smoke_test(cfg, env, adapter_factory, store, counted)
+    finally:
+        counted.close()
+
+
+def _smoke_test(
+    cfg: Config,
+    env: Mapping[str, str],
+    adapter_factory: Callable[[str, Any, str | None], Any],
+    store: Any,
+    counted: _Spending,
+) -> list[SmokeResult]:
     results: list[SmokeResult] = []
     locked: set[str] = set()
     refused: dict[str, AiError | None] = {}  # account -> the refusal its model list gave, looked up once each
@@ -129,7 +287,7 @@ def smoke_test(
                         if provider_name not in listed:
                             listed[provider_name] = adapter.catalog()
                         task = replace(task, model_info=listed[provider_name].get(model_id))
-                    reply = adapter.run(task, model_id)
+                    reply = counted.call(ref, settings, model_id, task, partial(adapter.run, task, model_id))
                     detail = "answered" if _is_ok(reply.text) else "answered, but not with the requested JSON"
                     if first_report is None and reply.input_tokens is not None:
                         first_report = {"reported": reply.input_tokens, "text": estimate_tokens(task.size)}
@@ -182,7 +340,9 @@ def smoke_test(
                     )
                 if refusal is None:
                     results.append(
-                        _learning(tier_name, ref, position == 0, cfg, settings, model_id, env, adapter_factory, store)
+                        _learning(
+                            tier_name, ref, position == 0, cfg, settings, model_id, env, adapter_factory, store, counted
+                        )
                     )
                 else:  # no call for work is sent with a key the service refused
                     results.append(
@@ -469,6 +629,7 @@ def _learning(
     env: Mapping[str, str],
     adapter_factory: Callable[[str, Any, str | None], Any],
     store: Any,
+    counted: _Spending | None = None,
 ) -> SmokeResult:
     """The learning round-trip for one account: one call with a tiny fixed correction, expecting one proposal back that
     the app accepts. The account's own call failing is said as it is; an answer that doesn't pass says which part."""
@@ -478,9 +639,10 @@ def _learning(
     answered = no_network = False
     failed_kind = raw_detail = ""
     try:
-        reply = adapter_factory(settings.adapter, settings, resolve_secret(settings.auth, env)).run(
-            learning_check.task(cfg), model_id
-        )
+        adapter = adapter_factory(settings.adapter, settings, resolve_secret(settings.auth, env))
+        task = learning_check.task(cfg)
+        counted = counted or _Spending(cfg, None)
+        reply = counted.call(ref, settings, model_id, task, lambda: adapter.run(task, model_id), check_cost.EXTRA_CALLS)
         answered = True
         why = learning_check.problem(reply.text, cfg, store)
         ok, detail = why is None, learning_check.PASSED if why is None else why
@@ -638,8 +800,13 @@ def ai_state(ws: Workspace, cfg: Config, store: Store) -> tuple[str, str | None]
         if failed or not test.get("results"):
             return "failing", (str(pick.get("detail", ""))[:DETAIL_LIMIT] or None) if pick else None
     # A call that found no network or did no work says nothing about the account: it never hides or makes a failure.
+    # A check's own calls are runs too, and say nothing here: the kept test results speak for a check.
     runs = sorted(
-        (run for run in store.read().list("run") if run.data.get("error_kind") not in NO_WORK_KINDS),
+        (
+            run
+            for run in store.read().list("run")
+            if run.data.get("error_kind") not in NO_WORK_KINDS and run.data.get("task") != CHECK_TASK
+        ),
         key=lambda run: run.data.get("started_at", ""),
     )
     if runs and runs[-1].data.get("outcome") == "error" and runs[-1].data.get("error_kind") in ("auth", "unsupported"):

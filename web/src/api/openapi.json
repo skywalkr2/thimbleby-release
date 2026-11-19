@@ -1501,6 +1501,18 @@
             "title": "Made By",
             "type": "string"
           },
+          "mention": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A warning shown with the content when a part mentions a name the assistant goes by without attributing anything to it (it may be someone else's name); the content can still be approved and sent.",
+            "title": "Mention"
+          },
           "parts": {
             "additionalProperties": {
               "type": "string"
@@ -8489,6 +8501,18 @@
             "description": "For work on a mail message the app is holding: its id, for 'Set aside' on the row.",
             "title": "Mail Item"
           },
+          "maybe_charged_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Of `spent_usd`, the estimates of calls that got no answer and may have been charged; none when there is none.",
+            "title": "Maybe Charged Usd"
+          },
           "note": {
             "anyOf": [
               {
@@ -13379,6 +13403,18 @@
             },
             "title": "Limited Out",
             "type": "array"
+          },
+          "mention": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A warning shown with the message when it mentions a name the assistant goes by without attributing anything to it (it may be someone else's name); the message can still be copied and sent.",
+            "title": "Mention"
           },
           "message": {
             "title": "Message",
@@ -19191,6 +19227,18 @@
             "title": "Left Out",
             "type": "array"
           },
+          "mention": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A warning shown with the message when it mentions a name the assistant goes by without attributing anything to it; the message can still be copied and sent.",
+            "title": "Mention"
+          },
           "question_ids": {
             "items": {
               "type": "string"
@@ -22376,6 +22424,63 @@
           "full_name"
         ],
         "title": "PersonIn",
+        "type": "object"
+      },
+      "PersonLookCostView": {
+        "description": "About what the weekly look at who the person deals with costs a week, on the account that would do it.",
+        "properties": {
+          "every_days": {
+            "description": "The days between one look and the next, as set.",
+            "title": "Every Days",
+            "type": "integer"
+          },
+          "kind": {
+            "description": "money: a priced account, an amount a week; runs: a plan, looks a week and no money; unknown: an account whose price isn't known; none: no account takes the work, so nothing is looked at.",
+            "enum": [
+              "money",
+              "runs",
+              "unknown",
+              "none"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "looks_a_week": {
+            "description": "How many looks that is a week.",
+            "title": "Looks A Week",
+            "type": "number"
+          },
+          "per_look_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What one look costs, for a priced account.",
+            "title": "Per Look Usd"
+          },
+          "per_week_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the looks of a week cost, for a priced account.",
+            "title": "Per Week Usd"
+          }
+        },
+        "required": [
+          "kind",
+          "every_days",
+          "looks_a_week"
+        ],
+        "title": "PersonLookCostView",
         "type": "object"
       },
       "PersonMemoryView": {
@@ -28636,6 +28741,12 @@
             "title": "Read",
             "type": "integer"
           },
+          "restart_waits": {
+            "default": 0,
+            "description": "How many of its requests are held until the person restarts the app; above 0 the step says so, with Restart now.",
+            "title": "Restart Waits",
+            "type": "integer"
+          },
           "sources": {
             "default": 0,
             "description": "How many mail and calendar sources are read.",
@@ -32780,6 +32891,7 @@
               "found": 0,
               "pending": [],
               "read": 0,
+              "restart_waits": 0,
               "sources": 0,
               "state": "none",
               "waiting": 0
@@ -34233,6 +34345,18 @@
       "SpendStatus": {
         "description": "What the assistant's work has cost today and this month (UTC), against the configured limits.",
         "properties": {
+          "maybe_month_usd": {
+            "default": 0.0,
+            "description": "Of this month's total, the estimates of calls that got no answer and may have been charged.",
+            "title": "Maybe Month Usd",
+            "type": "number"
+          },
+          "maybe_today_usd": {
+            "default": 0.0,
+            "description": "Of today's total, the estimates of calls that got no answer and may have been charged; 0 with none.",
+            "title": "Maybe Today Usd",
+            "type": "number"
+          },
           "month_usd": {
             "title": "Month Usd",
             "type": "number"
@@ -47020,6 +47144,25 @@
           }
         },
         "summary": "Leave Person Out"
+      }
+    },
+    "/api/knowledge/person-look-cost": {
+      "get": {
+        "description": "About what the weekly look at who the person deals with costs a week, shown in the dialog of the line under\nPeople's title that sets how often it looks.",
+        "operationId": "person_look_cost_api_knowledge_person_look_cost_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonLookCostView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Person Look Cost"
       }
     },
     "/api/knowledge/proposals": {

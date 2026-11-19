@@ -502,9 +502,10 @@ def test_the_pairs_are_counted_and_stopped_by_the_same_meter(env, monkeypatch):
     meter = measure.Meter(app.state.worker.store, load_config(ws.config_dir, env={}))
     report = pairs.evaluate_pairs(DEMO_B, stub=True, runs=1, env={}, meter=meter)
     made = [r for r in report.results if not r.not_run]
-    assert len(made) == 2 and all(r.not_run for r in report.results[2:]) and len(report.results) > 2
-    assert report.results[2].error and "spending limit" in report.results[2].error
-    assert len(runs_of(ws)) == 2 and meter.reason == measure.LIMIT_DAY
+    # The limit is a ceiling: a second pair like the first would take the day past it, so it is not made.
+    assert len(made) == 1 and all(r.not_run for r in report.results[1:]) and len(report.results) > 1
+    assert report.results[1].error and "spending limit" in report.results[1].error
+    assert len(runs_of(ws)) == 1 and meter.reason == measure.LIMIT_DAY
 
 
 def test_a_check_run_gets_a_meter_when_its_evaluator_takes_one_and_is_called_as_it_is_otherwise(tmp_path):
