@@ -22,6 +22,7 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Any
 
 from engine import (
@@ -58,6 +59,7 @@ from engine.ops import (
     ActWithdrawOp,
     OpModel,
 )
+from engine.sides import words_sheet
 from engine.storage import StoreError, WriteContext
 from engine.storage.store import Tx
 
@@ -121,11 +123,28 @@ def template_version_now(plugins: Any, data: Mapping[str, Any]) -> str | None:
     return channel.template_version(template["name"])
 
 
+def occurrence_of(key: Any) -> tuple[str, str | None]:
+    """A calendar entry's key split into the series' id and the original start of the one date it stands for. A
+    repeating series keeps each date under `<id>#<original start>`, the start as a date or a date-time; any other
+    key is a whole entry or series, with no date."""
+    text = str(key or "")
+    head, sep, tail = text.rpartition("#")
+    if sep and head:
+        for parse in (date.fromisoformat, datetime.fromisoformat):
+            try:
+                parse(tail)
+            except ValueError:
+                continue
+            return head, tail
+    return text, None
+
+
 def service_ref(view: Any, record_id: str) -> dict[str, Any]:
     """What a record an act is about is to the service, as it resolves now: a saved message's service id (the key the
     watched source gave it, a Message-ID for a plain mailbox) and a calendar entry's UID (its source key), with the
     entry's time, state and revision number (where its source gave one), which move when its organizer changes it. A
-    record that is gone says so."""
+    calendar entry that is one date of a repeating series gives the series' id as its UID and that date's original
+    start as its `occurrence`. A record that is gone says so."""
     found = view.get("source", record_id)
     if found is not None:
         watched = found.data.get("watched") or {}
@@ -133,15 +152,19 @@ def service_ref(view: Any, record_id: str) -> dict[str, Any]:
     entry = view.get("event", record_id)
     if entry is not None:
         data = entry.data
-        return {
+        uid, occurrence = occurrence_of(data.get("key"))
+        found = {
             "id": record_id,
             "service_id": data.get("key"),
-            "uid": data.get("key"),
+            "uid": uid,
             "sequence": data.get("sequence"),
             "start": data.get("start"),
             "end": data.get("end"),
             "cancelled": bool(data.get("cancelled")),
         }
+        if occurrence is not None:
+            found["occurrence"] = occurrence
+        return found
     return {"id": record_id, "missing": True}
 
 
@@ -255,6 +278,8 @@ def shown(
             text = f"{ref.get('start') or ''} - {ref.get('end') or ''}" + (
                 " (cancelled)" if ref.get("cancelled") else ""
             )
+            if ref.get("sequence") is not None:
+                text += " " + words_sheet()["act.about.revision"].format(number=ref["sequence"])
         else:
             text = str(ref.get("service_id") or "")
         found = view.get("source", ref["id"]) or view.get("event", ref["id"])
@@ -394,7 +419,11 @@ def outgoing(view: Any, act_id: str, data: Mapping[str, Any]) -> OutgoingAct:
         action=what(data),
         about=tuple(
             OutgoingAbout(
-                id=ref["id"], service_id=ref.get("service_id"), uid=ref.get("uid"), sequence=ref.get("sequence")
+                id=ref["id"],
+                service_id=ref.get("service_id"),
+                uid=ref.get("uid"),
+                sequence=ref.get("sequence"),
+                occurrence=ref.get("occurrence"),
             )
             for ref in about_refs(view, data)
         ),

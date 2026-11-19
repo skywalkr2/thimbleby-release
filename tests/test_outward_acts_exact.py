@@ -12,7 +12,7 @@ addresses come from the fixtures; every address is on example.com."""
 from __future__ import annotations
 
 import imaplib
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 import pytest
@@ -22,7 +22,7 @@ from engine.applier import apply_as_person
 from engine.channels import ChannelFailed, ChannelSent, ChannelUndone, ChannelUnknown
 from engine.config.schema import WatchSource
 from engine.connectors import calendar as calendar_files
-from tests.test_act_actions import ACCOUNT, MAILBOX, calendar_entry, saved_message, update_record
+from tests.test_act_actions import ACCOUNT, END, MAILBOX, START, calendar_entry, saved_message, update_record
 from tests.test_mailbox_channel import (  # noqa: F401  (the fixtures)
     ME,
     ORIGINAL,
@@ -383,3 +383,54 @@ def test_an_answer_writes_no_revision_number_nobody_gave(env, servers):
     entry = calendar_entry(env, "uid-9", source=saved_message(env, "invite"))  # its source gave no revision number
     assert env.publisher.send(answer_to(env, entry)).status == "sent"
     assert "SEQUENCE" not in reply_of(outgoing) and "UID:uid-9" in reply_of(outgoing)
+
+
+# ---- H5-32: an answer to one date of a repeating invitation names that date ------------------------------------------
+
+
+def occurrence_reply(env: Env, servers: Any, key: str) -> Any:
+    outgoing, _ = servers
+    entry = calendar_entry(env, key, source=saved_message(env, "invite"), sequence=3)
+    assert env.publisher.send(answer_to(env, entry)).status == "sent"
+    return itip.read_invitation(reply_of(outgoing))
+
+
+def test_an_answer_to_one_date_of_a_series_names_the_series_and_that_date(env, servers):
+    reply = occurrence_reply(env, servers, "uid-9#2030-03-11")
+    assert reply.uid == "uid-9" and reply.recurrence_id == date(2030, 3, 11)
+
+
+def test_an_answer_to_a_zoned_date_time_names_the_same_moment(env, servers):
+    reply = occurrence_reply(env, servers, "uid-9#2030-03-11T10:00:00+02:00")
+    assert reply.uid == "uid-9" and reply.recurrence_id == datetime(2030, 3, 11, 8, 0, tzinfo=UTC)
+
+
+def test_an_answer_to_a_utc_date_time_names_it_in_utc(env, servers):
+    reply = occurrence_reply(env, servers, "uid-9#2030-03-11T09:00:00+00:00")
+    assert reply.uid == "uid-9" and reply.recurrence_id == datetime(2030, 3, 11, 9, 0, tzinfo=UTC)
+
+
+def test_an_answer_to_the_whole_series_names_no_date(env, servers):
+    outgoing, _ = servers
+    reply = occurrence_reply(env, servers, "uid-9")
+    assert reply.uid == "uid-9" and reply.recurrence_id is None
+    assert "RECURRENCE-ID" not in reply_of(outgoing)
+
+
+def test_a_key_that_only_contains_a_hash_is_not_taken_for_a_date():
+    assert acts.occurrence_of("room#4") == ("room#4", None)
+    assert acts.occurrence_of("a#b#2030-03-11") == ("a#b", "2030-03-11")
+
+
+def test_a_stale_answer_whose_only_change_is_the_revision_shows_before_and_after(env, servers):
+    entry = calendar_entry(env, "uid-9", source=saved_message(env, "invite"), sequence=3)
+    act_id = answer_to(env, entry)
+    update_record(env, "event", entry, sequence=4)
+    assert env.publisher.send(act_id).status == "stale"
+    data = env.act(act_id)
+    found = acts.differences(
+        data["was_approved"]["shown"], acts.current_shown(env.store.read(), env.store.plugins, data)
+    )
+    assert [(d.part, d.before, d.after) for d in found] == [
+        ("about", f"{START} - {END} (revision 3)", f"{START} - {END} (revision 4)")
+    ]

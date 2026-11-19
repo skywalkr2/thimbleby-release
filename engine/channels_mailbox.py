@@ -21,7 +21,7 @@ import smtplib
 import socket
 import ssl
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from email.message import EmailMessage
 from email.utils import format_datetime
 from typing import Any
@@ -178,6 +178,17 @@ class MailboxChannel:
         start: datetime | None = None
         with contextlib.suppress(TypeError, ValueError):
             start = datetime.fromisoformat(act.start) if act.start else None
+        # A reply to one date of a repeating series names the series and that date (the UID of the series plus the
+        # RECURRENCE-ID of the instance, in the value type the invitation used); a reply to the whole series has none.
+        was: date | datetime | None = None
+        if about.occurrence:
+            try:
+                was = date.fromisoformat(about.occurrence)
+            except ValueError:
+                try:
+                    was = datetime.fromisoformat(about.occurrence)
+                except ValueError:
+                    raise _refused("the date of the invitation can't be read") from None
         invitation = itip.Invitation(
             method="REQUEST",
             uid=about.uid,
@@ -190,6 +201,7 @@ class MailboxChannel:
             attendees=(itip.Attendee(email=sender),),
             cancelled=False,
             dtstamp=self.now(),
+            recurrence_id=was,
         )
         try:
             ics = itip.reply_ics(

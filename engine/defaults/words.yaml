@@ -86,6 +86,7 @@ meeting_ask.title: "What should {title} on {day} take up?"
 meeting_ask.no_agenda: "Nothing is on its agenda yet."
 meeting_ask.away: "{why}."
 meeting_ask.matters: "The agenda of {title} on {day}"
+act.about.revision: "(revision {number})"
 absence_ask.title: "Whose days away are these in {source}?"
 absence_ask.text: "An entry for {days} could be for any of: {names}."
 

@@ -35,12 +35,14 @@ class OutgoingRecipient:
 class OutgoingAbout:
     """One record an act is about, with the service's own id of it as it resolves now: `id` is the record's id in the
     workspace; `service_id` is what the service calls the saved message or calendar entry; `uid` and `sequence` are a
-    calendar entry's, where the source gave them."""
+    calendar entry's, where the source gave them; `occurrence` is the original start (a date or a date-time, as text) of
+    the one date of a repeating series the entry stands for, None for a whole entry or series."""
 
     id: str
     service_id: str | None = None
     uid: str | None = None
     sequence: int | None = None
+    occurrence: str | None = None
 
 
 @dataclass(frozen=True)

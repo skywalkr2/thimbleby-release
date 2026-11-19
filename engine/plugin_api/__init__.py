@@ -52,7 +52,7 @@ from engine.tasks import TaskKind
 from engine.texts import LongText, Unit
 from engine.tools import ToolBox, ToolError, ToolResult
 
-PLUGIN_API_VERSION = "0.3.105"
+PLUGIN_API_VERSION = "0.3.106"
 
 #: The earlier minor version this core still serves (one minor back). A pack whose range reaches the end of that minor
 #: stays on, marked "Built for an earlier version"; the window ends with the next minor release. Every name the core
