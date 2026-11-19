@@ -29155,6 +29155,12 @@
       "ReportFacts": {
         "description": "GET /api/report/facts: what a problem report carries besides the person's words and the problem lines.",
         "properties": {
+          "details": {
+            "default": "",
+            "description": "The technical details exactly as a report would carry them: the app's recent log lines, scrubbed and trimmed to the form's limit; empty when there are none.",
+            "title": "Details",
+            "type": "string"
+          },
           "enabled": {
             "description": "A report address is set, so Report a problem is offered.",
             "title": "Enabled",
@@ -29188,6 +29194,19 @@
       "ReportSend": {
         "description": "POST /api/report/send: the report exactly as the person was shown it.",
         "properties": {
+          "details": {
+            "default": "",
+            "description": "The technical details as shown, or empty.",
+            "maxLength": 40000,
+            "title": "Details",
+            "type": "string"
+          },
+          "include_details": {
+            "default": true,
+            "description": "Whether the person left the technical details in; when false none are sent.",
+            "title": "Include Details",
+            "type": "boolean"
+          },
           "problems": {
             "default": "",
             "description": "The masked problem lines shown, or empty.",
@@ -51156,7 +51175,7 @@
     },
     "/api/report/facts": {
       "get": {
-        "description": "What a problem report states besides the person's words and the problem lines: the app's version, the\noperating system, and the person's own address when their record holds one, to offer as the reply address.\nWhether a report address is set says whether Report a problem is offered. Nothing is sent.",
+        "description": "What a problem report states besides the person's words and the problem lines: the app's version, the\noperating system, the person's own address when their record holds one, to offer as the reply address, and\nthe technical details a report would carry.\nWhether a report address is set says whether Report a problem is offered. Nothing is sent.",
         "operationId": "report_facts_api_report_facts_get",
         "responses": {
           "200": {

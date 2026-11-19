@@ -1,0 +1,9 @@
+{
+  "_source": "copied from the website's src/lib/report-limits.json; the form refuses what is over these",
+  "words": 5000,
+  "problems": 20000,
+  "details": 40000,
+  "version": 100,
+  "system": 100,
+  "reply_to": 200
+}

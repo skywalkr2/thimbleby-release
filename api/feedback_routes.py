@@ -27,6 +27,12 @@ from engine.workspace import Workspace
 def build_feedback_router(ws: Workspace, cfg: Config, store: Store, worker: Worker) -> APIRouter:
     r = APIRouter(prefix="/api")
 
+    def _scrubbed_details(shown: str) -> str:
+        """The details the person was shown, passed through the same scrub and limit again before they leave."""
+        with store.read_scope():
+            hide = problems.masker_for(ws, store, cfg)
+        return report_send.details_text(shown, masker=hide, folders={str(ws.root): "<workspace>"})
+
     def current() -> Config:
         """The settings as the files hold them now, so a change to how far back or how many applies at once."""
         try:
@@ -86,15 +92,18 @@ def build_feedback_router(ws: Workspace, cfg: Config, store: Store, worker: Work
     @r.get("/report/facts")
     def report_facts() -> ReportFacts:
         """What a problem report states besides the person's words and the problem lines: the app's version, the
-        operating system, and the person's own address when their record holds one, to offer as the reply address.
+        operating system, the person's own address when their record holds one, to offer as the reply address, and
+        the technical details a report would carry.
         Whether a report address is set says whether Report a problem is offered. Nothing is sent."""
         with store.read_scope():
             mine = own_address(store.read(), cfg.workspace.user.person)
+            details = report_send.details_for(ws, store, cfg)
         return ReportFacts(
             enabled=report_send.address(cfg.ui.report_to) is not None,
             version=__version__,
             system=report_send.system_text(),
             reply_to=mine,
+            details=details,
         )
 
     @r.post("/report/send")
@@ -111,6 +120,7 @@ def build_feedback_router(ws: Workspace, cfg: Config, store: Store, worker: Work
             reply_to=body.reply_to.strip(),
             version=__version__,
             problems=body.problems,
+            details=_scrubbed_details(body.details) if body.include_details else "",
         )
         return ReportSent(ok=done.ok, why=done.why)
 

@@ -1,7 +1,9 @@
 """Report a problem (design 7, Help): the report goes to the configured address only through the send route, carries
-exactly the person's words, reply address, version, system and the lines shown, and says why when it did not go."""
+exactly the person's words, reply address, version, system, the lines shown and the technical details (when left in),
+and says why when it did not go."""
 
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -10,6 +12,7 @@ from fastapi.testclient import TestClient
 import engine.net
 from api.app import create_app
 from engine import report_send
+from engine.legacy_names import private_dir
 from engine.reminder_content import own_address
 from engine.workspace import init_workspace
 from tests.conftest import DEMO_B
@@ -40,7 +43,7 @@ def test_the_address_is_the_settings_then_the_builds_and_only_https_or_this_comp
     assert report_send.address(FORM.replace("https", "ftp"), {}) is None
 
 
-def test_a_report_carries_exactly_five_parts_and_no_identifier(monkeypatch):
+def test_a_report_carries_five_parts_and_the_optional_details_and_no_identifier(monkeypatch):
     seen: list = []
     monkeypatch.setattr(engine.net, "TRANSPORT", serve(200, seen))
     done = report_send.send(LOCAL_FORM, words=WORDS, reply_to="sam@example.com", version="9.8.7", problems=LINES)
@@ -50,6 +53,104 @@ def test_a_report_carries_exactly_five_parts_and_no_identifier(monkeypatch):
     assert sorted(body) == ["problems", "reply_to", "system", "version", "words"]
     assert body["words"] == WORDS and body["problems"] == LINES and body["version"] == "9.8.7"
     assert body["system"] == report_send.system_text()
+    seen.clear()
+    report_send.send(
+        LOCAL_FORM,
+        words=WORDS,
+        reply_to="",
+        version="9.8.7",
+        problems=LINES,
+        details="2026-01-01 WARNING engine.x: slow",
+    )
+    ((_, with_details),) = seen
+    assert sorted(with_details) == ["details", "problems", "reply_to", "system", "version", "words"]
+    assert with_details["details"] == "2026-01-01 WARNING engine.x: slow"
+
+
+def test_the_limits_are_the_forms_copy_and_every_one_is_a_positive_number():
+    path = Path(report_send.__file__).parent / "defaults" / "report_limits.json"
+    copy = json.loads(path.read_text(encoding="utf-8"))
+    assert "_source" in copy
+    numbers = {k: v for k, v in copy.items() if not k.startswith("_")}
+    assert numbers and all(isinstance(v, int) and v > 0 for v in numbers.values())
+    assert numbers == report_send.LIMITS and "details" in numbers
+
+
+def test_details_over_the_limit_are_refused_and_never_sent(monkeypatch):
+    seen: list = []
+    monkeypatch.setattr(engine.net, "TRANSPORT", serve(200, seen))
+    over = "x" * (report_send.LIMITS["details"] + 1)
+    done = report_send.send(LOCAL_FORM, words=WORDS, reply_to="", version="1", problems="", details=over)
+    assert (done.ok, done.why) == (False, "refused")
+    assert seen == []
+    exact = "x" * report_send.LIMITS["details"]
+    assert report_send.send(LOCAL_FORM, words=WORDS, reply_to="", version="1", problems="", details=exact).ok
+    assert len(seen) == 1
+
+
+def test_details_hide_secrets_folders_and_addresses_and_keep_the_newest_lines_within_the_limit():
+    home, ws_root = "/home/sam", "/home/sam/work/ws"
+    lines = [
+        f"2026-01-01 ERROR engine.x: could not read {ws_root}/data/a.md",
+        f"2026-01-01 ERROR engine.x: under {home}/Documents/notes",
+        "2026-01-01 ERROR engine.x: mail from sam.person@example.com failed",
+        "2026-01-01 ERROR engine.x: key sk-abcdefghijklmnopqrstuvwxyz0123456789 refused",
+    ]
+    out = report_send.details_text("\n".join(lines), folders={home: "~", ws_root: "<workspace>"})
+    for leaked in ("sam.person@example.com", "abcdefghijklmnopqrstuvwxyz0123456789", ws_root, home + "/", "/home/sam"):
+        assert leaked not in out
+    # A masked-nothing case: the folders are replaced when the text mask lets them through.
+    assert report_send.scrub("at /srv/ws/x", masker=lambda t: t or "", folders={"/srv/ws": "<workspace>"}) == (
+        "at <workspace>/x"
+    )
+    assert report_send.scrub("~/a /home/sam/b", masker=lambda t: t or "", folders={"/home/sam": "~"}) == "~/a ~/b"
+    assert report_send.scrub("write to a.b@example.org now", masker=lambda t: t or "") == "write to <address> now"
+    big = "\n".join(f"line {n:06d} " + "y" * 90 for n in range(2000))
+    fitted = report_send.details_text(big)
+    assert len(fitted) <= report_send.LIMITS["details"]
+    assert fitted.endswith("line 001999 " + "y" * 90) and "line 000000" not in fitted
+    assert report_send.fit("a" * 50, 10) == "a" * 10
+
+
+def test_an_exception_gives_its_type_message_and_own_code_places_and_no_variable_value():
+    secret_local = "value-held-in-a-local-variable"
+
+    def deep():
+        _hidden = secret_local
+        raise ValueError("it broke")
+
+    try:
+        deep()
+    except ValueError as err:
+        lines = report_send.exception_lines(err)
+    assert lines[0] == "ValueError: it broke"
+    assert all(secret_local not in line for line in lines)
+    assert all(line.startswith("  ") and " in " in line for line in lines[1:])
+
+    def engine_frame():
+        raise KeyError("k")
+
+    # A frame outside the app's packages (this test file) is not kept.
+    try:
+        engine_frame()
+    except KeyError as err:
+        assert report_send.exception_lines(err) == ["KeyError: 'k'"]
+
+
+def test_the_facts_show_the_details_a_send_carries_and_unchecking_them_sends_none(tmp_path, monkeypatch):
+    seen: list = []
+    monkeypatch.setattr(engine.net, "TRANSPORT", serve(200, seen))
+    client, app, _cfg = make_client(tmp_path, LOCAL_FORM)
+    log = private_dir(tmp_path / "ws") / "logs" / "thimbleby.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("2026-01-01 ERROR engine.x: mail from a.b@example.org failed\n", encoding="utf-8")
+    with client:
+        shown = client.get("/api/report/facts").json()["details"]
+        assert "a.b@example.org" not in shown and "<address>" in shown
+        client.post("/api/report/send", json={"words": WORDS, "details": shown})
+        client.post("/api/report/send", json={"words": WORDS, "details": shown, "include_details": False})
+    assert seen[0][1]["details"] == shown
+    assert "details" not in seen[1][1]
 
 
 @pytest.mark.parametrize(
@@ -126,3 +227,14 @@ def test_a_refusal_and_empty_words_are_answered_without_sending(tmp_path, monkey
         assert down.json() == {"ok": False, "why": "unavailable"}
         assert client.post("/api/report/send", json={"words": ""}).status_code == 422
     assert len(seen) == 1
+
+
+def test_details_are_measured_as_the_form_counts_them_so_wide_characters_never_push_them_over():
+    from engine.report_send import details_text, units
+
+    wide = "\U0001f600" * 30  # each counts twice on the form
+    text = details_text("\n".join(f"line {i} {wide}" for i in range(2000)), masker=lambda s: s or "", limit=1000)
+    assert 0 < units(text) <= 1000
+    assert text.endswith(f"line 1999 {wide}")
+    one_long = details_text(wide * 100, masker=lambda s: s or "", limit=51)
+    assert 0 < units(one_long) <= 51

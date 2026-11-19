@@ -480,6 +480,11 @@ class ReportFacts(BaseModel):
     version: str = Field(description="The app's version, as the report states it.")
     system: str = Field(description="The operating system and release, as the report states it.")
     reply_to: str = Field("", description="The person's own address when their record holds one, else empty.")
+    details: str = Field(
+        "",
+        description="The technical details exactly as a report would carry them: the app's recent log lines, scrubbed "
+        "and trimmed to the form's limit; empty when there are none.",
+    )
 
 
 class AlphaNumbers(BaseModel):
@@ -506,6 +511,10 @@ class ReportSend(BaseModel):
     words: str = Field(min_length=1, max_length=5000, description="What happened, in the person's words.")
     reply_to: str = Field("", max_length=200, description="Where the makers may answer; empty for nowhere.")
     problems: str = Field("", max_length=20000, description="The masked problem lines shown, or empty.")
+    details: str = Field("", max_length=40000, description="The technical details as shown, or empty.")
+    include_details: bool = Field(
+        True, description="Whether the person left the technical details in; when false none are sent."
+    )
 
 
 class ReportSent(BaseModel):

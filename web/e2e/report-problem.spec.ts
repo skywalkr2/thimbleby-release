@@ -9,9 +9,10 @@ import { checkAccessibility, collectProblems } from "./journey-helpers";
 
 interface Reports {
   enabled: boolean;
-  received: Array<{ words: string; reply_to: string; version: string; system: string; problems: string }>;
+  received: Array<{ words: string; reply_to: string; version: string; system: string; problems: string; details?: string }>;
   status: number;
   failed_read: string;
+  log_line: string;
 }
 
 const reports = async (page: Page): Promise<Reports> => (await page.request.get("/__e2e/reports")).json();
@@ -41,12 +42,14 @@ test.describe("Report a problem", () => {
     await expect(dialog.getByRole("button", { name: "Send" })).toBeDisabled();
     await words.fill("Today stayed empty after I connected my mail");
 
-    const preview = dialog.locator("textarea[readonly]");
+    const preview = dialog.locator("textarea[readonly]").first();
     await expect(preview).toHaveValue(/Today stayed empty after I connected my mail/);
     await expect(preview).toHaveValue(/App version: \S+/);
     await expect(preview).toHaveValue(/System: \S+/);
     await expect(preview).toHaveValue(/Recent problems/);
     await expect(preview).toHaveValue(new RegExp(seeded.failed_read));
+    // The technical details are shown before anything leaves.
+    await expect(dialog.getByLabel("Technical details", { exact: true })).toHaveValue(new RegExp(seeded.log_line.slice(-30)));
     await checkAccessibility(page);
     // Everything is on screen and nothing has left.
     expect((await reports(page)).received).toHaveLength(before);
@@ -61,8 +64,24 @@ test.describe("Report a problem", () => {
     expect(got.version).toMatch(/\S/);
     expect(got.system).toMatch(/\S/);
     expect(got.problems).toContain(seeded.failed_read);
-    expect(Object.keys(got).sort()).toEqual(["problems", "reply_to", "system", "version", "words"]);
+    // The technical details reached the form as they were shown.
+    expect(got.details).toContain(seeded.log_line);
+    expect(Object.keys(got).sort()).toEqual(["details", "problems", "reply_to", "system", "version", "words"]);
     expect(problems).toEqual([]);
+  });
+
+  test("with the technical details taken out, none are shown and the form receives none", async ({ page }) => {
+    const before = (await reports(page)).received.length;
+    const dialog = await openReport(page);
+    await dialog.getByLabel("What happened?").fill("Mail stopped arriving");
+    await expect(dialog.getByLabel("Technical details", { exact: true })).toBeVisible();
+    await dialog.getByRole("checkbox", { name: "Include technical details" }).uncheck();
+    await expect(dialog.getByLabel("Technical details", { exact: true })).toHaveCount(0);
+    await dialog.getByRole("button", { name: "Send" }).click();
+    await expect(page.getByText("Sent. Thank you: the makers have your report.")).toBeVisible();
+    const got = (await reports(page)).received[before];
+    expect(got.words).toBe("Mail stopped arriving");
+    expect(got).not.toHaveProperty("details");
   });
 
   test("a form that is down is told in words, nothing is lost, and Try again sends once it answers", async ({ page }) => {
@@ -120,7 +139,7 @@ test.describe("Report a problem", () => {
     await numbers.getByRole("button", { name: "Share these with the makers" }).click();
     const dialog = page.getByRole("dialog", { name: "Report a problem" });
     await expect(dialog).toBeVisible();
-    const preview = dialog.locator("textarea[readonly]");
+    const preview = dialog.locator("textarea[readonly]").first();
     await expect(preview).toHaveValue(/My numbers from the alpha/);
     await expect(preview).toHaveValue(/Days used: \d+ of \d+/);
     const shown = await preview.inputValue();

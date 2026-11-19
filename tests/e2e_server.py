@@ -131,6 +131,18 @@ def seed_layout(store, cfg, stress: dict[str, str]) -> None:
             )
 
 
+def seed_log_line(ws) -> str:
+    """One line in the app's own log, so a problem report has technical details to show. Returns the line, so the
+    browser test reads it from here and does not write it out."""
+    from engine.app_log import log_path
+
+    line = "2026-01-01 08:00:00,000 WARNING engine.example: the stand-in log line for a report"
+    path = log_path(ws)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(line + "\n", encoding="utf-8")
+    return line
+
+
 def seed_failed_read(store, cfg) -> str:
     """One failed read of a source an hour before the server's clock, so a problem report has a line to show. Returns
     the error text it was given, so the browser test reads it from here and does not write it out."""
@@ -261,6 +273,15 @@ def seed_acts(ws, store, cfg):
     }
 
 
+def _form_limits() -> dict[str, int]:
+    from engine.report_send import LIMITS
+
+    return LIMITS
+
+
+LIMITS = _form_limits()
+
+
 class FakeForm:
     """The website's problem-report form, played on this computer: it keeps what each report posted and answers with the
     status the test sets (200 takes it)."""
@@ -275,12 +296,16 @@ class FakeForm:
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:  # noqa: N802
                 body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
-                if form.status < 300:
-                    form.received.append(json.loads(body))
-                self.send_response(form.status)
+                sent = json.loads(body)
+                over = any(len(str(v)) > LIMITS.get(k, 0) for k, v in sent.items())
+                # The played form refuses what the website's form refuses: a part over its limit or one it doesn't know.
+                code = 400 if over else form.status
+                if code < 300:
+                    form.received.append(sent)
+                self.send_response(code)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(json.dumps({"ok": form.status < 300}).encode())
+                self.wfile.write(json.dumps({"ok": code < 300}).encode())
 
             def log_message(self, *args) -> None:
                 pass
@@ -598,6 +623,7 @@ def main() -> None:
     folder_targets = list(cfg.storage.backups.targets)
     fake_channel = seed_outgoing(store, cfg) if args.fake_channel else None
     failed_read = seed_failed_read(store, cfg) if form is not None else None
+    log_line = seed_log_line(ws) if form is not None else None
     acts = seed_acts(ws, store, cfg) if args.acts else None
     meetings = seed_meetings(store, cfg) if args.meetings else None
     just_me = seed_just_me(store, cfg) if args.just_me else None
@@ -719,7 +745,13 @@ def main() -> None:
         if request.method == "POST":
             form.status = int(request.query_params["code"])
         return JSONResponse(
-            {"enabled": True, "received": form.received, "status": form.status, "failed_read": failed_read}
+            {
+                "enabled": True,
+                "received": form.received,
+                "status": form.status,
+                "failed_read": failed_read,
+                "log_line": log_line,
+            }
         )
 
     async def delivered(_request):

@@ -18,7 +18,8 @@ const PROBLEM: Problem = {
   error_kind: "outage",
   text: "couldn't read <path>",
 };
-const FACTS = { enabled: true, version: "9.8.7", system: "Example OS 1", reply_to: "own@example.com" };
+const DETAILS = "2026-01-01 08:00:00 ERROR engine.example: the source did not answer";
+const FACTS = { enabled: true, version: "9.8.7", system: "Example OS 1", reply_to: "own@example.com", details: DETAILS };
 
 function open(over: { send?: () => unknown; problems?: Problem[]; facts?: Partial<typeof FACTS> } = {}) {
   const calls = fakeApi({
@@ -33,6 +34,7 @@ function open(over: { send?: () => unknown; problems?: Problem[]; facts?: Partia
 
 const words = () => screen.getByLabelText("What happened?");
 const preview = () => screen.getByLabelText("What will be sent", { selector: "textarea" }) as HTMLTextAreaElement;
+const detailsBox = () => screen.queryByLabelText("Technical details", { selector: "textarea" }) as HTMLTextAreaElement | null;
 const sends = (calls: ReturnType<typeof open>["calls"]) => calls.filter((c) => c.route === "POST report/send");
 
 test("the cursor is in the first field, and Send waits for words", async () => {
@@ -43,7 +45,7 @@ test("the cursor is in the first field, and Send waits for words", async () => {
   expect(screen.getByRole("button", { name: "Send" })).toHaveAccessibleDescription("Write a few words to continue.");
 });
 
-test("what will be sent shows the words, the reply address, the version, the system and the problem lines, and nothing is sent before Send", async () => {
+test("what will be sent shows the words, the reply address, the version, the system, the problem lines and the technical details, and nothing is sent before Send", async () => {
   const { calls, user } = open();
   await waitFor(() => expect(screen.getByLabelText(/Your email address/)).toHaveValue("own@example.com"));
   expect(await screen.findByRole("checkbox", { name: "Include the recent problems (1)" })).toBeChecked();
@@ -56,6 +58,7 @@ test("what will be sent shows the words, the reply address, the version, the sys
   expect(shown).toContain("Recent problems");
   expect(shown).toContain("Doing: reading folder");
   expect(shown).toContain("Said: couldn't read <path>");
+  expect(detailsBox()?.value).toBe(DETAILS);
   expect(sends(calls)).toHaveLength(0);
   // Unticking takes every problem line out; clearing the address says nobody is named.
   await user.click(screen.getByRole("checkbox", { name: "Include the recent problems (1)" }));
@@ -120,4 +123,32 @@ test("a server that cannot be reached at all is told as the form not answering",
   await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeEnabled());
   await user.click(screen.getByRole("button", { name: "Send" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("isn't answering right now");
+});
+
+test("the technical details are on by default and sent as shown", async () => {
+  const { calls, user } = open();
+  await user.type(words(), "It broke");
+  const box = await screen.findByRole("checkbox", { name: "Include technical details" });
+  expect(box).toBeChecked();
+  await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeEnabled());
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(sends(calls)).toHaveLength(1));
+  expect(sends(calls)[0].body).toMatchObject({ details: DETAILS, include_details: true });
+});
+
+test("with the technical details taken out they are not shown and the send carries none", async () => {
+  const { calls, user } = open();
+  await user.type(words(), "It broke");
+  await user.click(await screen.findByRole("checkbox", { name: "Include technical details" }));
+  expect(detailsBox()).toBeNull();
+  await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeEnabled());
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(sends(calls)).toHaveLength(1));
+  expect(sends(calls)[0].body).toMatchObject({ details: "", include_details: false });
+});
+
+test("with no technical details there is no checkbox for them", async () => {
+  open({ facts: { details: "" } });
+  await screen.findByRole("checkbox", { name: "Include the recent problems (1)" });
+  expect(screen.queryByRole("checkbox", { name: "Include technical details" })).toBeNull();
 });
