@@ -206,8 +206,13 @@ def describe(
 def reason_of(outcome: dict[str, Any]) -> str | None:
     """Why a held op waits, in the words of today's checks: a hold made before the wording changed shows the same
     reason as one made now. Another kind of hold keeps the reason it was given."""
-    from engine.applier import ENDING_WAITS, INFERENCE_WAITS, REACHED_WAITS
+    from engine.applier import ENDING_WAITS, FACT_REPLACE_WAITS, INFERENCE_WAITS, REACHED_WAITS
 
-    words = {"inference-confirm": INFERENCE_WAITS, "ending-confirm": ENDING_WAITS, "reached-confirm": REACHED_WAITS}
+    words = {
+        "inference-confirm": INFERENCE_WAITS,
+        "ending-confirm": ENDING_WAITS,
+        "reached-confirm": REACHED_WAITS,
+        "outside-replaces": FACT_REPLACE_WAITS,
+    }
     found = [words[p["check"]] for p in outcome.get("problems") or [] if p.get("check") in words]
     return "; ".join(dict.fromkeys(found)) if found else outcome.get("reason")

@@ -124,6 +124,8 @@ def _keep_item(
             "attendees": attendees,
             "response": own["response"] if own is not None else None,
             "notes": list(details.notes),
+            # A changed date's own revision number, else the event's.
+            "sequence": date_.sequence if date_ is not None and date_.sequence is not None else details.sequence,
         }
         current = have.get(key)
         if current is None:

@@ -18,7 +18,7 @@ from typing import Any, NamedTuple
 
 from engine.config.schema import KnowledgeSettings
 from engine.records import Scope
-from engine.untrusted import neutralize
+from engine.untrusted import neutralize, outside_block, quoted_attribute
 
 HEADINGS = {
     "rules": "# Standing rules",
@@ -120,17 +120,18 @@ def _origin_note(data: dict[str, Any]) -> str:
 
 
 def _source_label(view: Any, data: dict[str, Any]) -> str:
+    """Where an entry from outside came from: its source's title, else the source's id or the entry's origin. The
+    title is itself outside text; the block's renderer makes it safe."""
     source_id = data.get("source") or (data.get("evidence") or {}).get("source")
     source = view.get("source", source_id) if source_id else None
-    label = source.data["title"] if source is not None else source_id or data.get("origin") or "outside"
-    return " ".join(str(label).split()).replace('"', "'")
+    return str(source.data["title"] if source is not None else source_id or data.get("origin") or "outside")
 
 
 def _shown(view: Any, stored: Any, line: str) -> str:
     """A line as guidance when its source is trusted, else as data with its source."""
     if stored.data.get("trust", "trusted") == "trusted":
         return line
-    return f'<untrusted source="{_source_label(view, stored.data)}">\n{_marked(line)}\n</untrusted>'
+    return outside_block(line, _source_label(view, stored.data))
 
 
 def _section(view: Any, heading: str, lines: list[tuple[Any, str]]) -> str:
@@ -415,8 +416,10 @@ def _facts_section(
     project above them (`scoped` holds the projects and their ancestors) goes too when it is marked as reaching the
     projects inside it; any other fact of an ancestor stays with that project. A fact about one of the records the run
     works on (`about`) goes with them."""
+    from engine.facts import replaced_ids
+
     facts = view.list("fact")
-    replaced = {f.data["supersedes"] for f in facts if f.data.get("supersedes")}
+    replaced = replaced_ids(facts, hide)
     above = (scoped or projects) - projects
     mine = [
         f
@@ -453,7 +456,9 @@ def _facts_section(
     def line(fact: Any) -> str:
         day = when(fact)
         source = view.get("source", fact.data["source"]) if fact.data.get("source") else None
-        bits = ([f"as of {day.isoformat()}"] if day else []) + ([f"from {source.data['title']}"] if source else [])
+        # A source's title is outside text even on a fact the person kept: nothing in it may read as a tag.
+        title = quoted_attribute(source.data["title"]) if source else ""
+        bits = ([f"as of {day.isoformat()}"] if day else []) + ([f"from {title}"] if title else [])
         return f"- {fact.id}: {fact.data['text']}" + (f" ({', '.join(bits)})" if bits else "")
 
     shown: list[tuple[Any, str]] = []

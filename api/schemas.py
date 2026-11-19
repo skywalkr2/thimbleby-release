@@ -115,8 +115,35 @@ class ProjectEndingChoice(BaseModel):
     keep: list[int] = Field(default_factory=list)
 
 
+class HeldItem(BaseModel):
+    """One question or action a copied message held, with the version it had then."""
+
+    id: str
+    version: int
+
+
+class HeldItems(BaseModel):
+    """What a follow-up message held when the person copied it, so Mark sent marks that and nothing that came after."""
+
+    questions: list[HeldItem] = []
+    actions: list[HeldItem] = []
+    message: str | None = Field(
+        None,
+        description="The message as it was drafted when it was copied, to tell the person's edits from later ones.",
+    )
+    as_copied: bool = Field(
+        False,
+        description="The person's answer for items that changed after the copy: they went out as copied, so mark them.",
+    )
+
+
 class SentText(BaseModel):
     text: str | None = Field(None, description="The message as the PM sent it, to notice edits.")
+    held: HeldItems | None = Field(
+        None,
+        description="What the message held when it was copied. Only these are marked sent; left out, everything to "
+        "send to the person now is.",
+    )
 
 
 class Answer(BaseModel):
@@ -1323,6 +1350,7 @@ class BlockerView(BaseModel):
 
 class FollowupQuestion(BaseModel):
     id: str
+    version: int | None = Field(None, description="Its version as read; sent back with a copied message's items.")
     title: str
     text: str
     links: list[Link]
@@ -1535,11 +1563,25 @@ class FollowupSection(BaseModel):
     )
 
 
+class SentChanged(BaseModel):
+    """A question or action that changed after the message was copied, so it was not marked sent."""
+
+    kind: Literal["action", "question"]
+    id: str
+    text: str
+
+
 class SentCounts(BaseModel):
     questions: int
     actions: int
     question_ids: list[str]
     action_ids: list[str]
+    changed: list[SentChanged] = Field(
+        default_factory=list,
+        description="What the copied message held that changed since: not marked sent, for the person to say whether "
+        "it went as copied.",
+    )
+    arrived: int = Field(0, description="How many items to send arrived after the copy; they stay to send.")
 
 
 class Unmark(BaseModel):
@@ -8930,6 +8972,10 @@ class ActView(BaseModel):
     undone_at: datetime | None = None
     undo_failure: ActFailureView | None = Field(
         None, description="Why the channel could not take it back; the act stays sent."
+    )
+    uncertain_reason: str | None = Field(
+        None,
+        description="For an uncertain act its channel began and could not finish: how far it got, in plain words.",
     )
     status: Literal["draft", "approved", "sending", "sent", "failed", "uncertain", "stale", "withdrawn", "undone"]
     parts: dict[str, str] = Field(description="The content exactly as it will go, by part.")

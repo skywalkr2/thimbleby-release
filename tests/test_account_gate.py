@@ -201,7 +201,7 @@ def test_a_reason_that_is_not_a_short_code_is_dropped():
 def test_the_sign_in_declares_a_pace_and_the_gate_starts_at_it(tmp_path):
     from engine.plugin_api import PLUGIN_API_VERSION, Registrar, RegistrationRefused
 
-    assert PLUGIN_API_VERSION == "0.3.104"
+    assert PLUGIN_API_VERSION >= "0.3.104"  # the sign-in pace arrived in 0.3.104
     registrar = Registrar("demo", {})
     registrar.sign_in(
         "demo/in",

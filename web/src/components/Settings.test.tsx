@@ -1759,7 +1759,7 @@ test("a text setting with a limit stops its box there, so a name that is too lon
   expect(box).toHaveAttribute("maxlength", "40");
 });
 
-test("Your name asks for a last name too, and doesn't save one word", async () => {
+test("Your name saves a name of one word, as setup does (H5-31)", async () => {
   const user = userEvent.setup();
   const calls = api([...ITEMS], {
     "GET me": () => ({ person: "PER-1", full_name: "Sam Tester" }),
@@ -1770,8 +1770,8 @@ test("Your name asks for a last name too, and doesn't save one word", async () =
   await user.clear(name);
   await user.type(name, "Sam");
   await user.tab();
-  expect(await screen.findByRole("alert")).toHaveTextContent("Add your last name too");
-  expect(calls.some((c) => c.route === "POST me")).toBe(false);
+  await waitFor(() => expect(calls.find((c) => c.route === "POST me")?.body).toEqual({ full_name: "Sam" }));
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
 test("the theme and the spacing apply at once when saved, show what this device has in effect, and carry the menu's names", async () => {

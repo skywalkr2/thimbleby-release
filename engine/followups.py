@@ -234,6 +234,7 @@ def sections(store: Store, cfg: Config, today: date, waiting: list[Late] | None 
                 "held_for_name": held_name if later else None,
                 "ready_since": ready,
                 "id": q.id,
+                "version": q.version,
                 "side": row_side,
                 "views": row_views,
                 "title": d["title"],
@@ -560,22 +561,67 @@ def _guard_sent_text(store: Store, cfg: Config, person: str, text: str | None) -
     outward.check_outgoing(store.read(), cfg, {where: text})
 
 
+@dataclass(frozen=True)
+class Held:
+    """What a follow-up message held when it was copied: each question and action by id with the version it had, and
+    the message as it was drafted then. `as_copied` is the person's answer that the items which changed since went
+    out as they were copied, so they are marked whatever their version is now."""
+
+    questions: dict[str, int] = field(default_factory=dict)
+    actions: dict[str, int] = field(default_factory=dict)
+    message: str | None = None
+    as_copied: bool = False
+
+
 def mark_sent(
-    store: Store, cfg: Config, person: str, *, sent_text: str | None = None, now: datetime | None = None
+    store: Store,
+    cfg: Config,
+    person: str,
+    *,
+    sent_text: str | None = None,
+    now: datetime | None = None,
+    held: Held | None = None,
 ) -> dict[str, Any]:
-    """Record that the person's open questions and untold actions went out. If the PM edited the message before
-    sending, that is recorded as a quality signal. Returns the counts and the ids, which `unmark_sent` takes."""
+    """Record that a message to the person went out. With `held` (what the message held when it was copied), only the
+    questions and actions it held are marked: one that arrived since stays to send, and one that changed since is not
+    marked but given back in `changed`, for the person to say whether it went as copied. Without `held`, everything to
+    send to the person now is marked. If the person edited the message as it was drafted when they copied it, that is
+    recorded as a quality signal; an item that arrived or changed after the copy is no edit of theirs. Returns the
+    counts and the ids, which `unmark_sent` takes, with `changed` and how many `arrived`."""
     now = now or datetime.now(UTC)
     today = local_day(now, zone(cfg))
     _guard_sent_text(store, cfg, person, sent_text)
     current = next((s for s in sections(store, cfg, today) if s.person == person), None)
+    counts: dict[str, Any] = {
+        "questions": 0,
+        "actions": 0,
+        "question_ids": [],
+        "action_ids": [],
+        "changed": [],
+        "arrived": 0,
+    }
     if current is None:
-        return {"questions": 0, "actions": 0, "question_ids": [], "action_ids": []}
-    counts: dict[str, Any] = {"questions": 0, "actions": 0, "question_ids": [], "action_ids": []}
+        return counts
+
+    def covered(kind: str, row: dict[str, Any], version: int, text: str) -> bool:
+        """Whether the message that went out held this item as it is now."""
+        if held is None:
+            return True
+        copied = (held.questions if kind == "question" else held.actions).get(row["id"])
+        if copied is None:
+            counts["arrived"] += 1
+            return False
+        if copied != version and not held.as_copied:
+            counts["changed"].append({"kind": kind, "id": row["id"], "text": text})
+            return False
+        return True
+
     with store.transaction() as tx:
         for q in current.questions:
             if q["status"] == "open":
                 rec = tx.get("question", q["id"])
+                if not covered("question", q, rec.version, q["title"]):
+                    continue
                 tx.update(
                     "question", q["id"], {"status": "sent", "sent_at": now.isoformat()}, _PM, read_version=rec.version
                 )
@@ -584,6 +630,8 @@ def mark_sent(
         for a in current.actions:
             if a["to_send"]:
                 rec = tx.get("action", a["id"])
+                if not covered("action", a, rec.version, a["text"]):
+                    continue
                 told = {**rec.data.get("told", {}), person: today.isoformat()}
                 if person in rec.data.get("told", {}):
                     # Told before and changed since: clear the old day first, so telling again on the same day is
@@ -593,7 +641,11 @@ def mark_sent(
                 tx.update("action", a["id"], {"told": told}, _PM, read_version=rec.version)
                 counts["actions"] += 1
                 counts["action_ids"].append(a["id"])
-    if sent_text is not None and normalize(sent_text) != normalize(current.message):
+    # The edit is measured against the message as it stood when it was copied, where that is known: what was drafted
+    # since is not something the person changed. Their answer about changed items is no second look at the words.
+    drafted = held.message if held is not None and held.message is not None else current.message
+    answered = held is not None and held.as_copied
+    if sent_text is not None and not answered and normalize(sent_text) != normalize(drafted):
         changeset, run = _written_by(store, counts["question_ids"])
         signal(
             store,
@@ -605,15 +657,17 @@ def mark_sent(
             run=run,
         )
     if counts["questions"] or counts["actions"]:
-        # What the person copied is kept as it was used, for matching the message that reaches the sent folder.
+        # What the person copied is kept as it was used, for matching the message that reaches the sent folder. Items
+        # the person says went as copied belong to the copy that message already made.
         sent_version.record_copy(
             store,
             "follow_up",
             person,
-            current.message if sent_text is None else sent_text,
+            drafted if sent_text is None else sent_text,
             questions=counts["question_ids"],
             actions=counts["action_ids"],
             now=now,
+            same_message=answered,
         )
     return counts
 

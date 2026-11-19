@@ -282,7 +282,7 @@ describe("an act the person sends themselves", () => {
     const pane = await screen.findByRole("complementary");
     expect(within(pane).queryByRole("button", { name: "Approve and send" })).toBeNull();
     expect(within(pane).getByRole("button", { name: "Copy" })).toBeInTheDocument();
-    expect(within(pane).getByRole("button", { name: "Mark sent" })).toBeDisabled();
+    expect(within(pane).getByRole("button", { name: "I've sent it" })).toBeDisabled();
     expect(within(pane).getByText(/copy it, send it, then mark it sent/)).toBeInTheDocument();
   });
 
@@ -304,7 +304,7 @@ describe("an act the person sends themselves", () => {
       "POST acts/XACT-1/settle": () => ({ id: "XACT-1", status: "sent", reason: null, changeset: "CS-5" }),
       "POST changesets/CS-5/undo": () => ({}),
     });
-    await user.click(await screen.findByRole("button", { name: "Mark sent" }));
+    await user.click(await screen.findByRole("button", { name: "I've sent it" }));
     await waitFor(() => expect(calls.find((c) => c.route === "POST acts/XACT-1/settle")?.body).toEqual({ answer: "sent" }));
     expect(screen.queryByRole("dialog")).toBeNull();
     await user.click(await screen.findByRole("button", { name: "Undo" }));

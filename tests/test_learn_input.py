@@ -16,6 +16,7 @@ from api.app import create_app
 from engine import learn, new_terms, proposals
 from engine.ai.adapters.stub import set_responder
 from engine.ai.router import Router
+from engine.applier import release
 from engine.dispatcher import process
 from engine.intake import hand_in
 from engine.ops import KNOWLEDGE_OPS
@@ -99,11 +100,14 @@ def test_a_run_proposing_a_term_a_routing_entry_and_a_superseding_fact_makes_thr
         {"op": "fact", "text": said, "project": PROJECT, "supersedes": older, "evidence": {"quote": said}},
     ]
     _, cs_id = read(env, pasted, ops)
-    assert statuses(store, cs_id) == ["applied"] * 3
+    # The fact would replace one the person trusts, so it waits for them; theirs stays the only one.
+    assert statuses(store, cs_id) == ["applied", "applied", "held"]
+    assert [f.id for f in entries(store, "fact")] == [older]
     (term,) = entries(store, "glossary_entry")
     (route,) = entries(store, "routing_entry")
     assert (term.data["status"], term.data["origin"], term.data["confidence"]) == ("proposed", "input", "unknown")
     assert (route.data["status"], route.data["origin"], route.data["person"]) == ("proposed", "input", NAMED["id"])
+    release(store, env[1], cs_id, 2)
     newer = next(f for f in entries(store, "fact") if f.id != older)
     assert newer.data["supersedes"] == older and newer.data["trust"] == "untrusted"
     assert {p.kind for p in proposals.proposals(store.read())} == {"glossary_entry", "routing_entry"}

@@ -12,7 +12,7 @@ interface Section {
   is_pm: boolean;
   to_send: number;
   questions: Array<{ id: string; status: string }>;
-  actions: Array<{ id: string; text: string; told: string | null }>;
+  actions: Array<{ id: string; version: number; text: string; told: string | null; to_send: boolean }>;
 }
 
 const NEGATIVE_DAYS = /-\d+\s*days?/;
@@ -58,7 +58,7 @@ test.describe("Late evening", () => {
     await expect(page.locator("aside[data-detail-pane]").getByRole("textbox").first()).toBeVisible();
     await page.locator("aside[data-detail-pane]").getByRole("button", { name: "Copy message" }).first().click();
     await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain(sent[0].text);
-    await page.locator("aside[data-detail-pane]").getByRole("button", { name: "Mark sent" }).first().click();
+    await page.locator("aside[data-detail-pane]").getByRole("button", { name: "I've sent it" }).first().click();
     await expect(page.getByText(`Marked as sent to ${name}`)).toBeVisible();
     await expectNoNegativeDays(page);
 
@@ -83,6 +83,39 @@ test.describe("Late evening", () => {
     await expect(page.getByRole("heading", { level: 2, name: "Needs you", exact: true })).toBeVisible();
     await expectNoNegativeDays(page);
     await expect(page.getByRole("main")).not.toContainText(/waiting up to -/);
+  });
+
+  // H5-29 O2: what changes after the message was copied did not go out as it now reads. Mark sent leaves it to send and asks; the
+  // person's answer that it went as copied is what marks it.
+  test("an item that changes between Copy and Mark sent is asked about and stays to send until the person answers", async ({ page }) => {
+    await signIn(page);
+    const read = async () => (await (await page.request.get("api/followups")).json()) as Section[];
+    const target = (await read()).find((s) => !s.is_pm && s.actions.some((a) => a.to_send));
+    expect(target, "someone with an action to send").toBeTruthy();
+    const { name, person } = target!;
+    const item = target!.actions.find((a) => a.to_send)!;
+    const still = async () => (await read()).find((s) => s.person === person)?.actions.find((a) => a.id === item.id);
+
+    await openView(page, "Follow-ups");
+    const pane = page.locator("aside[data-detail-pane]");
+    await page.getByRole("listitem", { name, exact: true }).getByRole("button", { name: new RegExp(`^${name}`) }).click();
+    await pane.getByRole("button", { name: "Copy message" }).first().click();
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain(item.text);
+
+    // While the person is in their mail program, the to-do's day moves: the copied message no longer says what the app holds.
+    const moved = await page.request.post("api/records/edit", { data: { kind: "action", id: item.id, fields: { due: "2026-12-18" }, read_version: item.version } });
+    expect(moved.ok(), await moved.text()).toBe(true);
+
+    await pane.getByRole("button", { name: "I've sent it" }).first().click();
+    const asked = page.locator("[data-changed-since-copy]");
+    await expect(asked).toBeVisible();
+    await expect(asked).toContainText(`after you copied the message to ${name}`);
+    await expect(asked).toContainText(item.text);
+    expect((await still())?.to_send, "the changed item is not marked sent unseen").toBe(true);
+
+    await asked.getByRole("button", { name: "Yes, mark as sent" }).click();
+    await expect(asked).toHaveCount(0);
+    await expect.poll(async () => (await still())?.to_send ?? false).toBe(false);
   });
 });
 

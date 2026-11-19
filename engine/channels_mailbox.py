@@ -20,7 +20,7 @@ import re
 import smtplib
 import socket
 import ssl
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from email.message import EmailMessage
 from email.utils import format_datetime
@@ -126,6 +126,7 @@ class MailboxChannel:
             undo=self.undo,
             actions=dict(ACTIONS),
             accounts=(act_accounts.MAILBOX,),
+            binding=self.binding,
         )
 
     # ---- sending -----------------------------------------------------------------------------------------------------
@@ -180,7 +181,8 @@ class MailboxChannel:
         invitation = itip.Invitation(
             method="REQUEST",
             uid=about.uid,
-            sequence=about.sequence or 0,
+            # The organizer's own revision number, as the calendar entry holds it; unknown, the reply carries none.
+            sequence=about.sequence if about.sequence is not None else 0,
             summary=act.title or "",
             start=start,
             end=None,
@@ -190,7 +192,14 @@ class MailboxChannel:
             dtstamp=self.now(),
         )
         try:
-            ics = itip.reply_ics(invitation, sender, status, act.parts.get("comment"), dtstamp=self.now())
+            ics = itip.reply_ics(
+                invitation,
+                sender,
+                status,
+                act.parts.get("comment"),
+                dtstamp=self.now(),
+                sequence_known=about.sequence is not None,
+            )
         except ValueError as err:
             raise _refused(f"the answer can't be prepared: {err}") from None
         message = self._envelope(act, settings, key, sender, act.parts.get("subject") or act.title or about.uid)
@@ -346,54 +355,96 @@ class MailboxChannel:
                 _close(server)
         return ChannelUnknown()
 
+    # ---- what the account resolves to --------------------------------------------------------------------------------
+
+    def binding(self, act: OutgoingAct) -> dict[str, str]:
+        """What the act's account resolves to now, for the person's yes to cover: the mailbox it signs in to (server
+        and user), the address and server it sends through, and for a mailbox act the folder it works in and, for an
+        archive, the folder set to archive to (empty: the one the server marks). A password is no part of it, so a new
+        one for the same mailbox changes nothing."""
+        settings = self.settings_of(act.account) if act.account else None
+        if settings is None:
+            return {"mailbox": ""}
+        found = {
+            **_identity(settings),
+            "sender": settings.sender.lower(),
+            "outgoing": f"{settings.outgoing_host.lower()}:{settings.smtp_port}",
+        }
+        if act.kind == "mailbox":
+            found["folder"] = settings.folder
+            if act.action == "archive":
+                found["to"] = settings.archive_folder or ""
+        return found
+
     # ---- mailbox acts ------------------------------------------------------------------------------------------------
 
     def _mailbox_act(self, act: OutgoingAct, settings: MailboxSettings) -> Any:
         ids = self._ids(act)
+        if act.action not in ACTIONS["mailbox"]:
+            raise _refused(f"a mailbox can't {act.action} messages")
         try:
             server = _open(settings)
         except ConnectorError as err:
             raise _failed_from(err, settings) from None
+        progress = _Progress(settings, {})
         try:
-            uids = self._locate(server, settings.folder, ids)
             if act.action in ("archive", "move"):
                 destination = self._destination(act, settings, server)
-                for uid in uids:
-                    self._move(server, uid, destination)
-            elif act.action == "label":
-                keyword = _keyword(act.label)
-                for uid in uids:
-                    self._store(server, uid, "+FLAGS", keyword)
-            elif act.action == "mark_read":
-                for uid in uids:
-                    self._store(server, uid, "+FLAGS", _FLAG_SEEN)
+                progress = _Progress(settings, _earlier(act, settings, "to", destination))
+                progress.did["to"] = destination
+                self._relocate(server, ids, settings.folder, destination, progress)
             else:
-                raise _refused(f"a mailbox can't {act.action} messages")
+                flag = _keyword(act.label) if act.action == "label" else _FLAG_SEEN
+                progress = _Progress(settings, _earlier(act, settings, "flag", flag))
+                progress.did["flag"] = flag
+                self._flag(server, ids, settings.folder, flag, progress)
+        except _Stop as stop:
+            # Sure that this step did nothing, but an earlier one did: the act is part done, never a plain failure.
+            if progress.touched and isinstance(stop.answer, ChannelFailed):
+                return ChannelUnknown(progress.said(stop.answer.reason), progress.did)
+            raise
         except (imaplib.IMAP4.error, imaplib.IMAP4.abort, OSError):
-            raise _Stop(ChannelUnknown()) from None
+            if progress.touched:
+                return ChannelUnknown(progress.said("the mail server stopped answering"), progress.did)
+            return ChannelUnknown()
         finally:
             _close(server)
-        return ChannelSent(", ".join(ids))
+        return ChannelSent(", ".join(ids), progress.did)
 
     def undo(self, act: OutgoingAct, service_id: str, context: ChannelContext | None = None) -> Any:
-        """Put a mailbox act back: moved messages go back to their folder, a label or the read mark is removed."""
+        """Put a mailbox act back, as far as the act itself went: the messages it moved go back to the folder they
+        left, and a label or the read mark comes off only the messages it put it on. It works in the mailbox and the
+        folders the act ran with, as kept when it ran."""
         try:
             if act.kind != "mailbox" or act.action not in ACTIONS["mailbox"]:
                 raise _refused("that can't be taken back")
             settings = self._settings(act)
             ids = self._ids(act)
+            did = dict(act.did or {})
+            moves = act.action in ("archive", "move")
+            if not did and not moves:
+                # Nothing says which messages the act marked, and a mark that was there before isn't its to remove.
+                raise _refused("what this changed wasn't kept when it ran, so it can't be taken back from here")
+            if did and did.get("mailbox") != _identity(settings):
+                raise _refused(
+                    "the mailbox this ran in isn't the one set up under that name now, so it can't be taken back "
+                    "from here"
+                )
             try:
                 server = _open(settings)
             except ConnectorError as err:
                 raise _failed_from(err, settings) from None
             try:
-                if act.action in ("archive", "move"):
-                    destination = self._destination(act, settings, server)
-                    for uid in self._locate(server, destination, ids):
-                        self._move(server, uid, settings.folder)
+                home = str(did.get("from") or settings.folder)
+                if moves:
+                    there = str(did.get("to") or "") or self._destination(act, settings, server)
+                    moved = [str(i) for i in did.get("moved") or []] if did else ids
+                    back = _Progress(settings, {"from": there, "moved": moved})
+                    self._relocate(server, moved, there, home, back)
                 else:
-                    flag = _keyword(act.label) if act.action == "label" else _FLAG_SEEN
-                    for uid in self._locate(server, settings.folder, ids):
+                    marked = [str(i) for i in did.get("flagged") or []]
+                    flag = str(did.get("flag") or (_keyword(act.label) if act.action == "label" else _FLAG_SEEN))
+                    for uid in self._locate(server, home, marked).values():
                         self._store(server, uid, "-FLAGS", flag)
             except (imaplib.IMAP4.error, imaplib.IMAP4.abort, OSError):
                 raise _Stop(ChannelUnknown()) from None
@@ -422,45 +473,177 @@ class MailboxChannel:
             raise _refused("this mailbox has no archive folder; pick one in its settings")
         return found
 
-    def _locate(self, server: Any, folder: str, ids: list[str]) -> list[str]:
-        """The UID of each message in the folder, found by Message-ID; every one must be there before
-        anything changes."""
-        status, _ = server.select(_quoted(folder))
+    def _find(
+        self, server: Any, folder: str, ids: list[str], *, readonly: bool = False
+    ) -> dict[str, str | None] | None:
+        """The UID of each message in the folder, found by Message-ID (None for one that isn't there). None when there
+        is no such folder."""
+        status, _ = server.select(_quoted(folder), readonly=readonly)
         if status != "OK":
-            raise _refused(f"there is no folder {folder}")
-        uids: list[str] = []
+            return None
+        found: dict[str, str | None] = {}
         for wanted in ids:
-            status, found = server.uid("SEARCH", None, "HEADER", "Message-ID", _quoted(wanted))
-            hits = (found[0] or b"").split() if status == "OK" and found else []
-            if not hits:
-                raise _refused(f"a message isn't in {folder} any more: it was moved or deleted")
-            uids.append(hits[0].decode() if isinstance(hits[0], bytes) else str(hits[0]))
-        return uids
+            status, hits_of = server.uid("SEARCH", None, "HEADER", "Message-ID", _quoted(wanted))
+            hits = (hits_of[0] or b"").split() if status == "OK" and hits_of else []
+            found[wanted] = (hits[0].decode() if isinstance(hits[0], bytes) else str(hits[0])) if hits else None
+        return found
 
-    def _move(self, server: Any, uid: str, destination: str) -> None:
+    def _locate(self, server: Any, folder: str, ids: list[str]) -> dict[str, str]:
+        """The UID of each message in the folder, by Message-ID; every one must be there before anything changes."""
+        found = self._find(server, folder, ids)
+        if found is None:
+            raise _refused(f"there is no folder {folder}")
+        if any(uid is None for uid in found.values()):
+            raise _refused(f"a message isn't in {folder} any more: it was moved or deleted")
+        return {wanted: str(uid) for wanted, uid in found.items()}
+
+    def _relocate(self, server: Any, ids: list[str], source: str, destination: str, progress: _Progress) -> None:
+        """Move each message from one folder to another, looking in the destination first: a message an earlier attempt
+        of this act already put there is not copied again, and one copied there but still in the folder it left is only
+        removed from that folder. Every message is accounted for before anything changes."""
+        there = self._find(server, destination, ids, readonly=True) or {}
+        here = self._find(server, source, ids)
+        if here is None:
+            raise _refused(f"there is no folder {source}")
+        for wanted in ids:
+            if here[wanted] is None and not (there.get(wanted) and wanted in progress.ours):
+                raise _refused(f"a message isn't in {source} any more: it was moved or deleted")
+        for wanted in ids:
+            uid = here[wanted]
+            if uid is None:
+                progress.moved(wanted)  # an earlier attempt of this act finished it
+            else:
+                self._move(server, wanted, uid, destination, progress, copied=bool(there.get(wanted)))
+
+    def _move(self, server: Any, wanted: str, uid: str, destination: str, progress: _Progress, *, copied: bool) -> None:
         """Move one message. Where the server has no MOVE, copy it and mark only that one message deleted and expunge
-        only it; a server with neither way is refused rather than risking another message."""
+        only it; a server with neither way is refused rather than risking another message. `copied`: it is in the
+        destination already, so it is only removed from the folder it is leaving."""
         capabilities = {str(c).upper() for c in getattr(server, "capabilities", ())}
         target = _quoted(destination)
-        if "MOVE" in capabilities:
+        if "MOVE" in capabilities and not (copied and "UIDPLUS" in capabilities):
+            progress.begin(wanted, "moving")
             status, _ = server.uid("MOVE", uid, target)
             if status != "OK":
+                progress.untouched()
                 raise _refused(f"the mail server wouldn't move the message to {destination}")
+            progress.moved(wanted)
             return
         if "UIDPLUS" not in capabilities:
             raise _refused("this mail server can't move a message without risking others")
-        status, _ = server.uid("COPY", uid, target)
+        if not copied:
+            progress.begin(wanted, "copying")
+            status, _ = server.uid("COPY", uid, target)
+            if status != "OK":
+                progress.untouched()
+                raise _refused(f"the mail server wouldn't copy the message to {destination}")
+        # From here the message is in both folders: anything short of the end is part done, never a failure.
+        progress.begin(wanted, "copied")
+        status, _ = server.uid("STORE", uid, "+FLAGS", f"({_FLAG_DELETED})")
         if status != "OK":
-            raise _refused(f"the mail server wouldn't copy the message to {destination}")
-        self._store(server, uid, "+FLAGS", _FLAG_DELETED)
+            raise _Stop(ChannelUnknown(progress.said("the mail server wouldn't mark it as moved"), progress.did))
+        progress.begin(wanted, "marked")
         status, _ = server.uid("EXPUNGE", uid)
         if status != "OK":
-            raise _refused("the mail server wouldn't finish the move")
+            raise _Stop(ChannelUnknown(progress.said("the mail server wouldn't finish the move"), progress.did))
+        progress.moved(wanted)
+
+    def _flag(self, server: Any, ids: list[str], folder: str, flag: str, progress: _Progress) -> None:
+        """Put a label or the read mark on each message that doesn't carry it, and note which those were: a mark that
+        was there before the act is not the act's."""
+        found = self._locate(server, folder, ids)
+        carried = {wanted: self._flags(server, uid) for wanted, uid in found.items()}
+        for wanted, uid in found.items():
+            if flag.lower() in carried[wanted]:
+                continue
+            progress.begin(wanted, "marking")
+            status, _ = server.uid("STORE", uid, "+FLAGS", f"({flag})")
+            if status != "OK":
+                progress.untouched()
+                raise _refused("the mail server wouldn't change the message")
+            progress.flagged(wanted)
+
+    def _flags(self, server: Any, uid: str) -> set[str]:
+        """The flags and keywords a message carries now, lowercased. Refused when the server won't say: without them
+        nothing can tell a mark the act adds from one that was there."""
+        status, data = server.uid("FETCH", uid, "(FLAGS)")
+        text = b" ".join(part if isinstance(part, bytes) else b"" for part in (data or []))
+        found = re.search(rb"FLAGS \(([^)]*)\)", text) if status == "OK" else None
+        if found is None:
+            raise _refused("the mail server wouldn't say how the message is marked")
+        return {word.decode("utf-8", "replace").lower() for word in found.group(1).split()}
 
     def _store(self, server: Any, uid: str, how: str, flag: str) -> None:
         status, _ = server.uid("STORE", uid, how, f"({flag})")
         if status != "OK":
             raise _refused("the mail server wouldn't change the message")
+
+
+def _identity(settings: MailboxSettings) -> dict[str, str]:
+    """Which mailbox these settings sign in to: the server and the user, never the password."""
+    return {"user": settings.user.strip(), "server": f"{settings.host.strip().lower()}:{settings.port}"}
+
+
+def _earlier(act: OutgoingAct, settings: MailboxSettings, name: str, value: str) -> dict[str, Any]:
+    """What an earlier attempt of this act reported, when it ran in this same mailbox and folder towards the same end
+    (`name`: the folder a move goes to, or the mark put on); nothing otherwise, so what was done somewhere else is
+    never taken for done here."""
+    did = dict(act.did or {})
+    if did.get("mailbox") != _identity(settings) or did.get("from") != settings.folder or did.get(name) != value:
+        return {}
+    return did
+
+
+class _Progress:
+    """What one mailbox act has done so far, as the channel reports it (`did`): the mailbox and folder it ran in, where
+    a move goes, the messages moved and the messages a mark was put on, and, while a step's outcome isn't known, the
+    message it was on and how far that got. `touched` says whether anything changed, or may have."""
+
+    def __init__(self, settings: MailboxSettings, before: Mapping[str, Any]):
+        self.did: dict[str, Any] = {
+            "mailbox": _identity(settings),
+            "from": before.get("from") or settings.folder,
+            "moved": [str(i) for i in before.get("moved") or []],
+            "flagged": [str(i) for i in before.get("flagged") or []],
+        }
+        unsure = before.get("unsure") or {}
+        #: The messages an earlier attempt of this act moved, or may have.
+        self.ours = {*self.did["moved"], *([str(unsure["id"])] if unsure.get("id") else [])}
+        self.touched = bool(self.ours or self.did["flagged"])
+
+    def begin(self, wanted: str, step: str) -> None:
+        """A step whose outcome isn't known until the server answers."""
+        self.touched = True
+        self.did["unsure"] = {"id": wanted, "step": step}
+
+    def untouched(self) -> None:
+        """The server said no to the step just begun: that message is as it was."""
+        self.did.pop("unsure", None)
+        self.touched = bool(self.did["moved"] or self.did["flagged"])
+
+    def moved(self, wanted: str) -> None:
+        self._done("moved", wanted)
+
+    def flagged(self, wanted: str) -> None:
+        self._done("flagged", wanted)
+
+    def _done(self, name: str, wanted: str) -> None:
+        self.did.pop("unsure", None)
+        if wanted not in self.did[name]:
+            self.did[name].append(wanted)
+        self.touched = True
+
+    def said(self, why: str) -> str:
+        """How far the act got, in plain words for the person."""
+        unsure = self.did.get("unsure") or {}
+        to = self.did.get("to")
+        if unsure.get("step") in ("copied", "marked") and to:
+            return (
+                f"a message was copied to {to} but is still in {self.did['from']}: {why}. "
+                "Send it again to finish; nothing is copied twice"
+            )
+        done = len(self.did["moved"]) + len(self.did["flagged"])
+        return f"it stopped part way, with {done} done: {why}. Send it again to finish the rest"
 
 
 def _sent_folder(server: Any, settings: MailboxSettings) -> str:

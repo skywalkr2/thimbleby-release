@@ -47,6 +47,7 @@ from engine import (
     understand,
 )
 from engine import agenda as agenda_module
+from engine import facts as facts_module
 from engine import search as workspace_search
 from engine import series as series_module
 from engine.blocked import blocker_problem
@@ -1178,6 +1179,15 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
             else:
                 held = why if reported else "changes how the product behaves; needs your confirmation"
             problems.append(Problem("tier", "hold", i, held))
+        # A fact that isn't the person's own words never replaces one they trust on its own: it waits, and theirs
+        # stays the one in use.
+        if (
+            isinstance(op, FactOp)
+            and ctx.actor != "pm"
+            and not ctx.confirmed_by_pm
+            and facts_module.outside_replaces_trusted(view, op.supersedes, _from_pm(view, ctx))
+        ):
+            problems.append(Problem("outside-replaces", "hold", i, FACT_REPLACE_WAITS))
         # A rule the person states that contradicts one in force waits even though they typed it: they say which wins.
         against = (
             rule_contradiction.contradicted(view, op)
@@ -1220,6 +1230,8 @@ DATED_WAITS = "A date found in the words of an input waits for your confirmation
 ACT_WAITS = "Something to send waits for your confirmation; nothing goes out until you say yes."
 REACHED_WAITS = "Someone has already been sent this: look at it before dropping it."
 PROJECT_WAITS = "A project the workspace doesn't have yet: add it, or say where this belongs?"
+#: Why a fact from outside that would replace one the person trusts waits: theirs stays in use until they say yes.
+FACT_REPLACE_WAITS = "This comes from outside and would replace a fact you trust; yours stays in use until you say yes."
 
 
 def reached_someone(record: Any) -> bool:

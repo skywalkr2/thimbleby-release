@@ -93,7 +93,7 @@ describe("beside the list", () => {
     expect(chosenId()).toBe("PER-2");
     await user.click(within(pane).getAllByRole("button", { name: "Copy message" }).at(-1)!);
     expect(await navigator.clipboard.readText()).toBe(sections[1].message);
-    expect(within(pane).getAllByRole("button", { name: "Mark sent" }).length).toBeGreaterThan(0);
+    expect(within(pane).getAllByRole("button", { name: "I've sent it" }).length).toBeGreaterThan(0);
     // No line carries a Copy or a Mark sent of its own.
     expect(within(await line("Robin Sample")).queryByRole("button", { name: /Copy message|Mark sent/ })).toBeNull();
     expect(within(await line("Casey Moor")).queryByRole("button", { name: /Copy message|Mark sent/ })).toBeNull();
@@ -129,8 +129,10 @@ describe("beside the list", () => {
     renderApp(<FollowUps />);
     const pane = await screen.findByRole("complementary", { name: "Ana Person" });
     await user.click(within(pane).getByRole("button", { name: "More actions for Ana Person" }));
-    await user.click(await screen.findByRole("menuitem", { name: "Mark sent" }));
-    await waitFor(() => expect(calls.find((c) => c.route === "POST followups/PER-1/mark-sent")?.body).toEqual({ text: sections[0].message }));
+    await user.click(await screen.findByRole("menuitem", { name: "I've sent it" }));
+    // The words as shown, and what the message held (the items and their versions), so later items are never marked with it.
+    await waitFor(() => expect(calls.find((c) => c.route === "POST followups/PER-1/mark-sent")?.body).toMatchObject({ text: sections[0].message }));
+    expect(calls.find((c) => c.route === "POST followups/PER-1/mark-sent")?.body).toHaveProperty("held");
     expect(await screen.findByRole("complementary", { name: "Robin Sample" })).toBeInTheDocument();
     expect(chosenId()).toBe("PER-2");
   });
@@ -205,7 +207,7 @@ describe("a line's own Copy on Today", () => {
     await user.click(seenCopy("Robin Sample"));
     expect(await navigator.clipboard.readText()).toBe(sections[1].message);
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(within(screen.getByRole("listitem", { name: "Robin Sample" })).getByRole("button", { name: "Mark sent" })).toBeInTheDocument();
+    expect(within(screen.getByRole("listitem", { name: "Robin Sample" })).getByRole("button", { name: "I've sent it" })).toBeInTheDocument();
   });
 
   test("a message opened before in another wording is shown first, not copied", async () => {

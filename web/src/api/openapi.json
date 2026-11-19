@@ -1647,6 +1647,18 @@
             "description": "What an event is called.",
             "title": "Title"
           },
+          "uncertain_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For an uncertain act its channel began and could not finish: how far it got, in plain words.",
+            "title": "Uncertain Reason"
+          },
           "undo_failure": {
             "anyOf": [
               {
@@ -13339,6 +13351,18 @@
             "title": "Title",
             "type": "string"
           },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its version as read; sent back with a copied message's items.",
+            "title": "Version"
+          },
           "views": {
             "description": "The ids of the views its project is in (design 6.32); empty when its project is in none. A view only changes what a screen shows.",
             "items": {
@@ -15111,6 +15135,66 @@
           }
         },
         "title": "HeldIn",
+        "type": "object"
+      },
+      "HeldItem": {
+        "description": "One question or action a copied message held, with the version it had then.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "version"
+        ],
+        "title": "HeldItem",
+        "type": "object"
+      },
+      "HeldItems": {
+        "description": "What a follow-up message held when the person copied it, so Mark sent marks that and nothing that came after.",
+        "properties": {
+          "actions": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/HeldItem"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "as_copied": {
+            "default": false,
+            "description": "The person's answer for items that changed after the copy: they went out as copied, so mark them.",
+            "title": "As Copied",
+            "type": "boolean"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The message as it was drafted when it was copied, to tell the person's edits from later ones.",
+            "title": "Message"
+          },
+          "questions": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/HeldItem"
+            },
+            "title": "Questions",
+            "type": "array"
+          }
+        },
+        "title": "HeldItems",
         "type": "object"
       },
       "HeldMessageChanged": {
@@ -31287,6 +31371,34 @@
         "title": "SendBack",
         "type": "object"
       },
+      "SentChanged": {
+        "description": "A question or action that changed after the message was copied, so it was not marked sent.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "action",
+              "question"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "text"
+        ],
+        "title": "SentChanged",
+        "type": "object"
+      },
       "SentCounts": {
         "properties": {
           "action_ids": {
@@ -31299,6 +31411,20 @@
           "actions": {
             "title": "Actions",
             "type": "integer"
+          },
+          "arrived": {
+            "default": 0,
+            "description": "How many items to send arrived after the copy; they stay to send.",
+            "title": "Arrived",
+            "type": "integer"
+          },
+          "changed": {
+            "description": "What the copied message held that changed since: not marked sent, for the person to say whether it went as copied.",
+            "items": {
+              "$ref": "#/components/schemas/SentChanged"
+            },
+            "title": "Changed",
+            "type": "array"
           },
           "question_ids": {
             "items": {
@@ -31362,6 +31488,17 @@
       },
       "SentText": {
         "properties": {
+          "held": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeldItems"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the message held when it was copied. Only these are marked sent; left out, everything to send to the person now is."
+          },
           "text": {
             "anyOf": [
               {

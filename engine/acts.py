@@ -124,7 +124,8 @@ def template_version_now(plugins: Any, data: Mapping[str, Any]) -> str | None:
 def service_ref(view: Any, record_id: str) -> dict[str, Any]:
     """What a record an act is about is to the service, as it resolves now: a saved message's service id (the key the
     watched source gave it, a Message-ID for a plain mailbox) and a calendar entry's UID (its source key), with the
-    entry's time and state, which move when its organizer changes it. A record that is gone says so."""
+    entry's time, state and revision number (where its source gave one), which move when its organizer changes it. A
+    record that is gone says so."""
     found = view.get("source", record_id)
     if found is not None:
         watched = found.data.get("watched") or {}
@@ -136,7 +137,7 @@ def service_ref(view: Any, record_id: str) -> dict[str, Any]:
             "id": record_id,
             "service_id": data.get("key"),
             "uid": data.get("key"),
-            "sequence": None,
+            "sequence": data.get("sequence"),
             "start": data.get("start"),
             "end": data.get("end"),
             "cancelled": bool(data.get("cancelled")),
@@ -159,9 +160,23 @@ def what(data: Mapping[str, Any]) -> str:
     return target.get("action") or ACT_ACTIONS[target["kind"]][0]
 
 
-def components(view: Any, data: Mapping[str, Any], template_now: str | None) -> dict[str, str]:
+def binding_now(view: Any, plugins: Any, data: Mapping[str, Any]) -> dict[str, str] | None:
+    """What the act's account resolves to now, as its channel says (which mailbox it signs in to, the address it sends
+    from, the folder a move ends in); None for an act with no account, or a channel whose account id says it all."""
+    channel = channel_of(plugins, data["channel"])
+    if channel is None or channel.binding is None or not data.get("account"):
+        return None
+    found = channel.binding(outgoing(view, "", data))
+    return {str(k): str(v) for k, v in found.items()} if found is not None else None
+
+
+def components(
+    view: Any, data: Mapping[str, Any], template_now: str | None, binding: Mapping[str, str] | None = None
+) -> dict[str, str]:
     """The parts of the fingerprint, each hashed on its own, so a difference can say what changed. What an act did not
-    use before acts named an action, their things, an event or an account adds nothing, so an older yes still holds."""
+    use before acts named an action, their things, an event or an account adds nothing, so an older yes still holds.
+    `binding` is what the account resolves to now (`binding_now`): the account part covers it with the account's id,
+    so the same id pointed at another mailbox is a different account to the yes."""
     target = data["target"]
     resolved: dict[str, Any] = {
         "kind": target["kind"],
@@ -192,18 +207,22 @@ def components(view: Any, data: Mapping[str, Any], template_now: str | None) -> 
     if target.get("about"):
         parts["about"] = _hash(about_refs(view, data))
     if data.get("account"):
-        parts["account"] = _hash(data["account"].lower())
+        account = data["account"].lower()
+        parts["account"] = _hash(account if binding is None else {"id": account, "binding": dict(binding)})
     return parts
 
 
-def fingerprint(view: Any, data: Mapping[str, Any], template_now: str | None = None) -> str:
+def fingerprint(
+    view: Any, data: Mapping[str, Any], template_now: str | None = None, binding: Mapping[str, str] | None = None
+) -> str:
     """The stable hash the person's yes covers, from the act and the workspace as it is now."""
-    return _hash(components(view, data, template_now))
+    return _hash(components(view, data, template_now, binding))
 
 
 def current_fingerprint(view: Any, plugins: Any, data: Mapping[str, Any]) -> tuple[str, dict[str, str]]:
-    """The fingerprint of an act now, with its parts, reading the template's version from its channel."""
-    parts = components(view, data, template_version_now(plugins, data))
+    """The fingerprint of an act now, with its parts, reading the template's version and what the account resolves to
+    from its channel."""
+    parts = components(view, data, template_version_now(plugins, data), binding_now(view, plugins, data))
     return _hash(parts), parts
 
 
@@ -214,11 +233,13 @@ def what_changed(covered: Mapping[str, str], now: Mapping[str, str]) -> list[str
     return [name for name in names if covered.get(name) != now.get(name)]
 
 
-def shown(view: Any, data: Mapping[str, Any], template_now: str | None = None) -> dict[str, Any]:
+def shown(
+    view: Any, data: Mapping[str, Any], template_now: str | None = None, binding: Mapping[str, str] | None = None
+) -> dict[str, Any]:
     """The act as the person saw it when they said yes, in plain values: the content by part, each recipient's address
     as it resolved, the other target fields, the things it is about as they stood, the template and its version, the
-    account and the channel. Kept on the yes so an act that went stale can say what is different now; the fingerprint
-    is what decides, this is only for showing."""
+    account, what it resolved to and the channel. Kept on the yes so an act that went stale can say what is different
+    now; the fingerprint is what decides, this is only for showing."""
     target = data["target"]
     template = data.get("template")
     fields = {
@@ -241,6 +262,7 @@ def shown(view: Any, data: Mapping[str, Any], template_now: str | None = None) -
     return {
         "channel": data["channel"],
         "account": data.get("account"),
+        "binding": dict(binding) if binding is not None else None,
         "parts": dict(data.get("parts") or {}),
         "recipients": [
             {"role": r["role"], "address": current_address(view, r)} for r in target.get("recipients") or []
@@ -252,15 +274,16 @@ def shown(view: Any, data: Mapping[str, Any], template_now: str | None = None) -
 
 
 def current_shown(view: Any, plugins: Any, data: Mapping[str, Any]) -> dict[str, Any]:
-    """`shown` for an act now, with the template at the version its channel has now."""
-    return shown(view, data, template_version_now(plugins, data))
+    """`shown` for an act now, with the template at the version its channel has now and the account as it resolves."""
+    return shown(view, data, template_version_now(plugins, data), binding_now(view, plugins, data))
 
 
 @dataclass(frozen=True)
 class Difference:
     """One thing that is different now from what the yes covered: the part of the yes it belongs to (`content`,
     `target`, `about`, `account`, `channel`, `template`), the field within it (a content part's name, `to`, `cc`, a
-    target field, or an id for a thing the act is about), what it was and what it is, as plain text."""
+    target field, an id for a thing the act is about, or for an account that resolves differently the name its channel
+    gives what moved), what it was and what it is, as plain text."""
 
     part: str
     field: str
@@ -298,6 +321,12 @@ def differences(before: Mapping[str, Any], now: Mapping[str, Any]) -> list[Diffe
     for key in ("account", "channel", "template"):
         if before.get(key) != now.get(key):
             found.append(Difference(key, key, before.get(key), now.get(key)))
+    # The same account pointed somewhere else: each value that moved, as the channel names it.
+    old_binding, new_binding = before.get("binding") or {}, now.get("binding") or {}
+    if before.get("binding") is not None:
+        for name in sorted(set(old_binding) | set(new_binding)):
+            if old_binding.get(name) != new_binding.get(name):
+                found.append(Difference("account", name, old_binding.get(name), new_binding.get(name)))
     return found
 
 
@@ -378,6 +407,7 @@ def outgoing(view: Any, act_id: str, data: Mapping[str, Any]) -> OutgoingAct:
         answer=target.get("answer"),
         proposed_start=target.get("proposed_start"),
         proposed_end=target.get("proposed_end"),
+        did=data.get("did"),
     )
 
 
@@ -907,7 +937,16 @@ def _sent(tx: Tx, op: ActSentOp, ctx: Any, w: WriteContext) -> list[dict[str, An
     tx.update(
         "act",
         found.id,
-        {"status": "sent", "service_id": op.service_id, "sent_at": op.at.isoformat(), "sent_by": "publisher"},
+        {
+            "status": "sent",
+            "service_id": op.service_id,
+            "sent_at": op.at.isoformat(),
+            "sent_by": "publisher",
+            "uncertain_reason": None,
+            # What the channel says the act changed is kept for taking it back; an answer that says nothing leaves
+            # what an earlier attempt reported.
+            **({"did": op.did} if op.did is not None else {}),
+        },
         w,
         read_version=found.version,
     )
@@ -918,14 +957,31 @@ def _failed(tx: Tx, op: ActFailedOp, ctx: Any, w: WriteContext) -> list[dict[str
     found = _get(tx, op.id)
     _attempt(found, op)
     failure = {"kind": op.kind, "reason": op.reason, "at": op.at.isoformat()}
-    tx.update("act", found.id, {"status": "failed", "failure": failure}, w, read_version=found.version)
+    tx.update(
+        "act",
+        found.id,
+        {"status": "failed", "failure": failure, "uncertain_reason": None},
+        w,
+        read_version=found.version,
+    )
     return [{"kind": "act", "id": found.id}]
 
 
 def _uncertain(tx: Tx, op: ActUncertainOp, ctx: Any, w: WriteContext) -> list[dict[str, Any]]:
     found = _get(tx, op.id)
     _need(found, ("sending",), "it can't be uncertain")
-    tx.update("act", found.id, {"status": "uncertain", "why": [op.why]}, w, read_version=found.version)
+    tx.update(
+        "act",
+        found.id,
+        {
+            "status": "uncertain",
+            "why": [op.why],
+            "uncertain_reason": op.reason,
+            **({"did": op.did} if op.did is not None else {}),
+        },
+        w,
+        read_version=found.version,
+    )
     return [{"kind": "act", "id": found.id}]
 
 

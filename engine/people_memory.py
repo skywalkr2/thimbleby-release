@@ -398,8 +398,10 @@ def facts_about(
 
     rules = cfg.steward.people
     set_words = [w.casefold() for w in rules.date_words if w.strip()]
+    from engine.facts import replaced_ids
+
     facts = view.list("fact")
-    replaced = {f.data["supersedes"] for f in facts if f.data.get("supersedes")}
+    replaced = replaced_ids(facts, hide)
     dates: list[Dated] = []
     kept: list[Kept] = []
     here = zone(cfg)

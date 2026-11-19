@@ -391,7 +391,7 @@ function WorkspaceForm(props: { onContinue?: () => void; done?: boolean; setting
   const off = !item || item.locked || !item.editable;
   const zoneChanged = !off && zone.trim() !== "" && zone.trim() !== stored;
   const empty = nameChanged && !fullName.trim();
-  // A full name is a first and a last name: one word is asked again, in words, instead of being kept as the full name.
+  // One word is a name too (some people go by one); a note says a last name keeps people who share it apart, and never blocks.
   const oneWord = nameChanged && !empty && fullName.trim().split(/\s+/).length < 2;
   const pending = nameChanged || zoneChanged;
 
@@ -432,7 +432,7 @@ function WorkspaceForm(props: { onContinue?: () => void; done?: boolean; setting
   };
 
   // Inside the walkthrough the screen's one Continue saves this form (when it has something to save) and moves on.
-  const missing = !props.done && (empty || oneWord || !pending) ? t(empty ? "welcome.workspace.why_blank" : oneWord ? "welcome.workspace.why_one_word" : "welcome.workspace.why") : "";
+  const missing = !props.done && (empty || !pending) ? t(empty ? "welcome.workspace.why_blank" : "welcome.workspace.why") : "";
   useContinue(hasSlot ? { run: async () => (pending ? save() : true), disabled: !!missing, why: missing } : null);
 
   const zoneId = "workspace-workspace-user-timezone";
@@ -446,7 +446,7 @@ function WorkspaceForm(props: { onContinue?: () => void; done?: boolean; setting
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        if (pending && !empty && !oneWord) void save();
+        if (pending && !empty) void save();
       }}
     >
       <FormField id="workspace-full-name" label={t("welcome.workspace.full_name")}>
@@ -462,7 +462,7 @@ function WorkspaceForm(props: { onContinue?: () => void; done?: boolean; setting
           {t("welcome.workspace.full_name_hint")}
         </p>
         {oneWord && (
-          <p className="problem-note" id="workspace-full-name-one-word">
+          <p className="hint" id="workspace-full-name-one-word">
             {t("welcome.workspace.why_one_word")}
           </p>
         )}
@@ -501,7 +501,7 @@ function WorkspaceForm(props: { onContinue?: () => void; done?: boolean; setting
       )}
       {!hasSlot && (
         <Actions align="end">
-          <Button type="submit" variant={props.done ? "secondary" : "primary"} disabled={busy || empty || oneWord || !pending}>
+          <Button type="submit" variant={props.done ? "secondary" : "primary"} disabled={busy || empty || !pending}>
             {t(props.onContinue && !props.done ? "welcome.workspace.save_continue" : "welcome.workspace.save")}
           </Button>
         </Actions>

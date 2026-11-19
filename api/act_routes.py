@@ -100,7 +100,7 @@ def build_act_router(ws: Workspace, cfg: Config, store: Store, events: Events, w
         out = []
         for d in acts.differences(was["shown"], acts.current_shown(view, store.plugins, data)):
             before, after = d.before, d.after
-            if d.part == "account":
+            if d.part == "account" and d.field == "account":
                 before, after = (act_accounts.label_of(store, cfg, v) if v else None for v in (before, after))
             elif d.part == "channel":
                 before, after = (
@@ -162,6 +162,7 @@ def build_act_router(ws: Workspace, cfg: Config, store: Store, events: Events, w
             and not data.get("undo_requested_at"),
             undone_at=data.get("undone_at"),
             undo_failure=ActFailureView(**data["undo_failure"]) if data.get("undo_failure") else None,
+            uncertain_reason=data.get("uncertain_reason") if data["status"] == "uncertain" else None,
             status=data["status"],
             parts=dict(data["parts"]),
             recipients=recipients,

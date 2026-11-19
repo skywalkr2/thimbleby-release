@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import inspect
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -52,7 +52,9 @@ class OutgoingAct:
     `calendar`, `when`, `start`, `end`, `title`, `alarm_minutes`; for an answer, `answer` (`accepted`, `tentative`,
     `declined` or `propose`) and the proposed times; `folder` is a file's folder or the one a mailbox act moves messages
     to, and `label` the label it applies. `template` is the name and version of the template the content was rendered
-    from, or None."""
+    from, or None. `did` is what the channel itself reported having done for this act (the `did` of its last
+    `ChannelSent` or `ChannelUnknown`), handed back on a later attempt and on `undo`, so a retry finishes what was
+    begun and an undo takes back only what the act did; None when it reported nothing."""
 
     id: str
     kind: str
@@ -73,6 +75,7 @@ class OutgoingAct:
     answer: str | None = None
     proposed_start: str | None = None
     proposed_end: str | None = None
+    did: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -115,9 +118,12 @@ def call_channel(fn: Callable[..., Any], args: tuple[Any, ...], context: Channel
 @dataclass(frozen=True)
 class ChannelSent:
     """The channel's answer when the act went out: the id the service gave it (kept on the act and used to find it
-    again)."""
+    again). `did` is what the channel wants to remember about what the act changed, in plain values (which messages it
+    moved and where from and to, which it added a label to): the core keeps it on the act and hands it back in
+    `OutgoingAct.did` when the person asks to take the act back, so `undo` takes back that and nothing else."""
 
     service_id: str
+    did: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -153,7 +159,13 @@ class ChannelNotSent:
 
 @dataclass(frozen=True)
 class ChannelUnknown:
-    """The channel can't say what happened: a send that got no clear answer, or a status it can't read."""
+    """The channel can't say what happened: a send that got no clear answer, or a status it can't read. An act that was
+    begun and not finished (a message copied to a folder and not yet removed from the one it left) is this answer,
+    never `ChannelFailed`: `reason` says in plain words for the person how far it got, and `did` what was done so far,
+    kept on the act and handed back in `OutgoingAct.did` when the person has it carried out again."""
+
+    reason: str | None = None
+    did: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -180,6 +192,11 @@ class ChannelRegistration:
     #: True for a channel the person carries out themselves (`copy`): the publisher never calls it, and the act is
     #: sent only when the person says it was.
     manual: bool = False
+    #: `binding(act)`: what the act's account resolves to now, as named plain values (which mailbox it signs in to, the
+    #: address it sends from, the folder a move ends in), never a secret. The person's yes covers it, so a yes given
+    #: for one mailbox never carries an act through another that took its name. It reads settings only and reaches no
+    #: service. None for a channel whose account id is the whole of what it resolves to.
+    binding: Callable[[OutgoingAct], Mapping[str, str] | None] | None = None
 
     def takes(self, kind: str, action: str) -> bool:
         """Whether the channel declares this action for this kind of target. A channel that lists none takes the first

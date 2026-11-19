@@ -117,6 +117,7 @@ export function OutgoingDetail(props: {
         </section>
       )}
       {act.status === "uncertain" && <p>{t("outgoing.uncertain.text")}</p>}
+      {act.status === "uncertain" && act.uncertain_reason && <p>{t("outgoing.uncertain.part_done", { reason: act.uncertain_reason })}</p>}
       {act.status === "sending" && <p>{t("outgoing.sending.text")}</p>}
       {blocked && (
         <p className="problem-note" role="alert">

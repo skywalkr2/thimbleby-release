@@ -170,13 +170,16 @@ def reply_ics(
     comment: str | None = None,
     *,
     dtstamp: datetime,
+    sequence_known: bool = True,
 ) -> str:
     """Prepare a REPLY containing only the responding attendee; never send it.
 
     Supply the reply creation instant explicitly to avoid reading the clock.
     Echo the organizer's UID, SEQUENCE, and optional RECURRENCE-ID. Convert aware
     times to UTC so replies do not depend on copying a VTIMEZONE definition.
-    Floating and all-day values retain their value types.
+    Floating and all-day values retain their value types. With `sequence_known`
+    False the organizer's revision number isn't known, so the reply carries no
+    SEQUENCE line rather than a number nobody gave.
     """
     if invitation.method != "REQUEST" or invitation.cancelled:
         raise ValueError("Only an active REQUEST can be answered")
@@ -194,7 +197,8 @@ def reply_ics(
     calendar.add("METHOD", "REPLY")
     event = Event()
     event.add("UID", invitation.uid)
-    event.add("SEQUENCE", invitation.sequence)
+    if sequence_known:
+        event.add("SEQUENCE", invitation.sequence)
     event.add("DTSTAMP", dtstamp.astimezone(UTC))
     event.add("ORGANIZER", vCalAddress("mailto:" + invitation.organizer))
     attendee = vCalAddress("mailto:" + person.email)

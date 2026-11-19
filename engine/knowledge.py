@@ -232,6 +232,10 @@ def proposal_rules(
         # unknown the person already kept stays, and the meaning is proposed beside it for them to keep.
         if existing.data.get("status") != "proposed":
             return None
+        # A meaning from outside content never takes over a proposal that came from elsewhere: it would wear that
+        # proposal's trust and origin. It is proposed beside it, as what it is, for the person to keep one.
+        if data.get("trust") == "untrusted" and _came_from(data) != _came_from(existing.data):
+            return None
         old = existing.data.get("evidence")
         more = [e for e in [old, *(existing.data.get("more_evidence") or [])] if e]
         changes = {f: data[f] for f in ("text", "meaning", "confidence", "evidence") if data.get(f) is not None}
@@ -239,6 +243,11 @@ def proposal_rules(
         return [{"kind": kind, "id": existing.id}]
     merge_into(tx, kind, existing, data.get("evidence"), w)
     return [{"kind": kind, "id": existing.id}]
+
+
+def _came_from(data: dict[str, Any]) -> tuple[Any, Any]:
+    """How far an entry is trusted and where it came from."""
+    return data.get("trust", "trusted"), data.get("origin")
 
 
 def _knows_more(new: dict[str, Any], old: dict[str, Any]) -> bool:

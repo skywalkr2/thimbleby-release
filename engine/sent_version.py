@@ -51,11 +51,30 @@ def record_copy(
     questions: list[str] | tuple[str, ...] = (),
     actions: list[str] | tuple[str, ...] = (),
     now: datetime | None = None,
+    same_message: bool = False,
 ) -> str:
     """Keep a message the person copied, exactly as copied. Copying the same message again (same kind, person, covered
-    items and words, not yet matched or settled) moves that copy forward instead of keeping a second. Returns its id."""
+    items and words, not yet matched or settled) moves that copy forward instead of keeping a second. With
+    `same_message`, the items are more of what a message already kept covered (same kind, person and words), so they
+    join that copy rather than making a second one for one message. Returns its id."""
     stamp = (now or datetime.now(UTC)).isoformat()
     with store.transaction() as tx:
+        if same_message:
+            for found in tx.list("copy"):
+                d = found.data
+                if (
+                    d["kind"] == kind
+                    and d.get("person") == person
+                    and not d.get("sent_source")
+                    and not d.get("settled")
+                    and normalize(d["text"]) == normalize(text)
+                ):
+                    more = {
+                        "questions": list(dict.fromkeys([*d["questions"], *questions])),
+                        "actions": list(dict.fromkeys([*d["actions"], *actions])),
+                    }
+                    tx.update("copy", found.id, more, _COPY, read_version=found.version)
+                    return found.id
         return _keep(tx, kind, person, text, questions, actions, stamp)
 
 
@@ -127,18 +146,25 @@ def keep_work(store: Any, action_id: str, *, now: datetime | None = None) -> str
 
 def forget_copy(store: Any, person: str, question_ids: list[str], action_ids: list[str]) -> None:
     """Take back the copy a follow-up marked as sent made, when the person undoes the mark: the message covering exactly
-    these questions and actions, if it has not been matched to a sent message."""
+    these questions and actions, if it has not been matched to a sent message. A copy that covers these and more
+    (items that joined it later, or the ones it began with) only stops covering these."""
+    gone_q, gone_a = set(question_ids), set(action_ids)
+    if not gone_q and not gone_a:
+        return
     with store.transaction() as tx:
         for found in tx.list("copy"):
             d = found.data
-            if (
-                d["kind"] == "follow_up"
-                and d.get("person") == person
-                and not d.get("sent_source")
-                and set(d["questions"]) == set(question_ids)
-                and set(d["actions"]) == set(action_ids)
-            ):
+            if d["kind"] != "follow_up" or d.get("person") != person or d.get("sent_source"):
+                continue
+            have_q, have_a = set(d["questions"]), set(d["actions"])
+            if have_q == gone_q and have_a == gone_a:
                 tx.delete("copy", found.id, _COPY, read_version=found.version)
+            elif gone_q <= have_q and gone_a <= have_a:
+                left = {
+                    "questions": [q for q in d["questions"] if q not in gone_q],
+                    "actions": [a for a in d["actions"] if a not in gone_a],
+                }
+                tx.update("copy", found.id, left, _COPY, read_version=found.version)
 
 
 # ---- matching the sent folder ----------------------------------------------------------------------------------------

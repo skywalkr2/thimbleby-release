@@ -43,7 +43,8 @@ class EventOccurrence:
     """One date of a repeating event the connector expanded. `start` and `end`: as on `EventDetails`. `was`: the
     start it had in the series before it was moved, set only for a moved date (the series' own date is the date's
     identity, so a moved date is still the same one). `cancelled`: this date was called off. `title`, `where`: what
-    differs from the series for a changed date; None for the series' own."""
+    differs from the series for a changed date; None for the series' own. `sequence`: the revision number the
+    organizer gave a changed date (its iCalendar SEQUENCE); None for a date the series' own revision covers."""
 
     start: str
     end: str | None = None
@@ -51,6 +52,7 @@ class EventOccurrence:
     cancelled: bool = False
     title: str | None = None
     where: str | None = None
+    sequence: int | None = None
 
 
 @dataclass(frozen=True)
@@ -70,7 +72,9 @@ class EventDetails:
     nobody else invited and `described` False is a plain one: the rules file it without the assistant reading it.
     `uid`: the invitation's own identity, its iCalendar UID, which every calendar that holds the same invitation
     gives it the same (each calendar's own id for it differs). Two accounts that hold one invitation then show it once.
-    Left out, an item is never taken for the same as another."""
+    Left out, an item is never taken for the same as another. `sequence`: the revision number the organizer gave the
+    event (its iCalendar SEQUENCE), which rises each time they change it; an answer to the invitation echoes it, and
+    a newer revision ends a yes given to an answer to the older one. None when the source doesn't say, never a guess."""
 
     start: str
     end: str | None = None
@@ -86,6 +90,7 @@ class EventDetails:
     entries: bool = False
     described: bool | None = None
     uid: str | None = None
+    sequence: int | None = None
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> EventDetails:

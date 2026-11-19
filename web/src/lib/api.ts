@@ -470,8 +470,8 @@ export const api = {
     call<S["RequestChanged"]>("POST", `requests/${id(req)}/dismiss`, { read_version: readVersion }),
   undismiss: (req: string, readVersion: number) =>
     call<S["RequestChanged"]>("POST", `requests/${id(req)}/undismiss`, { read_version: readVersion }),
-  markSent: (person: string, text: string | null) =>
-    call<S["SentCounts"]>("POST", `followups/${id(person)}/mark-sent`, { text }),
+  markSent: (person: string, text: string | null, held?: S["HeldItems"] | null) =>
+    call<S["SentCounts"]>("POST", `followups/${id(person)}/mark-sent`, { text, held: held ?? null }),
   unmarkSent: (person: string, body: S["Unmark"]) =>
     call<S["Ok"]>("POST", `followups/${id(person)}/unmark-sent`, body),
   nudgeSent: (person: string, body: S["NudgeSent"]) =>

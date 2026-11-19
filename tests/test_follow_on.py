@@ -16,7 +16,7 @@ from engine import packet as packets
 from engine import series as series_module
 from engine.ai.adapters.stub import set_responder
 from engine.ai.router import Router
-from engine.applier import Context, Inputs, apply_as_person, apply_changeset
+from engine.applier import Context, Inputs, apply_as_person, apply_changeset, release
 from engine.dispatcher import process, undo_changeset
 from engine.names import People
 from engine.ops import CHANGESET
@@ -209,11 +209,18 @@ def test_a_replaced_fact_queues_one_request_whoever_replaces_it(env):
         "supersedes": old,
         "evidence": {"quote": RAW},
     }
+    # From an input, a replacement of a fact the person trusts waits for them, and nothing follows until their yes.
     cs_id, statuses = assistant_applies(env, [op])
-    assert statuses == ["applied"]
+    assert statuses == ["held"] and follow_ons(store) == []
+    release(store, env[1], cs_id, 0)
     (queued,) = follow_ons(store)
     (move,) = follow_on.moves_of(store.read(), cs_id)
     assert (queued.data["follows"], move.kind, move.after) == (cs_id, "fact", old)
+    # A replacement of a fact that came from outside is made at once, and queues its own.
+    outside = make(store, "fact", trust="untrusted")
+    cs_id, statuses = assistant_applies(env, [{**op, "supersedes": outside}])
+    assert statuses == ["applied"]
+    assert [q.data["follows"] for q in follow_ons(store)] == [queued.data["follows"], cs_id]
 
 
 @pytest.mark.parametrize("change", ["new_action", "words_only", "same_day", "off", "first_value"])
@@ -338,7 +345,7 @@ def test_a_moved_action_ties_the_open_items_on_its_project_that_cite_its_old_day
 
 def test_a_replaced_fact_ties_items_that_repeat_it_and_ignores_the_fact_itself_and_the_replaced_ones(env):
     _, _, store = env
-    old = make(store, "fact", text="The press slot is booked for the third week of November")
+    old = make(store, "fact", text="The press slot is booked for the third week of November", trust="untrusted")
     repeats = make(store, "action", text="Confirm the press slot booked for the third week of November")
     unrelated = make(store, "action", text="Review the proof")
     other = make(store, "action", text="Confirm the press slot booked for the third week of November", project=None)
@@ -588,7 +595,7 @@ def test_a_moved_entry_with_one_dated_action_and_nothing_else_has_no_plan_to_con
 
 def test_a_replaced_fact_with_several_tied_items_asks_the_person_whether_the_plan_holds(env):
     ws, cfg, store = env
-    old = make(store, "fact", text="The press slot is booked for the third week of November")
+    old = make(store, "fact", text="The press slot is booked for the third week of November", trust="untrusted")
     first = make(store, "action", text="Confirm the press slot booked for the third week of November", due=NEW)
     second = make(store, "question", title="Is the press slot booked for the third week of November?")
     assistant_applies(

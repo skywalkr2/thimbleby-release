@@ -107,6 +107,14 @@ const markSentRoutes = {
   "POST followups/PER-2/unmark-sent": () => ({ ok: "PER-2" }),
 };
 const posts = (calls: { route: string }[]) => calls.filter((c) => c.route.startsWith("POST"));
+/** What Robin's message holds, as Mark sent hands it back: each item to send with its version, and the words as drafted. */
+const heldByRobin = { questions: [{ id: "Q-1", version: 0 }], actions: [{ id: "ACT-1", version: 0 }], message: sections[1].message, as_copied: false };
+/** The same follow-ups with the versions the server gives each item. */
+const versioned: S["FollowupSection"][] = [
+  sections[0],
+  { ...sections[1], questions: [{ ...sections[1].questions[0], version: 4 }], actions: [{ ...sections[1].actions[0], version: 2 }] },
+  sections[2],
+];
 
 test("Copy puts the edited message on the clipboard and changes nothing on the server", async () => {
   const user = userEvent.setup();
@@ -117,7 +125,7 @@ test("Copy puts the edited message on the clipboard and changes nothing on the s
   await user.type(box, " PS");
   await user.click(underBox());
   expect(await navigator.clipboard.readText()).toBe(sections[1].message + " PS");
-  expect(await screen.findByText("Copied")).toBeInTheDocument();
+  expect(await screen.findByText("Copied. Nothing has been sent yet. Paste it into your email and send it there.")).toBeInTheDocument();
   expect(posts(calls)).toHaveLength(0);
   expect(screen.queryByText(/Marked as sent/)).toBeNull();
 });
@@ -223,7 +231,7 @@ test("the menu's Copy as plain text puts only the plain text on the clipboard, a
   await waitFor(() => expect(plain).toHaveBeenCalledWith(sections[1].message));
   expect(await rich.read()).toHaveLength(0);
   expect(await screen.findByText("Copied as plain text")).toBeInTheDocument();
-  expect(screen.getAllByRole("button", { name: "Mark sent" }).length).toBeGreaterThan(0);
+  expect(screen.getAllByRole("button", { name: "I've sent it" }).length).toBeGreaterThan(0);
 });
 
 test("the person's own to-dos are one plain line at the top that opens To-dos, with no You group and no list of them", async () => {
@@ -283,12 +291,12 @@ test("a click on another person's line opens their message and copies nothing; t
   const box = await screen.findByRole("textbox", { name: /Message to Sam Other/ });
   expect(box).toHaveValue(more[3].message);
   expect(await navigator.clipboard.readText()).toBe("");
-  expect(screen.queryByText("Copied")).toBeNull();
+  expect(screen.queryByText(/^Copied/)).toBeNull();
   expect(posts(calls)).toHaveLength(0);
   // Only the message on screen is copied, and then the card offers Mark sent.
   await user.click(underBox());
   expect(await navigator.clipboard.readText()).toBe(more[3].message);
-  expect(await screen.findByText("Copied")).toBeInTheDocument();
+  expect(await screen.findByText("Copied. Nothing has been sent yet. Paste it into your email and send it there.")).toBeInTheDocument();
 });
 
 test("after copying, the button under the box becomes Mark sent, and the line has no button", async () => {
@@ -298,7 +306,7 @@ test("after copying, the button under the box becomes Mark sent, and the line ha
   await user.click(await screen.findByRole("button", { name: /^Robin Sample/ }));
   await user.click(within(await findPane()).getAllByRole("button", { name: "Copy message" })[0]);
   // The button under the box says it now; the line holds none and the detail's top holds only its menu.
-  expect(await screen.findAllByRole("button", { name: "Mark sent" })).toHaveLength(1);
+  expect(await screen.findAllByRole("button", { name: "I've sent it" })).toHaveLength(1);
   expect(within(screen.getByRole("listitem", { name: "Robin Sample" })).queryByRole("button", { name: "Copy message" })).toBeNull();
   expect(within(await findPane()).queryByRole("button", { name: "Copy message" })).toBeNull();
 });
@@ -320,9 +328,9 @@ test("Mark sent records the box's text and offers Undo", async () => {
   await user.click(await screen.findByRole("button", { name: /^Robin Sample/ }));
   await user.type(screen.getByRole("textbox", { name: /Message to Robin Sample/ }), " PS");
   await user.click(underBox());
-  await user.click((await screen.findAllByRole("button", { name: "Mark sent" }))[0]);
+  await user.click((await screen.findAllByRole("button", { name: "I've sent it" }))[0]);
   await waitFor(() => expect(calls.some((c) => c.route === "POST followups/PER-2/mark-sent")).toBe(true));
-  expect(calls.find((c) => c.route === "POST followups/PER-2/mark-sent")!.body).toEqual({ text: sections[1].message + " PS" });
+  expect(calls.find((c) => c.route === "POST followups/PER-2/mark-sent")!.body).toEqual({ text: sections[1].message + " PS", held: heldByRobin });
   expect(await screen.findByText("Marked as sent to Robin Sample")).toBeInTheDocument();
   await user.click(await screen.findByRole("button", { name: "Undo" }));
   await waitFor(() =>
@@ -340,11 +348,11 @@ test("a double click on Copy copies once and never marks the message sent", asyn
   renderApp(<FollowUps />);
   await user.click(await screen.findByRole("button", { name: /^Robin Sample/ }));
   await user.dblClick(underBox());
-  expect(await screen.findAllByRole("button", { name: "Mark sent" })).toHaveLength(1);
+  expect(await screen.findAllByRole("button", { name: "I've sent it" })).toHaveLength(1);
   expect(calls.some((c) => c.route === "POST followups/PER-2/mark-sent")).toBe(false);
   expect(screen.queryByText("Marked as sent to Robin Sample")).toBeNull();
   // A later, deliberate press is the next step.
-  await user.click(screen.getAllByRole("button", { name: "Mark sent" })[0]);
+  await user.click(screen.getAllByRole("button", { name: "I've sent it" })[0]);
   await waitFor(() => expect(calls.some((c) => c.route === "POST followups/PER-2/mark-sent")).toBe(true));
 });
 
@@ -354,11 +362,62 @@ test("the row menu's Mark sent works without copying", async () => {
   renderApp(<FollowUps />);
   await user.click(await screen.findByRole("button", { name: /^Robin Sample/ }));
   await user.click(await screen.findByRole("button", { name: "More actions for Robin Sample" }));
-  await user.click(await screen.findByRole("menuitem", { name: "Mark sent" }));
+  await user.click(await screen.findByRole("menuitem", { name: "I've sent it" }));
   await waitFor(() =>
-    expect(calls.find((c) => c.route === "POST followups/PER-2/mark-sent")?.body).toEqual({ text: sections[1].message }),
+    expect(calls.find((c) => c.route === "POST followups/PER-2/mark-sent")?.body).toEqual({ text: sections[1].message, held: heldByRobin }),
   );
   expect(await screen.findByText("Marked as sent to Robin Sample")).toBeInTheDocument();
+});
+
+// H5-29 O2: between Copy and Mark sent the assistant may add to the person's message or change it. Mark sent says what the
+// copied message held, so the server marks that and nothing that came after.
+test("Mark sent hands back what the message held when it was copied, not what it holds now", async () => {
+  const user = userEvent.setup();
+  let now = versioned;
+  const calls = fakeApi({ ...markSentRoutes, "GET followups": () => now });
+  const { client } = renderApp(<FollowUps />);
+  await user.click(await screen.findByRole("button", { name: /^Robin Sample/ }));
+  await user.click(underBox());
+  expect(await navigator.clipboard.readText()).toBe(versioned[1].message);
+  // A question arrives and the one that was copied is reworded, while the person is in their mail program.
+  const later = { ...versioned[1].questions[0], id: "Q-7", version: 1, title: "Who signs off the cover?" };
+  const reworded = { ...versioned[1].questions[0], version: 5, title: "Is the index final, or is a third pass coming?" };
+  now = [versioned[0], { ...versioned[1], questions: [reworded, later], message: "Hi Robin,\n\nTwo things now.", to_send: 3 }, versioned[2]];
+  await act(() => client.invalidateQueries());
+  await screen.findByText("Who signs off the cover?");
+  await user.click(screen.getAllByRole("button", { name: "I've sent it" })[0]);
+  await waitFor(() => expect(calls.some((c) => c.route === "POST followups/PER-2/mark-sent")).toBe(true));
+  expect(calls.find((c) => c.route === "POST followups/PER-2/mark-sent")!.body).toEqual({
+    text: versioned[1].message,
+    held: { questions: [{ id: "Q-1", version: 4 }], actions: [{ id: "ACT-1", version: 2 }], message: versioned[1].message, as_copied: false },
+  });
+});
+
+test("an item that changed after the copy is asked about, and the answer marks it as it was copied", async () => {
+  const user = userEvent.setup();
+  const answers = [
+    { questions: 0, actions: 1, question_ids: [], action_ids: ["ACT-1"], changed: [{ kind: "question", id: "Q-1", text: "Is the index final, or is a third pass coming?" }], arrived: 0 },
+    { questions: 1, actions: 0, question_ids: ["Q-1"], action_ids: [], changed: [], arrived: 0 },
+  ];
+  const calls = fakeApi({ ...markSentRoutes, "GET followups": () => versioned, "POST followups/PER-2/mark-sent": () => answers.shift() });
+  renderApp(<FollowUps />);
+  await user.click(await screen.findByRole("button", { name: /^Robin Sample/ }));
+  await user.click(underBox());
+  await user.click((await screen.findAllByRole("button", { name: "I've sent it" }))[0]);
+  const asked = await waitFor(() => {
+    const note = document.querySelector<HTMLElement>("[data-changed-since-copy]");
+    expect(note).not.toBeNull();
+    return note!;
+  });
+  expect(asked).toHaveTextContent("This changed after you copied the message to Robin Sample, so it isn't marked as sent. Did it go as you copied it?");
+  expect(within(asked).getByText("Is the index final, or is a third pass coming?")).toBeInTheDocument();
+  await user.click(within(asked).getByRole("button", { name: "Yes, mark as sent" }));
+  await waitFor(() => expect(calls.filter((c) => c.route === "POST followups/PER-2/mark-sent")).toHaveLength(2));
+  expect(calls.filter((c) => c.route === "POST followups/PER-2/mark-sent")[1].body).toEqual({
+    text: versioned[1].message,
+    held: { questions: [{ id: "Q-1", version: 0 }], actions: [], message: null, as_copied: true },
+  });
+  await waitFor(() => expect(document.querySelector("[data-changed-since-copy]")).toBeNull());
 });
 
 test("when the clipboard is blocked nothing is marked, the card keeps Copy, and Mark sent is offered beside the box, not only in the menu", async () => {
@@ -371,9 +430,9 @@ test("when the clipboard is blocked nothing is marked, the card keeps Copy, and 
   expect(await screen.findByText(/Copying was blocked/)).toBeInTheDocument();
   expect(calls.some((c) => c.route.startsWith("POST"))).toBe(false);
   expect(screen.queryByText(/Marked as sent/)).toBeNull();
-  expect(screen.queryByText("Copied")).toBeNull();
+  expect(screen.queryByText(/^Copied/)).toBeNull();
   expect(screen.getAllByRole("button", { name: /^Copy/ }).length).toBeGreaterThan(0);
-  expect(screen.getAllByRole("button", { name: "Mark sent" })).toHaveLength(1);
+  expect(screen.getAllByRole("button", { name: "I've sent it" })).toHaveLength(1);
 });
 
 test("a card lists only what is still to send, with no buttons or pills on the items", async () => {
@@ -867,10 +926,10 @@ test("the two copy buttons are named for where the table goes, with one hint, an
   await showTable(user);
   const buttons = screen.getAllByRole("button").map((b) => b.textContent);
   const at = buttons.indexOf("Copy as table");
-  expect(buttons.slice(at, at + 3)).toEqual(["Copy as table", "Copy for a spreadsheet", "Mark sent"]);
+  expect(buttons.slice(at, at + 3)).toEqual(["Copy as table", "Copy for a spreadsheet", "I've sent it"]);
   expect(screen.getByText(/Copy for a spreadsheet to paste into cells/)).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Copy as table" }));
-  await user.click(screen.getAllByRole("button", { name: "Mark sent" })[0]);
+  await user.click(screen.getAllByRole("button", { name: "I've sent it" })[0]);
   await waitFor(() => expect(calls.some((c) => c.route === "POST followups/PER-2/mark-sent")).toBe(true));
   expect(await screen.findByText("Marked as sent to Robin Sample")).toBeInTheDocument();
 });
@@ -958,7 +1017,7 @@ test("a person who hasn't answered gets a drafted nudge: the items, the box with
   await user.click(within(card).getByRole("button", { name: "Copy" }));
   expect(await navigator.clipboard.readText()).toBe(nudgeText + " PS");
   expect(calls.filter((c) => c.route.startsWith("POST"))).toHaveLength(0);
-  await user.click(within(card).getByRole("button", { name: "Mark sent" }));
+  await user.click(within(card).getByRole("button", { name: "I've sent it" }));
   await waitFor(() => expect(calls.find((c) => c.route === "POST followups/PER-4/followed-up")?.body).toEqual({ text: nudgeText + " PS", question_ids: ["Q-7"], action_ids: [] }));
   expect(await screen.findByText(/Recorded your follow-up with Quinn/)).toBeInTheDocument();
   await user.click(await screen.findByRole("button", { name: "Undo" }));

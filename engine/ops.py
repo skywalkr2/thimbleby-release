@@ -2152,6 +2152,10 @@ class ActSentOp(OpModel):
     attempt_key: str = Field(min_length=1, description="The key of the attempt.")
     service_id: str = Field(description="The id the service gave it.")
     at: AwareDatetime = Field(description="When it went out.")
+    did: dict[str, Any] | None = Field(
+        None,
+        description="What the channel says the act changed, in its own plain values, kept for taking it back.",
+    )
 
 
 class ActFailedOp(OpModel):
@@ -2166,12 +2170,20 @@ class ActFailedOp(OpModel):
 
 
 class ActUncertainOp(OpModel):
-    """The service's answer was lost and the channel can't say what happened. Only the publisher writes it."""
+    """The service's answer was lost and the channel can't say what happened, or the channel began the act and could not
+    finish it. Only the publisher writes it."""
 
     op: Literal["act.uncertain"] = "act.uncertain"
     id: str = Field(description="The id of the act.")
-    why: str = Field(description="A code for why it is uncertain: lost_answer, no_status or no_channel.")
+    why: str = Field(
+        description="A code for why it is uncertain: lost_answer, no_status, no_channel, or part_done for an act the "
+        "channel began and could not finish."
+    )
     at: AwareDatetime = Field(description="When the publisher gave up asking.")
+    reason: str | None = Field(None, description="For part_done: how far it got, in plain words for the person.")
+    did: dict[str, Any] | None = Field(
+        None, description="What the channel says the act changed so far, handed back when it is carried out again."
+    )
 
 
 class ActStaleOp(OpModel):

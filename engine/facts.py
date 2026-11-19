@@ -6,6 +6,7 @@ the newer fact, so undoing the newer fact brings the older one back with no seco
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable, Mapping
 from datetime import date, datetime
 from typing import Any
 
@@ -18,6 +19,24 @@ def superseded_by(view: Any, fact_id: str) -> str | None:
         if stored.data.get("supersedes") == fact_id:
             return stored.id
     return None
+
+
+def replaced_ids(facts: Iterable[Any], hide: Callable[[Mapping[str, Any]], bool] | None = None) -> set[str]:
+    """The ids of the facts a reader finds replaced: each fact a stored fact replaces, counting only replacements the
+    reader may see. A newer fact `hide` keeps from the reader replaces nothing for them, so the older fact stays where
+    they look."""
+    return {f.data["supersedes"] for f in facts if f.data.get("supersedes") and not (hide is not None and hide(f.data))}
+
+
+def outside_replaces_trusted(view: Any, fact_id: str | None, own_words: bool) -> bool:
+    """Whether a replacement must wait for the person: it does not come from the person's own words, and the fact it
+    names is one they trust. Until they say yes both stand: the trusted fact stays where readers look, and the new
+    one is only a claim on the line that asks them. A replacement of a fact that itself came from outside needs no
+    one's yes."""
+    if fact_id is None or own_words:
+        return False
+    older = view.get("fact", fact_id)
+    return older is not None and older.data.get("trust", "trusted") == "trusted"
 
 
 def check_replaces(tx: Any, fact_id: str | None) -> None:

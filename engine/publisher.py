@@ -6,7 +6,9 @@ every part, and then, in one transaction, moves the act to `sending` with a fres
 channel called, with that key, and a context built for the act's own account (the plugin's declared hosts, and the
 account's token and scopes; a channel written without a context parameter is called without it). A clear answer makes
 the act `sent` (with the service's id) or `failed` (with the reason the channel gave, classified by the channel). A
-timeout, a lost connection or a closed lid leaves it `sending`.
+timeout, a lost connection or a closed lid leaves it `sending`. A channel that began the act and could not finish it
+says so (`ChannelUnknown` with how far it got): the act is `uncertain` at once with that kept, never `failed`. What a
+channel reports having done is kept on the act and handed back to it on a later attempt and on undo.
 
 `resume` asks the channel what happened to every act left `sending`: sent becomes `sent`; the service has nothing
 for the key, so the act is `approved` again and is never sent by itself; a channel that can't say, or isn't there,
@@ -21,6 +23,7 @@ in the ledger; nothing here writes a record any other way.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import secrets
 import threading
@@ -31,7 +34,7 @@ from typing import Any
 
 from engine import acts, outward
 from engine.applier import apply_for_publisher
-from engine.channels import ChannelFailed, ChannelNotSent, ChannelSent, ChannelUndone, call_channel
+from engine.channels import ChannelFailed, ChannelNotSent, ChannelSent, ChannelUndone, ChannelUnknown, call_channel
 from engine.config import Config
 from engine.storage import Store, StoreError
 
@@ -53,6 +56,20 @@ class SendResult:
     id: str
     status: str
     reason: str | None = None
+
+
+def _plain(did: Any) -> dict[str, Any] | None:
+    """What a channel reported doing, as plain values the act can keep; None when it reported nothing usable."""
+    if did is None:
+        return None
+    try:
+        return json.loads(json.dumps(dict(did)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _sent(act_id: str, key: str, answer: ChannelSent, at: str) -> dict[str, Any]:
+    return {"id": act_id, "attempt_key": key, "service_id": answer.service_id, "at": at, "did": _plain(answer.did)}
 
 
 class Publisher:
@@ -177,10 +194,24 @@ class Publisher:
         at = self.now().isoformat()
         if isinstance(answer, ChannelSent):
             self._op(
-                {"op": "act.sent", "id": act_id, "attempt_key": key, "service_id": answer.service_id, "at": at},
+                {"op": "act.sent", **_sent(act_id, key, answer, at)},
                 "An act went out",
             )
             return SendResult(act_id, "sent")
+        if isinstance(answer, ChannelUnknown) and (answer.reason or answer.did):
+            # Begun and not finished: said at once, with how far it got, rather than asked about as a lost answer.
+            self._op(
+                {
+                    "op": "act.uncertain",
+                    "id": act_id,
+                    "why": "part_done",
+                    "at": at,
+                    "reason": answer.reason,
+                    "did": _plain(answer.did),
+                },
+                "An act was begun and not finished",
+            )
+            return SendResult(act_id, "uncertain", answer.reason)
         if isinstance(answer, ChannelFailed):
             self._op(
                 {
@@ -283,7 +314,7 @@ class Publisher:
             answer = None
         if isinstance(answer, ChannelSent):
             self._op(
-                {"op": "act.sent", "id": act_id, "attempt_key": key, "service_id": answer.service_id, "at": at},
+                {"op": "act.sent", **_sent(act_id, key, answer, at)},
                 "An act went out",
             )
             return SendResult(act_id, "sent")

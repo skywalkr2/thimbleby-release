@@ -262,6 +262,7 @@ from engine.drop_notes import note_the_drops
 from engine.files import description_of
 from engine.followups import (
     UNTOLD_STANCES,
+    Held,
     actions_to_send,
     follow_up,
     hold_message,
@@ -2576,7 +2577,17 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
     @r.post("/followups/{person}/mark-sent")
     def sent(person: str, body: SentText) -> SentCounts:
         need("person", person)
-        counts = guard(lambda: mark_sent(store, cfg, person, sent_text=body.text))
+        held = (
+            Held(
+                questions={q.id: q.version for q in body.held.questions},
+                actions={a.id: a.version for a in body.held.actions},
+                message=body.held.message,
+                as_copied=body.held.as_copied,
+            )
+            if body.held is not None
+            else None
+        )
+        counts = guard(lambda: mark_sent(store, cfg, person, sent_text=body.text, held=held))
         changed()
         return SentCounts(**counts)
 
@@ -3702,6 +3713,7 @@ def _followup_question(
     return FollowupQuestion(
         from_outside=asked is not None and from_outside(view, asked),
         id=q["id"],
+        version=q.get("version"),
         title=q["title"],
         text=q["text"],
         links=q["links"],

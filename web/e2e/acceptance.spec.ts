@@ -30,7 +30,7 @@ interface Section {
   is_pm: boolean;
   message: string;
   to_send: number;
-  questions: Array<{ id: string; title: string; text: string; links: Array<{ label: string; url: string }>; status: string; sent: string | null }>;
+  questions: Array<{ id: string; title: string; text: string; links: Array<{ label: string; url: string }>; status: string; sent: string | null; version?: number | null }>;
   actions: Array<{ id: string; text: string; due: string | null; project_name: string; told: string | null; version?: number | null }>;
 }
 interface ChangeOp {
@@ -804,7 +804,7 @@ test.describe.serial("acceptance scenario", () => {
     const hostile = `<img src=x onerror="window.pasted=1"> & "quoted"`;
     await box.fill(`${target!.message}\n\n${hostile}`);
     await page.locator("aside[data-detail-pane]").getByRole("button", { name: "Copy message" }).first().click();
-    await expect(page.getByText("Copied", { exact: true })).toBeVisible();
+    await expect(page.getByText("Copied. Nothing has been sent yet. Paste it into your email and send it there.", { exact: true })).toBeVisible();
 
     // A document (a rich text area) takes the formatting, and nothing in it is markup the person did not write.
     await page.evaluate(() => {
@@ -857,7 +857,8 @@ test.describe.serial("acceptance scenario", () => {
     // What is still to send, by content: an action's version is left out, since the worker may still be filing earlier
     // hand-ins onto the same records while this test runs.
     const toSend = (s: Section) => ({
-      questions: s.questions.filter((q) => q.status === "open"),
+      // A version counts every write, so marking sent and undoing it moves it on; what is compared is everything else.
+      questions: s.questions.filter((q) => q.status === "open").map(({ version: _version, ...rest }) => rest),
       actions: s.actions.filter((a) => a.told === null).map(({ version: _version, ...rest }) => rest),
     });
     const withQuestions = sections.filter((s) => !s.is_pm && toSend(s).questions.length && toSend(s).actions.length);
@@ -890,7 +891,7 @@ test.describe.serial("acceptance scenario", () => {
       }
       expect(copied).not.toMatch(/ACT-|Q-\d|PER-|PRJ-/);
       // Copying changes nothing yet: the detail still offers Mark sent, and the server still has all of it to send.
-      await expect(page.locator("aside[data-detail-pane]").getByRole("button", { name: "Mark sent" }).first()).toBeVisible();
+      await expect(page.locator("aside[data-detail-pane]").getByRole("button", { name: "I've sent it" }).first()).toBeVisible();
       expect(toSend((await getJson<Section[]>(page, "api/followups")).find((x) => x.person === id)!)).toEqual({ questions, actions });
       // Reload so the next card starts from Copy again.
       await page.reload();
@@ -906,7 +907,7 @@ test.describe.serial("acceptance scenario", () => {
     await page.locator("aside[data-detail-pane]").getByRole("button", { name: "Copy message" }).first().click();
     await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(target.message);
     await expect(page.getByText(`Marked as sent to ${target.name}`)).toHaveCount(0);
-    await page.locator("aside[data-detail-pane]").getByRole("button", { name: "Mark sent" }).first().click();
+    await page.locator("aside[data-detail-pane]").getByRole("button", { name: "I've sent it" }).first().click();
     await expect(page.getByText(`Marked as sent to ${target.name}`)).toBeVisible();
     // The toast is at the bottom center of the window, never over the navigation.
     const toast = (await page.getByRole("region", { name: "Notifications" }).boundingBox())!;

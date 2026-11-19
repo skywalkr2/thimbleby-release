@@ -1135,6 +1135,7 @@ class SnapshotOccurrence(BaseModel):
     cancelled: bool = False
     title: str | None = None
     where: str | None = None
+    sequence: int | None = None
 
 
 class SnapshotEvent(BaseModel):
@@ -1156,6 +1157,7 @@ class SnapshotEvent(BaseModel):
     entries: bool = False
     described: bool | None = None
     uid: str | None = None
+    sequence: int | None = None
 
 
 class SnapshotMessage(BaseModel):
@@ -2344,6 +2346,12 @@ class CalendarEntry(Record):
         "daily stand-up has no prep page). None reads as attend. Only the person sets it.",
     )
     invitation: bool = Field(False, description="It came as an invitation: someone else asked the person to it.")
+    sequence: int | None = Field(
+        None,
+        ge=0,
+        description="For an entry kept from a calendar source: the revision number its organizer gave it, as the "
+        "source says. An answer to the invitation echoes it. None when the source doesn't say.",
+    )
     organizer: EntryPerson | None = Field(None, description="Who invited, or who organizes it.")
     attendees: list[EntryPerson] = Field(default_factory=list, description="Who is asked, with each one's answer.")
     response: str | None = Field(
@@ -3144,6 +3152,16 @@ class Act(Record):
     attempt_key: str | None = Field(None, description="The key the channel was called with for the latest attempt.")
     attempt_at: AwareDatetime | None = Field(None, description="When the latest attempt started.")
     service_id: str | None = Field(None, description="The id the service gave the sent act.")
+    did: dict[str, Any] | None = Field(
+        None,
+        description="What its channel says the act changed, in the channel's own plain values (the messages a mailbox "
+        "act moved and where from and to, the messages it put a mark on). Handed back to the channel when the act is "
+        "carried out again or taken back, so neither does more than the act did.",
+    )
+    uncertain_reason: str | None = Field(
+        None,
+        description="For an act its channel began and could not finish: how far it got, in plain words for the person.",
+    )
     failure: ActFailure | None = Field(None, description="Why it failed, when it did.")
     undo_requested_at: AwareDatetime | None = Field(
         None, description="When the person asked to take a sent act back, until the channel answers."
@@ -3196,8 +3214,8 @@ class Act(Record):
     )
     why: list[str] = Field(
         default_factory=list,
-        description="Codes for why it is stale (content, target, template or channel), uncertain (lost_answer, "
-        "no_status or no_channel) or withdrawn (reminder_moved or reminder_ended); the screens word them.",
+        description="Codes for why it is stale (content, target, template or channel), uncertain (part_done, "
+        "lost_answer, no_status or no_channel) or withdrawn (reminder_moved or reminder_ended); the screens word them.",
     )
 
 

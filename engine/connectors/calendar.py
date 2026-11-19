@@ -258,6 +258,7 @@ def _expand(
                 cancelled=occurrence.cancelled or cancelled,
                 title=title or None,
                 where=where or None,
+                sequence=_sequence(change) if change is not None else None,
             )
         )
     dates += _moved_out(overrides, found, begins, reading, window)
@@ -288,6 +289,18 @@ def _moved_out(
                 )
             )
     return moved
+
+
+def _sequence(event: Any) -> int | None:
+    """The revision number the organizer gave an event, or None when it gives none that can be read."""
+    raw = _first(event.get("SEQUENCE"))
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        number = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return number if 0 <= number <= 2147483647 else None
 
 
 def _item(
@@ -359,6 +372,7 @@ def _item(
         notes=tuple(reading.notes),
         entries=True,
         described=bool(description),
+        sequence=_sequence(event),
     )
     return SourceItem(key, title[:200], "\n".join(lines), who, changed, None, event=details)
 

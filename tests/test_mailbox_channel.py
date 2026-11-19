@@ -3,6 +3,7 @@ the incoming servers are stand-ins that record every call; nothing reaches a net
 
 from __future__ import annotations
 
+import dataclasses
 import email
 import email.policy
 import hashlib
@@ -135,6 +136,9 @@ class Mail:
         self.commands: list[tuple] = []
         self.logins = 0
         self.append_error: Exception | None = None
+        # What the server does instead of a UID command: an answer (NO), an exception (the connection drops), or a
+        # function that gives either, or None to carry on as usual.
+        self.refuse: dict[str, Any] = {}
 
     def put(self, folder: str, id: str) -> Stored:
         found = Stored(id)
@@ -186,6 +190,15 @@ def imap_class(mail: Mail):
                 wanted = args[-1].strip('"')
                 return "OK", [" ".join(str(m.uid) for m in here if wanted in m.id).encode()]
             found = next(m for m in here if str(m.uid) == args[0])
+            refusal = mail.refuse.get(command)
+            if callable(refusal):
+                refusal = refusal()
+            if isinstance(refusal, Exception):
+                raise refusal
+            if refusal is not None:
+                return refusal
+            if command == "FETCH":
+                return "OK", [f"1 (UID {found.uid} FLAGS ({' '.join(sorted(found.flags))}))".encode()]
             if command == "MOVE":
                 return self.relocate(found, args[1].strip('"'), keep=False)
             if command == "COPY":
@@ -257,6 +270,11 @@ def mailbox_act(action: str, ids: tuple[str, ...] = (ORIGINAL,), **more: Any) ->
         account=ACCOUNT,
         **more,
     )
+
+
+def ran(act: OutgoingAct, answer: Any) -> OutgoingAct:
+    """The act as the publisher hands it back after an attempt: with what the channel reported doing."""
+    return dataclasses.replace(act, did=answer.did)
 
 
 def sent_message(outgoing: Outgoing, n: int = 0) -> email.message.EmailMessage:
@@ -520,7 +538,7 @@ def test_archive_moves_the_message_found_by_its_message_id_to_the_archive_folder
     found = mail.put("INBOX", ORIGINAL)
     mail.put("INBOX", "<other@example.com>")
     answer = channel().send(mailbox_act("archive"), "key-1")
-    assert answer == ChannelSent(ORIGINAL)
+    assert isinstance(answer, ChannelSent) and answer.service_id == ORIGINAL
     assert ("uid", "SEARCH", None, "HEADER", "Message-ID", f'"{ORIGINAL}"') in mail.of("uid")
     assert uid_commands(mail, "MOVE") == [("uid", "MOVE", str(found.uid), '"Old Mail"')]  # the server's own archive
     assert mail.ids("INBOX") == ["<other@example.com>"] and mail.ids("Old Mail") == [ORIGINAL]
@@ -618,28 +636,28 @@ def test_undo_moves_a_message_back_to_its_folder_and_takes_the_label_and_the_rea
     mail.put("INBOX", ORIGINAL)
     for action, extra in (("archive", {}), ("move", {"folder": "Projects"})):
         act = mailbox_act(action, **extra)
-        assert isinstance(channel().send(act, "key-1"), ChannelSent) and mail.ids("INBOX") == []
-        assert channel().undo(act, ORIGINAL) == ChannelUndone()
+        assert isinstance(sent := channel().send(act, "key-1"), ChannelSent) and mail.ids("INBOX") == []
+        assert channel().undo(ran(act, sent), ORIGINAL) == ChannelUndone()
         assert mail.ids("INBOX") == [ORIGINAL]
 
     labelled = mailbox_act("label", label="Needs review")
-    channel().send(labelled, "key-2")
-    assert channel().undo(labelled, ORIGINAL) == ChannelUndone()
+    sent = channel().send(labelled, "key-2")
+    assert channel().undo(ran(labelled, sent), ORIGINAL) == ChannelUndone()
     assert mail.folders["INBOX"][0].flags == set() and uid_commands(mail, "STORE")[-1][3] == "-FLAGS"
 
     read = mailbox_act("mark_read")
-    channel().send(read, "key-3")
+    sent = channel().send(read, "key-3")
     assert mail.folders["INBOX"][0].flags == {"\\Seen"}
-    assert channel().undo(read, ORIGINAL) == ChannelUndone() and mail.folders["INBOX"][0].flags == set()
+    assert channel().undo(ran(read, sent), ORIGINAL) == ChannelUndone() and mail.folders["INBOX"][0].flags == set()
 
 
 def test_undo_says_so_when_the_message_was_moved_again_and_never_takes_back_a_sent_message(servers):
     _, mail = servers
     mail.put("INBOX", ORIGINAL)
     act = mailbox_act("archive")
-    channel().send(act, "key-1")
+    sent = channel().send(act, "key-1")
     mail.folders["Old Mail"].clear()  # the person moved it on in their mail program
-    answer = channel().undo(act, ORIGINAL)
+    answer = channel().undo(ran(act, sent), ORIGINAL)
     assert isinstance(answer, ChannelFailed) and answer.kind == "refused"
     assert channel().undo(message_act(), "<x@example.com>").kind == "refused"
 

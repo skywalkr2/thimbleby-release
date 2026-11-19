@@ -153,19 +153,17 @@ test("the workspace step starts the time zone from this browser while it is stil
   vi.restoreAllMocks();
 });
 
-test("a full name of one word is asked again in words and is not saved; a first and a last name is", async () => {
+test("a name of one word is saved, with a note that never blocks (H5-31)", async () => {
   const user = userEvent.setup();
   const calls = api([step("workspace")], {
     "POST settings": () => ({ changes: [], fingerprint: "fp-2", needs_restart: false }),
-    "POST me": () => ({ person: "PER-1", full_name: "Sam Tester" }),
+    "POST me": () => ({ person: "PER-1", full_name: "Sam" }),
   });
   open();
   const box = await screen.findByLabelText("Your full name");
   await user.type(box, "Sam");
-  expect(await screen.findByText("Add your last name too, so people who share your first name aren't mixed up with you.")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
-  await user.type(box, " Tester");
-  expect(screen.queryByText(/Add your last name too/)).toBeNull();
+  expect(await screen.findByText(/If you have a last name, adding it keeps you apart/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
   await user.click(screen.getByRole("button", { name: "Save" }));
   await waitFor(() => expect(calls.some((c) => c.route === "POST me")).toBe(true));
   expect(calls.filter((c) => c.route === "POST me")).toHaveLength(1);

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from typing import Any
 
 #: The tags that fence a part of a prompt whose words came from outside, or hold such a part.
 MARKER_TAGS = ("untrusted", "note", "reference", "material", "app_data", "owed", "may_answer")
@@ -40,3 +41,20 @@ def neutralize(text: str) -> str:
     if not starts:
         return text
     return "".join("&lt;" if index in starts else char for index, char in enumerate(text))
+
+
+def quoted_attribute(text: Any) -> str:
+    """Outside text made safe as an attribute's value: no quote to close it, no angle bracket to open or close a tag
+    (their look-alike forms go too), and no line break."""
+    kept = [char for char in str(text) if not set(_folded(char)[0]) & set('"<>')]
+    return " ".join("".join(kept).split())
+
+
+def outside_block(text: Any, source: Any = None, *, marks: str = "", inline: bool = False) -> str:
+    """Words from outside between their markers: material to read, never instructions. `source` says where they came
+    from and may itself be outside text (a title, a label), so it is made safe as an attribute; `marks` are further
+    attributes the app wrote itself, each value already safe. The words can't close the block. With `inline`, the
+    block sits on one line."""
+    opening = "<untrusted" + (f' source="{quoted_attribute(source)}"' if source is not None else "") + marks + ">"
+    gap = "" if inline else "\n"
+    return f"{opening}{gap}{neutralize(str(text))}{gap}</untrusted>"

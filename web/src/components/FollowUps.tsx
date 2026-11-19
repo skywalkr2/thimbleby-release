@@ -82,6 +82,18 @@ const toSendQuestions = (s: S["FollowupSection"]) => s.questions.filter((q) => q
 /** Ready to send to this owner: never told, and not a promise they made themselves (which they know already). */
 const isToSend = (a: S["FollowupAction"]) => a.to_send;
 const toSendActions = (s: S["FollowupSection"]) => s.actions.filter(isToSend);
+
+/** What a person's message holds as it stands: each question and action to send with the version it has, and the words as
+ * drafted. It is kept when the message is copied and handed back with Mark sent, so only what went out is marked: an item that
+ * arrives afterwards stays to send, and one that changes afterwards is asked about. */
+export function heldOf(s: S["FollowupSection"]): S["HeldItems"] {
+  return {
+    questions: toSendQuestions(s).map((q) => ({ id: q.id, version: q.version ?? 0 })),
+    actions: toSendActions(s).map((a) => ({ id: a.id, version: a.version ?? 0 })),
+    message: s.message,
+    as_copied: false,
+  };
+}
 const waitingQuestions = (s: S["FollowupSection"]) => s.questions.filter((q) => q.status === "sent");
 // What was told to the person, and the promises they made themselves (design 6.33): one state each, never also to send.
 const waitingActions = (s: S["FollowupSection"]) => s.actions.filter((a) => !isToSend(a));
@@ -358,7 +370,7 @@ export function FollowUps(props: { compact?: boolean }) {
                   compact={compact}
                   copied={sharedMessage(s.person).state.copied}
                   message={sharedMessage(s.person).state.draft ?? s.message}
-                  onCopied={() => sharedMessage(s.person).set({ copied: true })}
+                  onCopied={() => sharedMessage(s.person).set({ copied: true, held: heldOf(s) })}
                 />
               ))}
             </RowList>
@@ -454,7 +466,7 @@ function FollowListRow(props: {
     }
     markMessageSeen(s.person, props.message);
     props.onCopied();
-    push({ message: t("toast.copied") });
+    push({ message: t("followups.copied_not_sent") });
   };
   const toDetail = (key: RowKey) => {
     const detail = choice.chosen === s.person ? document.querySelector<HTMLElement>("[data-detail-pane] [data-row], [data-modal-open] [data-row]") : null;
@@ -611,6 +623,8 @@ function ActionMeta(props: { a: S["FollowupAction"]; rest: string }) {
 export interface MessageState {
   draft: string | null;
   copied: boolean;
+  /** What the message held when it was copied; none until it is. */
+  held?: S["HeldItems"] | null;
 }
 
 /** One person's message to send. `open` shows the message box from the start (the Today inspector). `pane` is the detail
@@ -631,7 +645,19 @@ export function PersonSection(props: { section: S["FollowupSection"]; open?: boo
   const draft = shared ? shared.state.draft : ownDraft;
   const copied = shared ? shared.state.copied : ownCopied;
   const setDraft = (value: string | null) => (shared ? shared.set({ draft: value }) : setOwnDraft(value));
-  const setCopied = (value: boolean) => (shared ? shared.set({ copied: value }) : setOwnCopied(value));
+  const [ownHeld, setOwnHeld] = useState<S["HeldItems"] | null>(null);
+  const held = shared ? (shared.state.held ?? null) : ownHeld;
+  // Copying keeps what the message holds at that moment; anything that takes the copy back forgets it.
+  const setCopied = (value: boolean) => {
+    const kept = value ? heldOf(s) : null;
+    if (shared) shared.set({ copied: value, held: kept });
+    else {
+      setOwnCopied(value);
+      setOwnHeld(kept);
+    }
+  };
+  // What the copied message held that changed before Mark sent, with the words that went: the person says whether it went as copied.
+  const [changed, setChanged] = useState<{ items: S["SentChanged"][]; text: string } | null>(null);
   const [view, setView] = useState<"message" | "table">("message");
   // A message that holds many items lists the first few above the box; the rest are one press away.
   const [everyItem, setEveryItem] = useState(false);
@@ -674,7 +700,7 @@ export function PersonSection(props: { section: S["FollowupSection"]; open?: boo
     setCopied(true);
     push({ message: t(done) });
   };
-  const copy = () => copyWith(copyMessage, "toast.copied");
+  const copy = () => copyWith(copyMessage, "followups.copied_not_sent");
   const copyPlainText = () => copyWith(copyPlain, "toast.copied_plain");
 
   // The table is what the message holds, in rows: its words come from the sheet and nothing is added to it.
@@ -732,23 +758,49 @@ export function PersonSection(props: { section: S["FollowupSection"]; open?: boo
     push({ message: t("toast.copied_sheet") });
   };
 
-  const markSent = async () => {
-    if (!message.trim()) return;
+  // Mark sent marks what the copied message held (what is on screen now when nothing was copied here), never what came after.
+  // `answer` is the person saying the items that changed since went as copied.
+  const markSent = async (answer?: { items: S["SentChanged"][]; text: string }) => {
+    // The words that went: the person's own when they changed the box, else the message as it was drafted when it was copied.
+    const text = answer ? answer.text : (draft ?? held?.message ?? s.message);
+    if (!text.trim()) return;
+    const only = (kind: string) => (answer?.items ?? []).filter((c) => c.kind === kind).map((c) => ({ id: c.id, version: 0 }));
+    const what: S["HeldItems"] = answer ? { questions: only("question"), actions: only("action"), message: null, as_copied: true } : (held ?? heldOf(s));
     const result = await act(
-      () => api.markSent(s.person, message),
+      () => api.markSent(s.person, text, what),
       (counts) => ({
         message: t("toast.marked_sent", { name: s.name }),
         undo: () => api.unmarkSent(s.person, { question_ids: counts.question_ids, action_ids: counts.action_ids }),
       }),
-undefined,
-      { once: `mark-sent:${s.person}`, settle: true },
+      undefined,
+      { once: `mark-sent:${s.person}:${answer ? "answer" : "first"}`, settle: true },
     );
     if (result) {
       setDraft(null);
       setCopied(false);
       setCopyRefused(false);
+      const left = answer ? [] : (result.changed ?? []);
+      setChanged(left.length > 0 ? { items: left, text } : null);
     }
   };
+  const changedNote = changed && (
+    <div className="problem-note" role="alert" data-changed-since-copy="">
+      <p>{tn("followups.changed_since_copy", changed.items.length, { name: s.name })}</p>
+      <ul className="plain-list">
+        {changed.items.map((c) => (
+          <li key={`${c.kind}:${c.id}`}>{c.text}</li>
+        ))}
+      </ul>
+      <Actions>
+        <Button variant="secondary" onClick={() => void markSent(changed)}>
+          {t("followups.changed_since_copy.sent")}
+        </Button>
+        <Button variant="quiet" onClick={() => setChanged(null)}>
+          {t("followups.changed_since_copy.leave")}
+        </Button>
+      </Actions>
+    </div>
+  );
 
   // Copy never reaches the clipboard unless the message it copies is on screen: on a closed card it opens the message
   // (with the cursor in it) and the next Copy is the one that copies.
@@ -876,6 +928,7 @@ undefined,
         {/* The message is on screen with its own Copy and Mark sent, so the detail's top holds only the menu: one button for each step. */}
         <DetailTop state={<span>{tn("followups.to_send", s.to_send)}</span>} actions={open ? <Actions><RowMenu label={s.name} actions={menu} /></Actions> : buttons} />
         {hold.form}
+        {changedNote}
         {open && <RowBody pane>{opened}</RowBody>}
       </DetailItem>
     );
@@ -896,6 +949,7 @@ undefined,
       menu={<RowMenu label={s.name} actions={menu} />}
     >
       {hold.form}
+      {changedNote}
       {open && <RowBody>{opened}</RowBody>}
     </ExpandableRow>
   );
@@ -1048,7 +1102,7 @@ function NudgeCard(props: { section: S["FollowupSection"]; nudge: S["NudgeView"]
     setCopied(true);
     push({ message: t(done) });
   };
-  const copy = () => copyWith(copyMessage, "toast.copied");
+  const copy = () => copyWith(copyMessage, "followups.copied_not_sent");
   const copyPlainText = () => copyWith(copyPlain, "toast.copied_plain");
   const markSent = async () => {
     if (!text.trim()) return;

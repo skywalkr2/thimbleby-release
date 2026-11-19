@@ -52,7 +52,7 @@ from engine.tasks import TaskKind
 from engine.texts import LongText, Unit
 from engine.tools import ToolBox, ToolError, ToolResult
 
-PLUGIN_API_VERSION = "0.3.104"
+PLUGIN_API_VERSION = "0.3.105"
 
 #: The earlier minor version this core still serves (one minor back). A pack whose range reaches the end of that minor
 #: stays on, marked "Built for an earlier version"; the window ends with the next minor release. Every name the core
@@ -2415,9 +2415,21 @@ class Registrar:
         sign in to again), or `ChannelUnknown()` when it can't tell. A timeout or a raised exception also leaves the act
         waiting: the core asks `status` before anything is sent again.
 
+        An act that changes several things can stop part way (a message copied to a folder and not yet removed from the
+        one it left). That is never `ChannelFailed`, which says nothing was done: return
+        `ChannelUnknown(reason, did)`, where `reason` says in plain words for the person how far it got and `did` is
+        what was done so far, in plain values of the channel's own choosing. The act is then uncertain at once, with
+        both kept. `ChannelSent(service_id, did)` may carry `did` too: what the act changed (which messages it moved
+        and where from and to, which it put a label on, leaving out the ones that already had it). The core keeps
+        `did` on the act and hands it back as `OutgoingAct.did` when the person has the act carried out again, so the
+        channel finishes what was begun without doing any of it twice (look in the destination before copying), and
+        on `undo`, so it takes back what the act did and nothing that was there before.
+
         `OutgoingAct` carries what the act does and what it is about: `action`, `about` (each item an `OutgoingAbout`:
         the record's id, the service's own id of the saved message or calendar entry as it resolves now, and for a
-        calendar entry its UID and sequence where the source gave them), `account`, and for an event `calendar`,
+        calendar entry its UID and sequence where the source gave them: the organizer's revision number, from
+        `EventDetails.sequence`, which an answer echoes and never replaces with a guess; None when the source gave
+        none), `account`, and for an event `calendar`,
         `when`, `start`, `end`, `title`, `alarm_minutes`, and for an answer `answer` (`accepted`, `tentative`,
         `declined` or `propose`), `proposed_start` and `proposed_end`; an answer's recipient is the organizer, which
         the core called out to the person like any recipient.
