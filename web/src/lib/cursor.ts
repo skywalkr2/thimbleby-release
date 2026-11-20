@@ -16,6 +16,12 @@ export function firstField(root: HTMLElement): HTMLElement | null {
   return Array.from(root.querySelectorAll<HTMLElement>(FIELDS)).find(usable) ?? null;
 }
 
+/** Whether the cursor is already in a field inside `root`: where the person put it, so nothing moves it from there. */
+export function cursorInField(root: HTMLElement): boolean {
+  const at = document.activeElement;
+  return !!at && root.contains(at) && /^(INPUT|SELECT|TEXTAREA)$/.test(at.tagName);
+}
+
 /** Starts the cursor in `root`: its first field, else the heading with id `titleId`. Returns a function that stops
  * watching for late fields. */
 export function startCursor(root: HTMLElement, titleId?: string): () => void {

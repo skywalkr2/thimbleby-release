@@ -160,9 +160,13 @@ def test_the_answer_and_change_routes_hold_the_question_and_hand_nothing_in(tmp_
         assert done.status_code == 200 and done.json()["request"] is None
         said = client.post(f"/api/items/question/{second}/change", json={"note": "follow up on Friday please"})
         assert said.status_code == 200 and said.json()["request"] is None and said.json()["signal"] is None
+        # The workspace's own day, as the hold counts it (between midnight UTC and midnight in its zone the two differ).
+        from engine.repeats import local_today
+
+        today = local_today(store, cfg).isoformat()
         for qid in (first, second):
             data = store.read().get("question", qid).data
-            assert data["status"] == "open" and data["held_for"]["on"] > date.today().isoformat()
+            assert data["status"] == "open" and data["held_for"]["on"] > today
         assert store.read().list("request") == []
         closed = client.post(f"/api/questions/{plain}/answer", json={"text": "Tuesday works"})
         assert closed.status_code == 200 and store.read().get("question", plain).data["status"] == "answered"

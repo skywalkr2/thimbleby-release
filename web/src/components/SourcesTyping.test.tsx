@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { vi } from "vitest";
 import type { S } from "../lib/api";
 import { Refuse, fakeApi, renderApp } from "../test-utils";
 import { Sources } from "./Sources";
@@ -120,4 +121,77 @@ test("a kind's default value that arrives after the person typed leaves what the
   await waitFor(() => expect(client.isFetching()).toBe(0));
   expect(within(drawer).getByLabelText("Folder")).toHaveValue("Archive");
   expect(within(drawer).getByLabelText("Name")).toHaveValue("Typed name");
+});
+
+// The cursor a step change places a frame later never leaves the field the person is already typing in (H5-16): the frame
+// can come late on a busy computer, after the person chose the folder's field, and the rest of what they type stays there.
+test("a late frame after Continue leaves the cursor in the field the person chose: the folder keeps what was typed over its default and the name gets none of it", async () => {
+  const withDefault = [{ ...KINDS[0], items: [{ ...KINDS[0].items[0], value: "inbox", default: "inbox", source: "default" }] }] as unknown as S["WatchKindView"][];
+  fakeApi({
+    "GET watch": () => [source("a")],
+    "GET watch/kinds": () => withDefault,
+    "GET sign-ins": () => [],
+    "GET settings": () => ({ items: [] }),
+    "GET projects": () => [],
+    "GET watch/authors": () => [],
+  });
+  // Frames are held and run when the test says, as a busy computer runs them late.
+  const frames = new Map<number, FrameRequestCallback>();
+  let asked = 0;
+  const request = vi.spyOn(window, "requestAnimationFrame").mockImplementation((run) => {
+    frames.set(++asked, run);
+    return asked;
+  });
+  const cancel = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((n) => {
+    frames.delete(n);
+  });
+  const runFrames = () =>
+    act(() => {
+      const due = [...frames.values()];
+      frames.clear();
+      for (const run of due) run(0);
+    });
+  try {
+    renderApp(<Sources onAsk={() => {}} />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Add mail, calendar or folder" }));
+    const drawer = await screen.findByRole("dialog");
+    await user.click(await within(drawer).findByRole("radio", { name: /A folder/ }));
+    runFrames();
+    await user.click(within(drawer).getByRole("button", { name: "Continue" }));
+    // The field shows its default; the person goes to it, selects what is there and starts to type.
+    const folder = within(drawer).getByLabelText<HTMLInputElement>("Folder");
+    expect(folder).toHaveValue("inbox");
+    await user.click(folder);
+    folder.select();
+    await user.keyboard("Nonsense");
+    // The frame the step change asked for arrives only now.
+    runFrames();
+    await user.keyboard(" folder 123");
+    expect(folder).toHaveFocus();
+    expect(folder).toHaveValue("Nonsense folder 123");
+    expect(within(drawer).getByLabelText("Name")).toHaveValue("");
+  } finally {
+    request.mockRestore();
+    cancel.mockRestore();
+  }
+});
+
+// With nobody in a field yet, the step change still puts the cursor in the new step's first field.
+test("after Continue the cursor goes to the first field of the details when the person has not chosen one", async () => {
+  fakeApi({
+    "GET watch": () => [source("a")],
+    "GET watch/kinds": () => KINDS,
+    "GET sign-ins": () => [],
+    "GET settings": () => ({ items: [] }),
+    "GET projects": () => [],
+    "GET watch/authors": () => [],
+  });
+  renderApp(<Sources onAsk={() => {}} />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "Add mail, calendar or folder" }));
+  const drawer = await screen.findByRole("dialog");
+  await user.click(await within(drawer).findByRole("radio", { name: /A folder/ }));
+  await user.click(within(drawer).getByRole("button", { name: "Continue" }));
+  await waitFor(() => expect(within(drawer).getByLabelText("Name")).toHaveFocus());
 });

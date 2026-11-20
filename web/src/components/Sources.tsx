@@ -28,7 +28,7 @@ import { useWords } from "../lib/wording";
 import { LookBack } from "./LookBack";
 import { RowMenu, type MenuAction } from "./RowMenu";
 import { restoreFocus } from "./ModalPanel";
-import { firstField } from "../lib/cursor";
+import { cursorInField, firstField } from "../lib/cursor";
 import { MailServiceConnect, OTHER_MAILBOX } from "./MailServiceConnect";
 import { MissingAddon, addonOfConnector } from "./MissingAddon";
 import { RefreshedLines } from "./RefreshedLines";
@@ -780,8 +780,7 @@ function SourceForm(props: {
   useEffect(() => {
     if (!refocus || busy) return;
     const root = formEl.current;
-    const at = document.activeElement;
-    if (!root || (at && root.contains(at) && /^(INPUT|SELECT|TEXTAREA)$/.test(at.tagName))) return;
+    if (!root || cursorInField(root)) return;
     const { field } = refocus;
     const named = field ? root.querySelector<HTMLElement>(`input[id$="-setting-${CSS.escape(field)}"], select[id$="-setting-${CSS.escape(field)}"], textarea[id$="-setting-${CSS.escape(field)}"], input[id$="-setting-${CSS.escape(field)}-typed"]`) : null;
     (named ?? firstField(root))?.focus({ preventScroll: true });
@@ -794,14 +793,15 @@ function SourceForm(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Moving between the two steps puts the cursor in the new step's first field, never leaves it on the page behind.
+  // Moving between the two steps puts the cursor in the new step's first field, never leaves it on the page behind. A
+  // person who is in a field of the new step already keeps the cursor there, so what they type next lands where they are.
   const stepSeen = useRef(step);
   useEffect(() => {
     if (stepSeen.current === step) return;
     stepSeen.current = step;
     const frame = window.requestAnimationFrame(() => {
       const root = formEl.current;
-      if (!root) return;
+      if (!root || cursorInField(root)) return;
       (firstField(root) ?? document.getElementById(props.titleId ?? `${base}-title`))?.focus({ preventScroll: true });
     });
     return () => window.cancelAnimationFrame(frame);

@@ -7,6 +7,7 @@
 // address, or a program to start), never from its name. In Settings the same form opens in a drawer (`drawer`): it adds the
 // account's own name and "What is it for?" (the assistant's work, a backup, or nothing yet), checks the account for each
 // kind of work it was added for with the cost shown first, and never leaves Settings.
+import { cursorInField } from "../lib/cursor";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { api, ApiError, type S } from "../lib/api";
@@ -296,7 +297,13 @@ export function WelcomeAi(props: {
   useEffect(() => {
     if (!drawer || !kindsShown) return;
     // After the drawer has taken focus itself, which it does as it opens.
-    const frame = window.requestAnimationFrame(() => firstKind.current?.querySelector<HTMLInputElement>('input[name^="ai-kind"]')?.focus());
+    const frame = window.requestAnimationFrame(() => {
+      const kinds = firstKind.current;
+      const form = kinds?.closest<HTMLElement>("[role=dialog], form") ?? kinds;
+      // A late frame never takes the cursor from a field the person already went to.
+      if (!kinds || (form && cursorInField(form))) return;
+      kinds.querySelector<HTMLInputElement>('input[name^="ai-kind"]')?.focus();
+    });
     return () => window.cancelAnimationFrame(frame);
     // Only when the choices first appear.
     // eslint-disable-next-line react-hooks/exhaustive-deps
