@@ -361,6 +361,7 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
     similarity = ctx.cfg.checks.tuning.near_duplicate_action.similarity
     first_week = _FirstWeek(ctx, view)
     assistant_names = outward.assistant_names(view, ctx.cfg.workspace.assistant_name)
+    record_names = outward.not_people(view, assistant_names)
     id_prefixes = id_words.prefixes(plugins.records)
     origin = origin_of(ctx)
     about = origin.get("about") or {}
@@ -472,7 +473,8 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
             refuse(i, "paused", fact_pause.refusal(pauses[0], name))
             continue
         # What others read never names the assistant, whoever wrote it but the person on their own screen.
-        if ctx.actor != "pm" and (why := outward.op_problem(op, assistant_names)) is not None:
+        # A name that is also someone's in People is theirs there, so it is not checked.
+        if ctx.actor != "pm" and (why := outward.op_problem(op, record_names)) is not None:
             refuse(i, "names-assistant", why)
             continue
         # A title is never a record's id: an id is how the product refers to a record, not a word for a person.

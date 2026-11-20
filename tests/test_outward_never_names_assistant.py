@@ -130,6 +130,22 @@ def test_an_op_for_what_others_read_naming_the_assistant_is_refused_with_the_rea
     ]
 
 
+def test_a_name_that_is_also_someone_in_people_is_theirs_in_what_others_read(env):
+    # A colleague who shares the assistant's name is that colleague in a record others read; a name that is no one's in
+    # People is still refused.
+    _, cfg, store = env
+    name = name_of(cfg)
+    text = f"Reported by {name}, Oct 20"
+    assert apply(store, cfg, [log_op(text)], origin="input", trust="untrusted", source_id=source(store))[1] == [
+        "refused"
+    ]
+    with store.transaction() as tx:
+        tx.create("person", {"full_name": f"{name} Colleague"}, WriteContext(actor="pm", trust="trusted", op="test"))
+    for line in (f"Send {name} the signed proofs", text):
+        _, result = apply(store, cfg, [log_op(line)], origin="input", trust="untrusted", source_id=source(store))
+        assert result == ["applied"], line
+
+
 def test_renaming_the_assistant_blocks_the_new_name_and_the_old_one_on_what_others_read(env):
     ws, cfg, store = env
     old = name_of(cfg)

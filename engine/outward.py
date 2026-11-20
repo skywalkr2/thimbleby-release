@@ -90,6 +90,23 @@ def assistant_names(view: Any, current: str) -> list[str]:
     return names
 
 
+def not_people(view: Any, names: list[str]) -> list[str]:
+    """The names that belong to no one in People: a name the person gave the assistant that is also the name of someone
+    they deal with (a colleague called Reginald) is that person's when it is written in a record, whatever the
+    assistant is called. Matched, ignoring case, against each person's full name, its first word and their other
+    names."""
+    known: set[str] = set()
+    for person in view.list("person"):
+        full = " ".join(str(person.data.get("full_name") or "").split())
+        if full:
+            known.add(full.casefold())
+            known.add(full.split()[0].casefold())
+        if person.data.get("first_name"):
+            known.add(" ".join(str(person.data["first_name"]).split()).casefold())
+        known.update(" ".join(str(a).split()).casefold() for a in person.data.get("aliases") or [] if a)
+    return [n for n in names if n.casefold() not in known]
+
+
 #: Names that are also ordinary words ("an executive assistant"): in free text they count only where they attribute
 #: something, never as a word in a sentence.
 GENERIC_NAMES = frozenset({"assistant", "the assistant", "your assistant"})
