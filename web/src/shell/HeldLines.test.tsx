@@ -1236,3 +1236,13 @@ test.each([
   await user.click(within(row).getByRole("button", { name: "Open main to fix how its charges are read" }));
   expect(onOpenAiAccounts).toHaveBeenCalledTimes(1);
 });
+
+test("work a spending limit has no room for is a Today line with the limit named, the time it lifts and a way to the accounts (H5-39)", async () => {
+  const until = `${localDate(new Date())}T23:30:00+00:00`;
+  const { onOpenAiAccounts } = show([line("limit", { key: "limit:day", text: "day", count: 3, until })]);
+  const row = await screen.findByRole("region", { name: "Spending limit reached" });
+  expect(row).toHaveTextContent("Today's AI spending limit is reached. 3 tasks are waiting and carry on");
+  expect(row).toHaveTextContent("Raise the limit under AI spending in Settings");
+  await userEvent.setup().click(within(row).getByRole("button", { name: "Open AI accounts" }));
+  expect(onOpenAiAccounts).toHaveBeenCalled();
+});

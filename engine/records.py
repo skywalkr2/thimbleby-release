@@ -1329,8 +1329,9 @@ class WatchRun(Record):
         "offline after a stop; queued before its first page, reading between slices), `stopped_at` when it stopped, "
         "`at` when it continues (none once it gave up), `tries` the stops in a row without progress, "
         "`gave_up` that it ran out of tries and waits for the person, `taken` the items taken in so far, "
-        "`about` about how many there will be when the service said, and `reach` the days the person chose for a "
-        "full read (none for a look further back). None when no read is "
+        "`about` about how many there will be when the service said, `reach` the days the person chose for a "
+        "full read (none for a look further back), and `go` that the person's choice was also the go for what the "
+        "read takes in. None when no read is "
         "waiting to continue.",
     )
     header_sweep: dict[str, Any] | None = Field(

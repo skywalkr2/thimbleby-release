@@ -363,3 +363,92 @@ def test_the_name_read_of_an_account_being_added_goes_through_no_accounts_gate(s
     host = store.plugins
     assert host.connector_context("p18", ws.root).web.gates is not None
     assert host.connector_context("p18", ws.root, paced=False).web.gates is None
+
+
+def test_an_account_signed_in_while_the_jobs_thread_is_busy_is_read_at_once_on_a_thread_of_its_own(signing):  # noqa: F811
+    import threading
+
+    from engine import sign_in as flow
+    from engine import watch
+    from engine.sign_in_sources import start_sources
+    from engine.worker import Events, Worker
+
+    ws, cfg, store, _ = signing
+    store.close()
+    _with_sources(ws, READING)
+    cfg, store = _reopen(ws, cfg)
+    sign_in = store.plugins.sign_ins()["p18/service"]
+    flow.keep(ws.root / ".thimbleby" / "keys" / "p18", sign_in, {"access_token": "a", "expires_at": 9e9})
+    start_sources(ws, cfg, store, sign_in, accounts=[None])
+    cfg = load_config(ws.config_dir, env={})
+    source = next(s.id for s in cfg.watch.sources if s.connector == "p18/inbox")
+    worker = Worker(ws, store, cfg, Events(), on_restart=lambda: None)
+    # The jobs thread is in the middle of another account's work (a slice of older mail, a wait its service asked
+    # for) and stays there until the test lets it go.
+    release = threading.Event()
+    worker._jobs = threading.Thread(target=release.wait, daemon=True)
+    worker._jobs.start()
+    try:
+        assert watch.last_run(store, source) is None
+        worker.read_account_soon(sign_in, None)
+        (reading,) = worker._account_reads
+        reading.join(timeout=30)
+        assert not reading.is_alive() and worker._jobs.is_alive()  # read while the jobs thread was still busy
+        assert watch.last_run(store, source).data["outcome"] in ("ok", "baseline")
+        assert worker.read_accounts_now() == 0  # nothing is left for the jobs pass to read again
+    finally:
+        release.set()
+        worker._jobs.join(timeout=5)
+
+
+def test_the_due_pass_leaves_a_source_to_the_thread_reading_its_account_just_signed_in(signing):  # noqa: F811
+    import threading
+
+    from engine import sign_in as flow
+    from engine import watch
+    from engine.sign_in_sources import start_sources
+    from engine.worker import Events, Worker
+
+    ws, cfg, store, _ = signing
+    store.close()
+    _with_sources(ws, READING)
+    cfg, store = _reopen(ws, cfg)
+    sign_in = store.plugins.sign_ins()["p18/service"]
+    flow.keep(ws.root / ".thimbleby" / "keys" / "p18", sign_in, {"access_token": "a", "expires_at": 9e9})
+    start_sources(ws, cfg, store, sign_in, accounts=[None])
+    cfg = load_config(ws.config_dir, env={})
+    source = next(s.id for s in cfg.watch.sources if s.connector == "p18/inbox")
+    worker = Worker(ws, store, cfg, Events(), on_restart=lambda: None)
+    release = threading.Event()
+    worker._jobs = threading.Thread(target=release.wait, daemon=True)
+    worker._jobs.start()
+    try:
+        # The account's thread has claimed its sources but not reached this one yet: the jobs pass must not read it too,
+        # or the source is read twice in a row.
+        with worker._accounts_lock:
+            worker._claimed_accounts.append((sign_in, None))
+        worker.run_due_watches()
+        assert watch.last_run(store, source) is None
+        # Once the thread has read it and let go, the source is the jobs pass's own again.
+        with worker._accounts_lock:
+            worker._claimed_accounts.clear()
+        worker.run_due_watches()
+        assert watch.last_run(store, source) is not None
+    finally:
+        release.set()
+        worker._jobs.join(timeout=5)
+
+
+def test_the_jobs_pass_is_woken_when_an_account_thread_has_read_its_sources(signing):  # noqa: F811
+    """What waited on the first read (the look at who the person writes to) is queued at once, not at the next pass."""
+    from engine.worker import Events, Worker
+
+    ws, cfg, store, _ = signing
+    worker = Worker(ws, store, cfg, Events(), on_restart=lambda: None)
+    worker.read_accounts_now = lambda: 0  # type: ignore[method-assign]
+    claim = ("p18/service", None)
+    worker._claimed_accounts.append(claim)
+    worker._read_now.clear()
+    worker._read_accounts_apart(claim)
+    assert claim not in worker._claimed_accounts
+    assert worker._read_now.is_set()

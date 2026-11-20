@@ -10,7 +10,7 @@ import { alreadyOut } from "../lib/write";
 import { useToasts } from "../lib/toasts";
 import { useEstimate, useMoney } from "../lib/money";
 import { skippedWords } from "../lib/skipped";
-import { stopWords } from "../lib/olderRead";
+import { onceEach, stopWords } from "../lib/olderRead";
 import { useWords } from "../lib/wording";
 import { Button } from "../ui/Button";
 import { costWords, headWords } from "./LookBack";
@@ -68,6 +68,8 @@ export function FullReadChoice(props: { sources: Source[]; account: string }) {
       staleTime: Infinity,
       refetchOnWindowFocus: false,
       refetchOnReconnect: false,
+      // When the first read lands the counts are asked: the choices stay on screen meanwhile, with what they said before.
+      placeholderData: (previous: S["FullReadView"] | undefined) => previous,
     })),
   });
   if (open.length === 0) return null;
@@ -95,7 +97,8 @@ export function FullReadChoice(props: { sources: Source[]; account: string }) {
       const done = await act(() => api.answerFullRead(s.id, picked), undefined, undefined, { once: `full-read:${s.id}` });
       if (done !== undefined && picked !== NOT_NOW) said.push(readWords(done, s.label));
     }
-    if (said.length > 0) push({ message: said.join(" ") });
+    // Sources that did the same say the same words: each line is said once.
+    if (said.length > 0) push({ message: onceEach(said).join(" ") });
     setBusy(false);
     await client.invalidateQueries({ queryKey: ["watch"] });
   };

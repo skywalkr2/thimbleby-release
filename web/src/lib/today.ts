@@ -63,6 +63,7 @@ const COUNTED: ReadonlySet<QueueLine["kind"]> = new Set([
   "batches",
   "restart",
   "paused",
+  "limit",
   "borrow",
   "offline",
   "overdue",

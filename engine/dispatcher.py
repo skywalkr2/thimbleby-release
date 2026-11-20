@@ -71,7 +71,7 @@ from engine.packet import PacketRefused, build, reads_of, target_of
 from engine.plain_text import is_data
 from engine.projects import budget_problem
 from engine.rule_use import record_applied, record_named
-from engine.storage import Store, StoreError, WriteContext
+from engine.storage import ConflictError, Store, StoreError, WriteContext
 from engine.storage.store import Stored, Tx
 from engine.tasks import settings as task_settings
 from engine.text_shape import error_problem
@@ -1710,22 +1710,33 @@ def _named_account(cfg: Config, tier: str, account: Any, use: str | None) -> str
     return (settings.label if settings is not None and settings.label else account.provider) or None
 
 
-def grant_first_go(store: Store) -> int:
-    """The person's first go: every request waiting on it is approved and queued. Returns how many were."""
+#: How many times a go is written again when another write got in between (the reading's own writes, the worker).
+GO_TRIES = 5
+
+
+def grant_first_go(store: Store, unsorted: set[str] | frozenset[str] = frozenset()) -> int:
+    """The person's first go: every request waiting on it is approved and queued. `unsorted` are the requests whose
+    mail was never sorted: each queued one of them is marked `sort_pending`, so the worker sorts it under this go
+    before it runs. A write that clashes with another is made again, never shown. Returns how many were."""
     ctx = WriteContext(actor="pm", trust="trusted", op="request.first_go")
-    started = 0
-    with store.transaction() as tx:
-        for req in tx.list("request"):
-            if waits_on_first_go(req.data):
-                tx.update(
-                    "request",
-                    req.id,
-                    {"approval": "granted", "state": "queued", "waiting": None},
-                    ctx,
-                    read_version=req.version,
-                )
-                started += 1
-    return started
+    for attempt in range(GO_TRIES):
+        started = 0
+        try:
+            with store.transaction() as tx:
+                for req in tx.list("request"):
+                    if waits_on_first_go(req.data):
+                        changes: dict[str, Any] = {"approval": "granted", "state": "queued", "waiting": None}
+                        if req.id in unsorted:
+                            changes["sort_pending"] = True
+                        tx.update("request", req.id, changes, ctx, read_version=req.version)
+                        started += 1
+                    elif req.id in unsorted and req.data["state"] == "queued" and not req.data.get("sort_pending"):
+                        tx.update("request", req.id, {"sort_pending": True}, ctx, read_version=req.version)
+            return started
+        except ConflictError:
+            if attempt == GO_TRIES - 1:
+                raise
+    return 0
 
 
 def requeue_waiting_for_person(store: Store) -> int:

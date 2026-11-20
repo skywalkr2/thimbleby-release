@@ -3800,7 +3800,9 @@ class QueueLineView(BaseModel):
     is background work that stopped checking in (`waiting_since`, when it last did; the screen offers Restart
     now). `restart`
     is work held until the person restarts the app (`count` waiting; the screen offers Restart now, which is
-    POST /api/restart); `paused` is an AI account waiting for its usage limit to reset (`account`, `until`, `count`
+    POST /api/restart); `limit` is queued work the day's or month's spending limit has no room for (`text` is `day` or
+    `month`, `count` the requests held, `until` when the limit lifts; it goes by itself then, or when the limit is
+    raised), `paused` is an AI account waiting for its usage limit to reset (`account`, `until`, `count`
     waiting), after which the work runs again by itself; `borrow` asks whether another kind of work's free account
     (`account`, `model`) may take the `tier`'s work that waits on the paused account named in `text`, until `until`,
     when that account's limit resets (`count` waiting items it would take, `estimate_usd`, `unpriced`; the answer is
@@ -3964,6 +3966,7 @@ class QueueLineView(BaseModel):
         "handover",
         "failed",
         "paused",
+        "limit",
         "borrow",
         "offline",
         "overdue",
@@ -4220,7 +4223,8 @@ class QueueLineView(BaseModel):
     account: str | None = Field(None, description="The AI account waiting for its limit to reset (paused).")
     until: datetime | None = Field(
         None,
-        description="When the account's limit resets and the work waiting on it runs again by itself (paused), or "
+        description="When the account's limit resets and the work waiting on it runs again by itself (paused), when "
+        "the spending limit that holds the work lifts (limit), or "
         "when the line comes back if the person says Not now (rule_review), on the person's own clock (their time "
         "zone).",
     )
@@ -4668,7 +4672,11 @@ class FullReadView(BaseModel):
 class FullReadIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    days: int = Field(ge=0, description='One of the offered reaches, or 0 for "not now".')
+    days: int = Field(
+        ge=0,
+        description='One of the offered reaches, or 0 for "not now". A reach is the one ask for the source\'s reading: '
+        "it is also the go for what its first window holds and for what the older mail brings.",
+    )
 
 
 class ReadingCheckRefusalView(BaseModel):
@@ -4758,7 +4766,8 @@ class LookBackView(BaseModel):
         None,
         description="After the look: the service slowed the read down or failed partway (`throttled`, `outage`, "
         "`offline`, or another kind the person has to deal with; `queued` for a full read saved to be read in the "
-        "background, `reading` for a slice that left more to read). What was read is kept; the date moved only over "
+        "background, `reading` for a slice that left more to read, `first_look` for an answer kept until the source's "
+        "first read). What was read is kept; the date moved only over "
         "the days read whole.",
     )
     continues_at: datetime | None = Field(
@@ -5319,12 +5328,16 @@ class ReadingView(BaseModel):
         None,
         description="For none: mail was left out or none is read (no_mail), or there is no AI account (no_ai).",
     )
-    stage: Literal["fetching", "sorting", "looking", "waiting"] | None = Field(
+    stage: Literal["fetching", "sorting", "looking", "waiting", "limit"] | None = Field(
         None,
         description="For working: reading the mail and calendar (fetching), sorting what it found (sorting), "
-        "looking at who the person writes to (looking), or waiting for the mail service, which asked to slow down "
-        "(waiting, with `until`).",
+        "looking at who the person writes to (looking), waiting for the mail service, which asked to slow down "
+        "(waiting, with `until`), or held by a spending limit that is used up (limit, with `limit` and `limit_until`).",
     )
+    limit: Literal["day", "month"] | None = Field(
+        None, description="For the limit stage: which spending limit holds the work."
+    )
+    limit_until: str | None = Field(None, description="For the limit stage: when that limit lifts.")
     sources: int = Field(0, description="How many mail and calendar sources are read.")
     read: int = Field(0, description="How many of them were read once.")
     waiting: int = Field(0, description="How many of them wait for the mail service, which asked to slow down.")
@@ -6502,7 +6515,13 @@ class WatchSourceView(BaseModel):
     full_read_open: bool | None = Field(
         None,
         description="True while the source's first sign-in still has its question open: how far back to read its "
-        'mail in full. It stays true until the person answers, "not now" included.',
+        'mail in full. It stays true until the person answers, "not now" included. The question is open from the '
+        "moment the source exists, before its first read.",
+    )
+    full_read_chosen: int | None = Field(
+        None,
+        description='The answer given to that question before the source\'s first read, in days (0 for "not now"), '
+        "kept until the read lands and the answer takes effect. None when no answer waits.",
     )
     older_read: OlderReadView | None = Field(
         None, description="Set while a read of older mail that stopped partway waits to carry on."

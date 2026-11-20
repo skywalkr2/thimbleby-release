@@ -1534,6 +1534,16 @@ def helper_routes(state: State, base: str) -> list[Route]:
         )
         return JSONResponse({"quota": True})
 
+    async def hold_account(request: Request) -> JSONResponse:
+        """The service is already refusing one account (`account`, from 1) when the limit is on: its next request is
+        refused, as inside the penalty after a refusal, for `seconds` (the limit's own penalty when none is given)."""
+        body = await request.json()
+        if state.quota is None:
+            return JSONResponse({"held": False}, status_code=409)
+        seconds = float(body.get("seconds") or state.quota.penalty)
+        state.quota.until[int(body["account"]) - 1] = state.quota.clock() + seconds
+        return JSONResponse({"held": True})
+
     async def quota_requests(request: Request) -> JSONResponse:
         """Each request the quota counted for an account (`account` from 1; none for every account): its time, endpoint
         and answer ("ok" or "refused")."""
@@ -1569,6 +1579,7 @@ def helper_routes(state: State, base: str) -> list[Route]:
         Route("/__e2e/info", info),
         Route("/__e2e/slow-down", slow_down, methods=["POST"]),
         Route("/__e2e/quota", set_quota, methods=["POST"]),
+        Route("/__e2e/quota/hold", hold_account, methods=["POST"]),
         Route("/__e2e/requests", quota_requests),
         Route("/__e2e/big-mailbox", big_mailbox_info),
         Route("/__e2e/script", script, methods=["POST"]),

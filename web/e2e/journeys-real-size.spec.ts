@@ -230,6 +230,11 @@ test.describe.serial("journey: real-sized mailbox", () => {
       }, { timeout: 240_000, message: "the rest of the full read carries on by itself" })
       .toBe(inWindow);
     expect((await mailbox()).older_asked.filter((a) => a.answer === "slow down")).toHaveLength(1);
+    // The month's answer was the account's, so its sent mail reads a month too, in its own slices after the inbox's: every older read of
+    // the account is over before the count the reading step shows is compared with the final one.
+    await expect
+      .poll(async () => (await watch(page)).filter((w) => w.older_read).length, { timeout: 240_000, message: "every older read of the account ends" })
+      .toBe(0);
 
     // 9. The reading step counts the sources that are read now, and what it counts matches what was read.
     const sources = (await watch(page)).filter((w) => w.account_state === "signed_in");
@@ -255,7 +260,7 @@ test.describe.serial("journey: real-sized mailbox", () => {
     const reading = (await setup(page)).reading;
     expect(reading).toMatchObject({ sources: sources.length, read: sources.length });
     // Every item the full read took in is counted, and the count the screen showed while it worked is the one the setup view holds
-    // (every source was read before Continue, so it no longer changes).
+    // (every older read of the account was over before Continue, so it no longer changes).
     expect(reading.found).toBeGreaterThanOrEqual(inWindow);
     for (const text of shown) {
       const found = /(\d+) items? taken in so far/.exec(text);

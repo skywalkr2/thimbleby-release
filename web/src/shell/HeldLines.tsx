@@ -38,6 +38,7 @@ const HELD_ICON: Record<string, IconName> = {
   restart: "refresh",
   stuck: "alert",
   paused: "alert",
+  limit: "alert",
   borrow: "users",
   credential: "alert",
   offline: "alert",
@@ -73,7 +74,7 @@ function HeldRow(props: RowProps & { "data-queue-line": string }) {
 type Line = S["QueueLineView"];
 
 /** The kinds of queue line that are a stop or a check on the assistant's own work, each drawn here with its one button. */
-export const HELD_KINDS: Line["kind"][] = ["restart", "stuck", "paused", "borrow", "credential", "no_account", "pack_tier", "offline", "handover", "account_check", "switch_failed", "account_move", "sent_folder", "folder_rename", "update", "updated", "model_watch", "model_moved", "cost_gap", "cost_read_failed", "identity", "work_access", "extractor", "source_unread", "slow_screen", "rule_review", "catch_up_go", "intake_go", "older_read"];
+export const HELD_KINDS: Line["kind"][] = ["restart", "stuck", "paused", "limit", "borrow", "credential", "no_account", "pack_tier", "offline", "handover", "account_check", "switch_failed", "account_move", "sent_folder", "folder_rename", "update", "updated", "model_watch", "model_moved", "cost_gap", "cost_read_failed", "identity", "work_access", "extractor", "source_unread", "slow_screen", "rule_review", "catch_up_go", "intake_go", "older_read"];
 
 export function isHeld(line: Line): boolean {
   return HELD_KINDS.includes(line.kind);
@@ -147,6 +148,8 @@ export function HeldLine(props: {
       return <IntakeGoLine line={line} />;
     case "older_read":
       return <OlderReadLine line={line} />;
+    case "limit":
+      return <LimitLine line={line} onOpenAiAccounts={props.onOpenAiAccounts} />;
     default:
       return <PausedLine line={line} onOpenAiAccounts={props.onOpenAiAccounts} />;
   }
@@ -205,6 +208,27 @@ function StuckLine(props: { line: Line }) {
           </Button>
           </>
         ) : undefined
+      }
+    />
+  );
+}
+
+/** Waiting work a spending limit has no room for: which limit, when it lifts, and where to raise it. */
+function LimitLine(props: { line: Line; onOpenAiAccounts: () => void }) {
+  const { t, tn } = useWords();
+  const { line } = props;
+  return (
+    <HeldRow
+      as="section"
+      aria-label={t("queue.limit.label")}
+      data-queue-line="limit"
+      pill={<Pill tone="warn">{t("queue.limit.label")}</Pill>}
+      title={tn(`queue.limit.${line.text === "month" ? "month" : "day"}`, line.count, { time: line.until ? wallWhen(line.until) : "" })}
+      meta={t("queue.limit.sub")}
+      primary={
+        <Button size="sm" variant="primary" data-key="primary" onClick={props.onOpenAiAccounts}>
+          {t("queue.paused.open")}
+        </Button>
       }
     />
   );

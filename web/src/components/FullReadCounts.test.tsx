@@ -61,3 +61,14 @@ test("a source whose read stopped shows the read waiting with its time and no fu
   expect(screen.queryByRole("combobox")).toBeNull();
   expect(calls.filter((c) => c.route === "GET watch/m/full-read")).toHaveLength(0);
 });
+
+test("an account's inbox and sent mail, both queued for older mail, say it once on the card; lines that differ stay apart (H5-35)", () => {
+  const queued = { kind: "queued", at: inHours(0), gave_up: false, taken: 0 } as S["WatchSourceView"]["older_read"];
+  const { unmount } = renderApp(<OlderReadWaiting sources={[source({ id: "m", label: "Your inbox", older_read: queued }), source({ id: "s", label: "Your sent mail", older_read: queued })]} />);
+  expect(screen.getAllByRole("status").map((x) => x.textContent)).toEqual(["Reading the older mail in the background."]);
+  unmount();
+  // Each has taken some in: the lines name their own source and count, so both are said.
+  const reading = (taken: number) => ({ kind: "reading", at: inHours(0), gave_up: false, taken }) as S["WatchSourceView"]["older_read"];
+  renderApp(<OlderReadWaiting sources={[source({ id: "m", label: "Your inbox", older_read: reading(40) }), source({ id: "s", label: "Your sent mail", older_read: reading(7) })]} />);
+  expect(screen.getAllByRole("status")).toHaveLength(2);
+});

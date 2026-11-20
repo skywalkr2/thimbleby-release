@@ -440,6 +440,9 @@ class Reading:
     until: str | None = None
     pending: list[str] = field(default_factory=list)
     restart_waits: int = 0
+    #: Which spending limit holds the sorting (`day` or `month`), and when it lifts, while one does.
+    limit: str | None = None
+    limit_until: str | None = None
 
 
 def reading(ws: Any, cfg: Any, store: Any, found: list[Step], now: Any = None) -> Reading:
@@ -450,6 +453,7 @@ def reading(ws: Any, cfg: Any, store: Any, found: list[Step], now: Any = None) -
     from datetime import UTC, datetime
 
     from engine import person_look
+    from engine.ai import measure
     from engine.dispatcher import person_is_set
 
     by = {s.id: s for s in found}
@@ -489,13 +493,17 @@ def reading(ws: Any, cfg: Any, store: Any, found: list[Step], now: Any = None) -
     )
     if still:
         return Reading("working", stage="fetching", **base)
-    sorting = any(
-        r.data["state"] in ("queued", "running")
+    sorting_requests = [
+        r
+        for r in view.list("request")
+        if r.data["state"] in ("queued", "running")
         and not r.data.get("dismissed")
         and (r.data.get("intake") in ids or (r.data["task"] == "notes" and r.data.get("origin") == "input"))
-        for r in view.list("request")
-    )
-    if sorting:
+    ]
+    if sorting_requests:
+        held = measure.held_by_limit(store, cfg, sorting_requests, moment)
+        if held is not None:
+            return Reading("working", stage="limit", limit=held[0], limit_until=held[1].isoformat(), **base)
         return Reading("working", stage="sorting", **base)
     looking = any(
         r.data["task"] == person_look.TASK and r.data["state"] in ("queued", "running") for r in view.list("request")

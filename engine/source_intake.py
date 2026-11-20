@@ -15,6 +15,8 @@ the same way, under the same go rules, and the date moves.
 
 from __future__ import annotations
 
+import json
+import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -25,6 +27,8 @@ from engine import catch_up, watch
 from engine.connectors import OlderCount
 from engine.net import AnswerTooLarge
 from engine.storage import StoreError, WriteContext
+
+log = logging.getLogger(__name__)
 
 #: A look that takes in fewer than this fraction of the count the source gave says so.
 SHORT_FRACTION = 3
@@ -283,22 +287,35 @@ def total_waiting(ws: Any, store: Any, cfg: Any, source_id: str, router: Any = N
 
 
 def grant_go(ws: Any, store: Any, cfg: Any, source_id: str, router: Any = None, now: datetime | None = None) -> int:
-    """The person's go for a source's intake: the mail that waits for sorting is sorted first (what it sets aside never
-    runs), then every request held for the go is approved and queued. Returns how many were."""
-    watch.sort_before_first_go(ws, store, cfg, router, now, only=source_id)
-    started = 0
-    with store.transaction() as tx:
-        for req in tx.list("request"):
-            if waits_on_go(req.data) and req.data.get("intake") == source_id:
-                tx.update(
-                    "request",
-                    req.id,
-                    {"approval": "granted", "state": "queued", "waiting": None, "cause": None},
-                    _GO,
-                    read_version=req.version,
-                )
-                started += 1
-    return started
+    """The person's go for a source's intake: every request held for the go is approved and queued, and the ones whose
+    mail was never sorted are marked `sort_pending`, so the worker sorts them under this go before any of them runs
+    (what the sorting sets aside never runs). Nothing here asks the assistant, so the go answers at once; a write that
+    clashes with another (the reading's own) is made again, never shown. Returns how many were."""
+    from engine.dispatcher import GO_TRIES
+    from engine.storage import ConflictError
+
+    for attempt in range(GO_TRIES):
+        unsorted = watch.awaiting_sorting_ids(ws, store, cfg, source_id)
+        started = 0
+        try:
+            with store.transaction() as tx:
+                for req in tx.list("request"):
+                    if waits_on_go(req.data) and req.data.get("intake") == source_id:
+                        changes: dict[str, Any] = {
+                            "approval": "granted",
+                            "state": "queued",
+                            "waiting": None,
+                            "cause": None,
+                        }
+                        if req.id in unsorted:
+                            changes["sort_pending"] = True
+                        tx.update("request", req.id, changes, _GO, read_version=req.version)
+                        started += 1
+            return started
+        except ConflictError:
+            if attempt == GO_TRIES - 1:
+                raise
+    return 0
 
 
 # ---- the results, as one list -------------------------------------------------------------------------------
@@ -803,6 +820,9 @@ def _read_older(
     keys = {snap.data["key"] for snap in found}
     made = _take(ws, store, cfg, source, now, router, lambda data: data["key"] in keys)
     result.taken = len(made)
+    if made and carried and carried.get("go"):
+        # The person's choice of this reach was also the go for what it brings: nothing of it waits for a second ask.
+        grant_go(ws, store, cfg, source_id, router, now)
     view = store.read()
     held = [r for r in made if waits_on_go(view.get("request", r).data)]
     result.started = bool(made) and not held
@@ -881,6 +901,7 @@ def _carry(
         "taken": int(before.get("taken", 0)) + taken,
         "reach": reach_days if reach_days is not None else before.get("reach"),
         **({"about": before["about"]} if before.get("about") else {}),
+        **({"go": True} if before.get("go") else {}),
     }
     if stop is None:
         return {**base, "at": now.isoformat(), "gave_up": False}
@@ -991,19 +1012,55 @@ def full_read_pending(store: Any, cfg: Any, source: Any) -> bool:
     )
 
 
-def follow_account_answer(
-    ws: Any, store: Any, cfg: Any, source_id: str, now: datetime | None = None, router: Any = None
-) -> LookBack | None:
-    """A source of an account that is read for the first time after the person answered the full-read question for
-    another of its sources (the sent mail follows the inbox, which is read first) takes the same answer: the question is
-    asked once per account, so one press covers every source the account reads, whenever each one's first read comes.
-    Returns what the read did, or None when nothing applies (no sibling answered, the choice is not on offer, or the
-    answer is not one of the choices any more)."""
-    now = now or datetime.now(UTC)
-    source = next((s for s in cfg.watch.sources if s.id == source_id), None)
-    if source is None or not source.account or not full_read_pending(store, cfg, source):
+#: The answers given to the full-read question before a source's first read, kept on this computer until that read
+#: lands and they are recorded with it: the source's id and the reach in days (0 for "not now").
+AHEAD = "full-read-ahead.json"
+
+
+def answers_ahead(ws: Any) -> dict[str, int]:
+    """The answers kept for sources whose first read is still to come."""
+    try:
+        kept = json.loads((ws.private_dir / AHEAD).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {str(k): int(v) for k, v in kept.items()} if isinstance(kept, dict) else {}
+
+
+def _keep_ahead(ws: Any, source_id: str, reach: int | None) -> None:
+    """Keep a source's answer until its first read (`reach` None drops it). The file is read again under its lock, so
+    answers given at the same moment each stay."""
+    from engine.state_file import changing, write_whole
+
+    path = ws.private_dir / AHEAD
+    with changing(path):
+        kept = answers_ahead(ws)
+        if reach is None:
+            if kept.pop(source_id, None) is None:
+                return
+        else:
+            kept[source_id] = reach
+        write_whole(path, json.dumps(kept, sort_keys=True))
+
+
+def first_read_to_come(store: Any, source: Any) -> bool:
+    """Whether a source's first read, the one that takes its mail in quietly and asks the full-read question, has not
+    been made yet: it is on, it is taken in on its first read, and no read of it has worked."""
+    from engine import capture
+
+    if not source.enabled or source.first_run != "intake" or source.holds == "absence" or capture.is_capture(source):
+        return False
+    return not any(
+        r.data["outcome"] in ("ok", "baseline") for r in store.read().find("watch_run", {"source": source.id})
+    )
+
+
+def _account_answer(ws: Any, store: Any, cfg: Any, source: Any) -> int | None:
+    """The answer the person gave to the full-read question for another source of the same account, recorded with its
+    first read or kept ahead of it; the furthest reach when they differ, None when no other source was answered. The
+    question is asked once per account, so a source that appears later takes this."""
+    if not source.account:
         return None
-    view = store.read()
+    view, kept = store.read(), answers_ahead(ws)
     answers = []
     for other in cfg.watch.sources:
         if other.id == source.id or other.account != source.account:
@@ -1011,9 +1068,78 @@ def follow_account_answer(
         run = intake_run(view, other.id)
         if run is not None and isinstance(run.data.get("full_read"), int):
             answers.append(int(run.data["full_read"]))
-    if not answers:
+        elif other.id in kept:
+            answers.append(kept[other.id])
+    return max(answers) if answers else None
+
+
+def full_read_ahead(ws: Any, store: Any, cfg: Any, source: Any) -> bool:
+    """Whether the full-read question is open for a source ahead of its first read: the question is asked from the
+    moment the source exists, never only once its service has answered, so one account's reading never holds back
+    another's choice. True until the person answers or the first read lands (then `full_read_pending` says)."""
+    return bool(
+        cfg.watch.full_read_choices
+        and first_read_to_come(store, source)
+        and can_look_back(source, store)
+        and source.id not in answers_ahead(ws)
+        and _account_answer(ws, store, cfg, source) is None  # asked once per account
+    )
+
+
+def full_read_open(ws: Any, store: Any, cfg: Any, source: Any, signed_in: bool = True) -> bool:
+    """Whether the full-read question is shown for a source: it is open after its first read (`full_read_pending`) or
+    ahead of it (`full_read_ahead`, never for an account that is signed out), and neither the source nor another
+    source of its account has an answer that is kept or recorded. An answer waiting to be applied (the first read has
+    landed and is still taking its mail in) never shows the question again."""
+    if source.id in answers_ahead(ws) or _account_answer(ws, store, cfg, source) is not None:
+        return False
+    return full_read_pending(store, cfg, source) or (signed_in and full_read_ahead(ws, store, cfg, source))
+
+
+def _follow_own_answer(
+    ws: Any, store: Any, cfg: Any, source: Any, now: datetime, router: Any = None
+) -> tuple[bool, LookBack | None]:
+    """A source that was answered ahead of its first read takes that answer once the read has landed: it is recorded
+    with the read and its older mail queued, as if the person had pressed then. An answer that no longer fits (the
+    read took no mail in, the choice is gone) is dropped and the source keeps whatever question it has. Returns whether
+    an answer was kept for it, and what applying it did."""
+    kept = answers_ahead(ws).get(source.id)
+    if kept is None or first_read_to_come(store, source):
+        return False, None
+    found = None
+    try:
+        if full_read_pending(store, cfg, source) and (kept == 0 or kept in cfg.watch.full_read_choices):
+            found = answer_full_read(ws, store, cfg, source.id, kept, now, router)
+    except StoreError:
+        # It couldn't be recorded this time (another write got in between): the answer stays kept, the question stays
+        # answered on screen, and it is applied after the source's next read.
+        log.exception("applying the answer kept for %s failed; it is tried again after its next read", source.id)
+        return True, None
+    _keep_ahead(ws, source.id, None)
+    return True, found
+
+
+def follow_account_answer(
+    ws: Any, store: Any, cfg: Any, source_id: str, now: datetime | None = None, router: Any = None
+) -> LookBack | None:
+    """A source of an account that is read for the first time after the person answered the full-read question for
+    another of its sources (the sent mail follows the inbox, which is read first) takes the same answer: the question is
+    asked once per account, so one press covers every source the account reads, whenever each one's first read comes.
+    An answer given for the source itself ahead of its first read comes first. Returns what the read did, or None when
+    nothing applies (no answer was kept, no sibling answered, the choice is not on offer, or the answer is not one of
+    the choices any more)."""
+    now = now or datetime.now(UTC)
+    source = next((s for s in cfg.watch.sources if s.id == source_id), None)
+    if source is None:
         return None
-    reach = max(answers)
+    had, found = _follow_own_answer(ws, store, cfg, source, now, router)
+    if had:
+        return found
+    if not source.account or not full_read_pending(store, cfg, source):
+        return None
+    reach = _account_answer(ws, store, cfg, source)
+    if reach is None:
+        return None
     if reach and reach not in cfg.watch.full_read_choices:
         return None
     try:
@@ -1063,6 +1189,10 @@ def full_read_options(
     now = now or datetime.now(UTC)
     keep = timedelta(minutes=cfg.watch.full_read_count_minutes)
     source = _source(cfg, source_id)
+    if intake_run(store.read(), source_id) is None and first_read_to_come(store, source):
+        # Ahead of the first read nothing says where older mail begins, so the service is not asked: every reach is
+        # offered with no number, and the counts come once the read has landed.
+        return [FullReadOption(reach, unknown=True) for reach in cfg.watch.full_read_choices]
     settings = repr(source.settings)
     found = []
     blind = False
@@ -1099,7 +1229,35 @@ def full_read_options(
             with _KEPT_LOCK:
                 _KEPT_COUNTS[key] = (now, option)
         found.append(option)
-    return found
+    return _with_first_window(ws, store, cfg, source_id, found, router)
+
+
+def _with_first_window(
+    ws: Any, store: Any, cfg: Any, source_id: str, options: list[FullReadOption], router: Any = None
+) -> list[FullReadOption]:
+    """The choices with what the source's first window still holds for the go added to each reach's cost: choosing a
+    reach is also the go for that window, so the one figure shown is both amounts together. A reach with no number
+    (nothing more to read, or the service couldn't say) shows no cost and is left as it is."""
+    held = waiting_cost(ws, store, cfg, source_id, router)
+    if not held.count:
+        return options
+
+    def both(a: float | None, b: float | None) -> float | None:
+        return None if a is None and b is None else round((a or 0.0) + (b or 0.0), 4)
+
+    return [
+        replace(
+            o,
+            estimate_usd=both(o.estimate_usd, held.likely),
+            estimate_max_usd=both(
+                o.estimate_max_usd if o.estimate_max_usd is not None else o.estimate_usd, held.at_most
+            ),
+            unpriced=o.unpriced + held.unpriced,
+        )
+        if o.count > 0 and not o.unknown
+        else o
+        for o in options
+    ]
 
 
 def _record_full_read(store: Any, source_id: str, reach: int | None) -> None:
@@ -1125,15 +1283,27 @@ def older_failure(err: Any) -> str:
 
 
 def answer_full_read(
-    ws: Any, store: Any, cfg: Any, source_id: str, reach: int, now: datetime | None = None, router: Any = None
+    ws: Any,
+    store: Any,
+    cfg: Any,
+    source_id: str,
+    reach: int,
+    now: datetime | None = None,
+    router: Any = None,
+    go: bool = True,
 ) -> LookBack | None:
-    """The person's answer to the full-read question: 0 is "not now" (nothing is read, and it isn't asked again for this
-    sign-in); a reach is recorded and queued for the worker's lane, which reads it in the background in slices, so the
-    answer returns at once and never waits for the service (no count is asked, no page read). The read then holds its
-    work for the person's go like any other. Returns the queued read (`stopped` is "queued"), or None for "not now" or a
-    reach the first read already covers."""
+    """The person's answer to the full-read question: 0 is "not now" (nothing is read, it isn't asked again for this
+    sign-in, and no go is given: what the first window holds keeps its own ask); a reach is recorded and queued for the
+    worker's lane, which reads it in the background in slices, so the answer returns at once and never waits for the
+    service (no count is asked, no page read). A reach is the one ask for the source's reading, so it is also the go
+    (`go`; False keeps the work held, as a look further back does): what the first window holds is queued now, and
+    what the read of older mail takes in is queued as it comes, with no second ask. The budgets and each run's own
+    limits still hold when the worker runs them. Returns the queued read (`stopped` is "queued"), or None for "not
+    now" or a reach the first read already covers."""
     now = now or datetime.now(UTC)
     source = _source(cfg, source_id)
+    if intake_run(store.read(), source_id) is None and first_read_to_come(store, source):
+        return _answer_ahead(ws, store, cfg, source, reach, now, router)
     if reach == 0:
         _record_full_read(store, source_id, 0)
         return None
@@ -1142,6 +1312,8 @@ def answer_full_read(
     beyond = _days_beyond_first_read(store, source_id, reach, now)
     if beyond < 1:
         _record_full_read(store, source_id, reach)
+        if go:
+            grant_go(ws, store, cfg, source_id, router, now)
         return None
     if not can_look_back(source, store):
         raise StoreError("this source can't be asked for older mail")
@@ -1161,6 +1333,7 @@ def answer_full_read(
         "reach": reach,
         "at": now.isoformat(),
         "gave_up": False,
+        **({"go": True} if go else {}),
     }
     with store.transaction() as tx:
         current = tx.get("watch_run", run.id)
@@ -1169,8 +1342,31 @@ def answer_full_read(
             changes["older_read"] = queued
         tx.update("watch_run", run.id, changes, _MOVED, read_version=current.version)
     forget_full_read_counts(ws, source_id)
+    if go:
+        grant_go(ws, store, cfg, source_id, router, now)
     result = LookBack(days=beyond, from_date=asked, reaches=True)
     result.stopped, result.continues_at = "queued", now.isoformat()
+    return result
+
+
+def _answer_ahead(
+    ws: Any, store: Any, cfg: Any, source: Any, reach: int, now: datetime, router: Any = None
+) -> LookBack | None:
+    """An answer given before the source's first read: nothing is read and nothing is asked of the service. The answer
+    is kept and takes effect when the first read lands (`follow_account_answer`, after every read), the go with it.
+    Returns the read still to come (`stopped` is "first_look"), or None for "not now"."""
+    if reach and reach not in cfg.watch.full_read_choices:
+        raise StoreError(f"{reach} days is not one of the choices")
+    if not can_look_back(source, store):
+        raise StoreError("this source can't be asked for older mail")
+    _keep_ahead(ws, source.id, reach)
+    if not first_read_to_come(store, source):
+        # The first read landed while the answer was being kept: it is applied now rather than at the next read.
+        return _follow_own_answer(ws, store, cfg, source, now, router)[1]
+    if reach == 0:
+        return None
+    result = LookBack(days=reach, from_date=now.astimezone(UTC).date() - timedelta(days=reach), reaches=True)
+    result.stopped = "first_look"
     return result
 
 

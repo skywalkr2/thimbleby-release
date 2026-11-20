@@ -327,6 +327,11 @@ class Worker:
         #: Accounts just signed in (sign-in, address) whose sources are read at once, taken up by the reading thread.
         self._accounts_to_read: list[tuple[Any, str | None]] = []
         self._accounts_lock = threading.Lock()
+        #: The short-lived threads reading accounts just signed in, each ending with its read.
+        self._account_reads: list[threading.Thread] = []
+        #: The accounts (sign-in, address) an account-read thread is reading: the jobs pass leaves their sources to
+        #: it, so none is read twice in a row. Worked out when the pass runs, from the settings it then has.
+        self._claimed_accounts: list[tuple[Any, str | None]] = []
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._backups: threading.Thread | None = None
@@ -689,6 +694,8 @@ class Worker:
             self._backups.join(timeout=60)
         if self._jobs:
             self._jobs.join(timeout=60)
+        for reading in list(self._account_reads):
+            reading.join(timeout=60)
         if self._sync:
             self.events.changed()
             self._sync.join(timeout=60)
@@ -701,10 +708,49 @@ class Worker:
 
     def read_account_soon(self, sign_in: Any, address: str | None) -> None:
         """An account was just signed in (first or again): every enabled source reading as it is read at once, not at
-        its next turn, so a source that had failed for want of the sign-in clears on a read that works."""
+        its next turn, so a source that had failed for want of the sign-in clears on a read that works. While the
+        worker runs, the read has a short-lived thread of its own, so it never waits for whatever the jobs thread is
+        doing for another account (a slice of older mail, a wait its service asked for); each request still passes
+        its own account's gate, and a source is never read twice at once. Before the worker is started, the read is
+        left to the jobs pass."""
         with self._accounts_lock:
             self._accounts_to_read.append((sign_in, address))
+            self._account_reads = [t for t in self._account_reads if t.is_alive()]
+            if self._jobs is not None and self._jobs.is_alive() and not self._stop.is_set():
+                self._claimed_accounts.append((sign_in, address))
+                reading = threading.Thread(
+                    target=self._read_accounts_apart,
+                    args=((sign_in, address),),
+                    name="cockpit-account-read",
+                    daemon=True,
+                )
+                self._account_reads.append(reading)
+                reading.start()
         self._read_now.set()
+
+    def _claimed_sources(self) -> set[str]:
+        """The sources of the accounts an account-read thread is reading now."""
+        from engine.sign_in_sources import sources_of_account
+
+        with self._accounts_lock:
+            claimed = list(self._claimed_accounts)
+        return {s for sign_in, address in claimed for s in sources_of_account(self.cfg, sign_in, address)}
+
+    def _read_accounts_apart(self, claim: tuple[Any, str | None]) -> None:
+        try:
+            self.read_accounts_now()
+        except LeaseLost:
+            log.warning("Another copy took over this workspace; the account just signed in is not read here")
+        except (Exception, SystemExit):  # a failed read is recorded on its run; the jobs pass reads what is due
+            log.exception("reading a signed-in account's sources failed")
+            self._problem("reading watched sources failed")
+        finally:
+            with self._accounts_lock:
+                if claim in self._claimed_accounts:
+                    self._claimed_accounts.remove(claim)
+            # The jobs pass left this account's sources to the read; it comes round again now that they are in, so what
+            # waited on them (the look at who the person writes to) is queued at once, not at the next minute's pass.
+            self._read_now.set()
 
     def read_accounts_now(self) -> int:
         """Read the sources of the accounts queued by `read_account_soon`. A source already being read is left to that
@@ -1466,7 +1512,8 @@ class Worker:
         now = self.now()
         if purge_due(self.ws, self.store, self.cfg, now):
             self.events.changed()
-        sources = due(self.store, self.cfg, now)
+        claimed = self._claimed_sources()
+        sources = [s for s in due(self.store, self.cfg, now) if s not in claimed]
         handed = 0
         for source in sources:
             if self._stop.is_set():

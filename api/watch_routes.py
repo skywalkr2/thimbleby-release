@@ -136,6 +136,12 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
             for side in level_sides
             if (found := held.get("project", side)) is not None
         ]
+        account = sign_in_sources.account_state(
+            ws,
+            store,
+            source,
+            refused=bool(last and last.data.get("error_kind") == "auth" and last.data.get("outcome") == "failed"),
+        )
         return WatchSourceView(
             id=source.id,
             label=source.label or source.id,
@@ -151,12 +157,7 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
             author=source.author,
             author_name=author_names().get(source.author or ""),
             account=source.account,
-            account_state=sign_in_sources.account_state(
-                ws,
-                store,
-                source,
-                refused=bool(last and last.data.get("error_kind") == "auth" and last.data.get("outcome") == "failed"),
-            ),
+            account_state=account,
             sides=list(source.sides),
             color=source.color,
             shown_color=colors.get(source.id),
@@ -199,7 +200,11 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
             look_back_choices=list(current().watch.look_back_choices)
             if back_to and source_intake.can_look_back(source, store)
             else [],
-            full_read_open=source_intake.full_read_pending(store, current(), source) or None,
+            full_read_open=source_intake.full_read_open(
+                ws, store, now_cfg, source, signed_in=account not in ("signed_out", "expired")
+            )
+            or None,
+            full_read_chosen=source_intake.answers_ahead(ws).get(source.id),
             older_read=OlderReadView(**older)
             if (older := source_intake.older_read_waiting(store.read(), source.id))
             else None,
@@ -246,8 +251,8 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
 
     @r.post("/watch/{source_id}/intake/go")
     def intake_go(source_id: str) -> IntakeStarted:
-        """The person's go for a newly added source's intake: the mail waiting for sorting is sorted, then every request
-        held for the go starts."""
+        """The person's go for a newly added source's intake: every request held for the go starts, and the worker
+        sorts the mail that waits for sorting before any of it runs. Nothing is asked of the assistant here."""
         need_source(source_id)
         try:
             started = source_intake.grant_go(ws, store, current(), source_id)
@@ -322,8 +327,9 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
 
     @r.post("/watch/{source_id}/full-read")
     def full_read(source_id: str, body: FullReadIn) -> LookBackView:
-        """The person's answer: a reach is read through the look further back (held for the go like any AI work), 0 is
-        "not now". Either way the question is answered."""
+        """The person's answer: a reach is queued for the background read and is also the go for the source's reading
+        (its first window and the older mail), 0 is "not now". Either way the question is answered, and nothing is
+        asked of the service or the assistant here."""
         need_source(source_id)
         try:
             found = source_intake.answer_full_read(ws, store, current(), source_id, body.days, worker.now())
@@ -332,8 +338,12 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
         # The reading is the worker's, in the background: the answer returns at once with the choice recorded.
         events.changed()
         if found is None:
+            worker.poke()  # a reach the first read covers is still the go for its window
             return LookBackView(days=0, from_date=worker.now().date(), count=0, reaches=True)
+        if found.stopped == "first_look":
+            return look_back_view(found)  # kept for the first read, which is under way or queued already
         worker.read_sources_now()
+        worker.poke()  # what the first window held is queued: the worker starts on it
         return look_back_view(found)
 
     @r.post("/watch/{source_id}/older-read/continue")

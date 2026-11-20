@@ -180,15 +180,20 @@ def test_the_routes_offer_the_question_after_a_read_and_answer_it(tmp_path):
 
     app = create_app(ws, cfg, TOKEN, ui_dist=tmp_path / "no-ui", start_worker=False)
     with TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"}) as client:
-        assert [bool(s["full_read_open"]) for s in client.get("/api/watch").json()] == [False, False]
-        assert client.get("/api/watch/m/full-read").status_code == 409  # nothing read yet
+        # The question is open from the moment a source exists, ahead of its first read: the reaches carry no number
+        # yet, since nothing was asked of the service.
+        assert [bool(s["full_read_open"]) for s in client.get("/api/watch").json()] == [True, True]
+        ahead = client.get("/api/watch/m/full-read").json()
+        assert [(o["days"], o["count"], o["unknown"]) for o in ahead["options"]] == [(d, 0, True) for d in (14, 30, 90)]
         assert client.post("/api/watch/m/read").status_code == 200
-        assert [bool(s["full_read_open"]) for s in client.get("/api/watch").json()] == [True, False]
+        assert [bool(s["full_read_open"]) for s in client.get("/api/watch").json()] == [True, True]
         shown = client.get("/api/watch/m/full-read").json()
         assert [o["days"] for o in shown["options"]] == [14, 30, 90] and shown["answered"] is None
+        assert not any(o["unknown"] for o in shown["options"])  # counted once the read has landed
         assert client.post("/api/watch/m/full-read", json={"days": 0}).status_code == 200
         assert client.get("/api/watch/m/full-read").json()["answered"] == 0
-        assert [bool(s["full_read_open"]) for s in client.get("/api/watch").json()] == [False, False]
+        # The source that was read is answered; the one never read keeps its own question.
+        assert [bool(s["full_read_open"]) for s in client.get("/api/watch").json()] == [False, True]
 
 
 def test_the_people_step_shows_the_waiting_look_with_its_estimate_and_what_to_send_to_start_it(tmp_path):

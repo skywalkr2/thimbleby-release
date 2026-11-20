@@ -167,9 +167,9 @@ const atMoment = { env: { E2E_CLOCK_AT: momentAt } };
 
 // The app is told where the made-up services' helpers are: its stall watcher (tests/e2e_stall_watch.py, on only when
 // E2E_STALL_DIR names a folder) asks them what they were asked.
-const freshServer = (p: ReturnType<typeof pair>, flags: string) =>
+const freshServer = (p: ReturnType<typeof pair>, flags: string, env: Record<string, string> = {}) =>
   on(p.port, {
-    env: { ...atMoment.env, E2E_FAKE_ADDRESS: `http://127.0.0.1:${p.fakePort}` },
+    env: { ...atMoment.env, E2E_FAKE_ADDRESS: `http://127.0.0.1:${p.fakePort}`, ...env },
     command: `uv run python -m tests.e2e_fresh_server --port ${p.port} --state "${p.state}" --https-port ${p.httpsPort} ${flags}`,
     cwd: "..",
     url: `http://127.0.0.1:${p.port}/api/health`,
@@ -490,9 +490,13 @@ export const allServers = [
     }),
     freshServer(threeMailboxes, "--mail"),
     fakeServices(threeMailboxes, "--accounts 3 --sent-mail"),
-    freshServer(re4, "--mail --small-pages"),
+    // A month read in full is also the go for what it brings (the person's pick), so a real-sized mailbox's month is worked by
+    // the made-up assistant at its made-up prices: about two dollars, the default daily limit. The limit is raised here so the
+    // journey tests the walk, not the default limit's edge (a limit reached is shown by test_first_reading_waits.py and test_silent_stops.py).
+    freshServer(re4, "--mail --small-pages", { COCKPIT__AI__BUDGETS__PER_DAY_USD: "10", COCKPIT__AI__BUDGETS__PER_MONTH_USD: "30" }),
     fakeServices(re4, "--accounts 1 --big-mailbox"),
-    freshServer(re5, "--mail --small-pages"),
+    // Two real-sized accounts read a month each: the same limit as above, raised for the same reason.
+    freshServer(re5, "--mail --small-pages", { COCKPIT__AI__BUDGETS__PER_DAY_USD: "10", COCKPIT__AI__BUDGETS__PER_MONTH_USD: "30" }),
     fakeServices(re5, `--accounts 2 --big-mailbox --quota-rate 1 --quota-penalty ${QUOTA_PENALTY}`),
     freshServer(re3, "--mail --no-sent-mail"),
     fakeServices(re3, "--accounts 2 --account-links"),

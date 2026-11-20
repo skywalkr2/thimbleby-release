@@ -4,6 +4,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import { api } from "../lib/api";
+import { wallWhen } from "../lib/dates";
 import { waitWhen } from "../lib/olderRead";
 import { listOf } from "../lib/packs";
 import { useContinue } from "../lib/walkthrough-continue";
@@ -62,6 +63,11 @@ export function WalkthroughReading(props: {
       : t("walkthrough.reading.fetching", { read: reading.read, sources: reading.sources });
   // A source the mail service asked to wait on is waiting, with its time: not stuck, and the person can go on.
   const waiting = reading.waiting > 0 && reading.until ? tn("walkthrough.reading.waiting_some", reading.waiting, { when: waitWhen(reading.until, t) }) : "";
+  // Work a spending limit has no room for waits with the limit named and the time it lifts: not stuck, and the person can go on.
+  const limited =
+    stage === "limit" && reading.limit_until
+      ? t(`walkthrough.reading.limit.${reading.limit === "month" ? "month" : "day"}`, { when: wallWhen(reading.limit_until) })
+      : "";
   return (
     <div data-reading="working" data-stage={stage}>
       {(reading.restart_waits ?? 0) > 0 && (
@@ -70,7 +76,7 @@ export function WalkthroughReading(props: {
         </div>
       )}
       <p className="what" role="status">
-        {stage === "fetching" ? fetching : stage === "waiting" ? waiting : t(`walkthrough.reading.${stage}`)}
+        {stage === "fetching" ? fetching : stage === "waiting" ? waiting : stage === "limit" ? limited : t(`walkthrough.reading.${stage}`)}
       </p>
       {stage === "fetching" && waiting && (
         <p className="hint" data-reading-waiting="">

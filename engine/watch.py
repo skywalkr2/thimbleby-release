@@ -1037,6 +1037,13 @@ def _awaiting_sorting(
     return waiting
 
 
+def awaiting_sorting_ids(ws: Any, store: Any, cfg: Any, only: str | None = None) -> set[str]:
+    """The requests whose mail a go's sorting covers (never sorted, still waiting or queued); of one source with
+    `only`. A go marks them `sort_pending`, and the worker sorts them before any of them runs: nothing here asks the
+    assistant."""
+    return {req.id for found in _awaiting_sorting(ws, store, cfg, only).values() for req, _, _, _ in found}
+
+
 def first_go_sorting(
     ws: Any, store: Any, cfg: Any, router: Any = None, only: str | None = None
 ) -> tuple[int, float | None, int]:
@@ -1095,14 +1102,20 @@ def sort_before_first_go(
     limits it to one source's mail (a new source's intake); `go` is False when nobody has given a go, so the
     sorting keeps the checks that wait for one. `pending_only` sorts just the mail whose requests are marked
     `sort_pending` (the worker's sorting before any other run); every request the sorting answers loses the mark, and
-    one it couldn't be run for keeps it."""
+    one it couldn't be run for keeps it. Marked mail whose request the person's go already approved is sorted under
+    that go, apart from marked mail nobody gave a go for."""
     waiting = _awaiting_sorting(ws, store, cfg, only, pending_only)
     sources = {s.id: s for s in cfg.watch.sources}
     set_aside = 0
     still_waiting: set[str] = set()
-    for source_id, found in waiting.items():
+    groups: list[tuple[str, list[tuple[Any, Any, SourceItem, dict[str, Any]]], bool]] = []
+    for source_id, every in waiting.items():
+        granted = [f for f in every if pending_only and not go and f[0].data.get("approval") == "granted"]
+        rest = [f for f in every if f not in granted]
+        groups += [(source_id, part, part_go) for part, part_go in ((granted, True), (rest, go)) if part]
+    for source_id, found, with_go in groups:
         marks, personal_keys, _note, unsorted, kinds = _assistant_sorted(
-            ws, store, cfg, sources[source_id], router, {item.key: facts for _, _, item, facts in found}, go=go
+            ws, store, cfg, sources[source_id], router, {item.key: facts for _, _, item, facts in found}, go=with_go
         )
         home = _personal_home(store, cfg)
         for req, snap, item, _facts in found:

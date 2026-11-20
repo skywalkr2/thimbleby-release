@@ -1045,3 +1045,32 @@ def test_the_persons_own_hand_in_runs_before_background_work_that_was_queued_fir
     monkeypatch.setattr(worker_module, "process", recording)
     worker_of(env).run_pending()
     assert order[0] == own and order[1:4] == background
+
+
+def test_queued_work_a_spending_limit_has_no_room_for_is_a_today_line_with_when_it_lifts(env):
+    """H5-39: waiting work the day's limit holds is never only a status chip: one Today line names the limit, counts
+    the work and says when it lifts (the next UTC midnight), and goes when the limit is raised."""
+    ws, cfg, store, clock = env
+    cfg.ai.budgets.per_day_usd, cfg.ai.budgets.per_month_usd = 2.0, 30.0
+    run = {"task": "notes", "provider": "main", "model": "m", "tier": "routine", "cost_usd": 1.995, "outcome": "ok"}
+    with store.transaction() as tx:
+        tx.create(
+            "run", {**run, "request": None, "started_at": clock().isoformat()}, WriteContext("engine", "trusted", "t")
+        )
+        for _ in range(2):
+            tx.create(
+                "request",
+                {
+                    "task": "notes",
+                    "origin": "input",
+                    "state": "queued",
+                    "range_usd": [0.01, 0.04],
+                    "created_at": clock().isoformat(),
+                },
+                WriteContext("engine", "trusted", "t"),
+            )
+    [line] = [x for x in queue(ws, store, cfg, clock()) if x.kind == "limit"]
+    assert (line.group, line.count, line.text) == ("risk", 2, "day")
+    assert datetime.fromisoformat(line.until) == datetime(2026, 10, 14, tzinfo=UTC)
+    cfg.ai.budgets.per_day_usd = 5.0  # raised: nothing is held any more
+    assert all(x.kind != "limit" for x in queue(ws, store, cfg, clock()))

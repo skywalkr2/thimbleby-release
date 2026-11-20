@@ -510,6 +510,7 @@ def test_the_first_go_sorts_the_mail_handed_in_before_it_sets_aside_the_newslett
     from api.app import create_app
     from engine.ai.router import Router
     from engine.dispatcher import process
+    from engine.watch import sort_before_first_go
 
     seen = []
 
@@ -538,8 +539,12 @@ def test_the_first_go_sorts_the_mail_handed_in_before_it_sets_aside_the_newslett
             assert process(ws, store, cfg, Router(cfg, store, env={}), req.id, now=NOW) is None
         assert len([r for r in store.read().list("request") if r.data["state"] == "needs_you"]) == 3
         assert seen == [] and not store.read().has("run")
-        # The go: the sorting run happens first, covered by it; the newsletter is set aside and closed.
-        assert client.post(f"{base}/runs/first-go").json() == {"started": 2}
+        # The go asks the assistant nothing in the request: it marks the mail, and the worker's sorting runs first,
+        # covered by the go; the newsletter is set aside and closed.
+        assert client.post(f"{base}/runs/first-go").json() == {"started": 3}
+        assert seen == [] and not store.read().has("run")
+        assert all(r.data["sort_pending"] for r in requests_in(store, "queued"))
+        sort_before_first_go(ws, store, cfg, Router(cfg, store, env={}), NOW, go=False, pending_only=True)
         assert seen == ["sort-mail"] and len(sort_runs(store)) == 1
         snaps = snapshots(store)
         assert snaps["news"]["set_aside"]["section"] == "sales" and snaps["news"]["set_aside"]["by"] == "assistant"
@@ -649,7 +654,7 @@ def test_the_first_go_estimate_includes_the_sorting_run_so_the_person_approves_t
     from engine.config.schema import Price
     from engine.dispatcher import process
     from engine.today_queue import queue
-    from engine.watch import first_go_sorting
+    from engine.watch import first_go_sorting, sort_before_first_go
 
     set_responder(Account(answers={"Newsletter": "sales"}))
     items = [unplaced(0), mail("news", f"deals@{CLUB}", subject="Newsletter"), unplaced(2)]
@@ -684,8 +689,10 @@ def test_the_first_go_estimate_includes_the_sorting_run_so_the_person_approves_t
         cfg.ai.prices.pop(use)
         assert first_go_sorting(ws, store, cfg) == (1, None, 1)
         assert first_go_line().unpriced >= 1
-        # Once the go is given nothing waits for it, and the screen is told there is no sorting to add.
-        assert client.post(f"{base}/runs/first-go").json() == {"started": 2}
+        # Once the go is given nothing waits for it; the worker sorts under it, and the screen is then told there is no
+        # sorting to add.
+        assert client.post(f"{base}/runs/first-go").json() == {"started": 3}
+        sort_before_first_go(ws, store, cfg, Router(cfg, store, env={}), NOW, go=False, pending_only=True)
         assert client.get(f"{base}/runs/first-go").json() == {"runs": 0, "estimate_usd": None, "unpriced": 0}
     finally:
         created.state.store.close()

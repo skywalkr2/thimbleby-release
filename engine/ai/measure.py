@@ -25,7 +25,7 @@ import json
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -148,6 +148,31 @@ def limit_reached(store: Store, cfg: Config, now: datetime | None = None) -> str
     if s.today_usd >= s.per_day_usd:
         return LIMIT_DAY
     return None
+
+
+def held_by_limit(store: Any, cfg: Any, requests: list[Any], now: Any) -> tuple[str, Any] | None:
+    """Which spending limit holds these waiting requests, and when it lifts, as `(period, moment)`; None when nothing is
+    held by a limit (a request caught mid-attempt by the worker's retries doesn't lift a hold). Held means a limit is
+    used up, or the least any waiting request is estimated to cost is more than the limits leave. The day's limit lifts
+    at the next UTC midnight (the spending totals are counted by UTC day) and the month's at the start of the next UTC
+    month."""
+    if not requests:
+        return None
+    reached = limit_reached(store, cfg, now)
+    if reached is None:
+        low = [(r.data.get("range_usd") or [None])[0] for r in requests]
+        if any(x is None for x in low):
+            return None
+        room = left(store, cfg, now)
+        if min(low) <= room.today_usd + 1e-9:
+            return None
+        reached = LIMIT_MONTH if room.month_usd <= room.today_usd else LIMIT_DAY
+    moment = now.astimezone(UTC)
+    if reached == LIMIT_MONTH:
+        first = moment.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        return "month", (first + timedelta(days=32)).replace(day=1)
+    midnight = datetime(moment.year, moment.month, moment.day, tzinfo=UTC)
+    return "day", midnight + timedelta(days=1)
 
 
 def limit_words(cfg: Config, reason: str) -> str:

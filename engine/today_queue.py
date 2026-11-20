@@ -1140,6 +1140,28 @@ def _everything(
                 )
             )
 
+    # Risk: waiting work a spending limit has no room for (the day's or the month's), with when it lifts.
+    from engine.ai import measure
+
+    unheld = [
+        r
+        for r in requests.values()
+        if r.data.get("state") == "queued" and not r.data.get("dismissed") and not r.data.get("cause")
+    ]
+    limited = measure.held_by_limit(store, cfg, unheld, now)
+    if limited is not None:
+        lines.append(
+            Line(
+                key=f"limit:{limited[0]}",
+                group="risk",
+                kind="limit",
+                count=len(unheld),
+                text=limited[0],
+                until=limited[1].isoformat(),
+                since=limited[1].isoformat(),
+            )
+        )
+
     # Decide: every account a kind of work can use is paused and another kind of work's account is free: ask before
     # borrowing it, once for the pause. Nothing is borrowed without the person's yes.
     if cfg.ai.borrow_other_tier == "ask":
@@ -2405,6 +2427,7 @@ _KIND_ORDER = {
     "invitation": 7,
     "failed": 0,
     "paused": 1,
+    "limit": 1,
     "offline": 1,
     "overdue": 2,
     "capacity": 2,

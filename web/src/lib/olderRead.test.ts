@@ -72,3 +72,19 @@ test("every line that says when a read carries on uses the words for a short wai
   const waiting = first({ label: "Your calendar", last: { outcome: "throttled", retry_at: soon } });
   expect(firstReadLines([waiting], say)).toEqual(["read.first_look.waiting @read.wait.minute"]);
 });
+
+import { onceEach } from "./olderRead";
+
+test("lines said about one account are each said once, in the order they first came (H5-35)", () => {
+  expect(onceEach(["a", "b", "a", " a ", "", "c", "b"])).toEqual(["a", "b", "c"]);
+  // By the words of each, whatever carries them: the inbox and the sent mail, both queued, are one line.
+  expect(onceEach([["m", "same"], ["s", "same"], ["x", "other"]] as const, ([, words]) => words)).toEqual([["m", "same"], ["x", "other"]]);
+});
+
+test("a reach chosen before the first read says once that the older mail follows the first look, and an answer kept says so (H5-34)", () => {
+  const chosen = [first({ full_read_chosen: 30 }), first({ label: "Your sent mail", full_read_chosen: 30 })];
+  expect(firstReadLines(chosen, say)).toEqual(["read.first_look.taking", "read.first_look.then_older"]);
+  expect(firstReadLines([first({ full_read_chosen: 0 })], say)).toEqual(["read.first_look.taking"]);
+  expect(firstReadLines([first({ full_read_chosen: 30, read_at: at })], say)).toEqual([]);
+  expect(stopWords({ stopped: "first_look", taken: 0 }, say)).toBe("read.first_look.then_older");
+});

@@ -31,6 +31,8 @@ export type Stop = { stopped?: string | null; continues_at?: string | null; gave
 export function stopWords(stop: Stop, t: Say): string {
   if (!stop.stopped) return "";
   if (stop.gave_up) return t("read.stopped.gave_up");
+  // Answered ahead of the account's first read: the older mail follows that read.
+  if (stop.stopped === "first_look") return t("read.first_look.then_older");
   // Waiting for the worker's lane, or between its slices: nothing failed, so there is no time to give.
   if (stop.stopped === "queued" || stop.stopped === "reading") {
     // With how many there will be about, and some already in, the line counts: "400 of about 1,700".
@@ -55,7 +57,22 @@ type FirstReadState = {
   /** A source whose older mail is being read, or that has looked back already, has had its first read. */
   older_read?: { gave_up?: boolean } | null;
   looked_back_to?: string | null;
+  /** The reach chosen for the older mail ahead of the first read, in days; 0 for "not now". */
+  full_read_chosen?: number | null;
 };
+
+/** Lines said to the person about one account, each said once: two sources of an account in the same state (its inbox and its sent
+ * mail, both queued) give the same words, and one line per cause is the rule. The order of first appearance is kept. Every place
+ * that lists an account's reading lines, or joins them into one message, passes them through this. */
+export function onceEach<T>(lines: T[], words: (line: T) => string = (line) => String(line)): T[] {
+  const seen = new Set<string>();
+  return lines.filter((line) => {
+    const said = words(line).trim();
+    if (said === "" || seen.has(said)) return false;
+    seen.add(said);
+    return true;
+  });
+}
 
 /** Whether a source's first read is still to come, so its account's card says what it is doing: it is on, its sign-in is good, it was
  * never read, and its latest try was none yet or the service asking to wait (any other outcome has its own line). */
@@ -83,5 +100,7 @@ export function firstReadLines(sources: FirstReadState[], t: Say): string[] {
     const until = waiting.map((s) => s.last?.retry_at ?? "").sort()[0] ?? "";
     lines.push(t("read.first_look.waiting", { when: waitWhen(until, t) }));
   }
-  return lines;
+  // A reach chosen ahead of the first read: the older mail follows it, said once for the account.
+  if (pending.some((s) => (s.full_read_chosen ?? 0) > 0)) lines.push(t("read.first_look.then_older"));
+  return onceEach(lines);
 }

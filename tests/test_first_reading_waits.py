@@ -252,3 +252,56 @@ def test_first_reading_says_requests_held_for_a_restart_wait(env):
         )
     shown = setup.reading(ws, cfg, store, _found(ws, cfg, store), NOW)
     assert (shown.state, shown.stage, shown.restart_waits) == ("working", "sorting", 1)
+
+
+def _queue_sorting(store, estimate, state="queued"):
+    with store.transaction() as tx:
+        tx.create(
+            "request",
+            {
+                "task": "notes",
+                "origin": "input",
+                "state": state,
+                "range_usd": [estimate, estimate],
+                "created_at": NOW.isoformat(),
+            },
+            _ENGINE,
+        )
+
+
+def _spent(store, usd):
+    run = {"task": "notes", "provider": "main", "model": "m", "tier": "routine", "cost_usd": usd, "outcome": "ok"}
+    with store.transaction() as tx:
+        tx.create("run", {**run, "request": None, "started_at": NOW.isoformat()}, _ENGINE)
+
+
+def test_first_reading_says_which_spending_limit_holds_its_work_and_when_it_lifts(env):
+    """H5-39: queued work the day's limit has no room for never sits on "sorting" without a word: the step is held by
+    the limit, with the moment it lifts (the next UTC midnight; the next month's first day for the month's limit)."""
+    ws, cfg, store = env
+    refresh(ws, store, cfg, "m", NOW)
+    refresh(ws, store, cfg, "m2", NOW)
+    cfg.ai.budgets.per_day_usd, cfg.ai.budgets.per_month_usd = 2.0, 30.0
+    _queue_sorting(store, 0.01)
+    plain = setup.reading(ws, cfg, store, _found(ws, cfg, store), NOW)
+    assert (plain.stage, plain.limit, plain.limit_until) == ("sorting", None, None)
+    _spent(store, 1.995)  # not used up, but less than the least waiting request is estimated to cost
+    held = setup.reading(ws, cfg, store, _found(ws, cfg, store), NOW)
+    assert (held.state, held.stage, held.limit) == ("working", "limit", "day")
+    midnight = datetime(NOW.year, NOW.month, NOW.day, tzinfo=UTC) + timedelta(days=1)
+    assert datetime.fromisoformat(held.limit_until) == midnight
+    _spent(store, 1.0)  # used up
+    assert setup.reading(ws, cfg, store, _found(ws, cfg, store), NOW).stage == "limit"
+    # A request caught mid-attempt by the worker's own retries doesn't lift the hold.
+    _queue_sorting(store, 0.01, state="running")
+    assert setup.reading(ws, cfg, store, _found(ws, cfg, store), NOW).stage == "limit"
+    # The month's limit, when it is the nearer, says so and lifts on the first of the next month.
+    cfg.ai.budgets.per_month_usd = 2.5
+    with store.transaction() as tx:
+        for r in tx.list("request"):
+            if r.data["state"] == "running":
+                tx.update("request", r.id, {"state": "done"}, _ENGINE, read_version=r.version)
+    month = setup.reading(ws, cfg, store, _found(ws, cfg, store), NOW)
+    assert (month.stage, month.limit) == ("limit", "month")
+    nxt = datetime.fromisoformat(month.limit_until)
+    assert (nxt.day, nxt.hour) == (1, 0) and (nxt.year, nxt.month) > (NOW.year, NOW.month)

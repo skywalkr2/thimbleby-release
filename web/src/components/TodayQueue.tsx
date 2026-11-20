@@ -750,6 +750,7 @@ const KIND_ICONS: Record<QueueLine["kind"], IconName> = {
   handover: "alert",
   failed: "alert",
   paused: "alert",
+  limit: "alert",
   borrow: "alert",
   offline: "alert",
   source_unread: "alert",

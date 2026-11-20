@@ -1,4 +1,4 @@
-import { clockTime } from "../lib/dates";
+import { clockTime, wallWhen } from "../lib/dates";
 import "@testing-library/jest-dom/vitest";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -3674,6 +3674,22 @@ describe("Reginald is turned on in the AI step, the first reading is waited for,
     open();
     const line = await screen.findByText(/1 is waiting: the mail service asked to slow down, so it is read again around/);
     expect(line).toHaveTextContent(clockTime(until));
+    await user.click(screen.getByRole("button", { name: "Go on while it works" }));
+    expect(await screen.findByRole("heading", { level: 2, name: "People" })).toBeInTheDocument();
+  });
+
+  test.each([
+    ["day", "Today's AI spending limit is reached, so the sorting waits. It carries on at"],
+    ["month", "This month's AI spending limit is reached, so the sorting waits. It carries on at"],
+  ])("First reading held by the %s spending limit says so, with when it lifts and where to raise it, and Go on while it works is still the way on (H5-39)", async (limit, said) => {
+    const user = userEvent.setup();
+    const until = inHours(5);
+    fakeApi(routes({}, DONE_AI, { step: "reading" }, { reading: { state: "working", stage: "limit", sources: 2, read: 2, limit: limit as "day" | "month", limit_until: until, found: 40 } }));
+    open();
+    const line = await screen.findByText(new RegExp(said));
+    expect(line).toHaveTextContent(wallWhen(until));
+    expect(line).toHaveTextContent("under AI spending in Settings");
+    expect(screen.queryByText("Sorting what it found.")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Go on while it works" }));
     expect(await screen.findByRole("heading", { level: 2, name: "People" })).toBeInTheDocument();
   });

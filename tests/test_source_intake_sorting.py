@@ -10,7 +10,9 @@ from engine.today_queue import queue
 from tests.test_mail_sorting import CLUB, NOW, mail, make, rows_of, sort_runs, unplaced
 
 
-def test_the_intakes_go_sorts_its_mail_first_so_what_is_set_aside_never_starts(tmp_path):
+def test_the_intakes_go_asks_the_assistant_nothing_and_the_worker_sorts_first_so_what_is_set_aside_never_starts(
+    tmp_path,
+):
     seen = []
 
     def account(task):
@@ -23,7 +25,11 @@ def test_the_intakes_go_sorts_its_mail_first_so_what_is_set_aside_never_starts(t
     ws, cfg, store = make(tmp_path, items, first_run="intake")
     cfg.ai.budgets.confirm_unpriced = True  # unpriced runs wait for a go, so the intake does
     try:
-        from engine.watch import refresh
+        from engine.ai.router import Router
+        from engine.watch import refresh, sort_before_first_go
+
+        def no_router():
+            raise AssertionError("the go asked for the assistant")
 
         result = refresh(ws, store, cfg, "m", NOW)
         assert len(result.taken_in) == 3 and result.new == []
@@ -31,7 +37,15 @@ def test_the_intakes_go_sorts_its_mail_first_so_what_is_set_aside_never_starts(t
         assert seen == [] and not store.read().has("run")
         (line,) = [x for x in queue(ws, store, cfg, NOW) if x.kind == "intake_go"]
         assert line.count == 3 and line.unpriced >= 3
-        assert source_intake.grant_go(ws, store, cfg, "m", now=NOW) == 2
+        # The go itself asks the assistant nothing: it answers with the count, and marks the mail for the worker's
+        # sorting.
+        assert source_intake.grant_go(ws, store, cfg, "m", router=no_router, now=NOW) == 3
+        assert seen == [] and not store.read().has("run")
+        marked = [r for r in store.read().list("request") if r.data["state"] == "queued"]
+        assert len(marked) == 3 and all(r.data["sort_pending"] and r.data["approval"] == "granted" for r in marked)
+        assert [x for x in queue(ws, store, cfg, NOW) if x.kind == "intake_go"] == []
+        # The worker sorts what is marked before any of it runs, under the go already given.
+        sort_before_first_go(ws, store, cfg, Router(cfg, store, env={}), NOW, go=False, pending_only=True)
         assert seen == ["sort-mail"] and len(sort_runs(store)) == 1
         snaps = {s.data["key"]: s.data for s in store.read().list("snapshot")}
         assert snaps["news"]["set_aside"]["section"] == "sales"
@@ -39,6 +53,7 @@ def test_the_intakes_go_sorts_its_mail_first_so_what_is_set_aside_never_starts(t
         assert len(aside) == 1 and aside[0].data["state"] == "done" and aside[0].data["intake"] == "m"
         queued = [r for r in store.read().list("request") if r.data["state"] == "queued"]
         assert len(queued) == 2 and all(r.data["approval"] == "granted" for r in queued)
+        assert not any(r.data.get("sort_pending") for r in queued)
     finally:
         store.close()
         set_responder(None)

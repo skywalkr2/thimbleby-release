@@ -236,3 +236,35 @@ test("one source failing does not stop the account's other source being read, an
   expect(await screen.findByText(/5 older items from Sent mail are taken in\./)).toBeInTheDocument();
   expect(calls.filter((c) => c.route.startsWith("POST watch/")).map((c) => c.route)).toEqual(["POST watch/m/full-read", "POST watch/s/full-read"]);
 });
+
+test("two sources of one account that did the same are said once in the message (H5-35)", async () => {
+  const user = userEvent.setup();
+  const queued = { ...done(0), stopped: "queued", continues_at: "2026-09-19T09:00:00Z" };
+  fakeApi({
+    "GET watch/m/full-read": () => offered,
+    "GET watch/s/full-read": () => offered,
+    "POST watch/m/full-read": () => queued,
+    "POST watch/s/full-read": () => queued,
+    "GET watch": () => [],
+  });
+  renderApp(<FullReadChoice sources={[source({ id: "m", label: "Your inbox" }), source({ id: "s", label: "Your sent mail" })]} account="person@example.com" />);
+  await user.click(await pickerOf());
+  await user.click(await screen.findByRole("option", { name: /1 month/ }));
+  await user.click(screen.getByRole("button", { name: "Read it" }));
+  // The whole message is the one line, never the same line twice.
+  expect(await screen.findByText("Reading the older mail in the background.")).toBeInTheDocument();
+  expect(screen.queryByText(/Reading the older mail in the background\. Reading the older mail/)).not.toBeInTheDocument();
+});
+
+test("a choice offered before the first read has no numbers and says the older mail follows the first look (H5-34)", async () => {
+  const user = userEvent.setup();
+  const ahead = { answered: null, options: offered.options.map((o) => ({ ...o, count: 0, estimate_usd: null, unknown: true })) };
+  const kept = { ...done(0), stopped: "first_look" };
+  const calls = fakeApi({ "GET watch/m/full-read": () => ahead, "POST watch/m/full-read": () => kept, "GET watch": () => [] });
+  renderApp(<FullReadChoice sources={[source({ looked_back_to: null })]} account="person@example.com" />);
+  await user.click(await pickerOf());
+  await user.click(await screen.findByRole("option", { name: /1 month: More mail\./ }));
+  await user.click(screen.getByRole("button", { name: "Read it" }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST watch/m/full-read")?.body).toEqual({ days: 30 }));
+  expect(await screen.findByText("The older mail is read after the first look at this account.")).toBeInTheDocument();
+});

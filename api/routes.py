@@ -1585,13 +1585,13 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
 
     @r.post("/runs/first-go")
     def first_go() -> FirstGoStarted:
-        """The person's first go: the mail handed in unsorted while it was pending is sorted first (the go covers that
-        run), then every run still waiting for it starts, and no run waits for it again."""
+        """The person's first go: every run still waiting for it starts, and no run waits for it again. The mail handed
+        in unsorted while it was pending is marked, and the worker sorts it under this go before any of it runs:
+        nothing is asked of the assistant here, so the press answers at once."""
         from engine import setup, watch
 
         setup.give_first_go(ws)
-        watch.sort_before_first_go(ws, store, cfg)
-        started = grant_first_go(store)
+        started = grant_first_go(store, watch.awaiting_sorting_ids(ws, store, cfg))
         worker.poke()
         changed()
         return FirstGoStarted(started=started)
