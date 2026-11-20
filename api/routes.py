@@ -2776,7 +2776,7 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
             )
             for o in offers
         ]
-        state = person_look.look_state(ws, store, now) if not people else "looked"
+        state = person_look.look_state(ws, store, now, datetime.now(UTC)) if not people else "looked"
         held = person_look.held_for_go(store) if state == "waiting" else None
         until = person_look.waiting_until(ws, store, now, datetime.now(UTC)) if state == "not_yet" else None
         return PeopleSuggestionsView(

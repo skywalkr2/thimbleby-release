@@ -1755,7 +1755,9 @@ describe("each screen", () => {
       ["not_yet", "Your mail has not been read yet"],
       ["working", "The assistant is reading who you deal with"],
       ["waiting", "is waiting for your go"],
-      ["looked", "Nothing in your mail points to someone to add yet"],
+      ["looked", "looked at who you deal with in your mail and found no one to suggest"],
+      ["reading_more", "The rest of your year of mail is still being read"],
+      ["too_little", "holds too little so far to tell who you deal with"],
     ])("with no offer and the look at %s the step says so in plain words, with no tick boxes and a way to add by hand", async (state, words) => {
       personalOnly({ "GET setup/people-suggestions": () => ({ people: [], state }) });
       open();

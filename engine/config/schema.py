@@ -1701,7 +1701,8 @@ class KnowledgeSettings(ConfigModel):
         ge=1,
         le=500,
         description="The most people and companies from the tally of who you deal with (counts and names, never "
-        "message text) that one look shows the assistant, the ones you deal with most first.",
+        "message text) that one look shows the assistant: the ones you write to first, then the ones you deal with "
+        "most.",
         json_schema_extra={"internal": True},
     )
     person_look_min_messages: int = Field(

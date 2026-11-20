@@ -54,15 +54,17 @@ export function ReportProblem(props: { onClose: () => void; /** Words to start t
   const problems = addProblems ? fit(problemLines(found, t).join("\n")) : "";
   const replyTrimmed = reply.trim();
   const replyBad = replyTrimmed !== "" && !ADDRESS.test(replyTrimmed);
-  const ready = words.trim() !== "" && !replyBad && facts.isSuccess;
+  // The form never waits for the facts: the app adds its own version and system when it sends.
+  const ready = words.trim() !== "" && !replyBad;
+  const missing = words.trim() === "" ? t("report.required") : replyBad ? t("report.reply_bad") : undefined;
 
   const subject = t("report.subject", { app: t("app.name"), version: facts.data?.version ?? "" }).trim();
   const lines = [
     words.trim(),
     "",
     replyTrimmed ? t("report.line_reply", { address: replyTrimmed }) : t("report.line_reply_none"),
-    t("report.line_version", { version: facts.data?.version ?? "" }),
-    t("report.line_system", { system: facts.data?.system ?? "" }),
+    t("report.line_version", { version: facts.data?.version ?? t("report.line_later") }),
+    t("report.line_system", { system: facts.data?.system ?? t("report.line_later") }),
     ...(problems ? ["", problems] : []),
   ];
   const text = lines.join("\n").replace(/^\n+/, "");
@@ -180,7 +182,7 @@ export function ReportProblem(props: { onClose: () => void; /** Words to start t
             </span>
           </>
         )}
-        <CheckboxGroup legend={t("report.preview")}>
+        <CheckboxGroup legend={t("report.preview")} legendHidden>
           <FormField id={`${base}-body`} label={t("report.preview")}>
             <textarea id={`${base}-body`} className="short" readOnly rows={Math.min(14, text.split("\n").length + 1)} value={text} />
           </FormField>
@@ -190,6 +192,11 @@ export function ReportProblem(props: { onClose: () => void; /** Words to start t
             </FormField>
           )}
         </CheckboxGroup>
+        {facts.isError && (
+          <p className="problem-note" role="status">
+            {t("report.facts_failed")}
+          </p>
+        )}
         {failed && (
           <p className="problem-note" role="alert">
             {failed}
@@ -207,7 +214,7 @@ export function ReportProblem(props: { onClose: () => void; /** Words to start t
           <Button variant="secondary" disabled={!ready} onClick={() => void copy()}>
             {t("report.copy")}
           </Button>
-          <Button variant="primary" disabled={!ready || sending} reason={ready ? undefined : t("report.required")} onClick={() => void send()}>
+          <Button variant="primary" disabled={!ready || sending} reason={missing} onClick={() => void send()}>
             {sending ? t("report.sending") : failed ? t("report.retry") : t("report.send")}
           </Button>
         </DialogFooter>

@@ -1673,12 +1673,14 @@ class SetupPersonIn(PersonIn):
 
 class PeopleSuggestionsView(BaseModel):
     """The people the assistant offers in the people step, most mail first. With none, `state` says where its look at
-    who the person deals with stands: no_account (no assistant is set up for it), not_yet (no mail has been read),
-    working (it is reading), waiting (it waits for the person's go) or looked (it read and offered no one). With
-    `not_yet`, `until` says when the mail service lets a waiting read go on."""
+    who the person deals with stands: no_account (no assistant is set up for it), not_yet (the mail it counts has not
+    been read), working (it is reading), waiting (it waits for the person's go), reading_more (what was read so far
+    gave no one and the rest of the year's mail is still coming in), looked (it read all there is and offered no one)
+    or too_little (all is read and it holds too little to look at). With `not_yet`, `until` says when the mail service
+    lets a waiting read go on."""
 
     people: list[PersonSuggestion]
-    state: Literal["no_account", "not_yet", "working", "waiting", "looked"]
+    state: Literal["no_account", "not_yet", "working", "waiting", "reading_more", "looked", "too_little"]
     request: str | None = Field(
         None, description="With state `waiting`: the look that waits for the person's go, to start from the step."
     )

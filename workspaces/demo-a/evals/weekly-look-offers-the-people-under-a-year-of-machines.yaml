@@ -1,0 +1,74 @@
+id: weekly-look-offers-the-people-under-a-year-of-machines
+title: The weekly look offers the six people the user writes with, though shops and notices fill most of the list and write far more often
+skills: [evidence]
+received: '2026-10-19'
+# H5-36: a real mailbox's tally is mostly senders nobody answers, each busier than any person. The six lines with
+# messages both ways are the people; a look that offers no one because the list is mostly machines leaves the People
+# step empty. The lines are the tally of the fictional year in tests/people_year.py, as the packet gives them.
+person_look:
+  tally:
+  - 'no-reply@parcels.example.com | Parcel Tracking | 68 from them, 0 to them | 2025-10-29 to 2026-10-17 | sides: none | hints: automated sender, marked bulk mail'
+  - 'offers@store40.example.com | Store 40 Offers | 62 from them, 0 to them | 2025-10-30 to 2026-10-04 | sides: none | hints: name has a company word, marked bulk mail'
+  - 'offers@store39.example.com | Store 39 Offers | 61 from them, 0 to them | 2025-10-30 to 2026-10-03 | sides: none | hints: name has a company word, marked bulk mail'
+  - 'offers@store38.example.com | Store 38 Offers | 60 from them, 0 to them | 2025-10-30 to 2026-10-03 | sides: none | hints: name has a company word, marked bulk mail'
+  - 'offers@store37.example.com | Store 37 Offers | 59 from them, 0 to them | 2025-10-30 to 2026-10-03 | sides: none | hints: name has a company word, marked bulk mail'
+  - 'rowan.achterberg@example.com | Rowan Achterberg | 34 from them, 22 to them | 2025-11-04 to 2026-10-17 | sides: none'
+  - 'imre.vasko@example.com | Imre Vasko | 20 from them, 14 to them | 2025-11-10 to 2026-10-15 | sides: none'
+  - 'offers@store36.example.com | Store 36 Offers | 58 from them, 0 to them | 2025-10-30 to 2026-10-03 | sides: none | hints: name has a company word, marked bulk mail'
+  - 'offers@store35.example.com | Store 35 Offers | 57 from them, 0 to them | 2025-10-30 to 2026-10-03 | sides: none | hints: name has a company word, marked bulk mail'
+  - 'notifications@bank.example.com | Statements | 42 from them, 0 to them | 2025-11-02 to 2026-09-29 | sides: none | hints: automated sender, marked bulk mail'
+  - 'offers@store12.example.com | Store 12 Offers | 34 from them, 0 to them | 2025-11-03 to 2026-09-25 | sides: none | hints: name has a company word, marked bulk mail'
+  - 'odalys.b@example.com | Odalys Brennecke | 14 from them, 9 to them | 2025-11-17 to 2026-10-15 | sides: none'
+  - 'tavish@okonjo-joinery.example.com | Tavish Okonjo | 8 from them, 6 to them | 2025-12-03 to 2026-10-15 | sides: none'
+  - 'liesel.marchetti@example.com | Liesel Marchetti | 6 from them, 5 to them | 2025-12-14 to 2026-10-15 | sides: none'
+  - 'careers@staffing.example.com | Corwin Abara | 5 from them, 4 to them | 2025-12-23 to 2026-10-15 | sides: none'
+  - 'offers@store10.example.com | Store 10 Offers | 33 from them, 0 to them | 2025-11-04 to 2026-10-04 | sides: none | hints: name has a company word, marked bulk mail'
+  - 'offers@store11.example.com | Store 11 Offers | 33 from them, 0 to them | 2025-11-04 to 2026-09-24 | sides: none | hints: name has a company word, marked bulk mail'
+  - 'offers@store9.example.com | Store 9 Offers | 32 from them, 0 to them | 2025-11-04 to 2026-10-04 | sides: none | hints: name has a company word, marked bulk mail'
+expect:
+- op: person.offer
+  people: 6
+  addresses:
+  - rowan.achterberg@example.com
+  - imre.vasko@example.com
+  - odalys.b@example.com
+  - tavish@okonjo-joinery.example.com
+  - liesel.marchetti@example.com
+  - careers@staffing.example.com
+  why: true
+forbid:
+- op: person.offer
+  address: no-reply@parcels.example.com
+  attempted: true
+- op: person.offer
+  address: offers@store40.example.com
+  attempted: true
+- op: person.offer
+  address: offers@store39.example.com
+  attempted: true
+- op: action.add
+- op: question.add
+- new_person: true
+stub_answer:
+  summary: Six people you write with; the rest are shops and notices.
+  ops:
+  - op: person.offer
+    people:
+    - address: rowan.achterberg@example.com
+      name: Rowan Achterberg
+      why: Writes to you often and you write back about as often, so likely someone you work with closely.
+    - address: imre.vasko@example.com
+      name: Imre Vasko
+      why: Writes to you through the year and you reply, so likely a colleague or client.
+    - address: odalys.b@example.com
+      name: Odalys Brennecke
+      why: Writes to you and you write back, so likely someone you deal with regularly.
+    - address: tavish@okonjo-joinery.example.com
+      name: Tavish Okonjo
+      why: Writes from a business address and you reply, so likely a tradesperson you use.
+    - address: liesel.marchetti@example.com
+      name: Liesel Marchetti
+      why: A few messages each way over the year, so likely someone you know.
+    - address: careers@staffing.example.com
+      name: Corwin Abara
+      why: Writes under a person's name from a careers address and you write back, so likely a recruiter.

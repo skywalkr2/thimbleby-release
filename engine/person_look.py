@@ -114,8 +114,9 @@ def use_lines(contacts: list[str] | None, series: list[str] | None = None) -> No
 
 
 def shown_contacts(store: Any, cfg: Any, own: str | None = None) -> list[tuple[contact_tally.Contact, str | None]]:
-    """The tally entries a run is shown with the id of the person on file for each, the most dealt with first: not kept
-    apart, with at least `person_look_min_messages` messages, at most `person_look_entries`. Someone on file is shown
+    """The tally entries a run is shown with the id of the person on file for each: not kept apart, with at least
+    `person_look_min_messages` messages, at most `person_look_entries`; those the person writes to first, then those
+    no look has read, each group the most dealt with first. Someone on file is shown
     (it is who routing may name); someone not on file is left out when a glossary entry already names them or the
     person discarded one, or an earlier look already read their address with the counts it has now (`own` is the look
     being made now)."""
@@ -124,6 +125,7 @@ def shown_contacts(store: Any, cfg: Any, own: str | None = None) -> list[tuple[c
     decided = _already_decided(store.read())
     offered = _offered_addresses(store.read())
     asked = _asked_before(store.read(), own)
+    read_before = {address for address, _counts in asked}
     found: list[tuple[contact_tally.Contact, str | None]] = []
     for c in contact_tally.tally(store, cfg):
         if c.apart is not None or c.total < settings.person_look_min_messages:
@@ -133,6 +135,10 @@ def shown_contacts(store: Any, cfg: Any, own: str | None = None) -> list[tuple[c
         if person is None and (_norm(c.name) in decided or c.address in offered or unchanged):
             continue
         found.append((c, person))
+    # The tally comes most dealt with first. When more stand than a run is shown, those the person writes to come
+    # before those who only write to the person, and an address no look has read before one read with other counts,
+    # so the busiest senders never crowd the rest out look after look. An order only: nobody is left out by it for good.
+    found.sort(key=lambda pair: (not pair[0].wrote_to, pair[0].address in read_before))
     return found[: settings.person_look_entries]
 
 
@@ -328,11 +334,35 @@ def first_reads_in(store: Any, cfg: Any, now: datetime, ws: Any = None) -> bool:
     return not pending and not waiting
 
 
+def _sweeps(view: Any, cfg: Any) -> list[dict[str, Any]]:
+    """Where the rest of each mail source's headers stands, for those still being read (not given up on)."""
+    found = []
+    for source in cfg.watch.sources:
+        state = mail_headers.sweep_waiting(view, source.id) if source.enabled else None
+        if state and not state.get("gave_up"):
+            found.append(state)
+    return found
+
+
 def header_sample_in(store: Any, cfg: Any) -> bool:
-    """Whether the small sample of mail headers a first sign-in takes is in, so the look has something to count. The
-    sample is read right after each source's first read (`mail_headers.read_after_first`), so it is in whenever the
-    first reads are; the rest of the year comes later and brings its own look (`header_sweep_finished_since`)."""
-    return True
+    """Whether the look has headers to count: no mail source's headers are still waiting to be read with none kept yet
+    (the sample a first sign-in takes was refused or slowed down by the service, and the rest waits for its time). A
+    source whose headers can't be read, or whose read was given up on, holds nothing back."""
+    return all(int(state.get("taken", 0)) > 0 for state in _sweeps(store.read(), cfg))
+
+
+def more_mail_coming(store: Any, cfg: Any) -> bool:
+    """Whether the rest of a mail source's year of headers is still being read: the tally is still growing."""
+    return bool(_sweeps(store.read(), cfg))
+
+
+def headers_kept_since(view: Any, moment: datetime) -> bool:
+    """Whether a page of the rest of a mail source's headers was kept after `moment`."""
+    for run in view.list("watch_run"):
+        kept = _clock((run.data.get("header_sweep") or {}).get("kept_at"), moment.tzinfo or UTC)
+        if kept is not None and kept > moment:
+            return True
+    return False
 
 
 def header_sweep_finished_since(view: Any, moment: datetime) -> bool:
@@ -360,7 +390,8 @@ def due(store: Any, cfg: Any, now: datetime, ws: Any = None) -> bool:
     """Whether a look is due: it is on, none is open, every first read is in (and the header sample), and the last was
     queued at least `person_look_every_days` ago (or none ever was, which is the look after the first reads), with
     something to look at. Inside the week another look is due when a read finished since the last one (a first read,
-    an older read or the header sweep) and the tally shows an address new or with other counts than any look read."""
+    an older read or the header sweep), or, while nobody has been offered yet, when more of the year's headers came
+    in, and the tally shows an address new or with other counts than any look read."""
     settings = cfg.dispatch.knowledge
     if not settings.person_look:
         return False
@@ -373,7 +404,10 @@ def due(store: Any, cfg: Any, now: datetime, ws: Any = None) -> bool:
     if last is not None:
         stamp = last if last.tzinfo else last.replace(tzinfo=now.tzinfo)
         if now - stamp < timedelta(days=settings.person_look_every_days):
-            return settled_since(view, stamp) and bool(tally_lines(store, cfg))
+            # While nobody has been offered yet, each page of the year's headers that comes in is looked at too, so the
+            # first offers don't wait for the whole year to be read.
+            more = settled_since(view, stamp) or (not view.list("person_offer") and headers_kept_since(view, stamp))
+            return more and bool(tally_lines(store, cfg))
     return has_something_to_look_at(store, cfg)
 
 
@@ -468,14 +502,16 @@ def finish(store: Any, request_id: str, changeset_id: str) -> None:
 # ---- the offers ------------------------------------------------------------------------------------------------------
 
 
-def check(ctx: Any, op: Any) -> list[str]:
-    """The problems with a `person.offer` op as the applier sees it, in plain words: every address is one the request's
-    packet listed, is not on file and was not offered or left out before, and is named once."""
+def _sorted_out(ctx: Any, op: Any) -> tuple[list[Any], list[str]]:
+    """The entries of a `person.offer` op that stand, and what is wrong with each of the others in plain words: an
+    address stands when the request's packet listed it, it is not on file, it was not offered or left out before and
+    it was not named earlier in the op."""
     view = ctx.store.read()
     request = view.get("request", ctx.inputs.request) if ctx.inputs.request else None
     listed = {str(a).lower() for a in ((request.data.get("asked_about") if request is not None else None) or [])}
     on_file = set(_on_file(ctx.store))
     before = _offered_addresses(view)
+    good: list[Any] = []
     said: list[str] = []
     seen: set[str] = set()
     for person in op.people:
@@ -488,8 +524,18 @@ def check(ctx: Any, op: Any) -> list[str]:
             said.append(f"{person.address} was offered before")
         elif address in seen:
             said.append(f"{person.address} is offered twice")
+        else:
+            good.append(person)
         seen.add(address)
-    return said
+    return good, said
+
+
+def check(ctx: Any, op: Any) -> list[str]:
+    """The problems with a `person.offer` op as the applier sees it, in plain words. An entry that doesn't stand is left
+    out when the op is applied and the others are kept, so the op is refused only when it names people and none of
+    them stands."""
+    good, said = _sorted_out(ctx, op)
+    return said if op.people and not good else []
 
 
 def _counts(store: Any, cfg: Any, address: str, own: str | None) -> tuple[int, int]:
@@ -503,10 +549,11 @@ def _counts(store: Any, cfg: Any, address: str, own: str | None) -> tuple[int, i
 
 
 def apply(tx: Any, op: Any, ctx: Any, w: Any) -> list[dict[str, Any]]:
-    """Keep each person as an offer that waits for the person: name, address, why and the counts, as of now."""
+    """Keep each person who stands as an offer that waits for the person: name, address, why and the counts, as of
+    now. An entry that doesn't stand (`_sorted_out`) is left out and takes no other with it."""
     made = []
     now = ctx.store.clock()
-    for person in op.people:
+    for person in _sorted_out(ctx, op)[0]:
         address = person.address.strip().lower()
         from_them, to_them = _counts(ctx.store, ctx.cfg, address, ctx.inputs.request)
         offer = tx.create(
@@ -664,10 +711,13 @@ def held_for_go(store: Any) -> Any | None:
     return None
 
 
-def look_state(ws: Any, store: Any, cfg: Any) -> str:
+def look_state(ws: Any, store: Any, cfg: Any, now: datetime | None = None) -> str:
     """Where the look stands, for the People step to say when it has no offer to show: `no_account` (no assistant is
-    set up to do it), `waiting` (a look waits for the person's go), `working` (a look is queued or running), `looked`
-    (a look finished and offered no one) or `not_yet` (no look has been made, for want of mail read)."""
+    set up to do it), `waiting` (a look waits for the person's go), `working` (a look is queued or running), `not_yet`
+    (the mail's first read, or the headers a look counts, are not in), `reading_more` (the rest of the year's headers
+    is still being read: what was read so far gave no one, and the look goes again as more comes in), `looked` (a look
+    ran on all there is and offered no one) or `too_little` (everything is read and it holds too little to look at,
+    so no look ran: a look closed with no call is not a look)."""
     from engine.ai.smoke import ai_state
 
     requests = [r for r in store.read().list("request") if r.data["task"] == TASK and not r.data.get("dismissed")]
@@ -677,16 +727,27 @@ def look_state(ws: Any, store: Any, cfg: Any) -> str:
         return "working"
     if ai_state(ws, cfg, store)[0] != "ok":
         return "no_account"
-    if any(r.data["state"] in ("done", "review") for r in requests):
-        return "looked"
-    return "not_yet"
+    if not first_reads_in(store, cfg, now or datetime.now(UTC), ws) or not header_sample_in(store, cfg):
+        return "not_yet"
+    if more_mail_coming(store, cfg):
+        return "reading_more"
+    ran = any(
+        r.data["state"] in ("done", "review") and r.data.get("waiting") not in (NOTHING_TO_LOOK_AT, SWITCHED_OFF)
+        for r in requests
+    )
+    return "looked" if ran else "too_little"
 
 
 def waiting_until(ws: Any, store: Any, cfg: Any, now: datetime) -> datetime | None:
-    """When the mail the look waits for can be read again, when a first read was asked to wait and the time has not
-    come: the earliest such time; None when no first read waits for the service."""
+    """When the mail the look waits for can be read again, when a first read or the first headers were asked to wait
+    and the time has not come: the earliest such time; None when nothing waits for the service."""
     _, waiting = first_read_standing(store.read(), read_sources_of(store, cfg, ws), now)
-    return min((until for _, until in waiting), default=None)
+    times = [until for _, until in waiting]
+    for state in _sweeps(store.read(), cfg):
+        at = _clock(state.get("at"), UTC) if int(state.get("taken", 0)) == 0 else None
+        if at is not None and at > now:
+            times.append(at)
+    return min(times, default=None)
 
 
 # ---- the packet ------------------------------------------------------------------------------------------------------

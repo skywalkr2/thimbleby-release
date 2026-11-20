@@ -91,7 +91,7 @@ test("a bad reply address is named and holds Send; a person with no address on r
   expect(field).toHaveValue("");
   await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeEnabled());
   await user.type(field, "not an address");
-  expect(await screen.findByText(/doesn't look like an email address/)).toBeInTheDocument();
+  expect(await screen.findByRole("status")).toHaveTextContent(/doesn't look like an email address/);
   expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
 });
 
@@ -151,4 +151,54 @@ test("with no technical details there is no checkbox for them", async () => {
   open({ facts: { details: "" } });
   await screen.findByRole("checkbox", { name: "Include the recent problems (1)" });
   expect(screen.queryByRole("checkbox", { name: "Include technical details" })).toBeNull();
+});
+
+test("with the facts still loading, words are enough: Send works, and the preview says the version and system come later", async () => {
+  const calls = fakeApi({
+    "GET report/facts": () => new Promise(() => {}),
+    "GET feedback/problems": () => ({ problems: [] }),
+    "POST report/send": () => ({ ok: true, why: null }),
+  });
+  const onClose = vi.fn();
+  renderApp(<ReportProblem onClose={onClose} />);
+  const user = userEvent.setup();
+  expect(screen.getByRole("button", { name: "Send" })).toHaveAccessibleDescription("Write a few words to continue.");
+  await user.type(words(), "It broke");
+  expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Copy the report" })).toBeEnabled();
+  expect(preview().value).toContain("App version: added when it is sent");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  expect(sends(calls)).toHaveLength(1);
+  expect(sends(calls)[0].body).toMatchObject({ words: "It broke", include_details: true });
+});
+
+test("with the facts failed, the form says so in a line, and Send still works", async () => {
+  const calls = fakeApi({
+    "GET report/facts": () => new Refuse(503, "busy"),
+    "GET feedback/problems": () => ({ problems: [] }),
+    "POST report/send": () => ({ ok: true, why: null }),
+  });
+  const onClose = vi.fn();
+  renderApp(<ReportProblem onClose={onClose} />);
+  const user = userEvent.setup();
+  await user.type(words(), "It broke");
+  expect(await screen.findByText(/version and system couldn't be read just now/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  expect(sends(calls)).toHaveLength(1);
+});
+
+test("a bad reply address is the reason Send is held, not the missing words", async () => {
+  const { user } = open({ facts: { reply_to: "" } });
+  await user.type(words(), "It broke");
+  await user.type(screen.getByLabelText(/Your email address/), "not an address");
+  expect(screen.getByRole("button", { name: "Send" })).toHaveAccessibleDescription(/doesn't look like an email address/);
+});
+
+test("the preview has one visible heading", async () => {
+  open();
+  const shown = screen.getAllByText("What will be sent").filter((el) => !el.classList.contains("sr"));
+  expect(shown).toHaveLength(1);
 });

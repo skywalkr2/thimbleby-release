@@ -262,6 +262,8 @@ def sweep_slice(ws: Any, store: Any, cfg: Any, source_id: str, now: datetime) ->
         taken = int(state.get("taken", 0)) + kept
         moved = min(before, oldest + timedelta(days=1)) if oldest is not None else before
         state = {**state, "left": left - kept, "taken": taken, "before": moved.isoformat()}
+        if kept:
+            state["kept_at"] = now.isoformat()  # the look at who the person deals with may read what came in
         if stop is not None:
             if stop.kind not in CONTINUES:
                 log.warning("The rest of the headers of %s stopped (%s) and is not carried on", source_id, stop.kind)

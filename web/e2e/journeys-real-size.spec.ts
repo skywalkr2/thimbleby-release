@@ -5,6 +5,8 @@
 // account in the Mail step and signs in again. A workspace made as a person makes it, with the mail add-on on and a job beside
 // Personal, is walked from its first screen to People, and the rest of the read finishes without a click.
 // Names come from the fictional workspace the fake services serve, never written out here.
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
 import { choose } from "./choose";
@@ -16,6 +18,16 @@ const JOB = "Example Employer";
 /** How long the service asks to wait before the next page, in seconds: long enough for the person to sign out and in meanwhile. */
 const RETRY_AFTER = 40;
 const problems: string[] = [];
+/** What a real low-cost model answered when given the look's packet for this mailbox (H5-36), kept word for word: the look here is
+ * answered with it, never with the stand-in's rule that offers every line with enough messages. It is one op by itself, with no
+ * list around it, which is the shape the model gave and the one that once left People empty. */
+const LOOK_ANSWER = JSON.parse(readFileSync(fileURLToPath(new URL("./fixtures/people-look-real-answer.json", import.meta.url)), "utf8")) as {
+  op: string;
+  people: Array<{ address: string; name: string; why: string }>;
+};
+const OFFERED = LOOK_ANSWER.people;
+/** The words only the look's packet holds: the list of who the person deals with. */
+const LOOK_PACKET = '<untrusted source="contact-tally">';
 
 /** Words that belong to the app's insides or to the service, never to the person. */
 const INTERNAL = /ConnectorError|throttled|TooManyRequests|ServiceBusy|HTTP 429|\b429\b|Retry-After|watch_run|older_read|traceback|undefined|\[object/i;
@@ -76,6 +88,12 @@ test.describe.serial("journey: real-sized mailbox", () => {
     const held = await mailbox();
     expect(Object.keys(held.folders).sort()).toEqual(["Archive", "Deleted", "inbox", "sent"]);
     expect(Object.values(held.folders).reduce((n, c) => n + c, 0)).toBeGreaterThanOrEqual(400);
+
+    // The look at who the person deals with gets a real model's answer for this mailbox.
+    expect(LOOK_ANSWER.op).toBe("person.offer");
+    expect(OFFERED.length).toBeGreaterThan(0);
+    const scripted = await fetch(`${FAKE}/__e2e/script`, { method: "POST", body: JSON.stringify({ when: LOOK_PACKET, answer: LOOK_ANSWER }) });
+    expect(scripted.ok).toBe(true);
 
     await page.goto(`?token=${info.token}`);
     await expect(page.getByRole("heading", { level: 2, name: "Welcome", exact: true })).toBeVisible(LOADED);
@@ -257,6 +275,11 @@ test.describe.serial("journey: real-sized mailbox", () => {
     }
     await expect(offers.getByRole("checkbox").first()).toBeVisible({ timeout: 120_000 });
     expect(await offers.innerText()).not.toMatch(INTERNAL);
+    // The people shown are the ones the model's answer offered, each by name, and nobody else.
+    const names = await offers.getByRole("checkbox").evaluateAll((boxes) => boxes.map((b) => b.closest("label")?.textContent ?? ""));
+    expect(names.length).toBeGreaterThan(0);
+    // Each is shown with the reason the model gave, in its words: the offers are its answer, not the stand-in's rule.
+    for (const name of names) expect(OFFERED.some((p) => name.includes(p.name) && name.includes(p.why))).toBe(true);
     await visit(page);
     // Nothing was refused, kept nothing, or stopped in setup on the way.
     expect(await main.innerText()).not.toMatch(NOTHING_KEPT);

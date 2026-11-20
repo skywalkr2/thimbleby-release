@@ -22204,7 +22204,7 @@
         "type": "object"
       },
       "PeopleSuggestionsView": {
-        "description": "The people the assistant offers in the people step, most mail first. With none, `state` says where its look at\nwho the person deals with stands: no_account (no assistant is set up for it), not_yet (no mail has been read),\nworking (it is reading), waiting (it waits for the person's go) or looked (it read and offered no one). With\n`not_yet`, `until` says when the mail service lets a waiting read go on.",
+        "description": "The people the assistant offers in the people step, most mail first. With none, `state` says where its look at\nwho the person deals with stands: no_account (no assistant is set up for it), not_yet (the mail it counts has not\nbeen read), working (it is reading), waiting (it waits for the person's go), reading_more (what was read so far\ngave no one and the rest of the year's mail is still coming in), looked (it read all there is and offered no one)\nor too_little (all is read and it holds too little to look at). With `not_yet`, `until` says when the mail service\nlets a waiting read go on.",
         "properties": {
           "estimate_usd": {
             "anyOf": [
@@ -22255,7 +22255,9 @@
               "not_yet",
               "working",
               "waiting",
-              "looked"
+              "reading_more",
+              "looked",
+              "too_little"
             ],
             "title": "State",
             "type": "string"

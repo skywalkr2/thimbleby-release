@@ -85,14 +85,15 @@ def _set_aside(store: Any, cfg: Any, sources: list[Any]) -> tuple[set[str], set[
 
 def _mail_marks(store: Any, cfg: Any, sources: list[Any]) -> tuple[set[str], set[str]]:
     """The addresses whose mail the service marks bulk and those whose mail is of a kind the app tracks (a bill, an
-    order, a delivery): hints for the assistant's reading, never reasons to leave anyone out."""
+    order, a delivery): hints for the assistant's reading, never reasons to leave anyone out. Read from the messages
+    taken in and from the headers kept of the year before them, so a sender only the headers show carries its marks."""
     from engine.mail_kinds import kind_of
 
     bulk: set[str] = set()
     tracked: set[str] = set()
     view = store.read()
     for s in sources:
-        for snap in view.find("snapshot", {"source": s.id}):
+        for snap in [*view.find("snapshot", {"source": s.id}), *view.find("mail_header", {"source": s.id})]:
             message = snap.data.get("message") or {}
             _, sender = _parsed(str(message.get("sender") or ""))
             if not sender:

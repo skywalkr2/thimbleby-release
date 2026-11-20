@@ -44,8 +44,8 @@ test.describe("Report a problem", () => {
 
     const preview = dialog.locator("textarea[readonly]").first();
     await expect(preview).toHaveValue(/Today stayed empty after I connected my mail/);
-    await expect(preview).toHaveValue(/App version: \S+/);
-    await expect(preview).toHaveValue(/System: \S+/);
+    await expect(preview).toHaveValue(/App version: (?!added)\S+/);
+    await expect(preview).toHaveValue(/System: (?!added)\S+/);
     await expect(preview).toHaveValue(/Recent problems/);
     await expect(preview).toHaveValue(new RegExp(seeded.failed_read));
     // The technical details are shown before anything leaves.

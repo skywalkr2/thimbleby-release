@@ -22,6 +22,7 @@ import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from functools import lru_cache
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -166,7 +167,50 @@ def mask(
 
     text = _LONG_RUN.sub(token, text)
     text = _PREFIXED.sub(lambda m: m.group(0) if m.group(0) in held or not _mixed(m.group(0)) else SECRET, text)
+    return _hide_names(text, names if isinstance(names, frozenset) else frozenset(names))
+
+
+@lru_cache(maxsize=4)
+def _name_index(names: frozenset[str]) -> tuple[dict[str, tuple[str, ...]], tuple[str, ...]]:
+    """The names to hide, grouped by their first word in lower case (longest first), so a text is scanned once however
+    many names the workspace holds. A name that does not start with a word character is kept apart."""
+    by_word: dict[str, list[str]] = {}
+    odd: list[str] = []
     for name in sorted({n.strip() for n in names if len(n.strip()) >= 3}, key=len, reverse=True):
+        first = re.match(r"\w+", name)
+        if first:
+            by_word.setdefault(first.group(0).lower(), []).append(name.lower())
+        else:
+            odd.append(name)
+    return {k: tuple(v) for k, v in by_word.items()}, tuple(odd)
+
+
+def _hide_names(text: str, names: frozenset[str]) -> str:
+    """Each of `names` as a whole word, in any letter case, replaced by "<name>": one pass over the text, never one
+    pass per name."""
+    if not names:
+        return text
+    by_word, odd = _name_index(names)
+    low = text.lower()
+    if len(low) == len(text):
+        out: list[str] = []
+        done = 0
+        for word in re.finditer(r"\w+", low):
+            if word.start() < done:
+                continue
+            for name in by_word.get(word.group(0), ()):
+                end = word.start() + len(name)
+                if low.startswith(name, word.start()) and not (end < len(low) and re.match(r"\w", low[end])):
+                    out.append(text[done : word.start()])
+                    out.append(NAME)
+                    done = end
+                    break
+        text = "".join(out) + text[done:] if out else text
+    else:  # a letter whose lower case has another length: match each name the slow way
+        for name in sorted({n.strip() for n in names if len(n.strip()) >= 3}, key=len, reverse=True):
+            text = re.sub(rf"(?<!\w){re.escape(name)}(?!\w)", NAME, text, flags=re.IGNORECASE)
+        return text
+    for name in odd:
         text = re.sub(rf"(?<!\w){re.escape(name)}(?!\w)", NAME, text, flags=re.IGNORECASE)
     return text
 

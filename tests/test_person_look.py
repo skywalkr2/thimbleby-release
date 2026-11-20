@@ -177,7 +177,7 @@ def test_the_stand_in_offers_the_people_dealt_with_most_each_with_its_reason_and
     assert entries(store) == []  # a person is an offer, not a glossary entry
 
 
-def test_an_offer_for_an_address_the_list_did_not_hold_or_one_on_file_or_a_repeat_is_refused(env):
+def test_an_entry_for_an_address_the_list_did_not_hold_or_one_on_file_or_a_repeat_is_left_out_and_the_rest_kept(env):
     ws, cfg, store, _ = env
     with store.transaction() as tx:
         tx.create("person", {"full_name": "Correspondent B", "how_to_reach": {"email": ["c1@example.com"]}}, _W)
@@ -190,7 +190,22 @@ def test_an_offer_for_an_address_the_list_did_not_hold_or_one_on_file_or_a_repea
     ]
     set_responder(lambda task: json.dumps({"summary": "x", "ops": [{"op": "person.offer", "people": offers}]}))
     process(ws, store, cfg, Router(cfg, store, env={}), request, now=NOW)
-    assert entries(store, "person_offer") == []  # one bad address refuses the offer whole, so none is half made
+    # The made-up address, the person on file and the repeat are never offered; the one that stands is, once.
+    assert [o.data["address"] for o in entries(store, "person_offer")] == ["c0@example.com"]
+
+
+def test_an_offer_whose_every_entry_is_off_the_list_or_on_file_is_refused_whole(env):
+    ws, cfg, store, _ = env
+    with store.transaction() as tx:
+        tx.create("person", {"full_name": "Correspondent B", "how_to_reach": {"email": ["c1@example.com"]}}, _W)
+    request = person_look.queue(store, cfg, NOW)
+    offers = [
+        {"address": "made.up@example.com", "name": "Made Up", "why": "Not on the list."},
+        {"address": "c1@example.com", "name": "Correspondent B", "why": "On file."},
+    ]
+    set_responder(lambda task: json.dumps({"summary": "x", "ops": [{"op": "person.offer", "people": offers}]}))
+    process(ws, store, cfg, Router(cfg, store, env={}), request, now=NOW)
+    assert entries(store, "person_offer") == []
 
 
 def test_a_role_address_a_company_like_name_capitals_and_a_tag_reach_the_run_as_hints_and_can_be_offered(env):
@@ -568,6 +583,7 @@ def test_an_entry_called_off_or_gone_is_no_routine(env):
 CASES = (
     "weekly-look-proposes-people-from-the-tally",
     "weekly-look-offers-people-whatever-their-address-and-name-look-like",
+    "weekly-look-offers-the-people-under-a-year-of-machines",
     "hostile-weekly-look-name-is-data",
     "weekly-look-proposes-a-routine-from-a-repeating-entry",
 )

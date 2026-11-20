@@ -262,3 +262,35 @@ def test_the_workspaces_own_secret_values_are_masked_wherever_they_appear():
     )
     assert problems.mask("short ab", secrets=["ab"]) == "short ab"  # too short to be taken for a secret by value
     assert problems.mask("for Ada Quinn only", names=["Quinn"]) == "for Ada <name> only"
+
+
+def _names_one_by_one(text: str, names: list[str]) -> str:
+    """The reference: each name, longest first, as a whole word in any letter case."""
+    import re
+
+    for name in sorted({n.strip() for n in names if len(n.strip()) >= 3}, key=len, reverse=True):
+        text = re.sub(rf"(?<!\w){re.escape(name)}(?!\w)", problems.NAME, text, flags=re.IGNORECASE)
+    return text
+
+
+def test_hiding_names_one_pass_matches_one_name_at_a_time():
+    names = ["Quinn", "Ada Quinn", "ada quinn lee", "Fern Hollow Co.", "(odd) name", "Straße Büro", "ab", "x" * 5]
+    text = (
+        "Ada Quinn and QUINN, ada quinn lee; Quinnard stays. Fern Hollow Co. wrote "
+        "(odd) name, Straße Büro xxxxx xxxxxx ab"
+    )
+    assert problems.mask(text, names=frozenset(names)) == _names_one_by_one(problems.mask(text, names=()), names)
+    assert "Quinnard" in problems.mask(text, names=names)
+
+
+def test_hiding_many_names_does_not_cost_a_pass_per_name():
+    """A workspace holding thousands of records (a long reading adds many) must not make a report's details slow: the
+    text is scanned once, so the time doesn't grow with the names."""
+    import time
+
+    names = frozenset(f"person{i:05d} surname{i:05d}" for i in range(10000))
+    text = "\n".join(f"line {i} read item person{i:05d} surname{i:05d} ok" for i in range(250))
+    started = time.perf_counter()
+    done = problems.mask(text, names=names)
+    assert time.perf_counter() - started < 2.0  # one name at a time took about 7 seconds here
+    assert "person00001" not in done and done.count(problems.NAME) == 250

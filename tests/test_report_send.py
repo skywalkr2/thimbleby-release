@@ -238,3 +238,15 @@ def test_details_are_measured_as_the_form_counts_them_so_wide_characters_never_p
     assert text.endswith(f"line 1999 {wide}")
     one_long = details_text(wide * 100, masker=lambda s: s or "", limit=51)
     assert 0 < units(one_long) <= 51
+
+
+def test_a_send_with_no_facts_call_still_carries_the_version_and_system(tmp_path, monkeypatch):
+    """The form doesn't wait for the facts: whatever it sent, the app adds its own version and system."""
+    seen: list = []
+    monkeypatch.setattr(engine.net, "TRANSPORT", serve(200, seen))
+    client, _app, _cfg = make_client(tmp_path, LOCAL_FORM)
+    with client:
+        done = client.post("/api/report/send", json={"words": WORDS}).json()
+    assert done["ok"] is True
+    body = seen[0][1]
+    assert body["version"] and body["system"] == report_send.system_text()

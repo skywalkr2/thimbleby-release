@@ -119,6 +119,10 @@ def parse(text: str, op_models: dict | None = None) -> ChangesetIn:
     """Read a changeset from model output."""
     data = _json_object(text)
     models = op_models if op_models is not None else OP_MODELS
+    if isinstance(data, dict) and "ops" not in data and isinstance(data.get("op"), str):
+        # The answer is one op by itself, with no list around it: it is read as that op, and checked like any other,
+        # never as an answer that holds nothing.
+        data = {"ops": [data]}
     if isinstance(data, dict):
         # Only the summary, the topic, the ops, the ask flag and the lists of what it applied, what it lacked and what
         # it left out on purpose mean anything at the top; a model's extra remarks are left out.
