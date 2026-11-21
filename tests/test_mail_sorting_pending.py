@@ -145,3 +145,32 @@ def test_mail_waiting_for_the_sort_on_an_account_out_of_credit_is_counted_on_tod
         assert line.count == 2 and "out of credit" in line.waiting
     finally:
         store.close()
+
+
+def test_hundreds_of_pending_messages_are_sorted_a_batch_at_a_time_with_other_work_and_a_beat_between(
+    tmp_path, account
+):
+    """H5-49: the worker sorts the marked mail one batch per pass, in the order of work, so the rest of the queue runs
+    between batches and each pass begins with a beat; nothing is sorted in one call that outlasts the loop's limit."""
+    batch = 20
+    account.broken = True
+    ws, cfg, store = make(tmp_path, [unplaced(n) for n in range(120)], sorting_batch=batch)
+    try:
+        read(ws, store)
+        assert len(requests_in(store, "queued")) == 120
+        account.broken = False
+        release_paused(store)
+        account.kinds.clear()
+        worker = worker_of(ws, cfg, store)
+        beats = []
+        original = worker._beat_of
+        worker._beat_of = lambda name: (beats.append(name), original(name))[1]
+        worker.run_pending()
+        kinds = account.kinds
+        assert kinds.count("sort-mail") == 120 // batch and kinds.count("notes") == 120
+        first, second = [i for i, k in enumerate(kinds) if k == "sort-mail"][:2]
+        assert "notes" in kinds[first:second], "work the sorting freed runs before the next batch is sorted"
+        assert beats.count("requests") >= 120 + 120 // batch, "a beat begins every pass, batches and requests alike"
+        assert not any(r.data.get("sort_pending") for r in store.read().list("request"))
+    finally:
+        store.close()

@@ -60,7 +60,7 @@ def held_endings(changesets: dict[str, dict[str, Any]], live: set[str]) -> set[s
 def pending_endings(reader: Any, hidden: frozenset[str] | set[str] = frozenset()) -> set[str]:
     """The actions an ending waits on for the person's Keep, from the requests still open (`hidden`: requests Today
     holds back, which leave nothing waiting)."""
-    changesets = {c.id: c.data for c in reader.list("changeset")}
+    changesets = {c.id: c.data for c in reader.shared_list("changeset")}
     live = {
         str(r.data["changeset"])
         for r in reader.marked("request", "changeset")

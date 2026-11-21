@@ -7,7 +7,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { ApiError, api, type S } from "../lib/api";
 import { useReviewTime } from "../lib/review-time";
 import { useKnowledgeActs } from "../lib/knowledge-acts";
-import { changesOf, itemsOf, reachWords, sectionsOf, usedWords, type Item } from "../lib/knowledge";
+import { changesOf, itemsOf, reachWords, sectionsOf, seenWords, usedWords, type Item } from "../lib/knowledge";
 import { useReachNames } from "../lib/reach";
 import { useSettingEdits } from "../lib/use-setting-edits";
 import { useWords } from "../lib/wording";
@@ -57,12 +57,16 @@ export function Knowledge(props: { onOpenReview: () => void }) {
   const empty =
     all.length === 0 && !(plainWords && Array.isArray(plainWords.value) && plainWords.value.length > 0);
   const shown = (item: Item) => ({ item, now, words, reach: reachWords(item.scope, reach.names, words), projects: reach.projectList, onActed: () => setActed((n) => n + 1) });
+  // "From outside · not instructions" is said once for a list, not on every row.
   const list = (items: Item[], label: string, as: "waiting" | "follows" | "idle" | "retired" | "setAside") => (
-    <ul className={styles.list} aria-label={label}>
-      {items.map((item) => (
-        <KnowledgeRow key={item.id} {...shown(item)} as={as} />
-      ))}
-    </ul>
+    <>
+      {items.some((i) => i.untrusted) && <p className={styles.quiet}>{t("knowledge.outside")}</p>}
+      <ul className={styles.list} aria-label={label}>
+        {items.map((item) => (
+          <KnowledgeRow key={item.id} {...shown(item)} as={as} />
+        ))}
+      </ul>
+    </>
   );
 
   return (
@@ -174,7 +178,7 @@ function KnowledgeRow(props: {
     props.as === "retired" ? t("knowledge.status.retired") : "",
     props.as === "setAside" ? t("knowledge.status.set_aside") : "",
     t(`knowledge.from.${item.learnedFrom}`),
-    item.untrusted ? t("knowledge.outside") : "",
+    waiting ? "" : seenWords(item, props.words),
     item.enforced ? t("knowledge.enforced") : "",
     props.reach,
     waiting ? "" : usedWords(item, props.now, props.words),
@@ -191,6 +195,10 @@ function KnowledgeRow(props: {
   const primary = waiting ? (
     <Button variant="primary" size="sm" data-key="primary" aria-label={t("knowledge.keep_named", { text: item.text })} onClick={() => void done(acts.keep(item))}>
       {t("knowledge.keep")}
+    </Button>
+  ) : inUse && item.activated ? (
+    <Button size="sm" data-key="primary" aria-label={t("knowledge.wrong_named", { text: item.text })} onClick={() => void done(acts.wrong(item))}>
+      {t("knowledge.wrong")}
     </Button>
   ) : inUse ? (
     <Button size="sm" data-key="primary" aria-label={t("knowledge.stop_named", { text: item.text })} onClick={() => void done(acts.retire(item))}>

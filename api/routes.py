@@ -2031,7 +2031,9 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
                             watched_kind=kind_of_snapshots(
                                 snapshots.get((watched.get("source") or "", watched.get("key") or ""), [])
                             ),
-                            subject=subject_of(store.read(), d) if source is None and d.get("origin") != "pm" else "",
+                            subject=subject_of(store.read(), d)
+                            if source is None and (d.get("origin") != "pm" or d.get("task") == "action-work")
+                            else "",
                         ),
                         people,
                     ),

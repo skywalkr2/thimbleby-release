@@ -148,12 +148,23 @@ def take_in(
     """Take in a source's first read: hand in what the window takes, held for one go, price it as one total, and start
     it at once when the total is not above the amount to confirm and is known (or unpriced runs need no go). Returns
     the requests made."""
-    return _take(ws, store, cfg, source, now, router, _in_window(back_to, None, now))
+    return _take(ws, store, cfg, source, now, router, _in_window(back_to, None, now), go=True)
 
 
 def _take(
-    ws: Any, store: Any, cfg: Any, source: Any, now: datetime, router: Any, accept: Callable[[dict[str, Any]], bool]
+    ws: Any,
+    store: Any,
+    cfg: Any,
+    source: Any,
+    now: datetime,
+    router: Any,
+    accept: Callable[[dict[str, Any]], bool],
+    older: bool = False,
+    go: bool = False,
 ) -> list[str]:
+    """Hand in the window the source takes, held for one go. With `go` (a source's first window) connecting the source
+    is the go: the window is started at once whatever its estimate, and the worker sorts its mail; the daily and
+    monthly stops of the spending limits are the cap, and nothing asks the person to start the reading."""
     made = watch._hand_in_window(
         ws,
         store,
@@ -162,7 +173,13 @@ def _take(
         now,
         router,
         accept,
-        extra={"intake": source.id, "state": "needs_you", "approval": "required", "waiting": WAITING},
+        extra={
+            "intake": source.id,
+            **({"intake_older": True} if older else {}),
+            "state": "needs_you",
+            "approval": "required",
+            "waiting": WAITING,
+        },
         sort=False,  # the assistant's sorting is part of the one total: it runs when the intake starts
     )
     view = store.read()
@@ -170,6 +187,9 @@ def _take(
     if not held:
         return made
     catch_up._price(ws, store, cfg, router, held, now, _ENGINE)
+    if go:
+        grant_go(ws, store, cfg, source.id, router, now)
+        return made
     cost = waiting_cost(ws, store, cfg, source.id, router)
     # A run whose price isn't known always waits for the go; one on a flat account only when the person asked for a go
     # before those too, as single runs do. Starting without asking is decided on the most it could cost, never on the
@@ -818,7 +838,17 @@ def _read_older(
         and not fetched.more
     )
     keys = {snap.data["key"] for snap in found}
-    made = _take(ws, store, cfg, source, now, router, lambda data: data["key"] in keys)
+    made = _take(
+        ws,
+        store,
+        cfg,
+        source,
+        now,
+        router,
+        lambda data: data["key"] in keys,
+        older=True,
+        go=bool(carried and carried.get("go")),  # the person's pick is the go: a slice never waits to be started
+    )
     result.taken = len(made)
     if made and carried and carried.get("go"):
         # The person's choice of this reach was also the go for what it brings: nothing of it waits for a second ask.

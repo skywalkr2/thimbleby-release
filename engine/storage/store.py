@@ -392,6 +392,19 @@ class Tx:
         items = [_stored(r) for r in rows if include_deleted or not r["deleted"]]
         return sorted(items, key=lambda s: (id_number(s.id) or 0, s.id))
 
+    def shared_list(self, kind: str) -> list[Stored]:
+        """The live records of a kind, like `list`, but read from the file once for a whole read scope: every caller in
+        the scope gets the same records, so none of them may change what it gets. For the kinds whose records are big
+        (a change holds every op it made) and are read by several parts of one screen. Outside a read scope it is
+        `list`."""
+        if self._memo is None:
+            return self.list(kind)
+        table = self._memo.table()
+        key = ("shared", kind)
+        if key not in table:
+            table[key] = self.list(kind)
+        return table[key]
+
     def get_many(self, kind: str, ids: Iterable[str]) -> dict[str, Stored]:
         """The live records of a kind with these ids, by id, in a few reads however many ids there are (ids no record
         has are left out). Later `get`s of them in the same read scope are answered from here."""

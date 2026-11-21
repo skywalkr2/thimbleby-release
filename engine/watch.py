@@ -983,7 +983,12 @@ def _personal_home(store: Any, cfg: Any) -> str | None:
 
 
 def _awaiting_sorting(
-    ws: Any, store: Any, cfg: Any, only: str | None = None, pending_only: bool = False
+    ws: Any,
+    store: Any,
+    cfg: Any,
+    only: str | None = None,
+    pending_only: bool = False,
+    requests: set[str] | None = None,
 ) -> dict[str, list[tuple[Any, Any, SourceItem, dict[str, Any]]]]:
     """The mail the first go's sorting covers, by source id: each as (request, snapshot, item, facts). Mail handed in
     unsorted while the go was pending, still waiting for it or queued, whose message was never sorted. Mail the person
@@ -1008,6 +1013,8 @@ def _awaiting_sorting(
         if data.get("set_aside") or data.get("auto_closed") or data.get("folded_into") or data.get("dismissed"):
             continue
         if pending_only and not data.get("sort_pending"):
+            continue
+        if requests is not None and req.id not in requests:
             continue
         if not (data["state"] == "queued" or waits_on_first_go(data) or source_intake.waits_on_go(data)):
             continue
@@ -1093,6 +1100,7 @@ def sort_before_first_go(
     only: str | None = None,
     go: bool = True,
     pending_only: bool = False,
+    requests: set[str] | None = None,
 ) -> int:
     """The person's first go covers the sorting of the mail that was handed in unsorted while it was pending: the
     mail requests still waiting for the go (or queued) whose message was never sorted go through the sorting run first,
@@ -1103,8 +1111,9 @@ def sort_before_first_go(
     sorting keeps the checks that wait for one. `pending_only` sorts just the mail whose requests are marked
     `sort_pending` (the worker's sorting before any other run); every request the sorting answers loses the mark, and
     one it couldn't be run for keeps it. Marked mail whose request the person's go already approved is sorted under
-    that go, apart from marked mail nobody gave a go for."""
-    waiting = _awaiting_sorting(ws, store, cfg, only, pending_only)
+    that go, apart from marked mail nobody gave a go for. `requests` limits the sorting to those requests (a batch of
+    the worker's pass), and the mark is cleared only on them."""
+    waiting = _awaiting_sorting(ws, store, cfg, only, pending_only, requests)
     sources = {s.id: s for s in cfg.watch.sources}
     set_aside = 0
     still_waiting: set[str] = set()
@@ -1156,7 +1165,12 @@ def sort_before_first_go(
         # A marked request the sorting no longer covers (a rule places it now, the person pulled it back, or the
         # sorting is off) has nothing to wait for.
         for req in store.read().list("request"):
-            if req.data.get("sort_pending") and req.data["state"] == "queued" and req.id not in still_waiting:
+            if (
+                req.data.get("sort_pending")
+                and req.data["state"] == "queued"
+                and req.id not in still_waiting
+                and (requests is None or req.id in requests)
+            ):
                 _file_under(store, req.id, None)
     return set_aside
 

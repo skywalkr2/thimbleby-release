@@ -44,6 +44,14 @@ export function useKnowledgeActs() {
         undefined,
         { once: `knowledge:${item.id}` },
       ),
+    /** "That's wrong" on something in use: it stops at once and is recorded as a correction. */
+    wrong: (item: Target) =>
+      act(
+        () => api.wrongKnowledge(item.id, item.version),
+        (done) => ({ message: t("knowledge.toast.wrong"), undo: undo(done) }),
+        undefined,
+        { once: `knowledge:${item.id}` },
+      ),
     /** Bring a retired or set-aside entry back into use. */
     reuse: (item: Target) =>
       act(

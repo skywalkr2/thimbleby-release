@@ -33,6 +33,8 @@ A pair is a file in a workspace's `pairs/` folder. It runs in a fresh copy of th
         # assistant's fixed answer to it is `answer`, and it may change the other open items the rule covers
         # sent_version names a reply owed (`id`) whose draft the person copied; `note` is the message they actually
         # sent, which reaches the sent folder and is matched to the copy by the same rules as in the app
+      # an entry that only describes, from the person's correction, is active at once (`activated` is set): it counts
+      # as what the correction taught, and `keep: discard` says "That's wrong" to it
       expect_proposal: none | [{op, text_has, person, team, topic_has, negative, term, audience, origin, trust,
                                 projects, scope, optional}]
                               # a `text_has` / `topic_has` word with `|` is met by any one of its alternatives
@@ -693,6 +695,18 @@ class _Play:
                 continue
             kind = knowledge.kind_of(entry_id) or "rule"
             found = self.store.read().get(kind, entry_id)
+            if found is not None and found.data["status"] == "active" and found.data.get("activated"):
+                if how == "discard":  # "That's wrong" on what was learned on its own
+                    fields = {"status": "discarded", "discard_reason": "Said to be wrong"}
+                    edit = {"op": "record.edit", "record": {"kind": kind, "id": entry_id}, "fields": fields}
+                    apply_as_person(
+                        self.store,
+                        self.fixed,
+                        [{**edit, "read_version": found.version}],
+                        "Said what was learned is wrong",
+                    )
+                    signal(self.store, "discarded", [entry_id], now=self.tick())
+                continue
             if found is None or found.data["status"] != "proposed":
                 continue
             if how is True:
@@ -770,7 +784,9 @@ def _entry_matches(spec: Mapping[str, Any], stored: Any) -> bool:
     data = stored.data
     if OP_ENTRY.get(spec["op"]) != stored.kind:
         return False
-    if data["status"] != spec.get("status", "proposed"):
+    # An entry that only describes, learned from the person's correction or from agreeing messages, is active at once.
+    default = "active" if data.get("activated") else "proposed"
+    if data["status"] != spec.get("status", default):
         return False
     wording = " ".join(str(data.get(k, "")) for k in ("text", "term", "meaning", "topic", "observation"))
     if not _has(wording, spec.get("text_has", [])) or not _has(str(data.get("topic", "")), spec.get("topic_has", [])):
@@ -982,7 +998,7 @@ def _play_pair(
         learned = [s for i, s in play.entries().items() if i not in before and s.data["status"] != "discarded"]
         learned += play.held_stances(queued) if first.get("correction") is not None else []
         problems += _proposal_findings("first", first.get("expect_proposal"), learned, entry_extra)
-        active = [s for s in learned if s.data["status"] == "active"]
+        active = [s for s in learned if s.data["status"] == "active" and not s.data.get("activated")]
         if active and not first.get("allow_active"):
             problems += [f"first: {_describe_entry(s)} became active without the person's Keep" for s in active]
         play.decide([s.id for s in learned], first.get("keep", False))

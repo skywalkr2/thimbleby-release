@@ -4,10 +4,14 @@ never starts."""
 
 import json
 
+import pytest
+
 from engine import source_intake
 from engine.ai.adapters.stub import set_responder
 from engine.today_queue import queue
 from tests.test_mail_sorting import CLUB, NOW, mail, make, rows_of, sort_runs, unplaced
+
+pytestmark = pytest.mark.usefixtures("first_window_held")
 
 
 def test_the_intakes_go_asks_the_assistant_nothing_and_the_worker_sorts_first_so_what_is_set_aside_never_starts(

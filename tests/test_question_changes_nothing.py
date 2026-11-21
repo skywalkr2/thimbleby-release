@@ -5,6 +5,8 @@ come from the fixtures."""
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
@@ -132,3 +134,45 @@ def test_the_notes_prompt_asks_for_it_and_says_a_topic_only_match_is_watched_qui
 
     text = render("notes", {"assistant_name": "Reginald"})
     assert "would_change" in text and "only by its topic" in text and "ask nothing" in text
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        {"what": "field", "record": PROJECT},
+        "a field of the project",
+        {"what": "colour", "record": PROJECT},
+    ],
+)
+def test_an_unreadable_would_change_is_left_out_and_the_question_and_the_rest_of_the_answer_are_kept(shape, caplog):
+    from engine.dispatcher import parse
+
+    text = json.dumps(
+        {
+            "summary": "s",
+            "ops": [
+                {"op": "question.add", "to": PERSON, "title": "Ship now?", "would_change": shape},
+                {"op": "question.add", "to": PERSON, "title": "Other?"},
+            ],
+        }
+    )
+    with caplog.at_level("WARNING"):
+        cs = parse(text)
+    assert len(cs.ops) == 2 and cs.ops[0].title == "Ship now?" and cs.ops[0].would_change is None
+    assert sum("would_change left out" in r.message for r in caplog.records) == 1
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        {"record_id": PROJECT, "field": "status"},
+        {"record": PROJECT, "field": "status"},
+        {"what": "field", "field": f"{PROJECT}.status"},
+        {"setting": "ui.today.stale_after_days"},
+    ],
+)
+def test_plain_shapes_of_would_change_that_mean_the_same_are_read(shape):
+    cs = CHANGESET.validate_python(
+        {"ops": [{"op": "question.add", "to": PERSON, "title": "Ship now?", "would_change": shape}]}
+    )
+    assert cs.ops[0].would_change is not None

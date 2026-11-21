@@ -16,6 +16,7 @@ import { Row } from "../ui/Row";
 import { Skeleton } from "../ui/Skeleton";
 import { ProposalEvidence, ProposalForms, ReachPicker, useProposal, type Proposal } from "./Learned";
 import { useReadable } from "../lib/readable";
+import { seenWords } from "../lib/knowledge";
 import { RowMenu, type MenuAction } from "./RowMenu";
 import styles from "./Learned.module.css";
 
@@ -106,6 +107,7 @@ function ReviewDrawer(props: { list: List; onClose: () => void }) {
           <EmptyState text={t("learned.review.empty")} />
         ) : (
           <>
+            {rows.some((p) => p.trust === "untrusted") && <p className={styles.summary}>{t("knowledge.outside")}</p>}
             <ul className={styles.list} aria-label={daily ? t("learned.review.title") : t("learned.catch_up.title")}>
               {people.map((o) => (
                 <PersonOfferRow key={o.id} offer={o} />
@@ -170,14 +172,17 @@ function ProposalRow(props: { p: Proposal }) {
     { id: "discard", label: t("learned.discard"), run: () => state.setDiscarding(true) },
   ];
   const where = state.reachNow.charAt(0).toLowerCase() + state.reachNow.slice(1);
-  const meta = [t("learned.applies", { where }), p.expires_at ? t("learned.expires", { date: day(p.expires_at) }) : ""]
+  const words = useWords();
+  // One line says what it would mean and where it was seen, so Keep is a real choice.
+  const means = p.kind === "glossary_entry" && p.term && p.meaning ? t("learned.means", { term: p.term, meaning: p.meaning }) : p.text;
+  const meta = [seenWords({ activated: p.activated ?? null, messages: p.messages ?? 0 }, words), t("learned.applies", { where }), p.expires_at ? t("learned.expires", { date: day(p.expires_at) }) : ""]
     .filter(Boolean)
     .join(" · ");
   return (
     <Row
       data-learned={p.id}
       pill={<Pill>{t(p.learned_from === "person" ? "learned.from.person" : `learned.from.${p.came_from}`)}</Pill>}
-      title={readable(p.text)}
+      title={readable(means)}
       meta={meta}
       primary={
         <Button size="sm" variant="primary" onClick={() => void state.keep()}>
@@ -188,7 +193,7 @@ function ProposalRow(props: { p: Proposal }) {
     >
       <div className={styles.detail}>
         {!state.editing && <ReachPicker choices={state.choices} value={state.chosen} onChange={state.setChosen} words={state.words} said={state.reachSaid} />}
-        {!state.editing && <ProposalEvidence p={p} />}
+        {!state.editing && <ProposalEvidence p={p} marked={false} />}
         {p.just_this_time_before > 0 && <p className={styles.summary}>{tn("learned.said_just_this_time", p.just_this_time_before)}</p>}
         <ProposalForms p={p} state={state} />
       </div>

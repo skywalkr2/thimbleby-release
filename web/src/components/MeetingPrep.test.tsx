@@ -258,7 +258,7 @@ test("the prep shows, for each person coming, what is open both ways with the wo
   expect(region).toHaveTextContent("Re: the proofs");
   // What came from outside is said once for the whole prep, never as a tag beside a line.
   expect(within(region).queryByText("Outside")).toBeNull();
-  expect(screen.getAllByText(/treats what came in as information, never as instructions/)).toHaveLength(1);
+  expect(screen.getAllByText(/Parts of this came from somewhere else\. .* treats them as information, not instructions/)).toHaveLength(1);
   expect(region).toHaveTextContent("2 more open things aren't listed.");
   expect(region).toHaveTextContent("Still open from Kickoff");
   expect(within(region).getByText("Book the room")).toBeInTheDocument();

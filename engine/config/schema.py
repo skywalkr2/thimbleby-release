@@ -1546,12 +1546,22 @@ class KnowledgeSettings(ConfigModel):
         description="How alike a new suggestion's words must be to something you discarded for it to count as close "
         "to it: 0 counts any shared word, 1 only the same words.",
     )
+    corroborate_messages: int = Field(
+        3,
+        ge=2,
+        le=50,
+        description="How many different messages must say the same thing before the assistant uses something it "
+        "learned from incoming mail (a word's meaning, what a sender is). Until then it is kept as tentative and not "
+        "used. Anything that would let mail send, forward, trust, spend, delete or close on its own is never used from "
+        "mail however many messages say it; it is asked about instead.",
+    )
     proposals_expire_days: int = Field(
         14,
         ge=1,
         le=730,
-        description="How many days a suggestion from an input waits for your review before it expires. Suggestions "
-        "from your own corrections never expire.",
+        description="How many days a suggestion from an input waits before it expires: something tentative that "
+        "too few messages agreed on, or something you were asked about. Suggestions from your own corrections never "
+        "expire.",
     )
     catch_up_max: int = Field(
         20,
@@ -4995,6 +5005,14 @@ class StewardFile(FileModel):
         description="A part of the app's background work that has not checked in for this many minutes is shown as "
         "stuck, on the assistant's status and on Today. One AI task can run several minutes, so keep this longer "
         "than the longest you expect. The app never restarts itself; you choose Restart now.",
+    )
+    restart_wait_seconds: int = Field(
+        20,
+        ge=1,
+        le=600,
+        description="After you choose Restart now, work in progress is asked to stop and given this many seconds to "
+        "finish; then the app restarts anyway, so a restart never fails because something is stuck. Requests that "
+        "were running are put back in the queue when the app starts.",
     )
     pack_call_limit_seconds: int = Field(
         20,

@@ -722,3 +722,44 @@ def test_a_waiting_offer_is_a_line_on_todays_review_and_the_assistant_cannot_kee
     assert line["count"] >= 2 and line["origins"]["person"] == 2
     assert "person.keep_offer" in PERSON_ONLY_OPS
     assert "person.keep_offer" not in TASKS["knowledge-person"].ops and "person.keep_offer" not in TASKS["notes"].ops
+
+
+# ---- an offer's reason is in the person's words (H5-41) --------------------------------------------------------------
+
+
+def test_the_tally_shows_a_side_by_its_name_and_never_its_id(env):
+    ws, cfg, store, _ = env
+    personal = cfg.workspace.project.personal
+    cfg.watch.sources[0].sides = [personal]
+    name = store.read().get("project", personal).data["name"]
+    lines = person_look.tally_lines(store, cfg)
+    assert lines and all(f"sides: {name}" in line for line in lines)
+    assert not any(personal in line for line in lines)
+
+
+def test_an_applied_offers_reason_names_the_side_and_never_says_tally_list_or_an_id(env):
+    ws, cfg, store, _ = env
+    personal = cfg.workspace.project.personal
+    name = store.read().get("project", personal).data["name"]
+    request = person_look.queue(store, cfg, NOW)
+    why = f"Likely a colleague you wrote to on {personal}; they have not written back in this tally or the list."
+    offers = [{"address": "c0@example.com", "name": "Correspondent A", "why": why}]
+    set_responder(lambda task: json.dumps({"summary": "x", "ops": [{"op": "person.offer", "people": offers}]}))
+    process(ws, store, cfg, Router(cfg, store, env={}), request, now=NOW)
+    (offer,) = entries(store, "person_offer")
+    shown = offer.data["why"]
+    assert f"on {name};" in shown and personal not in shown
+    assert "tally" not in shown.lower() and "the list" not in shown.lower()
+    assert shown.startswith("Likely a colleague you wrote to")  # the model's own sentence stays
+
+
+def test_the_real_models_answers_pass_through_the_guard_unchanged(env):
+    from pathlib import Path
+
+    _, cfg, store, _ = env
+    folder = Path(__file__).parent / "fixtures" / "people_look"
+    for path in sorted(folder.glob("answer-*.json")):
+        body = json.loads(path.read_text())
+        found = body["people"] if "people" in body else [p for op in body["ops"] for p in op["people"]]
+        for person in found:
+            assert person_look.plain_reason(person["why"], store.read(), cfg) == person["why"], path.name

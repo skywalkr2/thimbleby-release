@@ -1,0 +1,51 @@
+id: junk-term
+# A mail subject line or a one-off code is a fact about that message, never a word the person would use: the proposal is
+# refused and nothing is learned, so nothing reaches the next packet. The good counterpart, a term the person explained in
+# a correction that is then active at once, is `acronym`.
+title: A subject line and a one-off code are never learned as words
+skills: [use-term]
+negative: true
+first:
+  received: '2026-10-09'
+  project: PRJ-1
+  pasted: |-
+    From: Sam Rivera
+    Subject: Proof Round Two Results, Monday 04/21/2053 to Friday
+
+    Tracking TRK0012345678901 is on its way. Please confirm the proofs by the 20th.
+  expect_proposal: none
+  keep: false
+later:
+  received: '2026-10-14'
+  project: PRJ-1
+  pasted: |-
+    From: Sam Rivera
+    Subject: Proof Round Two Results, Monday 04/21/2053 to Friday
+
+    Please confirm the proofs by the 20th.
+  forbid:
+  - op: event.add
+  expect_proposal: none
+ideal:
+  first:
+    summary: Sam wants the proofs confirmed by the 20th.
+    topic: proofs
+    ops:
+    - op: glossary.add
+      text: 'Proof Round Two Results, Monday 04/21/2053 to Friday: a mail subject'
+      term: Proof Round Two Results, Monday 04/21/2053 to Friday
+      meaning: a mail subject
+      confidence: assumed
+      evidence:
+        quote: Proof Round Two Results
+    - op: glossary.add
+      text: 'TRK0012345678901: a tracking number'
+      term: TRK0012345678901
+      meaning: a tracking number
+      confidence: assumed
+      evidence:
+        quote: TRK0012345678901
+  later:
+    summary: Sam wants the proofs confirmed by the 20th.
+    topic: proofs
+    ops: []

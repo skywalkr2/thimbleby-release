@@ -105,18 +105,30 @@ export function OpenItems() {
   const questions = (items.data?.questions ?? []).filter((q) => onSide(q.side, side.picked, q.views, (q.projects ?? []).length > 0));
 
   // What the open tab holds under a side choice (the side filter's own counts), and before any filter: a short tab has no filter bar.
+  // A count beside a filter counts what the filters would show: the pills and the tabs say the number of rows the list holds under
+  // the person, project and state chosen (a state belongs to its own tab, so the other tab leaves it out).
   const tabCount = (choice: SideChoice) =>
     tab === "done"
       ? (finished.data?.actions ?? []).filter((a) => onSide(a.side, choice, a.views, !!a.project_name)).length
       : tab === "actions"
-        ? (items.data?.actions ?? []).filter((a) => onSide(a.side, choice, a.views, !!a.project_name)).length
-        : (items.data?.questions ?? []).filter((q) => onSide(q.side, choice, q.views, (q.projects ?? []).length > 0)).length;
+        ? actionsShown(
+            (items.data?.actions ?? []).filter((a) => onSide(a.side, choice, a.views, !!a.project_name)),
+            filters,
+          ).length
+        : questionsShown(
+            (items.data?.questions ?? []).filter((q) => onSide(q.side, choice, q.views, (q.projects ?? []).length > 0)),
+            filters,
+          ).length;
   // The sides the open tab's rows are on, before any side is chosen: the side choice can change the list only with two or more.
   const sidesHeld = new Set(
     (tab === "done" ? (finished.data?.actions ?? []) : tab === "actions" ? (items.data?.actions ?? []) : (items.data?.questions ?? [])).map((r) => r.side).filter(Boolean),
   ).size;
   // What waits on the person is one pair of numbers, the same on both tabs and in the menu's badge, which is their sum.
   const mine = workCounts(actions, questions);
+  const tabNumbers = workCounts(
+    actionsShown(actions, tab === "actions" ? filters : { ...filters, state: "" }),
+    questionsShown(questions, tab === "questions" ? filters : { ...filters, state: "" }),
+  );
   const total = tab === "done" ? 0 : tab === "actions" ? actions.length : questions.length;
 
   // "12 open · 1 overdue · 2 due today": the to-dos and the questions, the same rows the tabs count.
@@ -229,8 +241,8 @@ export function OpenItems() {
             value={tab}
             onChange={choose}
             options={[
-              { value: "actions", label: t("open.tab.actions"), count: items.data === undefined ? undefined : mine.yours },
-              { value: "questions", label: t("open.tab.questions"), count: items.data === undefined ? undefined : mine.asked },
+              { value: "actions", label: t("open.tab.actions"), count: items.data === undefined ? undefined : tabNumbers.yours },
+              { value: "questions", label: t("open.tab.questions"), count: items.data === undefined ? undefined : tabNumbers.asked },
               // A count of finished things is not a need, so this tab has none.
               { value: "done", label: t("open.tab.done") },
             ]}
@@ -289,7 +301,7 @@ export function OpenItems() {
                 total === 0 ? (
                   <EmptyState text={t(`open.empty.${tab}`)} />
                 ) : (
-                  <FilteredEmpty card text={t("open.none_match")} onClear={() => setFilters(NO_FILTERS)} />
+                  <FilteredEmpty card text={filters.state ? t(`open.none.${tab}.${filters.state}`) : t("open.none_match")} onClear={() => setFilters(NO_FILTERS)} />
                 )
               ) : tab === "actions" ? (
                 // With no row to list (every to-do waits for a date) what is left is the add row and one line, which are not a list.

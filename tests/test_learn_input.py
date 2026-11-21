@@ -110,7 +110,10 @@ def test_a_run_proposing_a_term_a_routing_entry_and_a_superseding_fact_makes_thr
     release(store, env[1], cs_id, 2)
     newer = next(f for f in entries(store, "fact") if f.id != older)
     assert newer.data["supersedes"] == older and newer.data["trust"] == "untrusted"
-    assert {p.kind for p in proposals.proposals(store.read())} == {"glossary_entry", "routing_entry"}
+    # A routing entry names who answers, so it waits for the person; a word only describes, so it is tentative until
+    # enough messages agree.
+    assert {p.kind for p in proposals.proposals(store.read())} == {"routing_entry"}
+    assert {p.kind for p in proposals.tentative(store.read())} == {"glossary_entry"}
 
 
 def test_the_notes_packet_offers_the_learning_ops_and_says_when_to_propose_them(env):

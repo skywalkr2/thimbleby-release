@@ -662,7 +662,7 @@ test("Handled for you, a rule's closes on the set-aside tab and the assistant's 
 const WORKSPACE: S["Scope"] = { scope: "workspace", task_kinds: [], records: [], filter: {}, projects: [], people: [], except: [] };
 
 function lesson(id: string, text: string, over: Partial<S["KnowledgeView"]> = {}): S["KnowledgeView"] {
-  return { id, kind: "lesson", version: 4, text, status: "active", learned_from: "person", trust: "trusted", learned_at: at("2026-10-01", 9), applies_to: WORKSPACE, id_patterns: [], used: 0, given: 0, ...over };
+  return { id, kind: "lesson", version: 4, text, status: "active", learned_from: "person", trust: "trusted", learned_at: at("2026-10-01", 9), applies_to: WORKSPACE, id_patterns: [], used: 0, given: 0, messages: 0, asks: over.status === "proposed", ...over };
 }
 function rule(id: string, name: string, text: string, over: Partial<S["RuleView"]> = {}): S["RuleView"] {
   return { id, version: 2, name, text, status: "active", learned_from: "seed", trust: "trusted", learned_at: at("2026-09-20", 9), applies_to: WORKSPACE, constrains: [], enforced: false, used: 0, given: 0, ...over };

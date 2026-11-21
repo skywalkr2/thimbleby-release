@@ -31,6 +31,9 @@ function entry(over: Partial<Item> = {}): Item {
     constrains: [],
     term: "folio",
     meaning: "a page number",
+    activated: null,
+    messages: 0,
+    asks: false,
     ...over,
   };
 }

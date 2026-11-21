@@ -16,6 +16,7 @@ import { withoutAddress } from "../lib/calendar";
 import { whenWords } from "../lib/coverage";
 import { day, noReset, wallWhen } from "../lib/dates";
 import { useEstimate, useMoney } from "../lib/money";
+import { useOpenReport } from "../lib/open-report";
 import { useRestart, useRestartText } from "../lib/restart";
 import { inOrder, useActSaved, useAfterSave, useFreshFingerprint } from "../lib/settings-save";
 import { useSignInWindow } from "../lib/sign-in-window";
@@ -939,12 +940,16 @@ function SlowScreenLine(props: { line: Line }) {
   const { line } = props;
   const screen = line.subject ?? "";
   const named = has(`slow_screen.name.${screen}`) ? t(`slow_screen.name.${screen}`) : screen;
+  const openReport = useOpenReport();
   const [report, setReport] = useState<{ title: string; text: string } | null>(null);
   const [failed, setFailed] = useState(false);
   const draft = async () => {
     setFailed(false);
     try {
-      setReport(await api.slowScreenReport(screen));
+      const drafted = await api.slowScreenReport(screen);
+      // With the report form on, the drafted words open in it for the person to read and send; nothing stays open here.
+      if (openReport) openReport(`${drafted.title}\n\n${drafted.text}`);
+      else setReport(drafted);
     } catch {
       setFailed(true);
     }
@@ -970,6 +975,9 @@ function SlowScreenLine(props: { line: Line }) {
           <textarea readOnly aria-label={report.title} value={`${report.title}\n\n${report.text}`} rows={6} style={{ width: "100%" }} />
           <Button size="sm" onClick={() => void navigator.clipboard?.writeText(`${report.title}\n\n${report.text}`)}>
             {t("queue.slow_screen.copy")}
+          </Button>
+          <Button size="sm" variant="quiet" onClick={() => setReport(null)}>
+            {t("queue.slow_screen.close")}
           </Button>
         </div>
       )}

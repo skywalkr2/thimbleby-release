@@ -244,6 +244,20 @@ def requeue_interrupted(store: Store) -> tuple[list[str], list[str]]:
     return queued, held
 
 
+def run_rank(data: dict[str, Any]) -> int:
+    """Where a queued request goes in the order of work, lowest first; each group keeps the order it was made in. The
+    person's own hand-ins, answers and corrections come first; then what the person waits on while setting up (the
+    look at who they deal with, and a source's first window); then the background work, the read of older mail among
+    it. The background work runs whenever nothing ahead of it is queued."""
+    from engine import person_look
+
+    if data.get("origin") == "pm":
+        return 0
+    if data.get("task") == person_look.TASK or (data.get("intake") and not data.get("intake_older")):
+        return 1
+    return 2
+
+
 class Events:
     """A change counter that waiters can block on; the live-update stream reads it."""
 
@@ -386,6 +400,10 @@ class Worker:
         self._config_judged = self._config_seen
         self.restart_needed: str | None = None
         self.restart_requested = False
+        self._restart_lock = threading.Lock()
+        #: What each loop is doing now, in words, and the loops the log already said are stuck: a stuck report names it.
+        self._doing: dict[str, str] = {}
+        self._stuck_logged: set[str] = set()
         #: The settings keys whose change waits for the restart, and "code" when the program itself changed.
         self.restart_for: list[str] = []
         #: The restart is needed only because a restore is staged (cancelling it lifts the hold).
@@ -545,6 +563,7 @@ class Worker:
         """One pass of a loop: a beat first, the check that the watchdog is still watching, then the step. Any failure,
         an exit included, is logged and shown as an automation issue, and the loop goes on to its next pass."""
         self._beat_of(name)
+        self._doing[name] = where
         try:
             self._ensure_watchdog()
         except (Exception, SystemExit):
@@ -623,7 +642,17 @@ class Worker:
                 now=self.now(),
             )
             self.events.changed()
-        if any(h == "stuck" for h in self.loop_health(now_monotonic).values()):
+        health = self.loop_health(now_monotonic)
+        self._stuck_logged &= {name for name, h in health.items() if h == "stuck"}
+        for name, h in health.items():
+            if h == "stuck" and name not in self._stuck_logged:
+                self._stuck_logged.add(name)
+                now = time.monotonic() if now_monotonic is None else now_monotonic
+                quiet = int(now - self._beats.get(name, now))
+                log.error(
+                    "The %s loop has not checked in for %d seconds; it was %s", name, quiet, self._doing.get(name, "?")
+                )
+        if any(h == "stuck" for h in health.values()):
             self.events.changed()
             # The loop that sends notices may be the one that is stuck, so the watchdog sends this one: the stuck
             # line counts in the notice like any other line of Today's Decide group.
@@ -688,17 +717,19 @@ class Worker:
         self._stop.set()
         self._wake.set()
         self._read_now.set()
+        # A restart does not wait on work that is not stopping: it is put back in the queue when the app starts.
+        short = 2.0 if self.restarting else None
         if self._thread:
-            self._thread.join(timeout=10)
+            self._thread.join(timeout=short or 10)
         if self._backups:
-            self._backups.join(timeout=60)
+            self._backups.join(timeout=short or 60)
         if self._jobs:
-            self._jobs.join(timeout=60)
+            self._jobs.join(timeout=short or 60)
         for reading in list(self._account_reads):
-            reading.join(timeout=60)
+            reading.join(timeout=short or 60)
         if self._sync:
             self.events.changed()
-            self._sync.join(timeout=60)
+            self._sync.join(timeout=short or 60)
             self.release_folder()
 
     def read_sources_now(self) -> None:
@@ -835,9 +866,21 @@ class Worker:
         return self.on_restart is not None
 
     def request_restart(self) -> None:
-        """The person asked for the restart: it starts between requests, at once if none is running."""
+        """The person asked for the restart: it starts between requests, at once if none is running. Work that does
+        not yield is given `steward.restart_wait_seconds`; then the process restarts anyway, and the requests it left
+        running are put back in the queue when it starts (as after sleep)."""
+        already = self.restart_requested
         self.restart_requested = True
         self.poke()
+        if already or self.on_restart is None:
+            return
+        threading.Thread(target=self._restart_when_waited, name="cockpit-restart-wait", daemon=True).start()
+
+    def _restart_when_waited(self) -> None:
+        if self._stop.wait(timeout=float(self.cfg.steward.restart_wait_seconds)):
+            return
+        if self.restart_due():
+            log.warning("Background work did not stop in time; restarting anyway.")
 
     def queue_catch_up_learning(self) -> list[str]:
         """Once for each start of the app, queue the learning runs for the catch-up list, held for the person's go. A
@@ -861,7 +904,7 @@ class Worker:
         """Process every queued request now. Returns how many were processed."""
         done = 0
         self.queue_catch_up_learning()
-        sorted_pending = False
+        attempted: set[str] = set()  # requests whose sorting was tried in this pass of the queue
         waiting_for_sort: set[str] = set()
         while not self._stop.is_set():
             self._beat_of("requests")
@@ -871,21 +914,25 @@ class Worker:
                 for r in self.store.read().requests_unfinished()
                 if r.data["state"] == "queued" and not waits_for_its_time(r.data, now)
             ]
-            if not sorted_pending and any(r.data.get("sort_pending") for r in queued):
-                # Mail the sorting couldn't be run for is sorted, in one batch, before any other run of it.
-                sorted_pending = True
-                self.sort_pending_mail(now)
-                continue
             # A request still waiting for its sorting is tried once, so any hold on it is shown, and never run.
             queued = [r for r in queued if r.id not in waiting_for_sort]
             if not queued:
                 break
-            # The person's own hand-ins, answers and corrections go before background work; each group keeps the
-            # order it was made in.
-            queued.sort(key=lambda r: r.data.get("origin") != "pm")
+            queued.sort(key=lambda r: run_rank(r.data))
+            if queued[0].data.get("sort_pending") and queued[0].id not in attempted:
+                # Mail the sorting couldn't be run for when it was handed in is sorted one batch at a time, in the order
+                # of work, before its request runs; the rest of the queue (the look at who the person deals with first)
+                # is taken between batches, and each pass begins with a beat.
+                batch = [r.id for r in queued if r.data.get("sort_pending") and r.id not in attempted]
+                batch = batch[: max(1, self.cfg.watch.sorting_batch)]
+                attempted.update(batch)
+                self._doing["requests"] = f"sorting {len(batch)} pending messages"
+                self.sort_pending_mail(now, set(batch))
+                continue
             if self._changed_since_start():
                 self._hold_queued()
                 break
+            self._doing["requests"] = f"processing request {queued[0].id} ({queued[0].data['task']})"
             try:
                 process(
                     self.ws,
@@ -920,16 +967,17 @@ class Worker:
             self.remind_acts()
         return done
 
-    def sort_pending_mail(self, now: datetime) -> None:
-        """Run the assistant's sorting for every queued mail request still marked as waiting for it. A request it
-        sets aside is closed, one it answers loses the mark, and one it still can't be run for stays marked and
-        queued: the pause or budget that stops the sorting is already shown, so nothing new is said. A failure is
-        logged and never stops the worker."""
+    def sort_pending_mail(self, now: datetime, only: set[str] | None = None) -> None:
+        """Run the assistant's sorting for the queued mail requests still marked as waiting for it (`only` limits it to
+        those requests: one batch of the worker's pass). A request it sets
+        aside is closed, one it answers loses the mark, and one it still can't be run for stays marked and queued: the
+        pause or budget that stops the sorting is already shown, so nothing new is said. A failure is logged and never
+        stops the worker."""
         from engine import watch
 
         try:
             watch.sort_before_first_go(
-                self.ws, self.store, self.cfg, self.router_factory(), now, go=False, pending_only=True
+                self.ws, self.store, self.cfg, self.router_factory(), now, go=False, pending_only=True, requests=only
             )
         except Exception:
             log.exception("Sorting the mail that waited for it failed")
@@ -1697,9 +1745,10 @@ class Worker:
     def restart_due(self) -> bool:
         """Restart once the person asked for it, between requests. The app never restarts on its own: a change that
         needs one is shown, and new work waits, until the person chooses to restart."""
-        if self.on_restart is None or self.restarting or not self.restart_requested:
-            return False
-        self.restarting = True
+        with self._restart_lock:
+            if self.on_restart is None or self.restarting or not self.restart_requested:
+                return False
+            self.restarting = True
         log.warning("Restarting, as asked, to use changed settings or code.")
         self.events.changed()
         self.on_restart()

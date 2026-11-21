@@ -15,6 +15,7 @@ from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from engine.firm_due import firm_due
 from engine.names import People
 from engine.records import blocker_kind
 
@@ -119,6 +120,25 @@ def standing_hold(
         return None
     found = blocker_of(view, hold, people if people is not None else ViewNames(view), here)
     return None if found is not None and found.resolved else hold
+
+
+def overdue_day(
+    view: Any,
+    data: dict[str, Any],
+    today: date,
+    people: People | None = None,
+    here: ZoneInfo | None = None,
+    pm: str | None = None,
+) -> date | None:
+    """The firm day an open action went overdue, or None when it isn't overdue: it has a firm date before `today` and no
+    hold it still stands under. Today's overdue line and the to-dos list's Overdue state both ask this, so they
+    agree."""
+    if data.get("status") != "open":
+        return None
+    due = firm_due(data)
+    if due is None or due >= today or standing_hold(view, data, people, here, pm):
+        return None
+    return due
 
 
 def owed_by(view: Any, target: str | None) -> tuple[str, ...]:

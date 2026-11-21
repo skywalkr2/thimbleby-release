@@ -275,3 +275,24 @@ def test_a_watchdog_quiet_for_long_shows_as_stuck_on_status_and_today(env):
     assert since is not None
     lines = queue(ws, store, cfg, clock(), stuck=since.isoformat())
     assert [x.kind for x in lines if x.kind == "stuck"] == ["stuck"]
+
+
+def test_a_stuck_loop_is_logged_once_with_what_it_was_doing(env, caplog):
+    """H5-51: a report carries the line that names the stuck loop and what it was doing."""
+    worker = worker_of(env)
+    alive = threading.Event()
+    holder = threading.Thread(target=alive.wait, daemon=True)
+    holder.start()
+    worker._loop_threads["requests"] = holder
+    worker._beats["requests"] = 1000.0
+    worker._doing["requests"] = "sorting 20 pending messages"
+    late = 1000.0 + env[1].steward.background_stuck_after_minutes * 60 + 5
+    try:
+        with caplog.at_level("ERROR"):
+            worker.watchdog_check(now_monotonic=late)
+            worker.watchdog_check(now_monotonic=late + 30)
+        said = [r.getMessage() for r in caplog.records if "has not checked in" in r.getMessage()]
+        assert len(said) == 1 and "requests loop" in said[0] and "sorting 20 pending messages" in said[0]
+    finally:
+        alive.set()
+        holder.join(timeout=5)

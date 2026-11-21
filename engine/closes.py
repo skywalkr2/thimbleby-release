@@ -163,7 +163,7 @@ def _set_aside_closes(view: Any) -> list[Close]:
 
 def _assistant_closes(view: Any) -> list[Close]:
     found = []
-    changesets = view.list("changeset")
+    changesets = view.shared_list("changeset")
     requests = view.get_many("request", [c.data["request"] for c in changesets if c.data.get("request")])
     for cs in changesets:
         data = cs.data

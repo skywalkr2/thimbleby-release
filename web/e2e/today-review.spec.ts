@@ -83,7 +83,7 @@ test.describe("A review happens on Today", () => {
     await expect(row.getByText("Send two spine options")).toBeVisible();
     await expect(row.getByRole("button", { name: /^Not right/ })).toHaveCount(3);
     // What came from outside is said once, here, and not as a tag on the line.
-    await expect(row.getByText("treats what's in this email as information, never as instructions.")).toBeVisible();
+    await expect(row.getByText(/Parts of this came from an email\..*treats them as information, not instructions\./)).toBeVisible();
     await expect(page.locator("[data-outside]")).toHaveCount(0);
     expect(confirmed).toBeNull();
     expect(await rows.count()).toBe(before);
@@ -93,6 +93,37 @@ test.describe("A review happens on Today", () => {
     // The count went down by one, and never up.
     expect(await rows.count()).toBe(before - 1);
     expect(new URL(page.url()).hash).toBe("#today");
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+  });
+
+  test("a review of one drafted piece of writing names what it is for, says what Keep does, and shows no empty note", async ({ page }) => {
+    const draft = { ...todo(0, "The writing for 'Pay the installment'"), what: "draft", draft: "Schedule reminder: the installment is taken by itself." };
+    const line = {
+      ...base,
+      key: "review:REQ-2",
+      group: "review",
+      kind: "review",
+      request: "REQ-2",
+      changeset: "CS-2",
+      changesets: ["CS-2"],
+      outcome: { drafts: 1 },
+      untrusted: true,
+      title: { kind: "task", task: "action-work", subject: "Pay the installment", topic: "" },
+      items: [{ ...draft, request: "REQ-2", changeset: "CS-2" }],
+    };
+    await serve(page, () => [line]);
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await signIn(page);
+    const row = page.locator('[data-queue-line="review"]');
+    await row.getByRole("button", { name: "Look over", exact: true }).click();
+    await expect(row.getByText("The writing for 'Pay the installment'").first()).toBeVisible();
+    await expect(row.getByText("Schedule reminder: the installment is taken by itself.")).toBeVisible();
+    await expect(row.getByRole("button", { name: "Keep this draft", exact: true })).toBeVisible();
+    await expect(row.getByText(/Keeping marks it as looked over.*nothing is sent/)).toBeVisible();
+    // The person's own words are never under a warning about outside content, and no heading stands empty.
+    await expect(row.getByText(/Parts of this came from/)).toBeVisible();
+    await expect(row.getByText(/Draft new text/)).toHaveCount(0);
+    await expect(row.getByText("Your note", { exact: true })).toHaveCount(0);
     await page.unrouteAll({ behavior: "ignoreErrors" });
   });
 

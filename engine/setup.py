@@ -498,6 +498,8 @@ def reading(ws: Any, cfg: Any, store: Any, found: list[Step], now: Any = None) -
         for r in view.list("request")
         if r.data["state"] in ("queued", "running")
         and not r.data.get("dismissed")
+        # The read of older mail carries on in the background: only each source's first window is waited for.
+        and not r.data.get("intake_older")
         and (r.data.get("intake") in ids or (r.data["task"] == "notes" and r.data.get("origin") == "input"))
     ]
     if sorting_requests:

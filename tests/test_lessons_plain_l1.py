@@ -107,7 +107,8 @@ def test_a_lesson_whose_evidence_is_the_apps_own_reason_is_refused_and_one_quoti
     assert "the app's own wording" in asked[1].request
     (made,) = store.read().list("lesson")
     assert made.data["evidence"]["quote"] == "12 pages now return an error"
-    assert made.data["status"] == "proposed"
+    # It only describes, and it restates the person's own correction, so it is in use at once.
+    assert (made.data["status"], made.data["activated"], made.data["kept_by"]) == ("active", "correction", None)
 
 
 def test_the_apps_words_are_its_note_for_a_pulled_back_correction_and_its_reason_on_the_records_it_names(env):
@@ -196,10 +197,9 @@ def test_a_note_the_person_typed_beside_outside_content_is_marked_theirs_and_off
     answers(term("should be created as to-dos for fixes"))
     process(ws, store, cfg, Router(cfg, store, env={}), handed.request, now=NOW)
     (made,) = store.read().list("glossary_entry")
-    assert (made.data["origin"], made.data["trust"], made.data["status"]) == ("person", "trusted", "proposed")
-    assert made.data["kept_by"] is None, "offered for Keep, not kept"
-    (offered,) = proposals.proposals(store.read())
-    assert offered.came_from == proposals.FROM_CORRECTION, "the person's own words never expire like outside ones"
+    assert (made.data["origin"], made.data["trust"], made.data["status"]) == ("person", "trusted", "active")
+    assert made.data["activated"] == "person_note", "the person's own typed words apply at once, with no Keep"
+    assert proposals.proposals(store.read()) == [] and proposals.tentative(store.read()) == []
 
 
 def test_the_same_words_quoted_from_the_outside_content_stay_outside(env):
@@ -219,8 +219,8 @@ def test_two_near_identical_proposals_are_one_card_and_a_third_that_differs_is_a
     standing = knowledge.Standing(False, None, "input", "untrusted", None, None, NOW.isoformat(), alike=1.0)
     scope = Scope(scope="projects", projects=[PROJECT["id"]])
     texts = [
-        "Website alerts about pages returning errors are work: make each one a to-do for a fix.",
-        "Website alerts about pages returning errors are work: make each one a to-do.",
+        "Website alerts about pages returning errors must be work: make each one a to-do for a fix.",
+        "Website alerts about pages returning errors must be work: make each one a to-do.",
         "Questions about the printer go to the production lead.",
     ]
     with store.transaction() as tx:

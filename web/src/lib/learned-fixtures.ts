@@ -19,6 +19,8 @@ export function proposal(over: Partial<S["ProposalView"]> = {}): S["ProposalView
     more_evidence: [],
     used: 0,
     given: 0,
+    messages: 0,
+    asks: true,
     ...over,
   };
 }

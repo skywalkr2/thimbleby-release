@@ -122,7 +122,7 @@ export function ReachPicker(props: {
 
 /** The words a proposal was learned from, beside it: the person's own words are quoted as theirs, and words that came
  * from a message are marked as the message's, not theirs. */
-export function ProposalEvidence(props: { p: Proposal }) {
+export function ProposalEvidence(props: { p: Proposal; /** False in a list that says it once for all its rows. */ marked?: boolean }) {
   const { t } = useWords();
   const { p } = props;
   const quote = p.evidence?.quote;
@@ -131,7 +131,7 @@ export function ProposalEvidence(props: { p: Proposal }) {
   return (
     <p className={styles.evidence}>
       {t(own ? "learned.evidence.own" : "learned.evidence")} <q>{plainDates(quote)}</q>
-      {!own && p.trust === "untrusted" && (
+      {!own && p.trust === "untrusted" && props.marked !== false && (
         <>
           {" "}
           <span className="tag">{t("learned.from_outside")}</span>

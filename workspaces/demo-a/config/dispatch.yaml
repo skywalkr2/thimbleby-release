@@ -30,6 +30,7 @@ knowledge:
   rule_review_every_days: 7
   discards_hold_days: 90
   discard_similarity: 0.8
+  corroborate_messages: 3
   proposals_expire_days: 14
   catch_up_max: 20
   learn: true

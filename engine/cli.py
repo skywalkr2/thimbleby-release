@@ -886,7 +886,13 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     server = CockpitServer(
         uvicorn.Config(
-            app, host=cfg.server.host, port=cfg.server.port, log_level="warning", timeout_keep_alive=KEEP_ALIVE
+            app,
+            host=cfg.server.host,
+            port=cfg.server.port,
+            log_level="warning",
+            timeout_keep_alive=KEEP_ALIVE,
+            # A restart does not wait on a request that is stuck.
+            timeout_graceful_shutdown=cfg.steward.restart_wait_seconds,
         )
     )
     try:

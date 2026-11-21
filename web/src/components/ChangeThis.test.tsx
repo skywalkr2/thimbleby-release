@@ -202,3 +202,24 @@ test("a fact's page has Change this, posted as a fact", async () => {
   await user.click(screen.getByRole("button", { name: "Ask for the change" }));
   await waitFor(() => expect(posted(calls, "POST items/fact/FACT-1/change")).toEqual({ note: "It is the 18th" }));
 });
+
+test("while Drop or Change this is open on a question it is the only form there, and Cancel brings the answer form back", async () => {
+  const user = userEvent.setup();
+  fakeApi({ "GET people": () => [] });
+  renderApp(<DecisionRow question={question("Q-5")} reveal={0} />);
+  const answer = () => screen.queryByRole("textbox", { name: "Your answer" });
+  expect(await screen.findByRole("textbox", { name: "Your answer" })).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "More actions for Which cover?" }));
+  await user.click(screen.getByRole("menuitem", { name: "Drop" }));
+  expect(await screen.findByRole("textbox", { name: "Why isn't it needed?" })).toBeInTheDocument();
+  expect(answer()).toBeNull();
+  expect(screen.queryByRole("button", { name: "Answer" })).toBeNull();
+  // Opening another form closes the first: never two at once.
+  await user.click(screen.getByRole("button", { name: "More actions for Which cover?" }));
+  await user.click(screen.getByRole("menuitem", { name: "Change this" }));
+  expect(await screen.findByRole("textbox", { name: "Your note" })).toBeInTheDocument();
+  expect(screen.queryByRole("textbox", { name: "Why isn't it needed?" })).toBeNull();
+  expect(answer()).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(await screen.findByRole("textbox", { name: "Your answer" })).toBeInTheDocument();
+});

@@ -562,7 +562,7 @@ export function DecisionRow(props: { question: S["FollowupQuestion"]; reveal: nu
       {change.form}
       <LearnedLines records={[q.id]} />
       <div className="full">
-        {who ? (
+        {menu.open || change.open ? null : who ? (
           <AskChooser ask={{ id: q.id, about: q.about ?? "other", options: q.options, name: null }} />
         ) : q.about === "version" ? (
           <CurrentCopy question={q.id} copies={q.options} />
@@ -1279,7 +1279,7 @@ function WaitingQuestion(props: { question: S["FollowupQuestion"]; person: strin
         <OriginLink origin={q.origin} />
       </div>
       <Actions>
-        {!replying && (
+        {!replying && !menu.open && !change.open && (
           <Button onClick={() => setReplying(true)}>
             {t("followups.record_reply")}
           </Button>
@@ -1289,7 +1289,7 @@ function WaitingQuestion(props: { question: S["FollowupQuestion"]; person: strin
       {menu.form}
       {change.form}
       <LearnedLines records={[q.id]} />
-      {replying && (
+      {replying && !menu.open && !change.open && (
         <form
           className="answer-form"
           onSubmit={(e) => {

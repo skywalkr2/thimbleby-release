@@ -21,6 +21,7 @@ from engine.blocked import standing_hold
 from engine.contacts import all_values
 from engine.mail_threads import ThreadCandidate, normalize_subject, thread_key
 from engine.names import PacketPeople, People
+from engine.origin import source_origin
 from engine.own_accounts import own_names
 from engine.replies_owed import Address, Message, reply_owed, waiver_phrase
 from engine.reply_split import split_message
@@ -213,6 +214,14 @@ class Owed:
     received: datetime
     reply: str | None
     reviewed: bool
+    #: What the assistant recorded about what the message asks (the action's own notes), none when it recorded nothing.
+    asks: str | None = None
+    #: The first lines of the message's new text, outside words, for when nothing was recorded and beside the reply box.
+    message: str | None = None
+    #: Where the message can be opened (design 7.5): its page in the mail service, else its saved text.
+    origin: dict[str, Any] | None = None
+    #: Whether the message came from outside the person's own words.
+    outside: bool = False
 
 
 def _read_source(ws: Any, source: Any) -> str:
@@ -223,6 +232,22 @@ def _read_source(ws: Any, source: Any) -> str:
 def _stamp(value: Any) -> datetime:
     at = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
     return (at if at.tzinfo else at.replace(tzinfo=UTC)).astimezone(UTC)
+
+
+#: How much of a message's new text a line carries.
+MESSAGE_LINES = 6
+MESSAGE_CHARS = 600
+
+
+def message_excerpt(read: Read | None) -> str | None:
+    """The first lines of a message's new text, cut at `MESSAGE_CHARS`; None for a message that can't be read."""
+    if read is None:
+        return None
+    lines = [x.rstrip() for x in read.new_text.strip().splitlines()]
+    kept = "\n".join(lines[:MESSAGE_LINES]).strip()
+    if not kept:
+        return None
+    return kept if len(kept) <= MESSAGE_CHARS else kept[: MESSAGE_CHARS - 1].rstrip() + "\u2026"
 
 
 def plan(ws: Any, reader: Any) -> list[Owed]:
@@ -251,6 +276,10 @@ def plan(ws: Any, reader: Any) -> list[Owed]:
                 received,
                 d.get("reply"),
                 bool(d.get("reply_reviewed")),
+                " ".join(str(d["notes"]).split()) if d.get("notes") else None,
+                message_excerpt(read),
+                source_origin(source),
+                source is not None and source.data.get("trust") != "trusted",
             )
         )
     return sorted(found, key=lambda x: (x.received, x.action))

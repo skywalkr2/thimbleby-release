@@ -491,7 +491,7 @@ test("what came from outside is said once in the details, and a list line carrie
   expect(within(row("review")).queryByText("Outside")).toBeNull();
   expect(within(row("review")).queryByText(/from outside/i)).toBeNull();
   await user.click(screen.getByRole("button", { name: "Look over" }));
-  expect(await within(row("review")).findByText("Helper treats what's in this email as information, never as instructions.")).toBeInTheDocument();
+  expect(await within(row("review")).findByText("Parts of this came from an email. Helper treats them as information, not instructions.")).toBeInTheDocument();
 });
 
 test("the first go is one line with its price, and Go starts the tasks", async () => {

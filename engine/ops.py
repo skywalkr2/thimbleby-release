@@ -772,6 +772,30 @@ class WouldChange(BaseModel):
     field: str | None = Field(None, description="For field: the name of the field.")
     setting: str | None = Field(None, description="For setting: the setting's code from the settings list.")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _plain_shapes(cls, data: Any) -> Any:
+        """Accept the plain shapes that mean the same thing: another name for the record, the kind left out when the
+        other keys say it, and a field written as "record.field"."""
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        for alias in ("record_id", "target", "id", "item"):
+            if alias in data and "record" not in data:
+                data["record"] = data.pop(alias)
+        if isinstance(data.get("what"), str):
+            data["what"] = data["what"].strip().lower()
+        elif "what" not in data:
+            if data.get("setting"):
+                data["what"] = "setting"
+            elif data.get("record") and data.get("field"):
+                data["what"] = "field"
+        if data.get("what") == "field" and not data.get("record") and isinstance(data.get("field"), str):
+            head, dot, tail = data["field"].partition(".")
+            if dot and head and tail:
+                data["record"], data["field"] = head, tail
+        return data
+
     @model_validator(mode="after")
     def _names_it(self) -> WouldChange:
         if self.what == "field" and not (self.record and self.field):
@@ -1434,7 +1458,10 @@ class TextDraftOp(OpModel):
     )
 
     def describe(self, view: Any = None) -> str | None:
-        return f"Draft new text for {named(view, self.record.kind, self.record.id)}"
+        about = named(view, self.record.kind, self.record.id)
+        if self.record.kind == "action" and self.field == "work":
+            return f"The writing for {about}"
+        return f"A draft of {self.field.replace('_', ' ')} for {about}"
 
 
 class AnswerOp(OpModel):
@@ -1518,6 +1545,24 @@ class MailRestoreOp(OpModel):
 
     def describe(self, view: Any = None) -> str | None:
         return f"Bring back {named(view, 'snapshot', self.snapshot)} from the Set aside folder"
+
+
+class WorkDraftOp(OpModel):
+    """Ask for the writing a to-do stands for (a message, a list, a page) to be drafted: one request for the drafting
+    work is queued for the to-do, with the person's words as its note, and goes the usual way (estimated, held for the
+    person's go above the configured amount). Only from the person's own words; the draft comes back to be reviewed
+    and nothing is sent. Refused if the to-do isn't open or the assistant already has its work in hand."""
+
+    op: Literal["work.draft"] = "work.draft"
+    id: str = Field(description="The id of the open to-do whose writing is wanted.")
+    note: str | None = Field(
+        None,
+        max_length=2000,
+        description="What the person wants written, in their own words, when they said.",
+    )
+
+    def describe(self, view: Any = None) -> str | None:
+        return f"Draft the writing for {named(view, 'action', self.id)}"
 
 
 class SourceLimitOp(OpModel):
@@ -1630,7 +1675,8 @@ class RuleAddOp(OpModel):
         None,
         max_length=80,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._/-]*$",
-        description="A short name other settings can refer to; made from the rule's id when left out.",
+        description="A short name other settings can refer to, in letters, digits, dots, dashes and slashes with no "
+        "spaces; made from the rule's id when left out.",
     )
     applies_to: Scope = Field(default_factory=Scope, description="What the rule applies to; empty means all.")
     check: str | None = Field(
@@ -1658,6 +1704,16 @@ class RuleAddOp(OpModel):
         "that names an active one waits for the person to say which wins, even when the person typed it.",
     )
     evidence: EvidenceIn | None = Field(None, description="The words from the input that justify the rule, if any.")
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _plain_name(cls, value: Any) -> Any:
+        """A name written as words ("Mail from one sender: reminders") is made into the short form it asks for, so a
+        cosmetic field never makes the whole answer unreadable; a name with nothing usable in it is left out."""
+        if not isinstance(value, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", value):
+            return value
+        short = re.sub(r"[^a-z0-9._/-]+", "-", value.lower()).strip("-._/")[:80].strip("-._/")
+        return short or None
 
     @model_validator(mode="after")
     def _pause_has_an_end(self) -> RuleAddOp:
@@ -2343,6 +2399,7 @@ Op = Annotated[
     | ListMergeOp
     | ListRetireOp
     | MailRestoreOp
+    | WorkDraftOp
     | SourceLimitOp
     | SourceWidenOp
     | ViewAddOp
@@ -2438,6 +2495,7 @@ OP_MODELS: dict[str, type[OpModel]] = {
     "list.merge": ListMergeOp,
     "list.retire": ListRetireOp,
     "mail.restore": MailRestoreOp,
+    "work.draft": WorkDraftOp,
     "source.limit": SourceLimitOp,
     "source.widen": SourceWidenOp,
     "view.add": ViewAddOp,
@@ -2542,6 +2600,7 @@ NON_OVERWRITING_OPS: frozenset[str] = frozenset(
         "list.merge",
         "list.retire",
         "mail.restore",
+        "work.draft",
         "source.limit",
         "source.widen",
         "view.add",

@@ -1873,6 +1873,11 @@ class Request(Record):
         description="The id of the watched source this request was taken in from when the source was newly added (or "
         "looked at further back): its results are gathered into one line on Today and one list, not one line each.",
     )
+    intake_older: bool = Field(
+        False,
+        description="For a request taken in from a new source: it came from the read of older mail (the full read the "
+        "person chose), not from the source's first window. The first reading does not wait for these.",
+    )
     intake_seen: bool = Field(
         False,
         description="For a request taken in from a new source: the person opened the list of what was found (or "
@@ -2575,7 +2580,8 @@ class KnowledgeRecord(Record):
     learned_at: datetime = Field(description="When the entry was made.")
     status: Literal["proposed", "active", "discarded", "expired", "retired"] = Field(
         "proposed",
-        description="proposed: waits for the person's Keep. active: guides runs. discarded: the person said no. "
+        description="proposed: not in use yet (a describing one from mail waits for enough messages to agree; one that "
+        "grants power waits for the person). active: guides runs. discarded: the person said no. "
         "expired: a proposal nobody reviewed in time. retired: was active, and no longer is.",
     )
     discard_reason: str | None = Field(None, description="Why the person discarded it, if they said.")
@@ -2583,12 +2589,18 @@ class KnowledgeRecord(Record):
         None, description="The person who made it active, and so the author of its wording."
     )
     kept_at: datetime | None = Field(None, description="When it was made active.")
+    activated: Literal["person_note", "correction", "agreement"] | None = Field(
+        None,
+        description="How an entry became active with nobody pressing Keep: person_note, from the person's own typed "
+        "words; correction, restated from one of their corrections; agreement, several messages said the same "
+        "thing. Empty for an entry the person kept, and for one that is not active.",
+    )
     applies_to: Scope = Field(default_factory=Scope, description="What it applies to.")
 
     @model_validator(mode="after")
     def _states_hold_together(self) -> KnowledgeRecord:
-        if self.status == "active" and (self.kept_by is None or self.kept_at is None):
-            raise ValueError("an active entry says who kept it and when")
+        if self.status == "active" and (self.kept_at is None or (self.kept_by is None and self.activated is None)):
+            raise ValueError("an active entry says who kept it and when, or how it became active on its own")
         if self.discard_reason is not None and self.status != "discarded":
             raise ValueError("only a discarded entry has a reason for it")
         if (self.origin == "pack") != (self.pack is not None):

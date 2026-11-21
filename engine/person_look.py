@@ -24,7 +24,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from engine import contact_tally, mail_headers
+from engine import contact_tally, mail_headers, sides
 from engine import people_suggestions as ps
 from engine.contacts import all_values
 from engine.proposals import _decisions, _norm
@@ -148,14 +148,16 @@ def tally_lines(store: Any, cfg: Any, own: str | None = None) -> list[str]:
     if _stand_in_lines is not None:
         return list(_stand_in_lines[0])
     lines = []
+    names = sides.side_names(store.read(), cfg)
     for c, person in shown_contacts(store, cfg, own):
+        shown_sides = [_one_line(names.get(i) or i) for i in c.sides]
         days = f"{c.first} to {c.last}" if c.first and c.last else "no day"
         bits = [
             c.address,
             _one_line(c.name),
             f"{c.from_them} from them, {c.to_them} to them",
             days,
-            "sides: " + (", ".join(c.sides) or "none"),
+            "sides: " + (", ".join(shown_sides) or "none"),
         ]
         if c.hints:
             bits.append("hints: " + ", ".join(contact_tally.HINT_WORDS[h] for h in c.hints))
@@ -548,6 +550,26 @@ def _counts(store: Any, cfg: Any, address: str, own: str | None) -> tuple[int, i
     return 0, 0
 
 
+#: Phrases of the app's own workings an offer's reason may still hold, and the plain words they become.
+_PLAIN_WORDS = (
+    (re.compile(r"(?i)\b(?:in|from|on) (?:this|the|that) (?:tally|list|packet)\b"), "in your mail"),
+    (re.compile(r"(?i)\b(?:this|the|that|your) (?:tally|packet)\b"), "your mail"),
+    (re.compile(r"(?i)\bthe list\b"), "your mail"),
+    (re.compile(r"(?i)\btally\b"), "mail"),
+)
+
+
+def plain_reason(text: str, view: Any, cfg: Any) -> str:
+    """An offer's reason as the person reads it: a side's id is the side's name, and the app's own words for where the
+    counts came from ("the tally", "the list") are said as "your mail". The model's own sentence is kept otherwise."""
+    names = sides.side_names(view, cfg)
+    for side_id in sorted(names, key=len, reverse=True):
+        text = re.sub(rf"(?<![A-Za-z0-9-]){re.escape(side_id)}(?![A-Za-z0-9])", names[side_id] or "your mail", text)
+    for pattern, plain in _PLAIN_WORDS:
+        text = pattern.sub(plain, text)
+    return text
+
+
 def apply(tx: Any, op: Any, ctx: Any, w: Any) -> list[dict[str, Any]]:
     """Keep each person who stands as an offer that waits for the person: name, address, why and the counts, as of
     now. An entry that doesn't stand (`_sorted_out`) is left out and takes no other with it."""
@@ -561,7 +583,7 @@ def apply(tx: Any, op: Any, ctx: Any, w: Any) -> list[dict[str, Any]]:
             {
                 "name": " ".join(neutralize(person.name).split())[:80],
                 "address": address,
-                "why": " ".join(neutralize(person.why).split())[:240],
+                "why": " ".join(neutralize(plain_reason(person.why, ctx.store.read(), ctx.cfg)).split())[:240],
                 **({"relation": rel} if (rel := " ".join(neutralize(person.relation or "").split())[:60]) else {}),
                 "from_them": from_them,
                 "to_them": to_them,

@@ -106,7 +106,7 @@ test("with an account that can act, Send reply is the one button and Copy reply 
   expect(within(row).queryByRole("button", { name: "Copy reply" })).toBeNull();
   await menuOf(user, row);
   const items = (await screen.findAllByRole("menuitem")).map((x) => x.textContent);
-  expect(items).toEqual(["Copy reply", "Reply to everyone", "Forward", "Archive", "Move to…", "Label…", "Mark as read", "No reply needed", "Answered another way", "Edit reply"]);
+  expect(items).toEqual(["Copy reply", "Reply to everyone", "Forward", "Archive", "Move to…", "Label…", "Mark as read", "No reply needed", "I already replied", "Edit reply"]);
 });
 
 test("Send reply drafts the drafted reply to the message that asked, with its subject, and opens it in Waiting to go out", async () => {

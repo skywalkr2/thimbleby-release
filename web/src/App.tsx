@@ -24,6 +24,7 @@ import { SEARCH_FIELD } from "./components/SearchBox";
 import { Feedback } from "./components/Feedback";
 import { AlphaNumbers } from "./components/AlphaNumbers";
 import { ReportProblem } from "./components/ReportProblem";
+import { OpenReportProvider, type OpenReport } from "./lib/open-report";
 import { FollowUps } from "./components/FollowUps";
 import { HandIn } from "./components/HandIn";
 import { NotAvailable } from "./components/NotAvailable";
@@ -467,8 +468,14 @@ function Shell(props: { rc: S["RuntimeConfig"]; live: ReturnType<typeof useLive>
   const openFeedback = () => setFeedback(true);
   const openReport = rc.report_enabled ? () => setReport(true) : undefined;
   const openAlpha = () => setAlpha(true);
+  const openReportWith: OpenReport | undefined = rc.report_enabled
+    ? (words) => {
+        setReportWords(words);
+        setReport(true);
+      }
+    : undefined;
   return (
-    <>
+    <OpenReportProvider value={openReportWith}>
       <a href="#main" className="skip" onClick={skip}>
         {t("app.skip")}
       </a>
@@ -550,7 +557,7 @@ function Shell(props: { rc: S["RuntimeConfig"]; live: ReturnType<typeof useLive>
         />
       )}
       {overlays}
-    </>
+    </OpenReportProvider>
   );
 }
 

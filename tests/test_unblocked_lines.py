@@ -138,3 +138,33 @@ def test_the_assistants_list_of_open_actions_says_on_hold_only_while_the_hold_st
     assert "on hold" in line() and "blocked on" in line()
     answer(store, asked)
     assert "on hold" not in line() and "blocked on" not in line()
+
+
+def test_overdue_is_one_rule_for_todays_line_and_the_to_dos_list(env):
+    """Today's overdue line and the list's Overdue state read `overdue_day`: a held-up, undated, unchecked-date or
+    future to-do is in neither, an answered blocker puts it back in both."""
+    from engine.blocked import overdue_day
+    from engine.open_items import open_actions
+
+    ws, cfg, store = env
+    past = (TODAY - timedelta(days=5)).isoformat()
+    late = make(store, [me(cfg)], due=past)
+    checking = make(store, [me(cfg)], due=past, due_check=True)
+    future = make(store, [me(cfg)], due=(TODAY + timedelta(days=3)).isoformat())
+    held = make(store, [me(cfg)], due=past)
+    asked = blocked_on_a_question(store, held, other(cfg))
+
+    def both() -> tuple[set[str], set[str]]:
+        view = store.read()
+        mine = {a.id for a in view.list("action") if overdue_day(view, a.data, TODAY, People(store, cfg)) is not None}
+        listed = {r.id for r in open_actions(store, cfg, TODAY, light=True) if r.state == "overdue"}
+        line = {a for x in queue(ws, store, cfg, NOW) if x.kind == "overdue" for a in x.actions}
+        assert listed >= line
+        return mine, listed
+
+    mine, listed = both()
+    assert late in mine and mine == listed
+    assert not {checking, future, held} & mine
+    answer(store, asked)
+    mine, listed = both()
+    assert held in mine and mine == listed

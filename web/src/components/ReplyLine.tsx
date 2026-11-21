@@ -1,6 +1,6 @@
 // A reply the person owes (design 6.35, 7.7): one Today line, "Reply to Ana: Interior proofs", with the drafted reply under it
 // marked as a draft until the person has copied, edited or written it. Copy reply is the one button (copying marks the draft
-// reviewed, with Undo); No reply needed, Answered another way and Edit are in the row's menu. Each is the person's own change
+// reviewed, with Undo); No reply needed, I already replied and Edit are in the row's menu. Each is the person's own change
 // with Undo, and No reply needed is a correction the assistant learns from.
 import { useId, useState, type ReactNode } from "react";
 import { api, type S } from "../lib/api";
@@ -12,6 +12,7 @@ import { useMessageActs } from "./MessageActs";
 import type { MenuAction } from "./RowMenu";
 import { Button } from "../ui/Button";
 import { Actions } from "../ui/Actions";
+import { OriginLink } from "./Origin";
 type Line = S["QueueLineView"];
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
@@ -89,6 +90,7 @@ export function useReplyChoices(line: Line, onClosed?: () => void): ReplyChoices
     ) : asking === "edit" ? (
       <EditForm
         value={draft}
+        message={line.reply_message ?? ""}
         onSave={(text) =>
           void act(
             () => api.reviewReply(action, { text }),
@@ -118,8 +120,27 @@ export function useReplyChoices(line: Line, onClosed?: () => void): ReplyChoices
 export function ReplyDraft(props: { line: Line }) {
   const { t } = useWords();
   const draft = props.line.reply;
+  const asks = props.line.reply_asks;
+  const message = props.line.reply_message;
   return (
     <div className="reply-draft" data-reply-draft={(props.line.actions ?? [])[0]}>
+      {/* What the message asks: the assistant's own recorded words, else the message's own first lines, marked as from
+          outside; and the way to open the message where it came in. */}
+      {asks ? (
+        <p className="reply-asks" data-reply-asks="">
+          {asks}
+        </p>
+      ) : (
+        message && (
+          <>
+            <span className="hint">{t("queue.reply.message_from")}</span>
+            <p className="reply-text" data-reply-message="">
+              {message}
+            </p>
+          </>
+        )
+      )}
+      <OriginLink origin={props.line.origin} label={t("queue.reply.open_message")} />
       {draft ? (
         <>
           <span className="hint">{t(props.line.reply_reviewed ? "queue.reply.reviewed" : "queue.reply.draft")}</span>
@@ -155,6 +176,7 @@ function AnsweredForm(props: { onSave: (note: string) => void; onCancel: () => v
       <label className="hint" htmlFor={id}>
         {t("queue.reply.answered_label")}
       </label>
+      <span className="hint">{t("queue.reply.answered_hint")}</span>
       <input id={id} type="text" autoFocus value={note} onChange={(e) => setNote(e.target.value)} />
       <Actions align="end">
         <Button variant="quiet" onClick={props.onCancel}>
@@ -169,7 +191,7 @@ function AnsweredForm(props: { onSave: (note: string) => void; onCancel: () => v
 }
 
 /** The person's own reply, starting from the draft, with the cursor in it. */
-function EditForm(props: { value: string; onSave: (text: string) => void; onCancel: () => void }) {
+function EditForm(props: { value: string; message: string; onSave: (text: string) => void; onCancel: () => void }) {
   const { t } = useWords();
   const id = useId();
   const [text, setText] = useState(props.value);
@@ -184,6 +206,14 @@ function EditForm(props: { value: string; onSave: (text: string) => void; onCanc
         if (e.key === "Escape") props.onCancel();
       }}
     >
+      {props.message && (
+        <>
+          <span className="hint">{t("queue.reply.message_from")}</span>
+          <p className="reply-text" data-reply-message-beside="">
+            {props.message}
+          </p>
+        </>
+      )}
       <label className="hint" htmlFor={id}>
         {t("queue.reply.edit_label")}
       </label>

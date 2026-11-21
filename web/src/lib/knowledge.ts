@@ -35,6 +35,12 @@ export interface Item {
   /** A glossary entry's word and what it means; empty for the others. */
   term: string;
   meaning: string;
+  /** How it became active with no Keep (the person's note, a correction, agreeing messages); null for one they kept. */
+  activated: S["KnowledgeView"]["activated"] | null;
+  /** In how many different messages it was seen. */
+  messages: number;
+  /** A proposal that is a question for the person (it grants power); a proposal that only describes is tentative. */
+  asks: boolean;
 }
 
 /** Every entry and rule as items, newest first. */
@@ -58,6 +64,9 @@ export function itemsOf(entries: S["KnowledgeView"][], rules: S["RuleView"][]): 
       constrains: [],
       term: e.term ?? "",
       meaning: e.meaning ?? "",
+      activated: e.activated ?? null,
+      messages: e.messages ?? 0,
+      asks: e.asks ?? false,
     })),
     ...rules.map((r) => ({
       id: r.id,
@@ -77,9 +86,13 @@ export function itemsOf(entries: S["KnowledgeView"][], rules: S["RuleView"][]): 
       constrains: r.constrains ?? [],
       term: "",
       meaning: "",
+      activated: null,
+      messages: 0,
+      asks: r.status === "proposed",
     })),
   ];
-  return found.sort((a, b) => (a.learnedAt === b.learnedAt ? b.id.localeCompare(a.id) : a.learnedAt < b.learnedAt ? 1 : -1));
+  // A tentative entry (it only describes and too few messages agree) is kept, unused and never listed.
+  return found.filter((i) => !(i.status === "proposed" && !i.asks)).sort((a, b) => (a.learnedAt === b.learnedAt ? b.id.localeCompare(a.id) : a.learnedAt < b.learnedAt ? 1 : -1));
 }
 
 /** Which kind of work a rule or lesson is limited to decides its group; one place for all of it. */
@@ -129,7 +142,8 @@ export function notUsedInAWhile(item: Item, now: Date, days: number | undefined)
 }
 
 export interface Sections {
-  /** Proposed, waiting for the person. */
+  /** Proposed and a question for the person: it grants power, so nothing from outside makes it active. A tentative one
+   * (it only describes, too few messages agree) is in no section. */
   waiting: Item[];
   /** Active and used lately, by group, in the order of GROUPS; a group with nothing is left out. */
   follows: { group: Group; items: Item[] }[];
@@ -145,7 +159,7 @@ export interface Sections {
 
 /** Every item in the one section it belongs to; `items` is newest first and each section keeps that order. */
 export function sectionsOf(items: Item[], now: Date, days: number | undefined): Sections {
-  const waiting = items.filter((i) => i.status === "proposed");
+  const waiting = items.filter((i) => i.status === "proposed" && i.asks);
   const words = items.filter((i) => i.status === "active" && i.kind === "glossary_entry");
   const idle = items.filter((i) => notUsedInAWhile(i, now, days));
   const lately = items.filter((i) => i.status === "active" && i.kind !== "glossary_entry" && !idle.includes(i));
@@ -194,4 +208,17 @@ export function reachWords(
   }
   if ((scope.records ?? []).length) parts.push(t("knowledge.reach.records"));
   return parts.join(" · ");
+}
+
+/** Where something was seen, in a few words: "Seen in 4 messages", "From your correction", "From your own note". */
+export function seenWords(item: Pick<Item, "activated" | "messages">, { t, tn }: T): string {
+  if (item.activated === "person_note") return t("learned.seen.note");
+  if (item.activated === "correction") return t("learned.seen.correction");
+  return item.messages > 0 ? tn("learned.seen.messages", item.messages) : "";
+}
+
+/** One line for a learning: what it means, then where it was seen. */
+export function learnedLine(item: Pick<Item, "term" | "meaning" | "text" | "activated" | "messages">, words: T): string {
+  const means = item.term && item.meaning ? words.t("learned.means", { term: item.term, meaning: item.meaning }) : item.text;
+  return [means, seenWords(item, words)].filter(Boolean).join(" · ");
 }

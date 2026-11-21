@@ -208,7 +208,12 @@ def test_a_meaning_proposed_beside_a_term_the_person_kept_as_unknown_names_that_
     meaning = proposal(
         store,
         cfg,
-        {"op": "glossary.add", "text": "Gutter: the inner margin.", "term": "Gutter", "meaning": "the inner margin"},
+        {
+            "op": "glossary.add",
+            "text": "Gutter: the inner margin the printer must keep clear.",
+            "term": "Gutter",
+            "meaning": "the inner margin the printer must keep clear",
+        },
     )
     assert meaning != unknown
     overlap = waiting(client, meaning)["overlaps_with"]

@@ -31,6 +31,7 @@ NOT_FROM_NOTES = (
         "file.add",
         "text.propose",
         "text.draft",
+        "work.draft",
         "answer",
         "setting.propose",
         "report.draft",
@@ -49,8 +50,9 @@ NOT_FROM_NOTES = (
 #: system op, a person's part in a project, which waits the same way, a contact detail from a signature, which
 #: always waits, and a period someone is away that an input states.
 NOTES_ONLY = frozenset({"project.add", "project.role", "person.contact", "person.away"})
-#: What an ask may do besides what reading notes does: answer, suggest a setting, draft a report to the maintainers.
-ASK_OPS = ("answer", "setting.propose", "report.draft")
+#: What an ask may do besides what reading notes does: answer, suggest a setting, draft a report to the maintainers,
+#: and ask for the writing a to-do stands for to be drafted.
+ASK_OPS = ("answer", "setting.propose", "report.draft", "work.draft")
 #: What learning from a correction may propose (design 6.22): one entry to keep, or a change to a lesson that should
 #: have caught the mistake, or who a person is to the person (a stance, which waits for the person's Keep). None of
 #: these depends on the account that runs it.

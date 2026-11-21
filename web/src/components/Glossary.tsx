@@ -5,7 +5,7 @@
 // Settings. Case is ignored.
 import { useId, useRef, useState } from "react";
 import { useKnowledgeActs } from "../lib/knowledge-acts";
-import { usedWords, type Item } from "../lib/knowledge";
+import { seenWords, usedWords, type Item } from "../lib/knowledge";
 import { useSettingEdits } from "../lib/use-setting-edits";
 import { useWords } from "../lib/wording";
 import { Button } from "../ui/Button";
@@ -59,16 +59,27 @@ export function Glossary(props: { entries: Item[]; now: Date; onActed: () => voi
             <Row
               key={entry.id}
               title={entry.term || entry.text}
-              meta={[entry.meaning, t(`knowledge.from.${entry.learnedFrom}`), usedWords(entry, props.now, words)].filter(Boolean).join(" · ")}
+              meta={[entry.meaning, t(`knowledge.from.${entry.learnedFrom}`), seenWords(entry, words), usedWords(entry, props.now, words)].filter(Boolean).join(" · ")}
               primary={
-                <Button
-                  size="sm"
-                  data-key="primary"
-                  aria-label={t("knowledge.words.stop_named", { word: entry.term || entry.text })}
-                  onClick={() => void acts.retire(entry).then(props.onActed)}
-                >
-                  {t("knowledge.retire")}
-                </Button>
+                entry.activated ? (
+                  <Button
+                    size="sm"
+                    data-key="primary"
+                    aria-label={t("knowledge.wrong_named", { text: entry.term || entry.text })}
+                    onClick={() => void acts.wrong(entry).then(props.onActed)}
+                  >
+                    {t("knowledge.wrong")}
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    data-key="primary"
+                    aria-label={t("knowledge.words.stop_named", { word: entry.term || entry.text })}
+                    onClick={() => void acts.retire(entry).then(props.onActed)}
+                  >
+                    {t("knowledge.retire")}
+                  </Button>
+                )
               }
             />
           ))}

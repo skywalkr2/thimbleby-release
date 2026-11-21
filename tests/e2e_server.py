@@ -199,6 +199,9 @@ ACTS_SOURCE = "e2e-mail"
 ACTS_ACCOUNT = f"mailbox:{ACTS_SOURCE}"
 ACTS_SENDER = "sender.one@example.com"
 ACTS_ORGANIZER = "organizer@example.com"
+ACTS_OWED_SUBJECT = "Cover timing"
+ACTS_OWED_ASK = "Could you tell me when the cover art will be ready?"
+ACTS_OWED_URL = "https" + "://mail.example.com/u/0/#inbox/cover"
 
 
 def seed_acts(ws, store, cfg):
@@ -218,7 +221,7 @@ def seed_acts(ws, store, cfg):
     ctx = WriteContext(actor="engine", trust="trusted", op="e2e.acts")
     ws.sources_dir.mkdir(exist_ok=True)
 
-    def message(title: str, text: str, key: str) -> str:
+    def message(title: str, text: str, key: str, url: str | None = None) -> str:
         digest = hashlib.sha256(text.encode()).hexdigest()
         (ws.sources_dir / f"{digest}.txt").write_text(text, encoding="utf-8")
         with store.transaction() as tx:
@@ -231,6 +234,7 @@ def seed_acts(ws, store, cfg):
                     "content_hash": digest,
                     "trust": "untrusted",
                     "watched": {"source": ACTS_SOURCE, "key": key, "change": "new", "author": ACTS_SENDER},
+                    **({"url": url} if url else {}),
                 },
                 ctx,
             ).id
@@ -251,6 +255,27 @@ def seed_acts(ws, store, cfg):
         f"From: The Organizer <{ACTS_ORGANIZER}>\nTo: {me}\nSubject: Invitation: Planning session\n\nPlease join.",
         "<invite@example.com>",
     )
+    # A reply the person owes, with no draft: the line's sentence, its link to the message in its mail service and the
+    # message beside the reply box are what the browser test reads.
+    owed = message(
+        ACTS_OWED_SUBJECT,
+        f"From: Sender One <{ACTS_SENDER}>\nTo: {me}\nSubject: {ACTS_OWED_SUBJECT}\n\n{ACTS_OWED_ASK}",
+        "<cover@example.com>",
+        url=ACTS_OWED_URL,
+    )
+    with store.transaction() as tx:
+        tx.create(
+            "action",
+            {
+                "text": f"Reply to Sender One about {ACTS_OWED_SUBJECT}",
+                "owners": [{"person": pm}] if pm else [],
+                "reply_owed": True,
+                "replies_to": owed,
+                "source": owed,
+                "reply": None,
+            },
+            ctx,
+        )
     with store.transaction() as tx:
         entry = tx.create(
             "event",
@@ -269,6 +294,7 @@ def seed_acts(ws, store, cfg):
     return channel, {
         "account": "E2E mail",
         "reply": {"id": ask, "title": "Interior proofs", "sender": ACTS_SENDER},
+        "owed": {"subject": ACTS_OWED_SUBJECT, "ask": ACTS_OWED_ASK, "url": ACTS_OWED_URL},
         "tidy": {"id": tidy, "title": "Printer invoice"},
         "invitation": {"id": entry, "title": "Planning session", "organizer": ACTS_ORGANIZER},
     }

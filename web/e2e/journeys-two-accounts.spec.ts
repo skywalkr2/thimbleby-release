@@ -33,7 +33,7 @@ interface WatchSource {
   older_read?: { taken: number; kind: string; at?: string | null; gave_up: boolean } | null;
 }
 interface SetupSeen {
-  reading: { state: string; why?: string; sources: number; read: number; found: number };
+  reading: { state: string; why?: string; stage?: string; sources: number; read: number; found: number };
 }
 /** One request the made-up service counted: for which account (from 1), when (seconds), which endpoint, and how it answered. */
 interface Asked {
@@ -206,8 +206,10 @@ test.describe.serial("journey: two accounts under a rate limit", () => {
     // Both accounts were answered, so Continue asks nothing: no connection of either still has the question open.
     const open = (await watch(page)).filter((w) => w.full_read_open).map((w) => `${w.label} ${w.account}: looked back to ${w.looked_back_to ?? "nothing yet"}, last ${JSON.stringify((w as unknown as { last?: { outcome?: string } }).last?.outcome ?? null)}, older ${JSON.stringify(w.older_read ?? null)}`);
     expect(open, "a question still open after both accounts were answered").toEqual([]);
+    const continued = Date.now();
     await main.getByRole("button", { name: "Continue" }).click();
     // What the journey shows when First reading does not end: what the service was asked and how each connection stands.
+    const stages: [string, number][] = [];
     const showWhere = async () => {
       const log = await asked();
       const per = (n: number) => log.filter((r) => r.account === n);
@@ -222,16 +224,19 @@ test.describe.serial("journey: two accounts under a rate limit", () => {
             const text = (await working.innerText().catch(() => "")).replace(/\s+/g, " ");
             expect(text).not.toMatch(INTERNAL);
           }
+          const stage = (await setup(page)).reading?.stage;
+          if (stage && stage !== stages[stages.length - 1]?.[0]) stages.push([stage, Math.round((Date.now() - continued) / 1000)]);
           return await main.getByRole("heading", { level: 2, name: "People" }).count();
         },
         // Both accounts' choices were also their go, so the mail taken in is being worked while this step waits: on a busy machine
         // that is several minutes of the stand-in's answers, and the step ends when they are in.
-        { timeout: 720_000, message: "First reading moves on to People with no click beyond Continue" },
+        { timeout: 180_000, message: "First reading moves on to People with no click beyond Continue" },
       )
       .toBe(1)
       .catch(async (err: Error) => {
         throw new Error(`${err.message}\n${await showWhere()}`);
       });
+    const readingSeconds = Math.round((Date.now() - continued) / 1000);
     const reading = (await setup(page)).reading;
     expect(reading.sources).toBeGreaterThan(0);
 
@@ -245,6 +250,10 @@ test.describe.serial("journey: two accounts under a rate limit", () => {
       if (/waiting for the mail service/.test(words)) expect(words).toMatch(/\d{1,2}:\d{2}/);
     }
     await expect(offers.getByRole("checkbox").first()).toBeVisible({ timeout: 240_000 });
+    const offersSeconds = Math.round((Date.now() - continued) / 1000);
+    // H5-40: the times a person waits, whatever the older mail costs; the older read's work carries on in the background.
+    console.log(`H5-40 times: Continue to First reading done ${readingSeconds} s, Continue to People offers ${offersSeconds} s; First reading stages (seconds from Continue): ${JSON.stringify(stages)}`);
+    expect(offersSeconds, "People shows the assistant's offers within 3 minutes of Continue").toBeLessThanOrEqual(180);
     expect(await offers.innerText()).not.toMatch(INTERNAL);
 
     // 6. The older read ends by itself, with no click: its line is gone and the inbox looks back as far as the month.

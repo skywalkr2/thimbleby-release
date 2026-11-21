@@ -66,7 +66,7 @@ from engine.learning import offered_ops, request_learns
 from engine.moments import localize_ops
 from engine.money import usd
 from engine.names import People
-from engine.ops import CHANGESET, OP_MODELS, ChangesetIn
+from engine.ops import CHANGESET, OP_MODELS, ChangesetIn, WouldChange
 from engine.packet import PacketRefused, build, reads_of, target_of
 from engine.plain_text import is_data
 from engine.projects import budget_problem
@@ -132,12 +132,31 @@ def parse(text: str, op_models: dict | None = None) -> ChangesetIn:
             if key in ("summary", "topic", "ops", "ask", "applied", "missing", "omitted")
         }
     _drop_unused_evidence(data, models)
+    _drop_unreadable_would_change(data)
     try:
         return CHANGESET.validate_python(data, context={"op_models": op_models} if op_models is not None else None)
     except ValidationError as err:
         first = err.errors()[:5]
         detail = "; ".join(_describe_error(e, data, models) for e in first)
         raise Unreadable(f"the JSON doesn't match the op reference ({detail})") from None
+
+
+def _drop_unreadable_would_change(data: object) -> None:
+    """A question's `would_change` is optional to read. One that can't be read is left out and the question is kept,
+    so a whole answer is never lost over it; the question is then returned by the check that asks for one."""
+    ops = data.get("ops") if isinstance(data, dict) else None
+    for index, op in enumerate(ops if isinstance(ops, list) else []):
+        if not (isinstance(op, dict) and op.get("op") == "question.add" and op.get("would_change") is not None):
+            continue
+        try:
+            WouldChange.model_validate(op["would_change"])
+        except ValidationError as err:
+            del op["would_change"]
+            log.warning(
+                "op %d (question.add): would_change left out, the rest of the op kept (%s)",
+                index,
+                err.errors()[0]["msg"].removeprefix("Value error, "),
+            )
 
 
 def _drop_unused_evidence(data: object, models: dict) -> None:

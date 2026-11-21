@@ -60,3 +60,7 @@ test("a voice note waiting to be turned into text is titled by the file it is ab
   expect(titleWords({ ...base, kind: "task", task: "transcribe", subject: "walk.m4a" }, t, has)).toBe("Turn the voice note 'walk.m4a' into text");
   expect(titleWords({ ...base, kind: "task", task: "transcribe" }, t, has)).toBe("Turning a voice note into text");
 });
+
+test("writing asked for on a to-do is titled by the to-do it is for, never as a bare note", () => {
+  expect(titleWords({ ...base, kind: "task", task: "action-work", subject: "Pay the installment" }, t, has)).toBe("The writing for 'Pay the installment'");
+});

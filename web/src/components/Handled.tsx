@@ -22,6 +22,7 @@ import { Icon } from "../ui/Icon";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import styles from "./Handled.module.css";
 import { AssistantCloses } from "./HandledClosed";
+import { HandledLearned } from "./HandledLearned";
 import { SafeText } from "./SafeText";
 import { SideFilter } from "./SideFilter";
 import { RowMenu, type MenuAction } from "./RowMenu";
@@ -122,6 +123,7 @@ export function Handled() {
         }
         filters={<SideFilter waiting="handled" />}
       />
+      <HandledLearned />
       {/* With nothing in the list (and nothing typed to narrow it) there is nothing to search or group, so the controls wait. */}
       {/* A short list (fewer than the filter bar's minimum) has nothing worth searching or grouping either, unless something is typed or a
           grouping other than the first is on, so the person can always take it off. */}

@@ -423,6 +423,7 @@ INTERNAL = (
     "watch.failures_before_asking",
     "watch.unread_gap_factor",
     "steward.background_stuck_after_minutes",
+    "steward.restart_wait_seconds",
     "steward.second_move_days",
     "steward.sent_match",
     "steward.capture",

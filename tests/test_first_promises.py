@@ -22,6 +22,8 @@ from tests.test_source_intake import NOW, mail, make, read, requests_of, with_ch
 TOKEN = "first-promises-token"
 _TEST = WriteContext(actor="pm", trust="trusted", op="test.first-promises")
 
+pytestmark = pytest.mark.usefixtures("first_window_held")
+
 
 @pytest.fixture(autouse=True)
 def fake_reads_mail(monkeypatch):

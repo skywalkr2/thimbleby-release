@@ -257,3 +257,15 @@ def connection_answer(task) -> str:
         return '{"ok": true}'
     lesson = {"op": "lesson.add", "text": "Ask whoever owns the delivery.", "guard": "Name the delivery's owner."}
     return json.dumps({"summary": "A lesson.", "topic": "delivery dates", "ops": [lesson]})
+
+
+@pytest.fixture
+def first_window_held(monkeypatch):
+    """A source's first window held for the go, as a look further back still is: the fixture for tests of the go path
+    (connecting a source is the go for its first window, so nothing else holds it)."""
+    from engine import source_intake
+
+    def held(ws, store, cfg, source, now, router=None, back_to=None):
+        return source_intake._take(ws, store, cfg, source, now, router, source_intake._in_window(back_to, None, now))
+
+    monkeypatch.setattr(source_intake, "take_in", held)

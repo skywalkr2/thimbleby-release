@@ -1,9 +1,11 @@
 """Knowledge as records (design 6.22): lessons, glossary entries, routing entries and style notes.
 
 The four kinds share one shape (`engine.records.KnowledgeRecord`). They change only through the ops here, so every
-change is in the ledger with Undo. An entry added from the person's own words is active at once. Any other entry is
-added as a proposal: a record that changes nothing until the person keeps it. Keep, Discard and Retire are the person's
-own acts, built here as the fields they change.
+change is in the ledger with Undo. An entry added from the person's own words is active at once, and so is one that
+only describes and restates one of their corrections. Any other entry is added as a proposal, which changes nothing
+while it is proposed: one that only describes becomes active once enough different messages agree (`corroborate`), and
+one that grants power (`engine.learning_effects`) never does from an input and waits for the person. Keep, Discard and
+Retire are the person's own acts, built here as the fields they change.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from engine import learning_effects
 from engine.plain_errors import reason_of
 from engine.records import REGISTRY, KnowledgeRecord, Person, kind_label, ref_fields, values_at
 from engine.references import join_scope
@@ -141,6 +144,11 @@ class Standing:
     #: How long a discard keeps a close proposal from being shown, and how alike its words must be to count.
     hold_days: int = 90
     alike: float = 0.8
+    #: True for a restatement the assistant makes from one of the person's corrections: their act, so what it only
+    #: describes is active at once.
+    corrected: bool = False
+    #: How many different messages must say the same thing before what mail taught is used (design 6.22).
+    corroborate: int = 3
 
 
 def _evidence(tx: Any, op: Any, w: WriteContext, st: Standing) -> dict[str, Any] | None:
@@ -181,6 +189,8 @@ def apply(tx: Any, op: Any, w: WriteContext, st: Standing) -> list[dict[str, Any
             changes["applies_to"] = join_scope(tx, changes["applies_to"])
         tx.update(current.kind, op.id, changes, w, read_version=current.version)
         return [{"kind": current.kind, "id": op.id}]
+    from engine import proposals
+
     kind = OP_KIND[op.op]
     kept = st.person and st.pm is not None
     if kind == "lesson" and not kept and _single_value(op.text):
@@ -188,6 +198,8 @@ def apply(tx: Any, op: Any, w: WriteContext, st: Standing) -> list[dict[str, Any
             "a number or code from one item is a fact about that item, not a lesson: state what holds for the next "
             "one, or propose nothing"
         )
+    if kind == "glossary_entry" and not kept and (why := proposals.junk_term(op.term)) is not None:
+        raise StoreError(why)
     data: dict[str, Any] = {
         "text": op.text,
         "evidence": _evidence(tx, op, w, st),
@@ -200,7 +212,26 @@ def apply(tx: Any, op: Any, w: WriteContext, st: Standing) -> list[dict[str, Any
         "applies_to": join_scope(tx, op.applies_to.model_dump(mode="json", by_alias=True)),
         **{name: _stored(getattr(op, name)) for name in OWN_FIELDS[kind]},
     }
-    if not kept:
+    if not kept and (st.corrected or st.origin == "person") and not learning_effects.grants_power(kind, data):
+        # The person's own typed words, and what one of their corrections taught, apply at once when they only
+        # describe. Whatever grants power waits for the person, as any proposal does.
+        data.update(
+            status="active",
+            kept_by=st.pm if st.origin == "person" else None,
+            kept_at=st.now,
+            activated="person_note" if st.origin == "person" else "correction",
+        )
+        twin = proposals.duplicate_of(tx, kind, data, alike=st.alike)
+        if twin is not None:
+            # It says what an entry already says: one stays, with this evidence linked, and a tentative one is now
+            # active because the person's own act agrees with it.
+            merge_into(tx, kind, twin, data.get("evidence"), w)
+            if twin.data.get("status") == "proposed":
+                current = tx.get(kind, twin.id)
+                fields = {k: data[k] for k in ("status", "kept_by", "kept_at", "activated")}
+                tx.update(kind, twin.id, fields, w, read_version=current.version)
+            return [{"kind": kind, "id": twin.id}]
+    elif not kept:
         held = proposal_rules(tx, kind, data, w, st)
         if held is not None:
             return held
@@ -240,9 +271,34 @@ def proposal_rules(
         more = [e for e in [old, *(existing.data.get("more_evidence") or [])] if e]
         changes = {f: data[f] for f in ("text", "meaning", "confidence", "evidence") if data.get(f) is not None}
         tx.update(kind, existing.id, {**changes, "more_evidence": more}, w, read_version=existing.version)
+        corroborate(tx, kind, existing.id, w, st)
         return [{"kind": kind, "id": existing.id}]
     merge_into(tx, kind, existing, data.get("evidence"), w)
+    corroborate(tx, kind, existing.id, w, st)
     return [{"kind": kind, "id": existing.id}]
+
+
+def corroborate(tx: Any, kind: str, entry_id: str, w: WriteContext, st: Standing) -> bool:
+    """Make a tentative entry active when enough different messages agree on it (`Standing.corroborate`). Never for
+    one that grants power, however many agree, and never for one from the person's own words. Returns whether it
+    became active."""
+    from engine import proposals
+
+    current = tx.get(kind, entry_id)
+    if current is None or current.data.get("status") != "proposed" or current.data.get("origin") == "person":
+        return False
+    if learning_effects.grants_power(kind, current.data):
+        return False
+    if proposals.corroboration(tx, current.data) < st.corroborate:
+        return False
+    tx.update(
+        kind,
+        entry_id,
+        {"status": "active", "kept_at": st.now, "activated": "agreement"},
+        w,
+        read_version=current.version,
+    )
+    return True
 
 
 def _came_from(data: dict[str, Any]) -> tuple[Any, Any]:

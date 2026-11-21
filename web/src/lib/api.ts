@@ -514,6 +514,11 @@ export const api = {
   addTerm: (term: string, meaning: string) => call<S["Applied"]>("POST", "knowledge/terms", { term, meaning }),
   narrowKnowledge: (entry: string, body: S["KnowledgeNarrow"]) =>
     call<S["Applied"]>("POST", `knowledge/${id(entry)}/narrow`, body),
+  /** What the assistant learned on its own today, each with what it means and where it was seen. */
+  learnedToday: () => call<S["LearnedTodayView"]>("GET", "knowledge/learned-today"),
+  /** "That's wrong" on something in use: it stops at once, is set aside with that reason, and a correction is recorded. */
+  wrongKnowledge: (entry: string, readVersion: number) =>
+    call<S["Applied"]>("POST", `knowledge/${id(entry)}/wrong`, { read_version: readVersion }),
   retireKnowledge: (entry: string, readVersion: number) =>
     call<S["Applied"]>("POST", `knowledge/${id(entry)}/retire`, { read_version: readVersion }),
   /** Brings a retired or set-aside entry back into use, as the person's own Keep. */

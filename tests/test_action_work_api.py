@@ -31,16 +31,30 @@ def make_action(store, **fields) -> str:
         return tx.create("action", {"text": "Send the agenda", "owners": [{"person": OWNER}], **fields}, _PM).id
 
 
-def test_handing_over_queues_the_request_and_the_action_is_listed_as_in_hand(api):
+def test_handing_over_with_no_words_queues_the_drafting_request_and_the_action_is_listed_as_in_hand(api):
     client, store = api
     action = make_action(store)
     assert client.get("/api/actions/handed").json() == []
-    done = client.post(f"/api/actions/{action}/hand-over", json={"note": "Three lines."})
+    done = client.post(f"/api/actions/{action}/hand-over", json={})
     assert done.status_code == 200
     request = done.json()["request"]
-    assert store.read().get("request", request).data["note"] == "Three lines."
+    assert store.read().get("request", request).data["task"] == "action-work"
     (line,) = client.get("/api/actions/handed").json()
     assert (line["action"], line["request"], line["state"], line["draft"]) == (action, request, "working", None)
+
+
+def test_handing_over_with_words_sends_them_once_to_the_one_reading_about_the_record(api):
+    client, store = api
+    action = make_action(store)
+    spaced = {"note": "  Any mail like this   is not a to do "}
+    request = client.post(f"/api/actions/{action}/hand-over", json=spaced).json()["request"]
+    view = store.read()
+    made = view.get("request", request)
+    assert (made.data["task"], made.data["about"]) == ("ask", {"kind": "action", "id": action})
+    assert made.data["note"] == "Any mail like this is not a to do"
+    # the words are written once: one request, no note record, nothing on the to-do
+    assert [r.id for r in view.list("request")] == [request]
+    assert view.list("note") == [] and not view.get("action", action).data.get("notes")
 
 
 def test_a_second_hand_over_or_a_closed_action_is_a_plain_refusal(api):

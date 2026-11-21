@@ -19,6 +19,7 @@ from api.schemas import (
     KnowledgeTermAdd,
     KnowledgeView,
     LearnedLine,
+    LearnedTodayView,
     LearnedView,
     Ok,
     OverlapView,
@@ -42,8 +43,11 @@ from engine.references import join_scope
 from engine.rule_review import due, review, take_back_not_now
 from engine.storage import Store, StoreError
 from engine.storage.store import CONFLICT_WORDS
+from engine.today import local_day, zone
 from engine.worker import Events, Worker
 
+#: The reason kept on an entry the person said was wrong.
+WRONG_REASON = "Said to be wrong"
 Kind = Literal["lesson", "glossary_entry", "routing_entry", "style_note"]
 Status = Literal["proposed", "active", "discarded", "expired", "retired"]
 
@@ -53,7 +57,13 @@ def _use(uses: dict[str, knowledge_use.Use], entry_id: str) -> dict[str, Any]:
     return {"used": found.used, "given": found.given, "last_used": found.last_used}
 
 
-def _view(stored: Any, origin: dict[str, Any] | None, uses: dict[str, knowledge_use.Use]) -> KnowledgeView:
+def _view(
+    stored: Any,
+    origin: dict[str, Any] | None,
+    uses: dict[str, knowledge_use.Use],
+    messages: int = 0,
+    asks: bool = False,
+) -> KnowledgeView:
     data = dict(stored.data)
     own = {name: data.get(name) for names in knowledge.OWN_FIELDS.values() for name in names}
     return KnowledgeView(
@@ -72,6 +82,9 @@ def _view(stored: Any, origin: dict[str, Any] | None, uses: dict[str, knowledge_
         applies_to=data["applies_to"],
         evidence=data.get("evidence"),
         origin=origin,
+        activated=data.get("activated"),
+        messages=messages,
+        asks=asks,
         **_use(uses, stored.id),
         **{
             name: value
@@ -79,6 +92,15 @@ def _view(stored: Any, origin: dict[str, Any] | None, uses: dict[str, knowledge_
             if name in knowledge.OWN_FIELDS[stored.kind] and (value is not None or name == "negative")
         },
     )
+
+
+def _standing(view: Any, stored: Any) -> tuple[int, bool]:
+    """How many different messages an entry was seen in, and whether a proposed entry is a question for the person."""
+    data = stored.data
+    asks = data["status"] == "proposed" and proposals.needs_answer(
+        proposals.Proposal(stored.kind, stored, proposals.tag_of(view, stored.kind, stored))
+    )
+    return proposals.corroboration(view, data), asks
 
 
 def _rule(stored: Any, origin: dict[str, Any] | None, uses: dict[str, knowledge_use.Use]) -> RuleView:
@@ -149,6 +171,9 @@ def _proposal(
         ),
         expires_at=expires,
         from_changeset=card_learning.changeset_of_entry(view, stored),
+        activated=data.get("activated"),
+        messages=proposals.corroboration(view, data),
+        asks=True,
         **{name: value for name, value in own.items() if value is not None or name == "negative"},
     )
 
@@ -192,7 +217,7 @@ def build_knowledge_router(cfg: Config, store: Store, events: Events, worker: Wo
             links = origins(view, name, [s.id for s in view.list(name)])
             found += [(s, links.get(s.id)) for s in view.list(name) if status is None or s.data["status"] == status]
         found.sort(key=lambda pair: (pair[0].data["learned_at"], pair[0].id), reverse=True)
-        return [_view(stored, link, uses) for stored, link in found]
+        return [_view(stored, link, uses, *_standing(view, stored)) for stored, link in found]
 
     @r.get("/knowledge/rules")
     def rules(status: Status | None = None) -> list[RuleView]:
@@ -346,7 +371,46 @@ def build_knowledge_router(cfg: Config, store: Store, events: Events, worker: Wo
             proposals=views(view, found, "daily"),
             origins=origins_count,
             expired=proposals.expired_since(view, proposals.last_reviewed(view)),
+            tentative=len(proposals.tentative(view, alike=cfg.dispatch.knowledge.discard_similarity)),
         )
+
+    @r.get("/knowledge/learned-today")
+    def learned_today() -> LearnedTodayView:
+        """What the assistant learned on its own today: entries made active with no Keep, from the person's typed words,
+        a correction or agreeing messages, newest first, with what each means and how many messages it was seen in."""
+        view = store.read()
+        uses = knowledge_use.use_of(view)
+        today = local_day(worker.now(), zone(cfg))
+        found = []
+        for name in knowledge.KINDS:
+            for s in view.list(name):
+                kept = s.data.get("kept_at")
+                if (
+                    s.data["status"] == "active"
+                    and s.data.get("activated")
+                    and kept
+                    and local_day(proposals.at_of(kept), zone(cfg)) == today
+                ):
+                    found.append(s)
+        found.sort(key=lambda s: (str(s.data["kept_at"]), s.id), reverse=True)
+        out = []
+        for s in found:
+            links = origins(view, s.kind, [s.id])
+            out.append(_view(s, links.get(s.id), uses, proposals.corroboration(view, s.data)))
+        return LearnedTodayView(count=len(out), items=out)
+
+    @r.post("/knowledge/{entry_id}/wrong")
+    def wrong(entry_id: str, body: ReadVersion) -> Applied:
+        """ "That's wrong" on something the assistant uses: it stops at once, is kept as set aside with that reason so a
+        close suggestion is not made again, and a `discarded` signal records the correction. Undo makes it active
+        again. A standing rule is retired the way Stop using does it."""
+        found = entry(entry_id, body.read_version, rules=True)
+        if found.data["status"] != "active":
+            raise HTTPException(status_code=409, detail="That isn't in use.")
+        if found.kind == "rule":
+            return act(found, {"op": "rule.retire", "id": found.id}, "Said what was learned is wrong", "retired")
+        fields = {"status": "discarded", "discard_reason": WRONG_REASON}
+        return act(found, edit(found, fields), "Said what was learned is wrong", "discarded")
 
     @r.get("/knowledge/learned")
     def learned_lines() -> LearnedView:

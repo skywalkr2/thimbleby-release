@@ -1145,3 +1145,21 @@ test("the two numbers the page says add up to what the menu's badge counts, whic
   await user.click(screen.getByRole("button", { name: /^Questions\b/ }));
   expect(await screen.findByText("· 1 question for you")).toBeInTheDocument();
 });
+
+test("To-dos opens on everything, a filter from a Today line lasts that visit only, the counts follow the filters and an empty filter names itself", async () => {
+  const user = userEvent.setup();
+  api({}, { actions: [action("A-3", "Tidy the style sheet", { due: "2026-12-01" }), action("A-1", "Send the proof", { due: "2026-12-05" })] });
+  // A filter a line chose empties the list: the empty state says which one, with a way to clear it, and the tab counts what is shown.
+  chooseFilters({ state: "overdue", person: "P-1" });
+  const first = renderApp(<OpenItems />);
+  expect(await screen.findByText("No overdue to-dos.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /^To-dos\b/ })).toHaveTextContent("0");
+  await user.click(screen.getByRole("button", { name: "Clear" }));
+  expect((await rows()).length).toBe(2);
+  first.unmount();
+  // Opening the screen again later shows everything, soonest due first: nothing was kept.
+  renderApp(<OpenItems />);
+  const listed = await rows();
+  expect(listed.map((r) => r.textContent).join(" ")).toMatch(/Tidy the style sheet.*Send the proof/);
+  expect(screen.queryByText("No overdue to-dos.")).toBeNull();
+});

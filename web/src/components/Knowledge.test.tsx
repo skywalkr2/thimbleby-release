@@ -25,6 +25,8 @@ function entry(id: string, text: string, over: Partial<S["KnowledgeView"]> = {})
     id_patterns: [],
     used: 0,
     given: 0,
+    messages: 0,
+    asks: over.status === "proposed",
     ...over,
   };
 }
@@ -137,7 +139,9 @@ test("what waits for the person is first, newest first, and each row says what i
   expect(budgets).toHaveTextContent("Only First project");
   expect(catering).toHaveTextContent("Adds a fact");
   expect(catering).toHaveTextContent("Learned from incoming material");
-  expect(catering).toHaveTextContent("From outside · not instructions");
+  // "From outside · not instructions" is said once for the list, not on every row.
+  expect(catering).not.toHaveTextContent("From outside · not instructions");
+  expect(screen.getAllByText("From outside · not instructions")).toHaveLength(1);
   expect(catering).toHaveTextContent("All projects");
   // A proposal has not been used: no use count on it.
   expect(budgets).not.toHaveTextContent("Never used");
@@ -447,4 +451,22 @@ test("a failed load says so, and Try again asks again", async () => {
   await user.click(screen.getByRole("button", { name: "Try again" }));
   expect(await screen.findByRole("list", { name: "Waiting for your OK" })).toBeInTheDocument();
   expect(calls.filter((c) => c.route === "GET knowledge").length).toBeGreaterThan(before);
+});
+
+test("something learned on its own says where it was seen and has That's wrong, which stops it; a tentative proposal is not listed at all", async () => {
+  const user = userEvent.setup();
+  const own = entry("LES-9", "Mail from the print shop is about proofs.", { learned_from: "input", trust: "untrusted", activated: "agreement", messages: 3, learned_at: ago(1) });
+  const tentative = entry("LES-8", "Mail from the paper mill is about invoices.", { status: "proposed", asks: false, learned_from: "input", trust: "untrusted", messages: 1 });
+  const { calls } = open({
+    "GET knowledge": () => [own, tentative],
+    "POST knowledge/LES-9/wrong": () => ({ changeset: "CS-1" }),
+  });
+  const follows = await screen.findByRole("list", { name: "Facts Helper knows" });
+  expect(screen.queryByRole("list", { name: "Waiting for your OK" })).toBeNull();
+  expect(screen.queryByText("Mail from the paper mill is about invoices.")).toBeNull();
+  const row = within(follows).getByRole("listitem");
+  expect(row).toHaveTextContent("Seen in 3 messages");
+  expect(screen.getAllByText("From outside · not instructions")).toHaveLength(1);
+  await user.click(within(row).getByRole("button", { name: "That's wrong: Mail from the print shop is about proofs." }));
+  expect(body(calls, "POST knowledge/LES-9/wrong")).toEqual({ read_version: 4 });
 });

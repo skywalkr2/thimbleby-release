@@ -4473,6 +4473,20 @@ class QueueLineView(BaseModel):
         None,
         description="For a reply line: whether the person has approved or written the reply; until then it is a draft.",
     )
+    reply_asks: str | None = Field(
+        None,
+        description="For a reply line: what the message asks, in the assistant's own recorded words; none when it "
+        "recorded none (the screen then shows `reply_message`, marked as from outside).",
+    )
+    reply_message: str | None = Field(
+        None,
+        description="For a reply line: the first lines of the message's own new text, outside words, shown beside the "
+        "reply box; none when the message can't be read.",
+    )
+    origin: Origin | None = Field(
+        None,
+        description="For a reply line: where the message can be opened, its page in its service or its saved text.",
+    )
     sender: str | None = Field(
         None, description="For a reply line to nobody known: who the message is from, as the message writes it."
     )
@@ -7948,6 +7962,17 @@ class KnowledgeView(KnowledgeUse):
     look_up: str | None = None
     audience: str | None = None
     observation: str | None = None
+    activated: Literal["person_note", "correction", "agreement"] | None = Field(
+        None,
+        description="How it became active with no Keep: from the person's own typed words, from one of their "
+        "corrections, or because several messages agreed. Empty for one the person kept.",
+    )
+    messages: int = Field(0, description="How many different messages it was seen in (its evidence, merged).")
+    asks: bool = Field(
+        False,
+        description="A proposed entry that is a question for the person: it grants power, so no input makes it "
+        "active. A proposed entry that only describes is tentative (false): kept, unused, never asked about.",
+    )
 
 
 class RuleView(KnowledgeUse):
@@ -8132,6 +8157,18 @@ class ProposalsView(BaseModel):
     proposals: list[ProposalView]
     origins: dict[str, int] = Field(description="How many came from an input and how many from a correction.")
     expired: int = Field(description="How many from inputs expired unreviewed since the person last looked.")
+    tentative: int = Field(
+        0, description="How many describing entries from inputs wait for more messages to agree; never asked about."
+    )
+
+
+class LearnedTodayView(BaseModel):
+    """What the assistant learned on its own today, for the Learned today line on Handled for you: entries made active
+    with no Keep (from the person's words, a correction or agreeing messages), newest first, each with what it means and
+    where it was seen. Each can be said to be wrong."""
+
+    count: int
+    items: list[KnowledgeView]
 
 
 class CatchUpView(BaseModel):

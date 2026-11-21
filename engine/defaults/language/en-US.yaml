@@ -36,7 +36,7 @@ already_sent_phrases: [I sent, I've sent, I have sent, I just sent, I emailed, I
 # Wording not allowed in actions and shared text.
 blocked_phrases: [confirm, check whether, check if, 'TBD?']
 # Words of the app's own workings that never belong in text written for someone else.
-internal_terms: [changeset, ledger, applier, the assistant noticed, the assistant found]
+internal_terms: [changeset, ledger, applier, tally, packet, the assistant noticed, the assistant found]
 # Words that mark the assistant's reasoning, which belongs in a change's summary, not in a title.
 reasoning_phrases: [no recorded fact, no fact gives, nothing recorded, not recorded, couldn't find, could not find,
   not stated, not mentioned, I assume, I think]

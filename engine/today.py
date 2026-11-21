@@ -313,7 +313,7 @@ def _own_entries(
 
 def _made_by_assistant(view: Any) -> set[str]:
     """The ids of the calendar entries whose first change was an AI run's (one read of the ledger for all of them)."""
-    runs = {c.id for c in view.list("changeset") if c.data.get("run")}
+    runs = {c.id for c in view.shared_list("changeset") if c.data.get("run")}
     first: dict[str, str] = {}
     for row in view.ledger(kind="event"):
         first.setdefault(row["record_id"], row["changeset"])

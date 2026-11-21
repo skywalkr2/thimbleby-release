@@ -56,11 +56,11 @@ test("Hand to the assistant is in the row's menu, asks what is wanted with the c
   await user.click(await screen.findByRole("menuitem", { name: "Hand to the assistant" }));
   const box = await screen.findByRole("textbox", { name: /What do you want from it/ });
   await waitFor(() => expect(box).toHaveFocus());
-  expect(screen.getByText(/The to-do stays yours until you close it/)).toBeInTheDocument();
+  expect(screen.getByText(/It may make a rule from it, change or close this to-do, or write a draft for you to read\. Nothing is sent/)).toBeInTheDocument();
   await user.type(box, "Three lines, to the printer.");
   await user.click(screen.getByRole("button", { name: "Hand it over" }));
   await waitFor(() => expect(calls.find((c) => c.route === "POST actions/A-1/hand-over")?.body).toEqual({ note: "Three lines, to the printer." }));
-  expect(await screen.findByText(/Handed to Helper/)).toBeInTheDocument();
+  expect(await screen.findByText(/Helper is reading what you wrote/)).toBeInTheDocument();
   // Nothing about the to-do itself was changed.
   expect(calls.filter((c) => c.route.startsWith("POST") && c.route !== "POST actions/A-1/hand-over")).toHaveLength(0);
 });

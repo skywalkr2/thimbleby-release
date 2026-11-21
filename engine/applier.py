@@ -140,6 +140,7 @@ from engine.ops import (
     TextProposeOp,
     WeekGoalsOp,
     WeekReadOp,
+    WorkDraftOp,
     overwritten_by,
     reach_choices,
     reach_problem,
@@ -763,6 +764,14 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
             why = lists.merge_problem(view, op)
             if why:
                 refuse(i, "targets", why)
+        if isinstance(op, WorkDraftOp):
+            from engine import action_work
+
+            why = action_work.draft_problem(view, op.id)
+            if why is None and not _from_pm(view, ctx):
+                why = "Only the person's own words ask for something to be drafted."
+            if why:
+                refuse(i, "targets", why)
         if isinstance(op, MailRestoreOp):
             from engine import set_aside
 
@@ -859,6 +868,10 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
             if said:
                 refuse(i, "targets", "; ".join(said))
                 continue
+            for entry in op.people:  # the person reads the reason: warn only, `person_look.plain_reason` rewords it
+                _for_reader(
+                    i, entry.why, ctx, lambda i, name, message, p=problems: p.append(Problem(name, "warn", i, message))
+                )
         if isinstance(op, PersonKeepOfferOp):
             from engine import person_look
 
@@ -4272,6 +4285,10 @@ def _apply_op(
         from engine import lists
 
         return lists.apply(tx, op, w), None
+    if isinstance(op, WorkDraftOp):
+        from engine import action_work
+
+        return action_work.apply_op(tx, op, ctx, w), None
     if isinstance(op, MailRestoreOp):
         from engine import set_aside
 
@@ -5227,7 +5244,19 @@ def _standing(tx: Tx, ctx: Context, op: Any = None) -> knowledge.Standing:
     if not person and request is not None and learn.is_learning(request.data["task"]):
         # Learning from a correction restates it in the assistant's own words: a proposal the person reads, and
         # whose wording is theirs once they keep it.
-        return knowledge.Standing(False, ctx.people.pm, "assistant", "trusted", None, request.id, ctx.store.clock())
+        return knowledge.Standing(
+            False,
+            ctx.people.pm,
+            "assistant",
+            "trusted",
+            None,
+            request.id,
+            ctx.store.clock(),
+            hold_days=ctx.cfg.dispatch.knowledge.discards_hold_days,
+            alike=ctx.cfg.dispatch.knowledge.discard_similarity,
+            corrected=True,
+            corroborate=ctx.cfg.dispatch.knowledge.corroborate_messages,
+        )
     if (
         not person
         and request is not None
@@ -5247,6 +5276,7 @@ def _standing(tx: Tx, ctx: Context, op: Any = None) -> knowledge.Standing:
             now=ctx.store.clock(),
             hold_days=ctx.cfg.dispatch.knowledge.discards_hold_days,
             alike=ctx.cfg.dispatch.knowledge.discard_similarity,
+            corroborate=ctx.cfg.dispatch.knowledge.corroborate_messages,
         )
     if person:
         origin = "person"
@@ -5264,6 +5294,7 @@ def _standing(tx: Tx, ctx: Context, op: Any = None) -> knowledge.Standing:
         now=ctx.store.clock(),
         hold_days=ctx.cfg.dispatch.knowledge.discards_hold_days,
         alike=ctx.cfg.dispatch.knowledge.discard_similarity,
+        corroborate=ctx.cfg.dispatch.knowledge.corroborate_messages,
     )
 
 

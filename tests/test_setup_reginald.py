@@ -93,7 +93,9 @@ def _found(ws, cfg, store, ai=True):
     return found
 
 
-def test_the_wait_follows_the_first_reading_and_ends_with_the_look_at_who_the_person_writes_to(tmp_path):
+def test_the_wait_follows_the_first_reading_and_ends_with_the_look_at_who_the_person_writes_to(
+    tmp_path, first_window_held
+):
     ws, cfg, store = make(tmp_path)
     try:
         before = setup.reading(ws, cfg, store, _found(ws, cfg, store), NOW)

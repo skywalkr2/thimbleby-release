@@ -187,7 +187,7 @@ def build(ws: Any, view: Any, cfg: Any, people: Any, now: datetime, since: datet
             found[key] = (moment, entry)
 
     every = {c.ref: c for c in closes.collect(view)}
-    for cs in view.list("changeset"):
+    for cs in view.shared_list("changeset"):
         moment = _moment(cs.data["created_at"])
         if moment is None or not (since < moment <= now) or cs.data["status"] == "rejected":
             continue

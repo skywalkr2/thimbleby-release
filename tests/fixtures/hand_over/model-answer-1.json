@@ -1,0 +1,31 @@
+{
+ "summary": "Recorded a standing rule that incoming Acme Pay mail gets a reminder on the schedule and is not made into a to-do, because those payments are automatic.",
+ "ops": [
+  {
+   "op": "answer",
+   "text": "Got it. Incoming Acme Pay mail will record a reminder on the schedule and will not become a to-do, since those payments are made automatically. I have added this as a standing rule, active at once.",
+   "cites": [
+    {
+     "quote": "Any incoming Acme Pay mails should record reminders on the schedule"
+    },
+    {
+     "quote": "they should not be to dos"
+    }
+   ]
+  },
+  {
+   "op": "rule.add",
+   "name": "Acme Pay mail: reminders, not to-dos",
+   "text": "Incoming Acme Pay mail records a reminder on the schedule and is not made into a to-do, because those payments are automatic.",
+   "applies_to": {
+    "task_kinds": [
+     "read-arrival",
+     "sort-mail"
+    ]
+   },
+   "evidence": {
+    "quote": "Any incoming Acme Pay mails should record reminders on the schedule"
+   }
+  }
+ ]
+}

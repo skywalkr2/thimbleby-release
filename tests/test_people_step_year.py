@@ -259,3 +259,22 @@ def test_a_real_models_answer_becomes_the_offers_the_people_step_shows(year, mon
     assert body["people"], "the step shows offers, not an empty look"
     assert [p["address"] for p in body["people"]] == shown_first[: len(body["people"])]
     assert {p["name"] for p in body["people"]} <= {name for name, *_ in people_year.PEOPLE}
+
+
+def test_a_real_models_offers_after_the_packet_shows_side_names_name_no_id_and_never_the_tally_or_the_list(year):
+    """Answer 7: a real model's answer to the packet that shows a side by its name (H5-41)."""
+    import re
+
+    ws, cfg, store = year
+    for source in cfg.watch.sources:
+        source.sides = [cfg.workspace.project.personal]
+    sign_in(ws, cfg, store)
+    at = datetime.now(UTC) + timedelta(minutes=1)
+    sweep(ws, cfg, store, at, to_the_end=True)
+    run_look(ws, cfg, store, at, answer(7))
+    waiting = person_look.waiting_offers(store)
+    assert len(waiting) >= 3
+    for offer in waiting:
+        why = offer.data["why"]
+        assert not re.search(r"\b[A-Z]{2,4}-\d+\b", why), why
+        assert "tally" not in why.lower() and "the list" not in why.lower(), why

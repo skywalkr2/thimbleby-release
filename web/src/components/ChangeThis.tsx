@@ -18,7 +18,7 @@ export type ChangeKind = "action" | "question" | "decision" | "event" | "fact";
 
 /** The "Change this" entry for a row's menu, and the note box it opens. `onClosed` runs when the box goes, so the row
  * can take focus back. */
-export function useChangeThis(target: { kind: ChangeKind; id: string }, onClosed?: () => void): { entry: MenuAction; form: ReactNode } {
+export function useChangeThis(target: { kind: ChangeKind; id: string }, onClosed?: () => void): { entry: MenuAction; form: ReactNode; open: boolean } {
   const { t } = useWords();
   const act = useAct();
   const addOwn = useAddOwnRequest();
@@ -42,7 +42,7 @@ export function useChangeThis(target: { kind: ChangeKind; id: string }, onClosed
       }}
     />
   ) : null;
-  return { entry, form };
+  return { entry, form, open };
 }
 
 /** "Not mine to track" for a row's menu, on a to-do or question that came from a watched source (design 6.22): it and the
@@ -77,10 +77,25 @@ type Mode = "reword" | "reroute" | "drop";
 export function useQuestionMenu(
   q: { id: string; title: string; text: string },
   options: { canMarkSent: boolean; onClosed?: () => void },
-): { entries: MenuAction[]; form: ReactNode } {
+): { entries: MenuAction[]; form: ReactNode; open: boolean } {
   const { t } = useWords();
   const act = useAct();
-  const [mode, setMode] = useState<Mode | null>(null);
+  // One form at a time on a question: each form takes the shared editor slot, so opening one closes any other, and the
+  // callers hide their own answer form while `open` is true.
+  const [rewording, setRewording] = useOneEditor(`${q.id}:reword`);
+  const [rerouting, setRerouting] = useOneEditor(`${q.id}:reroute`);
+  const [dropping, setDropping] = useOneEditor(`${q.id}:drop`);
+  const mode: Mode | null = rewording ? "reword" : rerouting ? "reroute" : dropping ? "drop" : null;
+  const setMode = (next: Mode | null) => {
+    if (next === "reword") setRewording(true);
+    else if (next === "reroute") setRerouting(true);
+    else if (next === "drop") setDropping(true);
+    else {
+      setRewording(false);
+      setRerouting(false);
+      setDropping(false);
+    }
+  };
   const close = () => {
     setMode(null);
     options.onClosed?.();
@@ -110,7 +125,7 @@ export function useQuestionMenu(
     ) : mode === "drop" ? (
       <DropForm q={q} onClose={close} />
     ) : null;
-  return { entries, form };
+  return { entries, form, open: mode !== null };
 }
 
 function FormActions(props: { onClose: () => void; label: string; disabled: boolean }) {

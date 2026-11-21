@@ -47,8 +47,7 @@ from engine import (
     week_plan,
 )
 from engine.ai.spending import ACCOUNT_CHECK
-from engine.blocked import standing_hold
-from engine.firm_due import firm_due
+from engine.blocked import overdue_day
 from engine.followups import ROUTING, sections
 from engine.language_words import language_words
 from engine.names import People
@@ -305,6 +304,11 @@ class Line:
     reminders: list[dict[str, str]] = field(default_factory=list)
     reply: str | None = None
     reply_reviewed: bool | None = None
+    #: For a reply line: what the message asks (the assistant's own recorded words, else none), the message's first
+    #: lines, and where the message can be opened.
+    reply_asks: str | None = None
+    reply_message: str | None = None
+    origin: dict[str, Any] | None = None
     sender: str | None = None
     stance: str | None = None
     sent_copy: str | None = None
@@ -658,7 +662,7 @@ def _everything(
     people = People(store, cfg)
     reader = store.read()
     sources = ByIdData(reader, "source")
-    changesets = {c.id: c.data for c in reader.list("changeset")}
+    changesets = {c.id: c.data for c in reader.shared_list("changeset")}
     skip = list(language_words(cfg.language, "title_skip"))
 
     titled: dict[tuple[int, int | None], Title] = {}
@@ -683,7 +687,11 @@ def _everything(
             min_words=cfg.language.title_min_words,
             head=head,
             watched_kind=watched_kind(reader, watched.get("source"), watched.get("key")),
-            subject=subject_of(reader, request) if source is None and request.get("origin") != "pm" else "",
+            subject=(
+                subject_of(reader, request)
+                if source is None and (request.get("origin") != "pm" or request.get("task") == "action-work")
+                else ""
+            ),
         )
 
     def held_line(req: Any, cs_id: str, cs: dict[str, Any], outcome: dict[str, Any]) -> Line:
@@ -1477,6 +1485,10 @@ def _everything(
                 actions=[owed.action],
                 reply=owed.reply,
                 reply_reviewed=owed.reviewed,
+                reply_asks=owed.asks,
+                reply_message=owed.message,
+                origin=owed.origin,
+                untrusted=owed.outside,
                 since=owed.received.isoformat(),
             )
         )
@@ -1641,15 +1653,12 @@ def _everything(
     overdue: dict[str | None, list[tuple[date, str]]] = {}
     for action in reader.list("action"):
         d = action.data
-        due = firm_due(d)
-        if d.get("status") != "open" or due is None or standing_hold(reader, d, people) or people.pm is None:
-            continue
-        if action.id in on_a_line:
+        due = overdue_day(reader, d, today, people, zone(cfg))
+        if due is None or people.pm is None or action.id in on_a_line:
             continue
         if not any(o.get("person") == people.pm for o in d.get("owners") or []):
             continue
-        if due < today:
-            overdue.setdefault(sides.side_of_item(reader, cfg, action), []).append((due, action.id))
+        overdue.setdefault(sides.side_of_item(reader, cfg, action), []).append((due, action.id))
     for side, found in sorted(overdue.items(), key=lambda kv: (kv[0] is not None, kv[0] or "")):
         found.sort()
         lines.append(

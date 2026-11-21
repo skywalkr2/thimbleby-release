@@ -85,7 +85,9 @@ def lines(view: Any, *, hidden: Collection[str] = ()) -> list[Line]:
             status = stored.data.get("status")
             if status == "proposed":
                 out[signal_id] = Line(signal_id, PROPOSED, entry=stored, kind=kind)
-            elif status == "active" and stored.data.get("origin") == "person":
+            elif status == "active" and (
+                stored.data.get("origin") == "person" or stored.data.get("activated") == "correction"
+            ):
                 out[signal_id] = Line(signal_id, KEPT, entry=stored, kind=kind, undo=_created_in(view, kind, stored.id))
     for signal_id, request in _pending(view).items():
         if signal_id not in out and view.get("signal", signal_id) is not None:

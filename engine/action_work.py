@@ -46,31 +46,54 @@ def with_the_assistant(view: Any, action_id: str) -> bool:
     return False
 
 
+def queue_in(tx: Any, action_id: str, note: str | None, clock: Any, ctx: WriteContext = _QUEUE) -> str:
+    """Queue the request for the work an open action stands for inside a transaction already open; returns its id.
+    Nothing about the action changes."""
+    words = " ".join((note or "").split())[:2000] or None
+    found = tx.get("action", action_id)
+    if found is None:
+        raise StoreError(f"there is no action {action_id}")
+    if found.data["status"] != "open":
+        raise StoreError("Only an open action can be handed to the assistant.")
+    if with_the_assistant(tx, action_id):
+        raise StoreError("The assistant already has this action's work in hand.")
+    return tx.create(
+        "request",
+        {
+            "task": TASK,
+            "about": {"kind": "action", "id": action_id},
+            "note": words,
+            "origin": "pm",
+            "state": "queued",
+            "waiting": "With the assistant, starting now",
+            "created_at": clock(),
+        },
+        ctx,
+    ).id
+
+
 def hand_over(store: Any, action_id: str, note: str | None = None) -> str:
     """Queue the request for the work an open action stands for; returns its id. Nothing about the action changes."""
-    words = " ".join((note or "").split())[:2000] or None
     with store.transaction() as tx:
-        found = tx.get("action", action_id)
-        if found is None:
-            raise StoreError(f"there is no action {action_id}")
-        if found.data["status"] != "open":
-            raise StoreError("Only an open action can be handed to the assistant.")
-        if with_the_assistant(tx, action_id):
-            raise StoreError("The assistant already has this action's work in hand.")
-        made = tx.create(
-            "request",
-            {
-                "task": TASK,
-                "about": {"kind": "action", "id": action_id},
-                "note": words,
-                "origin": "pm",
-                "state": "queued",
-                "waiting": "With the assistant, starting now",
-                "created_at": store.clock(),
-            },
-            _QUEUE,
-        )
-    return made.id
+        return queue_in(tx, action_id, note, store.clock)
+
+
+def draft_problem(view: Any, action_id: str) -> str | None:
+    """Why the work of an action can't be drafted now, or None."""
+    found = view.get("action", action_id)
+    if found is None:
+        return f"there is no action {action_id}"
+    if found.data["status"] != "open":
+        return "Only an open action can be handed to the assistant."
+    if with_the_assistant(view, action_id):
+        return "The assistant already has this action's work in hand."
+    return None
+
+
+def apply_op(tx: Any, op: Any, ctx: Any, w: WriteContext) -> list[dict[str, Any]]:
+    """The `work.draft` op: queue the drafting request for the action, as the person's own."""
+    made = queue_in(tx, op.id, op.note, ctx.store.clock, w)
+    return [{"kind": "request", "id": made}]
 
 
 @dataclass(frozen=True)

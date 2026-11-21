@@ -16133,8 +16133,31 @@
       "KnowledgeView": {
         "description": "One piece of what the assistant learned: a lesson, glossary entry, routing entry or style note. `learned_from`\nsays whose words it is (person, input, assistant, pack, seed or import); `origin` is the link to where it came from,\ndecided on the server like an action's. The fields after `applies_to` are those of its kind and are empty for\nthe others.",
         "properties": {
+          "activated": {
+            "anyOf": [
+              {
+                "enum": [
+                  "person_note",
+                  "correction",
+                  "agreement"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How it became active with no Keep: from the person's own typed words, from one of their corrections, or because several messages agreed. Empty for one the person kept.",
+            "title": "Activated"
+          },
           "applies_to": {
             "$ref": "#/components/schemas/Scope"
+          },
+          "asks": {
+            "default": false,
+            "description": "A proposed entry that is a question for the person: it grants power, so no input makes it active. A proposed entry that only describes is tentative (false): kept, unused, never asked about.",
+            "title": "Asks",
+            "type": "boolean"
           },
           "audience": {
             "anyOf": [
@@ -16298,6 +16321,12 @@
               }
             ],
             "title": "Meaning"
+          },
+          "messages": {
+            "default": 0,
+            "description": "How many different messages it was seen in (its evidence, merged).",
+            "title": "Messages",
+            "type": "integer"
           },
           "negative": {
             "anyOf": [
@@ -16836,6 +16865,28 @@
           "state"
         ],
         "title": "LearnedLine",
+        "type": "object"
+      },
+      "LearnedTodayView": {
+        "description": "What the assistant learned on its own today, for the Learned today line on Handled for you: entries made active\nwith no Keep (from the person's words, a correction or agreeing messages), newest first, each with what it means and\nwhere it was seen. Each can be said to be wrong.",
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/KnowledgeView"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "count",
+          "items"
+        ],
+        "title": "LearnedTodayView",
         "type": "object"
       },
       "LearnedView": {
@@ -24840,8 +24891,31 @@
       "ProposalView": {
         "description": "One proposal waiting for the person: a piece of what the assistant learned, or a standing rule, to keep, set\naside \"just this time\" or discard. `came_from` says where it came from (an input, or one of the person's\ncorrections); proposals from inputs expire at `expires_at`, those from corrections never do.",
         "properties": {
+          "activated": {
+            "anyOf": [
+              {
+                "enum": [
+                  "person_note",
+                  "correction",
+                  "agreement"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How it became active with no Keep: from the person's own typed words, from one of their corrections, or because several messages agreed. Empty for one the person kept.",
+            "title": "Activated"
+          },
           "applies_to": {
             "$ref": "#/components/schemas/Scope"
+          },
+          "asks": {
+            "default": false,
+            "description": "A proposed entry that is a question for the person: it grants power, so no input makes it active. A proposed entry that only describes is tentative (false): kept, unused, never asked about.",
+            "title": "Asks",
+            "type": "boolean"
           },
           "audience": {
             "anyOf": [
@@ -25054,6 +25128,12 @@
               }
             ],
             "title": "Meaning"
+          },
+          "messages": {
+            "default": 0,
+            "description": "How many different messages it was seen in (its evidence, merged).",
+            "title": "Messages",
+            "type": "integer"
           },
           "more_evidence": {
             "description": "What other proposals of the same thing were learned from, merged into it.",
@@ -25277,6 +25357,12 @@
             },
             "title": "Proposals",
             "type": "array"
+          },
+          "tentative": {
+            "default": 0,
+            "description": "How many describing entries from inputs wait for more messages to agree; never asked about.",
+            "title": "Tentative",
+            "type": "integer"
           }
         },
         "required": [
@@ -27456,6 +27542,17 @@
             "description": "For a meeting_prep line: how many things are open with the people coming.",
             "title": "Open Items"
           },
+          "origin": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Origin"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For a reply line: where the message can be opened, its page in its service or its saved text."
+          },
           "origins": {
             "additionalProperties": {
               "type": "integer"
@@ -27762,6 +27859,30 @@
             ],
             "description": "For a reply line: the reply the assistant drafted, none when no recorded fact holds the answer.",
             "title": "Reply"
+          },
+          "reply_asks": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For a reply line: what the message asks, in the assistant's own recorded words; none when it recorded none (the screen then shows `reply_message`, marked as from outside).",
+            "title": "Reply Asks"
+          },
+          "reply_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For a reply line: the first lines of the message's own new text, outside words, shown beside the reply box; none when the message can't be read.",
+            "title": "Reply Message"
           },
           "reply_reviewed": {
             "anyOf": [
@@ -39334,7 +39455,7 @@
     },
     "/api/actions/{action_id}/hand-over": {
       "post": {
-        "description": "Ask the assistant to draft the work an open action stands for. The action stays the person's.",
+        "description": "Hand an open action to the assistant. With no words, it is asked for the writing the action stands for. With\nwords, they go to the one reading about the record, as in its conversation: it may propose or apply a standing\nrule, change or close the action, or ask for the writing. The action stays the person's until they close it.",
         "operationId": "hand_over_api_actions__action_id__hand_over_post",
         "parameters": [
           {
@@ -47247,6 +47368,25 @@
         "summary": "Learned Lines"
       }
     },
+    "/api/knowledge/learned-today": {
+      "get": {
+        "description": "What the assistant learned on its own today: entries made active with no Keep, from the person's typed words,\na correction or agreeing messages, newest first, with what each means and how many messages it was seen in.",
+        "operationId": "learned_today_api_knowledge_learned_today_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LearnedTodayView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Learned Today"
+      }
+    },
     "/api/knowledge/people/{offer_id}/keep": {
       "post": {
         "description": "Keep someone the assistant offered: they are added to the people on file with the relation the offer gave and\nthe sides of the accounts their mail came from, and the offer is settled, in one change that Undo takes back.",
@@ -47888,6 +48028,56 @@
           }
         },
         "summary": "Reuse"
+      }
+    },
+    "/api/knowledge/{entry_id}/wrong": {
+      "post": {
+        "description": "\"That's wrong\" on something the assistant uses: it stops at once, is kept as set aside with that reason so a\nclose suggestion is not made again, and a `discarded` signal records the correction. Undo makes it active\nagain. A standing rule is retired the way Stop using does it.",
+        "operationId": "wrong_api_knowledge__entry_id__wrong_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entry_id",
+            "required": true,
+            "schema": {
+              "title": "Entry Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReadVersion"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Applied"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Wrong"
       }
     },
     "/api/list-suggestion": {

@@ -12,6 +12,8 @@ from engine.storage import StoreError
 from engine.watch import refresh
 from tests.test_first_sign_in import NOW, TOKEN, make
 
+pytestmark = pytest.mark.usefixtures("first_window_held")
+
 
 @pytest.fixture
 def env(tmp_path):

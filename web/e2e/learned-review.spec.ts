@@ -79,7 +79,9 @@ for (const size of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) 
     for (const text of texts) expect(text).not.toMatch(INTERNAL);
     expect(texts[0]).toContain("Applies to: your mail for");
     expect(texts[0]).toContain("because it came from a message and not from you");
-    expect(texts[0]).toContain("From the message, not from you");
+    // "From outside · not instructions" is said once for the list, not on every row.
+    expect(texts[0]).not.toContain("From the message, not from you");
+    await expect(drawer.getByText("From outside · not instructions")).toHaveCount(1);
     expect(texts[1]).toContain("Your own words");
     expect(texts[1]).toContain("You said:");
     expect(texts[2]).toContain("Applies to: all things that come in");

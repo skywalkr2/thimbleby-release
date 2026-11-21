@@ -87,3 +87,20 @@ test("Not right is a quiet link on the item's row, never a second button beside 
   expect(screen.getByRole("button", { name: /Not right: Send two spine options/ })).toHaveAttribute("data-variant", "quiet");
   expect(screen.getByRole("button", { name: /^Keep (it|all \d+)$/ })).toHaveAttribute("data-variant", "primary");
 });
+
+test("a batch of only drafts is kept as drafts, and says what keeping does", () => {
+  const draft: Line = { ...item, key: "item:CS-1:1", what: "draft", text: "The writing for 'Pay the installment'", draft: "Hello.", op: 1, title: { kind: "task", task: "action-work", subject: "Pay the installment", topic: "" } };
+  renderApp(<BatchDetail line={{ ...batch, items: [draft] }} />);
+  expect(screen.getByRole("button", { name: "Keep this draft" })).toHaveAttribute("data-variant", "primary");
+  expect(screen.getByText(/Keeping marks it as looked over.*nothing is sent/)).toBeInTheDocument();
+  // the draft is named by what it is for, never as the person's note
+  expect(screen.getAllByText("The writing for 'Pay the installment'").length).toBeGreaterThan(0);
+  expect(screen.queryByText("Your note")).toBeNull();
+  expect(screen.queryByText(/Draft new text/)).toBeNull();
+});
+
+test("a batch with a to-do in it keeps its own words", () => {
+  const draft: Line = { ...item, key: "item:CS-1:1", what: "draft", text: "The writing for 'X'", draft: "Hello.", op: 1 };
+  renderApp(<BatchDetail line={{ ...batch, items: [item, draft] }} />);
+  expect(screen.getByRole("button", { name: "Keep all 2" })).toBeInTheDocument();
+});

@@ -70,6 +70,9 @@ def title_for(
 
     if source is None:
         note = request.get("note") or ""
+        if request.get("task") == "action-work":
+            # The drafting of a to-do is titled by that to-do.
+            return Title("task", None, None, assistant, "action-work", subject)
         if request.get("origin") == "pm":
             # A change the person made on a screen (setting something up, an edit) carries its own summary as the
             # request's note: it is worded by what it did, not as a note they wrote.

@@ -865,7 +865,7 @@ export function ChangeRow(props: {
           {cs && cs.ops.length > 0 && account && <AssistantAccount summary={account} untrusted={cs.trust === "untrusted"} />}
           {/* The first line of why it stopped is on the row's own line under the title; the card's body holds only what follows it (the detail pane has no such line, so it holds the whole), so no sentence is said twice in one card. */}
           {item.waiting && item.state !== "review" && (props.pane ? item.waiting : restOf(item.waiting)) && <p data-waiting-reason="">{props.pane ? item.waiting : restOf(item.waiting)}</p>}
-          {item.note && (
+          {item.note?.trim() && (
             <div className="your-note">
               <span className="what">{item.title?.kind === "answer" ? t("queue.title.answer") : t("changes.your_note")}</span>
               <p>{item.note}</p>

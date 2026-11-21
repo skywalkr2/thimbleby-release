@@ -412,6 +412,31 @@ def test_the_line_reads_the_subject_from_the_message_and_never_the_internal_text
     assert line.subject == SUBJECT  # a reply prefix is not part of the subject the line shows
 
 
+def test_the_line_carries_what_the_message_asks_where_to_open_it_and_marks_it_as_from_outside(env):
+    bare = make_reply(env, received=NOW - timedelta(hours=1), subject=SUBJECT, reply=None)
+    (line,) = reply_lines_of(env)
+    # Nothing recorded about the ask: the message's own first lines stand in, marked as from outside.
+    assert line.reply_asks is None and line.reply_message == ASK and line.untrusted
+    assert line.origin and line.origin["kind"] in ("link", "source") and line.origin["source"]
+    # What the assistant recorded about the ask is its own words, and is kept apart from the message's.
+    make_reply(
+        env, received=NOW - timedelta(hours=1), subject=SUBJECT, reply=None, notes="  Asks   when the proofs ship. "
+    )
+    line = next(x for x in reply_lines_of(env) if x.actions != [bare])
+    assert line.reply_asks == "Asks when the proofs ship." and line.reply_message == ASK
+
+
+def test_a_long_message_is_cut_for_the_line(env):
+    ws, cfg, store = env
+    from engine.reply_lines import MESSAGE_CHARS, MESSAGE_LINES, message_excerpt, read_message
+
+    body = "\n".join(f"Line {i} " + "word " * 40 for i in range(MESSAGE_LINES + 4))
+    read = read_message(mail(named(ASKER, address_of(ASKER)), [("The person", MY_ADDRESS)], SUBJECT, body))
+    out = message_excerpt(read)
+    assert out is not None and len(out) <= MESSAGE_CHARS and f"Line {MESSAGE_LINES} " not in out
+    assert message_excerpt(None) is None
+
+
 def test_the_words_of_the_reply_line_come_from_the_wording_sheet():
     words = json.loads((Path(__file__).parent.parent / "web/src/wording/en.json").read_text(encoding="utf-8"))
     assert words["queue.reply.title"] == "Reply to {name}: {subject}"
@@ -432,6 +457,11 @@ def test_the_words_of_the_reply_line_come_from_the_wording_sheet():
         "queue.reply.dropped_toast",
         "queue.reply.copied_toast",
     ):
+        assert words[key].strip(), key
+    assert words["queue.reply.answered_another_way"] == "I already replied"
+    assert "answered another way" not in " ".join(words[k].lower() for k in words if k.startswith("queue.reply."))
+    assert "nothing recorded" not in words["queue.reply.no_draft"]
+    for key in ("queue.reply.message_from", "queue.reply.open_message", "queue.reply.answered_hint"):
         assert words[key].strip(), key
     assert re.search(r"\{name\}", words["queue.reply.title"]) and "{subject}" in words["queue.reply.title"]
 

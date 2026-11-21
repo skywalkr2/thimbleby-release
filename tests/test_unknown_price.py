@@ -25,6 +25,8 @@ LOCAL = next(e for e in known_endpoints() if e["local"])
 NOW = datetime(2026, 10, 9, 14, 0, tzinfo=UTC)
 NOTE = "The printer says proof copies will ship on the fifth."
 
+pytestmark = pytest.mark.usefixtures("first_window_held")
+
 
 @pytest.fixture
 def env(tmp_path):

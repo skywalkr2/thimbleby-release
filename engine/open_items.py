@@ -14,8 +14,7 @@ from typing import Any
 
 from engine import endings, patterns, repeats, sides
 from engine.applier import _similar, apply_as_person
-from engine.blocked import Blocker, blocker_of, own_wait
-from engine.firm_due import firm_due
+from engine.blocked import Blocker, blocker_of, overdue_day, own_wait
 from engine.followups import ROUTING, actions_to_send, held_until_day
 from engine.mail_kinds import TRACKED as TRACKED_MAIL
 from engine.names import People, render_owner
@@ -204,7 +203,7 @@ def open_actions(
             state = "no_owner"
         elif hold:
             state = "on_hold"
-        elif (firm := firm_due(d)) is not None and firm < today:
+        elif overdue_day(view, d, today, people, here) is not None:
             state = "overdue"
         elif (
             stale_after

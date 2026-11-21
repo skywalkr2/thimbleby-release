@@ -114,6 +114,7 @@ def test_a_source_with_no_earlier_request_to_price_a_read_from_counts_only_the_s
     )
 
 
+@pytest.mark.usefixtures("first_window_held")  # the go path, as a look further back still takes it
 def test_the_go_for_a_source_shows_the_held_runs_as_the_most_and_a_cheaper_likely_figure_with_the_cache(tmp_path):
     from engine import source_intake
     from tests.test_source_intake import NOW as INTAKE_NOW
@@ -135,6 +136,7 @@ def test_the_go_for_a_source_shows_the_held_runs_as_the_most_and_a_cheaper_likel
     assert cost.likely < cost.at_most
 
 
+@pytest.mark.usefixtures("first_window_held")  # the go path, as a look further back still takes it
 def test_a_go_whose_likely_figure_is_under_the_amount_but_whose_most_is_over_still_waits_for_the_person(tmp_path):
     # The configured amount is a ceiling on what starts unasked: it is weighed against the most a go could cost.
     from engine import source_intake

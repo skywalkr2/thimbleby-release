@@ -4,6 +4,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { api, type S } from "../lib/api";
 import { addDays, localDate } from "../lib/dates";
+import { OpenReportProvider } from "../lib/open-report";
 import { RestartProvider } from "../lib/restart";
 import { fakeApi, renderApp, statusFixture } from "../test-utils";
 import { HeldLine, isHeld } from "./HeldLines";
@@ -36,7 +37,7 @@ function line(kind: S["QueueLineView"]["kind"], over: Partial<S["QueueLineView"]
 const paused = (over: Partial<S["QueueLineView"]> = {}) =>
   line("paused", { key: "paused:main", account: "main", until: `${localDate(new Date())}T15:30:00-05:00`, ...over });
 
-function show(lines: S["QueueLineView"][], routes: Record<string, (body: unknown) => unknown> = {}, canRestart = true) {
+function show(lines: S["QueueLineView"][], routes: Record<string, (body: unknown) => unknown> = {}, canRestart = true, openReport?: (words: string) => void) {
   const calls = fakeApi({
     "GET today/queue": () => lines,
     "GET status": () => statusFixture({ can_restart: canRestart }),
@@ -50,9 +51,11 @@ function show(lines: S["QueueLineView"][], routes: Record<string, (body: unknown
   const onAddAccount = vi.fn();
   const onOpenSources = vi.fn();
   renderApp(
-    <RestartProvider hellos={1}>
-      <HeldLines onOpenAiAccounts={onOpenAiAccounts} onOpenHandover={onOpenHandover} onOpenRules={onOpenRules} onOpenKnowledge={onOpenKnowledge} onAddAccount={onAddAccount} onOpenSources={onOpenSources} />
-    </RestartProvider>,
+    <OpenReportProvider value={openReport}>
+      <RestartProvider hellos={1}>
+        <HeldLines onOpenAiAccounts={onOpenAiAccounts} onOpenHandover={onOpenHandover} onOpenRules={onOpenRules} onOpenKnowledge={onOpenKnowledge} onAddAccount={onAddAccount} onOpenSources={onOpenSources} />
+      </RestartProvider>
+    </OpenReportProvider>,
   );
   return { calls, onOpenAiAccounts, onOpenHandover, onOpenRules, onOpenKnowledge, onAddAccount, onOpenSources };
 }
@@ -1177,6 +1180,34 @@ test("a slow main screen is one line with its time, a button that drafts a repor
   await user.click(within(row).getByRole("button", { name: "Draft a report" }));
   expect(await within(row).findByDisplayValue(/It took 4.2 seconds/)).toBeInTheDocument();
   expect(calls.filter((c) => c.route.startsWith("POST"))).toEqual([]);
+});
+
+test("with the report form on, the slow screen's button opens it with the drafted words and leaves nothing open on Today", async () => {
+  const user = userEvent.setup();
+  const openReport = vi.fn();
+  const { calls } = show(
+    [line("slow_screen", { key: "slow_screen:people", subject: "people", seconds: 4.2 })],
+    { "GET slow-screens/people/report": () => ({ title: "People is slow to open", text: "It took 4.2 seconds." }) },
+    true,
+    openReport,
+  );
+  const row = await screen.findByRole("region", { name: "Slow screen" });
+  await user.click(within(row).getByRole("button", { name: "Draft a report" }));
+  await waitFor(() => expect(openReport).toHaveBeenCalledWith("People is slow to open\n\nIt took 4.2 seconds."));
+  expect(within(row).queryByRole("textbox")).toBeNull();
+  expect(calls.filter((c) => c.route.startsWith("POST"))).toEqual([]);
+});
+
+test("without the report form, the drafted report can be closed", async () => {
+  const user = userEvent.setup();
+  show([line("slow_screen", { key: "slow_screen:people", subject: "people", seconds: 4.2 })], {
+    "GET slow-screens/people/report": () => ({ title: "People is slow to open", text: "It took 4.2 seconds." }),
+  });
+  const row = await screen.findByRole("region", { name: "Slow screen" });
+  await user.click(within(row).getByRole("button", { name: "Draft a report" }));
+  await within(row).findByDisplayValue(/It took 4.2 seconds/);
+  await user.click(within(row).getByRole("button", { name: "Close" }));
+  expect(within(row).queryByRole("textbox")).toBeNull();
 });
 
 test("a report that could not be drafted says so and can be tried again", async () => {

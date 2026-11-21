@@ -21,6 +21,8 @@ from tests.test_setup_reginald import _found
 
 _ENGINE = WriteContext(actor="engine", trust="trusted", op="test")
 
+pytestmark = pytest.mark.usefixtures("first_window_held")
+
 
 @pytest.fixture
 def env(tmp_path):
@@ -305,3 +307,46 @@ def test_first_reading_says_which_spending_limit_holds_its_work_and_when_it_lift
     assert (month.stage, month.limit) == ("limit", "month")
     nxt = datetime.fromisoformat(month.limit_until)
     assert (nxt.day, nxt.hour) == (1, 0) and (nxt.year, nxt.month) > (NOW.year, NOW.month)
+
+
+def test_older_mails_queued_work_does_not_hold_first_reading(env):
+    """H5-40: only a source's first window is waited for; the older read's queued work carries on in the background."""
+    ws, cfg, store = env
+    refresh(ws, store, cfg, "m", NOW)
+    refresh(ws, store, cfg, "m2", NOW)
+    source = cfg.watch.sources[0].id
+
+    def intake(older, state="queued"):
+        with store.transaction() as tx:
+            tx.create(
+                "request",
+                {
+                    "task": "notes",
+                    "origin": "input",
+                    "state": state,
+                    "intake": source,
+                    "intake_older": older,
+                    "created_at": NOW.isoformat(),
+                },
+                _ENGINE,
+            )
+
+    for _ in range(3):
+        intake(True)
+    assert setup.reading(ws, cfg, store, _found(ws, cfg, store), NOW).stage != "sorting"
+    intake(False)
+    assert setup.reading(ws, cfg, store, _found(ws, cfg, store), NOW).stage == "sorting"
+
+
+def test_the_order_of_work_puts_the_look_and_first_windows_before_older_background_work():
+    """H5-40: a look queued after 200 older-read requests runs next; background work runs when nothing is ahead."""
+    from engine.worker import run_rank
+
+    older = [{"task": "notes", "origin": "input", "intake": "s", "intake_older": True} for _ in range(200)]
+    look = {"task": person_look.TASK, "origin": "schedule"}
+    window = {"task": "notes", "origin": "input", "intake": "s"}
+    mine = {"task": "notes", "origin": "pm"}
+    order = sorted([*older, look, window, mine], key=run_rank)
+    assert order[:3] == [mine, look, window]
+    assert order[3:] == older
+    assert sorted(older, key=run_rank) == older  # nothing ahead: background work runs, in the order made

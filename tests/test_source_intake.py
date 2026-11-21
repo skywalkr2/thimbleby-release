@@ -23,6 +23,8 @@ NOW = datetime(2026, 10, 19, 9, 0, tzinfo=UTC)
 SENDER = "Colleague <colleague@work.example.com>"
 _TEST = WriteContext(actor="pm", trust="trusted", op="test.source-intake")
 
+pytestmark = pytest.mark.usefixtures("first_window_held")
+
 
 def mail(key: str, days: float, subject: str | None = None, now: datetime = NOW) -> dict:
     """A fake source's mail message received `days` before `now`."""

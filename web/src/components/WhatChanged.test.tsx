@@ -194,6 +194,14 @@ test("when nothing was recorded, the row says so and never shows the assistant's
   expect(within(await findPane()).getByText(/Nothing recorded/)).toBeInTheDocument();
 });
 
+test("a note of only spaces shows no empty Your note block", async () => {
+  const item = change("REQ-7", { note: "   \n " });
+  fakeApi({ "GET changes": () => [item] });
+  renderApp(<WhatChanged />);
+  await findPane();
+  expect(screen.queryByText("Your note")).toBeNull();
+});
+
 test("a change's line says what was done, as what it was, not as a count of things", async () => {
   const item = change("REQ-8");
   const op = (index: number, kind: string, status = "applied"): S["OpView"] => ({ ...item.changeset!.ops[0], index, op: kind, status: status as S["OpView"]["status"], group: `op${index}` });

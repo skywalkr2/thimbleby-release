@@ -31,7 +31,7 @@ PROJECT = fixture_records(DEMO_B, "project")[0]["id"]
 PAGE = fixture_records(DEMO_B, "project")[0]["links"][0]["url"]
 _TEST = WriteContext(actor="pm", trust="trusted", op="test.knowledge")
 NOW = datetime(2026, 10, 14, 9, 0, tzinfo=UTC).isoformat()
-LESSON = {"op": "lesson.add", "text": "Questions about work another team owns wait for an impact check."}
+LESSON = {"op": "lesson.add", "text": "Questions about work another team owns must wait for an impact check."}
 
 
 @pytest.fixture

@@ -752,7 +752,7 @@ Something to look at on the review (an image the plugin rendered, or plain text)
 
 Previews may be: `image/gif`, `image/jpeg`, `image/png`, `image/webp`, `text/plain`.
 
-Core ops an action may propose: `act.draft`, `action.close`, `action.drop`, `action.hold`, `action.move`, `action.part`, `action.repeat`, `action.reply`, `action.unhold`, `agenda.add`, `answer`, `list.add`, `list.merge`, `list.rename`, `list.retire`, `mail.restore`, `note`, `person.add`, `project.add`, `question.add`, `question.drop`, `question.mark_sent`, `question.move`, `question.update`, `record.delete`, `record.edit`, `record.log`, `record.set`, `report.draft`, `rule.add`, `rule.retire`, `setting.propose`, `source.widen`, `stage.move`, `text.edit`, `text.propose`, `view.add`, `view.remove`, `view.set`.
+Core ops an action may propose: `act.draft`, `action.close`, `action.drop`, `action.hold`, `action.move`, `action.part`, `action.repeat`, `action.reply`, `action.unhold`, `agenda.add`, `answer`, `list.add`, `list.merge`, `list.rename`, `list.retire`, `mail.restore`, `note`, `person.add`, `project.add`, `question.add`, `question.drop`, `question.mark_sent`, `question.move`, `question.update`, `record.delete`, `record.edit`, `record.log`, `record.set`, `report.draft`, `rule.add`, `rule.retire`, `setting.propose`, `source.widen`, `stage.move`, `text.edit`, `text.propose`, `view.add`, `view.remove`, `view.set`, `work.draft`.
 
 ## AI task kinds
 
@@ -1770,6 +1770,7 @@ A unit of work for the assistant. The engine creates it when something is handed
 | `folded_into` | str \| None | `None` | The newer request this one's change was folded into, so they are read in order, once. |
 | `may_answer` | list[str] | `[]` | For a message the person sent: the open replies owed (action ids) it may answer, found by the rules from its conversation and recipient. The assistant reads it with them and decides whether it answers each one; the rules close nothing. |
 | `intake` | str \| None | `None` | The id of the watched source this request was taken in from when the source was newly added (or looked at further back): its results are gathered into one line on Today and one list, not one line each. |
+| `intake_older` | bool | `False` | For a request taken in from a new source: it came from the read of older mail (the full read the person chose), not from the source's first window. The first reading does not wait for these. |
 | `intake_seen` | bool | `False` | For a request taken in from a new source: the person opened the list of what was found (or marked it seen), so its results show on Today one by one again if they still need a look. |
 | `held_on_today` | list[str] \| None | `None` | For a reading of the week ahead: the ids of the records Today held a line for when the run's packet was built. The reading is checked against these, not against lines that reached Today after the packet was made, so a first answer is never refused for what its packet could not have told it. |
 | `asked_about` | list[str] \| None | `None` | For a reading of the person's items for areas of their life: the ids of the items its packet listed; for a look at who they deal with: the addresses its packet listed. The reading is checked against these, and the same items or addresses are not asked about again while they stand. |
@@ -2006,10 +2007,11 @@ What went wrong, why, and the guard that prevents a repeat. Added by `lesson.add
 | `pack` | str \| None | `None` | For a pack's guidance, the pack's name. |
 | `trust` | Literal['trusted', 'untrusted'] | `'trusted'` | untrusted when it came from outside content. |
 | `learned_at` | datetime | required | When the entry was made. |
-| `status` | Literal['proposed', 'active', 'discarded', 'expired', 'retired'] | `'proposed'` | proposed: waits for the person's Keep. active: guides runs. discarded: the person said no. expired: a proposal nobody reviewed in time. retired: was active, and no longer is. |
+| `status` | Literal['proposed', 'active', 'discarded', 'expired', 'retired'] | `'proposed'` | proposed: not in use yet (a describing one from mail waits for enough messages to agree; one that grants power waits for the person). active: guides runs. discarded: the person said no. expired: a proposal nobody reviewed in time. retired: was active, and no longer is. |
 | `discard_reason` | str \| None | `None` | Why the person discarded it, if they said. |
 | `kept_by` | str \| None | `None` | The person who made it active, and so the author of its wording. |
 | `kept_at` | datetime \| None | `None` | When it was made active. |
+| `activated` | Literal['person_note', 'correction', 'agreement'] \| None | `None` | How an entry became active with nobody pressing Keep: person_note, from the person's own typed words; correction, restated from one of their corrections; agreement, several messages said the same thing. Empty for an entry the person kept, and for one that is not active. |
 | `applies_to` | Scope | see below | What it applies to. |
 | `applies_to.task_kinds` | list[str] | `[]` | Task kinds it applies to; empty means all. |
 | `applies_to.records` | list[str] | `[]` | Record types or type.field targets it applies to; empty means all. |
@@ -2044,10 +2046,11 @@ A term or acronym and what it means here. Added by `glossary.add`, changed by `g
 | `pack` | str \| None | `None` | For a pack's guidance, the pack's name. |
 | `trust` | Literal['trusted', 'untrusted'] | `'trusted'` | untrusted when it came from outside content. |
 | `learned_at` | datetime | required | When the entry was made. |
-| `status` | Literal['proposed', 'active', 'discarded', 'expired', 'retired'] | `'proposed'` | proposed: waits for the person's Keep. active: guides runs. discarded: the person said no. expired: a proposal nobody reviewed in time. retired: was active, and no longer is. |
+| `status` | Literal['proposed', 'active', 'discarded', 'expired', 'retired'] | `'proposed'` | proposed: not in use yet (a describing one from mail waits for enough messages to agree; one that grants power waits for the person). active: guides runs. discarded: the person said no. expired: a proposal nobody reviewed in time. retired: was active, and no longer is. |
 | `discard_reason` | str \| None | `None` | Why the person discarded it, if they said. |
 | `kept_by` | str \| None | `None` | The person who made it active, and so the author of its wording. |
 | `kept_at` | datetime \| None | `None` | When it was made active. |
+| `activated` | Literal['person_note', 'correction', 'agreement'] \| None | `None` | How an entry became active with nobody pressing Keep: person_note, from the person's own typed words; correction, restated from one of their corrections; agreement, several messages said the same thing. Empty for an entry the person kept, and for one that is not active. |
 | `applies_to` | Scope | see below | What it applies to. |
 | `applies_to.task_kinds` | list[str] | `[]` | Task kinds it applies to; empty means all. |
 | `applies_to.records` | list[str] | `[]` | Record types or type.field targets it applies to; empty means all. |
@@ -2089,10 +2092,11 @@ Who answers a kind of question, or who doesn't. Added by `routing.add`.
 | `pack` | str \| None | `None` | For a pack's guidance, the pack's name. |
 | `trust` | Literal['trusted', 'untrusted'] | `'trusted'` | untrusted when it came from outside content. |
 | `learned_at` | datetime | required | When the entry was made. |
-| `status` | Literal['proposed', 'active', 'discarded', 'expired', 'retired'] | `'proposed'` | proposed: waits for the person's Keep. active: guides runs. discarded: the person said no. expired: a proposal nobody reviewed in time. retired: was active, and no longer is. |
+| `status` | Literal['proposed', 'active', 'discarded', 'expired', 'retired'] | `'proposed'` | proposed: not in use yet (a describing one from mail waits for enough messages to agree; one that grants power waits for the person). active: guides runs. discarded: the person said no. expired: a proposal nobody reviewed in time. retired: was active, and no longer is. |
 | `discard_reason` | str \| None | `None` | Why the person discarded it, if they said. |
 | `kept_by` | str \| None | `None` | The person who made it active, and so the author of its wording. |
 | `kept_at` | datetime \| None | `None` | When it was made active. |
+| `activated` | Literal['person_note', 'correction', 'agreement'] \| None | `None` | How an entry became active with nobody pressing Keep: person_note, from the person's own typed words; correction, restated from one of their corrections; agreement, several messages said the same thing. Empty for an entry the person kept, and for one that is not active. |
 | `applies_to` | Scope | see below | What it applies to. |
 | `applies_to.task_kinds` | list[str] | `[]` | Task kinds it applies to; empty means all. |
 | `applies_to.records` | list[str] | `[]` | Record types or type.field targets it applies to; empty means all. |
@@ -2130,10 +2134,11 @@ What a recipient or audience wants or avoids in what is written for them. Added 
 | `pack` | str \| None | `None` | For a pack's guidance, the pack's name. |
 | `trust` | Literal['trusted', 'untrusted'] | `'trusted'` | untrusted when it came from outside content. |
 | `learned_at` | datetime | required | When the entry was made. |
-| `status` | Literal['proposed', 'active', 'discarded', 'expired', 'retired'] | `'proposed'` | proposed: waits for the person's Keep. active: guides runs. discarded: the person said no. expired: a proposal nobody reviewed in time. retired: was active, and no longer is. |
+| `status` | Literal['proposed', 'active', 'discarded', 'expired', 'retired'] | `'proposed'` | proposed: not in use yet (a describing one from mail waits for enough messages to agree; one that grants power waits for the person). active: guides runs. discarded: the person said no. expired: a proposal nobody reviewed in time. retired: was active, and no longer is. |
 | `discard_reason` | str \| None | `None` | Why the person discarded it, if they said. |
 | `kept_by` | str \| None | `None` | The person who made it active, and so the author of its wording. |
 | `kept_at` | datetime \| None | `None` | When it was made active. |
+| `activated` | Literal['person_note', 'correction', 'agreement'] \| None | `None` | How an entry became active with nobody pressing Keep: person_note, from the person's own typed words; correction, restated from one of their corrections; agreement, several messages said the same thing. Empty for an entry the person kept, and for one that is not active. |
 | `applies_to` | Scope | see below | What it applies to. |
 | `applies_to.task_kinds` | list[str] | `[]` | Task kinds it applies to; empty means all. |
 | `applies_to.records` | list[str] | `[]` | Record types or type.field targets it applies to; empty means all. |
@@ -3758,7 +3763,7 @@ Add a standing rule: an instruction the assistant follows from now on. A system 
 |---|---|---|---|
 | `group` | str \| None | `None` | Ops that must be undone together share a group name. |
 | `text` | str | required | The rule, in the person's wording. |
-| `name` | str \| None | `None` | A short name other settings can refer to; made from the rule's id when left out. |
+| `name` | str \| None | `None` | A short name other settings can refer to, in letters, digits, dots, dashes and slashes with no spaces; made from the rule's id when left out. |
 | `applies_to` | Scope | see below | What the rule applies to; empty means all. |
 | `applies_to.task_kinds` | list[str] | `[]` | Task kinds it applies to; empty means all. |
 | `applies_to.records` | list[str] | `[]` | Record types or type.field targets it applies to; empty means all. |
@@ -4023,3 +4028,13 @@ The assistant's reading of the coming week, kept on the person's record for the 
 | `rows[].to_day` | date \| None | `None` | The last day of its window; leave out for a single day. |
 | `rows[].words` | str | required | A few words on what it is and why it matters. |
 | `rows[].source` | str | required | The id of the record it comes from, exactly as the packet lists it. |
+
+### `work.draft`
+
+Ask for the writing a to-do stands for (a message, a list, a page) to be drafted: one request for the drafting work is queued for the to-do, with the person's words as its note, and goes the usual way (estimated, held for the person's go above the configured amount). Only from the person's own words; the draft comes back to be reviewed and nothing is sent. Refused if the to-do isn't open or the assistant already has its work in hand.
+
+| Field | Type | Default | What it is |
+|---|---|---|---|
+| `group` | str \| None | `None` | Ops that must be undone together share a group name. |
+| `id` | str | required | The id of the open to-do whose writing is wanted. |
+| `note` | str \| None | `None` | What the person wants written, in their own words, when they said. |

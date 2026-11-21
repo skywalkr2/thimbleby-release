@@ -25,6 +25,9 @@ function item(over: Partial<Item> = {}): Item {
     constrains: [],
     term: "",
     meaning: "",
+    activated: null,
+    messages: 0,
+    asks: over.status === "proposed",
     ...over,
   };
 }
@@ -80,6 +83,8 @@ test("every item is in exactly one section, newest first, and groups with nothin
     used: 1,
     given: 1,
     last_used: ago(1),
+    messages: 0,
+    asks: over.status === "proposed",
     ...over,
   });
   const all = itemsOf(
@@ -99,4 +104,27 @@ test("every item is in exactly one section, newest first, and groups with nothin
   expect(sections.words.map((i) => [i.id, i.term, i.meaning])).toEqual([["GLOSS-1", "gutter", "the inner margin"]]);
   expect(sections.idle.map((i) => i.id)).toEqual(["LES-4"]);
   expect(sections.retired.map((i) => i.id)).toEqual(["LES-3"]);
+});
+
+test("a proposal that only describes is tentative: kept, never listed, and never a question; one that grants power is a question", () => {
+  const entry = (id: string, over: Partial<S["KnowledgeView"]>): S["KnowledgeView"] => ({
+    id,
+    kind: "lesson",
+    version: 1,
+    text: id,
+    status: "proposed",
+    learned_from: "input",
+    trust: "untrusted",
+    learned_at: ago(1),
+    applies_to: WORKSPACE,
+    id_patterns: [],
+    used: 0,
+    given: 0,
+    messages: 1,
+    asks: false,
+    ...over,
+  });
+  const all = itemsOf([entry("LES-1", {}), entry("LES-2", { asks: true })], []);
+  expect(all.map((i) => i.id)).toEqual(["LES-2"]);
+  expect(sectionsOf(all, NOW, 30).waiting.map((i) => i.id)).toEqual(["LES-2"]);
 });

@@ -59,6 +59,8 @@ function Batch(props: { part: QueueLine; named: boolean }) {
       { key: part.key },
     );
   const hasHeld = items.some((item) => item.kind === "held");
+  // A batch of only drafts says what keeping does to a draft, and names it so; any other batch keeps its own words.
+  const onlyDrafts = items.length > 0 && items.every((item) => item.what === "draft");
   return (
     <section className={styles.batch} aria-label={heading ?? undefined} data-batch={part.key}>
       {heading && <h4 className={styles.heading}>{heading}</h4>}
@@ -112,8 +114,9 @@ function Batch(props: { part: QueueLine; named: boolean }) {
       {changesets.length > 0 ? (
         <div className={styles.end}>
           <Button variant="primary" onClick={confirm}>
-            {tn("queue.batch.keep_all", Math.max(1, items.length))}
+            {tn(onlyDrafts ? "queue.batch.keep_drafts" : "queue.batch.keep_all", Math.max(1, items.length))}
           </Button>
+          {onlyDrafts && <p className="hint">{t("queue.batch.keep_drafts_hint")}</p>}
         </div>
       ) : (
         hasHeld && <p className="hint">{t("queue.batch.waiting_only")}</p>

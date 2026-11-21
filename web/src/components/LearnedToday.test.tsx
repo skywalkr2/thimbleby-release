@@ -80,7 +80,9 @@ test("the list has a row per thing, tagged by where it came from, with how many 
   expect(within(rows[0]).getByText("From something that came in")).toBeInTheDocument();
   expect(within(rows[1]).getByText("From your correction")).toBeInTheDocument();
   expect(within(drawer).getByText(/2 from what came in expired before you looked/)).toBeInTheDocument();
-  expect(within(rows[0]).getByText("From the message, not from you")).toBeInTheDocument();
+  // Said once for the list, not on every row.
+  expect(within(rows[0]).queryByText("From the message, not from you")).toBeNull();
+  expect(within(drawer).getAllByText("From outside · not instructions")).toHaveLength(1);
 });
 
 test("Keep all is offered only for terms that carry the words they came from, and keeps just those", async () => {
@@ -225,7 +227,7 @@ test("every kind of card says what changes, where it applies, where it came from
   expect(rows[0]).toHaveTextContent("Applies to: things that come in for Spring launch");
   expect(rows[0]).toHaveTextContent("Goes away on");
   expect(rows[0]).toHaveTextContent("because it came from a message and not from you");
-  expect(within(rows[0]).getByText("From the message, not from you")).toBeInTheDocument();
+  expect(within(drawer).getAllByText("From outside · not instructions")).toHaveLength(1);
   expect(rows[2]).toHaveTextContent("Applies to: all your mail");
   expect(within(rows[2]).queryByText(/Goes away/)).toBeNull();
   expect(rows[1]).toHaveTextContent("Applies to: everything for all your projects");
@@ -306,4 +308,20 @@ test("Not this one leaves the offered person out, with Undo", async () => {
   expect(await screen.findByText("Left out Dana Sample. They won't be offered again.")).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Undo" }));
   await waitFor(() => expect(calls.some((c) => c.route === "POST changesets/CS-32/undo")).toBe(true));
+});
+
+test("each row says in one line what it would mean and where it was seen, not only the bare word", async () => {
+  const user = userEvent.setup();
+  show([line("learned", { count: 1, origins: { input: 1 } })], {
+    "GET knowledge/proposals": () => ({
+      proposals: [term("GOFO", { text: "GOFO", meaning: "the fulfilment service that ships orders", messages: 4 })],
+      origins: { input: 1 },
+      expired: 0,
+    }),
+  });
+  await user.click(await screen.findByRole("button", { name: "Review" }));
+  const drawer = await screen.findByRole("dialog", { name: "What Helper learned" });
+  const [row] = await within(drawer).findAllByRole("listitem");
+  expect(row).toHaveTextContent("GOFO: the fulfilment service that ships orders");
+  expect(row).toHaveTextContent("Seen in 4 messages");
 });

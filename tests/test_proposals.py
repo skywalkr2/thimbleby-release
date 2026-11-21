@@ -264,7 +264,7 @@ def test_a_proposal_close_to_a_recent_discard_is_not_shown_and_an_old_discard_is
     assert held_back["status"] == "discarded" and held_back["discard_reason"] == proposals.NEAR_DISCARD_REASON
     assert waiting(client)["proposals"] == []
     # Something else is shown.
-    other = proposal(store, cfg, lesson_saying("Name the owner on every risk."))
+    other = proposal(store, cfg, lesson_saying("Always name the owner on every risk."))
     assert [p["id"] for p in waiting(client)["proposals"]] == [other]
     # A discard older than the hold no longer counts.
     store.clock = lambda: (
@@ -289,7 +289,7 @@ def test_just_this_time_records_its_signal_discards_and_the_repeat_is_marked(app
     (shown,) = waiting(client)["proposals"]
     assert shown["id"] == again and shown["status"] == "proposed" and shown["just_this_time_before"] == 1
     # A proposal about something else has no mark.
-    other = proposal(store, cfg, lesson_saying("Name the owner on every risk."))
+    other = proposal(store, cfg, lesson_saying("Always name the owner on every risk."))
     marks = {p["id"]: p["just_this_time_before"] for p in waiting(client)["proposals"]}
     assert marks == {again: 1, other: 0}
     # Undo puts the first back to proposed, and it no longer counts as set aside.
@@ -388,7 +388,7 @@ def test_a_routing_that_matches_a_discarded_proposal_is_refused_unless_it_rests_
 
 def test_the_line_counts_both_origins_and_how_many_expired_since_the_person_last_looked(app):
     client, store, cfg, _ = app
-    from_input = proposal(store, cfg, lesson_saying("From an input."))
+    from_input = proposal(store, cfg, lesson_saying("Always cite the input."))
     corrected = signal(store, "sent_back", [PROJECT], note="Wrong owner.")
     own = proposal(store, cfg, {**lesson_saying("From a correction."), "signal": corrected})
     second_corrected = signal(store, "undone", [PROJECT])
@@ -421,7 +421,7 @@ def test_the_sweep_expires_input_proposals_after_the_days_and_never_correction_o
     client, store, cfg, _ = app
     days = cfg.dispatch.knowledge.proposals_expire_days
     assert days == 14
-    from_input = proposal(store, cfg, lesson_saying("From an input."))
+    from_input = proposal(store, cfg, lesson_saying("Always cite the input."))
     rule = proposed_rule(store, cfg)
     corrected = signal(store, "sent_back", [PROJECT])
     own = proposal(store, cfg, {**lesson_saying("From a correction."), "signal": corrected})

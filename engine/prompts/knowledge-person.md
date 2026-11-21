@@ -44,6 +44,9 @@ What to suggest, each with the line it rests on:
 - Who answers what, for someone on file: a routing entry naming their id, when their repeated messages and the
   calendar's titles show what they handle. Never route to someone not on file.
 
+The sentence of an offer is read by the user on their own screen: write to them about their mail ("in your mail"), name a
+side of their life by the name the line shows, and never write an id, "tally", "list" or "packet".
+
 Every glossary or routing entry carries evidence: the exact line of the list it rests on, copied word for word, so the user can see the
 counts. Offer a person only for an address the list holds. Suggest at most eight entries in all, the best supported first, and none for a line the counts don't support:
 a single message is not a pattern. When nothing is plain, suggest nothing and say so. Never suggest a person or an

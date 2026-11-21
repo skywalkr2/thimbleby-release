@@ -22,6 +22,8 @@ from tests.test_source_intake import (  # noqa: F401  (the fixture is used by ev
 
 TOKEN = "intake-token"
 
+pytestmark = pytest.mark.usefixtures("first_window_held")
+
 
 def now() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)

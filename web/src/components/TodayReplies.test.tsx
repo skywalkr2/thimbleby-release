@@ -9,11 +9,12 @@ import { fakeApi, renderApp, statusFixture, type Routes } from "../test-utils";
 import { Today } from "./Today";
 
 // A reply the person owes (design 6.35, 7.7): one line, "Reply to Ana: Interior proofs", with the draft under it marked as
-// a draft until it is copied or written, Copy reply as its one button, and No reply needed, Answered another way and Edit in
+// a draft until it is copied or written, Copy reply as its one button, and No reply needed, I already replied and Edit in
 // its menu. Each is the person's own change with Undo.
 
 type Line = S["QueueLineView"];
 
+const PAGE = "https" + "://mail.example.com/u/0/#inbox/abc";
 const DRAFT = "The interior proofs ship on November 3.";
 
 function reply(over: Partial<Line> = {}): Line {
@@ -83,6 +84,26 @@ test("a reply owed is one line with who it is to, the message's subject and the 
   expect(within(row).getByRole("button", { name: "Copy reply" })).toBeInTheDocument();
 });
 
+test("a reply line says what the message asks and links to the message showing its real domain", async () => {
+  show([reply({ reply_asks: "Asks when the interior proofs ship.", origin: { kind: "link", url: PAGE, source: "SRC-1" } })]);
+  const row = await rowOf();
+  expect(within(row).getByText("Asks when the interior proofs ship.")).toBeInTheDocument();
+  const link = within(row).getByRole("link", { name: "Open the message" });
+  expect(link).toHaveAttribute("href", PAGE);
+  expect(row).toHaveTextContent("mail.example.com");
+});
+
+test("with nothing recorded about the ask, the message's own first lines show, marked as from outside, and Write reply puts them beside the box", async () => {
+  const user = userEvent.setup();
+  show([reply({ reply: null, reply_message: "Can you tell me when the proofs ship?", origin: { kind: "source", source: "SRC-1" } })]);
+  const row = await rowOf();
+  expect(within(row).getByText("From the email, in its own words:")).toBeInTheDocument();
+  expect(within(row).getByText("Can you tell me when the proofs ship?")).toBeInTheDocument();
+  await user.click(within(row).getByRole("button", { name: "Write reply" }));
+  const form = (await screen.findByLabelText("Your reply")).closest("form") as HTMLElement;
+  expect(within(form).getByText("Can you tell me when the proofs ship?")).toBeInTheDocument();
+});
+
 test("a reply draft says where it came from at the step that copies or sends it", async () => {
   show([reply()]);
   const row = await rowOf();
@@ -145,11 +166,11 @@ test("if the browser blocks copying, nothing is approved and the person is told"
   expect(calls.some((c) => c.route === "POST actions/ACT-1/reply")).toBe(false);
 });
 
-test("the menu has No reply needed, Answered another way and Edit, and nothing else", async () => {
+test("the menu has No reply needed, I already replied and Edit, and nothing else", async () => {
   const user = userEvent.setup();
   show([reply()]);
   await menuOf(user, await rowOf());
-  expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["No reply needed", "Answered another way", "Edit reply"]);
+  expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["No reply needed", "I already replied", "Edit reply"]);
 });
 
 test("No reply needed drops it with the reason at once, and Undo brings it back", async () => {
@@ -163,28 +184,28 @@ test("No reply needed drops it with the reason at once, and Undo brings it back"
   await waitFor(() => expect(calls.some((c) => c.route === "POST changesets/CS-2/undo")).toBe(true));
 });
 
-test("Answered another way opens a short form with the cursor in the words and closes it with them", async () => {
+test("I already replied opens a short form with the cursor in the words and closes it with them", async () => {
   const user = userEvent.setup();
   const calls = show([reply()], { "POST replies/ACT-1/answered": () => ({ changeset: "CS-3" }) });
   await menuOf(user, await rowOf());
-  await user.click(screen.getByRole("menuitem", { name: "Answered another way" }));
-  const words = await screen.findByLabelText("How was it answered? (optional)");
+  await user.click(screen.getByRole("menuitem", { name: "I already replied" }));
+  const words = await screen.findByLabelText("How did you reply? (optional)");
   await waitFor(() => expect(words).toHaveFocus());
   await user.type(words, "We settled it on the phone");
   await user.click(screen.getByRole("button", { name: "Close it" }));
   await waitFor(() => expect(calls.find((c) => c.route === "POST replies/ACT-1/answered")?.body).toEqual({ note: "We settled it on the phone" }));
-  expect(await screen.findByText("Closed: answered another way.")).toBeInTheDocument();
+  expect(await screen.findByText("Closed: you already replied.")).toBeInTheDocument();
 });
 
 test("the words are optional: closing with none sends none, and Cancel sends nothing", async () => {
   const user = userEvent.setup();
   const calls = show([reply()], { "POST replies/ACT-1/answered": () => ({ changeset: "CS-4" }) });
   await menuOf(user, await rowOf());
-  await user.click(screen.getByRole("menuitem", { name: "Answered another way" }));
+  await user.click(screen.getByRole("menuitem", { name: "I already replied" }));
   await user.click(await screen.findByRole("button", { name: "Cancel" }));
-  expect(screen.queryByLabelText("How was it answered? (optional)")).toBeNull();
+  expect(screen.queryByLabelText("How did you reply? (optional)")).toBeNull();
   await menuOf(user, await rowOf());
-  await user.click(screen.getByRole("menuitem", { name: "Answered another way" }));
+  await user.click(screen.getByRole("menuitem", { name: "I already replied" }));
   await user.click(await screen.findByRole("button", { name: "Close it" }));
   await waitFor(() => expect(calls.filter((c) => c.route === "POST replies/ACT-1/answered").map((c) => c.body)).toEqual([{}]));
 });
@@ -207,7 +228,7 @@ test("with no draft the line says why, and Write reply opens the person's own", 
   const user = userEvent.setup();
   const calls = show([reply({ reply: null })], { "POST actions/ACT-1/reply": () => ({ changeset: "CS-6" }) });
   const row = await rowOf();
-  expect(within(row).getByText("No draft: nothing recorded holds the answer.")).toBeInTheDocument();
+  expect(within(row).getByText("No draft yet: nothing the assistant knows answers this. Write your own reply.")).toBeInTheDocument();
   await user.click(within(row).getByRole("button", { name: "Write reply" }));
   const box = await screen.findByLabelText("Your reply");
   await waitFor(() => expect(box).toHaveFocus());
@@ -215,5 +236,5 @@ test("with no draft the line says why, and Write reply opens the person's own", 
   await user.click(screen.getByRole("button", { name: "Save reply" }));
   await waitFor(() => expect(calls.find((c) => c.route === "POST actions/ACT-1/reply")?.body).toEqual({ text: "On it." }));
   await menuOf(user, row);
-  expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["No reply needed", "Answered another way"]);
+  expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["No reply needed", "I already replied"]);
 });

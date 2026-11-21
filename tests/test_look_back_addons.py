@@ -69,6 +69,8 @@ def register(registrar):
     registrar.connector("p18/plain", label="Plain", settings=InboxSettings, poll=poll, reads="mail")
 """
 
+pytestmark = pytest.mark.usefixtures("first_window_held")
+
 
 def _manifest():
     manifest = dict(MANIFEST)

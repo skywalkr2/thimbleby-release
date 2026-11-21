@@ -2,7 +2,9 @@
 to something the person discarded, where it came from, when it expires, and what "just this time" remembers.
 
 Plain functions over a read of the records, with no AI. A proposal is an entry in the status `proposed`: a lesson,
-glossary entry, routing entry or style note, or a standing rule. It changes nothing until the person keeps it.
+glossary entry, routing entry or style note, or a standing rule. It changes nothing while it is proposed. What only
+describes is active at once from the person and, from inputs, once enough messages agree; what grants power waits for
+the person (`engine.learning_effects`).
 """
 
 from __future__ import annotations
@@ -12,7 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from engine import knowledge
+from engine import knowledge, learning_effects
 from engine.cleaning import normalize
 from engine.records import Rule, Scope
 from engine.storage import WriteContext
@@ -94,6 +96,48 @@ def single_value(text: Any) -> bool:
         len(word) >= _ID_LENGTH and sum(c.isdigit() for c in word) >= _ID_DIGITS
         for word in re.findall(r"[A-Za-z0-9]+", str(text or ""))
     )
+
+
+#: The most words a term may have, and the most characters: more than that is a sentence or a subject line.
+_TERM_WORDS, _TERM_CHARS = 4, 40
+_DATE_LIKE = re.compile(r"\b\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}\b|\b(?:re|fwd?):", re.IGNORECASE)
+
+
+def junk_term(term: Any) -> str | None:
+    """Why a word proposed from incoming material is no word the person would use, or None: a mail subject line, a
+    sentence, a date or a value from one item (a tracking or order number) is a fact about that item, never a term."""
+    text = " ".join(str(term or "").split())
+    if single_value(text) or _DATE_LIKE.search(text):
+        return "a date or a number from one item is a fact about that item, not a word to learn"
+    if len(text.split()) > _TERM_WORDS or len(text) > _TERM_CHARS or any(c in text for c in ":;,\n"):
+        return "a sentence or a subject line is not a word to learn: propose the term itself, or nothing"
+    return None
+
+
+def evidence_keys(view: Any, data: dict[str, Any]) -> set[tuple[str, str]]:
+    """The different messages an entry's evidence comes from, each as one key: the sender's address when it is known,
+    else the source record, else the request. The same message cited again, or the same sender in several messages,
+    is one."""
+    from engine import filing
+
+    keys: set[tuple[str, str]] = set()
+    for evidence in (data.get("evidence"), *(data.get("more_evidence") or [])):
+        evidence = evidence or {}
+        source = evidence.get("source")
+        if source is None and evidence.get("request"):
+            request = view.get("request", evidence["request"])
+            source = request.data.get("source") if request is not None else None
+        if source is not None:
+            sender = filing.sender_of(view, {"source": source})
+            keys.add(("sender", sender) if sender else ("source", str(source)))
+        elif evidence.get("request"):
+            keys.add(("request", str(evidence["request"])))
+    return keys
+
+
+def corroboration(view: Any, data: dict[str, Any]) -> int:
+    """How many different messages agree on an entry: its own evidence and what was merged into it."""
+    return len(evidence_keys(view, data))
 
 
 def scopes_overlap(a: dict[str, Any] | Scope, b: dict[str, Any] | Scope) -> bool:
@@ -274,8 +318,27 @@ def _offered(kind: str, stored: Any) -> bool:
     return not (kind == "lesson" and single_value(stored.data.get("text")))
 
 
+def needs_answer(found: Proposal) -> bool:
+    """Whether a waiting entry is a question for the person: it grants power (nothing from an input becomes active on
+    its own then), or it is left from before corrections made entries active at once. A describing entry from an input
+    is not: it is tentative, unused, until enough messages agree."""
+    return found.came_from == FROM_CORRECTION or learning_effects.grants_power(found.kind, found.stored.data)
+
+
 def proposals(view: Any, *, alike: float = 1.0) -> list[Proposal]:
-    """Every proposal waiting for the person, oldest first, each with where it came from. A lesson that is only a value
+    """Every entry waiting for the person's answer, oldest first, each with where it came from: those that grant
+    power, which no input makes active. Tentative entries (describing, from inputs, waiting for more messages to agree)
+    are `tentative`, never a question."""
+    return [p for p in every_waiting(view, alike=alike) if needs_answer(p)]
+
+
+def tentative(view: Any, *, alike: float = 1.0) -> list[Proposal]:
+    """The describing entries from inputs that too few messages agree on yet: kept, unused, never asked about."""
+    return [p for p in every_waiting(view, alike=alike) if not needs_answer(p)]
+
+
+def every_waiting(view: Any, *, alike: float = 1.0) -> list[Proposal]:
+    """Every entry in the status `proposed`, oldest first, each with where it came from. A lesson that is only a value
     from one item is left out, and proposals of one kind that say nearly the same thing over the same work (at least
     `alike` of their words shared) are one: the oldest."""
     found: list[Proposal] = []
@@ -307,7 +370,7 @@ def expire_due(store: Any, now: datetime, days: int) -> list[str]:
     view = store.read()
     due = [
         p
-        for p in proposals(view)
+        for p in every_waiting(view)
         if p.came_from == FROM_INPUT
         and (learned := _at(p.stored.data.get("learned_at"))) is not None
         and now - learned > timedelta(days=days)

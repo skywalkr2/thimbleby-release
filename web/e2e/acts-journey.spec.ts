@@ -25,6 +25,7 @@ interface Acts {
   enabled: boolean;
   account: string;
   reply: { id: string; title: string; sender: string };
+  owed: { subject: string; ask: string; url: string };
   tidy: { id: string; title: string };
   invitation: { id: string; title: string; organizer: string };
   delivered: Handed[];
@@ -52,6 +53,39 @@ const wentOut = (page: Page) => page.getByRole("list", { name: "Went out" }).get
 test.describe.configure({ mode: "serial" });
 
 test.describe("mail and calendar acts", () => {
+  test("a reply owed on Today says what it answers, links to the message, opens Write reply with the message beside the box, and I already replied closes it", async ({ page }) => {
+    const problems: string[] = [];
+    collectProblems(page, problems);
+    const { owed } = await seeded(page);
+    await signIn(page);
+    const row = page.getByRole("group", { name: new RegExp(`^Reply to .*: ${owed.subject}$`) });
+    await expect(row).toBeVisible();
+    // With no draft the line says why, and shows the message's own words, marked as from the email.
+    await expect(row).toContainText("No draft yet");
+    await expect(row.getByText("From the email, in its own words:")).toBeVisible();
+    await expect(row.getByText(owed.ask)).toBeVisible();
+    // A link to the message in its mail service, showing its real domain.
+    const link = row.getByRole("link", { name: "Open the message" });
+    await expect(link).toHaveAttribute("href", owed.url);
+    await expect(row).toContainText(new URL(owed.url).host);
+    // Write reply opens with the message's words beside the box.
+    await row.getByRole("button", { name: "Write reply" }).click();
+    const box = page.getByRole("textbox", { name: "Your reply" });
+    await expect(box).toBeVisible();
+    await expect(box.locator("xpath=ancestor::form").getByText(owed.ask)).toBeVisible();
+    await page.keyboard.press("Escape");
+    // The menu says it plainly, and its toast and form label match.
+    await row.getByRole("button", { name: /More actions for/ }).click();
+    await expect(page.getByRole("menuitem", { name: "Answered another way" })).toHaveCount(0);
+    await page.getByRole("menuitem", { name: "I already replied" }).click();
+    await expect(page.getByLabel("How did you reply? (optional)")).toBeVisible();
+    await expect(page.getByText("By phone, in person or from your mail.")).toBeVisible();
+    await page.locator("form.answer-form").getByRole("button", { name: "Close it" }).click();
+    await expect(page.getByText("Closed: you already replied.")).toBeVisible();
+    await expect(row).toHaveCount(0);
+    expect(problems).toEqual([]);
+  });
+
   test("a reply is drafted from the message, read in full in the To send tab, approved and sent as shown", async ({ page }) => {
     const problems: string[] = [];
     collectProblems(page, problems);
