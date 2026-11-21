@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom/vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { expect, test } from "vitest";
 import type { S } from "../lib/api";
 import { clockTime } from "../lib/dates";
@@ -267,4 +268,37 @@ test("a choice offered before the first read has no numbers and says the older m
   await user.click(screen.getByRole("button", { name: "Read it" }));
   await waitFor(() => expect(calls.find((c) => c.route === "POST watch/m/full-read")?.body).toEqual({ days: 30 }));
   expect(await screen.findByText("The older mail is read after the first look at this account.")).toBeInTheDocument();
+});
+
+test("the list keeps its choices as elements while a source joins and counts arrive, and a pick made meanwhile is kept", async () => {
+  const user = userEvent.setup();
+  let release: () => void = () => {};
+  const later = new Promise<void>((resolve) => (release = resolve));
+  fakeApi({
+    "GET watch/m/full-read": () => offered,
+    "GET watch/n/full-read": async () => {
+      await later;
+      return { ...offered, options: offered.options.map((o) => ({ ...o, count: o.count + 5 })) };
+    },
+  });
+  let setSources: (s: S["WatchSourceView"][]) => void = () => {};
+  function Harness() {
+    const [sources, set] = useState([source()]);
+    setSources = set;
+    return <FullReadChoice sources={sources} account="person@example.com" />;
+  }
+  renderApp(<Harness />);
+  const pick = await pickerOf();
+  await user.click(pick);
+  const month = await screen.findByRole("option", { name: /1 month: 12 more/ });
+  // A second source of the account opens, and its counts are still being asked.
+  act(() => setSources([source(), source({ id: "n", label: "Sent" })]));
+  expect(screen.getByRole("combobox", { name: "Read in full from: person@example.com", hidden: true })).toBe(pick);
+  expect(screen.getByRole("option", { name: /1 month: 12 more/ })).toBe(month);
+  release();
+  // The counts arrive into the same elements.
+  await waitFor(() => expect(screen.getByRole("option", { name: /1 month: 29 more/ })).toBe(month));
+  await user.click(month);
+  expect(pick).toHaveTextContent("1 month");
+  expect(screen.getByRole("button", { name: "Read it" })).toBeEnabled();
 });

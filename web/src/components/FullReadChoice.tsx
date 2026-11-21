@@ -73,9 +73,13 @@ export function FullReadChoice(props: { sources: Source[]; account: string }) {
     })),
   });
   if (open.length === 0) return null;
-  const ready = views.every((v) => v.data !== undefined);
-  const dayStop = ready ? Math.max(...views.map((v) => (v.data as S["FullReadView"]).day_stop_usd ?? 0)) : 0;
-  const options = ready ? summed(views.map((v) => v.data as S["FullReadView"])) : [];
+  // The choices show as soon as any source has counts, and stay: a source that joins later (or whose counts are asked again) is
+  // added to the sums when its answer lands, so the list the person is picking from is never swapped out under them.
+  const answered = views.map((v) => v.data).filter((d): d is S["FullReadView"] => d !== undefined);
+  const ready = answered.length > 0;
+  const counting = answered.length < views.length;
+  const dayStop = ready ? Math.max(...answered.map((d) => d.day_stop_usd ?? 0)) : 0;
+  const options = ready ? summed(answered) : [];
   // What the read did for one source, in words: what is being taken in, then what it skipped (nothing is said of skipping when
   // none was), then, when the service gave far fewer than it said it held, how many it gave of how many.
   const readWords = (r: S["LookBackView"], source: string): string => {
@@ -130,6 +134,11 @@ export function FullReadChoice(props: { sources: Source[]; account: string }) {
           <Button variant="primary" size="sm" disabled={picked === null} loading={busy} onClick={() => void confirm()}>
             {t(picked === NOT_NOW ? "walkthrough.mail.full_read.skip" : "walkthrough.mail.full_read.go")}
           </Button>
+          {counting && (
+            <span className="hint" role="status">
+              {t("walkthrough.mail.full_read.counting")}
+            </span>
+          )}
         </>
       )}
     </div>

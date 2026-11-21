@@ -211,7 +211,8 @@ test("the person's own count remains the existing save-and-undo form in a compac
   await loaded();
   const count = screen.getByRole("region", { name: "Your own count" });
   const present = within(count).getByLabelText("Promises on your own list");
-  expect(present).toHaveValue(10);
+  // The saved count comes from its own request, which can answer after the page's first data on a busy machine.
+  await waitFor(() => expect(present).toHaveValue(10));
   expect(within(count).getByLabelText("Of those, how many the app didn't have")).toHaveValue(1);
   await user.clear(present);
   await user.type(present, "11");
