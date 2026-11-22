@@ -247,6 +247,9 @@ def test_work_whose_every_change_was_refused_keeps_a_line_that_counts_the_refuse
     lines = client.get(f"{base}/today/queue").json()
     (line,) = [line for line in lines if line["kind"] == "review"]
     assert line["count"] == len(refused) and line["outcome"]["refused"] == len(refused)
+    # Each refused change is a row of its own that says it was not recorded, so the count has its things beside it.
+    assert [item["what"] for item in line["items"]] == ["refused"] * len(refused)
+    assert all(item["text"] for item in line["items"])
     assert all(line["count"] > 0 for line in lines if line.get("count") is not None and line["kind"] != "rule_review")
     found = store.read().get("changeset", changeset)
     with store.transaction() as tx:
@@ -548,3 +551,61 @@ def test_no_line_key_repeats_when_mail_was_handled_and_its_count_is_not_a_line_o
         assert len(keys) == len(set(keys)) and not [k for k in keys if "handled" in k]
     finally:
         store.close()
+
+
+def test_an_overdue_promise_is_on_its_own_line_and_not_also_counted_on_the_overdue_line(api):
+    """One line per thing: a to-do read as a promise and past its date has the promise line, and the overdue line
+    counts only the plain ones."""
+    from datetime import date, timedelta
+
+    from engine.storage import WriteContext
+
+    client, base, _ = api
+    store = client.app_store
+    mine = client.get(f"{base}/me").json()["person"]
+    open_mine = [
+        a
+        for a in store.read().list("action")
+        if a.data["status"] == "open"
+        and not a.data.get("on_hold")
+        and any(o["person"] == mine for o in a.data.get("owners") or [])
+    ]
+    assert len(open_mine) >= 2
+    other = next(p.id for p in store.read().list("person") if p.id != mine)
+    past = (date.today() - timedelta(days=20)).isoformat()
+    future = (date.today() + timedelta(days=400)).isoformat()
+    context = WriteContext(actor="pm", trust="trusted", op="test.queue")
+    changes = {a.id: {"due": future} for a in open_mine}
+    changes[open_mine[0].id] = {"due": past, "promised_to": [other]}
+    changes[open_mine[1].id] = {"due": past}
+    for action_id, change in changes.items():
+        rec = store.read().get("action", action_id)
+        with store.transaction() as tx:
+            tx.update("action", action_id, change, context, read_version=rec.version)
+    lines = client.get(f"{base}/today/queue").json()
+    promised = [line for line in lines if line["key"] == f"promise:{open_mine[0].id}"]
+    overdue = [line for line in lines if line["kind"] == "overdue"]
+    assert len(promised) == 1
+    listed = [a for line in overdue for a in line["actions"]]
+    assert open_mine[0].id not in listed
+    assert listed == [open_mine[1].id]
+
+
+def test_a_draft_made_before_its_wording_changed_reads_the_current_way(api):
+    """The label is worked out when it is shown, not kept from when the draft was made."""
+    from engine.today_queue import fresh_label
+
+    client, _base, _ = api
+    view = client.app_store.read()
+    task = next(a for a in view.list("action") if a.data.get("text"))
+    stored = {
+        "index": 0,
+        "status": "applied",
+        "label": f"Draft new text for '{task.data['text']}'",
+        "op": {"op": "text.draft", "record": {"kind": "action", "id": task.id}, "field": "work", "text": "x"},
+    }
+    label = fresh_label(view, stored)["label"]
+    assert label.startswith("The writing for") and "Draft new text" not in label
+    # Any other outcome is left as it was kept, and so is a view-less call.
+    other = {"op": {"op": "answer"}, "label": "kept"}
+    assert fresh_label(view, other) is other and fresh_label(None, stored) is stored

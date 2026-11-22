@@ -164,6 +164,36 @@ def test_a_day_stated_with_no_year_takes_the_year_a_person_would_and_no_other(en
     assert outcomes[0]["status"] == "refused" and "full date" in outcomes[0]["reason"]
 
 
+def test_a_to_do_and_a_fact_with_a_day_of_no_year_are_read_from_the_day_the_input_came_never_kept_as_written(env):
+    _, cfg, store = env
+    quote = "Your bill was due on October 5 and is paid automatically on October 20"
+    todo = {
+        "op": "action.add",
+        "text": "Pay the bill",
+        "owners": [cfg.workspace.user.person],
+        "due": "--10-05",
+        "past": True,
+        "evidence": {"quote": "Your bill was due on October 5"},
+    }
+    _, outcomes = apply(env, [todo, fact_op(quote=quote, on="--10-20", kind="bill")], raw=quote)
+    assert [o["status"] for o in outcomes[:2]] == ["applied", "applied"], outcomes
+    # Seen on 19 October: a day the input says has passed is this year's 5 October; the next 20 October is this year's.
+    assert store.read().get("action", outcomes[0]["records"][0]["id"]).data["due"] == "2026-10-05"
+    assert store.read().get("fact", outcomes[1]["records"][0]["id"]).data["on"] == "2026-10-20"
+    stored = repr([o for o in store.read().list("action")] + [o for o in store.read().list("fact")])
+    assert "--10-" not in stored
+
+
+def test_a_day_of_no_year_written_any_other_way_is_returned_never_kept(env):
+    from pydantic import ValidationError
+
+    _, cfg, store = env
+    for written in ("10-05", "--10-5", "Oct 5", "--13-05", "--02-30"):
+        op = {"op": "action.add", "text": "Pay", "owners": [cfg.workspace.user.person], "due": written}
+        with pytest.raises(ValidationError):
+            CHANGESET.validate_python({"ops": [op]}, context={"op_models": store.plugins.ops})
+
+
 def test_a_day_without_its_kind_is_refused(env):
     _, outcomes = apply(env, [fact_op(kind=None)])
     assert outcomes[0]["status"] == "refused" and "on_kind" in outcomes[0]["reason"]

@@ -80,8 +80,9 @@ def test_the_go_route_starts_them_all_once(api):
     assert client.post("/api/watch/m/intake/go").json() == {"started": 2}
     assert client.post("/api/watch/m/intake/go").json() == {"started": 0}
     assert kinds(client, "intake_go") == []
-    changes = [c for c in client.get("/api/changes").json() if c["intake"] == "m"]
-    assert len(changes) == 2 and {c["state"] for c in changes} == {"queued"}
+    started = [r for r in store.read().list("request") if r.data.get("intake") == "m"]
+    assert len(started) == 2 and {r.data["state"] for r in started} == {"queued"}
+    assert not [c for c in client.get("/api/changes").json() if c["intake"] == "m"], "work in progress is not a row"
     assert client.post("/api/watch/nobody/intake/go").status_code == 404
 
 

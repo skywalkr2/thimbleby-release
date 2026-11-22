@@ -7,8 +7,8 @@
 .check:hover .ring, .check:focus-visible .ring { border-color: var(--ok); }
 .check:hover .ring::after, .check:focus-visible .ring::after { opacity: 1; border-color: var(--ok); }
 .check:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
-.check:active .ring { border-color: var(--ok); background: var(--ok); transform: scale(0.94); }
-.check:active .ring::after { opacity: 1; border-color: var(--surface); }
+.check[data-checked] .ring, .check:active .ring { border-color: var(--ok); background: var(--ok); transform: scale(0.94); }
+.check[data-checked] .ring::after, .check:active .ring::after { opacity: 1; border-color: var(--surface); }
 /* A to-do among a day's entries: the mark is a little smaller and sits before the title, in the entry's own row. */
 .small .ring { width: 16px; height: 16px; }
 .small .ring::after { left: 4.5px; top: 1px; width: 4px; height: 7px; }

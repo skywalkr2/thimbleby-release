@@ -104,3 +104,14 @@ test("a batch with a to-do in it keeps its own words", () => {
   renderApp(<BatchDetail line={{ ...batch, items: [item, draft] }} />);
   expect(screen.getByRole("button", { name: "Keep all 2" })).toBeInTheDocument();
 });
+
+test("something that could not be recorded is listed as a row that says so, with nothing to send back", () => {
+  const refused: Line = { ...item, key: "item:CS-1:2", what: "refused", text: "Pay the first installment", op: 2 };
+  renderApp(<BatchDetail line={{ ...batch, items: [item, refused] }} />);
+  expect(screen.getByText("Not recorded")).toBeInTheDocument();
+  expect(screen.getByText(/Nothing was changed\. If it matters, add it yourself in To-dos\./)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Not right: Pay the first installment/ })).toBeNull();
+  expect(screen.queryByText(/isn't listed|aren't listed/)).toBeNull();
+  // The refused row is not counted in what Keep all keeps.
+  expect(screen.getByRole("button", { name: /^Keep (it|all 1)$/ })).toBeInTheDocument();
+});

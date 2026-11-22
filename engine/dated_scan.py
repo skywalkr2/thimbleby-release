@@ -16,6 +16,7 @@ from datetime import date
 from typing import Any
 
 from engine.document_dates import dates_with_places
+from engine.fact_wording import raw_run
 from engine.language_words import language_words
 from engine.ops import EvidenceIn, FactOp
 
@@ -25,6 +26,16 @@ GROUP = "dates-found"
 LISTS = (("deadline", "dated_deadline_words"), ("renewal", "dated_renewal_words"), ("expiry", "dated_expiry_words"))
 #: A sentence longer than this is not offered: its words would not read as one fact.
 MOST_CHARS = 300
+
+
+def _shape(tuning: Any) -> dict[str, int | float]:
+    return {
+        "min_words": tuning.min_words,
+        "copied_share": tuning.copied_share,
+        "caps_run": tuning.caps_run,
+        "label_run": tuning.label_run,
+    }
+
 
 _CLAUSE = re.compile(r"[^;\n]+")
 _SENTENCE = re.compile(r".+?(?:[!?](?=\s|$)|\.(?=\s+[A-Z])|$)")
@@ -61,8 +72,12 @@ def read(cfg: Any, text: str, today: date) -> list[tuple[str, date, str]]:
     kinds = [(kind, _pattern(language_words(language, name))) for kind, name in LISTS]
     doubt = _pattern(language_words(language, "dated_doubt_words"))
     found: list[tuple[str, date, str]] = []
+    tuning = cfg.checks.tuning.raw_fact
     for sentence in sentences(text):
         if len(sentence) > MOST_CHARS:
+            continue
+        # Form fields or a run of capitalized labels would not read as one fact: the assistant's own reading writes it.
+        if raw_run(sentence, "", **_shape(tuning)) is not None:
             continue
         marks = {kind for kind, pattern in kinds if pattern is not None and pattern.search(sentence)}
         dates = dates_with_places(sentence, locale)

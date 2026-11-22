@@ -10,3 +10,5 @@
 .banner > :global([data-variant]) { flex: none; margin-left: auto; white-space: nowrap; }
 .banner[data-tone="danger"] { border-left-color: var(--danger); background: var(--danger-soft); }
 .banner[data-tone="danger"] > svg { color: var(--danger); }
+.banner[data-tone="info"] { border-left-color: var(--border-strong); }
+.banner[data-tone="info"] > svg { color: var(--text-muted); }

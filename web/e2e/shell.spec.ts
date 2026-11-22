@@ -242,8 +242,20 @@ test.describe("the visual system", () => {
   }
 });
 
-test.describe("screen use and the shell", () => {
+/** The menu lists Stages only while some kind of record has stages, and this workspace has none: a test that walks the menu with
+ * the entry has the status say there is one. */
+async function withStages(page: Page) {
+  await page.route("**/api/status", async (route) => {
+    try {
+      const response = await route.fetch();
+      await route.fulfill({ response, json: { ...(await response.json()), has_stages: true } });
+    } catch {
+      await route.abort();
+    }
+  });
+}
 
+test.describe("screen use and the shell", () => {
   // The first-go line is a line of the queue (design 7.8); the walkthrough's last button focuses it, and Go must then be
   // fully on the screen, not clipped.
   for (const [width, height] of [
@@ -447,6 +459,7 @@ test.describe("screen use and the shell", () => {
   }
 
   test("the sidebar keeps its labels from 1024px and is an icon rail below that, with a name for each icon, and can be pinned open", async ({ page }) => {
+    await withStages(page);
     await page.setViewportSize({ width: 1024, height: 800 });
     await signIn(page);
     expect((await page.getByRole("navigation", { name: "Views" }).boundingBox())!.width).toBeGreaterThan(200);
@@ -481,6 +494,7 @@ test.describe("screen use and the shell", () => {
   };
 
   test("views are links: each entry has an address, and the side menu has none for what moved", async ({ page }) => {
+    await withStages(page);
     await page.setViewportSize({ width: 1440, height: 900 });
     // Opened at Today by its address: a bare address lets a walkthrough left partway (the shared workspace, which the setup
     // walkthrough tests beside this one move on) open instead of the app.
@@ -529,6 +543,7 @@ test.describe("screen use and the shell", () => {
   }
 
   test("changing view moves focus to the new view's heading", async ({ page }) => {
+    await withStages(page);
     await page.setViewportSize({ width: 1440, height: 900 });
     await signIn(page);
     await page.getByRole("navigation", { name: "Views" }).getByRole("link", { name: /^Stages/ }).click();
@@ -616,6 +631,7 @@ test.describe("screen use and the shell", () => {
   });
 
   test("on a phone the bottom bar is visible, the page does not scroll sideways, and the More sheet lists the views", async ({ page }) => {
+    await withStages(page);
     await page.setViewportSize({ width: 390, height: 844 });
     await signIn(page);
     const bar = page.getByRole("navigation", { name: "Views" });

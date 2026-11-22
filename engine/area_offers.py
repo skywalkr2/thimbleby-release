@@ -281,6 +281,14 @@ def build(ws: Any, store: Any, cfg: Any, req: Any, kind: Any, today: date) -> An
         },
         key=str.lower,
     )
+    waiting = sorted(
+        {
+            str(o.data["name"])
+            for o in view.list("area_offer")
+            if o.data["status"] == "offered" and str(o.data.get("name") or "").strip()
+        },
+        key=str.lower,
+    )
     people = PacketPeople(store, cfg)
     learned = _learned(store, cfg, kind, people, projects=[], source=None, text=shown, today=today)
     instructions = render(kind.prompt, {"assistant_name": cfg.workspace.assistant_name}, ws.root, kind.prompt_file)
@@ -297,8 +305,11 @@ def build(ws: Any, store: Any, cfg: Any, req: Any, kind: Any, today: date) -> An
     parts = [
         f"Today is {today.isoformat()} ({today.strftime('%A')}).",
         learned.per_input,
-        "# Areas and projects the person already has (do not name an area the same)\n"
+        "# Areas and projects the person has kept (an item about a narrower kind of one of these belongs inside it: "
+        "leave it out, and offer no area for it)\n"
         + ("\n".join(f"- {neutralize(n)}" for n in have) if have else "(none)"),
+        "# Areas already offered and waiting for the person (the same applies: offer nothing that overlaps one)\n"
+        + ("\n".join(f"- {neutralize(n)}" for n in waiting) if waiting else "(none)"),
         f'# Items filed under Personal\n<untrusted source="{ITEMS_BLOCK}">\n{shown}\n</untrusted>',
     ]
     request = "\n\n".join(p for p in parts if p)

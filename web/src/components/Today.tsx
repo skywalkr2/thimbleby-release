@@ -16,6 +16,7 @@ import { useNextSetupStep } from "../lib/setup-next";
 import { AreaFilter } from "./AreaFilter";
 import { SideFilter } from "./SideFilter";
 import { opensItems } from "./TodayDetail";
+import { LearningNotice } from "./LearningNotice";
 import { TodayQueue, type QueueHandlers, type Selection } from "./TodayQueue";
 import { TodayNext } from "./TodayNext";
 import { TodayRail } from "./TodayRail";
@@ -138,6 +139,7 @@ export function Today(props: {
           }
         />
       </div>
+      <LearningNotice />
       <TodayQueue selected={selected} onSelect={setSelected} beside={beside} handlers={handlers} shortcuts={props.shortcuts} workspace={props.workspace} />
       {/* The briefing is the last card: under the queue beside it, at the end of the rail below it, so the queue's own lines stay first. */}
       <div ref={setBriefSlot} className={styles.briefBelow} data-brief-slot="" />

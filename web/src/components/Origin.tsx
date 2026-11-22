@@ -9,7 +9,7 @@ import { revealOrKeep } from "../lib/reveal";
 import { toHash } from "../lib/views";
 import { useWords } from "../lib/wording";
 import { ModalPanel, restoreFocus, DialogFooter } from "./ModalPanel";
-import { SafeLink } from "./SafeText";
+import { SafeLink, SourceText } from "./SafeText";
 import { SourceLimit } from "./SourceLimit";
 import { Skeleton } from "../ui/Skeleton";
 import { Button } from "../ui/Button";
@@ -95,7 +95,7 @@ function SourceDialog(props: { source: string; onClose: () => void }) {
             {s.trust === "untrusted" && <span className="tag">{t("source.outside")}</span>}
           </div>
           {s.limit && <SourceLimit source={props.source} limit={s.limit} />}
-          {s.text ? <div className="source-text">{s.text}</div> : <p className="hint">{t("source.not_kept")}</p>}
+          {s.text ? <SourceText text={s.text} /> : <p className="hint">{t("source.not_kept")}</p>}
         </div>
       )}
       <DialogFooter>

@@ -1,0 +1,44 @@
+# Older mail, read to learn about the person's life (`older: true`): a recurring service, a person and what they are to the
+# user, and an area of life are described as learnings, and no to-do is made: the lesson was on a day long past.
+id: older-mail-teaches-about-the-persons-life
+title: An older mail about a standing lesson yields what it teaches (a service, a person, a routine) and no to-do
+skills: [recording-only-what-matters, dates]
+received: '2026-10-14'
+given_file: busy-portfolio.yaml
+older: true
+pasted: 'From: Marisol Quint <marisol@example.com>
+
+  Subject: Your Thursday cello lesson, September 3
+
+
+  Hi, this is Marisol from Quint Music Studio. Your cello lessons stay on Thursdays at 6 PM, and Quint Music Studio bills
+  on the first of each month. Today''s lesson is done; see you next week.'
+forbid:
+- op: action.add
+allow:
+- fact
+- glossary.add
+- person.add
+stub_answer:
+  summary: Older mail about weekly cello lessons; it teaches a routine, a studio and a teacher, and asks nothing now.
+  ops:
+  - op: glossary.add
+    text: Cello lesson, Thursdays at 6 PM at Quint Music Studio.
+    term: Cello lesson
+    meaning: A weekly music lesson on Thursdays at 6 PM at Quint Music Studio.
+    confidence: assumed
+    routine:
+      days: [thursday]
+      start: '18:00'
+      end: '19:00'
+    evidence:
+      quote: Your cello lessons stay on Thursdays at 6 PM
+  - op: person.add
+    full_name: Marisol Quint
+    role: Cello teacher
+    evidence:
+      quote: this is Marisol from Quint Music Studio
+  - op: fact
+    text: Quint Music Studio bills on the first of each month.
+    evidence:
+      quote: Quint Music Studio bills on the first of each month

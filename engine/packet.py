@@ -217,6 +217,8 @@ def build(ws: Workspace, store: Store, cfg: Config, request_id: str, today: date
     request_parts = [f"Today is {today.isoformat()} ({today.strftime('%A')})."]
     if raw or note:
         request_parts.append(_received_line(store, cfg, req))
+    if kind.name == "notes" and req.data.get("intake_older"):
+        request_parts.append(render("notes-older", {}, ws.root))
     place = PLACE_LINES.get(_place_of(store, saved))
     if place:
         request_parts.append(place + ".")

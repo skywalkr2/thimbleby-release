@@ -825,6 +825,10 @@ class Status(BaseModel):
         description="Set while any request waits for the network connection, which it does with no tries used up.",
     )
     version: int
+    has_stages: bool = Field(
+        False,
+        description="Some kind of record moves through stages (an add-on's or the workspace's): the menu lists Stages.",
+    )
     restart_needed: ScreenText | None = Field(
         None, description="Why new work waits until the cockpit restarts, if it does."
     )
@@ -3595,7 +3599,8 @@ class HeldAsk(BaseModel):
     its date, give it to another owner, send a question to someone else instead, drop it, or, for an ending of a
     promise, move its date or record a part delivered, or keep a guess at how long it takes (`effort`, with the minutes
     in `value`), or keep a reminder proposed for a dated fact or a to-do (`remind`, with the moment in `value`, the day
-    it is for in `day` and the reminder it has now in `from_value`); `ending`: the words said only that it is closed,
+    it is for in `day` and the reminder it has now in `from_value`), or confirm a day the rules found in a message
+    (`fact_date`, the day in `value`, its kind in `day`); `ending`: the words said only that it is closed,
     so the person is asked whether it is done by its owners or no longer needed), `item` the words of what it is about,
     `value` and `from_value` the new and the present date, `to_name` the person it would go to, `told` the people a
     drop would leave out of the loop (told on `told_on`) and `quote` the words the assistant rested it on. An ending of
@@ -3606,7 +3611,18 @@ class HeldAsk(BaseModel):
     in `against`. The screen words the title and the answers from these."""
 
     ask: Literal[
-        "close", "date", "owner", "routing", "drop", "move", "part", "ending", "effort", "remind", "contradiction"
+        "close",
+        "date",
+        "owner",
+        "routing",
+        "drop",
+        "move",
+        "part",
+        "ending",
+        "effort",
+        "remind",
+        "contradiction",
+        "fact_date",
     ]
     item: str
     value: str | None = None
@@ -4190,8 +4206,10 @@ class QueueLineView(BaseModel):
         description="For a review line: the keys of the lines under Decide that ask about its own held ops, which the "
         "line leaves out of its count and the screen links to.",
     )
-    what: Literal["action", "question", "draft"] | None = Field(
-        None, description="For a `batch_item`: whether it is a to-do, a question or a draft the assistant made."
+    what: Literal["action", "question", "draft", "refused"] | None = Field(
+        None,
+        description="For a `batch_item`: whether it is a to-do, a question or a draft the assistant made, or "
+        "something it found that could not be recorded (`refused`).",
     )
     items: list[QueueLineView] = Field(
         default_factory=list,
@@ -8927,6 +8945,16 @@ class WeekWaitingView(BaseModel):
         description="The ids of the views its project is in (design 6.32); empty when its project is in none. A view "
         "only changes what a screen shows.",
     )
+
+
+class LearningNoticeView(BaseModel):
+    """Whether the assistant is still learning from the person's older mail (a notice above Today's lines)."""
+
+    active: bool = Field(
+        description="True while a read of older mail is under way; the notice goes by itself when it ends."
+    )
+    read: int = Field(0, description="Batches of older mail read so far.")
+    of: int = Field(0, description="Batches of older mail in the reach so far; 0 when not known.")
 
 
 class ThisWeekView(BaseModel):

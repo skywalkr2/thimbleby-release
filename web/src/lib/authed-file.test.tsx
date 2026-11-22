@@ -2,6 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AuthImage } from "../ui/AuthImage";
 import { openFile } from "./authed-file";
+import { onFileShown } from "./external-links";
 import { resetSession } from "./session";
 
 beforeEach(() => {
@@ -78,4 +79,48 @@ test("a file that can't be fetched closes the window that was opened for it", as
   );
   await user.click(screen.getByText("picture"));
   await waitFor(() => expect(win.close).toHaveBeenCalled());
+});
+
+test("in the app's own window a file is handed to the computer by its id, with no download and no pop-up; in a browser it is fetched", async () => {
+  const fetchMock = vi.fn(async () => new Response(new Blob(["x"]), { status: 200 }));
+  vi.stubGlobal("fetch", fetchMock);
+  const open = vi.fn();
+  vi.stubGlobal("open", open);
+  const asked: string[] = [];
+  (window as unknown as { pywebview?: unknown }).pywebview = {
+    api: { open_external: () => undefined, open_file: (id: string) => void asked.push(id) },
+  };
+  try {
+    const user = userEvent.setup();
+    render(
+      <a href="api/files/FILE-7/content" onClick={openFile("api/files/FILE-7/content", "notes.pdf", false)}>
+        document
+      </a>,
+    );
+    await user.click(screen.getByText("document"));
+    expect(asked).toEqual(["FILE-7"]);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+  } finally {
+    delete (window as unknown as { pywebview?: unknown }).pywebview;
+  }
+});
+
+test("when the window only shows a kept file in its folder, the person is told", async () => {
+  const told = vi.fn();
+  const off = onFileShown(told);
+  (window as unknown as { pywebview?: unknown }).pywebview = { api: { open_external: () => undefined, open_file: async () => "shown" } };
+  try {
+    const user = userEvent.setup();
+    render(
+      <a href="api/files/FILE-8/content" onClick={openFile("api/files/FILE-8/content", "run.command", false)}>
+        script
+      </a>,
+    );
+    await user.click(screen.getByText("script"));
+    await waitFor(() => expect(told).toHaveBeenCalledTimes(1));
+  } finally {
+    off();
+    delete (window as unknown as { pywebview?: unknown }).pywebview;
+  }
 });

@@ -236,7 +236,7 @@ test("S-0349 (X74). on Today's review panel, Not right then Send back on one ite
   const mine = async () => {
     // The assistant has finished its run before the page is read, so the line is there to be found.
     await expect
-      .poll(async () => ((await (await page.request.get("api/changes", { headers: AUTH })).json()) as Array<{ state: string }>).every((c) => !["queued", "running"].includes(c.state)), { timeout: 90_000 })
+      .poll(async () => { const q = ((await (await page.request.get("api/status", { headers: AUTH })).json()) as { requests: { queued: number; running: number } }).requests; return q.queued + q.running === 0; }, { timeout: 90_000 })
       .toBe(true);
     await page.reload();
     await expect(page.getByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening)/ })).toBeVisible(LOADED);
@@ -270,7 +270,7 @@ test("S-0349 (X74). on Today's review panel, Not right then Send back on one ite
   await target.getByRole("button", { name: "Send back" }).click();
   // The item leaves at once; after the second run finishes the panel holds the same items, with no item twice.
   await expect
-    .poll(async () => ((await (await page.request.get("api/changes", { headers: AUTH })).json()) as Array<{ state: string }>).every((c) => !["queued", "running"].includes(c.state)), { timeout: 90_000 })
+    .poll(async () => { const q = ((await (await page.request.get("api/status", { headers: AUTH })).json()) as { requests: { queued: number; running: number } }).requests; return q.queued + q.running === 0; }, { timeout: 90_000 })
     .toBe(true);
   // The line of the redone request replaces the first one; it is the only line that is new since the hand-in was made.
   const reopened = await (async () => {
@@ -331,7 +331,7 @@ test("sending one item back adds none of the others again", async ({ page, reque
   // The re-run reads the same input again and gives every item once more: the one that was sent back is made anew, and the
   // ones that were kept are not made a second time.
   await expect
-    .poll(async () => ((await (await page.request.get("api/changes", { headers: AUTH })).json()) as Array<{ state: string }>).every((c) => !["queued", "running"].includes(c.state)), { timeout: 60_000, message: "the re-run finished" })
+    .poll(async () => { const q = ((await (await page.request.get("api/status", { headers: AUTH })).json()) as { requests: { queued: number; running: number } }).requests; return q.queued + q.running === 0; }, { timeout: 60_000, message: "the re-run finished" })
     .toBe(true);
   const after = await open();
   for (const text of adds) expect(times(after, text), `"${text}" is there once more than before, not twice`).toBeLessThanOrEqual(kept[text]);

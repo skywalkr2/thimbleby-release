@@ -220,6 +220,7 @@ from engine import (
     answer_groups,
     answer_hold,
     catch_up,
+    change_rows,
     endings,
     follow_on,
     held_ask,
@@ -1608,6 +1609,7 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
             store, cfg, loop_restarted_at=worker.loop_restarted_at, loop_stuck_since=worker.stuck_since()
         )
         return Status(
+            has_stages=any(v.stages for v in store.plugins.stages.types.values()),
             ai=AiState(state=ai, detail=detail),
             assistant=AssistantStatus(
                 last_run_at=alive.last_run_at,
@@ -1957,6 +1959,8 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
                 continue  # a follow-on that found nothing to bring in line changed nothing
             view = None
             cs = None
+            if change_rows.in_progress(d) or change_rows.own_job(d):
+                continue  # work in progress and the assistant's own jobs show in its status, not here
             source = sources.get(d.get("source") or "")
             watched = (source or {}).get("watched") or {}
             if d.get("changeset"):
@@ -1984,6 +1988,8 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
                     first_on_account=cs.data.get("first_on_account"),
                     omitted=[OmittedOpView(**o) for o in cs.data.get("omitted") or []],
                 )
+                if change_rows.without_subject(d, cs.data, cfg):
+                    continue  # a change with nothing to say what it was about
                 target = own_edits.edited_record(d, cs.data)
                 if target is not None:
                     edited[req.id] = target

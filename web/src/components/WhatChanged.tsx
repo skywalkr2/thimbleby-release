@@ -326,7 +326,6 @@ export function WhatChanged(props: { compact?: boolean; onOpenGuide?: (step: str
                     count={count}
                     accounts={accounts}
                     inNeeds={group.kind === "needs"}
-                    inWith={group.kind === "with"}
                     reveal={revealed?.id === item.id ? revealed.n : 0}
                     onWant={asked(item.id)}
                     onOpenGuide={props.onOpenGuide}
@@ -359,13 +358,11 @@ function ChangeGroupRows(props: {
   const label =
     group.kind === "needs"
       ? t("changes.group.needs")
-      : group.kind === "with"
-        ? t("changes.group.with")
-        : group.day === todayOn(new Date())
-          ? t("changes.group.today")
-          : group.day === yesterdayOn()
-            ? t("changes.group.yesterday")
-            : dayLong(group.day ?? "");
+      : group.day === todayOn(new Date())
+        ? t("changes.group.today")
+        : group.day === yesterdayOn()
+          ? t("changes.group.yesterday")
+          : dayLong(group.day ?? "");
   const total = group.runs.reduce((n, r) => n + 1 + r.same.length, 0);
   return (
     <>
@@ -663,9 +660,8 @@ interface ChangeListRowProps {
   count: number;
   /** The accounts the row's change was read from, when it was read from more than one: the row names them all. */
   accounts?: string[];
-  /** The group the row is in says it needs the person, or is with the assistant, so the row does not say it again. */
+  /** The group the row is in says it needs the person, so the row does not say it again. */
   inNeeds: boolean;
-  inWith: boolean;
   onWant: (what: ChangeWant["what"]) => void;
   onOpenGuide?: (step: string) => void;
 }

@@ -54,6 +54,14 @@ def test_a_full_date_beside_the_words_for_a_deadline_a_renewal_or_an_expiry_is_f
     ]
 
 
+def test_a_sentence_that_is_a_run_of_form_fields_or_capitalized_labels_is_not_offered_as_a_fact(env):
+    _, cfg, _ = env
+    fields = "Unit Number: 1134 Unit Size: 10x10 Rent: $104.94 Next payment due 2026-12-01"
+    shouting = "PAYMENT AMOUNT $104.94 is due 2026-12-01"
+    assert read(cfg, fields) == [] and read(cfg, shouting) == []
+    assert read(cfg, "Your next payment is due 2026-12-01.") != []
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -171,7 +179,7 @@ def test_a_date_the_assistant_missed_is_held_for_the_persons_yes_and_kept_with_t
     cs_id, source = hand_in(ws, cfg, store, text)
     outcomes = store.read().get("changeset", cs_id).data["ops"]
     (found,) = [o for o in outcomes if o["op"]["op"] == "fact"]
-    assert found["status"] == "held" and "waits for your confirmation" in found["reason"]
+    assert found["status"] == "held" and "right" in found["reason"] and "input" not in found["reason"]
     assert found["op"]["on"] == "2026-11-30" and found["op"]["on_kind"] == "renewal"
     assert found["op"]["evidence"]["quote"] == "Your studio membership renews on 2026-11-30."
     assert facts(store) == [], "nothing is applied at once"

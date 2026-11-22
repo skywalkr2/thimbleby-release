@@ -389,7 +389,7 @@ def test_j11_a_scheduled_read_missed_in_sleep_runs_once_on_waking_and_a_lost_net
         first_read = clock()
         assert worker.run_due_watches() == 1
         assert _watch_runs(worker, "notes") == ["ok"]
-        assert len(_changes(client)) == 2
+        assert len(worker.store.read().list("request")) == 2
         lines = client.get("/api/today/queue").json()
 
         clock.move(hours=8)  # the computer sleeps through thirty-two turns and wakes with no network
@@ -400,7 +400,7 @@ def test_j11_a_scheduled_read_missed_in_sleep_runs_once_on_waking_and_a_lost_net
         row = next(s for s in client.get("/api/watch").json() if s["id"] == "notes")
         assert row["last"]["outcome"] == "offline" and row["failures"] == 0 and row["problem"] is None
         assert datetime.fromisoformat(row["read_at"]) == first_read  # still the time of the read that worked
-        assert len(_changes(client)) == 2 and client.get("/api/today/queue").json() == lines
+        assert len(worker.store.read().list("request")) == 2 and client.get("/api/today/queue").json() == lines
         assert not worker.store.read().list("question")
 
         clock.move(minutes=14)
@@ -410,7 +410,7 @@ def test_j11_a_scheduled_read_missed_in_sleep_runs_once_on_waking_and_a_lost_net
         worker.cfg.watch.sources[0].settings["items"] = [*notes, {"key": "note-2", "title": "Note 2", "text": "New."}]
         assert worker.run_due_watches() == 1
         assert _watch_runs(worker, "notes") == ["ok", "offline", "ok"]
-        assert len(_changes(client)) == 3  # only the new note was handed in
+        assert len(worker.store.read().list("request")) == 3  # only the new note was handed in
         row = next(s for s in client.get("/api/watch").json() if s["id"] == "notes")
         assert row["last"]["outcome"] == "ok" and datetime.fromisoformat(row["read_at"]) == clock()
 

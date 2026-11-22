@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { render, screen } from "@testing-library/react";
 import { WordingProvider } from "../lib/wording";
-import { Highlighted, SafeText, findQuote } from "./SafeText";
+import { Highlighted, SafeText, SourceText, findQuote } from "./SafeText";
 
 const wrap = (ui: React.ReactNode) => render(<WordingProvider>{ui}</WordingProvider>);
 
@@ -52,4 +52,16 @@ test("the quoted passage is marked for sight and for screen readers", () => {
   const mark = container.querySelector("mark")!;
   expect(mark.textContent).toContain("b c");
   expect(mark.querySelectorAll(".sr")).toHaveLength(2);
+});
+
+const TRACKING = ["http", "//link.example.com/ls/click?upn="].join(":") + "a1b2c3d4".repeat(40);
+
+test("a source's address shows as its real domain, in the plain viewer and around a highlighted quote", () => {
+  const text = `Thanks for your payment! ${TRACKING}. Next due soon.`;
+  const { container } = wrap(<SourceText text={text} />);
+  expect(container.textContent).toBe("Thanks for your payment! link: link.example.com. Next due soon.");
+  expect(container.textContent).not.toContain("upn=");
+  const marked = wrap(<Highlighted text={text} quote="Next due soon" />).container;
+  expect(marked.textContent).toContain("link: link.example.com.");
+  expect(marked.textContent).not.toContain("a1b2c3d4");
 });

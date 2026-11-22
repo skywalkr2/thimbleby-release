@@ -48,7 +48,6 @@ function Batch(props: { part: QueueLine; named: boolean }) {
   // Items sent back leave the list at once, before the next read of Today says so.
   const [sentBack, setSentBack] = useState<ReadonlySet<string>>(new Set());
   const heading = props.named ? title(part) : null;
-  const refused = (part.outcome ?? {}).refused ?? 0;
   const items = (part.items ?? []).filter((item) => !sentBack.has(item.key));
   const changesets = part.changesets ?? [];
   const confirm = () =>
@@ -75,14 +74,15 @@ function Batch(props: { part: QueueLine; named: boolean }) {
               <li key={item.key} className={styles.item} data-batch-item={item.what ?? ""}>
                 <span className={styles.what}>{whatWord(item.what, t)}</span>
                 <span className={styles.text}>{shortTitle(item.text ?? "")}</span>
-                <Button variant="quiet" size="sm" className={styles.notRight} aria-expanded={open === item.key} aria-label={t("queue.batch.not_right_named", { item: shortTitle(item.text ?? "") })} onClick={() => setOpen(open === item.key ? null : item.key)}>
+                {item.what !== "refused" && <Button variant="quiet" size="sm" className={styles.notRight} aria-expanded={open === item.key} aria-label={t("queue.batch.not_right_named", { item: shortTitle(item.text ?? "") })} onClick={() => setOpen(open === item.key ? null : item.key)}>
                   {t("queue.batch.not_right")}
-                </Button>
+                </Button>}
                 <span className={styles.meta}>
                   {titleWords(item.title, t, has)}
                   {(item.project_name || item.side_name) && <ProjectTag name={item.project_name} parent={item.parent_name} side={item.side_name} className={styles.tag} />}
                   {item.person_name && <span>{t("queue.batch.owner", { name: item.person_name })}</span>}
                 </span>
+                {item.what === "refused" && <p className="hint">{t("queue.batch.refused_row")}</p>}
                 {item.draft && (
                   <figure className={styles.draft}>
                     <figcaption>{t("queue.batch.draft")}</figcaption>
@@ -110,11 +110,10 @@ function Batch(props: { part: QueueLine; named: boolean }) {
       ) : (
         <p className="hint">{t("queue.batch.none_left")}</p>
       )}
-      {refused > 0 && <p className="hint">{tn("queue.batch.refused", refused)}</p>}
       {changesets.length > 0 ? (
         <div className={styles.end}>
           <Button variant="primary" onClick={confirm}>
-            {tn(onlyDrafts ? "queue.batch.keep_drafts" : "queue.batch.keep_all", Math.max(1, items.length))}
+            {tn(onlyDrafts ? "queue.batch.keep_drafts" : "queue.batch.keep_all", Math.max(1, items.filter((item) => item.what !== "refused").length))}
           </Button>
           {onlyDrafts && <p className="hint">{t("queue.batch.keep_drafts_hint")}</p>}
         </div>
@@ -131,6 +130,8 @@ function whatWord(what: QueueLine["what"], t: (key: string) => string): string {
       return t("queue.batch.item.question");
     case "draft":
       return t("queue.batch.item.draft");
+    case "refused":
+      return t("queue.batch.item.refused");
     default:
       return t("queue.batch.item.action");
   }

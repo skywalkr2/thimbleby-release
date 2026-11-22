@@ -1,0 +1,21 @@
+# An offer to accept tickets for a game that was three weeks before the day it is read (older mail read late) is history:
+# no to-do, and above all none dated in the past. Playbook: "A moment already past makes no to-do".
+id: past-event-ticket-offer-makes-no-todo
+title: An offer to accept tickets for an event three weeks past makes no to-do
+skills: [recording-only-what-matters, dates]
+received: '2026-10-24'
+given_file: busy-portfolio.yaml
+pasted: 'From: Ticket Desk <tickets@example.com>
+
+  Subject: Accept your ticket for Harbor City FC at Lakeside United
+
+
+  Odile Fenwick sent you a ticket for Harbor City FC at Lakeside United on Saturday, October 3, at 4 PM. Accept the
+  ticket by October 3 to get in.'
+expect: []
+forbid:
+- op: action.add
+- op: action.close
+stub_answer:
+  summary: The ticket was for a game on October 3, which is over; nothing to do.
+  ops: []

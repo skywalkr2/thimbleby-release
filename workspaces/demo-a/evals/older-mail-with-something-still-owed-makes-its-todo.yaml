@@ -1,0 +1,37 @@
+# Older mail read to learn about the person's life still yields a to-do when something is owed now.
+id: older-mail-with-something-still-owed-makes-its-todo
+title: An older mail with a form still to send makes its to-do beside what it teaches
+skills: [recording-only-what-matters, dates]
+received: '2026-10-14'
+given_file: busy-portfolio.yaml
+older: true
+pasted: 'From: Dr. Alder Clinic <frontdesk@example.com>
+
+  Subject: Before your next visit
+
+
+  Hello, this is the front desk at Alder Clinic. Your checkup is booked for October 28. Please send us the signed intake
+  form before then. Your last visit on September 9 is complete and needs nothing more.'
+expect:
+- op: action.add
+  owners:
+  - PER-1
+  text_has:
+  - intake form
+allow:
+- fact
+- glossary.add
+stub_answer:
+  summary: A checkup on October 28 needs the signed intake form; the September visit needs nothing.
+  ops:
+  - op: action.add
+    text: Send the signed intake form to Alder Clinic
+    owners:
+    - PER-1
+    project: PRJ-1
+    evidence:
+      quote: Please send us the signed intake form before then.
+  - op: fact
+    text: The checkup at Alder Clinic is booked for October 28.
+    evidence:
+      quote: Your checkup is booked for October 28.

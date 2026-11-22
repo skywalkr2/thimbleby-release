@@ -1,0 +1,28 @@
+# Still owed after its date: a bill past its due day with nothing saying it was paid stays a to-do.
+id: unpaid-bill-past-due-stays-a-todo
+title: An unpaid bill whose due date has passed is still a to-do
+skills: [recording-only-what-matters, dates]
+received: '2026-10-14'
+given_file: busy-portfolio.yaml
+pasted: 'From: Water Utility <accounts@example.com>
+
+  Subject: Past due: your bill of $82.40
+
+
+  Your bill of $82.40 was due on October 5 and has not been paid. Please pay it now to avoid a late fee.'
+expect:
+- op: action.add
+  owners:
+  - PER-1
+  text_has:
+  - bill|pay
+stub_answer:
+  summary: The water bill of $82.40 is past due and unpaid.
+  ops:
+  - op: action.add
+    text: Pay the $82.40 water utility bill
+    owners:
+    - PER-1
+    project: PRJ-1
+    evidence:
+      quote: Please pay it now to avoid a late fee.

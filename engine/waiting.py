@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any, NamedTuple
 
-from engine import catch_up, handled, open_items, review_batches, sides, source_intake
+from engine import catch_up, change_rows, handled, open_items, review_batches, sides, source_intake
 from engine.followups import sections
 from engine.names import People
 from engine.storage import Store, WriteContext
@@ -107,6 +107,8 @@ def _unchecked(view: Any, cfg: Any) -> list[Thing]:
         cs = view.get("changeset", d["changeset"])
         if cs is None or review_batches.review_of(cs.data) != "unchecked":
             continue
+        if change_rows.own_job(d) or change_rows.without_subject(d, cs.data, cfg):
+            continue  # the rows What changed leaves out are not counted
         found.append(_thing(view, cfg, request_project(view, req, cs.data)))
     return found
 

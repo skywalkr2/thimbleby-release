@@ -1,0 +1,26 @@
+id: area-a-narrower-kind-of-a-kept-area-is-no-new-area
+title: Items about mystery novels, with "Book collecting" already kept, offer no second area
+skills: [structured-answers, stay-in-scope]
+received: '2026-11-16T15:00:00+00:00'
+given_file: busy-portfolio.yaml
+# "Book collecting" is already an area under Personal. Items about mystery novels share a word, so the rule narrows to
+# them; they belong inside the kept area, so the assistant offers no area for them.
+area_read: true
+given:
+- {kind: project, id: PRJ-91, fields: {name: Book collecting, parent: PRJ-21, area: true}}
+- {kind: action, id: ACT-91, fields: {project: PRJ-21, text: Track the Pageturn order of a Poirot mystery novel, owners: [{person: PER-1}]}}
+- {kind: event, id: EVT-91, fields: {project: PRJ-21, title: Pageturn parcel with a Christie mystery novel, start: '2026-11-19', delivery: {carrier: Example Courier, status: on_its_way, dated: true}}}
+- {kind: action, id: ACT-92, fields: {project: PRJ-21, text: Reply to Pageturn about the damaged mystery novel, owners: [{person: PER-1}]}}
+- {kind: event, id: EVT-92, fields: {project: PRJ-21, title: Pageturn shipment of a Sayers mystery novel, start: '2026-11-21', delivery: {carrier: Example Post, status: on_its_way, dated: true}}}
+expect:
+- op: area.offer
+  areas: 0
+forbid:
+- op: area.offer
+  named: ['mystery']
+  attempted: true
+stub_answer:
+  summary: Mystery novels are part of the Book collecting area you already keep.
+  ops:
+  - op: area.offer
+    areas: []

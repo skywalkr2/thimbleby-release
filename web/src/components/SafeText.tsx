@@ -93,20 +93,39 @@ export function findQuote(text: string, quote: string): [number, number] | null 
   return [at[start], at[start + needle.length - 1] + 1];
 }
 
+const ADDRESS = /https?:\/\/[^\s<>"')\]]+/g;
+
+/** A source's words for reading: each address becomes "link: <its real domain>", never the long address (a tracking
+ * address many lines long hides where it goes), and ISO days read as days. */
+export function readableSource(text: string, t: (key: string, vars?: Record<string, string>) => string): string {
+  return plainDates(text).replace(ADDRESS, (found) => {
+    const trailing = /[.,;:!?]+$/.exec(found)?.[0] ?? "";
+    const host = domainOf(trailing ? found.slice(0, -trailing.length) : found);
+    return host ? t("source.link", { domain: host.replace(/^www\./, "") }) + trailing : found;
+  });
+}
+
+/** The saved words of an input, as plain text with links shown as their domain. */
+export function SourceText(props: { text: string }) {
+  const { t } = useWords();
+  return <div className="source-text">{readableSource(props.text, t)}</div>;
+}
+
 export function Highlighted(props: { text: string; quote: string }) {
   const { t } = useWords();
+  const plain = (text: string) => readableSource(text, t);
   const found = findQuote(props.text, props.quote);
-  if (!found) return <div className="source-text">{plainDates(props.text)}</div>;
+  if (!found) return <div className="source-text">{plain(props.text)}</div>;
   const [start, end] = found;
   return (
     <div className="source-text">
-      {plainDates(props.text.slice(0, start))}
+      {plain(props.text.slice(0, start))}
       <mark>
         <span className="sr">{t("source.quote_start")}</span>
-        {plainDates(props.text.slice(start, end))}
+        {plain(props.text.slice(start, end))}
         <span className="sr">{t("source.quote_end")}</span>
       </mark>
-      {plainDates(props.text.slice(end))}
+      {plain(props.text.slice(end))}
     </div>
   );
 }

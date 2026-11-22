@@ -76,6 +76,28 @@ export function useStablePanels(): NavPanel[] {
   return found ?? rememberedPanels();
 }
 
+const STAGES_KEY = "cockpit:nav:stages";
+
+/** Whether any kind of record has stages. Until the status is read it is what this browser last read, so the Stages entry
+ * does not arrive after the screen draws and push the links below it down; a read that fails keeps it too. */
+export function useStableHasStages(): boolean {
+  const found = useQuery({ queryKey: ["status"], queryFn: api.status }).data?.has_stages;
+  useEffect(() => {
+    if (found === undefined) return;
+    try {
+      window.localStorage.setItem(STAGES_KEY, found ? "1" : "0");
+    } catch {
+      // Storage can be blocked; the menu is then drawn from what is read.
+    }
+  }, [found]);
+  if (found !== undefined) return found;
+  try {
+    return window.localStorage.getItem(STAGES_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 export function useNav(): NavModel {
   const { t, tn } = useWords();
   const panels = useStablePanels();
@@ -95,7 +117,9 @@ export function useNav(): NavModel {
   const named = [...(personal ? [{ view: recordView("project", personal), label: t("nav.personal"), project: personal }] : []), ...sides.map((s) => ({ view: recordView("project", s.project), label: s.name, project: s.project }))];
   const sideEntries: NavEntry[] = named.map((n) => ({ view: n.view, label: n.label, icon: "grid", side: n.project }));
   const projects: NavEntry[] = justMe || sides.length > 0 ? sideEntries : [{ view: "records/projects", label: t("nav.projects"), icon: "grid" }];
-  const wait: NavEntry[] = justMe
+  // Stages is listed only while some kind of record has stages; the page still answers when opened by its address.
+  const hasStages = useStableHasStages();
+  const wait: NavEntry[] = !hasStages
     ? []
     : [
         { view: "work/stages", label: t("nav.stages"), icon: "layers", sub: true },

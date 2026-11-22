@@ -446,7 +446,7 @@ export const allServers = [
       timeout: 60_000,
     }),
     on(justMe.port, {
-      command: `uv run python -m tests.e2e_server --port ${justMe.port} --base-path / --just-me${clockFlag}`,
+      command: `uv run python -m tests.e2e_server --port ${justMe.port} --base-path / --just-me --plain-stages${clockFlag}`,
       cwd: "..",
       url: `http://127.0.0.1:${justMe.port}/api/health`,
       reuseExistingServer: false,

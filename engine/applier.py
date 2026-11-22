@@ -28,6 +28,7 @@ from engine import (
     endings,
     fact_pause,
     fact_use,
+    fact_wording,
     id_words,
     knowledge,
     learn,
@@ -529,6 +530,24 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
                 f"This came from an automated notice ('{sender}'): keep the fact only if it is something the person "
                 "needs to know.",
             )
+        if isinstance(op, FactOp) and ctx.actor != "pm" and not ctx.confirmed_by_pm:
+            tuning = ctx.cfg.checks.tuning.raw_fact
+            if (
+                copied := fact_wording.raw_run(
+                    op.text,
+                    f"{op.evidence.quote}\n{ctx.inputs.raw_input}",
+                    min_words=tuning.min_words,
+                    copied_share=tuning.copied_share,
+                    caps_run=tuning.caps_run,
+                    label_run=tuning.label_run,
+                )
+            ) is not None:
+                lint(
+                    i,
+                    "fact-is-raw-run",
+                    f"the fact reads as a run of the source: {copied}. Write it as one plain sentence that says what "
+                    "is true (what, who, which day), and keep the exact words as its evidence",
+                )
         if isinstance(op, FactOp) and op.about and (why := _about_problem(op.about, ctx, view)) is not None:
             refuse(i, "targets", why)
         # evidence
@@ -1240,7 +1259,7 @@ STANCE_PLAIN = {
 }
 #: Why a contact detail or a project the assistant found waits, as the held line says it.
 CONTACT_WAITS = "A way to reach someone waits for your confirmation."
-DATED_WAITS = "A date found in the words of an input waits for your confirmation."
+DATED_WAITS = "A day found in the words of a message waits for you to say it is right."
 #: Why an act the assistant drafted waits: nothing goes out, and nothing is even drafted, until the person says so.
 ACT_WAITS = "Something to send waits for your confirmation; nothing goes out until you say yes."
 REACHED_WAITS = "Someone has already been sent this: look at it before dropping it."

@@ -27,10 +27,11 @@ const plugin = { plugin: "demo", id: "L-1", text: "Look at this", about: null, a
 const none = (): S["WaitingCount"] => ({ total: 0, sides: [] });
 const waitingFixture = (): S["WaitingCounts"] => ({ changed: { total: 2, sides: [] }, followups: { total: 3, sides: [] }, open: { total: 4, sides: [] }, handled: { total: 1, sides: [] } });
 
-function show(opts: { current?: Parameters<typeof Sidebar>[0]["current"]; expanded?: boolean; panels?: S["PanelView"][]; onToggle?: () => void; waiting?: S["WaitingCounts"] } = {}) {
+function show(opts: { current?: Parameters<typeof Sidebar>[0]["current"]; expanded?: boolean; panels?: S["PanelView"][]; onToggle?: () => void; waiting?: S["WaitingCounts"]; hasStages?: boolean } = {}) {
   fakeApi({
     "GET waiting": () => opts.waiting ?? { changed: none(), followups: none(), open: none(), handled: none() },
     "GET panels": () => opts.panels ?? [],
+    "GET status": () => ({ has_stages: opts.hasStages ?? true }),
     "GET changes": () => [change("a", "review"), change("b", "needs_you"), change("c", "done")],
     "GET followups": () => [{ person: "p", name: "Sam", is_pm: false, message: "", questions: [], actions: [], to_send: 3 }],
     "GET today/queue": () => [line("a"), line("b"), line("c")],
@@ -157,6 +158,7 @@ const SECOND = { project: "PRJ-second", kind: "job", name: "Lantern Works" };
 /** The sidebar once the person's sides have been read, with the other views as in any workspace. */
 function showWithSides(sides: Array<typeof FIRST>, expanded = true) {
   fakeApi({
+    "GET status": () => ({ has_stages: sides.length > 0 }),
     "GET panels": () => [],
     "GET changes": () => [],
     "GET followups": () => [],
@@ -247,6 +249,7 @@ test("the current top project's page is the marked one", async () => {
 
 test("a workspace with projects of its own and no side keeps the Projects and Stages entries", async () => {
   fakeApi({
+    "GET status": () => ({ has_stages: true }),
     "GET panels": () => [],
     "GET changes": () => [],
     "GET followups": () => [],
@@ -257,6 +260,7 @@ test("a workspace with projects of its own and no side keeps the Projects and St
   });
   renderApp(<Sidebar current="today" expanded onToggle={() => undefined} />);
   await screen.findByText("Work");
+  await screen.findByRole("link", { name: "Stages" });
   expect(labels()).toEqual(expect.arrayContaining(["Stages", "Projects"]));
   expect(labels()).not.toContain("Personal");
 });
@@ -314,4 +318,15 @@ test("a side's name wraps beside the dot to two lines at most, the whole name on
   const css = readFileSync(join(__dirname, "Sidebar.module.css"), "utf8");
   expect(css).toMatch(/data-side-entry\] \.label \{[^}]*white-space: normal/);
   expect(css).toMatch(/data-side-entry\] \.label \{[^}]*-webkit-line-clamp: 2/);
+});
+
+test("Stages is in the menu only while some kind of record has stages", async () => {
+  show({ hasStages: false });
+  await screen.findByRole("link", { name: /^What changed/ });
+  await waitFor(() => expect(screen.queryByRole("link", { name: "Stages" })).toBeNull());
+});
+
+test("Stages is in the menu when a kind of record has stages", async () => {
+  show({ hasStages: true });
+  expect(await screen.findByRole("link", { name: "Stages" })).toBeInTheDocument();
 });

@@ -135,7 +135,7 @@ test.describe.serial("journey: one sent message in three mailboxes", () => {
       });
     // Every request the Start made has finished, so a second copy would be there by now.
     await expect
-      .poll(async () => ((await (await page.request.get("api/changes", { headers: auth })).json()) as Array<{ state: string }>).every((c) => !["queued", "running"].includes(c.state)), { timeout: 150_000 })
+      .poll(async () => { const q = ((await (await page.request.get("api/status", { headers: auth })).json()) as { requests: { queued: number; running: number } }).requests; return q.queued + q.running === 0; }, { timeout: 150_000 })
       .toBe(true);
     expect(await listed()).toBe(1);
     // And To-dos shows it once.

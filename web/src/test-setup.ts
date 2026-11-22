@@ -18,6 +18,8 @@ beforeEach(() => window.sessionStorage.clear());
 
 // The Schedule's "Show all hours" is remembered for the person; a test that picked it does not leave it picked for the next.
 beforeEach(() => window.localStorage.removeItem("cockpit:schedule-all-hours"));
+// The menu remembers whether Stages was listed; each test starts from a browser that hasn't seen it.
+beforeEach(() => window.localStorage.removeItem("cockpit:nav:stages"));
 
 // A test of a screen's filters uses a short list; the bar is drawn over it unless the test asks for the real minimum
 // (`setFilterBarMin(FILTER_BAR_MIN)`, in the tests of the rule itself).

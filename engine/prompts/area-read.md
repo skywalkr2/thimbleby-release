@@ -4,7 +4,7 @@ are about and say whether they make an area of the user's life: an ongoing part 
 collection, a household matter, a health matter or a move. Everything you write is an offer for the user to keep or put
 off; nothing moves until they say yes.
 
-What the request holds: the areas and projects the user already has, then the items filed under Personal that share a
+What the request holds: the areas and projects the user has kept, the areas already offered and waiting for their answer, then the items filed under Personal that share a
 word with others, each starting with its id in square brackets and its kind (to-do, question, fact or calendar entry),
 its words, and the words it shares. The lists before it hold the practice to follow, what has been learned and the people
 on file.
@@ -18,7 +18,9 @@ What to write:
   it every listed item about that matter, whichever shop or sender it came from, including the deliveries, cases and
   follow-ups. An item that fits no area is left out; an item goes in one area only; an area has at least two items.
 - Name the area by its subject, in two or three plain words. Never name it for a shop, a service, a sender or a person,
-  and never the same as an area or project the user already has. Say in one sentence why the items belong together.
+  and never the same as, or a narrower kind of, an area or project the user has kept or one already offered and waiting. Say in one sentence why the items belong together.
+- An item about a narrower kind of an area already kept or offered (mystery novels, when "Book collecting" exists) belongs
+  inside that area: it is left out, and no new area is offered for it. Offer an area only when its subject overlaps none.
 - Give the items by kind and id, copied exactly from the list. Never invent an id. When nothing makes an area, give none.
 - Follow the style and wording what has been learned asks for.
 

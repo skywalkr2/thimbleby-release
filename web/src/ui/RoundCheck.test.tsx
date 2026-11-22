@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { vi } from "vitest";
-import { RoundCheck } from "./RoundCheck";
+import { RoundCheck, useCheckNow } from "./RoundCheck";
 
 // S-0049: the round mark on a to-do reads as "done", never as "select".
 test("the mark is a button named for what it does, not a check box, and its ring is decoration", async () => {
@@ -31,4 +31,30 @@ test("the ring is drawn with a check inside it, and no other component draws its
   const own = (file: string) => /styles\.(ring|circle|roundMark)\b/.test(readFileSync(join(__dirname, "..", "components", file), "utf8"));
   const found = readdirSync(join(__dirname, "..", "components")).filter((f) => f.endsWith(".tsx") && !f.endsWith(".test.tsx") && own(f));
   expect(found).toEqual([]);
+});
+
+function Probe(props: { run: () => Promise<unknown> }) {
+  const [checked, press] = useCheckNow(props.run);
+  return <RoundCheck label="Mark done: X" checked={checked} onClick={press} />;
+}
+
+test("the mark is filled before the save answers, and empty again when the save did not happen", async () => {
+  let answer: (v: unknown) => void = () => undefined;
+  render(<Probe run={() => new Promise((resolve) => (answer = resolve))} />);
+  const mark = screen.getByRole("button", { name: "Mark done: X" });
+  expect(mark).not.toHaveAttribute("data-checked");
+  await userEvent.click(mark);
+  expect(mark).toHaveAttribute("data-checked");
+  answer(undefined);
+  await vi.waitFor(() => expect(mark).not.toHaveAttribute("data-checked"));
+});
+
+test("the mark stays filled when the save answers", async () => {
+  let answer: (v: unknown) => void = () => undefined;
+  render(<Probe run={() => new Promise((resolve) => (answer = resolve))} />);
+  const mark = screen.getByRole("button", { name: "Mark done: X" });
+  await userEvent.click(mark);
+  answer({ ok: true });
+  await new Promise((r) => setTimeout(r, 0));
+  expect(mark).toHaveAttribute("data-checked");
 });

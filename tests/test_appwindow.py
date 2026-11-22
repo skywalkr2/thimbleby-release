@@ -209,7 +209,7 @@ def test_the_dock_icon_shows_with_the_window_and_not_without_it():
 
     shell.run(work)
     docks = [args[0] for name, args, _ in window.calls if name == "tray.dock"]
-    assert docks[:1] == [True] and docks[-1] is False
+    assert True in docks and docks[-1] is False
 
 
 def test_started_at_login_it_shows_nothing_until_the_person_opens_it():
@@ -542,3 +542,29 @@ def test_a_choice_the_page_does_not_offer_is_ignored():
     shell, _, _ = make()
     PageApi(shell).choose("delete everything")
     assert not shell.answer_event.is_set()
+
+
+def test_the_dock_follows_the_window_whether_the_menu_item_starts_before_or_after_it_shows():
+    """Starting the menu item never hides the Dock icon of a window that is already open."""
+    for show_first in (True, False):
+        shell, window, _ = make()
+        if show_first:
+            shell._show()
+            shell._start_item()
+        else:
+            shell._start_item()
+            shell._show()
+        docks = [args[0] for name, args, _ in window.calls if name == "tray.dock"]
+        assert docks[-1] is True
+    shell, window, _ = make()
+    shell._start_item()
+    assert [a[0] for n, a, _ in window.calls if n == "tray.dock"] == [False]
+
+
+def test_the_menu_bar_item_start_does_not_touch_the_dock():
+    import inspect
+
+    from engine import appwindow_backends
+
+    source = inspect.getsource(appwindow_backends.MacStatusItem.start)
+    assert "dock(" not in source

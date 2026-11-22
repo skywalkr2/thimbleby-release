@@ -394,6 +394,37 @@ test("a ticked to-do keeps its place struck through, says it was done just now a
   await waitFor(() => expect(document.querySelector("[data-done-row]")).toBeNull());
 });
 
+test("the row reads done the moment the mark is pressed, before the save answers", async () => {
+  const user = userEvent.setup();
+  let answer: (v: unknown) => void = () => undefined;
+  api({ "POST actions/A-1/status": () => new Promise((resolve) => (answer = resolve)) });
+  renderApp(<OpenItems />);
+  const [first] = await rows();
+  await user.click(within(first).getByRole("button", { name: /^Mark done: / }));
+  const done = await waitFor(() => {
+    const found = document.querySelector<HTMLElement>("[data-done-row]");
+    if (!found) throw new Error("not yet");
+    return found;
+  });
+  expect(done).toHaveTextContent("Done just now");
+  answer({ ok: "A-1", request: null });
+  await waitFor(() => expect(document.querySelector("[data-done-row]")).not.toBeNull());
+});
+
+test("a save that fails puts the row back and says so beside it", async () => {
+  const user = userEvent.setup();
+  api({ "POST actions/A-1/status": () => new Refuse(500, "the disk is full") });
+  renderApp(<OpenItems />);
+  const [first] = await rows();
+  await user.click(within(first).getByRole("button", { name: /^Mark done: / }));
+  await waitFor(() => expect(document.querySelector("[data-done-row]")).toBeNull());
+  const back = (await rows())[0];
+  expect(within(back).getByRole("button", { name: /^Mark done: / })).toBeInTheDocument();
+  expect(document.body).toHaveTextContent(/Send the proof to the printer/);
+  await waitFor(() => expect(document.querySelector("[data-row-failed]")).not.toBeNull());
+  expect(document.body).toHaveTextContent("Not saved");
+});
+
 test("a tab with nothing in it says so, and only rows the filters hid say that nothing matches", async () => {
   const user = userEvent.setup();
   api({}, { questions: [] });

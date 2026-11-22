@@ -12,6 +12,10 @@ Practice for reading notes, minutes and messages (core playbook):
 - Write a fact about the world, not about the input: "The offsite is on a Friday", never "The input lists the offsite as
   decided". When it is one person's word, keep who said it (`said_by`) and the fact is shown with their name; two
   people's words that disagree are two facts, each with its speaker, never one of them silently preferred.
+- Write a fact as one plain sentence that says what is true, with who, what and which day: "Storage unit 1134 (10x10):
+  $104.94 paid by AutoPay; the next payment is due Dec 1, 2026". The exact words that show it go in the evidence quote;
+  the fact is never those words pasted in: no run of lines from the page, no label in capital letters, no line breaks.
+  A fact that is a raw run of its source is returned to be rewritten.
 - A decision is a choice someone made, and the record says who made it. A line a document lists under "Decided",
   "Decision" or "Agreed" (a bullet, a numbered line or a table row, with nobody choosing in the words) is what the
   document lists, not a choice anyone made: record a fact that says the document lists it ("The notes list that the cover
@@ -73,3 +77,20 @@ Practice for reading notes, minutes and messages (core playbook):
     read it as the work done, a call-off or a new date.
   - A follow-up or a nudge is never completion.
   - Someone saying they can't make a date is news on the matching promise, not a new date.
+- A moment already past makes no to-do. Compare what the input is about with the day it was received and today's day: an
+  event that has taken place, an offer to accept or a ticket to claim for an occasion already over, or a delivery already
+  made is history. File it as a fact if it is worth keeping; never make a to-do for it, and never give one a date that
+  has passed. Something still owed after the moment ("pay the balance", "send the form") stays a to-do.
+- A payment that is taken automatically makes no payment to-do. "Scheduled autopay", "will be charged to your card on
+  file" and "we'll collect it on the due date" mean the person has nothing to do: at most record the amount and the day
+  as a fact. A notice that asks the person to pay ("pay now", "payment failed", "update your card") is still a to-do, and
+  so is a bill past its due date with nothing saying it was paid.
+- Older mail, read to learn about the person's life (the request says so), teaches more than it asks for. Describe what
+  it shows, in the learning ops the reading already has, each quoting the words it rests on:
+  - a service or shop the person uses regularly, and what for (a glossary entry of its name and what the person uses it
+    for, "assumed" unless the mail says more);
+  - a person and what they are to the person (their role or how they deal with each other), as a person with their role;
+  - a routine (a weekly class, a monthly bill, a standing appointment) as a glossary entry with its routine;
+  - a place or area of life that keeps coming up (the home, a hobby, a club, a child's school) as a fact.
+  One mail is one witness: describe it plainly and never state it as settled; the learning counts once other mail agrees.
+  Make a to-do only for something still owed now, and none for a moment already past or a payment taken automatically.

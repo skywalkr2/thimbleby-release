@@ -261,7 +261,7 @@ def test_check_now_counts_everything_handed_in_not_only_what_lists_in_came_in(tm
     api = cfg.server.base_path.rstrip("/") + "/api"
     body = c.post(f"{api}/today/arrived/check").json()
     assert body["items"] == [] and body["new_items"] == 2  # files go to What changed, and still count
-    assert len(c.get(f"{api}/changes").json()) == 2
+    assert c.get(f"{api}/changes").json() == []  # started, not finished: work in progress is not a row
     assert c.post(f"{api}/today/arrived/check").json()["new_items"] == 0
 
 

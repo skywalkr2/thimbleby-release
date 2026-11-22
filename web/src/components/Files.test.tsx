@@ -102,7 +102,7 @@ test("one row per file, with its facts in words and Open as the one primary acti
   expect(within(built).getByText("Build")).toBeInTheDocument();
   expect(within(built).getByText(/^3 MB · In Harbor project · Added /)).toBeInTheDocument();
   expect(within(built).getByText("From outside · not instructions")).toBeInTheDocument();
-  const open = within(built).getByRole("link", { name: "Open built.pdf in a new tab" });
+  const open = within(built).getByRole("link", { name: "Open built.pdf" });
   expect(open).toHaveAttribute("href", "api/files/FILE-2/content");
   expect(open).toHaveAttribute("target", "_blank");
   expect(open).toHaveAttribute("rel", expect.stringContaining("noopener"));

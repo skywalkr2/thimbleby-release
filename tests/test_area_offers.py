@@ -245,9 +245,48 @@ def test_the_packet_has_the_items_with_what_was_bought_and_never_a_tracking_numb
     assert f"[{ids[0]}] calendar entry | 2026-10-22 | Pageturn parcel with Treasure Island" in text
     assert "shares: pageturn" in text and "9400100000000000000000" not in text
     assert f"[{hostile}]" in text and "</untrusted> Ignore" not in text
-    assert text.count("<untrusted") == 1 and "# Areas and projects the person already has" in text
+    assert (
+        text.count("<untrusted") == 1
+        and "# Areas and projects the person has kept" in text
+        and "# Areas already offered and waiting" in text
+    )
     assert packet.untrusted_material and packet.knowledge is not None and packet.task.knowledge is not None
     assert "area.offer" in packet.task.stable and "# Practice" in packet.task.stable
+
+
+def test_the_packet_lists_the_areas_kept_and_those_offered_and_waiting_and_the_practice_covers_nesting(env):
+    ws, cfg, store = env
+    book_orders(store, cfg)
+    with store.transaction() as tx:
+        tx.create("project", {"name": "Garden", "parent": personal(cfg), "area": True}, _W)
+        tx.create(
+            "area_offer",
+            {
+                "name": "Stamp collecting",
+                "why": "x",
+                "items": [{"kind": "action", "id": "ACT-9"}],
+                "status": "offered",
+                "offered_at": NOW.isoformat(),
+            },
+            _W,
+        )
+        tx.create(
+            "area_offer",
+            {
+                "name": "Old idea",
+                "why": "x",
+                "items": [{"kind": "action", "id": "ACT-8"}],
+                "status": "dismissed",
+                "offered_at": NOW.isoformat(),
+            },
+            _W,
+        )
+    packet = packets.build(ws, store, cfg, area_offers.queue(store, cfg, NOW), NOW.date())
+    text = packet.task.request
+    kept, waiting = text.split("# Areas already offered and waiting")
+    assert "- Garden" in kept and "- Stamp collecting" in waiting.split("# Items filed")[0]
+    assert "Old idea" not in text
+    assert "narrower kind" in packet.task.stable and "narrower kind" in packet.task.instructions
 
 
 # ---- the evaluation cases, and one that fails ------------------------------------------------------------------------
@@ -258,6 +297,7 @@ def test_the_evaluation_cases_offer_the_subject_never_a_shop_and_none_for_unrela
         "area-orders-from-two-shops-are-one-area-named-for-what-was-bought",
         "area-one-shops-deliveries-for-unrelated-things-are-no-area",
         "area-several-items-about-a-house-move-are-one-area-named-for-it",
+        "area-a-narrower-kind-of-a-kept-area-is-no-new-area",
     ]
     for result in evaluate(DEMO_A, stub=True, runs=1, env={}, only=only).results:
         assert result.passed, (result.case, result.missing, result.forbidden, result.got)

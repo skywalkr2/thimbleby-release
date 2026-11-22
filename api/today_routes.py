@@ -14,6 +14,7 @@ from api.schemas import (
     ComingView,
     ConnectedEventView,
     ConnectedPersonView,
+    LearningNoticeView,
     OwnerNameView,
     PriorityLineView,
     PriorityThingView,
@@ -96,6 +97,14 @@ def build_today_router(ws: Workspace, cfg: Config, store: Store, events: Events,
 
     def owner_ids(people: People, ids: list[str]) -> list[OwnerNameView]:
         return [OwnerNameView(person=p, name=people.name(p)) for p in ids]
+
+    @r.get("/today/learning")
+    def today_learning() -> LearningNoticeView:
+        """Whether a read of older mail is under way, and how far along it is, for the notice above Today's lines."""
+        from engine import learning_notice
+
+        found = learning_notice.standing(store.read())
+        return LearningNoticeView(active=found.active, read=found.read, of=found.of)
 
     @r.get("/today/priorities")
     def priorities() -> TopPrioritiesView:

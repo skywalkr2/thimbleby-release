@@ -4,7 +4,7 @@
 // primary act is the likeliest next step, and the rest are in its menu: edit, reassign, merge a near-duplicate, hold,
 // drop, a note to the assistant. Every act is the person's own, at once, with Undo; the server records its signal.
 import { useQuery } from "@tanstack/react-query";
-import { useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { api } from "../lib/api";
 import { useReviewTime } from "../lib/review-time";
 import { ActScope, useAct } from "../lib/act";
@@ -192,19 +192,36 @@ export function OpenItems() {
     setTab(next);
     set({ state: "" });
   };
+  // A to-do is shown done the moment its mark is pressed, before the save answers: its id waits here until the list stops holding it.
+  const [pressed, setPressed] = useState<Set<string>>(new Set());
   const gone = (a: OpenAction) => setSettled((now) => new Map(now).set(a.id, a));
-  const undone = (id: string) =>
+  const pressedNow = (a: OpenAction) => {
+    gone(a);
+    setPressed((now) => new Set(now).add(a.id));
+  };
+  const undone = (id: string) => {
     setSettled((now) => {
       const next = new Map(now);
       next.delete(id);
       return next;
     });
-  const stillOpen = new Set(actions.map((a) => a.id));
+    setPressed((now) => {
+      const next = new Set(now);
+      next.delete(id);
+      return next;
+    });
+  };
+  const listed = actions.map((a) => a.id).join("\u0000");
+  useEffect(() => {
+    const held = new Set(listed.split("\u0000"));
+    setPressed((now) => (now.size === 0 || [...now].every((id) => held.has(id)) ? now : new Set([...now].filter((id) => held.has(id)))));
+  }, [listed]);
+  const stillOpen = new Set(actions.filter((a) => !pressed.has(a.id)).map((a) => a.id));
   const ticked = [...settled.values()].filter((a) => !stillOpen.has(a.id) && actionsShown([a], filters).length > 0);
 
   // One cap for every section: with more to-dos than the setting names, each section shows the same smaller number, each with its own
   // "Show N more"; a list that fits is not cut.
-  const sections = groupActions([...shownActions, ...ticked], today);
+  const sections = groupActions([...shownActions.filter((a) => !pressed.has(a.id)), ...ticked], today);
   const rowsShown = items.data?.rows_shown ?? 15;
   const sectionCap = sections.reduce((n, g) => n + g.rows.length, 0) > rowsShown ? Math.max(3, Math.floor(rowsShown / 3)) : rowsShown;
   // The list | detail choice (design 7.13): from 1024px the first to-do is chosen as the list opens and its page shows beside the
@@ -308,7 +325,7 @@ export function OpenItems() {
                 <RowList aria-label={shownActions.length > 0 ? t("open.list.actions") : undefined} role={shownActions.length > 0 ? undefined : "presentation"}>
                   <InlineAddTodo onDetails={(words, when) => addTodo.open(words, undefined, undefined, when)} />
                   {sections.map(({ group, rows }) => (
-                    <TodoGroupRows key={group} group={group} rows={rows} limit={sectionCap} inlineOrigin={narrow} ticked={tickedIds} choice={rowChoice} onDone={gone} onUndone={undone} />
+                    <TodoGroupRows key={group} group={group} rows={rows} limit={sectionCap} inlineOrigin={narrow} ticked={tickedIds} choice={rowChoice} onDone={gone} onPressed={pressedNow} onUndone={undone} />
                   ))}
                   <NeedsADateLine rows={needDate} />
                 </RowList>
@@ -333,7 +350,7 @@ export function OpenItems() {
 
 /** One group of the to-dos: its label with the count, then its rows (the first `limit`, then "Show N more"; a row just ticked
  * stays where it was). The label is a part of the list, not a row of it. */
-function TodoGroupRows(props: { group: string; rows: OpenAction[]; limit: number; inlineOrigin: boolean; ticked: Set<string>; choice?: ListChoice; onDone: (a: OpenAction) => void; onUndone: (id: string) => void }) {
+function TodoGroupRows(props: { group: string; rows: OpenAction[]; limit: number; inlineOrigin: boolean; ticked: Set<string>; choice?: ListChoice; onDone: (a: OpenAction) => void; onPressed: (a: OpenAction) => void; onUndone: (id: string) => void }) {
   const { t, tn } = useWords();
   const id = useId();
   const [all, setAll] = useState(false);
@@ -352,7 +369,7 @@ function TodoGroupRows(props: { group: string; rows: OpenAction[]; limit: number
         props.ticked.has(a.id) ? (
           <DoneRow key={a.id} action={a} onUndone={props.onUndone} />
         ) : (
-          <ActionRow key={a.id} action={a} inlineOrigin={props.inlineOrigin} choice={props.choice} onDone={props.onDone} />
+          <ActionRow key={a.id} action={a} inlineOrigin={props.inlineOrigin} choice={props.choice} onDone={props.onDone} onPressed={props.onPressed} onUndone={props.onUndone} />
         ),
       )}
       {hidden.size > 0 && (
@@ -372,7 +389,7 @@ function Choice(props: { id: string; label: string; value: string; onChange: (v:
   return <FilterChip label={props.label} value={props.value} onChange={props.onChange} options={[["", props.none], ...props.options]} />;
 }
 
-type ActionRowProps = { action: OpenAction; inlineOrigin: boolean; choice?: ListChoice; onDone?: (a: OpenAction) => void };
+type ActionRowProps = { action: OpenAction; inlineOrigin: boolean; choice?: ListChoice; onDone?: (a: OpenAction) => void; onPressed?: (a: OpenAction) => void; onUndone?: (id: string) => void };
 
 /** One to-do's row: what is done to it goes one at a time, so a second press while the first is out is ignored. */
 function ActionRow(props: ActionRowProps) {
@@ -401,7 +418,14 @@ function ActionRowBody(props: ActionRowProps) {
   const remind = useRemindMe(a.id, a.remind_at, focus);
   const stopRepeat = useStopRepeat(a);
   const said = useSaid();
-  const done = (note?: string) =>
+  // The row reads done at once; a save that did not happen puts it back, with the failure named beside it.
+  const done = async (note?: string) => {
+    props.onPressed?.(a);
+    const result = await save(note);
+    if (result === undefined) props.onUndone?.(a.id);
+    return result;
+  };
+  const save = (note?: string) =>
     act(
       async () => {
         const result = await api.actionStatus(a.id, "done", note);
@@ -604,6 +628,7 @@ function DoneRow(props: { action: OpenAction; onUndone: (id: string) => void }) 
   return (
     <Row
       data-done-row=""
+      failedId={a.id}
       lead={<Icon name="check" size={18} />}
       title={<span className={styles.doneTitle}>{plainTitle(a.text)}</span>}
       meta={

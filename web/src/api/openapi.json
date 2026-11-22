@@ -14783,7 +14783,7 @@
         "type": "object"
       },
       "HeldAsk": {
-        "description": "A held item as the question the person is asked (design 7.6): `ask` is what is proposed (close an item, change\nits date, give it to another owner, send a question to someone else instead, drop it, or, for an ending of a\npromise, move its date or record a part delivered, or keep a guess at how long it takes (`effort`, with the minutes\nin `value`), or keep a reminder proposed for a dated fact or a to-do (`remind`, with the moment in `value`, the day\nit is for in `day` and the reminder it has now in `from_value`); `ending`: the words said only that it is closed,\nso the person is asked whether it is done by its owners or no longer needed), `item` the words of what it is about,\n`value` and `from_value` the new and the present date, `to_name` the person it would go to, `told` the people a\ndrop would leave out of the loop (told on `told_on`) and `quote` the words the assistant rested it on. An ending of\nan action also carries what the input says happened: the action's id in `record`, its `owners` in the owner\nformat, `reporter` (who said it), and by ask the words of a new date (`due_words`) with the promise's own earlier\nwords (`earlier`), what was `delivered` and what is `left`, or the `reason` it is called off. A rule the person\nstated that contradicts rules in force (`contradiction`) names the new rule in `item` and the words of those rules\nin `against`. The screen words the title and the answers from these.",
+        "description": "A held item as the question the person is asked (design 7.6): `ask` is what is proposed (close an item, change\nits date, give it to another owner, send a question to someone else instead, drop it, or, for an ending of a\npromise, move its date or record a part delivered, or keep a guess at how long it takes (`effort`, with the minutes\nin `value`), or keep a reminder proposed for a dated fact or a to-do (`remind`, with the moment in `value`, the day\nit is for in `day` and the reminder it has now in `from_value`), or confirm a day the rules found in a message\n(`fact_date`, the day in `value`, its kind in `day`); `ending`: the words said only that it is closed,\nso the person is asked whether it is done by its owners or no longer needed), `item` the words of what it is about,\n`value` and `from_value` the new and the present date, `to_name` the person it would go to, `told` the people a\ndrop would leave out of the loop (told on `told_on`) and `quote` the words the assistant rested it on. An ending of\nan action also carries what the input says happened: the action's id in `record`, its `owners` in the owner\nformat, `reporter` (who said it), and by ask the words of a new date (`due_words`) with the promise's own earlier\nwords (`earlier`), what was `delivered` and what is `left`, or the `reason` it is called off. A rule the person\nstated that contradicts rules in force (`contradiction`) names the new rule in `item` and the words of those rules\nin `against`. The screen words the title and the answers from these.",
         "properties": {
           "against": {
             "anyOf": [
@@ -14812,7 +14812,8 @@
               "ending",
               "effort",
               "remind",
-              "contradiction"
+              "contradiction",
+              "fact_date"
             ],
             "title": "Ask",
             "type": "string"
@@ -16904,6 +16905,33 @@
           "lines"
         ],
         "title": "LearnedView",
+        "type": "object"
+      },
+      "LearningNoticeView": {
+        "description": "Whether the assistant is still learning from the person's older mail (a notice above Today's lines).",
+        "properties": {
+          "active": {
+            "description": "True while a read of older mail is under way; the notice goes by itself when it ends.",
+            "title": "Active",
+            "type": "boolean"
+          },
+          "of": {
+            "default": 0,
+            "description": "Batches of older mail in the reach so far; 0 when not known.",
+            "title": "Of",
+            "type": "integer"
+          },
+          "read": {
+            "default": 0,
+            "description": "Batches of older mail read so far.",
+            "title": "Read",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "active"
+        ],
+        "title": "LearningNoticeView",
         "type": "object"
       },
       "LeftOpenItem": {
@@ -28323,7 +28351,8 @@
                 "enum": [
                   "action",
                   "question",
-                  "draft"
+                  "draft",
+                  "refused"
                 ],
                 "type": "string"
               },
@@ -28331,7 +28360,7 @@
                 "type": "null"
               }
             ],
-            "description": "For a `batch_item`: whether it is a to-do, a question or a draft the assistant made.",
+            "description": "For a `batch_item`: whether it is a to-do, a question or a draft the assistant made, or something it found that could not be recorded (`refused`).",
             "title": "What"
           }
         },
@@ -35185,6 +35214,12 @@
             "default": false,
             "description": "The app can start itself again when the person asks (POST /api/restart).",
             "title": "Can Restart",
+            "type": "boolean"
+          },
+          "has_stages": {
+            "default": false,
+            "description": "Some kind of record moves through stages (an add-on's or the workspace's): the menu lists Stages.",
+            "title": "Has Stages",
             "type": "boolean"
           },
           "network_wait": {
@@ -56064,6 +56099,25 @@
           }
         },
         "summary": "Today Held"
+      }
+    },
+    "/api/today/learning": {
+      "get": {
+        "description": "Whether a read of older mail is under way, and how far along it is, for the notice above Today's lines.",
+        "operationId": "today_learning_api_today_learning_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LearningNoticeView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Today Learning"
       }
     },
     "/api/today/priorities": {

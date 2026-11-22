@@ -685,6 +685,7 @@ export const api = {
   chooseAttention: (kind: string, how: "quiet" | "stop" | "show") => call<S["AttentionChosen"]>("POST", `attention/${id(kind)}/${how}`),
   /** Keep showing a kind of suggestion: the question about it isn't raised again for a while. Undo is `undoNotNowSuggestion`. */
   keepShowing: (kind: string) => call<S["NotNowDone"]>("POST", `attention/${id(kind)}/keep`),
+  todayLearning: () => call<S["LearningNoticeView"]>("GET", "today/learning"),
   thisWeek: () => call<S["ThisWeekView"]>("GET", "today/week"),
   /** The form of the brief that is due now, or the one named: the morning brief, the evening wrap-up or the Monday briefing. */
   brief: (form?: string) => call<S["BriefView"]>("GET", form ? `brief?form=${id(form)}` : "brief"),

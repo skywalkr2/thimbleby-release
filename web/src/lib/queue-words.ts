@@ -33,6 +33,12 @@ function effortTime(held: S["HeldAsk"], t: T): string {
   return parts.filter(Boolean).join(" ");
 }
 
+/** What kind of day a found date is, in a word: deadline, renewal, expiry, warranty or bill, else just "date". */
+function factKind(held: S["HeldAsk"], t: T): string {
+  const kinds = ["deadline", "renewal", "expiry", "warranty", "bill"];
+  return t(`queue.held.fact_kind.${held.day && kinds.includes(held.day) ? held.day : "other"}`);
+}
+
 /** A held line's title: the item as a question, named in quotes (design 7.6). */
 export function heldTitle(held: S["HeldAsk"], t: T): string {
   const item = shortTitle(held.item);
@@ -59,6 +65,8 @@ export function heldTitle(held: S["HeldAsk"], t: T): string {
       return t("queue.held.q.remind", { item, day: held.day ? day(held.day) : "" });
     case "contradiction":
       return t("queue.held.q.contradiction", { item });
+    case "fact_date":
+      return t("queue.held.q.fact_date", { item, date: held.value ? day(held.value) : "", kind: factKind(held, t) });
     default:
       return item;
   }
@@ -98,6 +106,8 @@ export function heldAnswers(held: S["HeldAsk"], t: T): { primary: string; other:
       return { primary: t("queue.held.a.remind", { when: held.value ? wallWhen(held.value) : "" }), other: held.from_value ? t("queue.held.k.remind", { when: wallWhen(held.from_value) }) : t("queue.held.k.no_remind") };
     case "contradiction":
       return { primary: t("queue.held.a.contradiction"), other: t("queue.held.k.contradiction") };
+    case "fact_date":
+      return { primary: t("queue.held.a.fact_date"), other: t("queue.held.k.fact_date") };
     default:
       return { primary: t("queue.held.a.close"), other: t("queue.held.k.close") };
   }

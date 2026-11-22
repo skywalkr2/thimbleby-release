@@ -1,0 +1,23 @@
+# A notice that a payment will be taken automatically leaves the person nothing to do.
+id: autopay-notice-makes-no-payment-todo
+title: A scheduled autopay notice makes no payment to-do, at most a fact
+skills: [recording-only-what-matters, dates]
+received: '2026-10-14'
+given_file: busy-portfolio.yaml
+pasted: 'From: Card Services <billing@example.com>
+
+  Subject: Your statement balance of $457.59 is ready
+
+
+  Your statement balance is $457.59. It is scheduled to be paid automatically from your checking account on October 20.
+  You do not need to do anything.'
+expect: []
+forbid:
+- op: action.add
+stub_answer:
+  summary: The balance of $457.59 is paid automatically on October 20; nothing to do.
+  ops:
+  - op: fact
+    text: The statement balance of $457.59 is scheduled to be paid automatically on October 20.
+    evidence:
+      quote: It is scheduled to be paid automatically from your checking account on October 20.

@@ -249,7 +249,6 @@ class MacStatusItem:
         menu.setDelegate_(self.delegate)
         self.item.setMenu_(menu)
         self.fill(menu)
-        self.dock(False)
 
     def _image(self, dotted: bool) -> Any:
         """The menu-bar picture: the one-colour template mark, with a dot when something waits for the person."""

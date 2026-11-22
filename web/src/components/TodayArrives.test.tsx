@@ -110,6 +110,11 @@ test("an area the assistant offered shows why and every item it would take as it
   expect(row("area")).toHaveTextContent("All four are about looking after your teeth.");
   expect(row("area")).toHaveTextContent("4 items");
   expect(row("area")).not.toHaveTextContent("Book the dentist; Ask about the crown");
+  // The items sit inside the line's own card, in the shared item list, never bare lines beside it.
+  const list = within(row("area")).getByRole("list", { name: "What it would take" });
+  expect(list).toHaveAttribute("data-item-list");
+  expect(row("area").contains(list)).toBe(true);
+  expect(rows.every((r) => r.hasAttribute("data-item"))).toBe(true);
 });
 
 test("an area offered for items that share a word is started and filled with one press, and Undo takes both changes back", async () => {

@@ -36,15 +36,14 @@ function item(id: string, over: Partial<S["ChangeItem"]> = {}): S["ChangeItem"] 
 
 const rowsOf = () => screen.getAllByRole("listitem").filter((li) => li.hasAttribute("data-row") && !li.closest("aside"));
 
-test("the groups are what needs you, what is with the assistant, then the days, newest first", () => {
+test("the groups are what needs you, then the days, newest first", () => {
   const groups = groupChanges(
-    [item("a", { state: "done", created_at: ago(60) }), item("b", { state: "queued" }), item("c", { state: "needs_you" }), item("d", { state: "done", created_at: ago(1) }), item("e", { state: "failed" })],
+    [item("a", { state: "done", created_at: ago(60) }), item("c", { state: "needs_you" }), item("d", { state: "done", created_at: ago(1) }), item("e", { state: "failed" })],
     (c) => c.source_title ?? "",
     (c) => c.state,
   );
   expect(groups.map((g) => [g.kind, g.runs.map((r) => r.head.id)])).toEqual([
     ["needs", ["c", "e"]],
-    ["with", ["b"]],
     ["day", ["d"]],
     ["day", ["a"]],
   ]);
@@ -67,10 +66,9 @@ test("a row that holds something to look at is never folded into a run", () => {
   expect(groups[0].runs.map((r) => r.head.id)).toEqual(["a", "b"]);
 });
 
-test("Needs you leads, a row in it has no chip, and the rest of the list has a heading for the day or the assistant", async () => {
+test("Needs you leads, a row in it has no chip, and the rest of the list has a heading for the day", async () => {
   fakeApi({
     "GET changes": () => [
-      item("w", { state: "queued", source_title: "Waiting thing" }),
       item("d", { state: "done", source_title: "Done today" }),
       item("o", { state: "done", source_title: "Done long ago", created_at: ago(24 * 9) }),
       item("n", { state: "needs_you", source_title: "Stopped thing", waiting: "Say who you are first" }),
@@ -80,15 +78,14 @@ test("Needs you leads, a row in it has no chip, and the rest of the list has a h
   await screen.findByText("Stopped thing");
   const headings = screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent);
   expect(headings[0]).toMatch(/^Needs you/);
-  expect(headings[1]).toMatch(/^With /);
-  expect(headings[2]).toMatch(/^Today/);
+  expect(headings[1]).toMatch(/^Today/);
+  expect(headings.some((h) => /^With /.test(h ?? ""))).toBe(false);
   // The order of the rows is the order of the groups.
-  expect(rowsOf().map((li) => li.textContent?.match(/Stopped thing|Waiting thing|Done today|Done long ago/)?.[0])).toEqual(["Stopped thing", "Waiting thing", "Done today", "Done long ago"]);
+  expect(rowsOf().map((li) => li.textContent?.match(/Stopped thing|Done today|Done long ago/)?.[0])).toEqual(["Stopped thing", "Done today", "Done long ago"]);
   // A routine state (with the assistant, done, waiting for you) is said by its group, not by a chip on each row.
-  const waiting = screen.getByRole("listitem", { name: "Waiting thing" });
-  expect(within(waiting).queryByText(/^With /)).toBeNull();
-  expect(waiting).toHaveTextContent("Handed in");
-  expect(waiting).not.toHaveTextContent("is on it");
+  const done = screen.getByRole("listitem", { name: "Done today" });
+  expect(within(done).queryByText(/^With /)).toBeNull();
+  expect(done).not.toHaveTextContent("is on it");
   // The reason a row stopped is in its meta line, not "see why below".
   expect(screen.getByRole("listitem", { name: "Stopped thing" })).toHaveTextContent("Say who you are first");
   expect(document.body).not.toHaveTextContent("see why below");

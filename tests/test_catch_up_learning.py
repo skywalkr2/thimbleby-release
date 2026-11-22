@@ -228,7 +228,8 @@ def test_the_go_route_starts_the_held_runs_and_today_has_one_line_for_them_and_t
         assert client.post("/api/knowledge/catch-up/go").json() == {"started": 2}
         assert client.post("/api/knowledge/catch-up/go").json() == {"started": 0}
         assert not [x for x in client.get("/api/today/queue").json() if x["kind"] == "catch_up_go"]
-        assert {c["state"] for c in client.get("/api/changes").json()} == {"queued"}
+        assert {r.data["state"] for r in store.read().list("request")} == {"queued"}
+        assert client.get("/api/changes").json() == [], "started runs are work in progress, not rows"
 
 
 # ---- an unchecked backup is skipped at run time ----------------------------------------------------------------------

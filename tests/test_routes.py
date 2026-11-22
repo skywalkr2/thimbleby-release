@@ -371,11 +371,13 @@ def test_a_stopped_request_can_be_dismissed_and_put_back(api):
 
 
 def test_a_request_that_is_not_stopped_cannot_be_dismissed(api):
-    client, base, _ = api
+    client, base, worker = api
     req = client.post(f"{base}/handin", json={"note": "file this"}).json()["request"]
-    item = _item(client, base, req)
-    assert item["state"] == "queued"
-    assert client.post(f"{base}/requests/{req}/dismiss", json={"read_version": item["version"]}).status_code == 409
+    # Work in progress is not listed on What changed, so the version is read from the record.
+    assert req not in [i["id"] for i in client.get(f"{base}/changes").json()]
+    record = worker.store.read().get("request", req)
+    assert record.data["state"] == "queued"
+    assert client.post(f"{base}/requests/{req}/dismiss", json={"read_version": record.version}).status_code == 409
     assert client.post(f"{base}/requests/NOPE-1/dismiss", json={"read_version": 1}).status_code == 404
 
 
@@ -623,7 +625,7 @@ def test_a_run_held_for_its_cost_shows_its_estimate_and_goes_on_the_go(gated):
     assert item["estimate_usd"] > 0.001 and abs(shown - item["estimate_usd"]) < 0.006
     assert client.post(f"{base}/requests/{item['id']}/retry").status_code == 409
     assert client.post(f"{base}/requests/{item['id']}/go", json={"read_version": item["version"]}).status_code == 200
-    assert _item(client, base, item["id"])["approval"] == "granted"
+    assert worker.store.read().get("request", item["id"]).data["approval"] == "granted"
     assert worker.run_pending() == 1
     assert _item(client, base, item["id"])["state"] == "review"
 

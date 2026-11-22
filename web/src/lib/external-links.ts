@@ -2,7 +2,7 @@
 // The window (a system web view) offers `window.pywebview.api.open_external` to the page; in a browser tab there is no
 // such function and links behave as usual.
 
-type Bridge = { open_external?: (url: string) => unknown; page_drawn?: () => unknown };
+type Bridge = { open_external?: (url: string) => unknown; open_file?: (file: string) => unknown; page_drawn?: () => unknown };
 type Handler = { postMessage: (body: string) => void };
 
 function bridge(): Bridge | undefined {
@@ -38,6 +38,29 @@ export function inAppWindow(): boolean {
 /** In the app's own window, open an outside address in the person's own browser. False in a browser tab. */
 export function openInBrowser(url: string): boolean {
   return inAppWindow() && ask("open_external", url);
+}
+
+let shownListener: (() => void) | null = null;
+
+/** Be told when the window only showed a kept file in its folder instead of opening it. Returns what undoes it. */
+export function onFileShown(listener: () => void): () => void {
+  shownListener = listener;
+  return () => {
+    if (shownListener === listener) shownListener = null;
+  };
+}
+
+/** In the app's own window, hand a kept file (by its id) to the computer's own program for it; when the window answers
+ * that it only showed the file in its folder (a kind that is never started), the person is told. False in a browser tab. */
+export function openKeptFile(file: string): boolean {
+  const own = bridge()?.open_file as ((id: string) => unknown) | undefined;
+  if (own) {
+    void Promise.resolve(own(file)).then((result) => {
+      if (result === "shown") shownListener?.();
+    });
+    return true;
+  }
+  return inAppWindow() && ask("open_file", file);
 }
 
 function outside(href: string): string | null {

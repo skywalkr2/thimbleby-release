@@ -601,6 +601,65 @@ class FileLimits(ConfigModel):
         "notes, which are handed in to be turned into text.",
         json_schema_extra={"choices": "media_types"},
     )
+    open_extensions: list[str] = Field(
+        default_factory=lambda: [
+            "pdf",
+            "png",
+            "jpg",
+            "jpeg",
+            "gif",
+            "webp",
+            "txt",
+            "csv",
+            "rtf",
+            "md",
+            "doc",
+            "docx",
+            "xls",
+            "xlsx",
+            "ppt",
+            "pptx",
+            "odt",
+            "ods",
+            "odp",
+            "mp3",
+            "m4a",
+            "mp4",
+            "mov",
+        ],  # fmt: skip
+        description="The endings of files the installed app opens with the computer's own program. A file whose name "
+        "ends otherwise (a program, a script, a shortcut) is only shown in its folder, never started; the last "
+        "ending counts, so 'invoice.pdf.command' is a '.command'.",
+    )
+    open_types: list[str] = Field(
+        default_factory=lambda: [
+            "application/pdf",
+            "image/png",
+            "image/jpeg",
+            "image/gif",
+            "image/webp",
+            "text/plain",
+            "text/csv",
+            "text/markdown",
+            "text/rtf",
+            "application/rtf",
+            "application/msword",
+            "application/vnd.ms-excel",
+            "application/vnd.ms-powerpoint",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/vnd.oasis.opendocument.text",
+            "application/vnd.oasis.opendocument.spreadsheet",
+            "application/vnd.oasis.opendocument.presentation",
+            "audio/mpeg",
+            "audio/mp4",
+            "video/mp4",
+            "video/quicktime",
+        ],
+        description="The media types of files the installed app opens with the computer's own program; a file is "
+        "opened only when its ending (open_extensions) and its stored type are both listed.",
+    )
     read_max_mb: float = Field(
         25,
         gt=0,
@@ -1834,6 +1893,7 @@ def _default_lints() -> dict[str, Severity]:
         "question-changes-nothing": "return",
         "bookkeeping": "return",
         "long-quote": "return",
+        "fact-is-raw-run": "return",
         "singling-out": "return",
         "action-stands-alone": "return",
         "reasoning-in-title": "return",
@@ -1962,6 +2022,37 @@ class LongQuoteTuning(ConfigModel):
     )
 
 
+class RawFactTuning(ConfigModel):
+    min_words: int = Field(
+        12,
+        ge=3,
+        le=200,
+        description="The fewest words a fact needs before the check that it isn't a copy of the source's own words "
+        "applies: a short fact may be the words as they stood.",
+    )
+    copied_share: float = Field(
+        0.8,
+        gt=0,
+        le=1,
+        description="How much of a fact's words, as one unbroken run found in the source, make it a copy rather than "
+        "a sentence written about it (0 to 1).",
+    )
+    caps_run: int = Field(
+        2,
+        ge=0,
+        le=20,
+        description="How many capitalized words in a row mark a fact as a copied label or heading; zero turns this "
+        "part of the check off.",
+    )
+    label_run: int = Field(
+        3,
+        ge=0,
+        le=20,
+        description="How many labels with a colon and a value ('Unit size: 10x10') in one fact mark it as copied "
+        "form fields; zero turns this part of the check off.",
+    )
+
+
 class ActionStandsAloneTuning(ConfigModel):
     min_words: int = Field(
         2,
@@ -2009,6 +2100,10 @@ class LintTuning(ConfigModel):
     long_quote: LongQuoteTuning = Field(
         default_factory=LongQuoteTuning,
         description="Settings of the check that text for someone else doesn't quote long passages back.",
+    )
+    raw_fact: RawFactTuning = Field(
+        default_factory=RawFactTuning,
+        description="Settings of the check that a fact is a sentence, not a run of the source's own words.",
     )
 
 

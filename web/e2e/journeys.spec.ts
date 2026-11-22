@@ -278,7 +278,7 @@ test.describe.serial("journeys", () => {
     // so a line is acted on only once nothing is queued or running.
     const settled = () =>
       expect
-        .poll(async () => (await json<Array<{ state: string }>>("api/changes")).every((c) => !["queued", "running"].includes(c.state)), { timeout: 60_000, message: "the assistant's own work settled" })
+        .poll(async () => { const q = (await json<{ requests: { queued: number; running: number } }>("api/status")).requests; return q.queued + q.running === 0; }, { timeout: 60_000, message: "the assistant's own work settled" })
         .toBe(true);
     const json = async <T>(path: string): Promise<T> => {
       const response = await page.request.get(path);

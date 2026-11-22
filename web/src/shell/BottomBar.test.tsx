@@ -6,7 +6,7 @@ import { fakeApi, renderApp } from "../test-utils";
 import { BottomBar } from "./BottomBar";
 
 function show(handlers: Partial<Record<"onHandIn" | "onAsk" | "onHelp" | "onFeedback" | "onOpenGuide", () => void>> = {}) {
-  fakeApi({ "GET panels": () => [], "GET changes": () => [], "GET followups": () => [] });
+  fakeApi({ "GET panels": () => [], "GET changes": () => [], "GET followups": () => [], "GET status": () => ({ has_stages: true }) });
   const noop = () => undefined;
   renderApp(
     <BottomBar

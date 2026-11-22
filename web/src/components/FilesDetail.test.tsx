@@ -58,7 +58,7 @@ test("choosing a file shows its details beside the list: a preview, where it cam
   expect(within(pane).getByRole("heading", { name: "What refers to it" })).toBeInTheDocument();
   const link = await within(pane).findByRole("link", { name: "File: cover-2.png" });
   expect(link).toHaveAttribute("href", expect.stringContaining("FILE-2"));
-  expect(within(pane).getByRole("link", { name: "Open cover.png in a new tab" })).toHaveAttribute("target", "_blank");
+  expect(within(pane).getByRole("link", { name: "Open cover.png" })).toHaveAttribute("target", "_blank");
 });
 
 test("a file nothing refers to says so, and a kind with no preview only offers to open it", async () => {

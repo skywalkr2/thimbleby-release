@@ -178,6 +178,15 @@ def start(
         fresh = ws.config(env=env)
         opened = open_or_hold(ws, fresh)
         token = ws.new_install_token()
+        from engine import kept_files
+
+        shell.open_kept = lambda file_id: kept_files.open_kept(
+            opened,
+            ws.private_dir,
+            file_id,
+            extensions=fresh.storage.files.open_extensions,
+            types=fresh.storage.files.open_types,
+        )
         app, _ = cli.make_app(
             ws, fresh, token, opened, on_restart=ask_restart, on_erased=finished.set, on_update=ask_update
         )

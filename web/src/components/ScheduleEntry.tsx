@@ -12,7 +12,7 @@ import { Button as AriaButton } from "react-aria-components";
 import { Icon } from "../ui/Icon";
 import { Pill } from "../ui/Pill";
 import { SideMark } from "../ui/SideMark";
-import { RoundCheck } from "../ui/RoundCheck";
+import { RoundCheck, useCheckNow } from "../ui/RoundCheck";
 import { Tooltip } from "../ui/Tooltip";
 import styles from "./Schedule.module.css";
 
@@ -149,6 +149,7 @@ export function EntryButton(props: {
       undefined,
       { once: `entry-done:${entry.action}` },
     );
+  const [checked, tick] = useCheckNow(done);
   const status = deliveryStatusWord(entry, t);
   const when = props.time ? shortWhen(entry, t) : "";
   // With more than one side the entry's color is its side's (its 3px edge; the key is the side filter's chips), and an entry whose side is
@@ -242,7 +243,7 @@ export function EntryButton(props: {
   // A to-do among the entries has the same mark as on the To-dos list; a calendar's entry has none, only its calendar's edge.
   return entry.kind === "due" && entry.action ? (
     <span className={styles.dueRow} data-due-row="">
-      <RoundCheck small label={t("today.todo.done_named", { text: entry.title })} tip={t("followups.mark_done")} onClick={() => void done()} />
+      <RoundCheck small checked={checked} label={t("today.todo.done_named", { text: entry.title })} tip={t("followups.mark_done")} onClick={tick} />
       {button}
     </span>
   ) : (

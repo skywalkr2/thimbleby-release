@@ -204,6 +204,11 @@ class PageApi:
         run in it from outside."""
         self._shell.page_drawn = True
 
+    def open_file(self, file_id: str) -> str:
+        """Open a file this workspace keeps with the computer's own program for it: "opened", or "shown" when its kind
+        is never started and it is only shown in its folder. Anything but the id of a kept file is refused ("")."""
+        return self._shell.open_kept(file_id) or ""
+
     def open_external(self, url: str) -> bool:
         """Open a link to another address in the person's own browser, never in this window."""
         if not isinstance(url, str) or not outside_address(url):
@@ -237,6 +242,9 @@ class AppShell:
         self.restart_enabled: Callable[[], bool] = lambda: False
         #: The version on offer, when a newer one is: the item's dot and its Update line.
         self.update_offered: str | None = None
+        #: Opens a kept file by its id with the computer's program (set once the workspace is open):
+        #: "opened", "shown" or None.
+        self.open_kept: Callable[[str], str | None] = lambda file_id: None
         self.quit_event = threading.Event()
         self.retry_event = threading.Event()
         self.answer = ""
@@ -284,6 +292,8 @@ class AppShell:
     def _start_item(self) -> None:
         if self.tray is not None:
             self.tray.start(self.lines, self._act, self.words["desktop.title"])
+            # The item's start never decides the Dock; the Dock follows the window, whichever came first.
+            self.tray.dock(self._shown)
 
     def _finish(self) -> None:
         _note("the work has stopped; closing the window")

@@ -6,12 +6,12 @@ import type { HTMLAttributes, ReactNode } from "react";
 import { Icon } from "./Icon";
 import styles from "./Banner.module.css";
 
-export function Banner(props: Omit<HTMLAttributes<HTMLElement>, "children"> & { as?: "div" | "li"; children: ReactNode; action?: ReactNode; /** A save that failed is drawn on the danger edge; the words and the icon say it too. */ tone?: "danger" }) {
+export function Banner(props: Omit<HTMLAttributes<HTMLElement>, "children"> & { as?: "div" | "li"; children: ReactNode; action?: ReactNode; /** A save that failed is drawn on the danger edge; the words and the icon say it too. */ tone?: "danger" | "info" }) {
   const { as = "div", children, action, tone, className, ...rest } = props;
   const Tag = as as "div";
   return (
     <Tag {...rest} className={[styles.banner, className ?? ""].filter(Boolean).join(" ")} data-banner="" data-tone={tone}>
-      <Icon name="alert" size={16} />
+      <Icon name={tone === "info" ? "inbox" : "alert"} size={16} />
       <p className={styles.text}>{children}</p>
       {action}
     </Tag>

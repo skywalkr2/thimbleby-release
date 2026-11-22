@@ -53,7 +53,7 @@ import { CONVERSATION_KINDS, RecordConversation } from "./RecordConversation";
 import { RecordActivity } from "./RecordActivity";
 import { RefreshedLines } from "./RefreshedLines";
 import { RowMenu, type MenuAction } from "./RowMenu";
-import { SafeLink, domainOf } from "./SafeText";
+import { SafeLink, SourceText, domainOf } from "./SafeText";
 import { StancePicker } from "./StancePicker";
 import { Unfiled } from "./Unfiled";
 import { TextSection } from "./TextSection";
@@ -860,7 +860,7 @@ function SourceBody(props: { id: string }) {
   return (
     <section aria-labelledby="source-body-title" className="record-section" data-source-body="">
       <h2 id="source-body-title">{t("record.source_body")}</h2>
-      {source.data.text ? <div className="source-text">{source.data.text}</div> : <p className="hint">{t("source.not_kept")}</p>}
+      {source.data.text ? <SourceText text={source.data.text} /> : <p className="hint">{t("source.not_kept")}</p>}
     </section>
   );
 }

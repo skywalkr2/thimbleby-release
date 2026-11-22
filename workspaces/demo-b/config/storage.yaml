@@ -27,6 +27,8 @@ files:
   max_file_mb: 50
   max_total_mb: 2000
   read_max_mb: 25
+  open_extensions: [pdf, png, jpg, jpeg, gif, webp, txt, csv, rtf, md, doc, docx, xls, xlsx, ppt, pptx, odt, ods, odp, mp3, m4a, mp4, mov]   # endings the app opens with the computer's program; any other is only shown in its folder
+  open_types: [application/pdf, image/png, image/jpeg, image/gif, image/webp, text/plain, text/csv, text/markdown, text/rtf, application/rtf, application/msword, application/vnd.ms-excel, application/vnd.ms-powerpoint, application/vnd.openxmlformats-officedocument.wordprocessingml.document, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.openxmlformats-officedocument.presentationml.presentation, application/vnd.oasis.opendocument.text, application/vnd.oasis.opendocument.spreadsheet, application/vnd.oasis.opendocument.presentation, audio/mpeg, audio/mp4, video/mp4, video/quicktime]   # media types it opens; both must match
   read_max_chars: 30000
 sync:
   folder: ""   # e.g. ~/CloudDrive/cockpit; off until set

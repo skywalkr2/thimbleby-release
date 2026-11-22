@@ -91,3 +91,23 @@ test("What changed: the open change's heading sits inside its side panel, also o
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(100);
   await inside();
 });
+
+test("What changed lists no work in progress: no group for it and no row of it, while the assistant has something started (S-0678)", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const auth = { Authorization: "Bearer e2e-token" };
+  // Something handed in is started work, the assistant's own or the person's, until it finishes.
+  const handed = await page.request.post("api/handin", { headers: auth, data: { note: `Check the proof copies before the phone review (${Date.now()}).` } });
+  expect(handed.ok(), await handed.text()).toBe(true);
+  const listed = page.waitForResponse((r) => r.url().endsWith("/api/changes") && r.ok());
+  await page.goto("?token=e2e-token");
+  await page.evaluate(() => {
+    window.location.hash = "work/changed";
+  });
+  await expect(page.getByRole("heading", { level: 1, name: "What changed" })).toBeVisible(LOADED);
+  const rows = (await (await listed).json()) as Array<{ state: string; cause: unknown; dismissed: boolean }>;
+  for (const row of rows) {
+    expect(row.dismissed || row.cause != null || !["queued", "running"].includes(row.state), "the list holds no work in progress").toBe(true);
+  }
+  await expect(page.getByRole("heading", { level: 3, name: /^With / })).toHaveCount(0);
+  await expect(page.locator("main")).not.toContainText("Learning from a correction");
+});

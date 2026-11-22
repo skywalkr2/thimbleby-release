@@ -56,6 +56,15 @@ test("a held reminder for a dated item is a question naming the day, with answer
   expect(heldAnswers({ ...held, from_value: "2026-12-05T09:00:00+00:00" }, t).other).toMatch(/^Keep the reminder at .*9:00/);
 });
 
+test("a day the rules found in a message is asked as 'is this the right day', with plain answers and no internal word", () => {
+  const held = { ask: "fact_date", item: "Your next payment is due 2026-12-01.", value: "2026-12-01", day: "renewal" } as const;
+  const title = heldTitle(held, t);
+  expect(title).toMatch(/^Is .*1.* the right day for the renewal: 'Your next payment is due .*\.'\?$/);
+  expect(title).not.toMatch(/input/i);
+  expect(heldAnswers(held, t)).toEqual({ primary: "Keep it", other: "Not right" });
+  expect(heldTitle({ ...held, day: "something" }, t)).toContain("the date:");
+});
+
 test("a voice note waiting to be turned into text is titled by the file it is about", () => {
   expect(titleWords({ ...base, kind: "task", task: "transcribe", subject: "walk.m4a" }, t, has)).toBe("Turn the voice note 'walk.m4a' into text");
   expect(titleWords({ ...base, kind: "task", task: "transcribe" }, t, has)).toBe("Turning a voice note into text");

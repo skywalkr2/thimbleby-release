@@ -171,3 +171,23 @@ def test_a_held_asks_told_names_are_exactly_who_a_note_goes_to(env):
     assert asked["ask"] == "ending" and asked["told"] == names and asked["told_on"] == NOW.date().isoformat()
     # Without the config there is no stance to read, so nothing is left out.
     assert len(held_ask.describe(view, people, drop_op(action))["told"]) == 3
+
+
+def test_a_day_the_rules_found_is_asked_as_a_question_about_that_day_and_its_hold_has_no_internal_word(env):
+    from engine.applier import DATED_WAITS
+
+    _, _, store = env
+    op = {
+        "op": "fact",
+        "text": "Your next payment is due 2026-12-01.",
+        "on": "2026-12-01",
+        "on_kind": "renewal",
+        "group": "dates-found",
+        "evidence": {"quote": "Your next payment is due 2026-12-01."},
+    }
+    shown = held_ask.describe(store.read(), None, op)
+    assert shown["ask"] == "fact_date" and shown["value"] == "2026-12-01" and shown["day"] == "renewal"
+    assert shown["quote"] == "Your next payment is due 2026-12-01."
+    assert "input" not in DATED_WAITS.lower()
+    # A fact with no such group is not this question.
+    assert held_ask.describe(store.read(), None, {**op, "group": None}) is None

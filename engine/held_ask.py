@@ -1,7 +1,7 @@
 """A held item as a question (design 7.6, 7.7): what the person is asked to confirm, in structured form so the screen
-words it as "Close 'X'?" with a button that names the result. Only the holds that rest on an inference, that end or move
-a promise, or that would drop something that already reached someone, are shaped here; any other hold is shown by its
-label. Reads only."""
+words it as "Close 'X'?" with a button that names the result. Only the holds that rest on an inference, that name a
+day the rules found, that end or move a promise, or that would drop something that already reached someone, are shaped
+here; any other hold is shown by its label. Reads only."""
 
 from __future__ import annotations
 
@@ -16,6 +16,8 @@ REMIND = "remind"
 ENDING = "ending"
 #: A rule the person stated that contradicts one in force: which wins is the person's to say.
 CONTRADICTION = "contradiction"
+#: A day the rules found in the words of a message: the person is asked whether it is the right day.
+FACT_DATE = "fact_date"
 
 
 def _text(record: Any) -> str:
@@ -117,6 +119,14 @@ def describe(
             "told_on": on,
             "quote": quote,
             **_ending(people, found, {"op": "action.close"}, reporter),
+        }
+    if name == "fact" and op.get("group") == "dates-found" and op.get("on"):
+        return {
+            "ask": FACT_DATE,
+            "item": " ".join(str(op.get("text") or "").split()),
+            "value": str(op["on"]),
+            "day": op.get("on_kind"),
+            "quote": quote,
         }
     if name in ("action.move", "action.part"):
         found = view.get("action", op.get("id", ""))

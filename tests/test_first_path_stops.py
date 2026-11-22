@@ -146,8 +146,9 @@ def test_the_screen_sees_the_cause_and_one_action_lets_the_account_see_it_and_ru
     assert on_disk["providers"][account]["allowed_data"] == ["open", "internal"]
     [kept] = [c for c in worker.store.read().list("setting_change") if c.data["key"] == change["key"]]
     assert kept.data["after"] == ["open", "internal"]
-    queued = client.get("/api/changes").json()[0]
-    assert queued["state"] == "queued" and queued["cause"] is None
+    queued = worker.store.read().get("request", stopped["id"]).data
+    assert queued["state"] == "queued" and not queued.get("cause")
+    assert client.get("/api/changes").json() == [], "work in progress is not a row"
 
     worker.run_pending()
     after = client.get("/api/changes").json()[0]
@@ -161,8 +162,8 @@ def test_the_action_refuses_a_request_that_is_not_waiting_on_a_level(api):
     pasted = fixture_records(DEMO_B, "project")[0]["name"]
     client.post("/api/handin", json={"note": "", "pasted": f"{NOTE} {pasted}"})
     assert client.post("/api/requests/REQ-404/allow-data").status_code == 404
-    [queued] = client.get("/api/changes").json()
-    assert client.post(f"/api/requests/{queued['id']}/allow-data").status_code == 409
+    [queued] = worker.store.read().list("request")
+    assert client.post(f"/api/requests/{queued.id}/allow-data").status_code == 409
     worker.run_pending()
 
 
@@ -226,8 +227,8 @@ def test_naming_the_person_queues_the_waiting_requests_by_itself(tmp_path):
         [waiting] = client.get("/api/changes").json()
         assert waiting["waiting"] == SAY_WHO_FIRST and waiting["cause"]["kind"] == "no_person"
         assert client.post("/api/me", json={"full_name": "Someone Plain"}).status_code == 200
-        [queued] = client.get("/api/changes").json()
-        assert queued["state"] == "queued" and queued["cause"] is None
+        [queued] = app.state.worker.store.read().list("request")
+        assert queued.data["state"] == "queued" and not queued.data.get("cause")
 
 
 # ---- a folder's first read -----------------------------------------------------------------------------------------

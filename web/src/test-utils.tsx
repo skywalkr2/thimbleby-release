@@ -65,6 +65,7 @@ export function statusFixture(over: Partial<S["Status"]> = {}, parts: { backup?:
     spend: { today_usd: 0, month_usd: 0, per_day_usd: 2, per_month_usd: 30, warn: false, warn_today: false, warn_month: false, maybe_today_usd: 0, maybe_month_usd: 0, ...parts.spend },
     requests: { queued: 0, running: 0, review: 0, needs_you: 0 },
     version: 1,
+    has_stages: false,
     restart_needed: null,
     can_restart: false,
     ...over,

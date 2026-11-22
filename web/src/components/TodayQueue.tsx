@@ -41,6 +41,7 @@ import { useWords } from "../lib/wording";
 import { HeldLine, isHeld } from "../shell/HeldLines";
 import { isRestoreLine, RestoreLine } from "./RestoreLine";
 import { useQuietChoices } from "./QuietLine";
+import { Item, ItemList } from "../ui/ItemList";
 import { Button } from "../ui/Button";
 import { Icon, type IconName } from "../ui/Icon";
 import { MarkDot } from "../ui/MarkDot";
@@ -1869,13 +1870,13 @@ function QueueRow(props: {
         <NoteBox sends={[{ label: heldWords.other.label, run: heldWords.declineWithNote }]} onClose={heldWords.closeNote} />
       )}
       {line.kind === "area" && (
-        <ul className="reminder-items" aria-label={t("queue.area.items")} data-area-items="">
+        <ItemList aria-label={t("queue.area.items")} data-area-items="">
           {(line.names ?? []).map((words, n) => (
-            <li key={n} className="reminder-item" data-area-item="">
-              <span>{words}</span>
-            </li>
+            <Item key={n} single data-area-item="">
+              {words}
+            </Item>
           ))}
-        </ul>
+        </ItemList>
       )}
       {line.kind === "area" && renaming && (
         <div className="answer-form">

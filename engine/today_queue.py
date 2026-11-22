@@ -752,6 +752,26 @@ def _everything(
                     since=str(req.data.get("created_at") or ""),
                 )
             )
+        # What the applier refused is listed too, as a row that says it was not recorded, so a count of refused things
+        # always has the things beside it.
+        for outcome in cs.get("ops") or []:
+            if outcome.get("status") != "refused" or review_batches.look_word(outcome) != "refused":
+                continue
+            found.append(
+                Line(
+                    key=f"item:{cs_id}:{outcome['index']}",
+                    group="review",
+                    kind="batch_item",
+                    what="refused",
+                    text=outcome.get("label") or _op_text(outcome.get("op") or {}),
+                    title=named,
+                    request=req.id,
+                    changeset=cs_id,
+                    op=outcome["index"],
+                    untrusted=cs.get("trust") == "untrusted",
+                    since=str(req.data.get("created_at") or ""),
+                )
+            )
         return found
 
     lines: list[Line] = []
@@ -1764,7 +1784,7 @@ def _everything(
         if cs.get("reviewed"):
             continue
         waiting = asked.get(d["changeset"], {})
-        outcome, shown = _outcome_of(cs, set(waiting))
+        outcome, shown = _outcome_of(cs, set(waiting), reader)
         # What an earlier try at this request left waiting for a look stays in this line, once: a redo that was told to
         # change one item keeps the batch the person was looking at, whatever the new answer repeated or left out.
         from engine.dispatcher import earlier_attempts
@@ -1786,7 +1806,7 @@ def _everything(
                 or earlier_cs.get("reviewed")
             ):
                 continue
-            _, kept = _outcome_of(earlier_cs, set(asked.get(earlier_cs_id, {})))
+            _, kept = _outcome_of(earlier_cs, set(asked.get(earlier_cs_id, {})), reader)
             kept = [
                 o
                 for o in kept
@@ -1874,7 +1894,7 @@ def _everything(
             if not cs or req.data.get("set_aside") or req.data.get("folded_into"):
                 continue
             # What is asked on a line of its own under Decide (a name to place) is not listed in the look-over again.
-            outcome, shown = _outcome_of(cs, set(asked.get(req.data["changeset"], {})))
+            outcome, shown = _outcome_of(cs, set(asked.get(req.data["changeset"], {})), reader)
             if cs.get("reviewed"):
                 # Reviewed work has nothing more to look at but what still waits for the person's yes.
                 outcome = {"held": outcome["held"]} if outcome.get("held") else {}
@@ -2495,8 +2515,25 @@ _KIND_ORDER = {
 }
 
 
+def fresh_label(view: Any, outcome: dict[str, Any]) -> dict[str, Any]:
+    """An op's outcome with the label of a draft worked out as it reads now, so a draft made before its wording changed
+    reads the current way. Any other outcome, and a draft whose record is gone, is left as it was kept."""
+    op = outcome.get("op") or {}
+    if view is None or op.get("op") != "text.draft":
+        return outcome
+    from pydantic import ValidationError
+
+    from engine.ops import TextDraftOp
+
+    try:
+        label = TextDraftOp(**op).describe(view)
+    except (ValidationError, TypeError, KeyError):
+        return outcome
+    return {**outcome, "label": label} if label else outcome
+
+
 def _outcome_of(
-    cs: dict[str, Any], leave_out: set[int] | frozenset[int] = frozenset()
+    cs: dict[str, Any], leave_out: set[int] | frozenset[int] = frozenset(), view: Any = None
 ) -> tuple[dict[str, int], list[dict[str, Any]]]:
     """What in a changeset needs a look (`engine/review_batches.py`), counted by the word the screen uses (a held or a
     refused op counted as such), and the ops that are shown: those applied that need a look and those held. The ops
@@ -2516,7 +2553,7 @@ def _outcome_of(
             kind = review_batches.LOOK_AT.get((o.get("op") or {}).get("op", ""))
             if kind is not None:
                 outcome[kind[0]] = outcome.get(kind[0], 0) + 1
-        shown.append(o)
+        shown.append(fresh_label(view, o))
     return outcome, shown
 
 

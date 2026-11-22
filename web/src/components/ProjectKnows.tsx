@@ -23,8 +23,13 @@ import { OriginLink } from "./Origin";
 
 import { CheckboxGroup } from "../ui/CheckboxGroup";
 import { RowList } from "../ui/RowList";
-/** The ways an input arrives that the sheet has a word for; any other is "another input". */
+/** The ways something arrives that the sheet has a word for; a note the person typed is "your words"; any other is "other material". */
 const KINDS = ["pasted", "email", "calendar", "change", "note", "task"];
+/** The word for a way of arriving: the person's own typed notes (`note:<button>`) are their words. */
+function kindWord(kind: string | null | undefined): string {
+  if (kind && KINDS.includes(kind)) return kind;
+  return kind?.startsWith("note:") ? "words" : "other";
+}
 const FIELDS = ["status", "phase", "target", "owner", "summary"] as const;
 
 function Part(props: { id: string; title: string; count: number; children: ReactNode }) {
@@ -98,7 +103,7 @@ function Sources(props: { rows: S["KnowsSource"][] }) {
       {props.rows.map((s) => (
         <Row
           key={s.key}
-          title={s.label ?? t(`knows.kind.${s.kind && KINDS.includes(s.kind) ? s.kind : "other"}`)}
+          title={s.label ?? t(`knows.kind.${kindWord(s.kind)}`)}
           meta={t("knows.source.meta", { inputs: tn("knows.source.inputs", s.inputs), day: monthDay(s.last.received_at) })}
         >
           <OriginLink origin={{ kind: "source", source: s.last.id }} label={s.last.title} />

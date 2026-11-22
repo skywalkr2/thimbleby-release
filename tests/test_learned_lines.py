@@ -67,8 +67,10 @@ def test_a_send_back_is_a_learning_line_then_a_proposal_that_names_the_change_it
     # The proposals list carries the same link, and the redo of the sent-back work points back at the corrected change.
     listed = client.get("/api/knowledge/proposals").json()["proposals"]
     assert [p["from_changeset"] for p in listed] == [cs_id]
-    redo = next(c for c in client.get("/api/changes").json() if c["redoes"])
-    assert redo["redoes"] == cs_id
+    from engine import learned as learned_records
+
+    redone = [r for r in store.read().list("request") if r.data.get("previous")]
+    assert [learned_records.request_changeset(store.read(), r.data["previous"]) for r in redone] == [cs_id]
 
 
 def test_a_proposal_that_came_from_an_input_names_no_change_and_has_no_line(app):

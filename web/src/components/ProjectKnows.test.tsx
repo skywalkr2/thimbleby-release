@@ -76,10 +76,25 @@ test("each source says how many inputs it gave and the last one, which opens", a
   const sources = await section("Sources");
   const rows = within(sources).getAllByRole("listitem");
   expect(rows[0]).toHaveTextContent("Pasted notes");
-  expect(rows[0]).toHaveTextContent(`3 inputs · last ${monthDay("2026-10-12")}`);
+  expect(rows[0]).toHaveTextContent(`3 items · last ${monthDay("2026-10-12")}`);
   expect(within(rows[0]).getByRole("button", { name: "Thursday notes" })).toBeInTheDocument();
   expect(rows[1]).toHaveTextContent("Production folder");
-  expect(rows[1]).toHaveTextContent(`1 input · last ${monthDay("2026-10-09")}`);
+  expect(rows[1]).toHaveTextContent(`1 item · last ${monthDay("2026-10-09")}`);
+});
+
+test("the person's own typed notes are 'Your words', and a way with no word is 'Other material', never 'input'", async () => {
+  show(
+    knows({
+      sources: [
+        { key: "kind:note:missed_one", label: null, kind: "note:missed_one", inputs: 1, last: { id: "SRC-5", title: "Missed one", received_at: "2026-10-12T09:00:00Z" } },
+        { key: "kind:capture:folder", label: null, kind: "capture:folder", inputs: 2, last: { id: "SRC-6", title: "A file", received_at: "2026-10-12T09:00:00Z" } },
+      ],
+    }),
+  );
+  const rows = within(await section("Sources")).getAllByRole("listitem");
+  expect(rows[0]).toHaveTextContent("Your words");
+  expect(rows[1]).toHaveTextContent("Other material");
+  expect(rows[1]).not.toHaveTextContent(/input/i);
 });
 
 test("a fact has its source label in the meta line, key facts are marked, and what was worked out is Inferred with Confirm it", async () => {
