@@ -1,0 +1,30 @@
+# Mail the person deleted (`deleted: true`), read for the Schedule and learning only: a booking confirmation reaches the
+# Schedule as a calendar entry and teaches the service, and no to-do is made, whatever the mail asks. Playbook: "Mail the
+# person deleted is read for the Schedule and for learning only".
+id: deleted-booking-confirmation-reaches-the-schedule-no-todo
+title: A deleted booking confirmation gives a calendar entry and no to-do
+skills: [recording-only-what-matters, dates]
+received: '2026-10-14'
+given_file: busy-portfolio.yaml
+deleted: true
+pasted: 'From: Harbor Dental <bookings@example.com>
+
+  Subject: Your appointment on October 20
+
+
+  Your cleaning at Harbor Dental is booked for Tuesday, October 20 at 9:30 AM. Please confirm your appointment by
+  replying to this message.'
+forbid:
+- op: action.add
+allow:
+- event.add
+- fact
+- glossary.add
+stub_answer:
+  summary: A deleted booking confirmation; the appointment goes to the Schedule and nothing is made to do.
+  ops:
+  - op: event.add
+    title: Cleaning at Harbor Dental
+    start: '2026-10-20T09:30'
+    evidence:
+      quote: Your cleaning at Harbor Dental is booked for Tuesday, October 20 at 9:30 AM.

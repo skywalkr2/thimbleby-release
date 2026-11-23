@@ -1878,6 +1878,11 @@ class Request(Record):
         description="For a request taken in from a new source: it came from the read of older mail (the full read the "
         "person chose), not from the source's first window. The first reading does not wait for these.",
     )
+    source_role: Literal["deleted"] | None = Field(
+        None,
+        description="For a request taken in from a source with a role: deleted means the mail was deleted by the "
+        "person and is read for the schedule and for learning only, so it makes no to-do.",
+    )
     intake_seen: bool = Field(
         False,
         description="For a request taken in from a new source: the person opened the list of what was found (or "

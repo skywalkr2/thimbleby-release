@@ -1335,7 +1335,7 @@ def is_own_work(cfg: Any, source: Any, item: SourceItem) -> bool:
     change was made under one of the names the person uses. The app's own names are kept apart, so what the app
     published never reads as the person's edit."""
     person = cfg.workspace.user.person
-    if person and source.author == person:
+    if person and (source.author == person or getattr(source, "role", None) == "sent"):
         return True
     return _named_in(item.author, own_names(cfg))
 
@@ -1417,6 +1417,8 @@ def _hand_in(
         )
     elif closed:
         data.update(state="done", waiting=f"Closed by {closed['rule']}: {closed['reason']}", auto_closed=closed)
+    if getattr(source, "role", None) == "deleted":
+        data["source_role"] = "deleted"
     if extra:
         data.update({k: v for k, v in extra.items() if not closed or k == "intake"})
     request = tx.create("request", data, ctx)

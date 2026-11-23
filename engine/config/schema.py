@@ -3753,6 +3753,13 @@ class WatchSource(ConfigModel):
         "own address (name+capture@example.com). Mail to it from one of your own addresses is handed in as your own "
         "words; mail to it from anyone else, and mail to any other address, is read as usual.",
     )
+    role: Literal["sent", "deleted"] | None = Field(
+        None,
+        description="For a mail source a sign-in started: what its mail is. sent: the account's own sent mail "
+        "(credited to you, read for the promises you made and the replies you sent). deleted: mail you deleted, "
+        "read over first_run_days for your schedule and for learning what you ignore, and never for to-dos. Empty: "
+        "an ordinary source.",
+    )
     author: str | None = Field(
         None,
         description="Whose work the source holds when it is all one person's or one team's: a person's id (yours "

@@ -94,3 +94,7 @@ Practice for reading notes, minutes and messages (core playbook):
   - a place or area of life that keeps coming up (the home, a hobby, a club, a child's school) as a fact.
   One mail is one witness: describe it plainly and never state it as settled; the learning counts once other mail agrees.
   Make a to-do only for something still owed now, and none for a moment already past or a payment taken automatically.
+- Mail the person deleted (the request says so) is read for the Schedule and for learning only. An appointment, a
+  booking or a delivery in it still reaches the Schedule (a calendar entry, or a fact when it has no day yet), and it
+  teaches the same things older mail does. It never makes a to-do, a promise or a reply owed: deleting it says the
+  person has nothing to do about it, and the checks refuse an action from it.

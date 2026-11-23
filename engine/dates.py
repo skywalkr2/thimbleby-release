@@ -142,7 +142,33 @@ def _day_of(value: str) -> date | None:
         return None
 
 
+_MONTH_DAY_TIME = re.compile(r"(--\d{2}-\d{2})(T\d{2}:\d{2}(?::\d{2})?)")
+
+
+def _split_time(text: str | None) -> tuple[str | None, str]:
+    """A month and day with a time of day (`--MM-DDTHH:MM`) as the month and day and the time part; anything else as
+    it is, with no time part."""
+    found = _MONTH_DAY_TIME.fullmatch(text.strip()) if text else None
+    return (found[1], found[2]) if found else (text, "")
+
+
+def is_month_day_maybe_timed(text: str) -> bool:
+    """Whether text is a month and day with no year, with or without a time of day."""
+    return is_month_day(_split_time(text)[0] or "")
+
+
 def resolve_range(
+    start: str | None, end: str | None, received: date, *, past: bool = False
+) -> tuple[str | None, str | None]:
+    """As `_resolve_range`, keeping a time of day written after a month and day (`--10-20T09:30` becomes
+    `2026-10-20T09:30`)."""
+    start_md, start_time = _split_time(start)
+    end_md, end_time = _split_time(end)
+    first, last = _resolve_range(start_md, end_md, received, past=past)
+    return (first + start_time if first and start_time else first), (last + end_time if last and end_time else last)
+
+
+def _resolve_range(
     start: str | None, end: str | None, received: date, *, past: bool = False
 ) -> tuple[str | None, str | None]:
     """A start and an end as the texts an entry holds (a day, a date-time, or `--MM-DD`), each month and day given the

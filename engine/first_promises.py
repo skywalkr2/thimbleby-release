@@ -163,7 +163,7 @@ def _places(ws: Any, store: Any, cfg: Any, sources: list[Any], today: date) -> l
                 source=s.id,
                 name=s.label or s.id,
                 folder=(str(s.settings.get("folder") or "") or None) if s.connector == "mailbox" else None,
-                sent=kind == "mail" and bool(person) and s.author == person,
+                sent=kind == "mail" and bool(person) and (s.author == person or s.role == "sent"),
                 outcome=_outcome(store, s.id),
                 from_date=_from_date(view, s, today) if kind == "mail" else None,
             )

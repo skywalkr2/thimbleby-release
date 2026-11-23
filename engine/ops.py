@@ -25,7 +25,7 @@ from pydantic import (
 )
 from pydantic.json_schema import SkipJsonSchema
 
-from engine.dates import DayOrMonthDay, parse_month_day
+from engine.dates import DayOrMonthDay, is_month_day_maybe_timed, parse_month_day
 from engine.id_words import KNOWLEDGE_KINDS, named, named_one_of, named_text_of
 from engine.records import ActTemplate, EntryRepeat, FiledBy, RefTo, Routine, Scope, canonical_time, entry_problem
 
@@ -202,6 +202,9 @@ def _entry_time_text(value: str | None) -> str | None:
     found = parse_month_day(text)
     if found is not None:
         return str(found)
+    if is_month_day_maybe_timed(text):
+        # A month and day with a time of day (--MM-DDTHH:MM): kept so, and the applier gives it its year.
+        return text
     if (why := entry_problem(text, None)) is not None:
         raise ValueError(why)
     return canonical_time(text)

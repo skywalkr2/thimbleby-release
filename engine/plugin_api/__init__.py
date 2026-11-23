@@ -52,7 +52,7 @@ from engine.tasks import TaskKind
 from engine.texts import LongText, Unit
 from engine.tools import ToolBox, ToolError, ToolResult
 
-PLUGIN_API_VERSION = "0.3.106"
+PLUGIN_API_VERSION = "0.3.107"
 
 #: The earlier minor version this core still serves (one minor back). A pack whose range reaches the end of that minor
 #: stays on, marked "Built for an earlier version"; the window ends with the next minor release. Every name the core
@@ -2618,6 +2618,14 @@ class Registrar:
         before that gets it then. Each account gets its own; one the person removed isn't brought back by a new
         sign-in, and "Start reading" brings it back.
 
+        **A source's role:** `"role": "sent"` is the general form of `"sent": True` (which is still read as it), and
+        `"role": "deleted"` marks the folder or label the service keeps the person's deleted mail in (named in the
+        source's `settings`, the same connector as the inbox). The core starts a deleted source with the others, over
+        `watch.first_run_days` only (no look further back is offered), and reads it for the schedule and for learning
+        what the person ignores: it never makes a to-do, a promise or a reply owed, and the checks refuse an
+        `action.add` from it. A role is `"sent"`, `"deleted"` or left out; `"sent": True` with `"role": "deleted"` is
+        refused.
+
         **The pace:** every request the core's web client makes for one account of this sign-in and one host passes one
         shared gate, whichever part of the app asks. `requests_per_second` is the pace the add-on starts at (a number
         above 0, at most 100; left out, the cautious `watch.gate_default_per_second`). When the service asks to wait
@@ -2673,9 +2681,10 @@ class Registrar:
                 "settings",
                 "every_minutes",
                 "sent",
+                "role",
             }:
                 raise RegistrationRefused(
-                    "sign_in", "each of sources is {connector, label, settings, every_minutes, sent}"
+                    "sign_in", "each of sources is {connector, label, settings, every_minutes, role}"
                 )
             connector, title = source.get("connector"), str(source.get("label") or "").strip()
             if not isinstance(connector, str) or not connector.startswith(self.name + "/") or not title:
@@ -2689,13 +2698,21 @@ class Registrar:
                 raise RegistrationRefused("sign_in", "a source's settings are a mapping")
             if not isinstance(source.get("sent", False), bool):
                 raise RegistrationRefused("sign_in", "a source's sent is true or false")
+            role = source.get("role")
+            if role not in (None, "sent", "deleted"):
+                raise RegistrationRefused("sign_in", 'a source\'s role is "sent" or "deleted"')
+            if source.get("sent") and role == "deleted":
+                raise RegistrationRefused("sign_in", "a source can't be both sent and deleted")
+            if source.get("sent"):
+                role = "sent"
             started.append(
                 {
                     "connector": connector,
                     "label": title,
                     "settings": dict(source.get("settings", {})),
                     "every_minutes": every,
-                    "sent": bool(source.get("sent", False)),
+                    "sent": role == "sent",
+                    "role": role,
                 }
             )
         from engine.sign_in import SignIn

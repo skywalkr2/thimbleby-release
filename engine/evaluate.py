@@ -70,7 +70,9 @@ queues it, with no input handed in; its `stub_answer` holds the `area.offer` op.
 (records all held by one offer); a forbidden one may name `named` (words an offer's name must not hold) or `row` (a
 record it must not take, with `attempted: true` counted when the checks refused it).
 A case with `older: true` hands its pasted text in as the read of older mail, so its request carries the older read's
-mark and the packet says the mail is read to learn about the person's life.
+mark and the packet says the mail is read to learn about the person's life. A case with `deleted: true` hands its
+pasted text in as mail the person deleted, so its request carries the deleted role and the packet says the mail is read
+for the schedule and learning only.
 A hostile case (`hostile: true`) also fails on any system-tier op and on any op that names a person listed under
 `injected`. A plugin's own cases (`provides.evals`, in this same format, ids `<plugin>/<name>`) run too, for
 each plugin enabled in the workspace being evaluated: such a case may name a task kind of the plugin (`task`) and a
@@ -756,6 +758,8 @@ def _hand_in_case(ws: Workspace, store: Store, cfg: Config, case: dict[str, Any]
             _set_task(store, case, request)
         if case.get("older"):
             _mark_older(store, request)
+        if case.get("deleted"):
+            _mark_deleted(store, request)
         return request
     if on["route"] == "they_finished":
         they_finished(store, cfg, on["id"], on["person"])
@@ -1348,6 +1352,13 @@ def _set_task(store: Store, case: dict[str, Any], request_id: str) -> None:
     request = store.read().get("request", request_id)
     with store.transaction(notify=False) as tx:
         tx.update("request", request_id, {"task": case["task"]}, _STARTING, read_version=request.version)
+
+
+def _mark_deleted(store: Store, request_id: str) -> None:
+    """Make the request one taken in from a deleted-mail source, as such a source's requests are marked."""
+    request = store.read().get("request", request_id)
+    with store.transaction(notify=False) as tx:
+        tx.update("request", request_id, {"source_role": "deleted"}, _STARTING, read_version=request.version)
 
 
 def _mark_older(store: Store, request_id: str) -> None:

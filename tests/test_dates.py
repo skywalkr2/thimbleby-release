@@ -115,3 +115,16 @@ def test_a_text_states_a_day_with_no_year_only_by_a_months_name():
     assert yearless_days("Delivery: Oct 30-Nov 5") == [(10, 30), (11, 5)]
     assert yearless_days("Due Dec 1, 2026 or on 1 December 2026") == []
     assert yearless_days("Feb 30 and 12/01") == []
+
+
+def test_a_month_and_day_with_a_time_keeps_its_time_and_takes_its_year():
+    # A real model wrote an appointment as "--10-20T09:30"; it is read against the day the mail came, time kept.
+    from engine.dates import is_month_day_maybe_timed
+
+    assert is_month_day_maybe_timed("--10-20T09:30")
+    assert resolve_range("--10-20T09:30", None, date(2026, 10, 14)) == ("2026-10-20T09:30", None)
+    assert resolve_range("--10-20T09:30", "--10-20T10:15", date(2026, 10, 14)) == (
+        "2026-10-20T09:30",
+        "2026-10-20T10:15",
+    )
+    assert not is_month_day_maybe_timed("--13-20T09:30")

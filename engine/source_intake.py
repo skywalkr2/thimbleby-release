@@ -480,6 +480,8 @@ def can_look_back(source: Any, store: Any = None) -> bool:
     offered a look further back."""
     from engine.connectors import older_mail
 
+    if getattr(source, "role", None) == "deleted":
+        return False  # deleted mail is read over the first window only, never further back
     if older_mail(source.connector) is not None:
         return True
     return store is not None and _asker(store, source) is not None

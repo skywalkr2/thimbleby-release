@@ -57,7 +57,7 @@ from engine.cleaning import normalize
 from engine.config import Config, ConfigError, load_config
 from engine.config.yaml_edit import set_key
 from engine.contacts import reach_lists, with_value
-from engine.dates import MonthDay, is_month_day, resolve_range, with_year
+from engine.dates import MonthDay, is_month_day_maybe_timed, resolve_range, with_year
 from engine.intake import is_reported, source_text
 from engine.language_words import language_words
 from engine.learning import request_learns
@@ -275,7 +275,7 @@ def with_years(cs: ChangesetIn, ctx: Context, now: datetime | None = None) -> Ch
     received: date | None = None
     for i, op in enumerate(ops):
         if isinstance(op, (EventAddOp, EventSetOp)):
-            if not any(v is not None and is_month_day(v) for v in (op.start, op.end)):
+            if not any(v is not None and is_month_day_maybe_timed(v) for v in (op.start, op.end)):
                 continue
             received = received or _received_day(ctx, view, now)
             start, end = op.start, op.end
@@ -1039,6 +1039,13 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
                     "one-owner",
                     "one promise per owner: for two people who each owe it, add one action each; for work they do "
                     'together, keep one action with both owners and leave "promised_to" out',
+                )
+            if ctx.actor != "pm" and _request_data(ctx).get("source_role") == "deleted":
+                refuse(
+                    i,
+                    "from-deleted-mail",
+                    "this mail was deleted, so it is read for the schedule and for learning only and makes no to-do, "
+                    "promise or reply owed: record an appointment, booking or delivery as a calendar entry or a fact",
                 )
             if ctx.actor != "pm" and (why := _put_off_problem(view, ctx)) is not None:
                 refuse(i, "put-off-question", why)

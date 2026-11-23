@@ -1,0 +1,38 @@
+# A kept rule says one sender's payments go on the schedule as reminders, not to-dos. The notice gives the day the
+# payment is taken, so the reading adds one calendar entry for that day, quotes the mail's own words, and makes no to-do.
+id: rule-puts-autopay-notice-on-the-schedule
+title: A kept rule puts an autopay notice on the schedule as a reminder, with no to-do
+skills: [recording-only-what-matters, dates]
+received: '2026-10-14'
+given_file: busy-portfolio.yaml
+given:
+- kind: rule
+  id: RULE-91
+  fields:
+    name: acme-pay-payments-go-on-the-schedule
+    text: Payments from Acme Pay go on the schedule as reminders, not to-dos; they are paid automatically.
+    origin: person
+    status: active
+pasted: 'From: Acme Pay <billing@example.com>
+
+  Subject: Your payment of $82.10 is scheduled
+
+
+  Your payment of $82.10 will be taken automatically from your checking account on October 21. You do not need to do
+  anything.'
+expect:
+- op: event.add
+  text_has:
+  - Acme Pay
+  start: '2026-10-21'
+forbid:
+- op: action.add
+stub_answer:
+  summary: An Acme Pay payment is taken on October 21; it is on the schedule, with nothing to do.
+  applied: [RULE-91]
+  ops:
+  - op: event.add
+    title: Acme Pay payment due
+    start: --10-21
+    evidence:
+      quote: will be taken automatically from your checking account on October 21

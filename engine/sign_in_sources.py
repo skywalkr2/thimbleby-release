@@ -3,7 +3,8 @@ sign-in (the inbox, the main calendar), so signing in is the whole setup. Each a
 only where the workspace reads nothing with that connector as that account yet; the person's later changes stand.
 Which accounts have had theirs added is kept on this computer, beside the sign-ins themselves.
 
-A declared source may be marked as holding the account's own sent mail (`sent`): it is started the same way, with the
+A declared source may carry a role: `deleted` for the mail the person deleted (read over the first window for the
+schedule and learning, never for to-dos), or `sent`: the account's own sent mail, started the same way, with the
 person as its author, since what it holds is their own mail, so the promises they made in mail they sent are found
 with no button to press. It waits until the workspace knows who the person is, and is started once that is so."""
 
@@ -76,6 +77,7 @@ def _reads(sources: list[Any], connector: str, address: str | None, only: str | 
     return any(
         (s["connector"] if isinstance(s, dict) else s.connector) == connector
         and (address is None or ((s["account"] if isinstance(s, dict) else s.account) or only) == address)
+        and (s.get("role") if isinstance(s, dict) else s.role) is None
         for s in sources
     )
 
@@ -111,6 +113,24 @@ def _own_sent(
     )
 
 
+def _own_deleted(
+    sources: list[Any], wanted: dict[str, Any], settings: dict[str, Any], address: str | None, only: str | None
+) -> bool:
+    """Whether the workspace already reads the account's deleted mail: a source of the connector for this account with
+    the deleted role and the same settings."""
+
+    def get(source: Any, key: str) -> Any:
+        return source.get(key) if isinstance(source, dict) else getattr(source, key)
+
+    return any(
+        get(s, "connector") == wanted["connector"]
+        and (address is None or (get(s, "account") or only) == address)
+        and get(s, "role") == "deleted"
+        and dict(get(s, "settings") or {}) == settings
+        for s in sources
+    )
+
+
 def _wanted_read(
     sources: list[Any],
     wanted: dict[str, Any],
@@ -123,6 +143,8 @@ def _wanted_read(
     is the person's own with the same settings; for any other, any source of the connector for the account."""
     if wanted.get("sent"):
         return _own_sent(sources, wanted, settings, address, only, person)
+    if wanted.get("role") == "deleted":
+        return _own_deleted(sources, wanted, settings, address, only)
     return _reads(sources, wanted["connector"], address, only)
 
 
@@ -259,9 +281,15 @@ def _start_sources(
     for address in pending:
         for wanted in sign_in.sources:
             connector = connectors.get(wanted["connector"])
-            if wanted.get("sent") or connector is None or _reads(sources, wanted["connector"], address, only):
+            if wanted.get("sent") or connector is None:
                 continue
-            add(wanted, address, declared_settings(wanted, connectors))
+            settings = declared_settings(wanted, connectors)
+            if wanted.get("role") == "deleted":
+                # Deleted mail is read over the first window only, for the schedule and learning, never for to-dos.
+                if not _own_deleted(sources, wanted, settings, address, only):
+                    add(wanted, address, settings, role="deleted")
+            elif not _reads(sources, wanted["connector"], address, only):
+                add(wanted, address, settings)
     # What the account's sent mail holds is the person's own work, so its source is credited to them.
     for address in pending_sent:
         for wanted in sign_in.sources:
@@ -272,7 +300,7 @@ def _start_sources(
                 or _own_sent(sources, wanted, settings, address, only, person)
             ):
                 continue
-            add(wanted, address, settings, author=person)
+            add(wanted, address, settings, author=person, role="sent")
     if added or changed:
         config_screens.save(
             ws,

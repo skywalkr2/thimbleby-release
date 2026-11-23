@@ -93,6 +93,13 @@ invariants:
       Mark an action as a reply owed only for a message that asks the person something and is for them. Automatic
       mail, mail the person sent and a message that says no reply is needed owe nothing, and a reply owed is never
       owned by someone else. Leave the action out, or record what the message says as a fact.
+  from-deleted-mail:
+    ops:
+      - action.add
+    line: Mail the person deleted is read for the schedule and for learning only; it makes no to-do, promise or reply owed.
+    seed: >-
+      Mail the person deleted makes no to-do. Record an appointment, a booking or a delivery in it as a calendar entry
+      or a fact, describe what it teaches with the learning ops, and leave the action out.
   put-off-question:
     ops:
       - action.add

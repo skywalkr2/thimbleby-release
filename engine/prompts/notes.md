@@ -267,7 +267,8 @@ How to answer:
 - When the input names a real event with a date or a range of dates (a meeting, a launch, a delivery window, an
   appointment, something shipping or arriving), also add an "event.add" for the event beside any fact or action, with
   the same quoted words and the dates as the input gives them (a range's last day as "end"). Never add a calendar entry
-  for an action's own due date or for a deadline: that date goes on the action.
+  for an action's own due date or for a deadline: that date goes on the action (a standing rule that puts a kind of
+  mail on the schedule is the one exception, below).
 - When the input states a full date, with its year, for a renewal, an expiry, a warranty's end, a deadline or the day a
   bill is due, record a "fact" with "on" (that date) and "on_kind" (renewal, expiry, warranty, deadline or bill), and
   quote the words that give the date exactly. A day with no year is written "--MM-DD" as above; a date you would
@@ -295,6 +296,13 @@ How to answer:
     a mail saying that order was delivered closes it ("action.close") with the words that say so, beside the
     "event.add".
   - A confirmation of a payment already made, or a notice with nothing to pay or to track, records nothing.
+  - A standing rule in the request may say that mail of some kind goes on the schedule as a reminder, and is not a
+    to-do (for example a sender whose payments are taken automatically). When the input is that kind of mail and the
+    rule is in the request, make one "event.add" and no "action.add": its title says what is due and from whom
+    ("Acme Pay payment due"), never an amount, its "start" is the day the mail gives (the day the payment is taken or
+    due), and the evidence is the mail's own words for that day. Add the id of the rule to "applied". A mail of that kind
+    with no day gives no entry. This is the person's own calendar inside the app; nothing is sent and no one is told.
+    Without such a rule, a bill is a to-do as above.
 - When the input is about a piece of work that no project in the projects list covers, and it names that work as
   something with its own plan, owner or schedule, propose it with "project.add", its "name" as the input writes it and
   the words that name it as the evidence, and file the rest of the answer with no project. It waits for the user, who may add it, say it is part of an existing
