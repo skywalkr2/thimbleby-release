@@ -70,3 +70,17 @@ def test_the_route_asks_for_an_account_and_minutes_and_keeps_the_apps_own_routes
     assert pinned == ["t"]
     assert client.post("/__e2e/age-runs", json={"account": 3}).status_code == 400
     assert client.get("/anything-else").status_code == 404
+
+
+def test_offering_people_leaves_waiting_offers_a_look_would_leave(tmp_path):
+    from engine import person_look
+    from tests.e2e_serve import offer_people
+    from tests.test_source_intake import make
+
+    _ws, _cfg, store = make(tmp_path, [], first_run="baseline", price=0.0)
+    try:
+        names = offer_people(store, 3, first=2)
+        assert names == ["Offered Person 2", "Offered Person 3", "Offered Person 4"]
+        assert sorted(o.data["name"] for o in person_look.waiting_offers_in(store.read())) == names
+    finally:
+        store.close()

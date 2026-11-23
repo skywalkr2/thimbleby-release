@@ -244,6 +244,15 @@ def test_a_row_with_days_outside_the_week_is_refused(env):
     assert "outside the week" in problems(env, [R(parcel, 9)])[0]
 
 
+def test_a_day_written_as_year_month_day_numbers_in_the_prose_is_returned(env):
+    ws, cfg, store = env
+    parcel = delivery(store, "Parcel", day(2))
+    iso = day(2)
+    assert problems(env, [R(parcel, 2)]) == []
+    said = week_ahead.problems(ws, store, cfg, NOW, FIRST, [R(parcel, 2)], sentence=f"A parcel comes on {iso}")
+    assert len(said) == 1 and "never as year-month-day numbers" in said[0]
+
+
 def test_one_record_gets_one_row(env):
     parcel = delivery(env[2], "Parcel", day(2))
     said = problems(env, [R(parcel, 2), R(parcel, 2)])
@@ -336,7 +345,7 @@ def test_the_run_is_estimated_and_waits_for_the_go_above_the_amount_to_confirm(e
     delivery(store, "Parcel", day(2))
     use = cfg.ai.tiers["routine"].use
     cfg.ai.prices[use] = Price(input_per_million=500_000.0, output_per_million=500_000.0)
-    cfg.ai.budgets.per_run_usd = 1000.0
+    cfg.ai.budgets.per_run_usd = 1_000_000.0  # far above any estimate: the per-run limit is not what this test holds
     cfg.ai.budgets.confirm_above_usd = 0.0
     asked: list = []
     set_responder(lambda task: asked.append(task) or answer([]))

@@ -106,6 +106,8 @@ export function useDetailLines() {
             return text ? [label ? `${label}: ${text}` : text] : [];
           });
         }
+        // A whole web address is a link, said by what it opens; its domain stands beside it, never the long address.
+        if (typeof v === "string" && /^https?:\/\/\S+$/i.test(v.trim())) return [{ label: t("record.link_open"), url: v.trim() }];
         const text = scalar(key, v, view?.type === "choice" && !view.value_list && !inList);
         return text ? [text] : [];
       };

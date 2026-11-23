@@ -29,7 +29,7 @@ from engine.owners import suggest_owner
 from engine.packet import _open_actions
 from engine.storage import Store, StoreError, WriteContext
 from engine.tasks import TASKS
-from engine.today import todo
+from engine.today import todo, zone
 from engine.today_queue import queue
 from engine.workspace import init_workspace
 from tests.conftest import DEMO_B, fixture_records
@@ -111,7 +111,7 @@ def test_action_hold_writes_what_the_persons_hold_writes_records_no_signal_and_u
     hold = data(store, "action", target)["on_hold"]
     assert hold["waiting_for"] == "the printer's quote"
     assert not store.read().has("signal"), "what the assistant applies is its own work, not a correction"
-    put_on_hold(store, person_held, "an answer")
+    put_on_hold(store, person_held, "an answer", here=zone(cfg))  # as the screen holds it: on the person's own day
     assert (
         set(hold) == set(data(store, "action", person_held)["on_hold"])
         and hold["since"] == (data(store, "action", person_held)["on_hold"]["since"])

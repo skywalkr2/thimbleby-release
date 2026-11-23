@@ -11,8 +11,10 @@ never as a verdict: a recruiter writes from a role address, a tradesperson's nam
 may carry a tag, and a newsletter's sender is no one to add.
 
 Nothing it proposes is used until the person keeps it. Knowledge proposals join the day's one review card, merge with
-each other and with what is kept, and expire unreviewed like proposals from inputs. People offers wait in the People
-step and are kept there by the person's own add; an offer left out is never made again. What the person discarded is
+each other and with what is kept, and expire unreviewed like proposals from inputs. People offers are ongoing, from
+every look: they are a line of their own on Today (`people_offers`) and are shown in the People step too while the
+person is on it, and each is kept by the person's own add in one change named for the person added; an offer left out
+is never made again. What the person discarded is
 left out of the next packet, so it is never offered again. The run is a request of the `knowledge-person` kind:
 estimated first, held for the person's go above the configured amount, with its own budget.
 """
@@ -623,7 +625,7 @@ def settle(store: Any, cfg: Any, address: str, status: str, person: str | None =
                         "read_version": offer.version,
                     }
                 ],
-                "Added someone the assistant offered" if status == "kept" else "Left out someone the assistant offered",
+                f"Added {offer.data['name']}" if status == "kept" else f"Left out {offer.data['name']}",
             )
             if status == "dismissed":
                 _rejected(store, offer.id)
@@ -668,7 +670,18 @@ def check_keep(ctx: Any, op: Any) -> list[str]:
     now)."""
     if find_waiting(ctx.store.read(), op.offer) is None:
         return ["That offer no longer stands: they are on file already, or it was answered."]
+    if chosen := _placement(op):
+        _, why = sides.person_write(ctx.store.read(), ctx.cfg, chosen)
+        if why:
+            return [why]
     return []
+
+
+def _placement(op: Any) -> dict[str, Any]:
+    """The sides the person chose for an offered person, as a write to a person's sides; empty when they chose none."""
+    if op.sides:
+        return {"sides": list(op.sides)}
+    return {"side": op.side} if op.side else {}
 
 
 def apply_keep(tx: Any, op: Any, ctx: Any, w: Any) -> list[dict[str, Any]]:
@@ -687,11 +700,18 @@ def apply_keep(tx: Any, op: Any, ctx: Any, w: Any) -> list[dict[str, Any]]:
     data: dict[str, Any] = {"full_name": offer.data["name"], "name_verified": True}
     if offer.data.get("relation"):
         data["relation"] = offer.data["relation"]
-    served = next((c.sides for c in contact_tally.tally(ctx.store, ctx.cfg) if c.address == address), ())
-    if served:
-        written, why = sides.person_write(ctx.store.read(), ctx.cfg, {"sides": list(served)})
-        if why is None:
-            data |= written
+    chosen = _placement(op)
+    if chosen:
+        written, why = sides.person_write(ctx.store.read(), ctx.cfg, chosen)
+        if why:
+            raise StoreError(why)
+        data |= written
+    else:
+        served = next((c.sides for c in contact_tally.tally(ctx.store, ctx.cfg) if c.address == address), ())
+        if served:
+            written, why = sides.person_write(ctx.store.read(), ctx.cfg, {"sides": list(served)})
+            if why is None:
+                data |= written
     kind = contact_kind(ctx.cfg, "email")
     if kind and "@" in address:
         data["how_to_reach"] = {kind: [address]}
@@ -700,14 +720,21 @@ def apply_keep(tx: Any, op: Any, ctx: Any, w: Any) -> list[dict[str, Any]]:
     return [{"kind": "person", "id": person.id}, {"kind": "person_offer", "id": offer.id}]
 
 
-def keep(store: Any, cfg: Any, offer_id: str) -> str:
-    """Keep an offer: the person is added and the offer settled, in one change the screen can undo. Returns the
-    change's id; raises `StoreError` when the offer no longer stands."""
+def keep(store: Any, cfg: Any, offer_id: str, sides: list[str] | None = None, side: str | None = None) -> str:
+    """Keep an offer: the person is added and the offer settled, in one change the screen can undo, named for the
+    person added. The sides are the ones the person chose, else those their mail came from. Returns the change's id;
+    raises `StoreError` when the offer no longer stands."""
     from engine.applier import apply_as_person
     from engine.dispatcher import signal
 
+    offer = store.read().get("person_offer", offer_id)
+    op: dict[str, Any] = {"op": "person.keep_offer", "offer": offer_id}
+    if sides:
+        op["sides"] = sides
+    elif side:
+        op["side"] = side
     changeset = apply_as_person(
-        store, cfg, [{"op": "person.keep_offer", "offer": offer_id}], "Added someone the assistant offered"
+        store, cfg, [op], f"Added {offer.data['name']}" if offer is not None else "Added a person"
     )
     signal(store, "kept", [offer_id])
     return changeset
@@ -721,7 +748,8 @@ def dismiss(store: Any, cfg: Any, offer_id: str) -> str | None:
 
 
 def held_for_go(store: Any) -> Any | None:
-    """The look that waits for the person's go (its estimate is on it), or None. The People step offers to start it."""
+    """The look that waits for the person's go (its estimate is on it), or None. Today's go line and the People step
+    both offer to start it."""
     for r in store.read().list("request"):
         if (
             r.data["task"] == TASK

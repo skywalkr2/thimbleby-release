@@ -99,8 +99,8 @@ def test_a_read_with_nothing_recorded_and_nothing_asked_closes_by_itself_and_und
     assert store.read().get("changeset", cs_id).data["reviewed"]
     store, client, base = _client(ws, cfg, store)
     try:
-        item = next(c for c in client.get(f"{base}/changes").json() if c["id"] == request)
-        assert item["state"] == "done"
+        # A read that recorded nothing is in Handled for you, not a row of What changed (results only).
+        assert all(c["id"] != request for c in client.get(f"{base}/changes").json())
         assert client.post(f"{base}/changesets/{cs_id}/reopen").status_code == 200
         assert store.read().get("request", request).data["state"] == "review"
         signals = [s.data for s in store.read().list("signal") if s.data["kind"] == "pulled_back"]

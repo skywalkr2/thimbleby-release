@@ -5,8 +5,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { S } from "../lib/api";
 import { clashGroups, foldIdentical, gridHours, hourLabel, mergeClashSpans, minutesOf, placeOverlaps, SHORT, type ClashGroup, type Span } from "../lib/calendar";
-import { day, onTheClock, wallTime, weekdayDay, weekdayLong } from "../lib/dates";
-import { useIsNarrow } from "../lib/media";
+import { day, dayOfMonth, onTheClock, wallTime, weekdayDay, weekdayLong } from "../lib/dates";
+import { useIsNarrow, useMediaQuery } from "../lib/media";
 import { useWords } from "../lib/wording";
 import { Icon } from "../ui/Icon";
 import { EntryButton, entryKey, type Calendars, type Entry } from "./ScheduleEntry";
@@ -125,6 +125,7 @@ export function TimeGrid(props: {
 }) {
   const { t, tn } = useWords();
   const phone = useIsNarrow();
+  const below1280 = useMediaQuery("(max-width: 1279.98px)");
   // How much room, in minutes from its start, each meeting's box has had to take to show its title and its time whole (by entry), and how
   // much a clash card has had to take to name every meeting whole (by day and start). A box taller than its span is laid out as long as
   // it is drawn: whatever its box reaches is laid out with it, so nothing is drawn under it.
@@ -385,10 +386,18 @@ export function TimeGrid(props: {
         : t("schedule.clash.head");
   // A single day's date is the page's heading already, so its column says only which day it is.
   const single = props.days.length === 1;
-  // A work week with today added on a day off has six columns: its headings take the short form to stay on one line.
-  const said = props.days.length === 6 ? weekdayDay : day;
+  // Up to six columns (the work week, with today added on a day off, and the Week below the wide layout) the headings take the short
+  // form, the weekday and the day number, so "Today · Wed 30" stays on one line in a column about 135px wide; the page's range names the month.
+  // Seven columns (the whole week, shown on a weekend) in a window under 1280px are about 95px each: they take the short form too, and
+  // today's heading says "Today" and the day number.
+  const tight = props.days.length > 6 && below1280;
+  const said = props.days.length <= 6 || tight ? weekdayDay : day;
   const label = (date: string) =>
-    single ? (date === props.today ? t("today.agenda.today") : weekdayLong(date)) : date === props.today ? t("schedule.day_today", { date: said(date) }) : t("schedule.day_plain", { date: said(date) });
+    single
+      ? date === props.today ? t("today.agenda.today") : weekdayLong(date)
+      : date === props.today
+        ? t("schedule.day_today", { date: tight ? String(dayOfMonth(date)) : said(date) })
+        : t("schedule.day_plain", { date: said(date) });
     // The grid opens scrolled to what matters: the first clash, else now, else the first entry, else the start of the hours shown
   // (never on empty early hours). Once for each time it is drawn from nothing (a view or a day picked).
   useEffect(() => {
@@ -447,7 +456,7 @@ export function TimeGrid(props: {
       </div>
     )}
     <div ref={scrollerRef} className={styles.scroller} tabIndex={0} role="region" aria-label={t("schedule.grid.region")} data-scroller="">
-    <div ref={gridRef} className={styles.grid} style={{ ["--cols" as string]: props.days.length, ["--rows" as string]: to - from }} data-grid="" data-few={props.days.length <= 6 ? "" : undefined}>
+    <div ref={gridRef} className={styles.grid} style={{ ["--cols" as string]: props.days.length, ["--rows" as string]: to - from }} data-grid="" data-few={props.days.length <= 6 || tight ? "" : undefined}>
       <div aria-hidden="true" className={styles.corner} />
       {props.days.map((d) => (
         <h3 key={d.date} className={styles.colHead} data-today={d.date === props.today ? "" : undefined}>

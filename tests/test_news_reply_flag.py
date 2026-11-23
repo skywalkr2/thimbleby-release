@@ -12,7 +12,7 @@ from engine.ops import ActionNewsOp
 from engine.storage import Store
 from engine.workspace import init_workspace
 from tests.conftest import DEMO_B
-from tests.test_since_yesterday import _TEST, ADDED_AT, CLOSE_QUOTE, ENV, THEIRS, apply_at
+from tests.test_since_yesterday import _TEST, ADDED_AT, CLOSE_QUOTE, ENV, MOVED_AT, THEIRS, apply_at
 
 
 @pytest.fixture
@@ -42,6 +42,13 @@ def test_the_news_op_says_what_a_reply_is_and_defaults_to_not_one():
     field = ActionNewsOp.model_fields["reply"]
     assert field.default is False
     assert "doesn't answer" in field.description and "acknowledgement" in field.description
+
+
+def test_news_is_dated_on_the_persons_own_day_across_midnight_utc(env):
+    # 1:00 AM UTC on the 19th is the evening of the 18th where the person is.
+    apply_at(env, [news_op()], MOVED_AT, quote_in=CLOSE_QUOTE)
+    (entry,) = entries_of(env[2])
+    assert entry["on"] == "2026-10-18"
 
 
 def test_news_that_is_not_a_reply_is_not_a_non_answer(env):

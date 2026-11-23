@@ -214,10 +214,11 @@ describe("calendarNames", () => {
   });
 });
 
-test("a work week shows today when today is a day off, so the view that opens by default always holds today", () => {
-  // A Saturday; the week starts on Monday (0) and the working days are Monday to Friday.
-  const shown = rangeOf("work_week", "2026-11-14", 0, MON, "2026-11-14").shown;
-  expect(shown).toEqual(["2026-11-09", "2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13", "2026-11-14"]);
+test("a work week holds the whole week when today is a day off, so no day is skipped and today is in it", () => {
+  const week = ["2026-11-09", "2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13", "2026-11-14", "2026-11-15"];
+  // A Saturday and a Sunday; the week starts on Monday (0) and the working days are Monday to Friday.
+  expect(rangeOf("work_week", "2026-11-14", 0, MON, "2026-11-14").shown).toEqual(week);
+  expect(rangeOf("work_week", "2026-11-15", 0, MON, "2026-11-15").shown).toEqual(week);
   // Another week, or a working day, is the working days alone.
   expect(rangeOf("work_week", "2026-11-21", 0, MON, "2026-11-14").shown).toHaveLength(5);
   expect(rangeOf("work_week", "2026-11-12", 0, MON, "2026-11-12").shown).toHaveLength(5);

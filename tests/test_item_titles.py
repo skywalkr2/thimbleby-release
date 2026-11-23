@@ -137,3 +137,26 @@ def test_a_change_the_person_made_on_a_screen_is_titled_by_what_it_did_and_not_a
         {"origin": "pm", "note": "Call them"}, None, {"summary": "Filed it."}, people=_People(), skip=SKIP
     )
     assert typed.kind == "note"
+
+
+TOKEN = "unsubscribev1.CRmPiixPUgeERRMivQ2eWgYqdhj01q"
+
+
+def test_a_machine_made_subject_is_never_a_title_for_mail_in_any_form():
+    answer = "Unsubscribe request to a sender"
+    watched = {"watched": {"author": "a@example.com"}, "title": TOKEN}
+    assert topic({"origin": "input"}, watched, answer, "") == answer
+    assert title_for({"origin": "input"}, watched, {"topic": answer}, people=_People(), skip=SKIP).topic == answer
+    pasted = {"trust": "untrusted"}
+    head = f"From: a@example.com\nSubject: Re: {TOKEN}\n\n"
+    assert topic({"origin": "input"}, pasted, answer, head) == answer
+    # With no topic from the assistant, the token is still not the title.
+    assert topic({"origin": "input"}, pasted, None, head) == ""
+    assert topic({"origin": "input"}, watched, None, TOKEN) == ""
+
+
+def test_words_with_digits_are_still_a_subject():
+    assert (
+        topic({"origin": "input"}, {"trust": "untrusted"}, None, "Subject: Q3 plan v2 review\n\nx")
+        == "Q3 plan v2 review"
+    )

@@ -18,6 +18,8 @@ What to write:
   copied exactly from the brackets. A record gets one row, never two.
 - Leave out the lines Today already holds, and anything that is not in the week's records. A thing with no day in the
   week ahead, today included, gets no row. When there is nothing worth a row, give the sentence and no rows.
+- Write a day the way a person says it: a weekday, month and day ("Fri, Nov 27"), or just the weekday for a day this week. Never
+  year-month-day numbers ("2026-11-27"): the request gives days that way, the user never reads them that way.
 - Write plainly, as the user would say it to themselves. No marketing words, no guesses about what the user feels.
   Follow the style and wording what has been learned asks for.
 

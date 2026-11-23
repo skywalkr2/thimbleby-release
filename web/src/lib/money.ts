@@ -111,8 +111,10 @@ export function useSpent() {
   return (spent: number | null | undefined, range: number[] | null | undefined, maybe?: number | null) => {
     if (spent == null) return null;
     const [low, high] = range ?? [];
+    // A cost under a cent whose whole estimate is a cent or less is said once; the estimate would only repeat it in other words.
+    const negligible = spent < 0.005 && (high ?? low ?? 0) < 0.015;
     const line =
-      low == null
+      low == null || negligible
         ? t("cost.spent", { spent: money(spent) })
         : high == null || money(high) === money(low)
           ? t("cost.spent_estimated", { spent: money(spent), low: money(low) })

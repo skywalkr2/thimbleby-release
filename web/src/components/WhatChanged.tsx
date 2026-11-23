@@ -287,7 +287,7 @@ export function WhatChanged(props: { compact?: boolean; onOpenGuide?: (step: str
         )
       ) : (
         <ListDetail
-          title={selected ? (folded(selected) ? editsTitle(selected, t) : changeTitle(selected, t, has)) : ""}
+          title={selected ? (folded(selected) ? editsTitle(selected, t, tn) : changeTitle(selected, t, has)) : ""}
           titleHref={selected?.mail_item && selected.source ? viewHref(recordView("source", selected.source)) : undefined}
           onClose={choice.close}
           fit={CHANGES_FIT}
@@ -601,8 +601,11 @@ function stateWord(item: S["ChangeItem"], gated: boolean): string {
 /** Whether a row stands for several of the person's own edits of one item on one day. */
 const folded = (item: S["ChangeItem"]): boolean => (item.edits ?? []).length > 1;
 
-/** "You changed Pay the deposit 5 times": the title of a row of folded edits. */
-const editsTitle = (item: S["ChangeItem"], t: T): string => t("changes.you_changed", { name: shortTitle(item.edited ?? "") || t("changes.untitled"), n: (item.edits ?? []).length });
+/** "You changed Pay the deposit 5 times", or "You added 5 people": the title of a row of folded changes. */
+const editsTitle = (item: S["ChangeItem"], t: T, tn: TN): string =>
+  item.fold === "people_added"
+    ? tn("changes.you_added_people", (item.edits ?? []).length)
+    : t("changes.you_changed", { name: shortTitle(item.edited ?? "") || t("changes.untitled"), n: (item.edits ?? []).length });
 
 /** Whether a row on this project is on no side while one side's filter is on: it shows under every choice, and says so. */
 function useEverySide(project: string | null | undefined): boolean {
@@ -621,7 +624,8 @@ function FoldedListRow(props: { item: S["ChangeItem"]; choice: ListChoice; revea
     if (props.reveal) showRow(ref.current);
   }, [props.reveal]);
   useRowKeys(ref, { toggle: () => choice.enter(item.id) });
-  const title = editsTitle(item, t);
+  const title = editsTitle(item, t, tn);
+  const added = item.fold === "people_added";
   const everySide = useEverySide(item.project);
   return (
     <ExpandableRow
@@ -630,7 +634,7 @@ function FoldedListRow(props: { item: S["ChangeItem"]; choice: ListChoice; revea
       {...choice.rowProps(item.id)}
       title={title}
       titleId={`t-${item.id}`}
-      meta={[t("changes.edits_sub", { edits: tn("changes.edits", (item.edits ?? []).length), when: dayAndTime(item.created_at) }), everySide ? t("queue.every_side") : ""].filter(Boolean).join(" · ")}
+      meta={[t(added ? "changes.people_added_sub" : "changes.edits_sub", { edits: tn("changes.edits", (item.edits ?? []).length), n: (item.edits ?? []).length, when: dayAndTime(item.created_at) }), everySide ? t("queue.every_side") : ""].filter(Boolean).join(" · ")}
       expand={{ expanded: choice.chosen === item.id, inert: choice.chosen === item.id, onToggle: () => choice.choose(item.id) }}
     />
   );
@@ -643,7 +647,7 @@ function FoldedEditsPane(props: { item: S["ChangeItem"] }) {
   return (
     <RowList as="ol" detail>
       <DetailItem data-row="" tabIndex={-1}>
-        <p className="hint">{t("changes.edits_intro", { edits: tn("changes.edits", edits.length), date: day(props.item.created_at) })}</p>
+        <p className="hint">{props.item.fold === "people_added" ? t("changes.people_added_intro", { date: day(props.item.created_at) }) : t("changes.edits_intro", { edits: tn("changes.edits", edits.length), date: day(props.item.created_at) })}</p>
       </DetailItem>
       {edits.map((edit) => (
         <ChangeRow key={edit.id} item={edit} reveal={0} history />
@@ -841,7 +845,7 @@ export function ChangeRow(props: {
   const account = cs && cs.ops.length > 0 ? cs.summary.trim() : "";
   const foldOpen = !!props.sendBack || !!props.want || asks || !!cs?.ops.some((o) => o.status === "held");
   const list = cs && cs.ops.length > 0 && (
-            <ItemList pane={props.pane} aria-label={tn("changes.did", cs.ops.length)}>
+            <ItemList pane={props.pane} aria-label={tn(item.own ? "changes.did_own" : "changes.did", cs.ops.length)}>
               {(cs.groups ?? []).map((group) => (
                 <GroupRow key={`g-${group.id}`} group={group} cs={cs} history={props.history} />
               ))}
@@ -987,6 +991,7 @@ const DID: Record<string, string> = {
   "record.set": "recorded",
   "record.log": "recorded",
   "person.add": "people",
+  "person.keep_offer": "people",
   "project.add": "projects",
   "text.draft": "drafts",
   "report.draft": "drafts",
@@ -996,7 +1001,7 @@ const DID_ORDER = ["actions_added", "actions_closed", "questions", "notes", "rec
 
 /** What the changes did, said as what they were: "Added 3 to-dos, Filed 1 note". Ops of a kind with no words here are
  * counted as "did N things", so nothing is left out. */
-function didText(ops: S["OpView"][], t: T, tn: TN): string {
+function didText(ops: S["OpView"][], t: T, tn: TN, own = false): string {
   const counts = new Map<string, number>();
   let other = 0;
   for (const op of ops) {
@@ -1005,7 +1010,7 @@ function didText(ops: S["OpView"][], t: T, tn: TN): string {
     else other += 1;
   }
   const said = DID_ORDER.filter((g) => counts.has(g)).map((g) => tn(`changes.did_what.${g}`, counts.get(g)!));
-  if (other) said.push(tn("changes.did", other));
+  if (other) said.push(tn(own ? "changes.did_own" : "changes.did", other));
   return said.join(t("changes.did_what.join"));
 }
 
@@ -1016,7 +1021,7 @@ function subLine(item: S["ChangeItem"], t: T, tn: TN): string {
   if (item.state === "needs_you" || item.state === "failed") return item.waiting ? t("changes.sub.stopped_why", { when, why: firstLine(item.waiting) }) : t("changes.sub.stopped", { when });
   const ops = item.changeset?.ops ?? [];
   const held = ops.filter((o) => o.status === "held" || o.ask?.status === "open").length;
-  const did = ops.length ? didText(ops, t, tn) : t("changes.did_nothing");
+  const did = ops.length ? didText(ops, t, tn, !!item.own) : t("changes.did_nothing");
   return held ? t("changes.sub.held", { did, held: tn("changes.held", held), when }) : t("changes.sub.did", { did, when });
 }
 

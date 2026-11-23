@@ -680,3 +680,34 @@ def test_people_is_left_out_only_by_a_confirmed_skip_never_by_reaching_a_later_s
     assert people["skipped"] and not people["done"] and people["reason"] == "none_added"
     c.post("/api/setup/walkthrough", json={"step": "people"})
     assert _steps(c)["people"]["skipped"], "going back to look does not make it a to-do again"
+
+
+def test_offers_never_change_where_the_walkthrough_stands_and_a_skipped_screen_is_not_where_it_resumes(tmp_path):
+    """H5-78: a passed or skipped step never brings the walkthrough back by itself, and people arriving for it change
+    neither whether it opens nor the screen it opens on."""
+    ws, c = _fresh(tmp_path)
+    for step in COUNTED:
+        assert c.post(f"/api/setup/{step}/skip").status_code == 200
+    shut = _view(c)["walkthrough"]
+    assert shut["open"] is False
+    with c.app.state.store.transaction() as tx:
+        tx.create(
+            "person_offer",
+            {
+                "name": "Someone Found",
+                "address": "found@example.com",
+                "why": "Writes to you.",
+                "from_them": 3,
+                "to_them": 1,
+                "status": "offered",
+                "offered_at": "2026-11-02T09:00:00+00:00",
+            },
+            _PM,
+        )
+    assert _view(c)["walkthrough"] == shut
+    assert _steps(c)["people"]["skipped"] and not _steps(c)["people"]["done"]
+    # Kept on People, which is skipped, with Backups still to do: it resumes after People, never on it.
+    assert c.post("/api/setup/backup/reopen").status_code == 200
+    c.post("/api/setup/walkthrough", json={"step": "people"})
+    walk = _view(c)["walkthrough"]
+    assert walk["open"] is True and walk["step"] == "backup"

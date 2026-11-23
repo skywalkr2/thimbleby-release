@@ -17,7 +17,7 @@ const WAS = "2026-10-23T10:00:00+00:00";
 const calendars = { name: () => undefined, color: () => undefined } as unknown as Parameters<typeof EntryDetails>[0]["calendars"];
 
 const options = (): S["ActOptionsView"] =>
-  ({ record: ENTRY, kind: "event", account: null, account_label: null, acting: false, can_act: false, channel_label: null, actions: [], answers: [], propose_refusal: null, folder_source: null, folders_listed: false, event_actions: [], event_own: true, event_why: null }) as S["ActOptionsView"];
+  ({ record: ENTRY, kind: "event", account: null, account_label: null, acting: false, can_act: false, channel_label: null, actions: [], answers: [], propose_refusal: null, folder_source: null, folders_listed: false, from_automated: false, event_actions: [], event_own: true, event_why: null }) as S["ActOptionsView"];
 
 function open(extra: Record<string, () => unknown> = {}) {
   const calls = fakeApi({

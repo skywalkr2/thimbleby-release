@@ -9,6 +9,7 @@ Only the publisher calls a channel, and only for an act whose yes still covers i
 
 from __future__ import annotations
 
+from email.utils import parseaddr
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query
@@ -245,6 +246,11 @@ def build_act_router(ws: Workspace, cfg: Config, store: Store, events: Events, w
             channel_label=channel.label if channel else None,
         )
         if kind == "message":
+            author = ((view.get("source", rid).data.get("watched") or {}).get("author")) or ""
+            address = parseaddr(str(author))[1] or str(author)
+            out.from_automated = (
+                address.strip().lower().startswith(tuple(w.lower() for w in cfg.watch.automated_mail.senders))
+            )
             out.actions = list(ACT_REPLY_ACTIONS)
             out.can_act = bool(channel and acting and channel.takes("message", "reply"))
             # What files messages is the account's mailbox channel, which needn't be the one that replies.

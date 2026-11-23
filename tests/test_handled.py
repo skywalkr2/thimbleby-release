@@ -116,6 +116,15 @@ def test_the_two_lists_hold_different_mail_and_no_mail_is_in_both(app):
     assert folder == ids(aside)
 
 
+def test_mail_read_with_nothing_to_do_is_in_handled_and_not_a_row_of_what_changed(app):
+    ws, cfg, store, client, base = app
+    read = get(client, base, tab="read")
+    assert sorted(titles(read)) == ["Lunch is moved", "Your statement is ready"]
+    rows = client.get(f"{base}/changes").json()
+    nothing = [r for r in rows if r["changeset"] is not None and not r["changeset"]["ops"] and r["state"] == "done"]
+    assert nothing == [], "a read that recorded nothing is not a change"
+
+
 def test_rows_are_grouped_by_kind_by_default_with_unique_keys_a_count_and_newest_first(app):
     ws, cfg, store, client, base = app
     view = get(client, base, tab="set_aside")

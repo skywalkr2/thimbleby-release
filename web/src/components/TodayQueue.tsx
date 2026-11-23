@@ -791,6 +791,7 @@ const KIND_ICONS: Record<QueueLine["kind"], IconName> = {
   sent_check: "send",
   rule_review: "book",
   learned: "book",
+  people_offers: "users",
   pattern: "book",
   terms: "book",
   since_yesterday: "note",

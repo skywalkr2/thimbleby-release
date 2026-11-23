@@ -954,6 +954,12 @@
             "title": "Folders Listed",
             "type": "boolean"
           },
+          "from_automated": {
+            "default": false,
+            "description": "The message is from an automatic sender (its address starts with a word of `watch.automated_mail.senders`), so a reply is no more likely than any other act and is not the page's main one.",
+            "title": "From Automated",
+            "type": "boolean"
+          },
           "kind": {
             "enum": [
               "message",
@@ -8449,6 +8455,19 @@
             "title": "First Go",
             "type": "boolean"
           },
+          "fold": {
+            "anyOf": [
+              {
+                "const": "people_added",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With `edits`, when the row folds the people the person took from those the assistant offered, not edits of one item: the row's title then counts the people added.",
+            "title": "Fold"
+          },
           "follows": {
             "anyOf": [
               {
@@ -8535,6 +8554,18 @@
               }
             ],
             "title": "Note"
+          },
+          "own": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "True when the person made this change themselves on a screen: the assistant did none of it.",
+            "title": "Own"
           },
           "project": {
             "anyOf": [
@@ -27409,6 +27440,7 @@
               "review",
               "rule_review",
               "learned",
+              "people_offers",
               "catch_up",
               "send",
               "nudge",

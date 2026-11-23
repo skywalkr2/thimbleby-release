@@ -4,7 +4,9 @@ import { flushSync } from "react-dom";
 import { Tooltip as AriaTooltip, TooltipTrigger } from "react-aria-components";
 import styles from "./Tooltip.module.css";
 
-export function Tooltip(props: { text: string; placement?: "top" | "bottom" | "left" | "right"; children: ReactNode }) {
+/** `trigger="focus"` opens it for keyboard focus only: a control whose wrapper carries the browser's own title for the pointer
+ * would otherwise show two on hover. */
+export function Tooltip(props: { text: string; placement?: "top" | "bottom" | "left" | "right"; trigger?: "focus"; children: ReactNode }) {
   // The open state is held here so that closing is applied before the next key or click. An open tooltip listens for Escape on the
   // whole page and takes it (closing itself); the pointer leaving is noticed by a plain page listener, whose update is otherwise
   // drawn a moment later, and an Escape in that moment would be taken by a tooltip that is already on its way out, so the pane or
@@ -36,7 +38,7 @@ export function Tooltip(props: { text: string; placement?: "top" | "bottom" | "l
     if (was?.at && was.scrolled && document.activeElement === was.at) requestAnimationFrame(() => document.activeElement === was.at && onOpenChange(true));
   };
   return (
-    <TooltipTrigger delay={400} closeDelay={0} isOpen={open} onOpenChange={onOpenChange}>
+    <TooltipTrigger trigger={props.trigger} delay={400} closeDelay={0} isOpen={open} onOpenChange={onOpenChange}>
       {props.children}
       <AriaTooltip className={styles.tip} placement={props.placement ?? "bottom"} offset={6}>
         {props.text}

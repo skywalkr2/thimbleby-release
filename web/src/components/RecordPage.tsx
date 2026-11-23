@@ -38,6 +38,7 @@ import { DAYS_OFF_FIELDS, DaysOff } from "./DaysOff";
 import { MeetingPrep } from "./MeetingPrep";
 import { useInvitationActs } from "./InvitationActs";
 import { useEventActs } from "./EventActs";
+import { AddressText } from "../ui/AddressText";
 import { useMessageActs } from "./MessageActs";
 import { useVersionActs } from "./SameDocument";
 import { ProjectKnows } from "./ProjectKnows";
@@ -456,7 +457,7 @@ export function RecordPage(props: { kind: string; id: string; onBack: () => void
                   ) : (
                     row.lines.map((line, i) => (
                       <div key={i} className={row.muted ? "muted" : undefined}>
-                        {typeof line === "string" ? line : <SafeLink label={line.label || domainOf(line.url) || line.url} url={line.url} />}
+                        {typeof line === "string" ? <AddressText text={line} /> : <SafeLink label={line.label || domainOf(line.url) || line.url} url={line.url} />}
                       </div>
                     ))
                   )}
@@ -521,7 +522,7 @@ export function RecordPage(props: { kind: string; id: string; onBack: () => void
         }
         back={props.embedded || isPerson || (gone && !isPerson) ? undefined : { label: t("record.back"), onClick: props.onBack }}
         primary={
-          data && message.options ? (
+          data && message.options && !message.options.from_automated ? (
             <Button variant="primary" onClick={() => message.ask("reply")}>
               {t("acts.reply")}
             </Button>
@@ -552,7 +553,7 @@ export function RecordPage(props: { kind: string; id: string; onBack: () => void
                 </Button>
               )}
               <Offers kind={kind} id={id} />
-              {message.options && <RowMenu label={heading} actions={message.menu(["reply"])} />}
+              {message.options && <RowMenu label={heading} actions={message.menu(message.options.from_automated ? [] : ["reply"])} />}
               {versions.entries.length > 0 && <RowMenu label={heading} actions={versions.entries} />}
               {invite.buttons}
               {eventActs.menu.length > 0 && <RowMenu label={t("acts.event.menu")} actions={eventActs.menu} />}

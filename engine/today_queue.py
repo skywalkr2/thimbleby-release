@@ -128,7 +128,9 @@ class Line:
     the always-sent section's `stable_size` against its `stable_budget`, and `moved` rules sent only with the runs they
     cover), learned (proposals of what the assistant learned from inputs and from the person's corrections, to look
     over: `count` of them, `origins` counted by where they came from and `expired` how many from inputs expired since
-    the person last looked), catch_up (what the assistant learned from corrections made before it could: `count`
+    the person last looked), people_offers (people the assistant offered to add after a look at who the person deals
+    with: `count` of them; the person adds or leaves out each one; not shown while the person is still before the People
+    screen in an open walkthrough), catch_up (what the assistant learned from corrections made before it could: `count`
     waiting and `left_out`, how many kinds of correction were too many for one list), extractor (a kind of file that
     isn't being read: `file_kind` is the kind, and `text` why), source_unread (a source that has failed for longer than
     its usual gap, or whose own data is older than its normal refresh (`problem_kind` "old_data", `days_old` how
@@ -1960,22 +1962,32 @@ def _everything(
     from engine import person_look
 
     offered = person_look.waiting_offers_in(reader)
-    if daily or offered:
+    if daily:
         origins: dict[str, int] = {}
         for p in daily:
             origins[p.came_from] = origins.get(p.came_from, 0) + 1
-        if offered:
-            origins["person"] = len(offered)
-        first = str(daily[0].stored.data.get("learned_at") or "") if daily else str(offered[0].data["offered_at"])
         lines.append(
             Line(
                 key="learned",
                 group="review",
                 kind="learned",
-                count=len(daily) + len(offered),
+                count=len(daily),
                 origins=origins,
                 expired=expired_since(reader, last_reviewed(reader)),
-                since=first,
+                since=str(daily[0].stored.data.get("learned_at") or ""),
+            )
+        )
+    # People the assistant offered to add are a line of their own, whenever a look made them (the first and each weekly
+    # one), whatever the state of setup's People step; only a person still before that screen in an open walkthrough
+    # waits, since setup shows them there first.
+    if offered and not first_run.not_reached(ws, "people"):
+        lines.append(
+            Line(
+                key="people_offers",
+                group="review",
+                kind="people_offers",
+                count=len(offered),
+                since=min(str(o.data["offered_at"]) for o in offered),
             )
         )
     on_list = [p for p in waiting if p.stored.id in listed]
@@ -2496,6 +2508,7 @@ _KIND_ORDER = {
     "batches": 0,
     "rule_review": 1,
     "learned": 2,
+    "people_offers": 2,
     "catch_up": 3,
     "unfiled": 4,
     "area": 4.5,

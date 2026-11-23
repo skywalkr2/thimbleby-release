@@ -61,6 +61,10 @@ class Item:
     untrusted: bool = True
 
 
+#: A day written as year-month-day numbers.
+_ISO_DAY = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+
+
 def week_of(cfg: Any, today: date) -> tuple[date, date]:
     """The seven days the week `today` belongs to runs: from the week's first working day through six days later, so
     the weekend is in it (the Monday briefing's week)."""
@@ -295,6 +299,7 @@ def problems(
     week: date,
     rows: list[Any],
     held: set[str] | None = None,
+    sentence: str = "",
 ) -> list[str]:
     """What is wrong with a reading's rows, in plain words, or nothing. Exact checks: each row cites a record that
     exists and falls in the week, the row's days are in the week, each record has one row, nothing Today holds is
@@ -309,6 +314,9 @@ def problems(
     most = cfg.steward.week_ahead.max_rows
     said: list[str] = []
     cited: set[str] = set()
+    # Prose shown to the person never carries a day as year-month-day numbers.
+    if any(_ISO_DAY.search(text or "") for text in [sentence, *(getattr(r, "words", "") for r in rows)]):
+        said.append("write each day as a weekday, month and day (Fri, Nov 27), never as year-month-day numbers")
     for row in rows:
         source = row.source
         if source in cited:
@@ -348,6 +356,7 @@ def check(ctx: Any, op: Any) -> list[str]:
         date.fromisoformat(str(plan.data["week"])),
         list(op.rows),
         set(given) if given is not None else None,
+        getattr(op, "sentence", "") or "",
     )
 
 

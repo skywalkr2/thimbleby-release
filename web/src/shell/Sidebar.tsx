@@ -72,11 +72,11 @@ function Entry(props: { entry: NavEntry; current: View; rail: boolean; sub?: boo
       <NavCount entry={entry} className={styles.count} />
     </Link>
   );
-  // The whole name shows on hover (the wrapper's title) and on focus (the tooltip; a link does not pass a pointer's hover to it), since a long label is cut
+  // The whole name shows on hover (the wrapper's title) and on keyboard focus (the tooltip, which stays closed for the pointer so only one shows), since a long label is cut
   // short, and on the icon rail the name is the only thing that tells the icons apart.
   return (
     <span className={styles.titled} title={entry.label} data-rail-title={props.rail ? "" : undefined}>
-      <Tooltip text={entry.label} placement="right">{link}</Tooltip>
+      <Tooltip text={entry.label} placement="right" trigger="focus">{link}</Tooltip>
     </span>
   );
 }

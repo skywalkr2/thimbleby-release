@@ -24,11 +24,11 @@ import { EmptyState } from "../ui/EmptyState";
 import { LoadFailed } from "../ui/LoadFailed";
 import { useLoadFailure } from "../lib/load-failure";
 import { refreshSince, writeMark } from "../lib/write";
-type List = "daily" | "catch_up";
+type List = "daily" | "catch_up" | "people";
 
-/** The kinds of queue line this draws: what was learned, and the catch-up list. */
+/** The kinds of queue line this draws: what was learned, the catch-up list, and the people offered to add. */
 export function isLearned(line: S["QueueLineView"]): boolean {
-  return line.kind === "learned" || line.kind === "catch_up";
+  return line.kind === "learned" || line.kind === "catch_up" || line.kind === "people_offers";
 }
 
 /** One learned line of the Today queue. The counts come from the queue; the list loads when it is opened. */
@@ -37,10 +37,10 @@ export function LearnedLine(props: { line: S["QueueLineView"] }) {
   const { line } = props;
   const [open, setOpen] = useState(false);
   const notNow = useNotNow();
-  const list: List = line.kind === "learned" ? "daily" : "catch_up";
+  const people = line.kind === "people_offers";
+  const list: List = line.kind === "learned" ? "daily" : line.kind === "people_offers" ? "people" : "catch_up";
   const origins = line.origins ?? {};
   const sub = [
-    line.kind === "learned" && origins.person ? tn("learned.today.from_people", origins.person) : "",
     line.kind === "learned" && origins.input ? tn("learned.today.from_inputs", origins.input) : "",
     line.kind === "learned" && origins.correction ? tn("learned.today.from_corrections", origins.correction) : "",
     line.kind === "learned" && line.expired ? tn("learned.today.expired", line.expired) : "",
@@ -51,17 +51,17 @@ export function LearnedLine(props: { line: S["QueueLineView"] }) {
   return (
     <Row
       as="section"
-      aria-label={t("learned.today.label")}
+      aria-label={people ? t("learned.today.people.label") : t("learned.today.label")}
       data-queue-line={line.kind}
-      pill={<Pill tone="need">{t("learned.today.label")}</Pill>}
-      title={line.kind === "learned" ? tn("learned.today.review", line.count) : tn("learned.today.catch_up", line.count)}
+      pill={<Pill tone="need">{people ? t("learned.today.people.label") : t("learned.today.label")}</Pill>}
+      title={people ? tn("learned.today.people", line.count) : line.kind === "learned" ? tn("learned.today.review", line.count) : tn("learned.today.catch_up", line.count)}
       meta={sub || undefined}
       primary={
         <Button size="sm" variant="primary" data-key="primary" onClick={() => setOpen(true)}>
-          {t("learned.today.open")}
+          {people ? t("learned.today.people.open") : t("learned.today.open")}
         </Button>
       }
-      menu={<RowMenu label={t("learned.today.label")} actions={[{ id: "not-now", label: t("queue.notnow"), run: () => notNow(line.key) }]} />}
+      menu={people ? undefined : <RowMenu label={t("learned.today.label")} actions={[{ id: "not-now", label: t("queue.notnow"), run: () => notNow(line.key) }]} />}
     >
       {open && <ReviewDrawer list={list} onClose={() => setOpen(false)} />}
     </Row>
@@ -76,16 +76,19 @@ export function keptTogether(rows: Proposal[]): Proposal[] {
 function ReviewDrawer(props: { list: List; onClose: () => void }) {
   const { t, tn } = useWords();
   const daily = props.list === "daily";
-  const proposals = useQuery({ queryKey: ["proposals"], queryFn: api.proposals, enabled: daily });
-  const catchUp = useQuery({ queryKey: ["catch-up"], queryFn: api.catchUp, enabled: !daily });
-  const found = daily ? proposals : catchUp;
+  const offers = props.list === "people";
+  const proposals = useQuery({ queryKey: ["proposals"], queryFn: api.proposals, enabled: daily || offers });
+  const catchUp = useQuery({ queryKey: ["catch-up"], queryFn: api.catchUp, enabled: !daily && !offers });
+  const found = daily || offers ? proposals : catchUp;
   const failure = useLoadFailure(found);
-  const rows = (daily ? proposals.data?.proposals : catchUp.data?.proposals) ?? [];
-  const people = (daily ? proposals.data?.people : undefined) ?? [];
+  const rows = (daily ? proposals.data?.proposals : offers ? undefined : catchUp.data?.proposals) ?? [];
+  const people = (offers ? proposals.data?.people : undefined) ?? [];
   const terms = keptTogether(rows);
-  const summary = daily
+  const title = offers ? t("learned.people.title") : daily ? t("learned.review.title") : t("learned.catch_up.title");
+  const summary = offers
+    ? []
+    : daily
     ? [
-        people.length ? tn("learned.today.from_people", people.length) : "",
         proposals.data?.origins.input ? tn("learned.today.from_inputs", proposals.data.origins.input) : "",
         proposals.data?.origins.correction ? tn("learned.today.from_corrections", proposals.data.origins.correction) : "",
         proposals.data?.expired ? tn("learned.today.expired", proposals.data.expired) : "",
@@ -95,7 +98,7 @@ function ReviewDrawer(props: { list: List; onClose: () => void }) {
         catchUp.data?.left_out ? tn("learned.catch_up.left_out", catchUp.data.left_out, { most: catchUp.data.most }) : "",
       ];
   return (
-    <Drawer open title={daily ? t("learned.review.title") : t("learned.catch_up.title")} onClose={props.onClose} wide>
+    <Drawer open title={title} onClose={props.onClose} wide>
       <div className={styles.review}>
         {summary.some(Boolean) && <p className={styles.summary}>{summary.filter(Boolean).join(" · ")}</p>}
         {terms.length > 0 && <KeepAll terms={terms} />}
@@ -108,7 +111,7 @@ function ReviewDrawer(props: { list: List; onClose: () => void }) {
         ) : (
           <>
             {rows.some((p) => p.trust === "untrusted") && <p className={styles.summary}>{t("knowledge.outside")}</p>}
-            <ul className={styles.list} aria-label={daily ? t("learned.review.title") : t("learned.catch_up.title")}>
+            <ul className={styles.list} aria-label={title}>
               {people.map((o) => (
                 <PersonOfferRow key={o.id} offer={o} />
               ))}
@@ -116,7 +119,7 @@ function ReviewDrawer(props: { list: List; onClose: () => void }) {
                 <ProposalRow key={p.id} p={p} />
               ))}
             </ul>
-            <p className={styles.summary}>{t("learned.review.one_at_a_time")}</p>
+            {!offers && <p className={styles.summary}>{t("learned.review.one_at_a_time")}</p>}
           </>
         )}
       </div>

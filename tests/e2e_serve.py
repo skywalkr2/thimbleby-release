@@ -9,6 +9,9 @@ builds. The route is added around it and exists only here, never in the app:
   sources of that account back in time by N minutes, as if they had been made that long ago. A failure becomes a line
   on Today only once it has lasted longer than the source's read interval times `watch.unread_gap_factor`, which a
   browser test cannot wait for. It answers with the number of reads moved.
+- `POST /__e2e/offer-people` with `{"count": N, "from": K}` makes N people the assistant offered to add (as a look at
+  who the person deals with leaves them), numbered from K, so a browser test can have a look's people arrive after
+  setup. It answers with their names.
 """
 
 from __future__ import annotations
@@ -41,6 +44,30 @@ def age_runs(store: Any, source_ids: list[str], minutes: float) -> int:
     return moved
 
 
+def offer_people(store: Any, count: int, first: int = 1) -> list[str]:
+    """Make `count` offers of people to add, numbered from `first`, as a look at who the person deals with does."""
+    ctx = WriteContext(actor="engine", trust="trusted", op="e2e.offer-people")
+    names = []
+    with store.transaction() as tx:
+        for n in range(first, first + count):
+            name = f"Offered Person {n}"
+            tx.create(
+                "person_offer",
+                {
+                    "name": name,
+                    "address": f"offered{n}@example.com",
+                    "why": "Writes to you most weeks, and you reply within a day.",
+                    "from_them": 6 + n,
+                    "to_them": 3,
+                    "status": "offered",
+                    "offered_at": datetime.now().astimezone().isoformat(),
+                },
+                ctx,
+            )
+            names.append(name)
+    return names
+
+
 def with_routes(create_app: Any) -> Any:
     """`create_app`, returning the same app with the test route in front of it (the app's own state is kept)."""
 
@@ -61,6 +88,15 @@ def with_routes(create_app: Any) -> Any:
             ids = [s.id for s in cfg.watch.sources if s.account == account]
             return JSONResponse({"moved": age_runs(app.state.store, ids, minutes), "sources": ids})
 
+        async def offer(request: Any) -> JSONResponse:
+            data = await request.json()
+            count, first = data.get("count"), data.get("from", 1)
+            if not isinstance(count, int) or isinstance(count, bool) or not isinstance(first, int) or count < 1:
+                return JSONResponse({"detail": "a count of people to offer is required"}, status_code=400)
+            names = offer_people(app.state.store, count, first)
+            app.state.events.changed()
+            return JSONResponse({"names": names})
+
         async def server_now(_request: Any) -> JSONResponse:
             # The server's clock now, in milliseconds, so a page can follow it (web/e2e/test.ts), and what the app
             # waits for a restart for ("code" when its own files changed while it ran): a failed test says so.
@@ -74,6 +110,7 @@ def with_routes(create_app: Any) -> Any:
         outer = Starlette(
             routes=[
                 Route("/__e2e/age-runs", age, methods=["POST"]),
+                Route("/__e2e/offer-people", offer, methods=["POST"]),
                 Route("/__e2e/now", server_now),
                 Mount("/", app=app),
             ],

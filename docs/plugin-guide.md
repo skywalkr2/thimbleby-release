@@ -3517,6 +3517,8 @@ The person keeps someone the assistant offered (a person.offer): they are added 
 |---|---|---|---|
 | `group` | str \| None | `None` | Ops that must be undone together share a group name. |
 | `offer` | str | required | The id of the offer being kept. |
+| `sides` | list[str] \| None | `None` | The ids of the sides to put them on when the person chose; none puts them on the sides their mail came from. |
+| `side` | Literal['personal', 'business', 'both'] \| None | `None` | The side of life to put them on, by word, when the person chose that way instead of `sides`. |
 
 ### `person.offer`
 

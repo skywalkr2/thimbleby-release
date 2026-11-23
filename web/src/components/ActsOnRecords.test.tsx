@@ -34,6 +34,7 @@ function options(over: Partial<S["ActOptionsView"]> = {}): S["ActOptionsView"] {
     propose_refusal: null,
     folder_source: SOURCE,
     folders_listed: true,
+    from_automated: false,
     event_own: false,
     ...over,
   };

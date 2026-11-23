@@ -7,6 +7,7 @@ import { api, type S } from "../lib/api";
 import { NO_RECORD_ACTS, useAct } from "../lib/act";
 import { shortDay } from "../lib/dates";
 import { useMoney } from "../lib/money";
+import { plainDates } from "../lib/read";
 import { shortTitle } from "../lib/title-dates";
 import { onSide, useSideFilter } from "../lib/sides";
 import { eventPageView, recordView, viewHref } from "../lib/views";
@@ -58,7 +59,7 @@ export function WeekAhead(props: { headingLevel?: 2 | 3; leaveOutAgenda?: boolea
         </Button>
       </div>
       {status && <p className="hint" data-week-ahead-status="">{status}</p>}
-      {data.sentence && !filtered && !leftOut && <p className={styles.sentence} data-week-ahead-sentence="">{data.sentence}</p>}
+      {data.sentence && !filtered && !leftOut && <p className={styles.sentence} data-week-ahead-sentence="">{plainDates(data.sentence)}</p>}
       {rows.length === 0 ? (
         (data.state === "empty" || ((filtered || leftOut) && data.rows.length > 0)) && <p className={styles.quiet}>{t("week_ahead.empty")}</p>
       ) : (

@@ -27,7 +27,7 @@ from email.utils import parseaddr
 from pathlib import Path
 from typing import Any, Literal
 
-from engine import closes, set_aside, sides
+from engine import change_rows, closes, set_aside, sides
 from engine.connectors import CORE, declared_reads, reads
 from engine.mail_kinds import kind_of
 from engine.storage import StoreError, WriteContext
@@ -148,20 +148,17 @@ def _mail_requests(view: Any) -> dict[tuple[str, str], list[Any]]:
 
 def _read_nothing(view: Any, requests: list[Any]) -> Any | None:
     """The request that says this mail was read with nothing to do: the latest one that wasn't taken back, when it is
-    done, came from an outside input, and its changeset recorded no op and was looked over. None otherwise."""
+    done, came from an outside input, and its changeset recorded no op (`change_rows.read_nothing`: with no op there is
+    nothing to look over). None otherwise."""
     live = [r for r in requests if not r.data.get("dismissed")]
     if not live:
         return None
     latest = live[-1]
     d = latest.data
-    if d["state"] != "done" or d.get("origin") != "input" or d.get("set_aside") or d.get("auto_closed"):
-        return None
-    if d.get("folded_into") or not d.get("changeset"):
+    if not d.get("changeset"):
         return None
     cs = view.get("changeset", d["changeset"])
-    if cs is None or cs.data["ops"] or not cs.data["reviewed"] or cs.data["status"] != "applied":
-        return None
-    return latest
+    return latest if change_rows.read_nothing(d, cs.data if cs is not None else None) else None
 
 
 def _row(

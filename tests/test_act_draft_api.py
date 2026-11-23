@@ -254,6 +254,16 @@ def test_the_options_for_a_message_say_what_its_account_can_do(client):
     assert missing["kind"] == "missing" and missing["actions"] == [] and missing["can_act"] is False
 
 
+def test_a_message_from_an_automatic_sender_says_so_so_a_reply_is_not_the_main_act(client):
+    mail = message(client)
+    assert client.get("/api/acts/options", params={"record": mail}).json()["from_automated"] is False
+    with client.store.transaction() as tx:
+        found = tx.get("source", mail)
+        watched = {**found.data["watched"], "author": "Updates <notifications@example.com>"}
+        tx.update("source", mail, {"watched": watched}, _ENGINE, read_version=found.version)
+    assert client.get("/api/acts/options", params={"record": mail}).json()["from_automated"] is True
+
+
 def test_the_options_for_a_reply_owed_are_those_of_the_message_that_asked(client):
     mail = message(client)
     with client.store.transaction() as tx:

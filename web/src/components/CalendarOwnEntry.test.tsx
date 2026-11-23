@@ -29,6 +29,7 @@ const options = (over: Partial<S["ActOptionsView"]> = {}): S["ActOptionsView"] =
   propose_refusal: null,
   folder_source: null,
   folders_listed: false,
+  from_automated: false,
   event_actions: [],
   event_own: true,
   event_why: null,

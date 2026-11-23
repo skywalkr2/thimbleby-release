@@ -107,7 +107,12 @@ def _unchecked(view: Any, cfg: Any) -> list[Thing]:
         cs = view.get("changeset", d["changeset"])
         if cs is None or review_batches.review_of(cs.data) != "unchecked":
             continue
-        if change_rows.own_job(d) or change_rows.without_subject(d, cs.data, cfg):
+        if (
+            change_rows.own_job(d)
+            or change_rows.without_subject(d, cs.data, cfg)
+            or change_rows.read_nothing(d, cs.data)
+            or change_rows.nothing_to_show(d, cs.data)
+        ):
             continue  # the rows What changed leaves out are not counted
         found.append(_thing(view, cfg, request_project(view, req, cs.data)))
     return found

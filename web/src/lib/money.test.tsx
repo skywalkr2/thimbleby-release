@@ -42,6 +42,8 @@ test("one writer serves every formatter: totals, estimates, small prices, amount
   expect(r.spent(0.5, [0.4, 0.6], 0.08)).toBe("Cost $0.50, estimated at $0.40 to $0.60 · $0.08 of it may have been charged: a call got no answer, so its estimate is counted");
   expect(r.spent(0.5, null, 0.08)).toBe("Cost $0.50 · $0.08 of it may have been charged: a call got no answer, so its estimate is counted");
   expect(r.spent(0.5, null, 0)).toBe("Cost $0.50");
+  // A cost under a cent is not followed by an estimate that only repeats it.
+  expect(r.spent(0.001, [0.0004, 0.01])).toBe("Cost less than a cent");
   expect(r.spent(0.5, null, null)).toBe("Cost $0.50");
 });
 

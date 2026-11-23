@@ -37,6 +37,12 @@ function edit(id: string, name: string, at: string, extra: Partial<S["ChangeItem
   } as S["ChangeItem"];
 }
 
+/** The change of an edit with its one op named `op`, whatever the op's own words. */
+const withOp = (id: string, op: string, title: string) => {
+  const changeset = edit(id, title, "2026-11-02T10:00:00Z").changeset!;
+  return { ...changeset, ops: [{ ...changeset.ops[0], op, title, record: null }] } as S["ChangesetView"];
+};
+
 const five = ["REQ-9", "REQ-8", "REQ-7", "REQ-6", "REQ-5"].map((id, i) => edit(id, "Pay the deposit", `2026-11-02T1${5 - i}:00:00Z`));
 const folded = { ...five[0], edited: "Pay the deposit", edits: five.map((e) => ({ ...e, edits: [] })) } as S["ChangeItem"];
 
@@ -75,4 +81,23 @@ test("a change the assistant made is a row of its own and is not folded", async 
   renderApp(<WhatChanged />);
   await screen.findByRole("button", { name: /^You changed Pay the deposit 5 times/ });
   expect(screen.getByRole("button", { name: /^A message/ })).toBeInTheDocument();
+});
+
+test("the people the person took from those offered are one row that says what they did, never that the assistant did", async () => {
+  const taken = ["REQ-3", "REQ-2", "REQ-1"].map((id, i) =>
+    edit(id, `Added Person ${3 - i}`, `2026-11-02T1${3 - i}:00:00Z`, { own: true, changeset: withOp(id, "person.keep_offer", `Added Person ${3 - i}`) }),
+  );
+  show([{ ...taken[0], fold: "people_added", edits: taken.map((e) => ({ ...e, edits: [] })) } as S["ChangeItem"]]);
+  renderApp(<WhatChanged />);
+  await screen.findByRole("button", { name: "You added 3 people" });
+  expect(await screen.findByText(/The people you added on/)).toBeInTheDocument();
+  expect(screen.queryByText(/did \d things?/)).toBeNull();
+  expect(screen.getAllByText(/Added 1 person/).length).toBeGreaterThan(0);
+});
+
+test("a change the person made with an op the list has no words for reads as theirs", async () => {
+  show([edit("REQ-1", "Pay the deposit", "2026-11-02T09:00:00Z", { own: true, changeset: withOp("REQ-1", "action.retitle", "Pay the deposit") })]);
+  renderApp(<WhatChanged />);
+  expect(await screen.findByText(/You changed 1 thing/)).toBeInTheDocument();
+  expect(screen.queryByText(/did 1 thing/)).toBeNull();
 });

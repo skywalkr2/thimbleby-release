@@ -69,8 +69,8 @@ export interface Range {
   shown: string[];
 }
 
-/** The days a view shows around the day the person is looking at. A work week also shows today when today falls in it on a
- * day off (a weekend), so the view that opens by default always has today in it. */
+/** The days a view shows around the day the person is looking at. A work week whose week holds today on a day off (a weekend)
+ * shows the whole week, so the view that opens by default has today in it and no day between is skipped. */
 export function rangeOf(view: CalendarView, date: string, startsOn: number, workDays: readonly number[], today?: string): Range {
   // The timeline has its own answer, which says its days.
   if (view === "day" || view === "timeline") return { first: date, days: 1, shown: [date] };
@@ -80,7 +80,8 @@ export function rangeOf(view: CalendarView, date: string, startsOn: number, work
   }
   const first = startOfWeek(date, startsOn);
   const week = Array.from({ length: 7 }, (_, n) => addDays(first, n));
-  return { first, days: 7, shown: view === "week" ? week : week.filter((d) => workDays.includes(weekdayIndex(d)) || d === today) };
+  const todayOff = today !== undefined && week.includes(today) && !workDays.includes(weekdayIndex(today));
+  return { first, days: 7, shown: view === "week" || todayOff ? week : week.filter((d) => workDays.includes(weekdayIndex(d))) };
 }
 
 /** Where an arrow press `n` steps (negative: back) takes the day being looked at: a day, a week or a month, by the view. */

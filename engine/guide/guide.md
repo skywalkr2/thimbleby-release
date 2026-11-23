@@ -38,6 +38,8 @@ Today is the home screen. It shows what needs you now: what changed since you la
 ready to move to their next stage, work waiting for your go, and lines that add-ons put there. Each row has one main
 button; everything else is in its menu (the three dots). While setup is unfinished, one line shows how far along it is and opens the setup walkthrough at the next step.
 
+People the assistant finds in your mail, the first time and every week after, are a line of their own, "Pick which of the 5 people found in your mail to add", whether or not you left out the People step in setup. Each person you add is one change with Undo, and What changed shows the day's additions as one row, "You added 5 people".
+
 A line starts with what you do: "Answer ...", "Send ...", "Set a new date for ..." or "Give 3 new to-dos a date". Lines about the same thing are grouped into one, never one for each item, and each kind has a small icon beside its words (the words always say it too). A few kinds worth knowing: a meeting that was called off is held, not done: Today asks you to set a new date for it or drop it, and the to-dos tied to it are paused with it until you keep or drop them; new to-dos with no date are one line that opens To-dos, and a new area the assistant suggests is a line that starts "Start the area ..." with its name filled in (Rename is in its menu); a screen that took long to open is one line, "Check why ... is slow", whose button drafts a short report you can copy to the maintainers (nothing is sent from here). A toast that only offers Undo goes when you move to another screen; press u to undo the last action while it is there.
 
 ## Setting up

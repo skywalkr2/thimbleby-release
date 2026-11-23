@@ -571,12 +571,22 @@ def walkthrough(ws: Any, cfg: Any, found: list[Step]) -> Walkthrough:
         step = todo.group if todo else "done"
         if not started and not any(s.done or s.skipped for s in found if s.counted):
             step = "welcome"
+    # A screen the person skipped is never where it resumes (a step left out on purpose is not brought back by the app):
+    # it goes on to the next screen, up to the last.
+    while step in WALKTHROUGH_STEPS and step != WALKTHROUGH_STEPS[-1] and _left_out(found, step):
+        step = WALKTHROUGH_STEPS[WALKTHROUGH_STEPS.index(step) + 1]
     return Walkthrough(
         open=not cfg.workspace.demo and not (closed or ended or finished(found)),
         step=step,
         closed=closed,
         finished=ended,
     )
+
+
+def _left_out(found: list[Step], screen: str) -> bool:
+    """Whether the screen's counted steps were all skipped by the person (and it has at least one)."""
+    here = [s for s in found if s.counted and s.group == screen]
+    return bool(here) and all(s.skipped and not s.done for s in here)
 
 
 def not_reached(ws: Any, screen: str) -> bool:

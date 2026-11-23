@@ -138,7 +138,7 @@ def first_line(text: str, skipping: list[re.Pattern[str]]) -> str:
     never cut, so there is none. Greetings, quoted header lines, sign-offs and blank lines are passed over."""
     for line in text.splitlines()[:_HEAD_LINES]:
         stripped = line.strip()
-        if not stripped or any(p.match(stripped) for p in skipping):
+        if not stripped or any(p.match(stripped) for p in skipping) or is_token(stripped):
             continue
         words = stripped.split()
         return " ".join(words) if len(words) <= TOPIC_WORDS else ""
@@ -207,8 +207,25 @@ def readable_sender(address: str, automated: tuple[str, ...] | None = None) -> s
     return " ".join(words)
 
 
+#: The shortest run of letters and digits with no space that is a token (a machine-made subject), never words.
+_TOKEN_LENGTH = 20
+
+
+def is_token(text: str) -> bool:
+    """Whether a subject is a machine-made token: one long run with no space, mixing letters and digits."""
+    text = text.strip()
+    return (
+        len(text) >= _TOKEN_LENGTH
+        and not any(c.isspace() for c in text)
+        and any(c.isdigit() for c in text)
+        and any(c.isalpha() for c in text)
+    )
+
+
 def _clean_subject(subject: str) -> str:
-    return _REPLY_PREFIX.sub("", " ".join(subject.split())).strip()
+    """A subject without its reply prefixes; nothing when it is a token, so the title falls back to the topic."""
+    cleaned = _REPLY_PREFIX.sub("", " ".join(subject.split())).strip()
+    return "" if is_token(cleaned) else cleaned
 
 
 @lru_cache(maxsize=2048)

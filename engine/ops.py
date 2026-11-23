@@ -1181,6 +1181,14 @@ class PersonKeepOfferOp(OpModel):
 
     op: Literal["person.keep_offer"] = "person.keep_offer"
     offer: str = Field(description="The id of the offer being kept.")
+    sides: list[str] | None = Field(
+        None,
+        description="The ids of the sides to put them on when the person chose; none puts them on the sides their mail "
+        "came from.",
+    )
+    side: Literal["personal", "business", "both"] | None = Field(
+        None, description="The side of life to put them on, by word, when the person chose that way instead of `sides`."
+    )
 
     def describe(self, view: Any = None) -> str | None:
         return "Add someone the assistant offered"

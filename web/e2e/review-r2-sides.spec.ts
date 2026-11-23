@@ -64,4 +64,16 @@ test.describe("the side picker and the icon rail (S-0362)", () => {
     const sides = ["Willowbrook Handmade Ceramics and Garden Supply Cooperative", "Northfield Mobile Bicycle Repair and Neighborhood Delivery Service"];
     for (const name of sides) await expect(nav.getByRole("link", { name }).locator("xpath=..")).toHaveAttribute("title", name);
   });
+
+  test("hovering a menu link shows one name (the browser's title), never the app's own tooltip as well", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await open(page);
+    const link = page.getByRole("navigation", { name: "Views" }).getByRole("link").nth(2);
+    await expect(link).toBeVisible(LOADED);
+    await expect(link.locator("xpath=..")).toHaveAttribute("title", /.+/);
+    await link.hover();
+    // Longer than the tooltip's own delay.
+    await page.waitForTimeout(800);
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+  });
 });

@@ -209,6 +209,7 @@ test("a clash line opens both entries, each with when it is, its calendar, Move 
     propose_refusal: null,
     folder_source: null,
     folders_listed: false,
+    from_automated: false,
     event_actions: [],
     event_own: true,
     event_why: null,

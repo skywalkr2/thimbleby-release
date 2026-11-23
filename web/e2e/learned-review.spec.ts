@@ -94,7 +94,7 @@ for (const size of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) 
   });
 }
 
-// A person the assistant offered is a row on the review card: it says how they would be added, Keep adds them in one
+// A person the assistant offered is a row of the people found in mail: it says how they would be added, Keep adds them in one
 // change that Undo takes back, and "Not this one" leaves them out (S-0534).
 async function offeredPersonRow(page: Page, size: { width: number; height: number }) {
   {
@@ -106,7 +106,7 @@ async function offeredPersonRow(page: Page, size: { width: number; height: numbe
     const posted: string[] = [];
     await page.route("**/api/today/queue", (route) =>
       route.fulfill({
-        json: [{ key: "learned", group: "review", kind: "learned", count: 2, origins: { person: 2 }, untrusted: false, unpriced: 0, actions: [], questions: [], outcome: {} }],
+        json: [{ key: "people_offers", group: "review", kind: "people_offers", count: 2, untrusted: false, unpriced: 0, actions: [], questions: [], outcome: {} }],
       }),
     );
     await page.route("**/api/knowledge/proposals", (route) => route.fulfill({ json: { people, proposals: [], origins: {}, expired: 0 } }));
@@ -115,8 +115,9 @@ async function offeredPersonRow(page: Page, size: { width: number; height: numbe
       return route.fulfill({ json: { changeset: "CS-900" } });
     });
     await openScreen(page, "today");
-    await expect(page.locator('[data-queue-line="learned"]')).toContainText("2 people to add");
-    await page.locator('[data-queue-line="learned"]').getByRole("button", { name: "Review", exact: true }).click();
+    // People found in mail are a Today line of their own, not part of what was learned (H5-78).
+    await expect(page.locator('[data-queue-line="people_offers"]')).toContainText("Pick which of the 2 people found in your mail to add");
+    await page.locator('[data-queue-line="people_offers"]').getByRole("button", { name: "Pick", exact: true }).click();
     const drawer = page.getByRole("dialog");
     const rows = drawer.getByRole("listitem");
     await expect(rows).toHaveCount(2);

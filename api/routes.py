@@ -1974,7 +1974,7 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
                     ops=[
                         _op_view(o, store, people, projects, cfg, to_send)
                         for o in cs.data["ops"]
-                        if not _is_bookkeeping_op(o, cs.data["ops"])
+                        if not change_rows.bookkeeping_op(o, cs.data["ops"])
                     ],
                     groups=[AnswerGroupView(**vars(g)) for g in answer_groups.groups_of(cs.data["ops"])],
                     made=[
@@ -1990,7 +1990,13 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
                 )
                 if change_rows.without_subject(d, cs.data, cfg):
                     continue  # a change with nothing to say what it was about
+                if change_rows.read_nothing(d, cs.data):
+                    continue  # a read that recorded nothing is in Handled for you, not a change
+                if change_rows.nothing_to_show(d, cs.data):
+                    continue  # a change of the person's own that lists nothing to read is no row
                 target = own_edits.edited_record(d, cs.data)
+                if target is None and own_edits.added_a_person(d, cs.data):
+                    target = own_edits.ADDED_PEOPLE
                 if target is not None:
                     edited[req.id] = target
             out.append(
@@ -2006,6 +2012,7 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
                     source_title=sources.get(d.get("source"), {}).get("title"),
                     approval=d.get("approval"),
                     stage_task=bool(d.get("stage_start")),
+                    own=d.get("origin") == "pm" and not d.get("source"),
                     first_go=waits_on_first_go(d),
                     estimate_usd=d.get("estimate_usd"),
                     range_usd=d.get("range_usd"),
@@ -2758,9 +2765,30 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
     @r.post("/setup/people-add")
     def add_setup_person(body: SetupPersonIn) -> Created:
         """Add a person from the people step with the address their mail showed, kept as the way to reach them."""
-        new = create_person(PersonIn(**body.model_dump(exclude={"address"})), body.address)
         from engine import person_look
 
+        # Someone the assistant offered, added as the offer names them: one change that adds them and answers the offer.
+        offer = next(
+            (
+                o
+                for o in person_look.waiting_offers_in(store.read())
+                if body.address and o.data["address"].lower() == body.address.strip().lower()
+            ),
+            None,
+        )
+        plain = body.model_dump(
+            exclude={"address", "full_name", "side", "sides"}, exclude_none=True, exclude_defaults=True
+        )
+        if offer is not None and not plain and " ".join(body.full_name.split()).lower() == offer.data["name"].lower():
+            if body.side and body.sides:
+                raise HTTPException(status_code=409, detail="Name the sides or the side, not both.")
+            try:
+                person_look.keep(store, cfg, offer.id, sides=body.sides, side=body.side)
+            except (StoreError, ValueError) as err:
+                raise HTTPException(status_code=409, detail=str(err)) from None
+            changed()
+            return Created(id=store.read().get("person_offer", offer.id).data["person"])
+        new = create_person(PersonIn(**body.model_dump(exclude={"address"})), body.address)
         if body.address:
             person_look.settle(store, cfg, body.address, "kept", new)  # an offer for them is answered
         changed()
@@ -3485,27 +3513,11 @@ def _fold_own_edits(items: list[ChangeItem], edited: dict[str, tuple[str, str]],
             if not head.edits:
                 head.edits = [head.model_copy()]
             head.edits.append(item)
-            head.edited = (head.changeset.ops[0].title if head.changeset and head.changeset.ops else None) or None
+            if target == own_edits.ADDED_PEOPLE:
+                head.fold = "people_added"
+            else:
+                head.edited = (head.changeset.ops[0].title if head.changeset and head.changeset.ops else None) or None
     return rows
-
-
-def _is_bookkeeping_op(o: dict[str, Any], ops: list[dict[str, Any]]) -> bool:
-    """Whether an op of a change is no news to the person: their own organization set to the one the same change just
-    made (they work for the business they added), which a record's Activity leaves out as well."""
-    op = o["op"]
-    if (
-        o.get("status") != "applied"
-        or op.get("op") != "record.set"
-        or op.get("kind") != "person"
-        or op.get("field") != "org"
-    ):
-        return False
-    return any(
-        other.get("status") == "applied"
-        and other["op"].get("op") == "project.add"
-        and op.get("value") in (other["op"].get("organization"), other["op"].get("name"))
-        for other in ops
-    )
 
 
 def _op_view(

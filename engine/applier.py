@@ -2475,7 +2475,9 @@ def apply_changeset(
     cs = endings.wind_down(restatements(with_years(cs, ctx, now), ctx), ctx)
     # Recheck at the write boundary: callers cannot bypass plugin validators or tiers.
     problems = list(dict.fromkeys([*problems, *check(cs, ctx)]))
-    today = now.date()
+    # The day an op is written under is the person's own day, not the server's: a to-do's news, log line or hold is
+    # dated where they are.
+    today = local_day(now, zone(ctx.cfg))
     by_op: dict[int, list[Problem]] = {}
     for p in problems:
         if p.op is not None:

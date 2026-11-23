@@ -3,6 +3,7 @@ import { screen, within } from "@testing-library/react";
 import { useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "../test-utils";
+import { setClockZone } from "../lib/dates";
 import { ActivityList } from "./ActivityList";
 import { AskAboutThis } from "./AskAboutThis";
 import { Definition, DefinitionList } from "./DefinitionList";
@@ -56,6 +57,18 @@ test("an activity list groups its entries by day, shows the latest five, and ask
   await user.click(screen.getByRole("button", { name: "Show all activity" }));
   expect(list.querySelectorAll("[data-activity-entry]")).toHaveLength(6);
   expect(screen.getByRole("button", { name: "Show fewer" })).toHaveAttribute("aria-expanded", "true");
+});
+
+test("an activity entry past midnight UTC is written on the person's own day and time", () => {
+  setClockZone("America/New_York");
+  try {
+    renderApp(<ActivityList entries={[{ key: "1", at: "2026-10-13T01:45:00+00:00", body: "Added a to-do" }]} />);
+    // 9:45 PM on Monday the 12th where the person is, not 1:45 AM on the 13th.
+    expect(screen.getByText("9:45 PM")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 3 }).textContent).toBe("Oct 12");
+  } finally {
+    setClockZone(null);
+  }
 });
 
 test("a short activity list has nothing to ask for", () => {

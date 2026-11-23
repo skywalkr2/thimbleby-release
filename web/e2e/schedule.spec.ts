@@ -8,9 +8,9 @@ import { momentAt } from "./clock";
 import { openScreen } from "./open-screen";
 import { test } from "./test";
 
-// The work week is the working days, and today too when the run's day is a day off (a weekend), so the default view always
-// holds today. The test workspaces work Monday to Friday, on UTC.
-const WORK = 5 + ([0, 6].includes(new Date(momentAt).getUTCDay()) ? 1 : 0);
+// The work week is the working days, or the whole week when the run's day is a day off (a weekend), so the default view always
+// holds today and skips no day. The test workspaces work Monday to Friday, on UTC.
+const WORK = [0, 6].includes(new Date(momentAt).getUTCDay()) ? 7 : 5;
 
 // The days shown after pressing 2 and then 3. Below 1100px the Week view is the working days; on a phone the week is a list by
 // day (a section for each day, not a lane).

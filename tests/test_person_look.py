@@ -711,17 +711,156 @@ def test_the_people_step_leaving_someone_out_records_the_same_signal(env):
     assert [s.data["kind"] for s in store.read().list("signal") if offer.id in s.data["refs"]] == ["discarded"]
 
 
-def test_a_waiting_offer_is_a_line_on_todays_review_and_the_assistant_cannot_keep_one(env):
+def queue_lines(client, kind):
+    return [item for item in client.get("/api/today/queue").json() if item["kind"] == kind]
+
+
+def test_a_waiting_offer_is_a_line_of_its_own_on_today_and_the_assistant_cannot_keep_one(env):
     from engine.ops import PERSON_ONLY_OPS
     from engine.tasks import TASKS
 
     ws, cfg, store, client = env
     look(env)
-    queue = client.get("/api/today/queue").json()
-    line = next(item for item in queue if item["kind"] == "learned")
-    assert line["count"] >= 2 and line["origins"]["person"] == 2
+    (line,) = queue_lines(client, "people_offers")
+    assert line["count"] == 2 and line["group"] == "review"
+    assert queue_lines(client, "learned") == [], "the offers are not counted in what was learned"
     assert "person.keep_offer" in PERSON_ONLY_OPS
     assert "person.keep_offer" not in TASKS["knowledge-person"].ops and "person.keep_offer" not in TASKS["notes"].ops
+
+
+def make_offer(store, name, address):
+    """An offer a later look made, as the look's own change writes it."""
+    with store.transaction() as tx:
+        tx.create(
+            "person_offer",
+            {
+                "name": name,
+                "address": address,
+                "why": "Writes to you.",
+                "from_them": 4,
+                "to_them": 2,
+                "status": "offered",
+                "offered_at": NOW.isoformat(),
+            },
+            _W,
+        )
+
+
+def test_offers_reach_today_after_the_people_step_was_skipped_and_again_from_each_later_look(env):
+    """H5-78: the person skipped People before anything was found; what a look finds later, the first or a weekly one,
+    is a line on Today whatever the step's state."""
+    ws, cfg, store, client = env
+    assert client.post("/api/setup/people/skip").status_code == 200
+    assert queue_lines(client, "people_offers") == []
+    look(env)
+    (line,) = queue_lines(client, "people_offers")
+    assert line["count"] == 2
+    make_offer(store, "Weekly Newcomer", "newcomer@example.com")  # the next weekly look's person
+    (line,) = queue_lines(client, "people_offers")
+    assert line["count"] == 3
+
+
+def test_the_line_waits_only_while_the_person_is_before_the_people_screen_of_an_open_walkthrough(env):
+    from engine import setup
+
+    ws, cfg, store, client = env
+    look(env)
+    setup.keep_walkthrough(ws, step="mail")
+    assert queue_lines(client, "people_offers") == [], "setup shows them first, on its own People screen"
+    setup.keep_walkthrough(ws, step="people")
+    assert len(queue_lines(client, "people_offers")) == 1
+    setup.keep_walkthrough(ws, step="mail", closed=True)
+    assert len(queue_lines(client, "people_offers")) == 1, "a walkthrough the person closed holds nothing back"
+
+
+def test_the_line_is_gone_when_nobody_waits(env):
+    ws, cfg, store, client = env
+    look(env)
+    for offer in person_look.waiting_offers(store):
+        assert client.post(f"/api/knowledge/people/{offer.id}/keep").status_code == 200
+    assert queue_lines(client, "people_offers") == []
+
+
+def test_a_look_held_for_the_go_is_a_go_line_on_today(env):
+    from engine.config.schema import Price
+
+    ws, cfg, store, client = env
+    cfg.ai.budgets.confirm_above_usd = 0.0
+    cfg.ai.prices[cfg.ai.tiers["routine"].use] = Price(input_per_million=50.0, output_per_million=50.0)
+    request = person_look.queue(store, cfg, NOW)
+    process(ws, store, cfg, Router(cfg, store, env={}), request, now=NOW)
+    held = person_look.held_for_go(store)
+    assert held is not None and held.id == request
+    assert [line["request"] for line in queue_lines(client, "go")] == [request]
+
+
+# ---- taking an offer is one change, named for the person (H5-79) -------------------------------------------------
+
+
+def changesets(store):
+    return [c for c in store.read().list("changeset") if c.data["ops"][0]["op"]["op"] != "person.offer"]
+
+
+def test_taking_an_offer_writes_one_change_named_for_the_person_whichever_screen_takes_it(env):
+    ws, cfg, store, client = env
+    look(env)
+    first, second = person_look.waiting_offers(store)
+    assert client.post(f"/api/knowledge/people/{first.id}/keep").status_code == 200
+    placed = {"full_name": second.data["name"], "aliases": [], "address": second.data["address"], "side": "personal"}
+    assert client.post("/api/setup/people-add", json=placed).status_code == 200
+    made = changesets(store)
+    assert [len(c.data["ops"]) for c in made] == [1, 1]
+    assert [c.data["summary"] for c in made] == [f"Added {first.data['name']}", f"Added {second.data['name']}"]
+    assert {c.data["ops"][0]["op"]["op"] for c in made} == {"person.keep_offer"}
+    kept = store.read().get("person_offer", second.id).data
+    assert kept["status"] == "kept" and store.read().get("person", kept["person"]) is not None
+    assert [r.data["note"] for r in store.read().list("request") if r.data["origin"] == "pm"] == [
+        c.data["summary"] for c in made
+    ], "one request each, no second write"
+
+
+def test_the_people_step_add_keeps_the_side_the_person_picked(env):
+    ws, cfg, store, client = env
+    look(env)
+    offer = person_look.waiting_offers(store)[0]
+    personal = cfg.workspace.project.personal
+    body = {"full_name": offer.data["name"], "aliases": [], "address": offer.data["address"], "sides": [personal]}
+    new = client.post("/api/setup/people-add", json=body).json()["id"]
+    assert store.read().get("person", new).data["sides"] == [personal]
+
+
+def test_the_persons_own_takings_of_one_day_are_one_row_named_for_what_they_did_and_none_is_empty(env):
+    ws, cfg, store, client = env
+    look(env)
+    make_offer(store, "Third Newcomer", "third@example.com")
+    store.clock = lambda: "2026-11-02T12:00:00Z"
+    for offer in person_look.waiting_offers(store):
+        assert client.post(f"/api/knowledge/people/{offer.id}/keep").status_code == 200
+    rows = client.get("/api/changes").json()
+    assert len(rows) == 1, "three takings are one row"
+    (row,) = rows
+    assert row["fold"] == "people_added" and len(row["edits"]) == 3 and row["own"] is True
+    assert all(
+        len(e["changeset"]["ops"]) == 1 and e["changeset"]["ops"][0]["op"] == "person.keep_offer" for e in row["edits"]
+    )
+    assert all(e["title"]["topic"].startswith("Added ") for e in row["edits"])
+
+
+def test_one_taking_is_one_row_named_for_the_person_and_a_change_with_nothing_to_read_is_no_row(env):
+    from engine import change_rows
+
+    ws, cfg, store, client = env
+    look(env)
+    offer = person_look.waiting_offers(store)[0]
+    client.post(f"/api/knowledge/people/{offer.id}/keep")
+    (row,) = client.get("/api/changes").json()
+    assert row["fold"] is None and row["edits"] == [] and row["title"]["topic"] == f"Added {offer.data['name']}"
+    request = {"origin": "pm", "state": "done"}
+    assert change_rows.nothing_to_show(request, {"status": "applied", "ops": []})
+    assert not change_rows.nothing_to_show(
+        request, {"status": "applied", "ops": [{"op": {"op": "x"}, "status": "applied"}]}
+    )
+    assert not change_rows.nothing_to_show({**request, "source": "SRC-1"}, {"status": "applied", "ops": []})
 
 
 # ---- an offer's reason is in the person's words (H5-41) --------------------------------------------------------------

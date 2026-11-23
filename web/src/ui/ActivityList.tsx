@@ -3,7 +3,7 @@
 // "Today", "Yesterday" or its month and day. A day is a heading over its own list, so the list items are the entries and
 // nothing else: a count of them is a count of what happened. Each entry can carry an icon for who did it. `shown` is how many show before the rest is asked for.
 import { useState, type ReactNode } from "react";
-import { addDays, monthDay, todayOn, wallTime } from "../lib/dates";
+import { addDays, clockDay, clockTime, monthDay, todayOn } from "../lib/dates";
 import { useWords } from "../lib/wording";
 import { Button } from "./Button";
 import { Icon, type IconName } from "./Icon";
@@ -11,7 +11,7 @@ import styles from "./ActivityList.module.css";
 
 export interface ActivityEntry {
   key: string;
-  /** When it happened, as the server wrote it on the person's own clock. */
+  /** When it happened: a moment with an offset is moved to the person's zone, one with none is already on their clock. */
   at: string;
   body: ReactNode;
   /** A small icon for who or what it was (the person, the assistant), in the slot before the words. */
@@ -25,12 +25,12 @@ export function ActivityList(props: { entries: ActivityEntry[]; shown?: number; 
   const entries = all ? props.entries : props.entries.slice(0, limit);
   const today = todayOn(new Date());
   const dayName = (at: string) => {
-    const d = at.slice(0, 10);
-    return d === today ? t("activity.today") : d === addDays(today, -1) ? t("activity.yesterday") : monthDay(at);
+    const d = clockDay(at);
+    return d === today ? t("activity.today") : d === addDays(today, -1) ? t("activity.yesterday") : monthDay(d);
   };
   const days: Array<{ day: string; name: string; entries: ActivityEntry[] }> = [];
   for (const entry of entries) {
-    const d = entry.at.slice(0, 10);
+    const d = clockDay(entry.at);
     const last = days[days.length - 1];
     if (last && last.day === d) last.entries.push(entry);
     else days.push({ day: d, name: dayName(entry.at), entries: [entry] });
@@ -48,7 +48,7 @@ export function ActivityList(props: { entries: ActivityEntry[]; shown?: number; 
                     {entry.icon && <Icon name={entry.icon} size={16} />}
                   </span>
                   <span className={styles.body}>{entry.body}</span>
-                  <span className={styles.time}>{wallTime(entry.at)}</span>
+                  <span className={styles.time}>{clockTime(entry.at)}</span>
                 </li>
               ))}
             </ol>

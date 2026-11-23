@@ -20,7 +20,7 @@ function LearnedToday() {
   );
 }
 
-function line(kind: "learned" | "catch_up", over: Partial<S["QueueLineView"]> = {}): S["QueueLineView"] {
+function line(kind: "learned" | "catch_up" | "people_offers", over: Partial<S["QueueLineView"]> = {}): S["QueueLineView"] {
   return { key: kind, group: "review", kind, count: 3, untrusted: false, unpriced: 0, actions: [], questions: [], outcome: {}, ...over };
 }
 
@@ -272,16 +272,16 @@ const offer = (over: Partial<S["PersonOfferView"]> = {}): S["PersonOfferView"] =
   ...over,
 });
 
-test("a person the assistant offered is a row on the review card, and Keep adds them in one change with Undo (S-0534)", async () => {
+test("a person the assistant offered is a row of its own line on Today, and Keep adds them in one change with Undo (S-0534, H5-78)", async () => {
   const user = userEvent.setup();
-  const calls = show([line("learned", { count: 1, origins: { person: 1 } })], {
+  const calls = show([line("people_offers", { count: 1 })], {
     "GET knowledge/proposals": () => ({ people: [offer()], proposals: [], origins: {}, expired: 0 }),
     "POST knowledge/people/POFR-1/keep": () => ({ changeset: "CS-31" }),
     "POST changesets/CS-31/undo": () => ({ restored: [0], skipped: [] }),
   });
-  expect(await screen.findByRole("region", { name: "Review" })).toHaveTextContent("1 person to add");
-  await user.click(await screen.findByRole("button", { name: "Review" }));
-  const drawer = await screen.findByRole("dialog", { name: "What Helper learned" });
+  expect(await screen.findByRole("region", { name: "People" })).toHaveTextContent("Pick whether to add the person found in your mail");
+  await user.click(await screen.findByRole("button", { name: "Pick" }));
+  const drawer = await screen.findByRole("dialog", { name: "People found in your mail" });
   const row = await within(drawer).findByRole("listitem");
   expect(row).toHaveTextContent("Dana Sample");
   expect(row).toHaveTextContent("Added as your accountant · On Work · 12 messages between you");
@@ -294,13 +294,13 @@ test("a person the assistant offered is a row on the review card, and Keep adds 
 
 test("Not this one leaves the offered person out, with Undo", async () => {
   const user = userEvent.setup();
-  const calls = show([line("learned", { count: 1, origins: { person: 1 } })], {
+  const calls = show([line("people_offers", { count: 1 })], {
     "GET knowledge/proposals": () => ({ people: [offer({ relation: null, sides: [] })], proposals: [], origins: {}, expired: 0 }),
     "POST knowledge/people/POFR-1/not-this-one": () => ({ changeset: "CS-32" }),
     "POST changesets/CS-32/undo": () => ({ restored: [0], skipped: [] }),
   });
-  await user.click(await screen.findByRole("button", { name: "Review" }));
-  const row = await within(await screen.findByRole("dialog", { name: "What Helper learned" })).findByRole("listitem");
+  await user.click(await screen.findByRole("button", { name: "Pick" }));
+  const row = await within(await screen.findByRole("dialog", { name: "People found in your mail" })).findByRole("listitem");
   expect(row).not.toHaveTextContent("Added as");
   await user.click(within(row).getByRole("button", { name: "More actions for Dana Sample" }));
   await user.click(await screen.findByRole("menuitem", { name: "Not this one" }));

@@ -1247,6 +1247,14 @@ class ChangeItem(BaseModel):
     edited: str | None = Field(
         None, description="With `edits`: the name of the item that was edited, for the row's title."
     )
+    own: bool | None = Field(
+        None, description="True when the person made this change themselves on a screen: the assistant did none of it."
+    )
+    fold: Literal["people_added"] | None = Field(
+        None,
+        description="With `edits`, when the row folds the people the person took from those the assistant offered, "
+        "not edits of one item: the row's title then counts the people added.",
+    )
 
 
 class BatchConfirmIn(BaseModel):
@@ -4011,6 +4019,7 @@ class QueueLineView(BaseModel):
         "review",
         "rule_review",
         "learned",
+        "people_offers",
         "catch_up",
         "send",
         "nudge",
@@ -9251,6 +9260,12 @@ class ActOptionsView(BaseModel):
     )
     folder_source: str | None = Field(
         None, description="The mail source whose folders GET /api/watch/{source}/folders lists, for Move to."
+    )
+    from_automated: bool = Field(
+        False,
+        description="The message is from an automatic sender (its address starts with a word of "
+        "`watch.automated_mail.senders`), so a reply is no more likely than any other act and is not the page's "
+        "main one.",
     )
     folders_listed: bool = Field(
         False,

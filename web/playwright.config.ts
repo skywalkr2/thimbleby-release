@@ -101,6 +101,9 @@ const settingsFixes = pair(8772, 8773, 8774);
 // The frame's own checks (H5-06, H5-11): a fresh install, walked as far as a message (taking a business back out, with Undo) shows
 // on a setup step, then Today, so the message's place and the page's height are measured on a real step and a real screen.
 const frame = pair(8709, 8710, 8711);
+// The people the assistant offers after setup (batch PO1, H5-78 and H5-79): a fresh install whose People step is skipped, then a look's
+// people arrive; they are a line on Today, taken in one change each, and the walkthrough stays shut.
+const peopleOffers = pair(8715, 8716, 8717);
 // A person with three accounts of one mail and calendar service: the app with the mail add-on on, beside fake services that play
 // three people (`--accounts 3`), signed in one after the other through the service's own page.
 const accounts = pair(8768, 8769, 8770);
@@ -270,6 +273,11 @@ export const allProjects = [
     name: "frame",
     testMatch: /toast-and-scroll\.spec\.ts/,
     use: { baseURL: `http://127.0.0.1:${frame.port}/`, ignoreHTTPSErrors: true },
+  },
+  {
+    name: "people-offers",
+    testMatch: /people-offers\.spec\.ts/,
+    use: { baseURL: `http://127.0.0.1:${peopleOffers.port}/`, ignoreHTTPSErrors: true },
   },
   {
     name: "journeys-three-mailboxes",
@@ -519,6 +527,8 @@ export const allServers = [
     fakeServices(settingsFixes),
     freshServer(frame, ""),
     fakeServices(frame),
+    freshServer(peopleOffers, ""),
+    fakeServices(peopleOffers),
     // A first evening: the same start as the new-start journey, with the fake services' evening mail and model list.
     freshServer(evening, "--add-ons --catalog-by-environment --log --no-sent-mail"),
     fakeServices(evening, "--catalog journey_mail --evening"),
