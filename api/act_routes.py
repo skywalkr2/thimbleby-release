@@ -31,6 +31,7 @@ from api.schemas import (
     ActCalendarOptionsView,
     ActChangeView,
     ActDraftIn,
+    ActEditIn,
     ActFailureView,
     ActListView,
     ActOptionsView,
@@ -52,6 +53,7 @@ from engine.channels_mailbox import NO_PROPOSE
 from engine.config import Config
 from engine.drop_notes import chosen_account, note_the_drops
 from engine.drop_notes import serving as carrier_for
+from engine.local_day import day_text, zone_of
 from engine.names import People
 from engine.ops import ACT_ACTIONS, ACT_REPLY_ACTIONS, ActDraftOp
 from engine.publisher import Publisher
@@ -83,7 +85,7 @@ def build_act_router(ws: Workspace, cfg: Config, store: Store, events: Events, w
                 kind="message",
                 title=data.get("title") or "",
                 sender=(data.get("watched") or {}).get("author"),
-                when=str(sent)[:10] if sent else None,
+                when=day_text(sent, zone_of(cfg)) if sent else None,
             )
         entry = view.get("event", rid)
         if entry is not None:
@@ -177,6 +179,7 @@ def build_act_router(ws: Workspace, cfg: Config, store: Store, events: Events, w
             approved_by=approval["by"] if approval else None,
             approved_at=approval["at"] if approval else None,
             withheld=acts.name_problem(view, cfg, data),
+            credited_name=acts.credited_name(view, cfg, data),
             mention=acts.name_mention(view, cfg, data),
             failure=ActFailureView(**failure) if failure else None,
             why=list(data.get("why") or []),
@@ -585,6 +588,29 @@ def build_act_router(ws: Workspace, cfg: Config, store: Store, events: Events, w
         cs = guard(lambda: apply_as_person(store, cfg, [op], "Said yes to an act"))
         events.changed()
         return ActResultView(id=act_id, status=status_of(act_id), changeset=cs)
+
+    @r.post("/acts/{act_id}/edit")
+    def edit(act_id: str, body: ActEditIn) -> ActView:
+        """The person's own rewording of a draft's content. It clears any yes: the act is a draft again, and Undo puts
+        the old content back. A version that is not the one now is refused."""
+        need(act_id)
+        op = {"op": "act.edit", "id": act_id, "read_version": body.read_version, "parts": body.parts}
+        guard(lambda: apply_as_person(store, cfg, [op], "Reworded an act"))
+        events.changed()
+        return view_of(need(act_id))
+
+    @r.post("/acts/{act_id}/name-is-a-person")
+    def name_is_a_person(act_id: str) -> ActView:
+        """The person's answer for content held because it credits the assistant: the name it holds is someone's, so
+        they join People and the content is no longer held. Nothing is sent; their yes is asked as for any act."""
+        found = need(act_id)
+        name = acts.credited_name(store.read(), cfg, found.data)
+        if name is None:
+            raise HTTPException(status_code=409, detail="Nothing in this act credits the assistant.")
+        op = {"op": "person.add", "full_name": name}
+        guard(lambda: apply_as_person(store, cfg, [op], f"Added {name} to People"))
+        events.changed()
+        return view_of(need(act_id))
 
     @r.post("/acts/{act_id}/withdraw")
     def withdraw(act_id: str) -> ActResultView:

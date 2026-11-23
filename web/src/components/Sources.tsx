@@ -73,6 +73,7 @@ export function lastReadText(source: Source, t: T, tn?: (key: string, n: number,
   if (!last) return t("sources.never");
   // Data older than the source's normal refresh is never worded as "nothing new".
   if (last.outcome === "ok" && source.old_data_days && tn) return tn("sources.last.old_data", source.old_data_days);
+  if (last.outcome === "ok" && last.older_copy) return t("sources.last.older_copy");
   switch (last.outcome) {
     case "ok":
       // Only what there is: "2 new, 1 removed", never "0 changed".

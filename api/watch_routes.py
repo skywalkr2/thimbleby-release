@@ -185,6 +185,7 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
                     )
                 },
                 skipped=dict(last.data.get("skipped") or {}),
+                older_copy=True if last.data.get("older_copy") else None,
                 started_at=str(last.data["started_at"]),
                 retry_at=str(last.data["retry_at"]) if last.data.get("retry_at") else None,
             )

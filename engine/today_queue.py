@@ -50,6 +50,7 @@ from engine.ai.spending import ACCOUNT_CHECK
 from engine.blocked import overdue_day
 from engine.followups import ROUTING, sections
 from engine.language_words import language_words
+from engine.local_day import day_text
 from engine.names import People
 from engine.origin import from_outside
 from engine.owners import suggest_owner
@@ -1137,7 +1138,8 @@ def _everything(
         )
 
     # Risk: an AI account paused until its usage limit resets, with the work waiting on it.
-    from engine.ai.pauses import Pauses, pauses_path, waiting_text
+    from engine.ai.pauses import Pauses, pauses_path, unsafe_reason, unsafe_text, waiting_text
+    from engine.legacy_names import private_dir
 
     sorter = _sorting_account(cfg)
     for account, until in sorted(Pauses(pauses_path(store), lambda: now).active().items(), key=lambda x: (x[1], x[0])):
@@ -1165,7 +1167,11 @@ def _everything(
                     text=account,
                     account=account,
                     until=until.isoformat(),
-                    waiting=waiting_text(cfg, account, until, now),
+                    waiting=(
+                        unsafe_text(account, unsafe)
+                        if (unsafe := unsafe_reason(private_dir(store.path.parent), account))
+                        else waiting_text(cfg, account, until, now)
+                    ),
                     since=until.isoformat(),
                 )
             )
@@ -1390,6 +1396,8 @@ def _everything(
                 kind="backup",
                 state="unset"
                 if not kept.configured
+                else kept.problem
+                if kept.problem in ("failed", "smaller") and kept.last_success
                 else "overdue"
                 if kept.last_success
                 else "failed"
@@ -1397,6 +1405,7 @@ def _everything(
                 else "never",
                 age_hours=kept.age_hours,
                 since=kept.last_success or "",
+                subject=kept.place,
             )
         )
 
@@ -1550,7 +1559,7 @@ def _everything(
         )
 
     # A called-off entry waits for a new date or a drop; a dropped one asks once about the to-dos held for it.
-    for held in called_off.held_entries(reader, today):
+    for held in called_off.held_entries(reader, today, zone(cfg)):
         lines.append(
             Line(
                 key=f"called_off:{held.id}",
@@ -2152,7 +2161,7 @@ def _everything(
             )
 
     lines += _day_lines(store, cfg, now)
-    lines += _tie_lines(store)
+    lines += _tie_lines(store, cfg)
     lines += _guest_lines(store, cfg, now)
     lines += _attention_lines(store, cfg, now)
 
@@ -2269,7 +2278,7 @@ def _other_meetings(group: Any, labels: dict[str, str], here: Any) -> list[Line]
     return sorted(more, key=lambda m: m.starts or "")
 
 
-def _tie_lines(store: Any) -> list[Line]:
+def _tie_lines(store: Any, cfg: Any) -> list[Line]:
     """One line for each calendar entry proposed for an open to-do, for the person to say whether it is the one."""
     from engine import entry_ties
 
@@ -2283,11 +2292,11 @@ def _tie_lines(store: Any) -> list[Line]:
             other=str(entry.data["title"]),
             entry=entry.id,
             actions=[action.id],
-            due=str(entry.data["start"])[:10],
+            due=day_text(entry.data["start"], zone(cfg)),
             project=action.data.get("project"),
-            since=str(entry.data["start"])[:10],
+            since=day_text(entry.data["start"], zone(cfg)),
         )
-        for action, entry in entry_ties.proposals(store.read())
+        for action, entry in entry_ties.proposals(store.read(), zone(cfg))
     ]
 
 
@@ -2307,9 +2316,9 @@ def _guest_lines(store: Any, cfg: Any, now: datetime) -> list[Line]:
             subject=str(entry.data["title"]),
             names=[str(reader.get("person", p).data["full_name"]) for p in people],
             entry=entry.id,
-            due=str(entry.data["start"])[:10],
+            due=day_text(entry.data["start"], zone(cfg)),
             project=entry.data.get("project"),
-            since=str(entry.data["start"])[:10],
+            since=day_text(entry.data["start"], zone(cfg)),
         )
         for entry, people in entry_guests.proposals(reader, today, zone(cfg))
     ]

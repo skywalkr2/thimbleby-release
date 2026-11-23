@@ -205,6 +205,13 @@ def build_correction_router(ws: Workspace, cfg: Config, store: Store, events: Ev
         events.changed()
         return Applied(changeset=done)
 
+    @r.post("/questions/{qid}/ask-again")
+    def ask_again(qid: str) -> Applied:
+        """Open a dropped question again, with Undo. A question the person dropped is never filed again by the
+        assistant; this is the person's own way back."""
+        need("question", qid)
+        return person_op({"op": "question.ask_again", "id": qid}, "Asked a dropped question again")
+
     @r.post("/questions/{qid}/sent")
     def sent(qid: str, body: QuestionSentIn) -> Applied:
         """Record that the person already sent this question themselves, with Undo."""

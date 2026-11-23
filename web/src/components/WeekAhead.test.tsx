@@ -11,7 +11,7 @@ afterEach(() => cleanup());
 
 const ROW: S["WeekAheadRowView"] = { from_day: "2026-10-21", to_day: null, words: "A parcel of ink arrives", kind: "delivery", link: { kind: "event", id: "EVT-1" } };
 const WINDOW: S["WeekAheadRowView"] = { from_day: "2026-10-20", to_day: "2026-10-24", words: "The print offer is open", kind: "window", link: { kind: "snapshot", id: "SNAP-1" } };
-const READ: S["WeekAheadView"] = { first: "2026-10-19", last: "2026-10-25", state: "read", sentence: "A light week with a parcel coming.", rows: [ROW, WINDOW], read_again: true };
+const READ: S["WeekAheadView"] = { first: "2026-10-19", last: "2026-10-25", state: "read", sentence: "A light week with a parcel coming.", rows: [ROW, WINDOW], read_again: true, days_off: [], working_days: 0 };
 
 test("the card has the sentence and one row for each thing, each with its day or window and a link to its source", async () => {
   fakeApi({ "GET week-ahead": () => READ });
@@ -23,6 +23,18 @@ test("the card has the sentence and one row for each thing, each with its day or
   expect(screen.getByRole("link", { name: "Open A parcel of ink arrives" }).getAttribute("href")).toContain("records/event/EVT-1");
   expect(screen.getByRole("link", { name: "Open The print offer is open" }).getAttribute("href")).toContain("SNAP-1");
   expect(rows[1].textContent).toMatch(/ to /); // a window shows both of its days
+});
+
+test("a week with days off and nothing else dated names the days and the working days left, never Nothing dated", async () => {
+  const off = [
+    { day: "2026-11-26", reason: "Thanksgiving" },
+    { day: "2026-11-27", reason: "Day After Thanksgiving" },
+  ];
+  fakeApi({ "GET week-ahead": () => ({ ...READ, state: "empty", sentence: null, rows: [], days_off: off, working_days: 2 }) });
+  renderApp(<WeekAhead />);
+  const line = await screen.findByText(/Days off:/);
+  expect(line).toHaveTextContent("Thu, Nov 26 (Thanksgiving), Fri, Nov 27 (Day After Thanksgiving). Plan for 2 working days.");
+  expect(screen.queryByText("Nothing dated this week.")).toBeNull();
 });
 
 test("with no reading the rows show without a sentence", async () => {

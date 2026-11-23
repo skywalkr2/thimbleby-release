@@ -4,6 +4,7 @@ question asked for it. Reads only: nothing here is worked out by an AI, and noth
 
 from __future__ import annotations
 
+from datetime import UTC
 from typing import Any
 
 from engine import area_readers, areas
@@ -17,6 +18,7 @@ from engine.knowledge_section import (
     _uses,
     with_ancestors,
 )
+from engine.local_day import day_text, zone_of
 from engine.new_terms import term_of
 from engine.record_page import fact_source
 
@@ -56,7 +58,7 @@ def _sources(view: Any, cfg: Config, project_id: str) -> list[dict[str, Any]]:
     return sorted(groups.values(), key=lambda g: (str(g["last"]["received_at"]), g["key"]), reverse=True)
 
 
-def _facts(view: Any, project_id: str, chain: list[str]) -> list[dict[str, Any]]:
+def _facts(view: Any, project_id: str, chain: list[str], here: Any = None) -> list[dict[str, Any]]:
     """The project's facts that no newer fact replaces, key facts first, then newest. A fact of a project above it
     is here only when it says it holds for the projects inside."""
     all_facts = view.list("fact")
@@ -75,7 +77,7 @@ def _facts(view: Any, project_id: str, chain: list[str]) -> list[dict[str, Any]]
                 "version": fact.version,
                 "text": fact.data["text"],
                 "key": bool(fact.data.get("key")),
-                "source": fact_source(view, fact),
+                "source": fact_source(view, fact, here),
             }
         )
     rows.sort(key=lambda r: _id_key(r["id"])[1], reverse=True)
@@ -144,7 +146,7 @@ def _routing(view: Any, chain: list[str]) -> list[dict[str, Any]]:
     return rows
 
 
-def _question_for(view: Any, project_id: str, term: str) -> dict[str, Any] | None:
+def _question_for(view: Any, project_id: str, term: str, here: Any = None) -> dict[str, Any] | None:
     """The oldest open or sent question about this project that uses the term, with who it was asked of."""
     asked = [
         q
@@ -155,16 +157,16 @@ def _question_for(view: Any, project_id: str, term: str) -> dict[str, Any] | Non
     ]
     if not asked:
         return None
-    return _asked(view, min(asked, key=_key))
+    return _asked(view, min(asked, key=_key), here)
 
 
-def _asked_on(view: Any, q: Any) -> str:
+def _asked_on(view: Any, q: Any, here: Any = None) -> str:
     """The day a question was asked: the day it was made."""
     first = next(iter(view.ledger(kind="question", record_id=q.id)), None)
-    return str(first["at"])[:10] if first is not None else ""
+    return day_text(first["at"], here or UTC) if first is not None else ""
 
 
-def _asked(view: Any, q: Any) -> dict[str, Any]:
+def _asked(view: Any, q: Any, here: Any = None) -> dict[str, Any]:
     """A question as the unknown list shows it: who it was asked of and the day it was asked."""
     person = view.get("person", q.data["to"], include_deleted=True)
     return {
@@ -173,7 +175,7 @@ def _asked(view: Any, q: Any) -> dict[str, Any]:
         "to": q.data["to"],
         "to_name": person.data["full_name"] if person is not None else q.data["to"],
         "status": q.data["status"],
-        "asked_on": _asked_on(view, q),
+        "asked_on": _asked_on(view, q, here),
     }
 
 
@@ -204,7 +206,8 @@ def knows(view: Any, project_id: str, cfg: Config) -> dict[str, Any] | None:
     if project is None:
         return None
     chain = with_ancestors(view, [project_id])
-    facts = _facts(view, project_id, chain)
+    here = zone_of(cfg)
+    facts = _facts(view, project_id, chain, here)
     text = _words(view, project_id, facts)
     glossary = _terms(view, project_id, chain, text, kinds=("active",))
     unknown_terms = [
@@ -216,7 +219,7 @@ def knows(view: Any, project_id: str, cfg: Config) -> dict[str, Any] | None:
     # shown (design 6.8).
     unknown: list[dict[str, Any]] = []
     for e in unknown_terms:
-        asked = _question_for(view, project_id, e.data["term"])
+        asked = _question_for(view, project_id, e.data["term"], here)
         if asked is not None:
             unknown.append({"kind": "term", "field": None, "term": e.data["term"], "entry": e.id, "question": asked})
     listed = {u["term"].lower() for u in unknown}
@@ -229,7 +232,9 @@ def knows(view: Any, project_id: str, cfg: Config) -> dict[str, Any] | None:
             and term.lower() not in listed
         ):
             listed.add(term.lower())
-            unknown.append({"kind": "term", "field": None, "term": term, "entry": None, "question": _asked(view, q)})
+            unknown.append(
+                {"kind": "term", "field": None, "term": term, "entry": None, "question": _asked(view, q, here)}
+            )
     return {
         "id": project_id,
         "name": project.data["name"],

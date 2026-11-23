@@ -46,7 +46,7 @@ def closed_by_a_rule(tmp_path):
     items = [{"key": "a", "title": "Plan", "text": "One budget."}]
     ws, cfg, store = make(tmp_path, [fake(items)], triage=RULES)
     refresh(ws, store, cfg, "s", NOW)
-    cfg, store, spaced = reread(tmp_path, ws, store, [{**items[0], "text": "One  budget"}])
+    cfg, store, spaced = reread(tmp_path, ws, store, [{**items[0], "text": "One  budget."}])
     return ws, cfg, store, spaced.changed[0]
 
 

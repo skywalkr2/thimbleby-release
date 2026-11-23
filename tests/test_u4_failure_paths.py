@@ -201,7 +201,7 @@ def test_item_16b_a_calendar_entry_the_assistant_found_does_not_look_like_one_th
     mail = "Your order has shipped.\n\nEstimated delivery: Tuesday, October 20 - Thursday, October 22\n\nThank you."
     window = {
         "op": "event.add",
-        "title": "Assistant found this",
+        "title": "Delivery window",
         "start": "2026-10-20",
         "end": "2026-10-22",
         "evidence": {"quote": "Estimated delivery: Tuesday, October 20 - Thursday, October 22"},
@@ -215,10 +215,10 @@ def test_item_16b_a_calendar_entry_the_assistant_found_does_not_look_like_one_th
     finally:
         set_responder(None)
         store.close()
-    assert set(rows) == {"Assistant found this", "Person typed this"}
+    assert set(rows) == {"Delivery window", "Person typed this"}
     own_words = {"title", "snapshot", "entry", "agenda", "start", "end", "days", "all_day", "source"}
     found, typed = (
-        {k: v for k, v in rows[t].items() if k not in own_words} for t in ("Assistant found this", "Person typed this")
+        {k: v for k, v in rows[t].items() if k not in own_words} for t in ("Delivery window", "Person typed this")
     )
     assert found != typed, "both rows say the same thing about who added them, so the screen can only say 'you'"
 

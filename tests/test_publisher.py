@@ -638,8 +638,8 @@ def test_an_acts_records_survive_export_and_import(env, tmp_path):
 
 def test_the_name_check_refuses_a_part_that_names_the_assistant(env):
     name = env.cfg.workspace.assistant_name
-    where = env.cfg.language.messages.withheld_where.format(name=env.name(env.ana))
-    named = env.draft(parts={"body": f"Reported by {name}."})
+    where = env.cfg.language.messages.withheld_where.format(name=env.name(env.ana)) + " (body)"
+    named = env.draft(parts={"subject": "Notes", "body": f"Reported by {name}."})
 
     with pytest.raises(StoreError) as refused:
         env.yes(named)
@@ -650,7 +650,7 @@ def test_the_name_check_refuses_a_part_that_names_the_assistant(env):
     )
 
     # a name the assistant went by since the yes is caught at send, and nothing is sent
-    clean = env.ready(parts={"body": "Notes from the dock."})
+    clean = env.ready(parts={"subject": "Dock notes", "body": "Notes from the dock."})
     with env.store.transaction() as tx:
         tx.create(
             "setting_change",
@@ -673,7 +673,7 @@ def test_a_part_that_only_mentions_the_assistants_name_is_approved_with_a_warnin
     """H5-19: a colleague may share the name; the draft carries a warning and goes through the yes and the send."""
     name = env.cfg.workspace.assistant_name
     where = env.cfg.language.messages.withheld_where.format(name=env.name(env.ana))
-    mention = env.draft(parts={"body": f"Can we meet on Monday, {name}?"})
+    mention = env.draft(parts={"subject": "Monday", "body": f"Can we meet on Monday, {name}?"})
     assert acts.name_mention(
         env.store.read(), env.cfg, env.act(mention)
     ) == env.cfg.language.messages.mentioned_name.format(where=where, name=name)
@@ -766,7 +766,7 @@ def test_the_api_withdraws_an_act_and_takes_the_persons_answers_for_one_it_canno
             "op": "act.draft",
             "channel": "fake",
             "target": {"kind": "message", "recipients": [{"person": api.person, "kind": "email"}]},
-            "parts": {"body": "Hello."},
+            "parts": {"subject": "Hello", "body": "Hello."},
         }
         cs = apply_as_person(api.store, api.cfg, [op], "Drafted an act")
         return api.store.read().get("changeset", cs).data["ops"][0]["records"][0]["id"]

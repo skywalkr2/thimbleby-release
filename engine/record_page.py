@@ -4,7 +4,7 @@ Projects and People tables show beside each row. Reads only."""
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any, Literal, get_args, get_origin
 from zoneinfo import ZoneInfo
 
@@ -12,6 +12,7 @@ from engine import agenda as agenda_module
 from engine import entry_ties, repeats, sides
 from engine.followups import ABOUT_THE_APP, ROUTING
 from engine.history import changes_for_person
+from engine.local_day import day_text
 from engine.names import render_owner
 from engine.organizations import LINK_OP
 from engine.origin import origins
@@ -170,17 +171,17 @@ def page(
             }
             for q in questions
         ],
-        "completed_actions": _completed(view, kind, record_id, name_of, place),
+        "completed_actions": _completed(view, kind, record_id, name_of, place, here),
         "facts": facts_about(view, kind, record_id),
-        "fact_source": fact_source(view, record) if kind == "fact" else None,
+        "fact_source": fact_source(view, record, here) if kind == "fact" else None,
         "filed": sides.filed_view(view, cfg, kind, record) if cfg is not None else None,
         "agenda": _agenda(view, record, today, here),
-        "tie": entry_ties.view_of(view, record) if kind == "action" else None,
+        "tie": entry_ties.view_of(view, record, here) if kind == "action" else None,
         "repeat": repeats.view_of(data.get("repeat")) if kind == "action" else None,
         "earlier_occurrences": repeats.earlier_occurrences(view, record)
         if kind == "action" and (data.get("repeat") or data.get("occurrence_of"))
         else [],
-        "activity": _activity(view, kind, record_id, actions, questions, name_of, pm, second_move_days),
+        "activity": _activity(view, kind, record_id, actions, questions, name_of, pm, second_move_days, here),
     }
 
 
@@ -259,7 +260,9 @@ def _meeting(view: Any, data: dict[str, Any], today: date | None, here: ZoneInfo
     }
 
 
-def _completed(view: Any, kind: str, record_id: str, name_of: Any, place: Any = None) -> list[dict[str, Any]]:
+def _completed(
+    view: Any, kind: str, record_id: str, name_of: Any, place: Any = None, here: Any = None
+) -> list[dict[str, Any]]:
     """The finished actions credited to this person (or in this project, or to this organization's people), newest
     first, each with who did the work and who said it was done. The one who only reported it is not credited."""
     if kind not in ("person", "project", "organization"):
@@ -292,14 +295,14 @@ def _completed(view: Any, kind: str, record_id: str, name_of: Any, place: Any = 
                 "side_name": side_name,
                 "done_by": [name_of("person", p) for p in d.get("done_by") or []],
                 "reported_by": name_of("person", d["reported_by"]) if d.get("reported_by") else None,
-                "done_on": str(closed[-1]["at"])[:10] if closed else None,
+                "done_on": day_text(closed[-1]["at"], here or UTC) if closed else None,
             }
         )
     found.sort(key=lambda c: (c["done_on"] or "", c["id"]), reverse=True)
     return found[:COMPLETED_MAX]
 
 
-def fact_source(view: Any, record: Any) -> dict[str, Any]:
+def fact_source(view: Any, record: Any, here: Any = None) -> dict[str, Any]:
     """Who a fact rests on and where it came from, for the label in its meta line: the basis (the person, someone
     else, or the assistant's inference), who said it and who reported it, the kind of input it came from and whose it
     was (never the input's own title), and the day. The day is the one the person confirmed it when they did, else the
@@ -318,8 +321,12 @@ def fact_source(view: Any, record: Any) -> dict[str, Any]:
     )
     rows = view.ledger(kind="fact", record_id=record.id)
     confirmed = [r for r in rows if r["field"] == "basis" and r["version"] > 1]
-    filed = str(rows[0]["at"])[:10] if rows else None
-    on = str(confirmed[-1]["at"])[:10] if confirmed else (str(data["as_of"]) if data.get("as_of") else filed)
+    filed = day_text(rows[0]["at"], here or UTC) if rows else None
+    on = (
+        day_text(confirmed[-1]["at"], here or UTC)
+        if confirmed
+        else (str(data["as_of"]) if data.get("as_of") else filed)
+    )
     reported_by = author.data["full_name"] if author is not None and (said is None or author.id != said.id) else None
     watched = (source.data.get("watched") or {}) if source is not None else {}
     kind = (
@@ -383,6 +390,7 @@ def _activity(
     name_of: Any,
     pm: str | None,
     second_move_days: int = 14,
+    here: Any = None,
 ) -> list[dict[str, Any]]:
     """What happened to the record and to what is open with it: one entry per change, newest first. A change that only
     moves a date on an existing item is left out (it is not news; the ledger keeps it), except a second move of the
@@ -402,7 +410,7 @@ def _activity(
         return made_in[changeset]
 
     for ref_kind, ref_id in [(kind, record_id), *related]:
-        rows = changes_for_person(view, ref_kind, ref_id, second_move_days)
+        rows = changes_for_person(view, ref_kind, ref_id, second_move_days, here)
         making = {r["changeset"] for r in rows if r["version"] == 1 and r.get("changeset")}
         made = False
         for row in rows:
@@ -463,7 +471,7 @@ def open_count(view: Any, person_id: str, pm: str | None) -> int:
     return len(actions) if person_id == pm else len(actions) + len(questions)
 
 
-def counts(view: Any) -> dict[str, dict[str, Any]]:
+def counts(view: Any, here: Any = None) -> dict[str, dict[str, Any]]:
     """For the tables: per person, open items with them and when they were last contacted; per project, open
     actions, open questions and when it last changed."""
     people: dict[str, dict[str, Any]] = {}
@@ -495,7 +503,7 @@ def counts(view: Any) -> dict[str, dict[str, Any]]:
                 project(pid)["open_questions"] += 1
         if d.get("sent_at") and d.get("to"):
             entry = person(d["to"])
-            sent = str(d["sent_at"])[:10]
+            sent = day_text(d["sent_at"], here or UTC)
             if entry["last_contact"] is None or sent > entry["last_contact"]:
                 entry["last_contact"] = sent
     for row in view.ledger(kind="project"):

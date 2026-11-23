@@ -18,7 +18,7 @@ import calendar
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, tzinfo
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -27,6 +27,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import yaml
 
 from engine.language_words import shipped
+from engine.local_day import maybe_day
 
 #: The words the date reader starts from are the core's shipped lists (`engine/defaults/language/`), read once here as
 #: the defaults of a reading made without the settings. The language settings replace any of them.
@@ -188,15 +189,16 @@ def names_title(phrase: str, title: str) -> bool:
     return bool(wanted) and any(words[i : i + len(wanted)] == wanted for i in range(len(words) - len(wanted) + 1))
 
 
-def named_entry(entries: Iterable[Any], phrase: str, today: str) -> Any | None:
+def named_entry(entries: Iterable[Any], phrase: str, today: str, here: Any = None) -> Any | None:
     """The one calendar entry still ahead that the phrase names, or None when it names none or several. An entry is
     named when its title's words appear in the phrase whole and in order; a title that is part of a longer matching one
     is the same meeting named less fully; of several entries with the same title the soonest is the one meant. Entries
-    called off, or that started before `today` (an ISO day), are not named."""
+    called off, or that started before `today` (an ISO day, on the person's clock in `here`), are not named."""
     titles: dict[str, list[Any]] = {}
     for entry in entries:
         data = entry.data
-        if data.get("cancelled") or str(data.get("start") or "")[:10] < today:
+        started = maybe_day(data.get("start"), here or UTC)
+        if data.get("cancelled") or (started.isoformat() if started else "") < today:
             continue
         if names_title(phrase, str(data["title"])):
             titles.setdefault(str(data["title"]).casefold(), []).append(entry)

@@ -274,6 +274,48 @@ describe("Approve and send", () => {
   });
 });
 
+describe("a message held for crediting the assistant, or without a subject", () => {
+  test("it waits with Reword and the name is a person, and saying so adds them and asks for the person's yes", async () => {
+    const user = userEvent.setup();
+    const held = actFixture({ withheld: "Held back: the message to Ana credits Echo.", credited_name: "Echo" });
+    const { calls } = show([held], {
+      "POST acts/XACT-1/name-is-a-person": () => ({ ...held, withheld: null, credited_name: null }),
+    });
+    const pane = await screen.findByRole("complementary");
+    expect(within(pane).getByRole("button", { name: "Approve and send" })).toBeDisabled();
+    expect(within(pane).getByRole("button", { name: "Reword" })).toBeInTheDocument();
+    await user.click(within(pane).getByRole("button", { name: "Echo is a person" }));
+    await waitFor(() => expect(calls.some((c) => c.route === "POST acts/XACT-1/name-is-a-person")).toBe(true));
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(calls.some((c) => c.route.endsWith("/send"))).toBe(false);
+  });
+
+  test("Reword saves the parts as the person wrote them, against the version they saw", async () => {
+    const user = userEvent.setup();
+    const held = actFixture({ version: 4, withheld: "Held back.", credited_name: "Echo" });
+    const { calls } = show([held], { "POST acts/XACT-1/edit": () => ({ ...held, version: 5, withheld: null }) });
+    await user.click(await screen.findByRole("button", { name: "Reword" }));
+    const body = await screen.findByLabelText("Message");
+    expect(screen.getByLabelText("Subject")).toHaveValue("The proofs");
+    await user.clear(body);
+    await user.type(body, "It ships Monday.");
+    await user.click(screen.getByRole("button", { name: "Save wording" }));
+    await waitFor(() => expect(calls.some((c) => c.route === "POST acts/XACT-1/edit")).toBe(true));
+    expect(calls.find((c) => c.route === "POST acts/XACT-1/edit")?.body).toEqual({
+      read_version: 4,
+      parts: { subject: "The proofs", body: "It ships Monday." },
+    });
+  });
+
+  test("a message with no subject can't be approved until one is written", async () => {
+    show([actFixture({ parts: { body: "The proofs ship on Monday." } })]);
+    const pane = await screen.findByRole("complementary");
+    expect(within(pane).getByText(/has no subject/)).toBeInTheDocument();
+    expect(within(pane).getByRole("button", { name: "Approve and send" })).toBeDisabled();
+    expect(within(pane).getByRole("button", { name: "Reword" })).toBeInTheDocument();
+  });
+});
+
 describe("an act the person sends themselves", () => {
   const byHand = (over: Partial<Act> = {}) => actFixture({ channel: "copy", channel_label: "Copy", ...over });
 

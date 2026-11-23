@@ -1561,6 +1561,11 @@ class FollowupSection(BaseModel):
         description="The day the oldest of what is to send became ready to send (a date), so a stale batch shows; "
         "none when nothing is to send.",
     )
+    out_until: str | None = Field(
+        None,
+        description="The day (a date) the person is next at work when they are away or on a holiday today, so nothing "
+        "is chased until then; none when they work today.",
+    )
     nudge: NudgeView | None = Field(None, description="The follow-up message to draft, when anything is due one.")
     send_from: list[str] = Field(
         default_factory=list,
@@ -3946,7 +3951,8 @@ class QueueLineView(BaseModel):
     they belong to, the business's name in `subject`); `nudge` is the one follow-up line for a person the person is
     waiting on (`person`, `count` their items, `overdue` how many are past their date with the oldest in `due`,
     `waiting_days` the longest wait; it opens the one message to them, GET /api/followups); `backup` is no backup
-    that works (`state`, and `age_hours` since the last one that did; Back up now is POST /api/backup);
+    that works, or one place that is behind (`state`: unset, never, failed, overdue or smaller; `age_hours` since the
+    last copy that worked there, and with more than one place its name in `subject`; Back up now is POST /api/backup);
     `invitation` is a calendar entry that came as an invitation, has not been answered and starts within
     `steward.meetings.invitation_days_ahead` days (`event`, its title in `text`, who invited in `subject`, `at` when it
     starts; it opens the entry's page, where Accept, Maybe, Decline and Propose a time draft the answer for the
@@ -4275,6 +4281,7 @@ class QueueLineView(BaseModel):
             "level",
             "unset",
             "never",
+            "smaller",
             "failed",
             "overdue",
             "which_side",
@@ -5266,6 +5273,11 @@ class SettingChangeView(BaseModel):
 
 class SettingsSaved(BaseModel):
     changes: list[SettingChangeView] = Field(description="What changed, for the read-back and Undo.")
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Things the person should know about what they just saved, which was saved all the same: the "
+        "assistant given the name of someone in People, for one.",
+    )
     fingerprint: str
     needs_restart: bool = Field(
         description="These settings take effect after a restart. Nothing restarts until the person chooses to: ask "
@@ -6408,6 +6420,11 @@ class WatchRunView(BaseModel):
         None,
         description="For a failed read: the wording key of what to do about it, when the connector named one. The "
         "screen words it from its sheet; without one the kind's usual advice applies.",
+    )
+    older_copy: bool | None = Field(
+        None,
+        description="True when the source served a copy older than the newest one it has served: nothing was "
+        'compared, so the screen says so instead of "nothing new".',
     )
     new: int = 0
     changed: int = 0
@@ -9094,7 +9111,12 @@ class ActView(BaseModel):
     approved_by: str | None = Field(None, description="The id of the person whose yes stands.")
     approved_at: datetime | None = None
     withheld: str | None = Field(
-        None, description="Why the content isn't offered to approve or send: a part still names the assistant."
+        None, description="Why the content isn't offered to approve or send: a part credits the assistant."
+    )
+    credited_name: str | None = Field(
+        None,
+        description="The name the content credits as the assistant, when it is held for that: the person can reword it "
+        "or say the name is a person, which adds them to People.",
     )
     mention: str | None = Field(
         None,
@@ -9411,6 +9433,14 @@ class ActApproveIn(BaseModel):
     acknowledged: list[str] = Field(default_factory=list)
 
 
+class ActEditIn(BaseModel):
+    """The person's change to a draft's content: the version of the act they were looking at, and each named part as it
+    should read now. It clears any yes, so the act needs a new one."""
+
+    read_version: int = Field(ge=1)
+    parts: dict[str, str]
+
+
 class ActYesOne(ActApproveIn):
     """The person's yes on one of several acts at once: which act, with the fingerprint their screen showed."""
 
@@ -9678,6 +9708,13 @@ class WeekAheadRowView(BaseModel):
     )
 
 
+class WeekAheadDayOffView(BaseModel):
+    """A day off in the week ahead (a holiday or a closure) and why."""
+
+    day: date
+    reason: str
+
+
 class WeekAheadView(BaseModel):
     """The assistant's reading of this week (GET /api/week-ahead): `sentence` and `rows` when it has read the week
     (`state` read), rows built by rules with no sentence when it has not (rules), a reading under way (working),
@@ -9693,6 +9730,11 @@ class WeekAheadView(BaseModel):
     estimate_usd: float | None = None
     waiting: str | None = None
     read_again: bool = True
+    days_off: list[WeekAheadDayOffView] = Field(
+        description="The holidays and closures on the working week in the days the week ahead covers, each with its "
+        "reason; empty when there are none.",
+    )
+    working_days: int = Field(description="The working days left in the days the week ahead covers.")
 
 
 class WeekAheadSetAside(BaseModel):

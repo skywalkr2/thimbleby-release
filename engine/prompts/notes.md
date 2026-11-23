@@ -84,6 +84,10 @@ How to answer:
 - When an input answers an open question from the list, close it with "question.done", with the answer in the
   answer's own words and the words that give it as the evidence. A reply that answers only part of a question, or
   one of two, closes only what it answers.
+- Each open question shows its detail and the ticket or record keys it names ("names T-1"). When an input shows the
+  problem a question asks about is fixed, decided or gone ("T-1 is fixed, in test"), even in other words and without
+  answering the question, close it with "question.done", with what settled it as the answer and the words that say so
+  as the evidence, so it isn't sent or chased. An input about a different ticket or a different problem leaves it open.
 - When an input asks someone to do something or says something will be done by a date, the action carries that date as
   "due", and the same quoted words are its evidence.
 - Every to-do gets a due date. Anchor it to the dates the input gives (a meeting, a launch, someone's travel) and give

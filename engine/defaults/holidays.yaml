@@ -18,6 +18,7 @@ calendars:
     - {names: [halloween], month: 10, day: 31, day_off: false}
     - {names: [veterans day, veterans' day], month: 11, day: 11}
     - {names: [thanksgiving, thanksgiving day], month: 11, weekday: 3, nth: 4}
+    - {names: [day after thanksgiving], month: 11, weekday: 4, nth: 4}
     - {names: [christmas eve], month: 12, day: 24, day_off: false}
     - {names: [christmas, christmas day], month: 12, day: 25}
     - {names: [new year's eve, new years eve], month: 12, day: 31, day_off: false}

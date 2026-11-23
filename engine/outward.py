@@ -24,12 +24,13 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict
-from datetime import date
+from datetime import UTC, date
 from typing import Any
 
 from engine import id_words
 from engine.config.schema import LanguageFile, MessageSettings, WorkspaceFile
 from engine.language_words import language_words
+from engine.local_day import day_of
 from engine.names import People
 from engine.storage import StoreError, WriteContext
 from engine.titles import title_for
@@ -90,12 +91,12 @@ def assistant_names(view: Any, current: str) -> list[str]:
     return names
 
 
-def not_people(view: Any, names: list[str]) -> list[str]:
+def not_people(view: Any, names: list[str], also: Iterable[str] = ()) -> list[str]:
     """The names that belong to no one in People: a name the person gave the assistant that is also the name of someone
     they deal with (a colleague called Reginald) is that person's when it is written in a record, whatever the
     assistant is called. Matched, ignoring case, against each person's full name, its first word and their other
-    names."""
-    known: set[str] = set()
+    names. `also` adds names to treat as someone's, such as a message's recipients."""
+    known: set[str] = {" ".join(str(n).split()).casefold() for n in also if str(n).strip()}
     for person in view.list("person"):
         full = " ".join(str(person.data.get("full_name") or "").split())
         if full:
@@ -111,8 +112,14 @@ def not_people(view: Any, names: list[str]) -> list[str]:
 #: something, never as a word in a sentence.
 GENERIC_NAMES = frozenset({"assistant", "the assistant", "your assistant"})
 #: Where a generic name attributes: after "by", "from" or "per", or before a date, "'s" or "judgment".
-_BEFORE = r"(?:\b(?:by|from|per|reported by|source:?)\s+)"
-_AFTER = r"(?=(?:'s|\u2019s)?\s*(?:,\s*\d|\d{1,2}/\d{1,2}|(?:pm\s+)?judge?ment\b))"
+_BEFORE = (
+    r"(?:\b(?:by|from|per|reported by|source:?|according to|drafted (?:with|using)|written with|generated with)\s+)"
+)
+_AFTER = (
+    r"(?=(?:'s|\u2019s)?\s*(?:,\s*\d|\d{1,2}/\d{1,2}|(?:pm\s+)?judge?ment\b"
+    r"|(?:analysis|view|assessment|take|opinion|recommendation|advice|reading|estimate|forecast|summary)\b"
+    r"|(?:says|said|thinks|believes|recommends|suggests|notes|wrote|found|flagged|estimates)\b))"
+)
 
 
 def _pattern(names: Iterable[str], attribution_only: bool = False) -> re.Pattern[str] | None:
@@ -183,12 +190,35 @@ def op_problem(op: Any, names: Iterable[str]) -> str | None:
     return None
 
 
-def outgoing_problem(view: Any, cfg: Any, parts: Mapping[str, str]) -> str | None:
+def name_warnings(view: Any, cfg: Any, changes: Iterable[Mapping[str, Any]]) -> list[str]:
+    """What the person is told when they save settings that name the assistant after someone in People: crediting that
+    name in a message is then taken to be the person, so a message that really credits the assistant would go out. One
+    line per such change, in the wording sheet's words."""
+    found: list[str] = []
+    for change in changes:
+        if change.get("key") != NAME_KEY or not isinstance(change.get("after"), str):
+            continue
+        name = " ".join(change["after"].split())
+        if name and len(not_people(view, [name])) == 0:
+            found.append(cfg.language.messages.assistant_named_like_person.format(name=name))
+    return found
+
+
+def crediting_name(view: Any, cfg: Any, text: str, recipients: Iterable[str] = ()) -> str | None:
+    """The name of the assistant that `text` credits (a crediting phrase: "<name> says", "according to <name>",
+    "<name>'s analysis", "drafted with or by <name>", a source or a dated attribution), or None. A name that is also
+    someone in People, or one of the recipients, is that person's and never credits the assistant."""
+    names = not_people(view, assistant_names(view, cfg.workspace.assistant_name), also=recipients)
+    return name_in(text or "", names, attribution_only=True)
+
+
+def outgoing_problem(view: Any, cfg: Any, parts: Mapping[str, str], recipients: Iterable[str] = ()) -> str | None:
     """Why content going to someone else is not offered: `parts` maps where each piece sits (a label a person
-    understands) to its text, and the first that holds one of the names is the reason, in the wording sheet's words."""
-    names = assistant_names(view, cfg.workspace.assistant_name)
+    understands) to its text, and the first that credits the assistant is the reason, in the wording sheet's words.
+    The send waits for the person to reword it, or to say the name is a person (which adds them to People)."""
+    recipients = list(recipients)
     for where, text in parts.items():
-        found = name_in(text or "", names, attribution_only=True)
+        found = crediting_name(view, cfg, text, recipients)
         if found is not None:
             return cfg.language.messages.withheld_name.format(where=where, name=found)
     return None
@@ -206,16 +236,16 @@ def outgoing_mention(view: Any, cfg: Any, parts: Mapping[str, str]) -> str | Non
     return None
 
 
-def check_outgoing(view: Any, cfg: Any, parts: Mapping[str, str]) -> None:
-    """Refuse content going to someone else that still holds one of the names, saying where."""
-    problem = outgoing_problem(view, cfg, parts)
+def check_outgoing(view: Any, cfg: Any, parts: Mapping[str, str], recipients: Iterable[str] = ()) -> None:
+    """Refuse content going to someone else that still credits the assistant, saying where."""
+    problem = outgoing_problem(view, cfg, parts, recipients)
     if problem is not None:
         raise StoreError(problem)
 
 
 def _day(value: Any) -> date | None:
     try:
-        return date.fromisoformat(str(value)[:10])
+        return day_of(value, UTC)
     except ValueError:
         return None
 

@@ -71,7 +71,12 @@ def assistant_draft(env: Env, *, edit: bool, body: str) -> str:
         found = tx.get("act", act)
         tx.update("act", act, {"made_by": "assistant"}, _ENGINE, read_version=found.version)
     if edit:
-        env.person_op("act.edit", act, read_version=env.store.read().get("act", act).version, parts={"body": "Edited"})
+        env.person_op(
+            "act.edit",
+            act,
+            read_version=env.store.read().get("act", act).version,
+            parts={"subject": "The proofs", "body": "Edited"},
+        )
     env.yes(act)
     return act
 

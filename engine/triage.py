@@ -20,7 +20,6 @@ never when it is addressed to the person alone); then bulk mail, and mail in pro
 from __future__ import annotations
 
 import fnmatch
-import re
 from collections.abc import Callable
 from email.utils import parseaddr
 from typing import Any
@@ -29,19 +28,20 @@ from engine.mail_kinds import kind_of_change
 from engine.references import names_for
 
 Matcher = Callable[[dict[str, Any], dict[str, Any]], str | None]
-_NOT_WORDS = re.compile(r"[\W_]+")
 
 
 def _letters(text: str) -> str:
-    return _NOT_WORDS.sub("", text).lower()
+    """The text with runs of whitespace made one space and letters folded to one case. Digits, signs, currency,
+    percent, decimal points and date separators are content and stay."""
+    return " ".join(text.split()).casefold()
 
 
 def cosmetic(change: dict[str, Any], params: dict[str, Any]) -> str | None:
-    """Only spacing, punctuation or capitals changed."""
+    """Only whitespace or letter case changed."""
     if change["change"] != "changed":
         return None
     if _letters(change["before"]) == _letters(change["now"]):
-        return "only spacing, punctuation or capitals changed"
+        return "only spacing or capitals changed"
     return None
 
 

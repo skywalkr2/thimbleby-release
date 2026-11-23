@@ -11,10 +11,11 @@ entry's reason. The core only moves its own records and never writes the person'
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date
 from typing import Any
 
 from engine import sides
+from engine.local_day import day_of, zone_of
 from engine.storage import StoreError, WriteContext
 
 WAITING_KEY = "entry.called_off.waiting"
@@ -45,7 +46,8 @@ def sync(tx: Any, event_id: str, w: WriteContext, cfg: Any = None) -> list[str]:
         return []
     held = is_held(entry.data)
     dropped = bool(entry.data.get("dropped"))
-    since = date.fromisoformat(tx._clock()[:10])
+    here = zone_of(cfg)
+    since = day_of(tx._clock(), here)
     changed = []
     if held:
         _tie_siblings(tx, entry, w, cfg)
@@ -88,9 +90,9 @@ def _tie_siblings(tx: Any, entry: Any, w: WriteContext, cfg: Any) -> None:
             )
 
 
-def held_entries(view: Any, today: date) -> list[Any]:
+def held_entries(view: Any, today: date, here: Any = None) -> list[Any]:
     """The called-off entries that wait for a new date and haven't passed, soonest first."""
-    found = [e for e in view.list("event") if is_held(e.data) and str(e.data["start"])[:10] >= today.isoformat()]
+    found = [e for e in view.list("event") if is_held(e.data) and day_of(e.data["start"], here or UTC) >= today]
     return sorted(found, key=lambda e: (str(e.data["start"]), e.id))
 
 

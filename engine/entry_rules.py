@@ -12,11 +12,13 @@ AI, and the words come from the language settings. Reads only, except `link`, wh
 from __future__ import annotations
 
 import re
+from datetime import UTC
 from typing import Any
 
 from engine.connectors import EventDetails, EventPerson, SourceItem
 from engine.due_phrases import names_title
 from engine.language_words import language_words
+from engine.local_day import day_text
 from engine.own_accounts import own_names
 
 
@@ -114,7 +116,7 @@ def people_named(title: str, people: list[Any], pm: str | None) -> list[str]:
     return sorted(weak) if len(weak) == 1 else []
 
 
-def link(tx: Any, entry_id: str, writer: Any, pm: str | None) -> None:
+def link(tx: Any, entry_id: str, writer: Any, pm: str | None, here: Any = None) -> None:
     """Propose the known people a plain, kept calendar entry's title names as its guests (`proposed_guests`; the person
     or the assistant confirms them into `people`), and propose the entry to each
     open, untied promise due on its day whose words the title names, or that names the title's words
@@ -126,7 +128,7 @@ def link(tx: Any, entry_id: str, writer: Any, pm: str | None) -> None:
     entry = tx.get("event", entry_id)
     if entry is None or not entry.data.get("plain") or entry.data.get("cancelled"):
         return
-    title, day = str(entry.data["title"]), str(entry.data["start"])[:10]
+    title, day = str(entry.data["title"]), day_text(entry.data["start"], here or UTC)
     confirmed = entry.data.get("people") or []
     named = [p for p in people_named(title, tx.list("person"), pm) if p not in confirmed]
     if named and entry_guests.subject(entry_id, named) in entry_guests.declined(tx):
@@ -138,7 +140,7 @@ def link(tx: Any, entry_id: str, writer: Any, pm: str | None) -> None:
         d = action.data
         if d.get("status") != "open" or d.get("due_event") or str(d.get("due") or "") != day:
             continue
-        if d.get("proposed_event") == entry_id or entry_ties.pending(tx, action, refused) is not None:
+        if d.get("proposed_event") == entry_id or entry_ties.pending(tx, action, refused, here) is not None:
             continue
         if entry_ties.subject(action.id, entry_id) in refused:
             continue

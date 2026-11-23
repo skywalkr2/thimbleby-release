@@ -347,7 +347,7 @@ def _check_files(item: SourceItem) -> None:
 def moment(value: str, *, all_day: bool = False) -> datetime | date:
     """An ISO 8601 date-time with its offset, or with `all_day` a plain date. Raises ValueError otherwise."""
     if all_day:
-        return date.fromisoformat(value[:10]) if len(value) == 10 else _aware(value).date()
+        return date.fromisoformat(value) if len(value) == 10 else _aware(value).date()
     return _aware(value)
 
 
@@ -489,6 +489,12 @@ def reads(connector: str, declared: Mapping[str, str | None] | None = None) -> l
 # ---- the folder connector ------------------------------------------------------------------------------------------
 
 
+#: The files a folder source reads by default: text, documents, spreadsheets, presentations and PDFs.
+READ_PATTERNS = ["*.txt", "*.md", "*.docx", "*.xlsx", "*.pptx", "*.pdf"]
+#: Endings of document files the core can't read; a watched folder lists one it finds instead of skipping it quietly.
+UNREAD_DOCUMENT_ENDINGS = (".doc", ".xls", ".ppt", ".rtf", ".odt", ".ods", ".odp", ".pages", ".numbers", ".key")
+
+
 class FolderSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -499,9 +505,9 @@ class FolderSettings(BaseModel):
         json_schema_extra={"picker": "folder"},
     )
     patterns: list[str] = Field(
-        default_factory=lambda: ["*.txt", "*.md"],
+        default_factory=lambda: list(READ_PATTERNS),
         description="Which files to read, as name patterns. Documents, spreadsheets, presentations and PDFs are read "
-        "as text too.",
+        "as text too. A document of a kind that can't be read is listed with why, never skipped quietly.",
         json_schema_extra={"advanced": True},
     )
     subfolders: bool = Field(True, description="Read the folders inside it too.", json_schema_extra={"advanced": True})
@@ -521,7 +527,7 @@ class FolderSettings(BaseModel):
 
 class CaptureFolderSettings(FolderSettings):
     patterns: list[str] = Field(
-        default_factory=lambda: ["*.txt", "*.md", "*.m4a", "*.mp3", "*.wav", "*.ogg", "*.webm", "*.flac", "*.aac"],
+        default_factory=lambda: [*READ_PATTERNS, "*.m4a", "*.mp3", "*.wav", "*.ogg", "*.webm", "*.flac", "*.aac"],
         description="Which files to take in, as name patterns. Notes and documents are read as your own words; a "
         "sound file is a voice note, turned into text by an account that takes speech.",
         json_schema_extra={"advanced": True},
@@ -532,6 +538,21 @@ class CaptureFolderSettings(FolderSettings):
 CAPTURE = "capture"
 
 
+def _unread_documents(folder: Path, settings: FolderSettings) -> list[Unreadable]:
+    """The documents in the folder of a kind that can't be read, each with why, so none is skipped quietly."""
+    paths = folder.rglob("*") if settings.subfolders else folder.glob("*")
+    return [
+        Unreadable(
+            path.relative_to(folder).as_posix(),
+            "this kind of document can't be read here; save it as a .docx, .xlsx, .pptx or .pdf file",
+        )
+        for path in sorted(paths)
+        if path.suffix.lower() in UNREAD_DOCUMENT_ENDINGS
+        and path.is_file()
+        and not any(part.startswith(".") for part in path.parts[-3:])
+    ]
+
+
 def _read_folder(settings: FolderSettings, state: dict[str, Any], context: ConnectorContext) -> Poll:
     folder = Path(settings.path).expanduser()
     if not folder.is_absolute():
@@ -540,6 +561,7 @@ def _read_folder(settings: FolderSettings, state: dict[str, Any], context: Conne
         raise ConnectorError("not_found", f"the folder {folder} isn't there")
     items = []
     found = set()
+    unreadable = _unread_documents(folder, settings)
     for pattern in settings.patterns:
         for path in sorted(folder.rglob(pattern) if settings.subfolders else folder.glob(pattern)):
             if not path.is_file() or path in found or any(part.startswith(".") for part in path.parts[-3:]):
@@ -596,7 +618,7 @@ def _read_folder(settings: FolderSettings, state: dict[str, Any], context: Conne
                 items.append(SourceItem(key, path.name, "(not read: not plain text)", changed_at=modified))
                 continue
             items.append(SourceItem(key, path.name, text, changed_at=modified))
-    return Poll(items, state, complete=True)
+    return Poll(items, state, complete=True, unreadable=unreadable)
 
 
 # ---- the stand-in connector -----------------------------------------------------------------------------------------

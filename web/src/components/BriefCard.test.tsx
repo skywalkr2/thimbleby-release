@@ -81,6 +81,8 @@ const WEEK: S["WeekAheadView"] = {
   sentence: "A light week with a parcel coming.",
   rows: [{ from_day: "2026-10-21", to_day: null, words: "A parcel of ink arrives", kind: "delivery", link: { kind: "event", id: "EVT-1" } }],
   read_again: true,
+  days_off: [],
+  working_days: 0,
 };
 const MONDAY: Brief = {
   form: "monday",
@@ -854,4 +856,21 @@ test("a stand-up kept only for the brief is a line with its time, and with no ti
   await screen.findByRole("heading", { level: 2, name: "Morning brief" });
   expect(screen.getByText("Daily standup at 9:00 AM")).toBeInTheDocument();
   expect(screen.getByText("Team day today")).toBeInTheDocument();
+});
+
+test("a day off that is near is one line: tomorrow and a later day together, or one named holiday, in the evening's own section", async () => {
+  await show({
+    ...MORNING,
+    sections: [{ key: "today", more: 0, lines: [line({ key: "days_off", kind: "days_off", state: "tomorrow", day: "2026-10-21", subjects: ["2026-10-21", "2026-10-23"] })] }],
+  });
+  await screen.findByRole("heading", { level: 2, name: "Morning brief" });
+  expect(screen.getByText("Tomorrow and Friday are holidays")).toBeInTheDocument();
+  cleanup();
+  await show({
+    ...MORNING,
+    form: "evening",
+    sections: [{ key: "tomorrow", more: 0, lines: [line({ key: "days_off", kind: "days_off", state: "tomorrow", text: "Thanksgiving", day: "2026-10-21", subjects: ["2026-10-21"] })] }],
+  });
+  expect(await screen.findByRole("heading", { name: "Tomorrow" })).toBeInTheDocument();
+  expect(screen.getByText("Tomorrow is a holiday: Thanksgiving")).toBeInTheDocument();
 });

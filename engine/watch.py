@@ -385,6 +385,8 @@ def _refresh(ws: Any, store: Any, cfg: Any, source_id: str, now: datetime | None
         return _failed_read(store, cfg, source, err, now, clock)
     if source.holds == "absence":
         return _read_absence(store, cfg, source, poll, settings, now, clock)
+    if _served_older_copy(worked, poll.generated_at):
+        return _record_older_copy(store, source, worked, now, clock)
     read_before = any(
         r.data["outcome"] in ("ok", "baseline") for r in store.read().find("watch_run", {"source": source.id})
     )
@@ -459,6 +461,50 @@ def _refresh(ws: Any, store: Any, cfg: Any, source_id: str, now: datetime | None
     _after_mail(ws, store, cfg, now)
     result.outcome = "baseline" if baseline else "ok"
     return result
+
+
+def _moment(value: Any) -> datetime | None:
+    """A time a source or a saved read gave, as an aware time; none when it says none or can't be read."""
+    if isinstance(value, datetime):
+        made = value
+    else:
+        try:
+            made = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return made if made.tzinfo is not None else None
+
+
+def _newest_copy(worked: list[Any]) -> datetime | None:
+    """The newest time a source's own data was made, over the reads that worked."""
+    seen = [m for r in worked if (m := _moment(r.data.get("generated_at"))) is not None]
+    return max(seen) if seen else None
+
+
+def _served_older_copy(worked: list[Any], generated_at: str | None) -> bool:
+    """Whether the source says its data was made before the newest copy it has served: a restore or a cache. A source
+    that says no time is read at the time of the read, which never goes back."""
+    made, newest = _moment(generated_at), _newest_copy(worked)
+    return made is not None and newest is not None and made < newest
+
+
+def _record_older_copy(store: Any, source: Any, worked: list[Any], now: datetime, clock: float) -> Result:
+    """Keep the read as one that compared nothing: the newest copy's state and time stay as they were, so the older copy
+    is never compared, stored or filed, and the next read of the newest copy compares with what it did before."""
+    last = worked[-1].data
+    newest = _newest_copy(worked)
+    _record(
+        store,
+        source.id,
+        now,
+        clock,
+        "ok",
+        older_copy=True,
+        state=dict(last.get("state") or {}),
+        generated_at=newest.isoformat() if newest else None,
+        old_data=bool(last.get("old_data")),
+    )
+    return Result(source.id, "ok", note=word(None, "read.older_copy"))
 
 
 def refusal(err: ConnectorError) -> dict[str, Any]:

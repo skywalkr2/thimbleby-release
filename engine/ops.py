@@ -940,6 +940,17 @@ class QuestionDropOp(OpModel):
         return f"Drop {named(view, 'question', self.id)}"
 
 
+class QuestionAskAgainOp(OpModel):
+    """Open a dropped question again, so it is asked as it was. Only the person uses it (the assistant never asks
+    again what the person dropped); Undo drops it again."""
+
+    op: Literal["question.ask_again"] = "question.ask_again"
+    id: str = Field(description="The id of the dropped question.")
+
+    def describe(self, view: Any = None) -> str | None:
+        return f"Ask again: {named(view, 'question', self.id)}"
+
+
 class QuestionMarkSentOp(OpModel):
     """Record that the person already sent an open question themselves, the day they did (today when left out). The
     person uses it, or the assistant when the person's own note says they asked; Undo makes it open again."""
@@ -2379,6 +2390,7 @@ Op = Annotated[
     | QuestionUpdateOp
     | QuestionMoveOp
     | QuestionDropOp
+    | QuestionAskAgainOp
     | QuestionMarkSentOp
     | PersonAddOp
     | PersonContactOp
@@ -2475,6 +2487,7 @@ OP_MODELS: dict[str, type[OpModel]] = {
     "question.update": QuestionUpdateOp,
     "question.move": QuestionMoveOp,
     "question.drop": QuestionDropOp,
+    "question.ask_again": QuestionAskAgainOp,
     "question.mark_sent": QuestionMarkSentOp,
     "person.add": PersonAddOp,
     "person.contact": PersonContactOp,
@@ -2581,6 +2594,7 @@ NON_OVERWRITING_OPS: frozenset[str] = frozenset(
         "question.update",
         "question.move",
         "question.drop",
+        "question.ask_again",
         "question.mark_sent",
         "person.add",
         "person.contact",
@@ -2716,6 +2730,7 @@ PERSON_ONLY_OPS = {
     "action.reply",
     "question.update",
     "question.move",
+    "question.ask_again",
     "question.mark_sent",
     "source.widen",
     "view.add",

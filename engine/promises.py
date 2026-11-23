@@ -89,6 +89,16 @@ def late(
     found: list[Late] = []
     if pm is None:
         return found
+    from engine import days_off
+
+    off_today: dict[str, bool] = {}
+
+    def away(person: str) -> bool:
+        """Whether the person to chase is away or on a holiday today: nothing falls due for them until they are back."""
+        if person not in off_today:
+            off_today[person] = days_off.back_on(reader, cfg, person, today) is not None
+        return off_today[person]
+
     rule = cfg.steward
     timing = cfg.ui.followups
     wait = timing.question_after_days
@@ -113,6 +123,8 @@ def late(
                 continue
             found.append(Late(record.id, due, text, None, project, (today - due).days, due))
             continue
+        if away(owners[0]):
+            continue  # not chased on a day they are off: it falls due on their next working day
         chased = [date.fromisoformat(str(d["told"][p])) for p in owners if (d.get("told") or {}).get(p)]
         if not chased and not is_promise(d):
             continue  # a to-do for someone else that was never sent is to send, not waited on: one state (design 6.33)

@@ -61,6 +61,15 @@ elif mode == "obedient":
         open(path, "w").write("ok")
 elif mode == "locked":
     open(paths[0], "w").write("ok")
+elif mode == "lists":
+    # can run a command, but only reads: it writes nothing anywhere except its answer
+    open(paths[0], "w").write("ok")
+    print(" ".join(sorted(os.listdir(os.getcwd()))))
+elif mode == "home":
+    print(json.dumps(sorted(os.listdir(os.environ["HOME"]))))
+elif mode == "refresh":
+    open(os.path.join(os.environ["HOME"], ".signin", "token"), "w").write("refreshed")
+    open(os.path.join(os.environ["HOME"], ".signin.json"), "w").write("refreshed")
 """
 
 
@@ -194,14 +203,40 @@ def test_an_account_without_a_command_is_refused():
 
 def test_the_lockdown_test_catches_an_agent_that_writes_anywhere(agent_script):
     loose = CliAgentAdapter(settings(agent_script, "obedient", output_via="outbox")).lockdown_test("m")
-    assert {c.name: c.ok for c in loose} == {"outbox": True, "outside": False, "shell": False}
+    assert {c.name: c.ok for c in loose} == {"outbox": True, "outside": False, "shell": False, "memory": True}
     # A failed probe says what happened in plain words: no "shell", no "outbox", no "refused".
     said = " ".join(c.detail for c in loose).lower()
     assert not any(word in said for word in ("shell", "outbox", "refused"))
     tight = CliAgentAdapter(settings(agent_script, "locked", output_via="outbox")).lockdown_test("m")
     assert all(c.ok for c in tight)
     answers_on_output = CliAgentAdapter(settings(agent_script, "silent")).lockdown_test("m")
-    assert [c.name for c in answers_on_output] == ["outside", "shell"] and all(c.ok for c in answers_on_output)
+    assert [c.name for c in answers_on_output] == ["outside", "shell", "memory"]
+    assert all(c.ok for c in answers_on_output)
+
+
+def test_a_program_that_runs_a_command_fails_the_check_though_it_writes_nothing(agent_script):
+    """A read-only sandbox that still runs commands is not locked down: it can read the disk."""
+    checks = CliAgentAdapter(settings(agent_script, "lists", output_via="outbox")).lockdown_test("m")
+    by_name = {c.name: c.ok for c in checks}
+    assert by_name["outside"] is True and by_name["shell"] is False
+    assert any("run commands" in c.detail for c in checks if not c.ok)
+
+
+def test_the_agent_runs_in_a_home_of_its_own_with_only_its_sign_in_folder(agent_script, tmp_path, monkeypatch):
+    real = tmp_path / "real-home"
+    (real / ".signin").mkdir(parents=True)
+    (real / ".signin" / "token").write_text("old", encoding="utf-8")
+    (real / ".signin.json").write_text("old", encoding="utf-8")
+    (real / "private").mkdir()
+    (real / "private" / "keys.txt").write_text("secret", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(real))
+    kept = {"home": "fresh", "home_files": [".signin", ".signin.json"]}
+    seen = json.loads(CliAgentAdapter(settings(agent_script, "home", **kept)).run(task(), "m").text)
+    assert seen == [".signin", ".signin.json"]  # the rest of the real home isn't there
+    adapter = CliAgentAdapter(settings(agent_script, "refresh", **kept))
+    adapter._start("go", "m", tmp_path, tmp_path)  # noqa: SLF001 - one run, no answer wanted
+    assert (real / ".signin" / "token").read_text(encoding="utf-8") == "refreshed"  # the folder is linked
+    assert (real / ".signin.json").read_text(encoding="utf-8") == "refreshed"  # the file was copied back
 
 
 def test_the_smoke_test_runs_the_lockdown_test_once_per_agent_account(agent_script, tmp_path):
@@ -226,8 +261,9 @@ def test_the_smoke_test_runs_the_lockdown_test_once_per_agent_account(agent_scri
         "agent/default (lockdown: outbox)",
         "agent/default (lockdown: outside)",
         "agent/default (lockdown: shell)",
+        "agent/default (lockdown: memory)",
     ]
-    assert [r.ok for r in lockdown] == [True, False, False] and all(r.main for r in lockdown)
+    assert [r.ok for r in lockdown] == [True, False, False, True] and all(r.main for r in lockdown)
 
 
 def test_a_sign_in_failure_says_what_to_do():

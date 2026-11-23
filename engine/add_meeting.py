@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from engine.local_day import day_of
 from engine.records import entry_time
 from engine.storage import StoreError
 from engine.today import _dates, zone
@@ -140,7 +141,7 @@ def edit_entry(
         raise StoreError("That entry changed while you were looking at it. Open it again and try again.")
     place = " ".join((where or "").split())[:200] or None
     rule = _repeat_rule(
-        date.fromisoformat(str(found.data["start"])[:10]),
+        day_of(found.data["start"], zone(cfg)),
         (repeat or "").strip() or None,
         (repeat_until or "").strip() or None,
     )

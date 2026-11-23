@@ -111,6 +111,12 @@ export function briefClosed(data: Brief | undefined, workspace: string): boolean
   return !!data && data.form !== null && closedFor(workspace, data.form, data.day) && briefHasContent(data);
 }
 
+const longWeekdayFormat = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", weekday: "long" });
+const longWeekday = (iso: string) => {
+  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  return longWeekdayFormat.format(new Date(Date.UTC(y, m - 1, d)));
+};
+
 const clock = (at: string | null | undefined) => (at ? wallTime(`T${at}`) : "");
 
 function heading(key: string, t: T): string {
@@ -123,6 +129,8 @@ function heading(key: string, t: T): string {
       return t("brief.section.risk");
     case "yes":
       return t("brief.section.yes");
+    case "tomorrow":
+      return t("brief.section.tomorrow");
     case "done":
       return t("brief.section.done");
     case "moved":
@@ -230,6 +238,11 @@ function lineWords(line: Line, queue: QueueLine | undefined, t: T, tn: Tn, title
       return line.place && line.other_place
         ? tn("brief.line.clash.travel", between, { ...vars, need, from: line.place, to: line.other_place })
         : tn("brief.line.clash.travel_apart", between, { ...vars, need });
+    }
+    case "days_off": {
+      const days = (line.subjects ?? []).map((d, i) => (i === 0 && line.state === "tomorrow" ? t("brief.line.days_off.tomorrow") : longWeekday(d)));
+      if (days.length === 1) return t(line.text ? "brief.line.days_off.one_named" : "brief.line.days_off.one", { day: days[0], name: line.text ?? "" });
+      return t("brief.line.days_off.many", { days: new Intl.ListFormat(undefined, { style: "long", type: "conjunction" }).format(days) });
     }
     case "standup":
       return t(line.at ? "brief.line.standup_at" : "brief.line.standup", { text, time: clock(line.at) });

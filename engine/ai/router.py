@@ -15,7 +15,7 @@ from engine.ai.borrow import Borrowed, borrowed_path, chain
 from engine.ai.calibration import Calibration, estimate_tokens, learn_from_run, lookup, scaled
 from engine.ai.catalog import Catalogs
 from engine.ai.checked import folder_of
-from engine.ai.pauses import NO_RESET, Pauses, pauses_path, waiting_text
+from engine.ai.pauses import NO_RESET, Pauses, pauses_path, unsafe_reason, unsafe_text, waiting_text
 from engine.ai.spending import BudgetReached, Hold
 from engine.ai.task import AiError, AiResult, AiTask, CountNotOffered, ModelInfo, work_in_words
 from engine.config import Config
@@ -519,8 +519,12 @@ class Router:
                 except AiError as err:
                     if err.kind not in FALLBACK_ON:
                         raise
+            held = unsafe_reason(private_dir(self.store.path.parent), account)
             raise AccountPaused(
-                account, until, waiting_text(self.cfg, account, until, self.now()), tier=options[0].tier
+                account,
+                until,
+                unsafe_text(account, held) if held else waiting_text(self.cfg, account, until, self.now()),
+                tier=options[0].tier,
             )
         if last is None and over:
             raise BudgetReached(

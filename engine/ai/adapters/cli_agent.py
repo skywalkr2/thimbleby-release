@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -77,9 +78,25 @@ COMMON_ERRORS: dict[str, tuple[str, ...]] = {
     "offline": (
         r"connection (?:closed|reset|lost|dropped)\b",
         r"\beconnreset\b",
+        r"\benotfound\b",
+        r"\bfetch failed\b",
+        r"could not resolve host",
+        r"\betimedout\b",
         r"unknown model\b[^\n]*available models:\s*\Z",
     ),
 }
+
+
+#: Terminal color and cursor codes, which can split the words of an error message.
+_ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
+
+#: A program that ends a spent plan by printing the notice as its answer (exit code 0) says no more than this.
+LIMIT_NOTICE_CHARS = 600
+
+
+def plain(text: str) -> str:
+    """The text with its terminal color and cursor codes removed, so wording is matched as a person reads it."""
+    return _ANSI.sub("", text or "")
 
 
 class CliAgentAdapter:
@@ -131,6 +148,7 @@ class CliAgentAdapter:
         if system:
             write_whole(system_file, system)
         home = self._fresh_home(scratch) if self.agent.home == "fresh" else None
+        copied = self._copied_in(home)
         if self.agent.packet_via == "argument" and len(prompt) > MAX_ARGUMENT_CHARS:
             raise AiError("other", "the packet is too long to pass on the command line; this agent can't take it")
         values = {"model": model, "packet": str(packet), "outbox": str(outbox), "scratch": str(scratch)}
@@ -156,9 +174,11 @@ class CliAgentAdapter:
                 timeout=self.settings.timeout_seconds,
             )
         except subprocess.TimeoutExpired:
+            self._copy_back(copied)
             raise AiError("timeout", f"the agent didn't finish in {self.settings.timeout_seconds} seconds") from None
         except OSError as err:
             raise AiError("provider_down", f"the agent program couldn't start: {err}", sent=False) from None
+        self._copy_back(copied)
         return done, time.monotonic() - started
 
     def _error_report(self, done: subprocess.CompletedProcess) -> str:
@@ -185,10 +205,12 @@ class CliAgentAdapter:
         return env
 
     def _fresh_home(self, scratch: Path) -> Path:
-        """An empty home folder for one run, with only the sign-in files the account lists copied in."""
+        """A home folder of its own for one run, holding only the program's sign-in files: a folder is linked, so what
+        the program writes there (a refreshed sign-in) reaches the real one; a single file is copied in and copied back
+        when the run changed it (`_copy_back`)."""
         home = scratch / "home"
         home.mkdir(exist_ok=True)
-        real = Path(os.environ.get("HOME") or Path.home())
+        real = self._real_home()
         for relative in self.agent.home_files:
             source = (real / relative).resolve()
             if not source.is_relative_to(real.resolve()) or not source.exists():
@@ -196,18 +218,58 @@ class CliAgentAdapter:
             target = home / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             if source.is_dir():
-                shutil.copytree(source, target, dirs_exist_ok=True)
+                try:
+                    target.symlink_to(source, target_is_directory=True)
+                except (
+                    OSError
+                ):  # where links aren't allowed, a copy: a refreshed sign-in may then not reach the real one
+                    shutil.copytree(source, target, dirs_exist_ok=True)
             else:
                 shutil.copy2(source, target)
         return home
 
+    @staticmethod
+    def _real_home() -> Path:
+        return Path(os.environ.get("HOME") or Path.home())
+
+    def _copied_in(self, home: Path | None) -> list[tuple[Path, Path, bytes]]:
+        """The sign-in files copied into a run's home: where each is, where it came from and what it held."""
+        if home is None:
+            return []
+        real = self._real_home().resolve()
+        found = []
+        for relative in self.agent.home_files:
+            inside, source = home / relative, (real / relative).resolve()
+            if inside.is_file() and not inside.is_symlink() and source.is_relative_to(real) and source.is_file():
+                found.append((inside, source, inside.read_bytes()))
+        return found
+
+    @staticmethod
+    def _copy_back(copied: list[tuple[Path, Path, bytes]]) -> None:
+        """A sign-in file the run changed (a refreshed token) is put back where the program keeps it."""
+        for inside, source, before in copied:
+            try:
+                now = inside.read_bytes()
+                if now != before and _is_text(now):  # a sign-in kept as text; a binary one is left as it was
+                    write_whole(source, now.decode("utf-8"))
+            except OSError:
+                continue
+
     def _result(self, stdout: str, answer: str | None, model: str, seconds: float) -> AiResult:
         """The run's result. A program that finished without error but left no answer (nothing on its output, or an
         empty answer file) is its own outcome, never an empty answer."""
+        said = plain(answer if answer is not None else stdout).strip()
+        if said and len(said) <= LIMIT_NOTICE_CHARS and self._is_limit_notice(said):
+            # A plan limit the program reported as its answer with exit code 0 is the limit, never the model's answer.
+            raise self.classify_error(None, said, None)
         result = self._read_result(stdout, answer, model, seconds)
         if not result.text.strip():
             raise AiError("no_output", "the agent finished without an answer")
         return result
+
+    def _is_limit_notice(self, text: str) -> bool:
+        patterns = (*self.agent.errors.quota, *COMMON_ERRORS["quota"])
+        return any(re.search(p, text, re.I) for p in patterns)
 
     def _read_result(self, stdout: str, answer: str | None, model: str, seconds: float) -> AiResult:
         fields = self.agent.output_fields
@@ -246,7 +308,7 @@ class CliAgentAdapter:
         """What a failed run means, from the program's exit code and error stream only. A failure with nothing on the
         error stream, one the account's patterns call a banner, or one ended by a signal is `no_work`: the program
         ran but did nothing."""
-        tail = (error_stream or "")[-ERROR_TAIL:]
+        tail = plain(error_stream or "")[-ERROR_TAIL:]
         if transport_error:
             return AiError("provider_down", transport_error)
         errors = self.agent.errors
@@ -374,15 +436,19 @@ class CliAgentAdapter:
     # ---- lockdown ---------------------------------------------------------------------------------------------------
 
     def lockdown_test(self, model: str) -> list[LockdownCheck]:
-        """Ask the agent to write in its outbox, write outside its folder and start a shell. Locked down means only
-        the first happens (or none, for an agent that answers on its output)."""
+        """Ask the agent to write in its outbox, write outside its folder, start a shell and run a harmless read-only
+        command. Locked down means only the first happens (or none, for an agent that answers on its output): any
+        command that ran fails the check, whether or not it could write."""
         with _scratch() as scratch, _scratch() as elsewhere:
             outbox = scratch / "outbox"
             outbox.mkdir()
             inside, outside, shell = outbox / "lockdown.txt", elsewhere / "outside.txt", elsewhere / "shell.txt"
+            # A file with a name only a listing shows: the agent can only repeat it by running a command that lists.
+            marker = f".probe-{secrets.token_hex(6)}"
+            write_whole(scratch / marker, "")
             prompt = render("agent-lockdown", {"inside": str(inside), "outside": str(outside), "shell": str(shell)})
             try:
-                self._start(prompt, model, scratch, outbox)
+                done, _ = self._start(prompt, model, scratch, outbox)
             except AiError as err:
                 return [LockdownCheck("outbox", False, f"The app could not start it: {err}")]
             checks = []
@@ -407,7 +473,14 @@ class CliAgentAdapter:
                     else "It was stopped from changing files outside its own folder",
                 )
             )
-            ran = shell.exists()
+            said = " ".join(
+                [
+                    done.stdout or "",
+                    done.stderr or "",
+                    inside.read_text(encoding="utf-8", errors="replace") if inside.is_file() else "",
+                ]
+            )
+            ran = shell.exists() or marker in said
             checks.append(
                 LockdownCheck(
                     "shell",
@@ -442,6 +515,14 @@ class CliAgentAdapter:
             else "It keeps nothing between runs"
         )
         return LockdownCheck("memory", not leaked, detail)
+
+
+def _is_text(data: bytes) -> bool:
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
 
 
 class _scratch:

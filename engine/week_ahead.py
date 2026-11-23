@@ -29,6 +29,7 @@ from engine import routines, sides, week_plan
 from engine.blocked import standing_hold
 from engine.facts import superseded_by
 from engine.firm_due import firm_due
+from engine.local_day import day_of
 from engine.names import People
 from engine.storage import StoreError, WriteContext
 from engine.today import zone
@@ -85,7 +86,7 @@ def _one_line(text: Any) -> str:
 
 def _day(value: Any) -> date | None:
     try:
-        return date.fromisoformat(str(value)[:10])
+        return day_of(value, UTC)
     except ValueError:
         return None
 
@@ -517,6 +518,17 @@ def _line(item: Item) -> str:
     return " | ".join(bits)
 
 
+def days_off_of(store: Any, cfg: Any, first: date, last: date) -> tuple[list[tuple[date, str]], int]:
+    """The days off in the days from `first` through `last`, and the working days left in them (none off when the
+    range is empty)."""
+    from engine import days_off
+
+    if first > last:
+        return [], 0
+    off = days_off.week_days_off(store.read(), cfg, People(store, cfg).pm, first, last)
+    return off, days_off.working_days_between(cfg, first, last, [d for d, _ in off])
+
+
 def lines(ws: Any, store: Any, cfg: Any, now: datetime) -> tuple[list[str], list[str]]:
     """The week's records as the packet shows them, and Today's lines (so they are not repeated)."""
     first, last = ahead(cfg, now.astimezone(zone(cfg)).date())
@@ -569,6 +581,7 @@ def build(ws: Any, store: Any, cfg: Any, req: Any, kind: Any, today: date) -> An
     first = date.fromisoformat(str(plan.data["week"]))
     start, _ = ahead(cfg, zoned.astimezone(zone(cfg)).date())
     people = _packet_people(store, cfg)
+    off, working = days_off_of(store, cfg, start, first + timedelta(days=6))
     shown_week = neutralize("\n".join(week))
     shown_today = neutralize("\n".join(held)) if held else "(none)"
     learned = _learned(
@@ -590,6 +603,12 @@ def build(ws: Any, store: Any, cfg: Any, req: Any, kind: Any, today: date) -> An
         f"The week ahead runs from {start.isoformat()} (tomorrow; today is Today's) through "
         f"{(first + timedelta(days=6)).isoformat()}. "
         f"Give at most {cfg.steward.week_ahead.max_rows} rows.",
+        (
+            f"Days off in the week ahead: {_days_off_said(off)}. {working} working "
+            f"{'day is' if working == 1 else 'days are'} left in it."
+            if off
+            else ""
+        ),
         learned.per_input,
         f'# The week\'s records\n<untrusted source="{WEEK_BLOCK}">\n{shown_week}\n</untrusted>',
         "# Lines Today already holds (leave these out)\n"
@@ -609,6 +628,12 @@ def build(ws: Any, store: Any, cfg: Any, req: Any, kind: Any, today: date) -> An
         data_level=_data_level(store, req.data),
         knowledge=learned.log,
     )
+
+
+def _days_off_said(off: list[tuple[date, str]]) -> str:
+    from engine import days_off
+
+    return days_off.said(days_off._runs(off))
 
 
 def _packet_people(store: Any, cfg: Any) -> Any:
@@ -648,6 +673,10 @@ class Card:
     estimate_usd: float | None = None
     waiting: str | None = None
     hidden: int = 0
+    #: The week ahead's days off (holidays and closures on the working week), each with its reason, and how many working
+    #: days are left in it.
+    days_off: tuple[tuple[date, str], ...] = ()
+    working_days: int = 0
 
 
 #: The kinds of record a row's source can be, in the order they are looked for.
@@ -682,6 +711,7 @@ def card_of(ws: Any, store: Any, cfg: Any, now: datetime) -> Card:
     mine = {i.id: i for i in items(store, cfg, now, start, last)}
     aside = set(plan.data.get("set_aside") or []) if plan is not None else set()
     shown = [i for i in mine.values() if i.id not in held and i.id not in aside]
+    off, working = days_off_of(store, cfg, start, last)
     request = None
     if plan is not None:
         for r in sorted(_requests(view, plan.id), key=lambda r: (str(r.data["created_at"]), r.id), reverse=True):
@@ -702,9 +732,19 @@ def card_of(ws: Any, store: Any, cfg: Any, now: datetime) -> Card:
             if r["source"] in mine and r["source"] not in held and r["source"] not in aside
         ]
         rows = tuple(kept[:most])
-        card = Card(first, last, "read", plan.data.get("read_sentence"), rows)
+        card = Card(
+            first, last, "read", plan.data.get("read_sentence"), rows, days_off=tuple(off), working_days=working
+        )
     else:
-        card = Card(first, last, "rules" if shown else "empty", None, tuple(_rules_rows(shown, most, view, cfg)))
+        card = Card(
+            first,
+            last,
+            "rules" if shown else "empty",
+            None,
+            tuple(_rules_rows(shown, most, view, cfg)),
+            days_off=tuple(off),
+            working_days=working,
+        )
     if request is not None and state_of in ("queued", "running"):
         return replace(card, state="working" if card.state != "read" else card.state, request=request.id)
     if request is not None and state_of == "needs_you":

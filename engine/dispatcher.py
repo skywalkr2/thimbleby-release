@@ -9,7 +9,7 @@ import re
 import time
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -269,7 +269,7 @@ def process(
         state="running",
         waiting="With the assistant now",
         cause=None,
-        attempts=req.data["attempts"] + 1,
+        attempts=req.data["attempts"] + (0 if req.data.get("held_answer") else 1),
     )
     if started is not None:
         started()
@@ -318,6 +318,17 @@ def process(
     if packet.data_level and LEVELS.index(packet.data_level) > LEVELS.index(level):
         level = packet.data_level
     ctx.data_level = level
+    if held := req.data.get("held_answer"):
+        # A stop came after the assistant's answer was accepted and before its change was marked done: the same
+        # answer is applied now, and nothing is run or charged again.
+        kept = _Outcome(
+            changeset=ChangesetIn.model_validate(held["changeset"]),
+            problems=[Problem(**p) for p in held.get("problems") or []],
+            run_id=held.get("run"),
+            searched=bool(held.get("searched")),
+            fallback=held.get("fallback"),
+        )
+        return _apply_outcome(store, cfg, request_id, req, store.plugins.task_kind(req.data["task"]), ctx, kept, now)
     tier = route(
         cfg,
         packet.task.kind,
@@ -534,6 +545,15 @@ def process(
         return stop_or_retry(store, cfg, request_id, outcome, now)
     if outcome.stop is not None:
         return needs_you(store, request_id, outcome.stop, cause=outcome.cause)
+    return _apply_outcome(store, cfg, request_id, req, kind, ctx, outcome, now)
+
+
+def _apply_outcome(
+    store: Store, cfg: Config, request_id: str, req: Any, kind: Any, ctx: Context, outcome: _Outcome, now: datetime
+) -> str | None:
+    """Apply an accepted answer and mark its request done in the same transaction. The answer is first kept on the
+    request, so a stop between accepting and applying it applies the same answer on the next start (no second run, no
+    second charge); a change that fails clears it, so the retry asks the assistant again."""
     changeset, problems, run_id = outcome.changeset, outcome.problems, outcome.run_id
     assert changeset is not None
     ctx.searched = outcome.searched
@@ -544,6 +564,17 @@ def process(
         # guide and the records (6.25). Pasted or outside material never does this.
         _set(store, request_id, task="ask", state="queued", waiting="With the assistant, starting now")
         return None
+    _set(
+        store,
+        request_id,
+        held_answer={
+            "changeset": changeset.model_dump(mode="json"),
+            "problems": [asdict(p) for p in problems],
+            "run": run_id,
+            "searched": outcome.searched,
+            "fallback": outcome.fallback,
+        },
+    )
     changeset = changeset.model_copy(update={"ops": localize_ops(changeset.ops, cfg)})
     if kind.name == follow_on.TASK:
         changeset, problems = follow_on.without_lone_notes(changeset, problems)
@@ -553,6 +584,18 @@ def process(
     extra = quality.claims(store, run_id, changeset.applied, changeset.missing, changeset.omitted)
     if outcome.fallback is not None and quality.first_run_on(store, run_id) == outcome.fallback:
         extra["first_on_account"] = outcome.fallback
+
+    def mark_done(tx: Any, cs_id: str) -> None:
+        cur = tx.get("request", request_id)
+        tx.update(
+            "request",
+            request_id,
+            {"state": "review", "waiting": None, "changeset": cs_id, "held_answer": None},
+            _ENGINE,
+            read_version=cur.version,
+        )
+        tx.redact_ledger("request", request_id, ["held_answer"])  # the kept answer leaves no copy in the history
+
     try:
         cs_id = apply_changeset(
             changeset,
@@ -563,14 +606,18 @@ def process(
             extra=extra,
             all_or_nothing=getattr(kind, "all_or_nothing", False),
             labeler=store.plugins.answer_labels(kind),
+            finish=mark_done,
         )
     except ChangeFailed as failed:
         # Nothing of the change was kept: the work goes back to the assistant to be done again, as a failed run does.
         log.warning("Request %s: %s", request_id, failed)
+        _drop_held_answer(store, request_id)
         return stop_or_retry(store, cfg, request_id, _Outcome(retry=str(failed), stop=str(failed)), now)
+    except Exception:
+        _drop_held_answer(store, request_id)  # an error is not a stop: the retry asks the assistant afresh
+        raise
     if run_id is not None:
         record_applied(store, run_id, cs_id)
-    _set(store, request_id, state="review", waiting=None, changeset=cs_id)
     if answer_effect.after_run(store, store.read().get("request", request_id), cs_id, now):
         return cs_id  # the person's answer changed nothing: sent back once, then Today asks them to look
     if _nothing_to_do(req.data, kind.name, changeset, problems) or (kind.name == "ask" and _answer_only(store, cs_id)):
@@ -590,6 +637,14 @@ def process(
     if _applied_something(store, cs_id):
         retire_earlier_attempts(store, request_id)
     return cs_id
+
+
+def _drop_held_answer(store: Store, request_id: str) -> None:
+    """Forget the answer kept on a request, in the record and in its history."""
+    with store.transaction() as tx:
+        cur = tx.get("request", request_id)
+        tx.update("request", request_id, {"held_answer": None}, _ENGINE, read_version=cur.version)
+        tx.redact_ledger("request", request_id, ["held_answer"])
 
 
 def person_is_set(store: Store, cfg: Config) -> bool:

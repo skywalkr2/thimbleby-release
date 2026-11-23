@@ -2649,12 +2649,13 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
 
     def _people() -> list[PersonView]:
         from engine import sides
+        from engine.local_day import zone_of
         from engine.record_page import counts, open_count
 
         pm = cfg.workspace.user.person
         view = store.read()
         orgs = {o.id: o.data["name"] for o in view.list("organization")}
-        seen = counts(view)["people"]
+        seen = counts(view, zone_of(cfg))["people"]
         # The number beside a person is the number their page counts, so the table and the page never say two.
         for person in view.list("person"):
             seen[person.id] = {
@@ -3086,13 +3087,14 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
     def projects() -> list[ProjectView]:
         from engine import sides
         from engine.lists import describe, status_rank
+        from engine.local_day import zone_of
         from engine.projects import language_for, spent_on
         from engine.record_page import counts
         from engine.scope import role_of
 
         names = People(store, cfg)
         view = store.read()
-        seen = counts(view)["projects"]
+        seen = counts(view, zone_of(cfg))["projects"]
         done = cfg.workspace.project.completed_status.strip().casefold()
         meant = {p.id: describe(view, "project-status", p.data.get("status")) for p in view.list("project")}
         groups = set(sides.side_ids(view, cfg))
@@ -3717,6 +3719,7 @@ def _section(
         limited_out=[LimitedOutView(**x) for x in s.limited],
         to_send=s.to_send,
         ready_since=s.ready_since,
+        out_until=s.out_until,
         nudge=_nudge_view(s.nudge, nudge_held, nudge_mention) if s.nudge is not None else None,
         send_from=mailboxes,
         send_from_default=came_through or (mailboxes[0] if mailboxes else None),

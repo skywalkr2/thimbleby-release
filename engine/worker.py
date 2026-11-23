@@ -37,9 +37,11 @@ def held_for_restart(waiting: object) -> bool:
 
 
 INTERRUPTED = "The app closed while this ran; it runs again now."
+APPLYING_KEPT_ANSWER = "The app closed before this answer was applied; it is applied now, nothing runs again."
 INTERRUPTED_TWICE = "Stopped twice when the app closed during it"
 _REQUEUE_OP = "worker.requeue"
 _INTERRUPTED_OP = "worker.interrupted"
+_RESUME_OP = "worker.resume"
 #: What `Worker.restart_for` names when an add-on that is running was updated from the screen.
 ADD_ONS = "add-ons"
 #: What `Worker.restart_for` names while a restore of a backup copy waits for the restart that swaps it in.
@@ -90,6 +92,7 @@ LIVE_KEYS = (
     "dispatch.knowledge.follow_on",
     "dispatch.knowledge.follow_on_max_tied",
     "dispatch.knowledge.follow_on_match",
+    "dispatch.knowledge.question_body_chars",
     "dispatch.knowledge.check_on_switch",
     "dispatch.knowledge.learn_later_inputs",
     "dispatch.knowledge.new_terms_per_input",
@@ -153,14 +156,39 @@ def waits_for_its_time(request: dict[str, Any], now: datetime) -> bool:
 def release_paused(store: Store) -> int:
     """Lift every pause on the accounts and let the requests waiting for one try again at once: used when the AI
     accounts changed, since a different account may be able to take the work. Returns how many requests were let go."""
-    from engine.ai.pauses import Pauses, pauses_path
+    from engine.ai.pauses import NO_RESET, Pauses, held_unsafe, pauses_path
+    from engine.legacy_names import private_dir
 
-    Pauses(pauses_path(store)).clear()
+    pauses = Pauses(pauses_path(store))
+    pauses.clear()
+    # An account held for its lock-down check stays held until a check passes, however the accounts changed.
+    for account in held_unsafe(private_dir(store.path.parent)):
+        pauses.pause(account, NO_RESET)
     ctx = WriteContext(actor="engine", trust="trusted", op="worker.release")
     released = 0
     with store.transaction() as tx:
         for r in tx.requests_unfinished():
             if r.data["state"] == "queued" and (r.data.get("cause") or {}).get("kind") in ("paused", "identity"):
+                tx.update(
+                    "request",
+                    r.id,
+                    {"cause": None, "waiting": "With the assistant, next in line"},
+                    ctx,
+                    read_version=r.version,
+                )
+                released += 1
+    return released
+
+
+def release_account(store: Store, accounts: Collection[str]) -> int:
+    """Let the requests that wait on these accounts (held for their lock-down check, which now passed) try again at
+    once, with nothing counted against them. Returns how many were let go."""
+    ctx = WriteContext(actor="engine", trust="trusted", op="worker.release")
+    released = 0
+    with store.transaction() as tx:
+        for r in tx.requests_unfinished():
+            cause = r.data.get("cause") or {}
+            if r.data["state"] == "queued" and cause.get("kind") == "paused" and cause.get("account") in accounts:
                 tx.update(
                     "request",
                     r.id,
@@ -229,6 +257,19 @@ def requeue_interrupted(store: Store) -> tuple[list[str], list[str]]:
     with store.transaction() as tx:
         for r in tx.requests_unfinished():
             if r.data["state"] != "running":
+                continue
+            if r.data.get("held_answer"):
+                # The assistant's answer was received and not yet applied: it is applied on the next run of the
+                # request, with nothing asked or charged again, so this is no second interruption.
+                ctx = WriteContext(actor="engine", trust="trusted", op=_RESUME_OP)
+                tx.update(
+                    "request",
+                    r.id,
+                    {"state": "queued", "waiting": APPLYING_KEPT_ANSWER},
+                    ctx,
+                    read_version=r.version,
+                )
+                queued.append(r.id)
                 continue
             history = tx.ledger(kind="request", record_id=r.id)
             if any(e["op"] in (_REQUEUE_OP, _INTERRUPTED_OP) for e in history):

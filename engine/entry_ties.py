@@ -20,6 +20,7 @@ from typing import Any
 from engine.applier import apply_as_person
 from engine.due_phrases import after_marker, named_entry, names_title
 from engine.language_words import language_words
+from engine.local_day import day_text, zone_of
 from engine.storage import StoreError
 
 KIND = "tie"
@@ -46,7 +47,7 @@ def declined(view: Any) -> set[str]:
     return found
 
 
-def pending(view: Any, action: Any, refused: set[str] | None = None) -> Any | None:
+def pending(view: Any, action: Any, refused: set[str] | None = None, here: Any = None) -> Any | None:
     """The calendar entry a to-do is proposed to be tied to, or None: the proposal stands while the to-do is open and
     untied, the entry is kept, not called off and on the to-do's day, and the person hasn't said it isn't this one."""
     d = action.data
@@ -54,25 +55,29 @@ def pending(view: Any, action: Any, refused: set[str] | None = None) -> Any | No
     if not entry_id or d.get("status") != "open" or d.get("due_event"):
         return None
     entry = view.get("event", entry_id)
-    if entry is None or entry.data.get("cancelled") or str(entry.data["start"])[:10] != str(d.get("due") or ""):
+    if (
+        entry is None
+        or entry.data.get("cancelled")
+        or day_text(entry.data["start"], here or UTC) != str(d.get("due") or "")
+    ):
         return None
     refused = declined(view) if refused is None else refused
     return None if subject(action.id, entry_id) in refused else entry
 
 
-def proposals(view: Any) -> list[tuple[Any, Any]]:
+def proposals(view: Any, here: Any = None) -> list[tuple[Any, Any]]:
     """Every open proposal, as (to-do, entry), the earliest day first."""
     refused = declined(view)
-    found = [(a, e) for a in view.list("action") if (e := pending(view, a, refused)) is not None]
+    found = [(a, e) for a in view.list("action") if (e := pending(view, a, refused, here)) is not None]
     return sorted(found, key=lambda pair: (str(pair[1].data["start"]), pair[0].id))
 
 
-def view_of(view: Any, action: Any) -> dict[str, Any] | None:
+def view_of(view: Any, action: Any, here: Any = None) -> dict[str, Any] | None:
     """The proposal as the to-do's page shows it: the entry, its title and its day; None when there is none."""
-    entry = pending(view, action)
+    entry = pending(view, action, None, here)
     if entry is None:
         return None
-    return {"entry": entry.id, "title": entry.data["title"], "day": str(entry.data["start"])[:10]}
+    return {"entry": entry.id, "title": entry.data["title"], "day": day_text(entry.data["start"], here or UTC)}
 
 
 def _step_words(cfg: Any, words: str | None) -> str | None:
@@ -90,7 +95,7 @@ def followed(view: Any, cfg: Any, words: str | None, today: str) -> Any | None:
     sync"), or None when they name none or several. A rule on the words (whole title, in order), so a to-do made from
     notes is tied to the step it follows when it is made, not found out when that step is called off."""
     named = _step_words(cfg, words)
-    return named_entry(view.list("event"), named, today) if named else None
+    return named_entry(view.list("event"), named, today, zone_of(cfg)) if named else None
 
 
 def follows(cfg: Any, words: str | None, entry: Any) -> bool:
@@ -99,12 +104,12 @@ def follows(cfg: Any, words: str | None, entry: Any) -> bool:
     return bool(named) and names_title(named, str(entry.data["title"]))
 
 
-def tied_fields(entry: Any) -> dict[str, Any]:
+def tied_fields(entry: Any, here: Any = None) -> dict[str, Any]:
     """What tying a to-do to an entry sets, for the person's tie and the assistant's `action.tie` alike: the entry it is
     due at, its day as the to-do's date (no longer a date to check) and no proposal left."""
     return {
         "due_event": entry.id,
-        "due": str(entry.data["start"])[:10],
+        "due": day_text(entry.data["start"], here or UTC),
         "due_check": False,
         "proposed_event": None,
     }
@@ -115,13 +120,13 @@ def tie(store: Any, cfg: Any, action_id: str) -> str:
     entry's. Returns the changeset's id, which Undo takes. Raises `StoreError` saying why when nothing is proposed."""
     view = store.read()
     action = view.get("action", action_id)
-    entry = pending(view, action) if action is not None else None
+    entry = pending(view, action, None, zone_of(cfg)) if action is not None else None
     if action is None or entry is None:
         raise StoreError("There is no calendar entry proposed for that to-do now.")
     op = {
         "op": "record.edit",
         "record": {"kind": "action", "id": action_id},
-        "fields": tied_fields(entry),
+        "fields": tied_fields(entry, zone_of(cfg)),
         "read_version": action.version,
     }
     return apply_as_person(store, cfg, [op], f"Tied a to-do to {entry.data['title']}", note=str(action.data["text"]))

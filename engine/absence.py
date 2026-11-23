@@ -20,11 +20,12 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from engine.connectors import EventPerson, SourceItem, moment
 from engine.language_words import language_words
+from engine.local_day import day_of, zone_of
 from engine.sides import word as wording
 from engine.storage import StoreError, WriteContext
 
@@ -64,15 +65,16 @@ class Report:
 # ---- reading the entries ------------------------------------------------------------------------------------------
 
 
-def _days(details: Any, start: str, end: str | None) -> tuple[date, date | None] | None:
+def _days(details: Any, start: str, end: str | None, here: Any = UTC) -> tuple[date, date | None] | None:
     """The first day and the last day (None for one day) of a date of an entry; None when the times can't be read."""
     try:
         if details.all_day:
             first = moment(start, all_day=True)
             last = moment(end, all_day=True) - timedelta(days=1) if end else first
         else:
-            begins = moment(start)
-            ends = moment(end) if end else begins
+            # The days are the person's own: both ends go into their zone before the day or the midnight is read.
+            begins = moment(start).astimezone(here)
+            ends = moment(end).astimezone(here) if end else begins
             first, last = begins.date(), ends.date()
             if end and ends > begins and ends.time() == datetime.min.time().replace(tzinfo=None):
                 last = last - timedelta(days=1)  # an entry that ends at midnight does not take the next day
@@ -83,7 +85,7 @@ def _days(details: Any, start: str, end: str | None) -> tuple[date, date | None]
         return None
 
 
-def entries_of(items: list[SourceItem]) -> list[Entry]:
+def entries_of(items: list[SourceItem], here: Any = UTC) -> list[Entry]:
     """The entries a read lists, one for each date of a repeating one."""
     found: list[Entry] = []
     for item in items:
@@ -93,7 +95,7 @@ def entries_of(items: list[SourceItem]) -> list[Entry]:
         dates = list(details.occurrences) if details.repeats and details.occurrences else [None]
         for each in dates:
             start, end = (each.start, each.end) if each is not None else (details.start, details.end)
-            days = _days(details, start, end)
+            days = _days(details, start, end, here)
             if days is None:
                 continue
             key = f"{item.key}#{each.was or each.start}" if each is not None else item.key
@@ -264,12 +266,12 @@ def apply(tx: Any, op: Any, w: WriteContext) -> bool:
 # ---- the read -----------------------------------------------------------------------------------------------------
 
 
-def window_of(settings: Any, now: datetime) -> tuple[date, date] | None:
+def window_of(settings: Any, now: datetime, here: Any = UTC) -> tuple[date, date] | None:
     """The days a read of this calendar looks at, when its settings say (`days_back`, `days_ahead`); None otherwise."""
     back, ahead = getattr(settings, "days_back", None), getattr(settings, "days_ahead", None)
     if not isinstance(back, int) or not isinstance(ahead, int):
         return None
-    today = now.date()
+    today = now.astimezone(here).date()
     return today - timedelta(days=back), today + timedelta(days=ahead)
 
 
@@ -290,9 +292,10 @@ def read(
     view = store.read()
     people = People(store, cfg)
     away_words = list(language_words(cfg.language, "away_words"))
-    entries = entries_of(poll.items)
+    here = zone_of(cfg)
+    entries = entries_of(poll.items, here)
     held = held_periods(view, source.id)
-    window = window_of(settings, now)
+    window = window_of(settings, now, here)
     asked = _asked(view, source.id)
     pm = cfg.workspace.user.person
     ops: list[dict[str, Any]] = []
@@ -404,8 +407,8 @@ def _gone_for_sure(period: dict[str, Any], key: str, poll: Any, window: tuple[da
         return True
     if window is None:
         return False
-    first = date.fromisoformat(str(period["start"])[:10])
-    last = date.fromisoformat(str(period.get("end") or period["start"])[:10])
+    first = day_of(period["start"], UTC)
+    last = day_of(period.get("end") or period["start"], UTC)
     return window[0] <= first and last <= window[1]
 
 

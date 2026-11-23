@@ -11,11 +11,12 @@ actions. Reads only.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from engine.firm_due import firm_due
+from engine.local_day import maybe_day
 from engine.names import People
 from engine.records import blocker_kind
 
@@ -45,20 +46,7 @@ class Blocker:
 def _day(value: Any, here: ZoneInfo | None) -> date | None:
     if value is None:
         return None
-    if isinstance(value, datetime):
-        moment = value
-    else:
-        text = str(value)
-        try:
-            moment = datetime.fromisoformat(text)
-        except ValueError:
-            try:
-                return date.fromisoformat(text[:10])
-            except ValueError:
-                return None
-    if here is not None and moment.tzinfo is not None:
-        moment = moment.astimezone(here)
-    return moment.date()
+    return maybe_day(value, here or UTC)
 
 
 def answered_on(view: Any, question_id: str, here: ZoneInfo | None = None) -> date | None:

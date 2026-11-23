@@ -344,11 +344,11 @@ def test_triage_rules_close_changes_with_a_reason(tmp_path):
     ws, cfg, store = make(tmp_path, [fake(items)], triage=RULES)
     try:
         assert len(refresh(ws, store, cfg, "s", NOW).new) == 1
-        cfg, store, spaced = reread(tmp_path, ws, store, [{**items[0], "text": "The budget  is ten\nLunch at noon."}])
+        cfg, store, spaced = reread(tmp_path, ws, store, [{**items[0], "text": "the budget  is ten.\nLunch at noon."}])
         closed = store.read().get("request", spaced.changed[0])
         assert closed.data["state"] == "done" and closed.data["auto_closed"]["rule"] == "Spacing"
         assert closed.data["waiting"].startswith("Closed by Spacing: Closed: only spacing")
-        cfg, store, other = reread(tmp_path, ws, store, [{**items[0], "text": "The budget  is ten\nLunch at one."}])
+        cfg, store, other = reread(tmp_path, ws, store, [{**items[0], "text": "the budget  is ten.\nLunch at one."}])
         assert store.read().get("request", other.changed[0]).data["auto_closed"]["rule"] == "Budget only"
         cfg, store, real = reread(tmp_path, ws, store, [{**items[0], "text": "The budget is twelve.\nLunch at one."}])
         assert store.read().get("request", real.changed[0]).data["state"] == "queued"
@@ -486,7 +486,7 @@ def test_a_closed_change_can_be_taken_a_closer_look_at(tmp_path):
     items = [{"key": "a", "title": "Plan", "text": "One budget."}]
     ws, cfg, store = make(tmp_path, [fake(items)], triage=RULES)
     refresh(ws, store, cfg, "s", NOW)
-    cfg, store, spaced = reread(tmp_path, ws, store, [{**items[0], "text": "One  budget"}])
+    cfg, store, spaced = reread(tmp_path, ws, store, [{**items[0], "text": "One  budget."}])
     store.close()
     c = TestClient(create_app(ws, cfg, "t", start_worker=False))
     c.headers["Authorization"] = "Bearer t"

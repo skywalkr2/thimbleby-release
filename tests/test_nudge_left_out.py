@@ -14,6 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.app import create_app
+from engine import days_off
 from engine.followups import mark_followed_up, mark_sent, sections
 from engine.storage import Store, WriteContext
 from engine.today_queue import queue
@@ -27,6 +28,13 @@ _PM = WriteContext(actor="pm", trust="trusted", op="test")
 
 def editor_id() -> str:
     return next(p for p in fixture_records(DEMO_B, "person") if p.get("role") == "Editor")["id"]
+
+
+def working(store, cfg, moment):
+    """`moment`, or the same time on the editor's next working day when they are off that day (a holiday of their
+    team's): no chase falls due while its person is off."""
+    back = days_off.back_on(store.read(), cfg, editor_id(), moment.date())
+    return moment if back is None else moment + timedelta(days=(back - moment.date()).days)
 
 
 @pytest.fixture
@@ -172,7 +180,7 @@ def chased_twice(env):
     for _ in range(2):
         nudge = section(store, cfg, day).nudge
         mark_followed_up(store, cfg, editor_id(), nudge.question_ids, nudge.action_ids, sent_text=nudge.text, now=day)
-        day = day + timedelta(days=rule.question_after_days)
+        day = working(store, cfg, day + timedelta(days=rule.question_after_days))
     return day
 
 
@@ -203,7 +211,7 @@ def test_one_follow_up_is_not_yet_an_escalation(env):
     sent_a_while_ago(env, rule.question_after_days + 2)
     nudge = section(store, cfg, NOW).nudge
     mark_followed_up(store, cfg, editor_id(), nudge.question_ids, nudge.action_ids, sent_text=nudge.text, now=NOW)
-    later = NOW + timedelta(days=rule.question_after_days)
+    later = working(store, cfg, NOW + timedelta(days=rule.question_after_days))
     assert escalations(ws, store, cfg, later) == []
     assert [n for n in queue(ws, store, cfg, later) if n.kind == "nudge"], "it is the second follow-up still"
 

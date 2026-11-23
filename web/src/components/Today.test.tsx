@@ -12,7 +12,7 @@ import { takeFilters } from "../lib/open-items";
 import { showNewLines } from "../lib/queue-hold";
 import { RestartProvider } from "../lib/restart";
 import { forgetLine } from "../lib/today";
-import { fakeApi, renderApp, setupStep, setupView, statusFixture, type Routes, optionsOf } from "../test-utils";
+import { fakeApi, Refuse, renderApp, setupStep, setupView, statusFixture, type Routes, optionsOf } from "../test-utils";
 import { Today } from "./Today";
 
 type Line = S["QueueLineView"];
@@ -122,6 +122,7 @@ function show(lines: Line[], extra: Routes = {}, over: { wide?: boolean; unnamed
     "GET changes": () => [change("REQ-1")],
     "GET followups": () => [pm([decisionQuestion]), robin],
     "GET plugin-today": () => [],
+    "GET acts": () => ({ acts: [], next: null }),
     "GET stages/records": () => [],
     "GET stages/ready": () => [],
     "GET stages/requests": () => [],
@@ -202,6 +203,26 @@ test("an empty queue says so in one line", async () => {
   show([]);
   expect(await screen.findByText("Nothing needs you right now.")).toBeInTheDocument();
   expect(screen.getByText(/Nothing needs you$/)).toBeInTheDocument();
+});
+
+test("a failed read of what waits to go out is a line of its own, and Today never says nothing needs the person (S-0687)", async () => {
+  show([], { "GET acts": () => new Refuse(500, "") });
+  expect(await screen.findByText("Couldn't check what's waiting to go out: the app didn't answer")).toBeInTheDocument();
+  expect(screen.queryByText("Nothing needs you right now.")).toBeNull();
+  expect(screen.queryByText(/Nothing needs you/)).toBeNull();
+  expect(document.querySelector("[data-all-clear]")).toBeNull();
+});
+
+test("each other read Today depends on that fails is named, and the empty card shows only when every read answered (S-0687)", async () => {
+  show([], {
+    "GET plugin-today": () => new Refuse(500, ""),
+    "GET stages/requests": () => new Refuse(500, ""),
+    "GET watch": () => new Refuse(500, ""),
+  });
+  expect(await screen.findByText(/Couldn't check what your add-ons need from you: the app didn't answer/)).toBeInTheDocument();
+  expect(screen.getByText(/Couldn't check the stages that wait for you/)).toBeInTheDocument();
+  expect(screen.getByText(/Couldn't check your mail and calendar sources/)).toBeInTheDocument();
+  expect(screen.queryByText(/Nothing needs you/)).toBeNull();
 });
 
 test("with no AI service an empty Today says to connect one, and its button goes on with setup", async () => {

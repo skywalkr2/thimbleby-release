@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
+from engine.local_day import day_of, zone_of
+
 #: A fact's own words count as stated in a draft only when they run at least this long; a shorter one is too common.
 MIN_WORDS = 4
 
@@ -52,7 +54,7 @@ def stale(view: Any, cfg: Any, fact_ids: list[str], today: date) -> list[Stale]:
         if stored is None or not stored.data.get("as_of"):
             continue
         as_of = stored.data["as_of"]
-        as_of = as_of if isinstance(as_of, date) else date.fromisoformat(str(as_of)[:10])
+        as_of = as_of if isinstance(as_of, date) else day_of(as_of, zone_of(cfg))
         limit = limit_days(cfg, stored.data)
         days = (today - as_of).days
         if limit and days > limit:

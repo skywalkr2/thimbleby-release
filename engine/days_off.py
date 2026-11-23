@@ -24,6 +24,9 @@ CLOSED = "closed"
 AWAY = "away"
 NOT_WORKED = "not a working day for the team"
 
+#: How far ahead `back_on` looks for the day a person is back.
+_SEARCH_DAYS = 400
+
 #: Small words a holiday's name keeps in lower case when it is written for a reader.
 _SMALL = frozenset({"of", "the", "and", "a", "in", "on"})
 
@@ -148,6 +151,46 @@ def off_on(view: Any, cfg: Any, person_id: str, day: date, name: str) -> str | N
     if own:
         parts.append(f"{name} is away on {when} ({', '.join(dict.fromkeys(own))})")
     return "; ".join(parts)
+
+
+def back_on(view: Any, cfg: Any, person_id: str, day: date) -> date | None:
+    """The first working day after a day a person is off (away, or on a holiday or closure of their team's), or None
+    when they work that day. A weekly rest day of the workspace's week is no working day. A person away with no end in
+    sight is back the day after the last day searched."""
+    if not kinds(view, cfg, person_id, day, day):
+        return None
+    week = _workspace_week(cfg)
+    end = day + timedelta(days=_SEARCH_DAYS)
+    off = {d for d, _ in non_working(view, cfg, person_id, day, end)}
+    for n in range(1, _SEARCH_DAYS + 1):
+        later = day + timedelta(days=n)
+        if later not in off and later.weekday() in week:
+            return later
+    return end + timedelta(days=1)
+
+
+def week_days_off(view: Any, cfg: Any, person_id: str | None, start: date, end: date) -> list[tuple[date, str]]:
+    """The days from `start` to `end` that are days off on the workspace's working week: the workspace's holidays and
+    the holidays and closures of the person's teams (their own away periods are not listed: the week ahead says them
+    as routines paused). Weekly rest days are left out. Each day once, in day order, with its reasons."""
+    if end < start:
+        return []
+    week = _workspace_week(cfg)
+    found: dict[date, list[str]] = {}
+    pairs = list(holidays_off(cfg, None, start, end))
+    if person_id is not None:
+        pairs += [(d, reason) for d, whose, reason in kinds(view, cfg, person_id, start, end) if whose == "team"]
+    for day, reason in sorted(pairs):
+        if day.weekday() in week and reason not in found.setdefault(day, []):
+            found[day].append(reason)
+    return [(day, ", ".join(found[day])) for day in sorted(found)]
+
+
+def working_days_between(cfg: Any, start: date, end: date, off: Iterable[date]) -> int:
+    """How many days from `start` to `end` (both included) fall on the workspace's working week and are not in `off`."""
+    week = _workspace_week(cfg)
+    skip = set(off)
+    return sum(1 for d in _days(start, end) if d.weekday() in week and d not in skip)
 
 
 def _runs(days: list[tuple[date, str]]) -> list[tuple[date, date, str]]:

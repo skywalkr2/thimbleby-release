@@ -40,6 +40,7 @@ knowledge:
   follow_on_max_tied: 20
   correction_reach_items: 20   # the most other open items a correction's request shows after the corrected item
   follow_on_match: 0.67
+  question_body_chars: 400     # the most characters of an open question's detail the assistant is shown beside its title
   check_on_switch: true
   person_look: true            # the weekly look at who you deal with (mail headers' counts and repeating calendar entries)
   person_look_every_days: 7    # days between one look and the next

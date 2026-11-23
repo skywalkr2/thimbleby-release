@@ -754,7 +754,7 @@ Something to look at on the review (an image the plugin rendered, or plain text)
 
 Previews may be: `image/gif`, `image/jpeg`, `image/png`, `image/webp`, `text/plain`.
 
-Core ops an action may propose: `act.draft`, `action.close`, `action.drop`, `action.hold`, `action.move`, `action.part`, `action.repeat`, `action.reply`, `action.unhold`, `agenda.add`, `answer`, `list.add`, `list.merge`, `list.rename`, `list.retire`, `mail.restore`, `note`, `person.add`, `project.add`, `question.add`, `question.drop`, `question.mark_sent`, `question.move`, `question.update`, `record.delete`, `record.edit`, `record.log`, `record.set`, `report.draft`, `rule.add`, `rule.retire`, `setting.propose`, `source.widen`, `stage.move`, `text.edit`, `text.propose`, `view.add`, `view.remove`, `view.set`, `work.draft`.
+Core ops an action may propose: `act.draft`, `action.close`, `action.drop`, `action.hold`, `action.move`, `action.part`, `action.repeat`, `action.reply`, `action.unhold`, `agenda.add`, `answer`, `list.add`, `list.merge`, `list.rename`, `list.retire`, `mail.restore`, `note`, `person.add`, `project.add`, `question.add`, `question.ask_again`, `question.drop`, `question.mark_sent`, `question.move`, `question.update`, `record.delete`, `record.edit`, `record.log`, `record.set`, `report.draft`, `rule.add`, `rule.retire`, `setting.propose`, `source.widen`, `stage.move`, `text.edit`, `text.propose`, `view.add`, `view.remove`, `view.set`, `work.draft`.
 
 ## AI task kinds
 
@@ -1689,6 +1689,8 @@ A question for a person; a decision is a question to the person. Added by `quest
 | `raised_by` | dict[str, str] \| None | `None` | For a question an add-on's job or event handler filed: `plugin` is the add-on and `subject` a key of its title and words. The same question from the same add-on is never filed twice, whatever became of the first one (open, sent, answered or dropped). |
 | `matters_for` | str \| None | `None` | Which of the person's decisions, designs or dated items depends on the answer, by id or in words. A question to anyone but the person says it. |
 | `dropped_reason` | str \| None | `None` | Why the person dropped it, when they did. |
+| `key` | str \| None | `None` | Whom it is for and its subject, as one key. A question with the key of one that was answered or dropped is refused for good, with the earlier answer quoted. |
+| `would_change` | dict[str, Any] \| None | `None` | What the answer should change (a field of a record, a setting or the owner of an item), as the question named it. The run that handles the answer is given it. |
 | `asker` | str \| None | `None` | The id of the person who asked it, when the input says who asked (a question someone put to the person). Empty for a question the assistant or the person made up, and for a name that isn't one known person: it is never guessed. The asker's page lists it as a question they asked. |
 
 ### `source` (SRC-n)
@@ -1772,6 +1774,7 @@ A unit of work for the assistant. The engine creates it when something is handed
 | `sort_pending` | bool | `False` | For a watched mail message the assistant's sorting couldn't be run for when it was handed in: it waits for that sorting before any other run, and the sorting clears this when it answers. |
 | `mail_kind` | str \| None | `None` | For a watched mail message the assistant's sorting answered for: the kind it gave (bill, order, delivery or none). Empty when no sorting ran for it. A kind is tracked, never set aside, and files the mail under the Personal project; none means the sorting looked and found no kind, so the word lists don't stand in. |
 | `folded_into` | str \| None | `None` | The newer request this one's change was folded into, so they are read in order, once. |
+| `held_answer` | dict[str, Any] \| None | `None` | The assistant's answer as it came back, kept from the moment it is accepted until its change is applied and the request marked done in one step: {changeset, problems, run, searched, fallback}. A stop in between applies this answer on the next start instead of running the request again. |
 | `may_answer` | list[str] | `[]` | For a message the person sent: the open replies owed (action ids) it may answer, found by the rules from its conversation and recipient. The assistant reads it with them and decides whether it answers each one; the rules close nothing. |
 | `intake` | str \| None | `None` | The id of the watched source this request was taken in from when the source was newly added (or looked at further back): its results are gathered into one line on Today and one list, not one line each. |
 | `intake_older` | bool | `False` | For a request taken in from a new source: it came from the read of older mail (the full read the person chose), not from the source's first window. The first reading does not wait for these. |
@@ -2266,7 +2269,7 @@ One run of a plugin's scheduled job. The engine writes it after each run; nothin
 | `job` | str | required | The job's name. |
 | `started_at` | datetime | required | When the run started. |
 | `seconds` | float | `0.0` | How long it took. |
-| `outcome` | Literal['ok', 'failed'] | required | ok: it finished. failed: it raised; repeated failures turn the plugin off. |
+| `outcome` | Literal['ok', 'failed', 'offline'] | required | ok: it finished. failed: it raised; repeated failures turn the plugin off. offline: it found no network connection; that is never counted, and it runs again on its schedule. |
 | `error` | str \| None | `None` | What went wrong, for a failed run. |
 | `notes` | list[str] | `[]` | What the run did that the person may want to know: a question it filed that had already been asked, and so was not filed again. |
 
@@ -2545,6 +2548,7 @@ One read of a watched source and what came of it. The watcher writes it; only a 
 | `state` | dict[str, Any] | `{}` | What the connector keeps between reads. |
 | `generated_at` | datetime \| None | `None` | When the source's own data was made, as the source said on this read; none when it says none. |
 | `old_data` | bool | `False` | The source's own data was older than the source's `data_fresh_hours` when this read made it: the read is not "no changes", and the read after it that finds fresh data files what was missed together. |
+| `older_copy` | bool | `False` | The source served a copy made before the newest one it has served: nothing was compared, stored or filed, and the newest copy's state and time were kept. |
 | `looked_back_to` | date \| None | `None` | For a source's first read that took it in quietly: the day before which its mail was not looked at. A look further back moves it earlier; none for a source with no mail or another kind of first read. |
 | `full_read` | int \| None | `None` | For a source's first read that took it in quietly: the answer to how far back to read its mail in full, in days back from the day it was answered; 0 for "not now". None while the question is still open. |
 | `older_read` | dict[str, Any] \| None | `None` | For a source's first read that took it in quietly: where a read of older mail stopped when the service slowed it down or failed partway, so it carries on from there. `since` and `before` are the days still to read, `left` how many messages the read may still take, `kind` why it waits (throttled, outage or offline after a stop; queued before its first page, reading between slices), `stopped_at` when it stopped, `at` when it continues (none once it gave up), `tries` the stops in a row without progress, `gave_up` that it ran out of tries and waits for the person, `taken` the items taken in so far, `about` about how many there will be when the service said, `reach` the days the person chose for a full read (none for a look further back), and `go` that the person's choice was also the go for what the read takes in. None when no read is waiting to continue. |
@@ -3613,6 +3617,15 @@ A question for a person, written for its reader. A decision is a question to who
 | `sides[].date` | date | required | The day it was said or written, as the source gives it (YYYY-MM-DD). |
 | `sides[].quote` | str | required | The exact words of this side, copied from that source. A quote that isn't in the source is refused. |
 | `term` | str \| None | `None` | A question to the user asking what a word or acronym means here: the word, copied from the "unknown_words" block of the request. The title and text are then written for you and the question goes to the user. Leave it out for every other question. |
+
+### `question.ask_again`
+
+Open a dropped question again, so it is asked as it was. Only the person uses it (the assistant never asks again what the person dropped); Undo drops it again.
+
+| Field | Type | Default | What it is |
+|---|---|---|---|
+| `group` | str \| None | `None` | Ops that must be undone together share a group name. |
+| `id` | str | required | The id of the dropped question. |
 
 ### `question.done`
 

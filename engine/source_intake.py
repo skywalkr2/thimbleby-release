@@ -25,6 +25,7 @@ from typing import Any
 
 from engine import catch_up, watch
 from engine.connectors import OlderCount
+from engine.local_day import day_of
 from engine.net import AnswerTooLarge
 from engine.storage import StoreError, WriteContext
 
@@ -388,7 +389,7 @@ def intake_run(view: Any, source_id: str) -> Any | None:
 def back_to_of(view: Any, source_id: str) -> date | None:
     """The day before which a source's mail wasn't looked at, or None (nothing was taken in, or no mail)."""
     run = intake_run(view, source_id)
-    return date.fromisoformat(str(run.data["looked_back_to"])[:10]) if run else None
+    return day_of(run.data["looked_back_to"], UTC) if run else None
 
 
 def days_taken(view: Any, source_id: str) -> int | None:
@@ -399,7 +400,7 @@ def days_taken(view: Any, source_id: str) -> int | None:
         return None
     # The look-back date is a UTC day (`looked_back_to`), so the read is counted in UTC days too.
     read = datetime.fromisoformat(str(run.data["started_at"])).date()
-    return max(1, (read - date.fromisoformat(str(run.data["looked_back_to"])[:10])).days)
+    return max(1, (read - day_of(run.data["looked_back_to"], UTC)).days)
 
 
 # ---- looking further back -----------------------------------------------------------------------------------

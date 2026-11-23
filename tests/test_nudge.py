@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from engine import days_off
 from engine.followups import FollowUpError, mark_followed_up, mark_sent, sections, unmark_followed_up
 from engine.storage import Store, WriteContext
 from engine.workspace import init_workspace
@@ -34,6 +35,13 @@ def editor():
 
 def editor_id():
     return editor()["id"]
+
+
+def working(store, cfg, moment):
+    """`moment`, or the same time on the editor's next working day when they are off that day (a holiday of their
+    team's): no chase falls due while its person is off."""
+    back = days_off.back_on(store.read(), cfg, editor_id(), moment.date())
+    return moment if back is None else moment + timedelta(days=(back - moment.date()).days)
 
 
 def section(store, cfg, on: datetime):
@@ -119,7 +127,7 @@ def test_a_second_nudge_is_shorter_and_asks_who_else_to_ask(env):
     sent_a_while_ago(env, rule.question_after_days + 2)
     first = section(store, cfg, NOW).nudge
     mark_followed_up(store, cfg, editor_id(), first.question_ids, first.action_ids, sent_text=first.text, now=NOW)
-    later = NOW + timedelta(days=rule.question_after_days)
+    later = working(store, cfg, NOW + timedelta(days=rule.question_after_days))
     second = section(store, cfg, later).nudge
     assert second is not None and second.round == 2
     words = cfg.language.messages

@@ -203,6 +203,7 @@ EDITED_FIELDS = {
     "fact": ("key", "value", "as_of", "project"),
     "event": ("title", "start", "end", "project"),
     "note": ("project",),
+    "act": ("parts",),
 }
 
 

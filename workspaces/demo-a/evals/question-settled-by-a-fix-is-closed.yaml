@@ -1,0 +1,35 @@
+id: question-settled-by-a-fix-is-closed
+title: An input that says the problem a question asks about is fixed closes the question, citing the input
+skills: [close-right-item]
+received: '2026-10-14'
+given_file: busy-portfolio.yaml
+given:
+- kind: question
+  id: Q-90
+  fields:
+    projects: [PRJ-4]
+    title: T-1 shows dates a day early. Do the other flows need the same workaround?
+    text: Dates on the depot sheet arrive a day early (ticket T-1). Tell me whether the other flows need the same workaround.
+    to: PER-3
+pasted: |-
+  From: Marguerite Osei
+
+  T-1 is fixed, in test. Ready to re-test on your side.
+expect:
+- op: question.done
+  id: Q-90
+forbid:
+- op: question.done
+  id: Q-5
+- op: question.add
+allow:
+- action.add
+- fact
+stub_answer:
+  summary: T-1 is fixed, so the question about its workaround is moot.
+  ops:
+  - op: question.done
+    id: Q-90
+    answer: T-1 is fixed in test, so the other flows need no workaround.
+    evidence:
+      quote: T-1 is fixed, in test

@@ -16,6 +16,7 @@ from typing import Any
 
 from engine import called_off, entry_rules
 from engine.connectors import EventDetails, SourceItem, moment
+from engine.local_day import day_text, zone_of
 from engine.records import canonical_time, entry_problem
 from engine.storage import StoreError, WriteContext
 
@@ -40,9 +41,9 @@ def keep(store: Any, cfg: Any, source: Any, items: list[SourceItem], now: dateti
         with store.transaction() as tx:
             have = {e.data["key"]: e for e in tx.find("event", {"source": source.id}) if e.data.get("key")}
             for item in wanted:
-                made += _keep_item(tx, source, item, have, people, mine, names, now)
+                made += _keep_item(tx, source, item, have, people, mine, names, now, cfg)
             for entry_id in dict.fromkeys(made):
-                entry_rules.link(tx, entry_id, _KEEP, cfg.workspace.user.person)
+                entry_rules.link(tx, entry_id, _KEEP, cfg.workspace.user.person, zone_of(cfg))
     except StoreError as err:
         log.warning("The calendar entries of %s couldn't be kept: %s", source.id, err)
         return []
@@ -86,6 +87,7 @@ def _keep_item(
     mine: set[str],
     names: set[str],
     now: datetime,
+    cfg: Any = None,
 ) -> list[str]:
     details = item.event
     series_item = bool(details.repeats and details.occurrences)
@@ -133,13 +135,13 @@ def _keep_item(
                 continue  # called off before it was ever kept: nothing to take back
             made.append(tx.create("event", {**wanted, "source": source.id, "key": key, "trust": "untrusted"}, _KEEP).id)
             continue
-        made += _update(tx, current, wanted, source, now)
+        made += _update(tx, current, wanted, source, now, cfg)
     if series_item and seen:
-        made += _skipped(tx, existing, seen, source, now)
+        made += _skipped(tx, existing, seen, source, now, cfg)
     return made
 
 
-def _update(tx: Any, current: Any, wanted: dict[str, Any], source: Any, now: datetime) -> list[str]:
+def _update(tx: Any, current: Any, wanted: dict[str, Any], source: Any, now: datetime, cfg: Any = None) -> list[str]:
     changes = {k: v for k, v in wanted.items() if current.data.get(k) != v}
     if not changes:
         return []
@@ -147,15 +149,15 @@ def _update(tx: Any, current: Any, wanted: dict[str, Any], source: Any, now: dat
 
     tx.update("event", current.id, changes, _KEEP, read_version=current.version)
     if "start" in changes:
-        follow_event(tx, current.id, _KEEP)
+        follow_event(tx, current.id, _KEEP, cfg)
     if changes.keys() & {"cancelled", "start"}:
-        called_off.sync(tx, current.id, _KEEP)
+        called_off.sync(tx, current.id, _KEEP, cfg)
     if changes.get("cancelled") is True:
-        _tell(tx, current.id, {**current.data, **changes}, source, now)
+        _tell(tx, current.id, {**current.data, **changes}, source, now, cfg)
     return [current.id]
 
 
-def _skipped(tx: Any, existing: list[Any], seen: set[str], source: Any, now: datetime) -> list[str]:
+def _skipped(tx: Any, existing: list[Any], seen: set[str], source: Any, now: datetime, cfg: Any = None) -> list[str]:
     """The dates the series no longer lists between its first and last date now listed: skipped, so called off."""
     listed = [e for e in existing if e.data["key"] in seen]
     if not listed:
@@ -167,20 +169,27 @@ def _skipped(tx: Any, existing: list[Any], seen: set[str], source: Any, now: dat
         if entry.data["key"] in seen or entry.data.get("cancelled") or not low <= entry.data["start"] <= high:
             continue
         tx.update("event", entry.id, {"cancelled": True}, _KEEP, read_version=entry.version)
-        called_off.sync(tx, entry.id, _KEEP)
-        _tell(tx, entry.id, {**entry.data, "cancelled": True}, source, now)
+        called_off.sync(tx, entry.id, _KEEP, cfg)
+        _tell(tx, entry.id, {**entry.data, "cancelled": True}, source, now, cfg)
         made.append(entry.id)
     return made
 
 
-def _tell(tx: Any, entry_id: str, entry: dict[str, Any], source: Any, now: datetime) -> None:
+def _tell(tx: Any, entry_id: str, entry: dict[str, Any], source: Any, now: datetime, cfg: Any = None) -> None:
     """Say, once, on each open promise due at an entry that it was called off. Its date stays: the person decides."""
-    day = str(entry["start"])[:10]
+    here = zone_of(cfg)
+    day = day_text(entry["start"], here)
     text = f"{entry['title']} on {day} was called off"
     for action in tx.find("action", {"due_event": entry_id}):
         if action.data["status"] not in ("open", "held"):
             continue
-        heard = {"on": now.date().isoformat(), "text": text, "quote": None, "source": source.id, "delivered": False}
+        heard = {
+            "on": now.astimezone(here).date().isoformat(),
+            "text": text,
+            "quote": None,
+            "source": source.id,
+            "delivered": False,
+        }
         tx.update(
             "action", action.id, {"news": [*action.data.get("news", []), heard]}, _KEEP, read_version=action.version
         )

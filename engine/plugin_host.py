@@ -189,6 +189,13 @@ class PluginStatus:
 _IMPORTING = threading.RLock()
 
 
+def _is_offline(err: object) -> bool:
+    """Whether a failure is only that no network connection could be made (`ConnectorError` kind `offline`)."""
+    from engine.connectors import ConnectorError
+
+    return isinstance(err, ConnectorError) and err.kind == "offline"
+
+
 class PluginHost:
     def __init__(self, store: Any, cfg: Any, *, bundled: Path = BUNDLED):
         self.store, self.cfg = store, cfg
@@ -1543,8 +1550,13 @@ class PluginHost:
             outcome, error = "failed", str(err)
             self.disable(plugin, f"job {name} broke the plugin contract: {error}")
         except Exception as err:
-            outcome, error = "failed", str(err) or type(err).__name__
-            self.failed(plugin, f"job {name}", error)
+            if _is_offline(err):
+                # No network here is not the add-on's failure: nothing is counted; the job runs again on schedule.
+                outcome, error = "offline", str(err) or "no network connection"
+                log.info("Plugin %s: job %s found no network and will run again", plugin, name)
+            else:
+                outcome, error = "failed", str(err) or type(err).__name__
+                self.failed(plugin, f"job {name}", error)
         else:
             self.succeeded(plugin, f"job {name}")
         finally:
@@ -1570,6 +1582,8 @@ class PluginHost:
         """A contained failure of one call (Today lines, interface items, an event handler, a job): noted on the plugin
         where the person sees it, and the plugin is turned off once the same place has failed the configured number of
         times in a row."""
+        if _is_offline(err):
+            return  # no network is never counted toward turning a plugin off
         key = (plugin, where)
         count = self.failures.get(key, 0) + 1
         self.failures[key] = count

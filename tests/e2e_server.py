@@ -802,6 +802,25 @@ def main() -> None:
             }
         )
 
+    async def draft_crediting(_request):
+        """Draft a second message to the same person that credits the assistant by name, for the browser test of a send
+        that waits: Reword or "<name> is a person". Returns the assistant's name."""
+        from engine.applier import apply_as_person
+
+        if fake_channel is None:
+            return JSONResponse({"enabled": False})
+        _, drafted = fake_channel
+        name = cfg.workspace.assistant_name
+        person = next(p["id"] for p in fixture_records(DEMO_B, "person") if p["id"] != cfg.workspace.user.person)
+        op = {
+            "op": "act.draft",
+            "channel": "fake",
+            "target": {"kind": "message", "recipients": [{"person": person, "kind": "email"}]},
+            "parts": {"subject": "The new date", "body": f"According to {name}, the date moved to Tuesday."},
+        }
+        apply_as_person(store, cfg, [op], "Drafted a message that credits the assistant")
+        return JSONResponse({"enabled": True, "assistant": name, "person": drafted["name"]})
+
     async def acted(_request):
         """What the act journey's records are, what the stand-in channel was handed (each act with what it is about, who
         it goes to and what it carries) and what it was asked to take back."""
@@ -912,6 +931,7 @@ def main() -> None:
             Route("/__e2e/review-r3", with_review_r3),
             Route("/__e2e/review-r4", with_review_r4),
             Route("/__e2e/delivered", delivered),
+            Route("/__e2e/draft-crediting", draft_crediting, methods=["POST"]),
             Route("/__e2e/reports", reports, methods=["GET", "POST"]),
             Route("/__e2e/meetings", met),
             Route("/__e2e/acts", acted),

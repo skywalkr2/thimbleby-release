@@ -22,6 +22,23 @@ test.describe("QF1", () => {
     await expect(line.getByRole("textbox", { name: "Why isn't it needed?" })).toHaveCount(0);
   });
 
+  test("a dropped question is listed under Dropped on Follow-ups and Ask again opens it again", async ({ page }) => {
+    await openScreen(page, "today");
+    const line = page.locator('[data-queue-line="decision"]').first();
+    await line.getByRole("button", { name: "Answer", exact: true }).click();
+    await line.getByRole("button", { name: /^More actions for Cover finish/ }).click();
+    await page.getByRole("menuitem", { name: "Drop" }).click();
+    await line.getByRole("textbox", { name: "Why isn't it needed?" }).fill("Decided in the meeting.");
+    await line.getByRole("button", { name: "Drop it" }).click();
+    await openScreen(page, "work/followups");
+    await page.getByRole("group", { name: "Show" }).getByRole("button", { name: "Dropped" }).click();
+    const row = page.locator("[data-dropped-item]", { hasText: "Cover finish" });
+    await expect(row).toContainText("Decided in the meeting.");
+    await row.getByRole("button", { name: /^Ask again/ }).click();
+    await expect(row).toHaveCount(0);
+    await expect(page.getByText("Asked again.")).toBeVisible();
+  });
+
   test("Today's overdue line opens the overdue rows, and To-dos opened again later shows everything, soonest due first", async ({ page }) => {
     await openScreen(page, "today");
     const line = page.locator('[data-queue-line="overdue"]');

@@ -99,7 +99,7 @@ def test_a_rule_that_names_a_source_keeps_matching_when_the_source_is_relabeled(
         current = yaml.safe_load((ws.config_dir / "watch.yaml").read_text())
         current["sources"][0]["label"] = "A renamed board"
         (ws.config_dir / "watch.yaml").write_text(yaml.safe_dump(current))
-        cfg, store, spaced = reread(tmp_path, ws, store, [{**items[0], "text": "One  budget"}])
+        cfg, store, spaced = reread(tmp_path, ws, store, [{**items[0], "text": "One  budget."}])
         assert state_of(store, spaced.changed[0])["auto_closed"]["rule"] == "Spacing"
     finally:
         store.close()

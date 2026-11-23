@@ -515,6 +515,13 @@ class BackupSettings(ConfigModel):
         24, ge=1, description="How often a full backup is made.", json_schema_extra={"enabled_by": "automatic"}
     )
     keep: int = Field(14, ge=1, description="How many backups to keep in each target.")
+    shrink_percent: int = Field(
+        50,
+        ge=1,
+        le=99,
+        description="A new backup copy smaller than this percent of the one before it in the same place is flagged on "
+        "Today as much smaller than the last: something may have gone missing from it.",
+    )
     encrypt: str = Field(
         "",
         description=SecretHint(
@@ -829,14 +836,17 @@ class AgentSettings(ConfigModel):
         "is sent as the packet. Empty: everything is sent as the packet.",
     )
     home: Literal["shared", "fresh"] = Field(
-        "shared",
-        description="shared: the agent uses this user's home folder, where it may keep memory between runs. fresh: "
-        "each run gets an empty home folder with only home_files copied in, so nothing one run keeps reaches the next.",
+        "fresh",
+        description="fresh: each run gets a home folder of its own that holds only home_files, so the agent can't read "
+        "the rest of this user's home (the workspace's keys and database among it) and nothing one run keeps reaches "
+        "the next. shared: the agent uses this user's home folder, where it may read anything and keep memory between "
+        "runs.",
     )
     home_files: list[str] = Field(
         default_factory=list,
-        description="With a fresh home: the files or folders, relative to this user's home, the agent needs to stay "
-        "signed in (its credentials), copied into each run's home.",
+        description="With a fresh home: the folders or files, relative to this user's home, that hold the program's "
+        "sign-in. A folder is linked into each run's home, so a sign-in the program refreshes reaches the real "
+        "folder; a file is copied in and copied back when the run changed it.",
     )
     version_command: list[str] = Field(
         default_factory=list,
@@ -1672,6 +1682,14 @@ class KnowledgeSettings(ConfigModel):
         "the item corrected, so a rule the person states can reach every one it covers in the same change: those for "
         "the same person, project or source, newest first. 0 shows none.",
     )
+    question_body_chars: int = Field(
+        400,
+        ge=0,
+        le=5000,
+        description="The most characters of an open question's detail the assistant is shown beside its title, so an "
+        "input that settles the problem the question asks about closes it. Longer detail is cut and says so. 0 shows "
+        "only the title and the ticket or record keys the question names.",
+    )
     follow_on_match: float = Field(
         0.67,
         gt=0,
@@ -1895,6 +1913,7 @@ def _default_lints() -> dict[str, Severity]:
         "long-quote": "return",
         "fact-is-raw-run": "return",
         "singling-out": "return",
+        "message-without-subject": "return",
         "action-stands-alone": "return",
         "reasoning-in-title": "return",
         "question-is-statement": "return",
@@ -2220,9 +2239,15 @@ class MessageSettings(ConfigModel):
         "kind.",
     )
     withheld_name: str = Field(
-        "Held back: {where} names {name}. Take the name out before this goes to anyone.",
+        "Held back: {where} credits {name}, your assistant. Reword it, or say {name} is a person.",
         description="Why a message for someone else is not offered to copy: {where} says which part names the "
         "assistant and {name} is the name it holds.",
+    )
+    assistant_named_like_person: str = Field(
+        "{name} is also the name of someone in People, so a message that credits {name} will be taken to mean that "
+        "person and go out. Pick another name if the assistant should never be credited.",
+        description="The warning shown when the person names the assistant after someone in People: {name} is the "
+        "name. The name is kept all the same.",
     )
     mentioned_name: str = Field(
         "This mentions {name}, your assistant's name. Check it means someone else before this goes out.",

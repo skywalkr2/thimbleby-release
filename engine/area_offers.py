@@ -21,10 +21,11 @@ Nothing here reaches a service.
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from engine import areas, sides
+from engine.local_day import day_text, zone_of
 from engine.storage import WriteContext
 from engine.untrusted import neutralize
 
@@ -237,11 +238,11 @@ def finish(store: Any, request_id: str, changeset_id: str) -> None:
 # ---- the packet ------------------------------------------------------------------------------------------------------
 
 
-def _line(view: Any, item: areas.Candidate) -> str:
+def _line(view: Any, item: areas.Candidate, here: Any = None) -> str:
     bits = [f"[{item.id}] {_KIND_WORDS[item.kind]}", _one_line(item.text)]
     record = view.get(item.kind, item.id)
     if item.kind == "event" and record is not None:
-        bits.insert(1, str(record.data["start"])[:10])
+        bits.insert(1, day_text(record.data["start"], here or UTC))
         delivery = record.data.get("delivery")
         if delivery:
             kept = {
@@ -272,7 +273,7 @@ def build(ws: Any, store: Any, cfg: Any, req: Any, kind: Any, today: date) -> An
     found = [c for c in candidates(store, cfg) if c.id in wanted]
     if not found:
         raise PacketRefused("there is nothing left to read")
-    shown = neutralize("\n".join(_line(view, c) for c in found))
+    shown = neutralize("\n".join(_line(view, c, zone_of(cfg)) for c in found))
     have = sorted(
         {
             str(p.data["name"])

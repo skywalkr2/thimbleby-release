@@ -128,9 +128,8 @@ test.describe("Ask", () => {
     });
   }
 
-  test("Escape pressed the moment the pointer leaves a side-menu link's tooltip still closes the pane", async ({ page }) => {
-    // An open tooltip takes Escape for itself. The pointer leaving it is drawn a moment later on a slow computer, and an Escape
-    // in that moment must still reach the pane the cursor is in.
+  test("Escape pressed the moment the pointer comes back from a side-menu link still closes the pane", async ({ page }) => {
+    // An Escape sent as the pointer comes back from the side menu to the pane must reach the pane the cursor is in.
     await page.setViewportSize({ width: 1440, height: 900 });
     // The menu gains the entries the add-ons provide when their list is read (the entries below move down by one row). The pointer
     // must rest on a link that stays where it is, so the test starts once that read is in and drawn.
@@ -144,9 +143,10 @@ test.describe("Ask", () => {
     const link = page.getByRole("navigation", { name: "Views" }).getByRole("link", { name: /^People/ });
     await link.click();
     await expect(page.getByRole("heading", { level: 1, name: "People" })).toBeVisible();
-    // The pointer rests on another link of the menu until its tooltip opens.
+    // The pointer rests on another link of the menu. A menu link's own tooltip opens for the keyboard only (the pointer gets the
+    // browser's title), so nothing opens that could take the Escape below.
+    // (review-r2-sides.spec.ts holds that hovering a menu link opens none of the app's own.)
     await page.getByRole("navigation", { name: "Views" }).getByRole("link", { name: /^Projects/ }).hover();
-    await expect(page.getByRole("tooltip")).toBeVisible();
     // The pointer arrives at the field and Escape follows in the same moment (what a busy page does to the order of things: the key is
     // handled before the draw that the pointer leaving the link caused), so the two are sent in one step.
     await page.evaluate(() => {

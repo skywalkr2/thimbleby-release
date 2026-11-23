@@ -7,7 +7,8 @@
 import { narrowCameIn } from "../lib/came-in-window";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { api, type S } from "../lib/api";
+import { api, ApiError, type S } from "../lib/api";
+import { LoadFailed } from "../ui/LoadFailed";
 import { ActScope, useAct } from "../lib/act";
 import { clockTime, day, sinceDay, time, todayOn, wallTime, weekday } from "../lib/dates";
 import { backupAge } from "../lib/backup";
@@ -29,7 +30,7 @@ import { EVENT_PAGE, type View } from "../lib/views";
 import { useActToday } from "../lib/acts";
 import { mixesAreas } from "../lib/area-filter";
 import { PartBoundary } from "../ui/PartBoundary";
-import { GROUPS, inGroup, mixesProjects, recallLine, rememberLine, tuckedLines, useHeavyDay, useQueue, useSideBare, useTodayCount, type QueueLine } from "../lib/today";
+import { GROUPS, inGroup, mixesProjects, recallLine, rememberLine, tuckedLines, useHeavyDay, useQueue, useSideBare, useTodayCount, useTodayReadFailures, type QueueLine } from "../lib/today";
 import { useAccountToday } from "../lib/account-today";
 import { useWaiting } from "../lib/waiting";
 import { AccountTodayRows } from "./AccountToday";
@@ -127,6 +128,7 @@ export function TodayQueue(props: {
   const everything = useQueue();
   const count = useTodayCount(filter.picked);
   const total = useTodayCount();
+  const readFailures = useTodayReadFailures();
   const stage = useStageToday();
   const outgoing = useActToday();
   const staleReminders = staleLine(useReminderWhere().data, t) !== null;
@@ -469,6 +471,14 @@ export function TodayQueue(props: {
           <ListState query={queue} failed={t("queue.load_failed")} rows={5} above={<GroupLabel>{t("queue.group.decide")}</GroupLabel>}>
             {() => (
             <>
+              {/* A read Today depends on that failed is a line of its own with the reason: it is never counted as nothing. */}
+              {readFailures.map((failure) => (
+                <LoadFailed
+                  key={failure.key}
+                  message={t(failure.wording, { reason: failure.error instanceof ApiError && failure.error.detail ? failure.error.detail : t("queue.read_failed.no_answer") })}
+                  onRetry={failure.retry}
+                />
+              ))}
               {sideBare && <FilteredEmpty data-queue-empty="side" text={t("sides.empty.today", { side: filter.named })} others={(total ?? 0) - (count ?? 0) > 0 ? tn("sides.empty.today_others", (total ?? 0) - (count ?? 0)) : undefined} label={t("sides.empty.show_all")} onClear={() => filter.set("all")} />}
               {/* With a side picked and nothing on it, what still needs the person is not on any side, and says so under its own label. */}
               {sideBare && (shown.some((l) => l.group !== "setup") || accountsToday.accounts.length > 0) && <GroupLabel data-not-on-side="">{t("queue.not_on_any_side")}</GroupLabel>}
@@ -1435,8 +1445,12 @@ function QueueRow(props: {
       case "backup": {
         // The one place besides the header chip: Back up now runs it, and with no folder the button opens the step that picks one.
         const state = line.state;
+        // With more than one place, the line names the one that is behind.
+        const place = line.subject ?? "";
+        const at = (key: string, values: Record<string, string> = {}) => t(place ? `${key}_at` : key, { place, ...values });
+        const age = backupAge({ age_hours: line.age_hours ?? null }, t) ?? "";
         const words =
-          state === "unset" ? t("queue.backup.unset") : state === "failed" ? t("queue.backup.failed") : state === "overdue" ? t("queue.backup.overdue", { age: backupAge({ age_hours: line.age_hours ?? null }, t) ?? "" }) : t("queue.backup.never");
+          state === "unset" ? t("queue.backup.unset") : state === "failed" ? at("queue.backup.failed") : state === "overdue" ? at("queue.backup.overdue", { age }) : state === "smaller" ? at("queue.backup.smaller") : at("queue.backup.never");
         const run = () => void act(() => api.backup(), () => ({ message: t("toast.backup_ran") }), undefined, { key: line.key, touches: ["today", "status", "backups", "setup", "sync"] });
         return {
           // Never set up or never run is a gap in setup; once it ran and stopped, or fails, it is a risk.

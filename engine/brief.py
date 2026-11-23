@@ -7,14 +7,16 @@ repeat their logic. Every line is data: a kind and its values for the screen to 
 record or Today line it opens. No line reports status or progress.
 
 **The morning brief** summarises and never repeats Today. Its sections, in this order: *today* (counts that link to
-the lines Today already has: "2 things need you", "1 thing is late", "1 clash today"), *changed* overnight (what
-someone else did to the person's own things, and what changed in an invitation), *risk* (what Today has no line for:
-the person's own to-dos due today, the day's squeeze), and *yes* (a reminder offered, and what the attention rules
-saved for the brief). An empty section is left out and a quiet day is one line.
+the lines Today already has: "2 things need you", "1 thing is late", "1 clash today", and a day off in the next two
+working days), *changed* overnight (what someone else did to the person's own things, and what changed in an
+invitation), *risk* (what Today has no line for: the person's own to-dos due today, the day's squeeze), and *yes* (a
+reminder offered, and what the attention rules saved for the brief). An empty section is left out and a quiet day is
+one line.
 
-**The evening wrap-up** has *done* today (credited to whoever did it), *moved* (a date moved ahead today), *carried*
-(what is due today and still open) and *waiting* (what others owe the person, and the questions sent that nobody has
-answered). It is quiet when nothing moved, nothing is carried and nobody is waited on.
+**The evening wrap-up** has *tomorrow* (a day off tomorrow), *done* today (credited to whoever did it), *moved* (a
+date moved ahead today), *carried* (what is due today and still open) and *waiting* (what others owe the person, and
+the questions sent that nobody has answered). It is quiet when no day off is tomorrow, nothing moved, nothing is
+carried and nobody is waited on.
 
 **The Monday briefing** is the weekly form: the person's promises through the end of the week (weekend days
 included), what others promised them, the questions held to send, the answers to chase and the decisions waiting,
@@ -43,6 +45,7 @@ from engine.blocked import standing_hold
 from engine.config.schema import WEEKDAYS
 from engine.due_phrases import named_entry
 from engine.firm_due import firm_due
+from engine.local_day import day_of
 from engine.meeting_guests import window
 from engine.names import People
 from engine.records import entry_time
@@ -650,7 +653,7 @@ def _named_today(c: _Day, data: dict[str, Any]) -> Any | None:
             continue
         entries.append(entry)
     for phrase in (data.get("text"), data.get("due_words"), (data.get("evidence") or {}).get("quote")):
-        found = named_entry(entries, str(phrase), "") if phrase else None
+        found = named_entry(entries, str(phrase), "", c.here) if phrase else None
         if found is not None:
             return found
     return None
@@ -906,11 +909,47 @@ def _on_today_counts(c: _Day, risk: list[Line], yes: list[Line]) -> tuple[list[L
     return counts, keep[0], keep[1]
 
 
+#: How many working days ahead the morning brief looks for a day off.
+DAYS_OFF_AHEAD = 2
+
+
+def _days_off(c: _Day, working_days: int) -> list[Line]:
+    """The one line naming the days off that fall in the next `working_days` days of the workspace's working week
+    (the workspace's and the person's teams' holidays and closures; the full week's list is the Monday briefing's).
+    `subjects` holds the days, `state` is "tomorrow" when the first is tomorrow, and `text` the reason when there is
+    one day. None when there is no day off in that range."""
+    from engine import days_off
+    from engine.schedule import work_days
+
+    week = work_days(c.cfg)
+    last = c.today
+    found = 0
+    while found < working_days:
+        last += timedelta(days=1)
+        found += last.weekday() in week
+        if (last - c.today).days > 14:
+            break
+    off = days_off.week_days_off(c.view, c.cfg, c.pm, c.today + timedelta(days=1), last)
+    if not off:
+        return []
+    tomorrow = c.today + timedelta(days=1)
+    return [
+        Line(
+            "days_off",
+            "days_off",
+            text=off[0][1] if len(off) == 1 else None,
+            day=off[0][0].isoformat(),
+            state="tomorrow" if off[0][0] == tomorrow else "later",
+            subjects=[d.isoformat() for d, _ in off],
+        )
+    ]
+
+
 def _morning(c: _Day) -> Brief:
     rule = c.cfg.steward.brief
     counts, risk, yes = _on_today_counts(c, _risk(c), _yes(c))
     sections = [
-        _cap(counts + _standups(c), "today", rule),
+        _cap(_days_off(c, DAYS_OFF_AHEAD) + counts + _standups(c), "today", rule),
         _cap(_changed(c), "changed", rule),
         _cap(risk, "risk", rule),
         _cap(yes + _offers(c) + _digest(c), "yes", rule),
@@ -1005,7 +1044,7 @@ def _carried(c: _Day, moved: list[Line]) -> list[Line]:
 def _day_of(value: Any) -> date | None:
     """The day a stored date or moment names, or none when it names no day."""
     try:
-        return date.fromisoformat(str(value)[:10])
+        return day_of(value, UTC)
     except ValueError:
         return None
 
@@ -1061,14 +1100,19 @@ def _evening(c: _Day) -> Brief:
     rule = c.cfg.steward.brief
     moved, waiting = _moved(c), _waiting(c)
     carried = _carried(c, moved)
+    tomorrow = [line for line in _days_off(c, 1) if line.state == "tomorrow"]
     sections = [
+        _cap(tomorrow, "tomorrow", rule),
         _cap(_done(c), "done", rule),
         _cap(moved, "moved", rule),
         _cap(carried, "carried", rule),
         _cap(waiting, "waiting", rule),
     ]
     return Brief(
-        "evening", c.today, sections=[s for s in sections if s.lines], quiet=not moved and not carried and not waiting
+        "evening",
+        c.today,
+        sections=[s for s in sections if s.lines],
+        quiet=not tomorrow and not moved and not carried and not waiting,
     )
 
 

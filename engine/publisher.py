@@ -161,7 +161,7 @@ class Publisher:
         outgoing = acts.outgoing(view, act_id, data)
         if (why := acts.acting_problem(self.cfg, self.store.plugins, data)) is not None:
             raise StoreError(why)
-        outward.check_outgoing(view, self.cfg, acts.part_labels(view, self.cfg, data))
+        outward.check_outgoing(view, self.cfg, acts.part_labels(view, self.cfg, data), acts.recipient_names(view, data))
         from engine.names import People
 
         if (

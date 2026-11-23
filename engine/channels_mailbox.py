@@ -152,7 +152,10 @@ class MailboxChannel:
 
     def _compose(self, act: OutgoingAct, settings: MailboxSettings, key: str) -> EmailMessage:
         sender = self._sender(settings)
-        message = self._envelope(act, settings, key, sender, act.parts.get("subject") or "(no subject)")
+        subject = str(act.parts.get("subject") or "").strip()
+        if not subject:
+            raise _refused("the message has no subject, and one the person never saw is never added")
+        message = self._envelope(act, settings, key, sender, subject)
         body = act.parts.get("body") or ""
         if act.action in ("reply", "reply_all", "forward") and act.about and act.about[0].service_id:
             original = act.about[0]

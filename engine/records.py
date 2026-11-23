@@ -900,6 +900,16 @@ class Question(Record):
         "words. A question to anyone but the person says it.",
     )
     dropped_reason: str | None = Field(None, description="Why the person dropped it, when they did.")
+    key: str | None = Field(
+        None,
+        description="Whom it is for and its subject, as one key. A question with the key of one that was answered or "
+        "dropped is refused for good, with the earlier answer quoted.",
+    )
+    would_change: dict[str, Any] | None = Field(
+        None,
+        description="What the answer should change (a field of a record, a setting or the owner of an item), as the "
+        "question named it. The run that handles the answer is given it.",
+    )
     asker: Annotated[str | None, RefTo("person")] = Field(
         None,
         description="The id of the person who asked it, when the input says who asked (a question someone put to the "
@@ -1055,8 +1065,9 @@ class JobRun(Record):
     job: str = Field(description="The job's name.")
     started_at: datetime = Field(description="When the run started.")
     seconds: float = Field(0.0, description="How long it took.")
-    outcome: Literal["ok", "failed"] = Field(
-        description="ok: it finished. failed: it raised; repeated failures turn the plugin off."
+    outcome: Literal["ok", "failed", "offline"] = Field(
+        description="ok: it finished. failed: it raised; repeated failures turn the plugin off. offline: it found no "
+        "network connection; that is never counted, and it runs again on its schedule."
     )
     error: str | None = Field(None, description="What went wrong, for a failed run.")
     notes: list[str] = Field(
@@ -1309,6 +1320,11 @@ class WatchRun(Record):
         False,
         description="The source's own data was older than the source's `data_fresh_hours` when this read made it: "
         'the read is not "no changes", and the read after it that finds fresh data files what was missed together.',
+    )
+    older_copy: bool = Field(
+        False,
+        description="The source served a copy made before the newest one it has served: nothing was compared, stored "
+        "or filed, and the newest copy's state and time were kept.",
     )
     looked_back_to: date | None = Field(
         None,
@@ -1861,6 +1877,12 @@ class Request(Record):
     )
     folded_into: str | None = Field(
         None, description="The newer request this one's change was folded into, so they are read in order, once."
+    )
+    held_answer: dict[str, Any] | None = Field(
+        None,
+        description="The assistant's answer as it came back, kept from the moment it is accepted until its change is "
+        "applied and the request marked done in one step: {changeset, problems, run, searched, fallback}. A stop "
+        "in between applies this answer on the next start instead of running the request again.",
     )
     may_answer: list[str] = Field(
         default_factory=list,

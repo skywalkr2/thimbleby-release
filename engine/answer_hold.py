@@ -19,6 +19,7 @@ from typing import Any
 
 from engine.due_phrases import after_marker, date_phrases, load_holidays, named_entry, resolve
 from engine.language_words import language_words
+from engine.local_day import day_of, zone_of
 from engine.names import People
 from engine.storage import Store, StoreError
 from engine.today import zone
@@ -88,8 +89,8 @@ def read(view: Any, cfg: Any, text: str, today: date) -> Hold | None:
     # "after Thursday's meeting": the day of that meeting, as the entry itself when the words name one.
     meeting = after_marker(tail, language_words(settings, "due_hold_words"))
     if meeting:
-        entry = named_entry(view.list("event"), meeting, today.isoformat())
-        if entry is not None and (day := date.fromisoformat(str(entry.data["start"])[:10])) > today:
+        entry = named_entry(view.list("event"), meeting, today.isoformat(), zone(cfg))
+        if entry is not None and (day := day_of(entry.data["start"], zone_of(cfg))) > today:
             return Hold({"event": entry.id}, day)
         for phrase in date_phrases(meeting):
             if (day := reader(phrase)) is not None and day > today:

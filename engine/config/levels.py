@@ -385,6 +385,7 @@ INTERNAL = (
     "storage.backups.cloud_path",
     "storage.backups.former_cloud_path",
     "storage.backups.retry_minutes",
+    "storage.backups.shrink_percent",
     "storage.backups.before_changes",
     "storage.backups.bulk_change_records",
     "storage.backups.key_min_chars",

@@ -246,7 +246,7 @@ def test_the_set_aside_tab_lists_both_a_set_aside_mail_and_a_file_a_rule_closed_
     from tests.test_watch import reread
 
     ws, cfg, store, request = closed_by_a_rule(tmp_path)
-    plan = {"key": "a", "title": "Plan", "text": "One  budget"}
+    plan = {"key": "a", "title": "Plan", "text": "One  budget."}
     cfg, store, _ = reread(
         tmp_path,
         ws,

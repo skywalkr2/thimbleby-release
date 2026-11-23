@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -455,6 +456,21 @@ def _target_name(view: Any, data: Mapping[str, Any]) -> str:
     return ", ".join(names)
 
 
+#: The message actions that go out as a mail with a subject line.
+SUBJECT_ACTIONS = ("send", "reply", "reply_all", "forward")
+
+
+def subject_problem(data: Mapping[str, Any]) -> str | None:
+    """Why a message can't be approved yet: it has no subject, and a subject the person never saw is never added at
+    send. None for anything else, and for a message that has one."""
+    target = data.get("target") or {}
+    if target.get("kind") != "message" or what(data) not in SUBJECT_ACTIONS:
+        return None
+    if str((data.get("parts") or {}).get("subject") or "").strip():
+        return None
+    return "this message has no subject: write one in the draft before approving it"
+
+
 def part_labels(view: Any, cfg: Any, data: Mapping[str, Any]) -> dict[str, str]:
     """Where each part of the act sits, in the words the name check says it in ("the message to Ana"); with more than
     one part, each is named after the place."""
@@ -470,9 +486,36 @@ def part_labels(view: Any, cfg: Any, data: Mapping[str, Any]) -> dict[str, str]:
     return {(f"{where} ({name})" if len(parts) > 1 else where): text for name, text in parts.items()}
 
 
+def recipient_names(view: Any, data: Mapping[str, Any]) -> list[str]:
+    """What the act's recipients are called, for telling them from the assistant: a known person's name, and for an
+    address alone the words of its local part."""
+    names: list[str] = []
+    for r in (data.get("target") or {}).get("recipients") or []:
+        found = view.get("person", r["person"]) if r.get("person") else None
+        if found is not None:
+            names.append(str(found.data.get("full_name") or ""))
+        local = str(r.get("address") or "").partition("@")[0]
+        names.extend(word for word in re.split(r"[._+\-]+", local) if word)
+        names.append(local)
+    return names
+
+
 def name_problem(view: Any, cfg: Any, data: Mapping[str, Any]) -> str | None:
-    """Why the act's content isn't offered or sent: a part still names the assistant. None when it is clean."""
-    return outward.outgoing_problem(view, cfg, part_labels(view, cfg, data))
+    """Why the act's content isn't offered or sent: a part credits the assistant. None when it is clean."""
+    return outward.outgoing_problem(view, cfg, part_labels(view, cfg, data), recipient_names(view, data))
+
+
+def credited_name(view: Any, cfg: Any, data: Mapping[str, Any]) -> str | None:
+    """The name the act's content credits as the assistant, when it holds one that isn't someone's."""
+    names = recipient_names(view, data)
+    return next(
+        (
+            found
+            for text in part_labels(view, cfg, data).values()
+            if (found := outward.crediting_name(view, cfg, text, names))
+        ),
+        None,
+    )
 
 
 def name_mention(view: Any, cfg: Any, data: Mapping[str, Any]) -> str | None:
@@ -587,6 +630,33 @@ def stranger_problem(ctx: Any, op: ActDraftOp) -> str | None:
             "comes from outside text, so flag the recipient as called out and the person decides"
         )
     return None
+
+
+def named_records(view: Any, words: str) -> list[dict[str, Any]]:
+    """The facts, actions and questions that `words` name by id, as the records they draw on."""
+    from engine import id_words
+    from engine.records import REGISTRY
+
+    kinds = {model.prefix: kind for kind, model in REGISTRY.items() if kind in ("fact", "action", "question")}
+    found = (
+        view.get(kinds[match.rpartition("-")[0]], match)
+        for match in id_words.ID.findall(words)
+        if match.rpartition("-")[0] in kinds
+    )
+    return [record.data for record in found if record is not None]
+
+
+def run_sources(view: Any, ctx: Any, op: ActDraftOp) -> list[str]:
+    """The saved inputs a draft made by a run rests on beyond the ones it lists: the input the run was handed, and the
+    sources of the records its content names. Nothing for the person's own draft or the engine's own reminders and
+    notices, which have no run to draw on."""
+    inputs = getattr(ctx, "inputs", None)
+    if getattr(ctx, "actor", "pm") == "pm" or op.reminder is not None or op.notice is not None or inputs is None:
+        return []
+    drawn = [inputs.source] if inputs.source else []
+    for record in named_records(view, " ".join(op.parts.values())):
+        drawn.extend(audience.sources_of(record))
+    return list(dict.fromkeys(s for s in drawn if s))
 
 
 def audience_problem(view: Any, people: Any, sources: list[str], written: list[str]) -> str | None:
@@ -723,7 +793,11 @@ def _draft(tx: Tx, op: ActDraftOp, ctx: Any, w: WriteContext) -> list[dict[str, 
         if tx.get("source", source) is None:
             raise StoreError(f"source {source} doesn't exist")
     saved_about = about if op.target.kind == "mailbox" else []
-    sources = list(dict.fromkeys([*op.sources, *([op.in_reply_to] if op.in_reply_to else []), *saved_about]))
+    sources = list(
+        dict.fromkeys(
+            [*op.sources, *([op.in_reply_to] if op.in_reply_to else []), *saved_about, *run_sources(tx, ctx, op)]
+        )
+    )
     target = op.target
     made = tx.create(
         "act",
@@ -854,7 +928,9 @@ def _approve(tx: Tx, op: ActApproveOp, ctx: Any, w: WriteContext) -> list[dict[s
             why := standing_yes.approval_problem(ctx.store, ctx.cfg, tx, ctx.people, found, op.by_standing)
         ) is not None:
             raise StoreError(why)
-    outward.check_outgoing(tx, ctx.cfg, part_labels(tx, ctx.cfg, data))
+    outward.check_outgoing(tx, ctx.cfg, part_labels(tx, ctx.cfg, data), recipient_names(tx, data))
+    if (why := subject_problem(data)) is not None:
+        raise StoreError(why)
     if (why := audience_problem(tx, ctx.people, data["sources"], act_recipients(tx, data))) is not None:
         raise StoreError(why)
     now, parts = current_fingerprint(tx, ctx.store.plugins, data)
@@ -906,7 +982,7 @@ def _confirm_sent(tx: Tx, op: ActConfirmSentOp, ctx: Any, w: WriteContext) -> li
     if found.data["status"] != "uncertain" and not by_hand:
         raise StoreError(f"it can't be marked sent: this act is {found.data['status']}")
     if by_hand:
-        outward.check_outgoing(tx, ctx.cfg, part_labels(tx, ctx.cfg, found.data))
+        outward.check_outgoing(tx, ctx.cfg, part_labels(tx, ctx.cfg, found.data), recipient_names(tx, found.data))
         if current_fingerprint(tx, ctx.store.plugins, found.data)[0] != found.data["approved"]["fingerprint"]:
             raise StoreError("this act changed since you approved it; approve it again")
     tx.update(

@@ -11,12 +11,13 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime, tzinfo
 from typing import Any
 
-from engine import audience, greetings, learn, outward, promises, sent_version, sides
+from engine import audience, days_off, greetings, learn, outward, promises, sent_version, sides
 from engine.blocked import ViewNames, blocker_of, blocker_problem, holds_up
 from engine.cleaning import normalize
 from engine.config import Config
 from engine.dispatcher import signal
 from engine.firm_due import firm_due
+from engine.local_day import day_text
 from engine.names import People
 from engine.promises import Late
 from engine.scope import stance_of
@@ -107,6 +108,8 @@ class Section:
     to_send: int = 0
     #: The day the oldest of what is to send became ready to send, where the workspace is; none when nothing is.
     ready_since: str | None = None
+    #: The day the person is next at work when they are away or on a holiday today; none when they work today.
+    out_until: str | None = None
     nudge: Nudge | None = None
 
 
@@ -188,6 +191,13 @@ def sections(store: Store, cfg: Config, today: date, waiting: list[Late] | None 
     project_parents = {p.id: projects.get(p.data.get("parent") or "") for p in store.read().list("project")}
     by_person: dict[str, Section] = {}
     made = reader.creators("question")
+    back: dict[str, date | None] = {}
+
+    def back_on(pid: str) -> date | None:
+        """The day a person who is off today (away, or on a holiday) is next at work; none when they work today."""
+        if pid not in back:
+            back[pid] = days_off.back_on(reader, cfg, pid, today)
+        return back[pid]
 
     def out_of_reach(kind: str, record_id: str, text: str, data: dict[str, Any], person: str) -> bool:
         """Whether the record rests on a source whose audience leaves this person out; it is then noted on the
@@ -252,6 +262,7 @@ def sections(store: Store, cfg: Config, today: date, waiting: list[Late] | None 
                 "chases": len(chased),
                 "waiting_days": waiting,
                 "chase_due": d["status"] == "sent"
+                and back_on(d["to"]) is None
                 and (follow_up_due(cfg, today, waiting_days=waiting) or q.id in pulled),
                 "holds_up": len(held_up.get(q.id, [])),
                 "holds_overdue": pulled.get(q.id, 0),
@@ -320,16 +331,19 @@ def sections(store: Store, cfg: Config, today: date, waiting: list[Late] | None 
                     "chases": len(chases),
                     "on_hold": hold["waiting_for"] if hold else None,
                     "blocker": asdict(blocker) if blocker is not None else None,
-                    "chase_due": (chase_for.get(a.id) == owner["person"] and not hold)
-                    or follow_up_due(
-                        cfg,
-                        today,
-                        waiting_days=told_days,
-                        action=True,
-                        due=firm_due(d),
-                        on_hold=bool(hold),
-                    )
-                    or (a.id in pulled and told_days is not None and owner["person"] != people.pm and not hold),
+                    "chase_due": back_on(owner["person"]) is None
+                    and (
+                        (chase_for.get(a.id) == owner["person"] and not hold)
+                        or follow_up_due(
+                            cfg,
+                            today,
+                            waiting_days=told_days,
+                            action=True,
+                            due=firm_due(d),
+                            on_hold=bool(hold),
+                        )
+                        or (a.id in pulled and told_days is not None and owner["person"] != people.pm and not hold)
+                    ),
                     "due_soon": soon_days > 0
                     and not hold
                     and (deadline := firm_due(d)) is not None
@@ -339,6 +353,8 @@ def sections(store: Store, cfg: Config, today: date, waiting: list[Late] | None 
                 }
             )
     for s in by_person.values():
+        until = back_on(s.person)
+        s.out_until = until.isoformat() if until is not None else None
         s.actions.sort(key=lambda a: (("9999" if a["due_check"] else a["due"]) or "9999", a["text"]))
         if not s.is_pm:
             s.to_send = sum(q["status"] == "open" for q in s.questions) + sum(a["to_send"] for a in s.actions)
@@ -358,7 +374,7 @@ def sections(store: Store, cfg: Config, today: date, waiting: list[Late] | None 
 
 def _day(stamp: str, here: tzinfo) -> str:
     """The day a stored time falls on where the workspace is, as an ISO date (a bare day stays as it is)."""
-    return local_day(datetime.fromisoformat(stamp), here).isoformat() if "T" in stamp else stamp[:10]
+    return day_text(stamp, here)
 
 
 def _ready_day(

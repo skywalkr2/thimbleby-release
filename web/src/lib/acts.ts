@@ -25,6 +25,8 @@ const TAKE_BACK: readonly ActState[] = ["draft", "approved", "stale", "failed"];
 const APPROVABLE: readonly ActState[] = ["draft", "stale", "failed"];
 
 export const canTakeBack = (a: Act): boolean => TAKE_BACK.includes(a.status);
+/** The part a forward carries: the message it forwards, which the person never rewords. */
+export const QUOTED_PART = "quoted";
 export const canApprove = (a: Act): boolean => APPROVABLE.includes(a.status);
 /** Whether the person carries this one out themselves: the copy channel, whose send is their own. */
 export const isByHand = (a: Act): boolean => a.channel === "copy";
@@ -233,7 +235,7 @@ export function useActToday() {
   const lines: ActLine[] = (acts.data ?? []).flatMap((act): ActLine[] =>
     act.status === "failed" || act.status === "uncertain" ? [{ act, group: "risk" }] : act.status === "stale" ? [{ act, group: "decide" }] : [],
   );
-  return { count: lines.length, lines, in: (group: ActLineGroup) => lines.filter((l) => l.group === group) };
+  return { count: lines.length, lines, read: acts, in: (group: ActLineGroup) => lines.filter((l) => l.group === group) };
 }
 
 // ---- the person's choices --------------------------------------------------------------------------------------------

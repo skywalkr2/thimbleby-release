@@ -51,6 +51,10 @@ class BackupState:
     message: str
     last_error: str | None = None
     encrypted: bool = False
+    #: With more than one place, the one the message is about (its label, else its folder); None when all is well.
+    place: str | None = None
+    #: What is wrong with that place: failed, overdue, never or smaller; None when all is well.
+    problem: str | None = None
 
 
 def run_backup(
@@ -201,21 +205,27 @@ def _run(ws: Workspace, cfg: Config, now: datetime) -> dict[str, Any]:
             # only when it is whole: a copy that stops midway is never counted, offered or kept.
             building = base / f".{dest.name}.part"
             building.mkdir(exist_ok=False)
+            counted = {name: _file_count(ws.root / name) for name in BACKUP_FOLDERS}
             try:
                 if secret is None:
                     _copy(ws, building)
                 else:
                     _copy_encrypted(ws, building, secret)
+                _verify(ws, building, secret, counted)
+                size = _size(building)
                 building.rename(dest)
             except BaseException:
                 shutil.rmtree(building, ignore_errors=True)
                 raise
             _prune(base, ws.root.name, cfg.storage.backups.keep)
+            before = status.get(key, {}).get("size_bytes")
             status[key] = {
                 "last_success": now.isoformat(),
                 "last_attempt": now.isoformat(),
                 "last_error": None,
                 "label": target.label,
+                "size_bytes": size,
+                "last_warning": _shrunk(before, size, cfg.storage.backups.shrink_percent),
             }
         except (OSError, ValueError, sqlite3.Error) as err:
             prev = status.get(key, {})
@@ -224,9 +234,76 @@ def _run(ws: Workspace, cfg: Config, now: datetime) -> dict[str, Any]:
                 "last_attempt": now.isoformat(),
                 "last_error": str(err),
                 "label": target.label,
+                "size_bytes": prev.get("size_bytes"),
+                "last_warning": prev.get("last_warning"),
             }
     _save(ws, status)
     return status
+
+
+def _size(folder: Path) -> int:
+    """The bytes of every file in a finished copy."""
+    return sum(p.stat().st_size for p in folder.rglob("*") if p.is_file())
+
+
+def _shrunk(before: Any, now_bytes: int, percent: int) -> str | None:
+    """Why a new copy is flagged when it is smaller than `percent` of the one before it, else None."""
+    if not isinstance(before, int) or before <= 0 or now_bytes * 100 >= before * percent:
+        return None
+    return f"The newest copy is much smaller than the one before it ({_megabytes(now_bytes)}, was {_megabytes(before)})"
+
+
+def _megabytes(size: int) -> str:
+    return f"{size / 1_000_000:.1f} MB" if size >= 100_000 else f"{size / 1000:.0f} KB"
+
+
+def _verify(ws: Workspace, copy: Path, secret: str | None, counted: dict[str, int]) -> None:
+    """Open a finished copy the way a restore would, so a copy that couldn't be restored fails the backup instead of
+    standing as one: the database passes SQLite's own check, an encrypted copy opens with its key (every sealed file
+    must authenticate), and every folder the workspace has is in the copy with its files. The app keeps working while
+    it is copied, so a folder's count is the fewer of what it held before and after the copy."""
+    try:
+        if secret is None:
+            _same_database(ws.db_path, backup_database(copy))
+        else:
+            sealer = backup_crypto.open_backup(copy, secret)
+            ws.private_dir.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=ws.private_dir, prefix="verify-") as temporary:
+                backup_crypto.open_tree(sealer, copy, Path(temporary))
+                _same_database(ws.db_path, backup_database(Path(temporary)))
+    except (RestoreError, backup_crypto.BackupKeyError, backup_crypto.BackupDamaged) as err:
+        raise ValueError(f"the copy was written but doesn't check out, so it was not kept: {err}") from None
+    for name in BACKUP_FOLDERS:
+        expected = min(counted.get(name, 0), _file_count(ws.root / name))
+        if _file_count(copy / name) < expected:
+            raise ValueError(f"the copy was written but its {name} folder isn't whole, so it was not kept")
+
+
+def _same_database(original: Path, copy: Path) -> None:
+    """The copy's database passes SQLite's own check and has every table the original has (a workspace with no tables
+    yet is copied as it is)."""
+    try:
+        wanted = sqlite3.connect(original)
+        try:
+            tables = {row[0] for row in wanted.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        finally:
+            wanted.close()
+        conn = _read_only(copy)
+        try:
+            verdict = [row[0] for row in conn.execute("PRAGMA integrity_check")]
+            kept = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        finally:
+            conn.close()
+    except sqlite3.Error as err:
+        raise RestoreError(f"The backup's database can't be read ({err}).") from None
+    if verdict != ["ok"]:
+        raise RestoreError(f"The backup's database is damaged ({verdict[0]}).")
+    if not tables <= kept:
+        raise RestoreError("The backup's database is missing tables the workspace has.")
+
+
+def _file_count(folder: Path) -> int:
+    return sum(1 for p in folder.rglob("*") if p.is_file()) if folder.is_dir() else 0
 
 
 def _database_copy(ws: Workspace, path: Path) -> None:
@@ -277,12 +354,53 @@ def state(ws: Workspace, cfg: Config, now: datetime | None = None) -> BackupStat
         return BackupState(
             True, None, None, True, "No successful backup yet." + why, errors[0] if errors else None, encrypted
         )
+    every = cfg.storage.backups.every_hours
+    named = len(targets) > 1
+    worst: tuple[tuple[float, float], BackupState] | None = None
+    for target in targets:
+        entry = status.get(target.path, {})
+        success, error, warning = entry.get("last_success"), entry.get("last_error"), entry.get("last_warning")
+        age = (now - datetime.fromisoformat(success)).total_seconds() / 3600 if success else None
+        place = (target.label or target.path) if named else None
+        if age is None:
+            if not error:
+                continue  # a place added just now, not tried yet: the schedule tries it, and it isn't a failure
+            problem, rank = "never", 4.0
+            message = f"{place}: no successful backup yet. The last try failed: {error}"
+        elif age > 2 * every:
+            problem, rank = "overdue", 3.0
+            message = f"Backed up {_ago(age)}. That's overdue."
+        elif error and age > every:
+            problem, rank = "failed", 2.0
+            message = f"The last backup failed ({error}); the one before it was {_ago(age)}."
+        elif warning:
+            problem, rank = "smaller", 1.0
+            message = warning + "."
+        else:
+            continue
+        if place and not message.startswith(place):
+            message = f"{place}: {message}"
+        found = BackupState(
+            True,
+            success,
+            round(age, 2) if age is not None else None,
+            True,
+            message + (" Encrypted." if encrypted else ""),
+            error,
+            encrypted,
+            place if named else None,
+            problem,
+        )
+        # The place that has gone longest without a copy is the one the person is told about.
+        weight = (rank, age or 0.0)
+        if worst is None or weight > worst[0]:
+            worst = (weight, found)
+    if worst is not None:
+        return worst[1]
     last = max(successes)
     age = (now - datetime.fromisoformat(last)).total_seconds() / 3600
-    stale = age > 2 * cfg.storage.backups.every_hours
-    message = f"Backed up {_ago(age)}." + (" That's overdue." if stale else "")
-    message += " Encrypted." if encrypted else ""
-    return BackupState(True, last, round(age, 2), stale, message, errors[0] if errors else None, encrypted)
+    message = f"Backed up {_ago(age)}." + (" Encrypted." if encrypted else "")
+    return BackupState(True, last, round(age, 2), False, message, errors[0] if errors else None, encrypted)
 
 
 @dataclass(frozen=True)

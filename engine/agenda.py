@@ -81,10 +81,10 @@ def add(tx: Any, op: Any, w: Any, *, by: str | None, at: str) -> tuple[str, str]
     return meeting
 
 
-def named_meeting(view: Any, phrase: str, today: date) -> tuple[str, str] | None:
+def named_meeting(view: Any, phrase: str, today: date, here: Any = None) -> tuple[str, str] | None:
     """The one meeting the words name, as its kind and id: a calendar entry still ahead whose title they hold, else a
     series whose title they hold (and no calendar entry did). None when they name none or several."""
-    entry = named_entry(view.list("event"), phrase, today.isoformat())
+    entry = named_entry(view.list("event"), phrase, today.isoformat(), here)
     if entry is not None:
         return "event", entry.id
     titles: dict[str, list[Any]] = {}

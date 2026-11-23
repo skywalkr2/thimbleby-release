@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from engine.local_day import day_text, zone_of
+
 CLOSE, DATE, OWNER, ROUTING, DROP, MOVE, PART = "close", "date", "owner", "routing", "drop", "move", "part"
 #: A guess at how long a to-do takes, held for the person to keep.
 EFFORT = "effort"
@@ -43,7 +45,7 @@ def _told(view: Any, people: Any, record: Any, cfg: Any = None) -> tuple[list[st
         days = sorted(str(d) for d in told.values() if d)
         return names, days[0] if days else None
     if data.get("status") == "sent" or data.get("sent_at"):
-        return [people.name(data["to"])], (str(data["sent_at"])[:10] if data.get("sent_at") else None)
+        return [people.name(data["to"])], (day_text(data["sent_at"], zone_of(cfg)) if data.get("sent_at") else None)
     return [], None
 
 

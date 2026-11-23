@@ -1,0 +1,1 @@
+{"summary": "Closed Q-90 because the input says ticket T-1 is fixed and in test.", "topic": "ticket T-1 fixed in test", "ops": [{"op": "question.done", "id": "Q-90", "answer": "T-1 is fixed, in test.", "evidence": {"quote": "T-1 is fixed, in test."}}]}

@@ -114,6 +114,13 @@ describe("beside the list", () => {
     expect(document.body.textContent).not.toMatch(/ready since \d{4}-/);
   });
 
+  test("a person who is away shows Out until the day they are back, and one at work shows nothing", async () => {
+    fakeApi(routes(() => [person("PER-1", "Ana Person", { out_until: "2026-11-30" }), person("PER-2", "Robin Sample")]));
+    renderApp(<FollowUps />);
+    expect(await line("Ana Person")).toHaveTextContent("Out until Mon, Nov 30");
+    expect(await line("Robin Sample")).not.toHaveTextContent("Out until");
+  });
+
   test("Mark sent, from the detail, records the message and the person leaves the list, so the next is chosen", async () => {
     const user = userEvent.setup();
     let list = sections;

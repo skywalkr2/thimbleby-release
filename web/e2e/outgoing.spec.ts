@@ -72,4 +72,29 @@ test.describe("To send", () => {
     expect(after.delivered[0].parts).toEqual({ subject: first.subject, body: first.body });
     expect(problems).toEqual([]);
   });
+
+  test("a message that credits the assistant waits, and Reword clears it", async ({ page }) => {
+    const problems: string[] = [];
+    collectProblems(page, problems);
+    await signIn(page);
+    const drafted = await (await page.request.post("/__e2e/draft-crediting")).json();
+    expect(drafted.enabled).toBe(true);
+    await page.goto("?token=e2e-token#work/followups");
+    await page.getByRole("button", { name: "To send", exact: true }).click();
+    await expect(page.getByRole("list", { name: "Waiting to go out" }).getByRole("listitem").first()).toBeVisible();
+    const pane = page.getByRole("complementary", { name: `Message to ${drafted.person}` });
+
+    // It is held, with the two ways on: Reword, or the name is a person. Nothing can be approved meanwhile.
+    await expect(pane).toContainText(`credits ${drafted.assistant}`);
+    await expect(pane.getByRole("button", { name: "Approve and send" })).toBeDisabled();
+    await pane.getByRole("button", { name: "Reword" }).click();
+    await expect(pane.getByLabel("Subject")).toBeFocused(); // a form puts the cursor in its first field
+    await pane.getByLabel("Message", { exact: true }).fill("The date moved to Tuesday.");
+    await pane.getByRole("button", { name: "Save wording" }).click();
+    await expect(pane).not.toContainText(`credits ${drafted.assistant}`);
+    await expect(pane.getByRole("button", { name: "Approve and send" })).toBeEnabled();
+    await checkAccessibility(page);
+    expect((await handed(page)).delivered).toHaveLength(1); // only the first message went; this one waits for the yes
+    expect(problems).toEqual([]);
+  });
 });

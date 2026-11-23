@@ -16,6 +16,7 @@ backups:
   former_cloud_path: [Backups, PM Cockpit]
   every_hours: 24
   keep: 14
+  shrink_percent: 50   # a copy smaller than this percent of the one before it in the same place is flagged
   automatic: true
   retry_minutes: 60
   before_changes: false   # a backup first before a change that is hard to take back (restoring, installing an add-on, releasing all, loading files, removing many records); true by default, off here because this sandbox's backup folder is made up

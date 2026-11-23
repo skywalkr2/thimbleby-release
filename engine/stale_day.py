@@ -18,7 +18,7 @@ def without_day(text: str, day: str | None) -> str:
     if not day or not isinstance(text, str):
         return text
     found = _DAY.search(text)
-    if found is None or found.group(0) != str(day)[:10] or not _END.match(text[found.end() :]):
+    if found is None or found.group(0) != str(day) or not _END.match(text[found.end() :]):
         return text
     kept = _LEAD.sub("", text[: found.start()]).rstrip()
     return f"{kept}{text[found.end() :].strip()}" if kept else text

@@ -231,6 +231,13 @@ test("a read of old data says how old it is and never says nothing is new", asyn
   expect(stale).not.toHaveTextContent("Nothing new");
 });
 
+test("a read that found an older copy says nothing was compared and never says nothing is new", async () => {
+  open([source("older", { last: run({ older_copy: true }) })]);
+  const older = await row("Source older");
+  expect(older).toHaveTextContent("The source served an older copy; nothing compared");
+  expect(older).not.toHaveTextContent("Nothing new");
+});
+
 test.each([
   ["seconds", 40_000, /Not read yet: the service asked to wait\. It is tried again in a minute or so/],
   ["minutes", 150_000, /Not read yet: the service asked to wait\. It is tried again in a few minutes/],

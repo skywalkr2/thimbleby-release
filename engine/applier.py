@@ -9,7 +9,7 @@ dropped and shown, returned lints hold an op that would reach another person and
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from email.utils import parseaddr
@@ -61,6 +61,7 @@ from engine.dates import MonthDay, is_month_day_maybe_timed, resolve_range, with
 from engine.intake import is_reported, source_text
 from engine.language_words import language_words
 from engine.learning import request_learns
+from engine.local_day import day_of, day_text, zone_of
 from engine.names import People
 from engine.new_refs import NewRefs, WithMade, created_in
 from engine.note_titles import note_text
@@ -114,6 +115,7 @@ from engine.ops import (
     ProjectAddOp,
     ProjectRoleOp,
     QuestionAddOp,
+    QuestionAskAgainOp,
     QuestionDoneOp,
     QuestionDropOp,
     QuestionMarkSentOp,
@@ -441,6 +443,19 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
                 continue
             if isinstance(op, ActDraftOp) and ctx.actor != "pm" and op.target.kind == "message":
                 _single_out(i, op.parts.values(), singling_out.group_of(ctx.people, acts.op_recipients(op)), ctx, lint)
+            if (
+                isinstance(op, ActDraftOp)
+                and ctx.actor != "pm"
+                and op.target.kind == "message"
+                and op.target.what in acts.SUBJECT_ACTIONS
+                and not op.parts.get("subject", "").strip()
+            ):
+                lint(
+                    i,
+                    "message-without-subject",
+                    "the message has no subject: propose one in the draft's subject part, since a message can't be "
+                    "approved without one",
+                )
             if isinstance(op, ActDraftOp) and op.reminder is None and op.notice is None:
                 if (why := _facts_stated_problem(op, view)) is not None:
                     refuse(i, "inferred-fact", why)
@@ -458,7 +473,7 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
             if isinstance(op, (ActDraftOp, ActEditOp)):
                 held = view.get("act", op.id) if isinstance(op, ActEditOp) else None
                 drawn = (
-                    [*op.sources, *([op.in_reply_to] if op.in_reply_to else [])]
+                    [*op.sources, *([op.in_reply_to] if op.in_reply_to else []), *acts.run_sources(view, ctx, op)]
                     if isinstance(op, ActDraftOp)
                     else (held.data["sources"] if held is not None else [])
                 )
@@ -650,7 +665,9 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
         if isinstance(op, EventAddOp) and op.repeat is not None:
             if ctx.actor != "pm":
                 refuse(i, "targets", "only you make a calendar entry repeat")
-            elif op.start is None or (op.repeat.until is not None and op.repeat.until < op.start[:10]):
+            elif op.start is None or (
+                op.repeat.until is not None and op.repeat.until < day_text(op.start, zone(ctx.cfg))
+            ):
                 refuse(i, "targets", f"calendar entry {op.title!r}: it can't stop repeating before it starts")
         if isinstance(op, EventAddOp) and op.role is not None and ctx.actor != "pm":
             refuse(i, "targets", "only you say whether you run or attend a calendar entry")
@@ -771,7 +788,7 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
             why = action_reply_problem(view, op)
             if why:
                 refuse(i, "targets", why)
-        if isinstance(op, (QuestionUpdateOp, QuestionMoveOp, QuestionDropOp, QuestionMarkSentOp)):
+        if isinstance(op, (QuestionUpdateOp, QuestionMoveOp, QuestionDropOp, QuestionAskAgainOp, QuestionMarkSentOp)):
             why = question_correction_problem(ctx, view, op)
             if why:
                 refuse(i, "targets", why)
@@ -986,8 +1003,13 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
                 for link in op.links:
                     if not _openable(link.url):
                         refuse(i, "question-links", f"{link.url} isn't a link the recipient can open")
+                for written in _links_in_text(f"{op.title} {op.text}"):
+                    if not _openable(written):
+                        refuse(i, "question-links", f"{written} isn't a link the recipient can open")
             for why in _conflict_problems(op, ctx, view, assistant_names):
                 refuse(i, "conflict-sides", why)
+            if (why := _closed_question_problem(ctx, view, op, resolved.person)) is not None:
+                refuse(i, "question-asked-before", why)
             _wording(i, op.title + " " + op.text, ctx, lint, _quotes_in(op, ctx))
             _item_text(i, op.title, ctx, lint, _quotes_in(op, ctx), asks=True)
             if not to_pm:
@@ -1591,10 +1613,34 @@ def _single_out(i: int, texts: Any, group: list[str], ctx: Context, lint: Any) -
 
 
 def _openable(url: str) -> bool:
+    """Whether a link is one another person could open: a public web address, not this computer or a private network."""
+    import ipaddress
+
     if not re.match(r"^https?://", url):
         return False
-    host = re.sub(r"^https?://", "", url).split("/", 1)[0].split(":", 1)[0].lower()
-    return host not in ("localhost", "127.0.0.1", "::1", "0.0.0.0") and "." in host
+    authority = re.sub(r"^https?://", "", url).split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    authority = authority.rsplit("@", 1)[-1]
+    host = (authority[1:].split("]", 1)[0] if authority.startswith("[") else authority.split(":", 1)[0]).lower()
+    host = host.rstrip(".")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        return address.is_global
+    if "." not in host or host == "localhost":
+        return False
+    return host.rsplit(".", 1)[-1] not in _NOT_PUBLIC_ENDINGS and not host.endswith(".localhost")
+
+
+_NOT_PUBLIC_ENDINGS = frozenset(
+    {"localhost", "test", "invalid", "local", "internal", "lan", "home", "corp", "intranet"}
+)
+_LINK_IN_TEXT = re.compile(r"https?://[^\s<>\"'()\[\]]+", re.IGNORECASE)
+
+
+def _links_in_text(text: str) -> list[str]:
+    return [m.group(0).rstrip(".,;:!?") for m in _LINK_IN_TEXT.finditer(text)]
 
 
 LANGUAGE_TAG = r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*"
@@ -1889,13 +1935,7 @@ def _named_records(view: Any, op: OpModel) -> list[dict[str, Any]]:
     """The facts, actions and questions a draft names by id in its own words (an id in a title is refused elsewhere), as
     the records it draws on."""
     words = " ".join(str(getattr(op, name, None) or "") for name in ("title", "text", "reply", "matters_for"))
-    kinds = {model.prefix: kind for kind, model in REGISTRY.items() if kind in ("fact", "action", "question")}
-    found = (
-        view.get(kinds[match.rpartition("-")[0]], match)
-        for match in id_words.ID.findall(words)
-        if match.rpartition("-")[0] in kinds
-    )
-    return [record.data for record in found if record is not None]
+    return acts.named_records(view, words)
 
 
 def _audience_problem(view: Any, ctx: Context, op: QuestionAddOp | QuestionMoveOp | ActionAddOp) -> str | None:
@@ -2108,6 +2148,8 @@ def question_correction_problem(ctx: Context, view: Any, op: OpModel) -> str | N
     found = view.get("question", qid)
     if found is None:
         return f"there is no question {qid}"
+    if isinstance(op, QuestionAskAgainOp):
+        return None if found.data["status"] == "dropped" else f"question {qid} wasn't dropped"
     if found.data["status"] not in ("open", "sent"):
         return f"question {qid} is already closed"
     ended = isinstance(op, QuestionDropOp) and op.reason == endings.PROJECT_ENDED
@@ -2129,6 +2171,55 @@ def question_correction_problem(ctx: Context, view: Any, op: OpModel) -> str | N
     return None
 
 
+_KEY_WORD = re.compile(r"[a-z0-9]{2,}")
+
+
+def question_key(to: str | None, title: str) -> str:
+    """A question's key: whom it is for and its subject (the words of its title, without links, in any order)."""
+    words = sorted(set(_KEY_WORD.findall(normalize(without_links(title)))))
+    return f"{to or ''}|{' '.join(words)}"
+
+
+def _closed_question_problem(ctx: Context, view: Any, op: QuestionAddOp, to: str | None) -> str | None:
+    """Why a question can't be asked: the person was asked the same thing before (the same key), and it was answered or
+    dropped. The earlier answer is quoted. A newer source that contradicts the answer is asked as a conflict
+    (`asks_about` mistake, naming what changed in its sides), which this never refuses."""
+    if to is None or op.term or ctx.actor == "pm":
+        return None
+    key = question_key(to, op.title)
+    for question in view.list("question"):
+        data = question.data
+        if data["status"] not in ("answered", "dropped") or data["to"] != to:
+            continue
+        if (data.get("key") or question_key(to, data["title"])) != key:
+            continue
+        if op.asks_about == "mistake" and _newer_than_close(ctx, view, question):
+            continue
+        if data["status"] == "answered":
+            said = f"it was answered: {data.get('answer') or '(no words)'!r}"
+        else:
+            reason = data.get("dropped_reason") or "no reason given"
+            said = f"it was dropped ({reason}) and stays dropped unless the person asks again"
+        return (
+            f"{question.id} already asked this of the same person, and {said}. Don't ask it again. If a newer source "
+            "contradicts that answer, ask it as a conflict (asks_about mistake) and name in the sides what changed"
+        )
+    return None
+
+
+def _newer_than_close(ctx: Context, view: Any, question: Any) -> bool:
+    """Whether the input this change is made from reached the workspace after the question was answered or dropped."""
+    source = view.get("source", ctx.inputs.source) if ctx.inputs.source else None
+    if source is None:
+        return False
+    closed = [
+        e["at"]
+        for e in view.ledger(kind="question", record_id=question.id)
+        if e["field"] == "status" and e["after"] in ("answered", "dropped")
+    ]
+    return bool(closed) and datetime.fromisoformat(str(source.data["received_at"])) > datetime.fromisoformat(closed[-1])
+
+
 def _near_duplicate_question(ctx: Context, view: Any, title: str, to: str | None) -> Any | None:
     """The open question, or the one answered within the configured days, to the same person, whose title is as alike
     as the configured similarity to `title`; None when there is none."""
@@ -2139,7 +2230,7 @@ def _near_duplicate_question(ctx: Context, view: Any, title: str, to: str | None
         if question.data["to"] != to:
             continue
         status = question.data["status"]
-        if status in ("open", "sent"):
+        if status in ("open", "sent", "dropped"):
             pass
         elif status == "answered":
             if answered is None:
@@ -2388,15 +2479,15 @@ def edit_record(store: Store, tx: Tx, op: Any, w: WriteContext) -> None:
 
         keep_names_together(tx, op.record.kind, op.record.id, fields["name"], w)
     if op.record.kind == "event" and "start" in op.fields:
-        follow_event(tx, op.record.id, w)
+        follow_event(tx, op.record.id, w, store.plugins.cfg)
     if op.record.kind == "event" and op.fields.keys() & {"start", "cancelled", "dropped"}:
         called_off.sync(tx, op.record.id, w, store.plugins.cfg)
 
 
-def follow_event(tx: Tx, event_id: str, w: WriteContext) -> list[str]:
+def follow_event(tx: Tx, event_id: str, w: WriteContext, cfg: Any = None) -> list[str]:
     """Move every open promise due at a calendar entry to the entry's day: a date-only move, with no news. Returns the
     actions moved."""
-    day = _event_day(tx, event_id)
+    day = _event_day(tx, event_id, cfg)
     moved = []
     for action in tx.find("action", {"due_event": event_id}):
         if action.data["status"] in ("open", "held") and action.data.get("due") != (day.isoformat() if day else None):
@@ -2405,12 +2496,12 @@ def follow_event(tx: Tx, event_id: str, w: WriteContext) -> list[str]:
     return moved
 
 
-def _event_day(tx: Tx, event_id: str) -> date | None:
+def _event_day(tx: Tx, event_id: str, cfg: Any = None) -> date | None:
     entry = tx.get("event", event_id)
     start = entry.data.get("start") if entry is not None else None
     if not start:
         return None
-    return date.fromisoformat(str(start)[:10])
+    return day_of(start, zone_of(cfg))
 
 
 def _within_window(existing: Any, due: date | None, ctx: Context) -> bool:
@@ -2465,11 +2556,13 @@ def apply_changeset(
     extra: dict[str, Any] | None = None,
     all_or_nothing: bool = False,
     labeler: Any = None,
+    finish: Callable[[Tx, str], None] | None = None,
 ) -> str:
     """Apply what passed, hold what needs the PM, record refusals. Returns the changeset id. With `all_or_nothing`,
     one refused op rolls everything back, and the changeset is recorded as rejected with every op refused. A `labeler`
     (a task kind's grouping of its answer, `PluginHost.answer_labels`) gives each op its group for the review; if it
-    fails on any op, none is grouped."""
+    fails on any op, none is grouped. `finish` is called with the transaction and the changeset id inside the same
+    transaction that records the change, so what marks the work done is kept or lost with the change itself."""
     now = now or datetime.now(UTC)
     ctx.run = run
     cs = endings.wind_down(restatements(with_years(cs, ctx, now), ctx), ctx)
@@ -2603,6 +2696,8 @@ def apply_changeset(
             if all_or_nothing and refused:
                 raise _AllOrNothing(outcomes)  # rolls back everything applied above
             _record_changeset(tx, cs_id, cs, outcomes, status, problems, ctx, run, now, extra)
+            if finish is not None:
+                finish(tx, cs_id)
     except _AllOrNothing as stopped:
         why = "; ".join(o.reason for o in stopped.outcomes if o.status == "refused" and o.reason)
         for outcome in stopped.outcomes:
@@ -2612,6 +2707,8 @@ def apply_changeset(
         with ctx.store.transaction() as tx:
             cs_id = tx.new_id("changeset")
             _record_changeset(tx, cs_id, cs, stopped.outcomes, "rejected", problems, ctx, run, now, extra)
+            if finish is not None:
+                finish(tx, cs_id)
         return cs_id
     except StoreError:
         raise  # a write refused with a plain reason: the caller says why
@@ -3548,7 +3645,8 @@ def _due_differs(tx: Tx, ctx: Context, op: Any) -> str | None:
     if kind == "hold":
         reads = "as waiting for something to happen, which is a promise on hold (waiting_for)"
     elif kind == "event" and found is not None:
-        reads = f"as maybe tied to the calendar entry {found.data['title']!r} on {str(found.data['start'])[:10]}"
+        on = day_text(found.data["start"], zone(ctx.cfg))
+        reads = f"as maybe tied to the calendar entry {found.data['title']!r} on {on}"
         if isinstance(op, ActionAddOp):
             reads += " (event with due_at_event true)"
     elif op.due is not None:
@@ -4328,7 +4426,7 @@ def _apply_op(
         return standing_yes.apply(tx, op, ctx, w), None
     if op.op in ACT_OPS:
         return acts.apply(tx, op, ctx, w), None
-    if isinstance(op, (QuestionUpdateOp, QuestionMoveOp, QuestionDropOp, QuestionMarkSentOp)):
+    if isinstance(op, (QuestionUpdateOp, QuestionMoveOp, QuestionDropOp, QuestionAskAgainOp, QuestionMarkSentOp)):
         return _correct_question(tx, op, ctx, w), None
     if isinstance(op, ActionReplyOp):
         return _review_reply(tx, op, ctx, w), None
@@ -4473,7 +4571,7 @@ def _apply_op(
             op.person,
             w,
             read_version=op.read_version,
-            today=ctx.store.clock()[:10],
+            today=local_day(datetime.fromisoformat(ctx.store.clock()), zone(ctx.cfg)).isoformat(),
             store=ctx.store,
             root=ctx.store.path.parent,
         )
@@ -4622,7 +4720,7 @@ def _apply_op(
             moved["delivery"] = {**cur.data["delivery"], "dated": True}  # a time the person or the input gives dates it
         tx.update("event", op.id, moved, w, read_version=cur.version)
         made("event", op.id)
-        for action_id in follow_event(tx, op.id, w):
+        for action_id in follow_event(tx, op.id, w, ctx.cfg):
             made("action", action_id)
     elif isinstance(op, SeriesAddOp):
         ev = {"source": w.evidence["source"] or source or "note", "quote": op.evidence.quote}
@@ -4692,7 +4790,7 @@ def _apply_op(
         placed = series_module.placement(tx, op.event, op.series, today, zone(ctx.cfg))
         due_event = placed if op.due_at_event and placed else None
         if due_event:
-            due, check = _event_day(tx, due_event), False
+            due, check = _event_day(tx, due_event, ctx.cfg), False
         same = _identical_open(tx, op, source, due, ctx)
         if same is not None:
             _merge_promise(tx, same, op, ctx, w, due, check, ev, today, source)
@@ -4812,7 +4910,13 @@ def _apply_op(
         from engine import entry_ties
 
         cur = tx.get("action", op.id)
-        tx.update("action", op.id, entry_ties.tied_fields(tx.get("event", op.event)), w, read_version=cur.version)
+        tx.update(
+            "action",
+            op.id,
+            entry_ties.tied_fields(tx.get("event", op.event), zone(ctx.cfg)),
+            w,
+            read_version=cur.version,
+        )
         made("action", op.id)
     elif isinstance(op, EventGuestsOp):
         cur = tx.get("event", op.id)
@@ -4854,6 +4958,8 @@ def _apply_op(
             "source": source,
             "matters_for": " ".join(op.matters_for.split()) if op.matters_for else None,
             "asker": _asker(ctx, op.asker, to),
+            "key": question_key(to, op.title),
+            "would_change": op.would_change.model_dump(exclude_none=True) if op.would_change else None,
         }
         if op.term:
             from engine import new_terms
@@ -5087,7 +5193,7 @@ def _condition(tx: Tx, ctx: Context, source: str | None, words: str, today: date
         return ("event", step.id) if step is not None else ("hold", None)
     named = after_marker(words, language_words(settings, "due_before_words"))
     if named:
-        found = named_entry(tx.list("event"), named, today.isoformat())
+        found = named_entry(tx.list("event"), named, today.isoformat(), zone(ctx.cfg))
         if found is not None:
             return "event", found.id
     return "open", None
@@ -5140,6 +5246,8 @@ def _correct_question(tx: Tx, op: OpModel, ctx: Context, w: WriteContext) -> lis
         changes = {"status": "dropped", "dropped_reason": " ".join(op.reason.split())}
         kind = "dropped"
         note = changes["dropped_reason"]
+    elif isinstance(op, QuestionAskAgainOp):
+        changes = {"status": "open", "dropped_reason": None}
     else:
         assert isinstance(op, QuestionMarkSentOp)
         when = (

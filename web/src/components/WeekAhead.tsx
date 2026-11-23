@@ -46,6 +46,13 @@ export function WeekAhead(props: { headingLevel?: 2 | 3; leaveOutAgenda?: boolea
   const when = (row: Row) => (row.to_day && row.to_day !== row.from_day ? t("week_ahead.when.window", { start: shortDay(row.from_day), end: shortDay(row.to_day) }) : shortDay(row.from_day));
   // A row's words as Today shows a to-do's: a day written out as year-month-day reads as a day.
   const wordsOf = (row: Row) => shortTitle(row.words, row.from_day);
+  const daysOffWords =
+    data.days_off.length === 0
+      ? ""
+      : t(data.working_days === 0 ? "week_ahead.days_off_none" : data.working_days === 1 ? "week_ahead.days_off_one" : "week_ahead.days_off", {
+          days: data.days_off.map((d) => `${shortDay(d.day)} (${d.reason})`).join(", "),
+          count: data.working_days,
+        });
   const status =
     data.state === "working" ? t("week_ahead.reading") : data.state === "needs_go" ? (data.estimate_usd != null ? t("week_ahead.needs_go_cost", { cost: money(data.estimate_usd) }) : t("week_ahead.needs_go")) : null;
   return (
@@ -59,9 +66,14 @@ export function WeekAhead(props: { headingLevel?: 2 | 3; leaveOutAgenda?: boolea
         </Button>
       </div>
       {status && <p className="hint" data-week-ahead-status="">{status}</p>}
+      {data.days_off.length > 0 && (
+        <p className={styles.sentence} data-week-ahead-days-off="">
+          {daysOffWords}
+        </p>
+      )}
       {data.sentence && !filtered && !leftOut && <p className={styles.sentence} data-week-ahead-sentence="">{plainDates(data.sentence)}</p>}
       {rows.length === 0 ? (
-        (data.state === "empty" || ((filtered || leftOut) && data.rows.length > 0)) && <p className={styles.quiet}>{t("week_ahead.empty")}</p>
+        ((data.state === "empty" && data.days_off.length === 0) || ((filtered || leftOut) && data.rows.length > 0)) && <p className={styles.quiet}>{t("week_ahead.empty")}</p>
       ) : (
         <ul className={styles.rows}>
           {rows.map((row) => (

@@ -62,6 +62,7 @@ function showToday(lines: Line[], extra: Routes = {}) {
     "GET changes": () => [],
     "GET followups": () => [],
     "GET plugin-today": () => [],
+    "GET acts": () => ({ acts: [], next: null }),
     "GET stages/records": () => [],
     "GET stages/ready": () => [],
     "GET stages/requests": () => [],

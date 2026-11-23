@@ -19,6 +19,7 @@ from datetime import UTC, date, datetime
 from typing import Any, Literal
 
 from engine.language_words import language_words
+from engine.local_day import zone_of
 from engine.ops import ActionCloseOp, ActionDropOp, QuestionDropOp, RecordSetOp
 from engine.records import values_at
 from engine.storage import StoreError
@@ -153,7 +154,7 @@ def moved_into(quote: str, ctx: Any) -> dict[str, str] | None:
 
     if not _has(quote, language_words(ctx.cfg.language, "meeting_words")):
         return None
-    found = named_meeting(ctx.store.read(), quote, _today(ctx))
+    found = named_meeting(ctx.store.read(), quote, _today(ctx), zone_of(ctx.cfg))
     return {"series" if found[0] == "series" else "event": found[1]} if found is not None else None
 
 

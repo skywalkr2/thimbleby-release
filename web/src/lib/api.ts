@@ -179,6 +179,10 @@ export const api = {
   approveAct: (a: string, body: S["ActApproveIn"]) => call<S["ActResultView"]>("POST", `acts/${id(a)}/approve`, body),
   /** Send an act that has the person's yes (the publisher checks again); the result says whether it went, failed or is unsure. */
   sendAct: (a: string, body: S["ActApproveIn"]) => call<S["ActResultView"]>("POST", `acts/${id(a)}/send`, body),
+  /** The person's own rewording of a draft's content; it clears any yes. */
+  editAct: (a: string, body: S["ActEditIn"]) => call<S["ActView"]>("POST", `acts/${id(a)}/edit`, body),
+  /** Content held for crediting the assistant: the name it holds is a person, so they join People. */
+  nameIsAPerson: (a: string) => call<S["ActView"]>("POST", `acts/${id(a)}/name-is-a-person`),
   /** Take an act back; the result's change is what Undo takes. */
   withdrawAct: (a: string) => call<S["ActResultView"]>("POST", `acts/${id(a)}/withdraw`),
   /** The answer for an act the app can't confirm went out: `sent`, or `again` to send it again. */
@@ -549,6 +553,8 @@ export const api = {
   foldAction: (cs: string, index: number, into: string, readVersion: number) =>
     call<S["Applied"]>("POST", `changesets/${id(cs)}/ops/${index}/fold`, { into, read_version: readVersion }),
   dropQuestion: (q: string, reason: string) => call<S["Applied"]>("POST", `questions/${id(q)}/drop`, { reason }),
+  droppedQuestions: () => call<S["DroppedQuestionView"][]>("GET", "questions/dropped"),
+  askQuestionAgain: (q: string) => call<S["Applied"]>("POST", `questions/${id(q)}/ask-again`, {}),
   questionSent: (q: string) => call<S["Applied"]>("POST", `questions/${id(q)}/sent`, {}),
   projects: () => call<S["ProjectView"][]>("GET", "projects"),
   notes: () => call<S["NoteView"][]>("GET", "notes"),

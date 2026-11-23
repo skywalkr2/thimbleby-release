@@ -725,13 +725,30 @@ def record(ws: Workspace, results: list[SmokeResult], cfg: Config | None = None)
     write_whole(ws.private_dir / STATUS_FILE, json.dumps(data, indent=2) + "\n")
 
 
-def lift_pauses(ws: Workspace, results: list[SmokeResult]) -> None:
-    """An account whose test call was answered is not out of its usage limit any more: its pause is lifted."""
-    from engine.ai.pauses import Pauses
+def lift_pauses(ws: Workspace, results: list[SmokeResult]) -> set[str]:
+    """An account whose test call was answered is not out of its usage limit any more: its pause is lifted. An agent
+    account whose lock-down check failed is held instead, and one whose check passed again is let go; the accounts let
+    go are returned, so the work waiting on them can try again."""
+    from engine.ai.pauses import Pauses, held_unsafe, hold_unsafe, release_unsafe
 
     pauses = Pauses(ws.private_dir / "ai-pauses.json")
-    for account in {r.provider for r in results if r.answered and r.provider}:
+    # An agent whose lock-down check failed is held, main or backup, until a check passes: an answered call doesn't
+    # lift that.
+    unsafe: dict[str, str] = {}
+    for r in results:
+        if r.part == "lockdown" and not r.ok and r.provider and not r.offline:
+            unsafe.setdefault(r.provider, r.detail)
+    for account, why in unsafe.items():
+        hold_unsafe(ws.private_dir, account, why)
+    freed = {
+        account
+        for account in {r.provider for r in results if r.part == "lockdown" and r.provider} - set(unsafe)
+        if release_unsafe(ws.private_dir, account)
+    }
+    held = set(held_unsafe(ws.private_dir))
+    for account in {r.provider for r in results if r.answered and r.provider} - held:
         pauses.clear(account)
+    return freed
 
 
 def untested_since_change(ws: Workspace, cfg: Config | None = None) -> bool:

@@ -90,6 +90,60 @@ class Pauses:
             self._save(data)
 
 
+LOCKDOWN_FILE = "ai-lockdown.json"
+
+
+def hold_unsafe(private: Path, account: str, why: str) -> None:
+    """An agent account whose lock-down check failed is paused with no reset, and the reason is kept for its Today
+    line. Its waiting work stays queued and nothing counts as an attempt; it runs again once a check passes
+    (`release_unsafe`)."""
+    kept = _unsafe(private)
+    kept[account] = why
+    with contextlib.suppress(OSError):
+        write_whole(private / LOCKDOWN_FILE, json.dumps(kept, sort_keys=True))
+    Pauses(private / "ai-pauses.json").pause(account, NO_RESET)
+
+
+def release_unsafe(private: Path, account: str) -> bool:
+    """An account whose lock-down check passed again is let go. True when it was held for that."""
+    kept = _unsafe(private)
+    if account not in kept:
+        return False
+    del kept[account]
+    with contextlib.suppress(OSError):
+        write_whole(private / LOCKDOWN_FILE, json.dumps(kept, sort_keys=True))
+    Pauses(private / "ai-pauses.json").clear(account)
+    return True
+
+
+def _unsafe(private: Path) -> dict[str, str]:
+    try:
+        data = json.loads((private / LOCKDOWN_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return (
+        {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)} if isinstance(data, dict) else {}
+    )
+
+
+def unsafe_reason(private: Path, account: str) -> str | None:
+    """Why an account is held for its lock-down check, or None when it isn't."""
+    return _unsafe(private).get(account)
+
+
+def held_unsafe(private: Path) -> dict[str, str]:
+    """Every account held for its lock-down check, with the reason."""
+    return _unsafe(private)
+
+
+def unsafe_text(account: str, why: str) -> str:
+    """What work waits on while an account's lock-down check hasn't passed: the reason and the way out."""
+    return (
+        f"Waiting for {account}: it can't be used safely yet. {why} Change its command so its tools are off, or "
+        "choose another account, then check it again under AI accounts; the waiting work goes on by itself"
+    )
+
+
 def when_text(cfg: Any, until: datetime, now: datetime) -> str:
     """A time in the person's time zone in plain words: the time alone today, otherwise the day and the time."""
     here = zone(cfg)

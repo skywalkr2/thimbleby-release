@@ -1,0 +1,32 @@
+id: question-about-another-ticket-stays-open
+title: An input about a different ticket leaves an open question open
+skills: [close-right-item]
+received: '2026-10-14'
+given_file: busy-portfolio.yaml
+given:
+- kind: question
+  id: Q-90
+  fields:
+    projects: [PRJ-4]
+    title: T-1 shows dates a day early. Do the other flows need the same workaround?
+    text: Dates on the depot sheet arrive a day early (ticket T-1). Tell me whether the other flows need the same workaround.
+    to: PER-3
+pasted: |-
+  From: Marguerite Osei
+
+  T-2 is fixed, in test. The label printing is ready to re-test.
+forbid:
+- op: question.done
+  id: Q-90
+- op: question.add
+allow:
+- action.add
+- fact
+stub_answer:
+  summary: T-2, label printing, is fixed in test.
+  ops:
+  - op: fact
+    text: T-2, the label printing problem, is fixed in test.
+    project: PRJ-4
+    evidence:
+      quote: T-2 is fixed, in test

@@ -44,7 +44,9 @@ export function useAfterSave() {
       const going = saved.kept_secrets_going ?? 0;
       const minutes = saved.kept_secrets_undo_minutes ?? 0;
       const secrets = going === 0 ? "" : minutes > 0 ? tn("kept_secrets.going", going, { minutes }) : tn("kept_secrets.gone", going);
-      const said = (message: string) => (secrets ? `${message} ${secrets}` : message);
+      // A warning about what was just saved (the assistant named like someone in People) is said with the confirmation.
+      const warned = (saved.warnings ?? []).join(" ");
+      const said = (message: string) => [message, secrets, warned].filter(Boolean).join(" ");
       // A setup step shows what it saved in its own controls: it asks for no message for each tick.
       if (opts.quiet) return refreshed;
       if (!saved.changes.length) {

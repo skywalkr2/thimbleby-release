@@ -10,7 +10,7 @@ import { useReviewTime } from "../lib/review-time";
 import { useAct } from "../lib/act";
 import { actTitle, useWaitingActs } from "../lib/acts";
 import { copyBoth, copyMessage, copyPlain, type CopyResult } from "../lib/copy";
-import { day, todayOn, monthDay, sinceDay } from "../lib/dates";
+import { day, todayOn, monthDay, sinceDay, shortDay } from "../lib/dates";
 import { dueState } from "../lib/due-state";
 import { tablesOf, toHtml, toTsv, type TableWords } from "../lib/followup-table";
 import { sendKeyTo, useRowKeys, type RowKey } from "../lib/keys";
@@ -48,6 +48,7 @@ import { ListDetail } from "../ui/ListDetail";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { FilteredEmpty } from "../ui/FilteredEmpty";
 import { ListState } from "../ui/ListState";
+import { DroppedQuestions, useDroppedQuestions } from "./DroppedQuestions";
 import { LoadFailed } from "../ui/LoadFailed";
 import { useLoadFailure } from "../lib/load-failure";
 import { FollowUpTables, tableBar, tableHint } from "./FollowUpTable";
@@ -75,8 +76,8 @@ import { RowBody } from "../ui/RowBody";
 import { ItemList, Item } from "../ui/ItemList";
 import { ExpandableRow } from "../ui/Row";
 type Group = "person" | "project";
-type Filter = "send" | "later" | "waiting";
-const FILTERS: Filter[] = ["send", "later", "waiting"];
+type Filter = "send" | "later" | "waiting" | "dropped";
+const FILTERS: Filter[] = ["send", "later", "waiting", "dropped"];
 
 const toSendQuestions = (s: S["FollowupSection"]) => s.questions.filter((q) => q.status === "open");
 /** Ready to send to this owner: never told, and not a promise they made themselves (which they know already). */
@@ -138,6 +139,10 @@ export function FollowUps(props: { compact?: boolean }) {
   const [group, setGroup] = useState<Group>("person");
   const [styleOpen, setStyleOpen] = useState(false);
   const followups = useQuery({ queryKey: ["followups"], queryFn: api.followups });
+  // The Dropped tab is offered when the person has dropped a question (or while it is open), and never on Today's compact list.
+  const dropped = useDroppedQuestions();
+  const droppedTab = !compact && ((dropped.data ?? []).length > 0 || filter === "dropped");
+  const onList = filter !== "dropped";
   const latest = useRef(followups.data);
   latest.current = followups.data;
   // A row the person is sent to (a question to answer, a person's group): once the list shows it, it is chosen and in view.
@@ -276,12 +281,17 @@ export function FollowUps(props: { compact?: boolean }) {
           ) : undefined
         }
         tabs={
-          !nothingAnywhere ? (
-            <TabStrip label={t("followups.filter")} value={filter} onChange={setFilter} options={FILTERS.map((f) => ({ value: f, label: t(`followups.filter.${f}`) }))} />
+          !nothingAnywhere || droppedTab ? (
+            <TabStrip
+              label={t("followups.filter")}
+              value={filter}
+              onChange={setFilter}
+              options={FILTERS.filter((f) => f !== "dropped" || droppedTab).map((f) => ({ value: f, label: t(`followups.filter.${f}`) }))}
+            />
           ) : undefined
         }
         filterSheet={{
-          shown: (!compact && !justMe && !nothingAnywhere && filterBarShown(tabHolds, group === "project")) || (side.offered && filterBarShown(tabHolds, side.picked !== "all")),
+          shown: onList && ((!compact && !justMe && !nothingAnywhere && filterBarShown(tabHolds, group === "project")) || (side.offered && filterBarShown(tabHolds, side.picked !== "all"))),
           active: (group === "project" ? 1 : 0) + (side.picked !== "all" ? 1 : 0),
         }}
         filters={
@@ -302,6 +312,9 @@ export function FollowUps(props: { compact?: boolean }) {
         }
       />
       {ownRow && filter === "send" && !nothingAnywhere && <OwnTodosRow section={ownRow} />}
+      {!onList ? (
+        <DroppedQuestions />
+      ) : (
       <ListState query={followups} failed={t("followups.load_failed")} row={{ lead: false, framed: true }}>
         {() =>
       sections.length === 0 && actRows.length === 0 ? (
@@ -379,6 +392,7 @@ export function FollowUps(props: { compact?: boolean }) {
       )
         }
       </ListState>
+      )}
       {!compact && !byProject && filter === "send" && actsFailure.failed && !followups.isError && (
         <LoadFailed message={t("outgoing.load_failed")} onRetry={() => void acts.refetch()} />
       )}
@@ -452,6 +466,8 @@ function FollowListRow(props: {
           ]
             .filter(Boolean)
             .join(" · ");
+  // Someone away or on a holiday is not chased until they are back.
+  const outUntil = s.out_until ? shortDay(s.out_until) : "";
   // The line's keys and button reach the person's message in the detail once it is shown there. Until then they show it, with
   // the cursor in the message, and the next press is the one that acts.
   const showFirst = () => {
@@ -495,6 +511,7 @@ function FollowListRow(props: {
       meta={
         <>
           {sub}
+          {outUntil && <span data-out-until="">{` · ${t("followups.out_until", { day: outUntil })}`}</span>}
           {kind === "waiting" && <WaitingPill days={oldest} chase={chase} />}
         </>
       }

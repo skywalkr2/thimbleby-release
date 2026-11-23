@@ -13,6 +13,7 @@ from api.schemas import (
     HandedOver,
     Ok,
     RecordRef,
+    WeekAheadDayOffView,
     WeekAheadRestore,
     WeekAheadRowView,
     WeekAheadSetAside,
@@ -63,6 +64,8 @@ def build_week_ahead_router(ws: Workspace, cfg: Config, store: Store, events: Ev
                 estimate_usd=card.estimate_usd,
                 waiting=card.waiting,
                 read_again=card.state not in ("working", "needs_go"),
+                days_off=[WeekAheadDayOffView(day=d, reason=r) for d, r in card.days_off],
+                working_days=card.working_days,
             )
 
     @r.post("/week-ahead/read")

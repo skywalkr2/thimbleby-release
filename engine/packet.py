@@ -20,10 +20,12 @@ from engine.ai.task import AiTask
 from engine.blocked import standing_hold
 from engine.cleaning import Cleaned, clean
 from engine.config import Config
+from engine.id_words import ID
 from engine.intake import MISSED_KIND, source_text
 from engine.knowledge_section import per_input_section, stable_section, with_ancestors
 from engine.learn import is_learning
 from engine.learning import offered_ops, request_learns
+from engine.local_day import zone_of
 from engine.mail_sorting import PLACE_LINES
 from engine.names import PacketPeople, People
 from engine.ops import reach_choices, reference_for, schema_for
@@ -208,7 +210,7 @@ def build(ws: Workspace, store: Store, cfg: Config, request_id: str, today: date
             learned.stable,
             _calendar_section(store, cfg, today),
             "# Open actions\n" + _open_actions(store, people, out),
-            "# Open questions\n" + _open_questions(store, people, out),
+            "# Open questions\n" + _open_questions(store, people, out, cfg.dispatch.knowledge.question_body_chars),
             "# People\n" + _people(store, cfg),
             "# Projects\n" + _projects(store, cfg, people.pm, reach),
         )
@@ -481,6 +483,7 @@ def _item_block(ws: Workspace, store: Store, cfg: Config, req: Stored, source: S
                 "to": people.name(d["to"]),
                 "status": d["status"],
                 "answer": d.get("answer"),
+                "would_change": d.get("would_change"),
             }
             held = (d.get("resolves") or {}).get("action")
             if held:
@@ -665,7 +668,7 @@ def _ask_packet(ws: Workspace, store: Store, cfg: Config, req: Stored, kind: Tas
         part
         for part in (
             "# Open actions\n" + _open_actions(store, people),
-            "# Open questions\n" + _open_questions(store, people),
+            "# Open questions\n" + _open_questions(store, people, None, cfg.dispatch.knowledge.question_body_chars),
             "# People\n" + _people(store, cfg),
             "# Projects\n" + _projects(store, cfg, people.pm),
         )
@@ -1129,21 +1132,34 @@ def _open_actions(store: Store, people: People, left_out: Callable[[Mapping], bo
         project = f"[{d['project']}] " if d.get("project") else ""
         promised = ", ".join(people.name(person) for person in d.get("promised_to") or [])
         promised = f"; promised to {promised}" if promised else ""
-        proposed = entry_ties.pending(reader, a, refused)
+        proposed = entry_ties.pending(reader, a, refused, zone_of(store.plugins.cfg))
         tie = f"; may be due at calendar entry {proposed.id}, not tied yet" if proposed is not None else ""
         words = _marked_if_outside(reader, a, d["text"])
         lines.append(f"- {a.id} {project}{words} (owners: {owners}{promised}{due}{hold}{owed}{_belongs_to(d)}{tie})")
     return "\n".join(lines) or "(none)"
 
 
-def _open_questions(store: Store, people: People, left_out: Callable[[Mapping], bool] | None = None) -> str:
+def _open_questions(
+    store: Store, people: People, left_out: Callable[[Mapping], bool] | None = None, body_chars: int = 400
+) -> str:
+    """The open questions, one line each: the id, who it is to, the title, what it belongs to, the ticket or record keys
+    its words name, and its detail trimmed to `body_chars` (`knowledge.question_body_chars`; 0 leaves the detail out),
+    so an input that settles the problem a question asks about is seen to settle it, not only one that answers it."""
     lines = []
     for q in store.read().list("question"):
         d = q.data
         if d["status"] in ("answered", "dropped") or (left_out is not None and left_out(d)):
             continue
         title = _marked_if_outside(store.read(), q, d["title"])
-        lines.append(f"- {q.id} to {people.name(d['to'])}: {title}{_belongs_to(d, ' (', ')')}")
+        body = " ".join((d.get("text") or "").split())
+        keys = list(dict.fromkeys(ID.findall(f"{d['title']} {body}")))
+        named = f"; names {', '.join(keys)}" if keys else ""
+        if body_chars > 0 and body:
+            cut = body if len(body) <= body_chars else body[:body_chars].rstrip() + "..."
+            detail = f"; detail: {_marked_if_outside(store.read(), q, cut)}"
+        else:
+            detail = ""
+        lines.append(f"- {q.id} to {people.name(d['to'])}: {title}{_belongs_to(d, ' (', ')')}{named}{detail}")
     return "\n".join(lines) or "(none)"
 
 

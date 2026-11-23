@@ -12,7 +12,9 @@ practice to follow, what has been learned and the people on file.
 What to write:
 - One sentence that reads the week as a whole ("A light week with two parcels coming and the case deadline on Thursday").
   Use only what the records say. Never invent a day, a number, a name or a promise. A fact in the sentence is one a row
-  also states.
+  also states, except the days off the request lists.
+- When the request lists days off in the week ahead (holidays, closures), the sentence says so in a few words ("Thursday
+  and Friday are holidays, so three working days"). Days off are not records: they get no row.
 - One row for each thing that matters, in the order of the days. Each row has the day it falls on (from_day) and, for a
   window, its last day (to_day); a few words on what it is and why it matters; and the id of the record it comes from,
   copied exactly from the brackets. A record gets one row, never two.

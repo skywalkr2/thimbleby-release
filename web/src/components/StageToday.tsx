@@ -29,7 +29,7 @@ export function useStageToday() {
     item: (records.data ?? []).find((view) => sameItem(view.record, request.stage_start)) ?? null,
   }));
   const moves = (ready.data ?? []).filter((view) => view.next && view.ready);
-  return { waiting, moves, count: waiting.length + moves.length };
+  return { waiting, moves, count: waiting.length + moves.length, reads: [requests, records, ready] as const };
 }
 
 export function StageTodayRows(props: { today: ReturnType<typeof useStageToday> }) {

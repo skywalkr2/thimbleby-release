@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterable, Mapping
-from datetime import date
+from datetime import UTC, date
 from typing import Any, NamedTuple
 
 from engine.config.schema import KnowledgeSettings
+from engine.local_day import day_of
 from engine.records import Scope
 from engine.untrusted import neutralize, outside_block, quoted_attribute
 
@@ -440,7 +441,7 @@ def _facts_section(
         if fact.data.get("as_of"):
             return min(date.fromisoformat(str(fact.data["as_of"])), today)
         source = view.get("source", fact.data["source"]) if fact.data.get("source") else None
-        return min(date.fromisoformat(str(source.data["received_at"])[:10]), today) if source is not None else None
+        return min(day_of(source.data["received_at"], UTC), today) if source is not None else None
 
     def rank(fact: Any) -> tuple:
         day = when(fact)

@@ -17,11 +17,13 @@ Reads only.
 from __future__ import annotations
 
 import types
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from functools import cache
 from typing import Any, Union, get_args, get_origin
 
 from pydantic import BaseModel
+
+from engine.local_day import day_of
 
 #: Fields that hold a date as text, by record kind, because their type is a string.
 _TEXT_DATES: dict[str, frozenset[str]] = {"event": frozenset({"start", "end"})}
@@ -81,12 +83,12 @@ def for_readers(rows: list[dict[str, Any]], model: type[BaseModel] | None) -> li
     return [r for r in rows if r.get("version") not in quiet]
 
 
-def _day(stamp: Any) -> date:
-    return date.fromisoformat(str(stamp)[:10])
+def _day(stamp: Any, here: Any = None) -> date:
+    return day_of(stamp, here or UTC)
 
 
 def second_moves(
-    rows: list[dict[str, Any]], model: type[BaseModel] | None, within_days: int
+    rows: list[dict[str, Any]], model: type[BaseModel] | None, within_days: int, here: Any = None
 ) -> dict[tuple[Any, str], tuple[int, str]]:
     """The date moves that are a second or later move of the same date within `within_days` of the one before, by the
     version and field that made them: how many times the date has moved in that run (2 for the second) and the day the
@@ -102,7 +104,7 @@ def second_moves(
     for version, group in by_version.items():
         if not is_date_move(group, model):
             continue
-        day = _day(group[0]["at"])
+        day = _day(group[0]["at"], here)
         moved = {r["field"] for r in group if r["field"] in dates and r["before"] != r["after"]}
         for field in sorted(moved):
             count, first, last = runs.get(field, (0, day, day))
@@ -115,13 +117,15 @@ def second_moves(
     return found
 
 
-def changes_for_person(view: Any, kind: str, record_id: str, within_days: int) -> list[dict[str, Any]]:
+def changes_for_person(
+    view: Any, kind: str, record_id: str, within_days: int, here: Any = None
+) -> list[dict[str, Any]]:
     """A record's ledger rows as the person's own history shows them, oldest first: what readers see, and the date
     moves that are a second or later move of the same date within `within_days`, each carrying `moved_again` (how many
     times the date has moved in the run) and `moved_since` (the day the run began)."""
     rows = view.ledger(kind=kind, record_id=record_id)
     model = view.models.get(kind)
-    again = second_moves(rows, model, within_days)
+    again = second_moves(rows, model, within_days, here)
     seen = {id(r) for r in for_readers(rows, model)}
     out: list[dict[str, Any]] = []
     for row in rows:

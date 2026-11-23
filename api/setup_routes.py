@@ -116,6 +116,7 @@ from engine import (
     audit,
     kept_secrets,
     mail_services,
+    outward,
     references,
     setup,
     sides,
@@ -265,6 +266,7 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
         events.changed()
         return SettingsSaved(
             changes=[SettingChangeView(**c) for c in result.changes],
+            warnings=outward.name_warnings(store.read(), current(), result.changes),
             fingerprint=result.fingerprint,
             needs_restart=bool(result.changes) and worker.needs_restart(),
             kept_secrets_going=(released.going or None) if released else None,
@@ -2102,7 +2104,7 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
             # The check's calls are paid for out of the spending limits, which have no room for them: nothing was sent.
             raise HTTPException(status_code=409, detail=str(err)) from None
         remember(ws, now, results)
-        lift_pauses(ws, results)
+        release_after_check(lift_pauses(ws, results))
         release_identity_waits()
         line = AiTestResult(tier="account", account=name, main=True, ok=True, detail="answered")
         for x in results:
@@ -2143,6 +2145,13 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
         line.next_model = hard if work == "deep" else easy
         # In the person's words: which work, never the model's name.
         line.detail = RETIRED_PLAIN.format(work=work_in_words(work))
+
+    def release_after_check(freed: set[str]) -> None:
+        """Work that waited on an agent account held for its lock-down check tries again once the check passed."""
+        from engine.worker import release_account
+
+        if freed and release_account(store, freed):
+            worker.poke()
 
     def release_identity_waits() -> None:
         """After a check or an answer: work that waited on an agent's sign-in tries again unless that sign-in still
@@ -2958,7 +2967,7 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
             raise HTTPException(status_code=409, detail=str(err)) from None
         record(ws, results, current)
         remember(ws, current, results)
-        lift_pauses(ws, results)
+        release_after_check(lift_pauses(ws, results))
         release_identity_waits()
         events.changed()
         # One line per kind of work and account, in plain words: the run's own details are for `thimbleby ai test`.

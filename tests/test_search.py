@@ -404,10 +404,12 @@ def test_near_duplicate_question_ignores_a_similar_question_to_a_different_perso
     assert near_duplicates(env, OPEN_QUESTION)  # the same question to the same person still fires
 
 
-def test_near_duplicate_question_ignores_dropped_questions(env):
+def test_near_duplicate_question_names_a_dropped_question_too(env):
+    """A dropped question counts as asked: the warning names it, and `question-asked-before` refuses it for good
+    (`tests/test_question_asked_before.py`)."""
     _, _, store = env
     add_question(store, OPEN_QUESTION, status="dropped")
-    assert not near_duplicates(env, OPEN_QUESTION)
+    assert near_duplicates(env, OPEN_QUESTION)
 
 
 def test_the_lint_defaults_and_ranges():

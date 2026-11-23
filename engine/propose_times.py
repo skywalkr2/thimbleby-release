@@ -14,6 +14,7 @@ from typing import Any
 
 from engine import routines
 from engine.free_slots import Busy, free_slots
+from engine.local_day import maybe_day
 from engine.reminder_lines import rules
 from engine.reminders import crosses_midnight
 from engine.today import zone
@@ -41,10 +42,7 @@ def _moment(text: str, tz: Any) -> datetime | None:
 
 
 def _day(text: str) -> date | None:
-    try:
-        return date.fromisoformat(text[:10])
-    except ValueError:
-        return None
+    return maybe_day(text, UTC)
 
 
 def busy_of(entries: list[Any], tz: Any, *, skip: str | None = None) -> list[Busy]:

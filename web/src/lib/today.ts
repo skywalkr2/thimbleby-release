@@ -107,8 +107,39 @@ export function useTodayCount(side: SideChoice = "all"): number | null {
   const stage = useStageToday();
   const outgoing = useActToday();
   const accounts = useAccountToday(side);
+  const failed = useTodayReadFailures().length > 0;
   if (!queue.data) return null;
-  return queue.data.filter((line) => !isSetupLine(line)).length + (plugins.data?.length ?? 0) + stage.count + outgoing.count + accounts.count;
+  const count = queue.data.filter((line) => !isSetupLine(line)).length + (plugins.data?.length ?? 0) + stage.count + outgoing.count + accounts.count;
+  // A read that failed counts as nothing known, never as nothing: a zero from reads that could not answer is "can't tell".
+  return count === 0 && failed ? null : count;
+}
+
+/** A read Today depends on that failed, with the words for what it was and the error it failed with. */
+export interface ReadFailure {
+  key: "sends" | "addons" | "stages" | "sources";
+  /** The wording-sheet key of what could not be checked ("queue.read_failed.sends"). */
+  wording: string;
+  error: unknown;
+  retry: () => void;
+}
+
+/** The reads besides the queue's own that Today's count and empty card depend on, as far as they have failed and not answered since:
+ * what waits to go out, the add-ons' lines, the stages' tasks and the sources. Empty when every one answered. */
+export function useTodayReadFailures(): ReadFailure[] {
+  const plugins = useQuery({ queryKey: ["plugin-today"], queryFn: api.pluginToday });
+  const watch = useQuery({ queryKey: ["watch"], queryFn: api.watchSources });
+  const stage = useStageToday();
+  const outgoing = useActToday();
+  const found: ReadFailure[] = [];
+  const add = (key: ReadFailure["key"], reads: ReadonlyArray<{ isError: boolean; data: unknown; error: unknown; refetch: () => unknown }>) => {
+    const bad = reads.find((read) => read.isError);
+    if (bad) found.push({ key, wording: `queue.read_failed.${key}`, error: bad.error, retry: () => reads.forEach((read) => void read.refetch()) });
+  };
+  add("sends", [outgoing.read]);
+  add("addons", [plugins]);
+  add("stages", stage.reads);
+  add("sources", [watch]);
+  return found;
 }
 
 /** A side is picked and nothing of its own needs the person: what remains is the app's own lines, which belong to no side and stay

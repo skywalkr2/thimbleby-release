@@ -24,6 +24,8 @@ import { useWords } from "../lib/wording";
 import { Button } from "../ui/Button";
 import { ActPill } from "./ActPill";
 import { ConfirmSend } from "./ConfirmSend";
+import { RewordAct } from "./RewordAct";
+import { api } from "../lib/api";
 import { RowMenu, type MenuAction } from "./RowMenu";
 import { restoreFocus } from "./ModalPanel";
 import styles from "./Outgoing.module.css";
@@ -45,6 +47,7 @@ export function OutgoingDetail(props: {
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   const [confirm, setConfirm] = useState<null | "send" | "again">(null);
   const [busy, setBusy] = useState(false);
+  const [rewording, setRewording] = useState(false);
   const allTicked = called.every((r) => ticked.has(r.key));
   const acknowledged = called.filter((r) => ticked.has(r.key)).map((r) => r.key);
   const byHand = isByHand(act);
@@ -52,6 +55,8 @@ export function OutgoingDetail(props: {
   const mustLook = stale && !props.looked;
   const offered = canApprove(act) || act.status === "approved";
   const blocked = !!act.withheld;
+  const noSubject = act.kind === "message" && ["send", "reply", "reply_all", "forward"].includes(act.action) && !(act.parts.subject ?? "").trim();
+  const canReword = canApprove(act) && act.kind === "message";
   const title = actTitle(act, t);
   const approveId = `${base}-approve`;
   const messages = (act.about ?? []).filter((x) => x.kind === "message");
@@ -71,6 +76,19 @@ export function OutgoingDetail(props: {
       setBusy(false);
     }
   };
+
+  const reword = (parts: Record<string, string>) =>
+    void guard(async () => {
+      await api.editAct(act.id, { read_version: act.version, parts });
+      setRewording(false);
+      await client.invalidateQueries({ queryKey: ["acts"] });
+    });
+  const isAPerson = () =>
+    void guard(async () => {
+      await api.nameIsAPerson(act.id);
+      await Promise.all([client.invalidateQueries({ queryKey: ["acts"] }), client.invalidateQueries({ queryKey: ["people"] })]);
+      setConfirm("send");
+    });
 
   const toggle = (key: string, on: boolean) => {
     const next = new Set(ticked);
@@ -124,6 +142,11 @@ export function OutgoingDetail(props: {
           {act.withheld}
         </p>
       )}
+      {noSubject && !blocked && (
+        <p className="problem-note" role="alert" data-no-subject="">
+          {t("outgoing.no_subject_note")}
+        </p>
+      )}
       {!blocked && act.mention && (
         <p className="hint" role="note" data-mention="">
           {act.mention}
@@ -136,7 +159,8 @@ export function OutgoingDetail(props: {
         </p>
       )}
 
-      {Object.keys(act.parts).length > 0 && (
+      {rewording && <RewordAct act={act} busy={busy} onSave={reword} onCancel={() => setRewording(false)} />}
+      {!rewording && Object.keys(act.parts).length > 0 && (
         <section className={styles.section} aria-label={t("outgoing.section.content")}>
           <h3>{t("outgoing.section.content")}</h3>
           {Object.entries(act.parts).map(([name, text]) => (
@@ -260,12 +284,22 @@ export function OutgoingDetail(props: {
             </Button>
           </>
         )}
+        {canReword && !rewording && !mustLook && (
+          <Button variant={blocked || noSubject ? "primary" : "secondary"} disabled={busy} onClick={() => setRewording(true)}>
+            {t("outgoing.reword")}
+          </Button>
+        )}
+        {blocked && act.credited_name && !mustLook && (
+          <Button variant="secondary" disabled={busy} onClick={isAPerson}>
+            {t("outgoing.name_is_person", { name: act.credited_name })}
+          </Button>
+        )}
         {offered && !mustLook && !byHand && (
           <Button
             id={approveId}
             variant="primary"
-            disabled={busy || blocked || !allTicked}
-            reason={blocked ? undefined : reasonAck}
+            disabled={busy || blocked || noSubject || !allTicked}
+            reason={blocked || noSubject ? undefined : reasonAck}
             onClick={() => setConfirm("send")}
           >
             {t("outgoing.approve_send")}

@@ -21,6 +21,7 @@ function show(routes: Record<string, () => unknown>) {
     "GET changes": () => [],
     "GET followups": () => [],
     "GET plugin-today": () => [],
+    "GET acts": () => ({ acts: [], next: null }),
     "GET stages/records": () => [],
     "GET stages/ready": () => [],
     "GET stages/requests": () => [],
