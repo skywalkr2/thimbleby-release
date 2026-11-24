@@ -648,6 +648,14 @@ class BackupStatus(BaseModel):
     needs_attention: bool
     last_error: ScreenText | None
     encrypted: bool = Field(False, description="Whether every backup copy is encrypted (a key is set for it).")
+    folder: str = Field(
+        "",
+        description="The folder off this computer the copies go to (its label, else its path); empty while the only "
+        "copies are kept on this computer. `configured` is true exactly when this is set.",
+    )
+    newest_hours: float | None = Field(
+        None, description="How old the newest copy is, of either kind (kept here or in the folder); null when none yet."
+    )
 
 
 class BackupTargetView(BaseModel):
@@ -664,6 +672,7 @@ class BackupCopyView(BaseModel):
     name: str
     made_at: str | None = Field(description="When it was made, from its name.")
     encrypted: bool
+    local: bool = Field(False, description="Kept on this computer itself, not in a folder the person chose.")
 
 
 class PendingRestoreView(BaseModel):
@@ -706,6 +715,8 @@ class BackupsView(BaseModel):
         description="Backups are made on their own now: the setting is on and there is a place to put them."
     )
     switch: bool = Field(description="The setting itself, which stays on while there is no folder.")
+    local_last_success: str | None = Field(None, description="When the last copy kept on this computer was made.")
+    local_last_error: ScreenText | None = Field(None, description="Why the last try at that copy didn't work.")
     pending: PendingRestoreView | None = Field(
         None, description="A restore waiting for the next start, if there is one."
     )

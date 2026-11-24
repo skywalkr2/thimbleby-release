@@ -388,6 +388,7 @@ class Worker:
         self._accounts_lock = threading.Lock()
         #: The short-lived threads reading accounts just signed in, each ending with its read.
         self._account_reads: list[threading.Thread] = []
+        self._asks_apart: list[threading.Thread] = []
         #: The accounts (sign-in, address) an account-read thread is reading: the jobs pass leaves their sources to
         #: it, so none is read twice in a row. Worked out when the pass runs, from the settings it then has.
         self._claimed_accounts: list[tuple[Any, str | None]] = []
@@ -772,10 +773,42 @@ class Worker:
             self._jobs.join(timeout=short or 60)
         for reading in list(self._account_reads):
             reading.join(timeout=short or 60)
+        for asked in list(self._asks_apart):
+            asked.join(timeout=short or 60)
         if self._sync:
             self.events.changed()
             self._sync.join(timeout=short or 60)
             self.release_folder()
+
+    def do_apart(self, where: str, work: Any) -> bool:
+        """Do a person's ask that reads a source or asks the assistant (work that waits for a read under way, or runs
+        for as long as one does) on a short-lived thread of its own, so the press answers at once and never waits
+        behind another run. Returns True when it was handed to the thread. Before the worker is started nothing
+        else is running to take it, so it is done here and False is returned. A failure is logged and shown as an
+        automation issue; the screens are told when it ends."""
+        with self._accounts_lock:
+            self._asks_apart = [t for t in self._asks_apart if t.is_alive()]
+            running = self._jobs is not None and self._jobs.is_alive() and not self._stop.is_set()
+            if running:
+
+                def run() -> None:
+                    try:
+                        work()
+                    except LeaseLost:
+                        log.warning("Another copy took over this workspace; %s is not done here", where)
+                    except (Exception, SystemExit):
+                        log.exception("%s failed", where)
+                        self._problem(where)
+                    finally:
+                        self.events.changed()
+                        self.poke()
+
+                asked = threading.Thread(target=run, name="cockpit-ask-apart", daemon=True)
+                self._asks_apart.append(asked)
+                asked.start()
+                return True
+        work()
+        return False
 
     def read_sources_now(self) -> None:
         """A source was just added or a sign-in just started some: read what is due at once, not at the next minute's
@@ -1064,9 +1097,23 @@ class Worker:
             self._problem("notices by mail")
 
     def backup_if_due(self) -> bool:
-        """Make a scheduled backup when one is due. On its own thread, so a large copy never holds up other work."""
-        from engine.backup import due, run_backup
+        """Make the scheduled backups that are due: the copy kept on this computer, and the ones off it. On its own
+        thread, so a large copy never holds up other work. Returns whether a backup off this computer was made."""
+        from engine.backup import due, local_due, run_backup, run_local
 
+        # The copy this computer keeps for itself, from the first day, whether or not a folder off it is chosen.
+        mine = self.cfg.storage.backups
+        made = False
+
+        def local_still_due() -> bool:
+            nonlocal made
+            made = local_due(self.ws, mine)
+            return made
+
+        if local_due(self.ws, mine):
+            run_local(self.ws, mine, only_if=local_still_due)
+            if made:
+                self.events.changed()
         if not due(self.ws, self.cfg):
             return False
         # Asked again with the lock held: the first backup of a new folder may have been made while this one waited.

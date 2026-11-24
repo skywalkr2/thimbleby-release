@@ -1,0 +1,29 @@
+id: todo-due-day-not-in-the-input-is-marked-to-check
+title: A to-do whose due day nothing in the input says keeps it, marked for the person to check
+skills: [dates, evidence]
+received: '2026-10-14'
+# The mail asks for the sizing numbers and gives no day. An answer that dates the to-do anyway, with no words of the input
+# behind the day, keeps it as the assistant's own reckoning, marked for the person to check: never a day passed unchecked.
+pasted: |-
+  From: Kofi Mensah-Hale
+
+  Could you send me the hardware sizing numbers for the rollout?
+expect:
+- op: action.add
+  text_has:
+  - sizing
+  due: '2026-10-20'
+  due_check: true
+forbid:
+- op: event.add
+stub_answer:
+  summary: Kofi asked for the hardware sizing numbers.
+  ops:
+  - op: action.add
+    text: Send Kofi the hardware sizing numbers
+    owners:
+    - Kofi Mensah-Hale
+    project: PRJ-1
+    due: '2026-10-20'
+    evidence:
+      quote: Could you send me the hardware sizing numbers for the rollout?

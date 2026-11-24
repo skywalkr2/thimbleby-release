@@ -122,6 +122,17 @@ export function BackupsPanel(props: { local: boolean }) {
           }
         />
       </RowList>
+      {view.local_last_error ? (
+        <p className="problem-note" data-local-copy-failed="">
+          {t("backups.local.failed", { problem: view.local_last_error })}
+        </p>
+      ) : (
+        view.local_last_success && (
+          <p className="hint" data-local-copy="">
+            {t("backups.local.last", { when: dayAndTime(view.local_last_success) })}
+          </p>
+        )
+      )}
       <Actions align="start">
         <Button loading={busy} disabled={!there} reason={t("backups.now.needs_folder")} onClick={() => void backUp()}>
           {t("backups.now")}
@@ -145,7 +156,7 @@ export function BackupsPanel(props: { local: boolean }) {
               <span>{copy.made_at ? dayAndTime(copy.made_at) : copy.name}</span>
               <span className="hint">
                 {" · "}
-                {folderName(copy.target)}
+                {copy.local ? t("backups.local.name") : folderName(copy.target)}
                 {copy.encrypted ? ` · ${t("backup.encrypted")}` : ""}
               </span>{" "}
               <Button

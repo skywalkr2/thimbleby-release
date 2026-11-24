@@ -430,3 +430,16 @@ def test_a_running_copy_of_the_same_build_is_never_asked_to_quit_by_a_source_run
     finally:
         control.stop()
         lock.release()
+
+
+@pytest.mark.parametrize("system", ["Darwin", "Windows", "Linux"])
+def test_the_saved_keys_are_inside_the_app_data_folder_on_each_system(system):
+    from engine.app_dirs import app_dirs
+    from engine.legacy_names import private_dir
+
+    home = {"Darwin": "/Users/rowan", "Windows": r"C:\Users\Rowan", "Linux": "/home/rowan"}[system]
+    root, _ = desktop.places({}, home, system)
+    data = Path(app_dirs(system, {}, home, desktop.app_name(system, {}, home)).data)
+    keys = private_dir(root) / "keys"
+    assert str(keys).startswith(str(data))
+    assert "Roaming" not in str(keys)

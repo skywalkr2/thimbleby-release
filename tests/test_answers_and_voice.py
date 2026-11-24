@@ -198,6 +198,48 @@ def test_a_fact_whose_day_the_quote_does_not_state_is_kept_without_the_day(env):
     assert kept and kept[0].data.get("on") is None and kept[0].data.get("on_kind") is None
 
 
+def _todo(words: str, due: str, due_words: str | None, cfg) -> dict:
+    op = {
+        "op": "action.add",
+        "text": "Send the jacket copy to marketing",
+        "owners": [cfg.workspace.user.person],
+        "due": due,
+        "evidence": {"quote": words},
+    }
+    return {**op, "due_words": due_words} if due_words else op
+
+
+def _the_todo(store) -> dict:
+    return next(a.data for a in store.read().list("action") if a.data["text"] == "Send the jacket copy to marketing")
+
+
+def test_a_todo_whose_due_day_nothing_in_the_input_says_is_kept_and_marked_to_check(env):
+    ws, cfg, store = env
+    words = "The marketing group needs the jacket copy before then"
+    request = hand_in(ws, store, note="", pasted=f"Thread of 20 November.\n\n{words}.", now=NOW).request
+    run(env, request, {"summary": "Recorded what marketing needs.", "ops": [_todo(words, "2026-12-03", None, cfg)]})
+    kept = _the_todo(store)
+    assert kept["due"] == "2026-12-03" and kept["due_check"] is True
+
+
+def test_a_todo_whose_quote_states_its_day_is_not_marked(env):
+    ws, cfg, store = env
+    words = "Send marketing the jacket copy by December 3, 2026"
+    request = hand_in(ws, store, note="", pasted=f"{words}.", now=NOW).request
+    run(env, request, {"summary": "Recorded it.", "ops": [_todo(words, "2026-12-03", None, cfg)]})
+    kept = _the_todo(store)
+    assert kept["due"] == "2026-12-03" and not kept.get("due_check")
+
+
+def test_a_todo_whose_due_words_are_in_the_input_keeps_its_day(env):
+    ws, cfg, store = env
+    words = "Send marketing the jacket copy by Wednesday"
+    request = hand_in(ws, store, note="", pasted=f"{words}.", now=NOW).request
+    run(env, request, {"summary": "Recorded it.", "ops": [_todo(words, "2026-11-25", "by Wednesday", cfg)]})
+    kept = _the_todo(store)
+    assert kept["due"] == "2026-11-25" and not kept.get("due_check")
+
+
 def test_a_fact_whose_day_the_quote_states_keeps_it(env):
     ws, cfg, store = env
     words = "Marketing needs the jacket copy by December 3, 2026"
@@ -314,6 +356,7 @@ CASES = [
     "note-settling-one-part-leaves-the-other-parts-questions-open",
     "message-request-with-no-mail-account-is-never-refused",
     "own-note-drafting-a-message-is-a-copy-draft-not-a-todo",
+    "todo-due-day-not-in-the-input-is-marked-to-check",
 ]
 
 
@@ -326,6 +369,18 @@ def test_the_golden_set_cases_of_these_stories_pass_on_their_scripted_answers():
     report = evaluate.evaluate(demo, stub=True, runs=1, only=CASES)
     assert sorted(r.case for r in report.results) == sorted(CASES)
     assert all(r.passed for r in report.results), [(r.case, r.missing, r.forbidden) for r in report.results]
+
+
+def test_the_reviewers_draft_request_case_passes_on_its_scripted_answer():
+    from pathlib import Path
+
+    from engine import evaluate
+
+    demo_b = Path(__file__).resolve().parent.parent / "workspaces" / "demo-b"
+    case = "own-note-asking-for-the-acknowledgments-names-is-a-draft"
+    report = evaluate.evaluate(demo_b, stub=True, runs=1, only=[case])
+    assert [r.case for r in report.results] == [case]
+    assert report.results[0].passed, (report.results[0].missing, report.results[0].forbidden)
 
 
 # ---- S-0731: a message is drafted from the person's own words, never from outside text -------------------------------
@@ -385,3 +440,77 @@ def test_an_outside_mail_asking_for_a_message_drafts_nothing(env):
     # Run end to end: the draft is refused and no act exists.
     run(env, request, {"summary": "Drafted the message.", "ops": [draft_op(store, cfg)]})
     assert store.read().list("act") == []
+
+
+# ---- S-0786: the person's own note asking for a message is drafted, not a to-do -------------------------------
+
+
+def _reviewers_note() -> str:
+    """The functional reviewer's note of #63, as its golden case holds it."""
+    from pathlib import Path
+
+    import yaml
+
+    case = Path(__file__).resolve().parent.parent / "workspaces" / "demo-b" / "evals"
+    return yaml.safe_load((case / "own-note-asking-for-the-acknowledgments-names-is-a-draft.yaml").read_text())["note"]
+
+
+REVIEWERS_NOTE = _reviewers_note()
+
+
+def _returned_twice(env, note: str, first: dict, second: dict) -> list:
+    ws, cfg, store = env
+    asked = []
+    queue = [json.dumps(first), json.dumps(second)]
+
+    def responder(task):
+        asked.append(task)
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+
+    set_responder(responder)
+    request = hand_in(ws, store, note=note, pasted="", now=NOW).request
+    process(ws, store, cfg, Router(cfg, store, env={}), request, now=NOW)
+    return asked
+
+
+def _write_it_todo(cfg) -> dict:
+    return {
+        "summary": "Noted to write about the acknowledgments.",
+        "ops": [
+            {
+                "op": "action.add",
+                "text": "Write a message about the acknowledgments names",
+                "owners": [cfg.workspace.user.person],
+                "evidence": {"quote": REVIEWERS_NOTE},
+            }
+        ],
+    }
+
+
+def test_a_note_asking_for_a_message_answered_with_a_todo_goes_back_once(env):
+    ws, cfg, store = env
+    asked = _returned_twice(env, REVIEWERS_NOTE, _write_it_todo(cfg), _write_it_todo(cfg))
+    assert len(asked) == 2
+    assert "asks for a message" in asked[1].request and "act.draft" in asked[1].request
+    # The assistant's second answer stands: the rule only points.
+    assert any("acknowledgments" in a.data["text"] for a in store.read().list("action"))
+
+
+def test_a_note_that_asks_for_no_message_is_not_sent_back(env):
+    ws, cfg, store = env
+    note = "Remind me to check the acknowledgments names on Friday"
+    todo = {**_write_it_todo(cfg)}
+    todo["ops"] = [{**todo["ops"][0], "text": "Check the acknowledgments names", "evidence": {"quote": note}}]
+    asked = _returned_twice(env, note, todo, todo)
+    assert len(asked) == 1
+
+
+def test_the_words_that_ask_for_a_message_come_from_the_language_settings(env):
+    from engine.applier import _asks_for_a_message
+
+    ws, cfg, store = env
+    assert _asks_for_a_message(cfg, REVIEWERS_NOTE) == "Draft a short message"
+    assert _asks_for_a_message(cfg, "Write an email to the printer") == "Write an email"
+    assert _asks_for_a_message(cfg, "Send the proofs to the printer") is None
+    cfg.language.message_request_nouns = ["memo"]
+    assert _asks_for_a_message(cfg, REVIEWERS_NOTE) is None

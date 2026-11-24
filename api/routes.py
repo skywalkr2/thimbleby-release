@@ -686,7 +686,10 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
     def sync_check_now() -> HandoverView:
         """Look over the synced folder now instead of at the next pass: write what changed and say what was found."""
         if cfg.storage.sync.folder.strip() and not worker.sync_held and not worker.sync_lost:
-            worker.sync_if_changed()  # a folder that can't be written is set as the page's problem line by the pass
+            # A folder that can't be written is set as the page's problem line by the pass. The pass is the worker's:
+            # it waits for the background pass that may be writing, so the press answers at once and the page updates
+            # when the pass ends.
+            worker.do_apart("checking the synced folder", worker.sync_if_changed)
             changed()
         return handover_view()
 
@@ -1643,6 +1646,8 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
                 needs_attention=b.needs_attention,
                 last_error=b.last_error,
                 encrypted=b.encrypted,
+                folder=b.folder or "",
+                newest_hours=b.newest_hours,
             ),
             requests=RequestCounts(**counts),
             network_wait=NetworkWait(count=len(waiting), since=min(waiting)) if waiting else None,
@@ -3246,6 +3251,7 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
     @r.post("/backup")
     def backup_now() -> Status:
         run_backup(ws, cfg)
+        backup_module.run_local(ws, cfg.storage.backups)
         changed()
         return status()
 
@@ -3270,12 +3276,16 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
                 needs_attention=b.needs_attention,
                 last_error=b.last_error,
                 encrypted=b.encrypted,
+                folder=b.folder or "",
+                newest_hours=b.newest_hours,
             ),
             message=b.message,
             targets=[BackupTargetView(**vars(t)) for t in found.targets],
             copies=[BackupCopyView(**vars(c)) for c in found.copies],
             schedule=found.schedule,
             switch=found.switch,
+            local_last_success=found.local_last_success,
+            local_last_error=found.local_last_error,
             pending=pending_restore(),
             restore_blocked=restore_in_app.blocked(cfg),
         )

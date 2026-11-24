@@ -2832,6 +2832,11 @@ class Run(Record):
     tier: str = Field(description="The configured tier the call was made on.")
     input_chars: int = Field(0, description="Characters sent.")
     output_chars: int = Field(0, description="Characters received.")
+    packet_parts: dict[str, int] | None = Field(
+        None,
+        description="The packet's size in the app's own token count by part (knowledge, questions, todos, people, "
+        "rest); the parts add up to the whole packet. Sizes only, never the text. None for a call with no packet.",
+    )
     input_tokens: int | None = Field(None, description="Tokens sent, when the provider reports them.")
     output_tokens: int | None = Field(None, description="Tokens received, when the provider reports them.")
     cached_input_tokens: int | None = Field(None, description="Tokens sent that were read from the provider's cache.")

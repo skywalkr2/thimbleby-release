@@ -14,3 +14,6 @@ Font License, Version 1.1 (https://openfontlicense.org), which allows them to be
 - Fraunces (variable), Copyright 2020 The Fraunces Project Authors (https://github.com/undercasetype/Fraunces), through the npm
   package @fontsource-variable/fraunces.
 The fonts' own license text ships with each package.
+The Windows and Linux desktop builds bundle pystray, the library that draws the app's tray item, unmodified and as a separate
+library, under the GNU Lesser General Public License, Version 3 (https://www.gnu.org/licenses/lgpl-3.0.html); its source is at
+https://github.com/moses-palmer/pystray.

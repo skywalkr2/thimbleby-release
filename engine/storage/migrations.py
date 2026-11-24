@@ -57,6 +57,8 @@ def run(store: Any) -> list[str]:
     conn: sqlite3.Connection = store._conn
     conn.execute(TABLE)
     kinds = sorted({m.kind for m in MIGRATIONS})
+    if _pending(conn, kinds):
+        _copy_first(store)
     with store._lock:
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -70,6 +72,32 @@ def run(store: Any) -> list[str]:
             raise
         conn.execute("COMMIT")
     return done
+
+
+def _pending(conn: sqlite3.Connection, kinds: list[str]) -> bool:
+    """Whether opening this workspace is about to rewrite records: some kind is at an earlier version than this
+    program writes, and the workspace holds records (a new one starts at the current versions)."""
+    recorded = {r["kind"]: r["schema"] for r in conn.execute("SELECT kind, schema FROM record_schema")}
+    if not recorded and not conn.execute("SELECT 1 FROM records LIMIT 1").fetchone():
+        return False
+    return any(recorded.get(kind, BASE_VERSION) < latest(kind) for kind in kinds)
+
+
+def _copy_first(store: Any) -> None:
+    """Keep a copy of the workspace on this computer before records are rewritten. When it can't be made nothing is
+    changed and the workspace doesn't open, with the reason. A database outside a workspace folder is left alone."""
+    from engine.storage.store import StoreError
+    from engine.workspace import Workspace
+
+    ws = Workspace(store.path.parent)
+    if not ws.config_dir.is_dir():
+        return
+    from engine import backup
+
+    try:
+        backup.local_backup_before(ws)
+    except backup.BackupFirstFailed as err:
+        raise StoreError(str(err)) from None
 
 
 def _run(store: Any, conn: sqlite3.Connection, kinds: list[str]) -> list[str]:

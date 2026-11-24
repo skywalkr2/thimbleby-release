@@ -335,6 +335,27 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      - name: Time the built app with a low-end laptop's cores and memory, and fail past the budget
+        # Windows only. The first start walks setup to Today; the second runs with its cores and memory limited to the
+        # figures in deploy/desktop/build_support/low_end_budget.json, and the check fails when the time from opening to
+        # Today, or the memory held a minute later, is past its budget. Both numbers are printed on every run.
+        if: runner.os == 'Windows'
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/pw-browsers
+        shell: bash
+        run: |
+          APP="$(cygpath -w "$PWD/dist/Thimbleby/Thimbleby.exe")"
+          python deploy/desktop/build_support/low_end_check.py "$APP" "$RUNNER_TEMP/low-end-pictures"
+
+      - name: Keep the pictures of the low-end run
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Thimbleby-low-end-pictures-${{ matrix.target }}
+          path: ${{ runner.temp }}/low-end-pictures
+          if-no-files-found: warn
+          retention-days: 14
+
   # The release's list of files (each installer's name, size and SHA-256), made once every installer is built, and
   # signed with the key kept as the repository secret RELEASE_SIGNING_KEY. The app carries the public key and offers or
   # installs an update only when this signature verifies. A tag with no key fails here; a run by hand with no key

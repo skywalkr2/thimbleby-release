@@ -16,6 +16,10 @@ backups:
   former_cloud_path: [Backups, PM Cockpit]
   every_hours: 24
   keep: 14
+  local_keep: 14   # how many copies this computer keeps for itself: one a day from the first day, and one before every update
+  local_folder: ""   # empty: a folder beside the workspace's own; it can't be inside the workspace
+  warn_after_hours: 48   # how old the newest copy may be before the header and Today say it is overdue
+  nudge_again_days: 14   # how long after Not now the reminder to pick a folder off this computer comes back
   shrink_percent: 50   # a copy smaller than this percent of the one before it in the same place is flagged
   automatic: true
   retry_minutes: 60

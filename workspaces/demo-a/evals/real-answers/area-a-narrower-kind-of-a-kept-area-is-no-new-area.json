@@ -1,1 +1,1 @@
-{"summary": "Offered no area: the four Pageturn items are all about mystery novels, a narrower kind of the kept area Book collecting, so they belong inside it and are left out.", "ops": [{"op": "area.offer", "areas": []}]}
+{"summary": "Left the mystery novel items out, since they are about Book collecting, which you already keep, so no new area is offered.", "topic": "Mystery novel orders from Pageturn", "ops": [{"op": "area.offer", "areas": []}]}

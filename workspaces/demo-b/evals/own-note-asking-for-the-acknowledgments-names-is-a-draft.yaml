@@ -1,0 +1,34 @@
+id: own-note-asking-for-the-acknowledgments-names-is-a-draft
+title: The person's own note asking for a message to Maya about the acknowledgments is a Copy draft for their yes, never a to-do
+skills: [use-facts]
+received: '2026-10-09'
+# The functional reviewer's case of build #63, word for word: on the cheapest model it became a to-do to write the message.
+# The message is drafted for the person's approval instead; a to-do that only says to write it goes back once (the lint
+# `message-as-todo`), and the assistant's second answer stands.
+note: Draft a short message to Maya asking her to send the last two acknowledgments names by Friday so the interior can go to the printer
+summary_voice: true
+expect:
+- held: act.draft
+  text_has:
+  - Maya|PER-2
+  - acknowledgment
+forbid:
+- op: action.add
+stub_answer:
+  summary: Drafted a message to Maya Okafor asking for the last two acknowledgments names by Friday; it waits for your yes.
+  ops:
+  - op: act.draft
+    channel: copy
+    target:
+      kind: message
+      action: send
+      recipients:
+      - person: PER-2
+    parts:
+      subject: The last two acknowledgments names
+      body: |-
+        Hi Maya,
+
+        Could you send me the last two names for the acknowledgments by Friday? Then the interior can go to the printer.
+
+        Thanks!

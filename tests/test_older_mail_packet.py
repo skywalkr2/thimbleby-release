@@ -42,12 +42,14 @@ def test_a_recent_inputs_request_does_not(monkeypatch):
 
 # A real low-cost model's answers to the packets of these cases, scored by each case's own checks.
 ANSWERS = DEMO / "evals" / "real-answers"
+#: Every workspace with real answers of its own: the second demo holds the reviewer's draft-request case.
+DEMOS = [DEMO, DEMO.parent / "demo-b"]
 
 
-def _score(case: str, monkeypatch):
+def _score(case: str, monkeypatch, demo: Path = DEMO):
     """Score a real model's saved answers to a case. A file holding a list is the answers of each round in order (the
     first answer, then its answer to the problems sent back), as the app gets them; the last answers any later call."""
-    found = json.loads((ANSWERS / f"{case}.json").read_text(encoding="utf-8"))
+    found = json.loads((demo / "evals" / "real-answers" / f"{case}.json").read_text(encoding="utf-8"))
     rounds = [json.dumps(a) for a in found] if isinstance(found, list) else [json.dumps(found)]
     calls = iter(range(10_000))
 
@@ -58,12 +60,12 @@ def _score(case: str, monkeypatch):
         stub.set_responder(None if responder is None else answer)
 
     monkeypatch.setattr(ev, "set_responder", replace)
-    return ev.evaluate(DEMO, stub=True, runs=1, only=[case])
+    return ev.evaluate(demo, stub=True, runs=1, only=[case])
 
 
 def test_a_real_models_answers_pass_the_cases_checks(monkeypatch):
-    for path in sorted(ANSWERS.glob("*.json")):
-        report = _score(path.stem, monkeypatch)
+    for path in sorted(p for demo in DEMOS for p in (demo / "evals" / "real-answers").glob("*.json")):
+        report = _score(path.stem, monkeypatch, path.parent.parent.parent)
         assert report.results, path.stem
         failed = [r for r in report.results if not r.passed]
         assert not failed, (path.stem, [getattr(r, "reasons", r) for r in failed])

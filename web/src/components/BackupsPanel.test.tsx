@@ -27,6 +27,8 @@ const state = (over: Partial<S["BackupStatus"]> = {}): S["BackupStatus"] => ({
   needs_attention: false,
   last_error: null,
   encrypted: false,
+  folder: "/mnt/drive",
+  newest_hours: 1,
   ...over,
 });
 
@@ -34,7 +36,7 @@ const view = (over: Partial<S["BackupsView"]> = {}): S["BackupsView"] => ({
   state: state(),
   message: "Backed up 1 h ago.",
   targets: [{ path: "/mnt/drive", label: "Drive", reachable: true, last_success: "2026-10-28T09:00:00+00:00", last_error: null }],
-  copies: [{ target: "Drive", path: "/mnt/drive/ws-20261028-090000", name: "ws-20261028-090000", made_at: "2026-10-28T09:00:00+00:00", encrypted: false }],
+  copies: [{ target: "Drive", path: "/mnt/drive/ws-20261028-090000", name: "ws-20261028-090000", made_at: "2026-10-28T09:00:00+00:00", encrypted: false, local: false }],
   schedule: true,
   switch: true,
   pending: null,
@@ -100,7 +102,7 @@ test("Restore this copy asks first, in plain words, and a plain copy has no key 
 
 test("an encrypted copy asks for its key in the same dialog, with the cursor in that field, and a refused key is said there", async () => {
   const user = userEvent.setup();
-  const copy = { target: "Drive", path: "/mnt/drive/ws-20261028-090000", name: "ws-20261028-090000", made_at: "2026-10-28T09:00:00+00:00", encrypted: true };
+  const copy = { target: "Drive", path: "/mnt/drive/ws-20261028-090000", name: "ws-20261028-090000", made_at: "2026-10-28T09:00:00+00:00", encrypted: true, local: false };
   let refuse = true;
   const calls = api(() => view({ copies: [copy] }), [{ path: "/mnt/drive", label: "Drive" }], {
     "POST backups/restore": () =>
@@ -180,4 +182,30 @@ test("Back up now says what it did on the page: the places it reached, or why it
   await user.click(screen.getByRole("button", { name: "Back up now" }));
   expect(await screen.findByText(/The backup didn't work: \/mnt\/drive isn't there/)).toBeInTheDocument();
   await waitFor(() => expect(screen.getByText(/Not there right now: Drive/)).toBeInTheDocument());
+});
+
+test("with no folder chosen it says backups are local only, lists the copy kept on this computer and restores from it", async () => {
+  const user = userEvent.setup();
+  const calls = api(
+    () =>
+      view({
+        state: state({ configured: false, last_success: null, age_hours: null, needs_attention: true }),
+        targets: [],
+        copies: [{ target: "", path: "/data/ws-backups/ws-20261028-090000", name: "ws-20261028-090000", made_at: "2026-10-28T09:00:00+00:00", encrypted: false, local: true }],
+        local_last_success: "2026-10-28T09:00:00+00:00",
+      }),
+    [],
+    { "POST backups/restore": () => ({ pending: { made_at: "2026-10-28T09:00:00+00:00", kind: "backup", records: 3 }, can_restart: true }) },
+  );
+  open();
+  const where = await screen.findByRole("region", { name: "Where backups go" });
+  expect(await within(where).findByText(/Backups: local only\. Pick a folder to protect against losing this computer/)).toBeInTheDocument();
+  expect(where).toHaveTextContent(/Copy kept on this computer/);
+  const copies = within(where).getByRole("list", { name: "Copies you can restore from" });
+  expect(copies).toHaveTextContent("This computer");
+  await user.click(within(copies).getByRole("button", { name: /^Restore the copy from / }));
+  await user.click(await screen.findByRole("button", { name: "Restore this copy" }));
+  await waitFor(() =>
+    expect(calls.find((c) => c.route === "POST backups/restore")?.body).toEqual({ path: "/data/ws-backups/ws-20261028-090000", key: null }),
+  );
 });

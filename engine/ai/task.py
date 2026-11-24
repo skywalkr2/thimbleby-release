@@ -117,6 +117,19 @@ class Image:
     name: str
 
 
+#: The parts a run's packet size is kept by in its record: lessons and other knowledge, open questions, open to-dos,
+#: people, and everything else (so the parts add up to the whole packet).
+PACKET_PARTS = ("knowledge", "questions", "todos", "people", "rest")
+
+
+def part_sizes(**chars: int) -> dict[str, int]:
+    """The characters of each named part of a packet other than the rest; only names in `PACKET_PARTS` are taken."""
+    unknown = set(chars) - set(PACKET_PARTS) - {"rest"}
+    if unknown:
+        raise ValueError(f"not a packet part: {sorted(unknown)}")
+    return dict(chars)
+
+
 @dataclass(frozen=True)
 class AiTask:
     """One call: what kind of work, the packet split into its stable part and its request part, and limits."""
@@ -145,10 +158,25 @@ class AiTask:
     image: Image | None = None
     # The smallest context window, in tokens, a model must have for this kind of work, whatever the packet's size.
     min_context: int = 0
+    # The characters of the packet's named parts (`PACKET_PARTS` but "rest"), measured where it was built; None when
+    # the packet doesn't say, which counts the whole packet as the rest.
+    parts: dict[str, int] | None = None
 
     @property
     def size(self) -> int:
         return len(self.instructions) + len(self.stable) + len(self.request)
+
+
+def packet_tokens_by_part(task: AiTask) -> dict[str, int]:
+    """The packet's size in the app's own token count by `PACKET_PARTS`. The rest is what the named parts leave of
+    the whole, so the five add up to the count the run was estimated from."""
+    from engine.ai.calibration import estimate_tokens
+
+    named = {name: estimate_tokens(chars) for name, chars in (task.parts or {}).items() if name != "rest"}
+    whole = estimate_tokens(task.size)
+    sizes = {name: min(named.get(name, 0), whole) for name in PACKET_PARTS if name != "rest"}
+    sizes["rest"] = max(0, whole - sum(sizes.values()))
+    return sizes
 
 
 @dataclass(frozen=True)

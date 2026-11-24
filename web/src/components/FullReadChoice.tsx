@@ -29,7 +29,7 @@ export function reachWords(days: number, tn: (key: string, n: number) => string)
   return tn("walkthrough.mail.full_read.days", days);
 }
 
-/** What one reach would take in and cost, summed over the account's open sources. */
+/** What one reach would take in and cost, summed over the sources the account has open. */
 function summed(views: S["FullReadView"][]): Option[] {
   const first = views[0]?.options ?? [];
   return first.map((o, i) => {
@@ -88,7 +88,7 @@ export function FullReadChoice(props: { sources: Source[]; account: string }) {
     const short = r.short ? tn(r.expected_estimate ? "walkthrough.mail.full_read.short_about" : "walkthrough.mail.full_read.short", r.gave, { expected: r.expected }) : "";
     return [head, skipped, short, stopWords(r, t)].filter(Boolean).join(" ");
   };
-  // Every open source of the account is answered (the inbox, the sent mail, any other), and what they did is said in one line
+  // Every source of the account that is open is answered (the inbox, the sent mail, any other), and what they did is said in one line
   // that names each, since a newer message would replace an older one.
   const confirm = async () => {
     if (picked === null) return;

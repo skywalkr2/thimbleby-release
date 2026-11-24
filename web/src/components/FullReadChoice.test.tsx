@@ -155,7 +155,7 @@ test("a count the service only estimated says about, in the list of reaches", as
   expect(options[1]).toMatch(/^1 month: About 201 more messages\./);
 });
 
-test("Read it answers every open source of the account and one line names each with its own count", async () => {
+test("Read it answers every source of the account that is open and one line names each with its own count", async () => {
   const user = userEvent.setup();
   const sent = source({ id: "s", label: "Your sent mail" });
   const inbox = source({ id: "m", label: "Your inbox" });

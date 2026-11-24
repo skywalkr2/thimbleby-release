@@ -1551,8 +1551,8 @@ function QueueRow(props: {
           pill: t(state === "unset" ? "queue.pill.backup.unset" : state === "never" ? "queue.pill.backup.never" : "queue.pill.backup"),
           tone: state === "failed" || state === "overdue" ? "danger" : "warn",
           // The title is what the person does; the state keeps its one word, then what happened.
-          meta: `${backupWord(state ?? "failed", t)} · ${words}`,
-          primary: state === "unset" ? { label: t("status.backup_set_up"), run: () => props.handlers.onOpenGuide?.("backup") } : { label: t("backup.now"), run },
+          meta: state === "unset" ? words : `${backupWord(state ?? "failed", t)} · ${words}`,
+          primary: state === "unset" ? { label: t("queue.backup.pick"), run: () => props.handlers.onOpenGuide?.("backup") } : { label: t("backup.now"), run },
           menu: [],
         };
       }
@@ -1884,7 +1884,9 @@ function QueueRow(props: {
   })();
 
   // A suggestion can be put off until something about it changes; what is due cannot.
-  const menu: MenuAction[] = SUGGESTION_KINDS.has(line.kind) ? [...d.menu, { id: "not-now", label: t("queue.notnow"), run: () => notNow(line.key) }] : d.menu;
+  // The backup line is put off only as the nudge to pick a folder; a failed or old copy stays until it is mended.
+  const offerable = SUGGESTION_KINDS.has(line.kind) || (line.kind === "backup" && line.state === "unset");
+  const menu: MenuAction[] = offerable ? [...d.menu, { id: "not-now", label: t("queue.notnow"), run: () => notNow(line.key) }] : d.menu;
   useRowKeys(ref, { toggle: props.beside ? choose : opens ? () => (props.paned && !open ? choose() : select(!open)) : undefined });
   // Under one side's filter, a line that is on no side (the app's own, or about all of them) says so, so it is never read as that side's.
   const everySide = props.everySideTag && sideFilter.choice !== "all" && line.side == null && !(line.sides ?? []).length ? <span className={styles.tag} data-every-side="">{t("queue.every_side")}</span> : null;

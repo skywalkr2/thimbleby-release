@@ -36,7 +36,8 @@ action to the assistant, as the button on its row does, with no input handed in;
 `draft`, and no ops. A case that names `answers` (one of its starting questions) hands its pasted text in as the
 reply to that question, with the note the Reply button writes (forbid `question.add` and `lesson.add` with
 `attempted: true` to refuse a new question or a correction even when the checks stop it); an expected `action.add`
-may name `reply_owed` (true for the action that is the reply the person owes), and an expected `question.add` may
+may name `reply_owed` (true for the action that is the reply the person owes) and `due_check` (true when its day
+is marked for the person to check), and an expected `question.add` may
 name `sides` (how many sides of a conflict it cites).
 A case that names `person_look` (`tally`, the lines of a fictional contact tally as the packet
 shows them, and `series`, the repeating calendar entries) starts from the weekly look at who the person deals with,
@@ -945,6 +946,8 @@ def _op_matches(e: dict[str, Any], o: dict[str, Any], store: Store) -> bool:
         if "reply_owed" in e and bool(a.get("reply_owed")) != bool(e["reply_owed"]):
             return False
         if "due" in e and a.get("due") != e["due"]:
+            return False
+        if "due_check" in e and bool(a.get("due_check")) != bool(e["due_check"]):
             return False
         if "promised_to" in e and sorted(a.get("promised_to") or []) != sorted(e["promised_to"]):
             return False

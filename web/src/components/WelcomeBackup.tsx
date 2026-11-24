@@ -142,6 +142,11 @@ export function WelcomeBackup(props: {
 
   return (
     <div className="guide-body" data-in-settings={props.settings ? "" : undefined}>
+      {existing.length === 0 && settings.data && (
+        <p className="hint" data-local-only="">
+          {t("welcome.backup.local_only")}
+        </p>
+      )}
       {existing.length > 0 && (
         <div>
           <p className="what">{t("welcome.backup.current")}</p>

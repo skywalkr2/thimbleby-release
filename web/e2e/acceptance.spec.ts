@@ -989,18 +989,19 @@ test.describe.serial("acceptance scenario", () => {
     expect(facts.length).toBeGreaterThan(0);
   });
 
-  test("7. With no off-device backup configured, Today and the header say so; after one succeeds, the status popover shows its age.", async ({ page }) => {
+  test("7. With no off-device backup configured, Today and the popover say this computer only; after one succeeds, the status popover shows its age.", async ({ page }) => {
     // No backup folder at all: the header chip, its popover and Today's At risk line each say there is none.
     await helperJson(page, "backup-targets?configured=0", "POST");
     await signIn(page);
     const chip = page.getByRole("button", { name: /^App status: / });
-    await expect(chip).toContainText("Backup not set up");
+    // Copies are kept on this computer from the first day, so the chip is quiet; the popover says what is protected.
+    await expect(chip).not.toContainText(/backup/i);
     const none = await openStatus(page);
-    await expect(none).toContainText("No backup on another device");
+    await expect(none).toContainText("Backup: this computer only");
     await page.keyboard.press("Escape");
-    const line = page.getByRole("group", { name: "Set up backups", exact: true });
-    await expect(line).toContainText("Backup not set up · No backup folder is chosen yet");
-    await expect(line.getByRole("button", { name: "Set up backups" })).toBeVisible();
+    const line = page.getByRole("group", { name: "Pick a backup folder", exact: true });
+    await expect(line).toContainText("Backups: local only. Pick a folder to protect against losing this computer");
+    await expect(line.getByRole("button", { name: "Pick a folder" })).toBeVisible();
     await checkAccessibility(page);
 
     // A folder is chosen but nothing has been copied yet: both still say a backup is needed.

@@ -56,9 +56,10 @@ def test_with_a_folder_and_no_backup_yet_it_says_never_and_a_failed_try_says_fai
 
 def test_an_overdue_backup_says_how_many_hours_ago_the_last_one_was(env):
     _, cfg, _ = env
-    old = NOW - timedelta(hours=3 * cfg.storage.backups.every_hours)
+    ago = cfg.storage.backups.warn_after_hours + 12  # past the age the setting calls overdue
+    old = NOW - timedelta(hours=ago)
     (line,) = backing_up(env, target=True, last_success=old.isoformat())
-    assert line.state == "overdue" and line.age_hours == 3 * cfg.storage.backups.every_hours
+    assert line.state == "overdue" and line.age_hours == ago
     assert line.group == "risk"  # backups that ran and then stopped are at risk
 
 

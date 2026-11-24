@@ -251,7 +251,7 @@ test("folder addresses are joined with the separator the address already uses", 
 
 describe("the first backup", () => {
   const statusWith = (backup: Partial<S["BackupStatus"]>) => ({
-    "GET status": () => statusFixture({}, { backup: { configured: true, ...backup } }),
+    "GET status": () => statusFixture({}, { backup: { configured: true, folder: "/mnt/drive", ...backup } }),
   });
 
   test("while the first backup is being made the screen says so, and it asks for nothing", async () => {

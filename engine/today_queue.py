@@ -1387,27 +1387,41 @@ def _everything(
 
     kept = backup.state(ws, cfg, now)
     # Not for a backup the person hasn't been asked about yet: partway through setup, before its screen.
-    if kept.needs_attention and not (not kept.configured and first_run.not_reached(ws, "backup")):
+    # With no folder off this computer chosen, the line is the plain nudge to pick one, or the copy kept here failing.
+    if (kept.needs_attention or not kept.configured) and not (
+        not kept.configured and first_run.not_reached(ws, "backup")
+    ):
         # A backup never set up or never run is a setup gap; one that ran and stopped, or that fails, is a risk.
-        lines.append(
-            Line(
-                key="backup",
-                group="setup" if not kept.configured or not (kept.last_success or kept.last_error) else "risk",
-                kind="backup",
-                state="unset"
-                if not kept.configured
-                else kept.problem
-                if kept.problem in ("failed", "smaller") and kept.last_success
-                else "overdue"
-                if kept.last_success
-                else "failed"
-                if kept.last_error
-                else "never",
-                age_hours=kept.age_hours,
-                since=kept.last_success or "",
-                subject=kept.place,
+        nudge = not kept.configured and kept.problem is None
+        # The nudge stays until a folder is chosen or the person puts it off, and comes back `nudge_again_days` after
+        # Not now while there is still no folder; a failed or old copy is another state, so it shows despite a put-off.
+        put_off = nudge and suggestions.dismissed(reader).get(("backup", "backup")) == "unset"
+        if put_off:
+            since = suggestions.put_off_at(reader, "backup", "backup")
+            again = timedelta(days=cfg.storage.backups.nudge_again_days)
+            put_off = since is not None and now - since < again
+        if not put_off:
+            lines.append(
+                Line(
+                    key="backup",
+                    group="setup"
+                    if nudge or not (kept.last_success or kept.last_error or not kept.configured)
+                    else "risk",
+                    kind="backup",
+                    state="unset"
+                    if nudge
+                    else kept.problem
+                    if kept.problem in ("failed", "smaller") and (kept.last_success or not kept.configured)
+                    else "overdue"
+                    if kept.last_success or not kept.configured
+                    else "failed"
+                    if kept.last_error
+                    else "never",
+                    age_hours=kept.age_hours if kept.configured else kept.newest_hours,
+                    since=kept.last_success or "",
+                    subject=kept.place,
+                )
             )
-        )
 
     # A promise past its date with nothing heard since is a line of its own, with its choices (design 6.33), for the
     # person's own and for one owed by someone the person reports to. One owed by anyone else is chased with the one

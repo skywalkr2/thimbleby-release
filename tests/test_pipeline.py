@@ -676,6 +676,42 @@ def test_an_answer_that_fails_twice_says_so_in_plain_words_and_tells_the_assista
     assert not any(word in waiting for word in ("JSON", "op reference", "Value error", "None"))
 
 
+def test_an_unreadable_answer_goes_back_with_itself_and_keeps_the_ops_that_were_right(env):
+    """A cheap model that broke one op redid the whole answer and changed an op that was right, because the return round
+    held only the error (S-0781). The answer goes back with the problem, and the assistant is told to keep the rest."""
+    _, cfg, store = env
+    cfg.dispatch.retries = 0
+    first = {
+        "summary": "s",
+        "ops": [
+            {"op": "fact", "text": "The checkup is on October 28.", "evidence": {"quote": "q"}},
+            {"op": "glossary.add", "term": "Clinic"},
+        ],
+    }
+    asked = answers(first)
+    run(env, "Anything.")
+    assert len(asked) >= 2
+    again = asked[1].request
+    assert "The checkup is on October 28." in again and "glossary.add" in again
+    assert "keep every other op exactly as it was" in again
+
+
+def test_an_answer_that_is_not_json_goes_back_with_only_its_problem(env):
+    _, cfg, store = env
+    cfg.dispatch.retries = 0
+    asked = []
+
+    def responder(task):
+        asked.append(task)
+        return "I can't help with that."
+
+    set_responder(responder)
+    run(env, "Anything.")
+    assert len(asked) >= 2
+    assert "Your previous answer (its ops" not in asked[1].request
+    assert "Answer with only the JSON object." in asked[1].request
+
+
 def test_a_question_handed_in_as_a_note_goes_to_ask_and_is_answered_there(env):
     """The person's path: their own note is a question to the assistant. The notes run says so, and the same request
     becomes an ask, answered from the guide like one asked in the Ask box."""
@@ -872,3 +908,17 @@ def test_what_an_outage_cut_off_is_not_the_requests_cost(env):
         ):
             tx.create("run", {**base, "request": "REQ-9", **extra}, WriteContext("engine", "trusted", "test"))
     assert request_spent(store, "REQ-9") == pytest.approx(0.07)
+
+
+def test_a_runs_record_keeps_its_packet_size_by_part_adding_up_to_the_packet(env):
+    from engine.ai.calibration import estimate_tokens
+    from engine.ai.task import PACKET_PARTS
+
+    _, _, store = env
+    answers({"ops": []})
+    run(env, "The printer says proof copies will ship on November 5.")
+    (record,) = store.read().list("run")
+    parts = record.data["packet_parts"]
+    assert set(parts) == set(PACKET_PARTS)
+    assert all(isinstance(n, int) and n >= 0 for n in parts.values())
+    assert sum(parts.values()) == estimate_tokens(record.data["input_chars"])

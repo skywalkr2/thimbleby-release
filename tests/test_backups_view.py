@@ -15,7 +15,10 @@ def test_with_no_folder_backups_are_not_made_on_their_own_and_the_page_says_so(t
     assert body["targets"] == [] and body["copies"] == []
     # The setting is still on, so choosing a folder turns backups on at once; until then nothing runs on its own.
     assert body["switch"] is True and body["schedule"] is False
-    assert body["state"]["configured"] is False and body["state"]["needs_attention"] is True
+    # No folder off the computer and no copy yet is no warning: the header warns only for a failed or old copy (S-0788),
+    # and Today's nudge says no folder is chosen.
+    assert body["state"]["configured"] is False and body["state"]["needs_attention"] is False
+    assert body["state"]["folder"] == ""
 
 
 def test_choosing_a_folder_and_backing_up_now_shows_the_last_backup_and_the_copy_made(tmp_path):

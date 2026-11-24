@@ -11,19 +11,32 @@ export function backupAge(b: { age_hours: number | null }, t: T): string | null 
   return h < 1 ? t("age.under_hour") : h < 48 ? t(`age.hours.${hours === 1 ? "one" : "other"}`, { n: hours }) : t("age.days", { n: Math.floor(h / 24) });
 }
 
-/** The backup in one phrase: none set up, none yet, the last one failed, overdue, or how long ago it ran. */
+/** The age of the newest copy the status speaks of: the folder's own while one is chosen, else the newest kept on this computer. */
+function copyAge(b: S["BackupStatus"]): number | null {
+  return b.configured ? b.age_hours : (b.newest_hours ?? null);
+}
+
+/** The backup in one phrase: what it protects (this computer only, or the folder's name), then how it stands; a failed or old
+ * copy says so instead. */
 export function backupText(b: S["BackupStatus"], t: T): string {
-  if (!b.configured) return t("backup.none");
-  const age = backupAge(b, t);
-  const text = age === null ? (b.last_error ? t("backup.failed") : t("backup.never")) : b.needs_attention ? t("backup.overdue", { age }) : t("backup.ok", { age });
+  const age = backupAge({ age_hours: copyAge(b) }, t);
+  const where = b.configured ? t("backup.folder", { folder: folderName(b.folder) }) : t("backup.local_only");
+  let text: string;
+  if (b.configured) {
+    text = age === null ? (b.last_error ? t("backup.failed") : t("backup.never")) : b.needs_attention ? t("backup.overdue", { age }) : `${where} · ${t("backup.ok", { age })}`;
+  } else if (b.needs_attention) {
+    text = b.last_error || age === null ? t("backup.failed") : t("backup.overdue", { age });
+  } else {
+    text = age === null ? where : `${where} · ${t("backup.ok", { age })}`;
+  }
   return b.encrypted ? `${text} · ${t("backup.encrypted")}` : text;
 }
 
 export type BackupState = "unset" | "never" | "failed" | "overdue" | "smaller" | "ok";
 
-/** The backup's one state, named the same in the header chip, Today's line and the popover. */
+/** The backup's one state ("unset" is the quiet one: copies kept on this computer only), named the same in the header chip, Today's line and the popover. */
 export function backupState(b: S["BackupStatus"]): BackupState {
-  if (!b.configured) return "unset";
+  if (!b.configured) return b.needs_attention ? (b.last_error ? "failed" : "overdue") : "unset";
   if (b.age_hours === null) return b.last_error ? "failed" : "never";
   if (b.last_error && b.needs_attention) return "failed";
   return b.needs_attention ? "overdue" : "ok";
@@ -37,7 +50,7 @@ export function backupWord(state: BackupState | string, t: T): string {
 /** How the backup stands, for the state mark: a danger when the last try failed, a warning when one is due, fine when it is
  * recent, and quiet when none is set up. */
 export function backupTone(b: S["BackupStatus"]): "ok" | "warn" | "danger" | "neutral" {
-  if (!b.configured) return "neutral";
+  if (!b.configured && !b.needs_attention) return "neutral";
   if (b.last_error) return "danger";
   return b.needs_attention ? "warn" : "ok";
 }

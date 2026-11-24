@@ -22,7 +22,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from engine.backup import _is_unfinished_copy_of, is_copy_of
+from engine.backup import _is_unfinished_copy_of, is_copy_of, local_folder
 from engine.config import Config
 from engine.storage import StoreError
 from engine.workspace import Workspace
@@ -108,8 +108,9 @@ def plan(ws: Workspace, cfg: Config) -> Plan:
             Item(WORKSPACE, str(entry), entry.name, files, size, _commits(root) if entry.name == ".git" else None)
         )
     seen: set[Path] = set()
-    for target in cfg.storage.backups.targets:
-        base = Path(target.path).expanduser()
+    places = [Path(t.path).expanduser() for t in cfg.storage.backups.targets]
+    places.append(local_folder(ws, cfg.storage.backups))
+    for base in places:
         try:
             real = base.resolve()
         except OSError:

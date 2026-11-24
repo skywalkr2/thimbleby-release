@@ -194,6 +194,25 @@ test("a suggestion has Not now in its menu, which puts it off with Undo; what is
   expect(within(row("capacity")).queryByRole("button", { name: /More|menu/i })).toBeNull();
 });
 
+test("the nudge to pick a backup folder can be put off with Not now", async () => {
+  const user = userEvent.setup();
+  const { calls } = show([line("backup", { key: "backup", state: "unset", count: 1 }), capacity], {
+    "GET capacity": () => proposal,
+    "POST suggestions/not-now": () => ({ signal: "SIG-7" }),
+  });
+  await waitFor(() => expect(row("backup")).not.toBeNull());
+  await user.click(within(row("backup")).getByRole("button", { name: /More|menu/i }));
+  await user.click(await screen.findByRole("menuitem", { name: "Not now" }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST suggestions/not-now")?.body).toEqual({ key: "backup" }));
+});
+
+test("a failed backup line offers no Not now", async () => {
+  show([line("backup", { key: "backup", state: "failed", count: 1 }), capacity], { "GET capacity": () => proposal });
+  await waitFor(() => expect(row("backup")).not.toBeNull());
+  // Its menu would hold only Not now, so a failed copy has no menu at all: Back up now is its one choice.
+  expect(within(row("backup")).queryByRole("button", { name: /More|menu/i })).toBeNull();
+});
+
 test("a clash line opens both entries, each with when it is, its calendar, Move and Open", async () => {
   const user = userEvent.setup();
   const own = (record: string): S["ActOptionsView"] => ({

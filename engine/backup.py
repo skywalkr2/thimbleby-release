@@ -29,6 +29,7 @@ from typing import Any
 
 from engine import backup_crypto
 from engine.config import Config, ConfigError, load_config
+from engine.config.schema import BackupSettings
 from engine.legacy_names import DB_NAME, backup_database
 from engine.secrets import SecretError, resolve_secret
 from engine.state_file import write_whole
@@ -55,6 +56,10 @@ class BackupState:
     place: str | None = None
     #: What is wrong with that place: failed, overdue, never or smaller; None when all is well.
     problem: str | None = None
+    #: The folder off this computer the copies go to (its label, else its path); None while copies are only kept here.
+    folder: str | None = None
+    #: The age in hours of the newest copy of either kind (kept here or in a folder); None when there is none yet.
+    newest_hours: float | None = None
 
 
 def run_backup(
@@ -131,6 +136,106 @@ def due(ws: Workspace, cfg: Config, now: datetime | None = None) -> bool:
     return False
 
 
+# ---- the copy kept on this computer ----------------------------------------------------------------------------------
+
+#: The key of the local copy's result in the status file; a folder path never takes this form.
+LOCAL_KEY = "\0local"
+
+
+def local_folder(ws: Workspace, settings: BackupSettings) -> Path:
+    """Where this computer keeps its own copies: the folder the setting names, else a folder beside the workspace's
+    folder (in the installed app, inside the app-data folder), never inside the workspace."""
+    chosen = settings.local_folder.strip()
+    return Path(chosen).expanduser() if chosen else ws.root.with_name(f"{ws.root.name}-backups")
+
+
+def _settings_of(ws: Workspace) -> BackupSettings:
+    """The backup settings as the files hold them; the defaults when they can't be read, so a copy is still made."""
+    try:
+        return load_config(ws.config_dir, env=dict(os.environ)).storage.backups
+    except ConfigError:
+        return BackupSettings()
+
+
+def _make_local(ws: Workspace, settings: BackupSettings, now: datetime) -> dict[str, Any]:
+    """Make one local copy, same format and checks as any other, and record how it went. Never raises."""
+    status = _load(ws)
+    prev = status.get(LOCAL_KEY, {})
+    try:
+        secret: str | None = None
+        if settings.encrypt:
+            try:
+                secret = resolve_secret(settings.encrypt) or ""
+                if not secret.strip():
+                    raise SecretError("the key for encrypting backups is empty")
+            except SecretError as err:
+                raise ValueError(f"the key for encrypting backups can't be read: {err}") from None
+        base = local_folder(ws, settings)
+        if base.resolve().is_relative_to(ws.root.resolve()):
+            raise ValueError("the folder for copies on this computer is inside the workspace, so it isn't a copy")
+        base.mkdir(parents=True, exist_ok=True)
+        size = _write_copy(ws, base, now.strftime("%Y%m%d-%H%M%S"), secret, settings.local_keep)
+        entry = {
+            "last_success": now.isoformat(),
+            "last_attempt": now.isoformat(),
+            "last_error": None,
+            "size_bytes": size,
+        }
+    except (OSError, ValueError, sqlite3.Error) as err:
+        entry = {
+            "last_success": prev.get("last_success"),
+            "last_attempt": now.isoformat(),
+            "last_error": str(err),
+            "size_bytes": prev.get("size_bytes"),
+        }
+    status[LOCAL_KEY] = entry
+    _save(ws, status)
+    return entry
+
+
+def local_due(ws: Workspace, settings: BackupSettings, now: datetime | None = None) -> bool:
+    """Whether the daily local copy should be made now: backups are on, the last local copy is older than
+    `every_hours` (or there is none), and the last try is older than `retry_minutes`."""
+    if not settings.automatic:
+        return False
+    now = now or datetime.now(UTC)
+    entry = _load(ws).get(LOCAL_KEY, {})
+    success, attempt = entry.get("last_success"), entry.get("last_attempt")
+    if success and _hours(now, success) < settings.every_hours:
+        return False
+    return not (attempt and _hours(now, attempt) * 60 < settings.retry_minutes)
+
+
+def run_local(
+    ws: Workspace,
+    settings: BackupSettings,
+    now: datetime | None = None,
+    *,
+    only_if: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    """Make a local copy under the same lock as every other backup. With `only_if`, it is asked once the lock is
+    held."""
+    with _RUNNING:
+        if only_if is not None and not only_if():
+            return _load(ws).get(LOCAL_KEY, {})
+        return _make_local(ws, settings, now or datetime.now(UTC))
+
+
+def local_backup_before(ws: Workspace, now: datetime | None = None) -> None:
+    """Make a local copy before an update or a migration, even when the daily one already ran today. Raises
+    `BackupFirstFailed` with the plain reason when it can't be made, so the caller stops before changing anything."""
+    now = now or datetime.now(UTC)
+    entry = run_local(ws, _settings_of(ws), now)
+    if entry.get("last_success") == now.isoformat():
+        return
+    why = f" {str(entry['last_error']).rstrip('.')}." if entry.get("last_error") else ""
+    raise BackupFirstFailed(
+        "Nothing was changed, because the copy kept on this computer first couldn't be made."
+        + why
+        + " Free some space or check the folder for copies in Settings, then try again."
+    )
+
+
 def _stamped(root: str) -> str:
     """The pattern of the dated name of a finished backup of the workspace `root`, `<root>-YYYYMMDD-HHMMSS[-n]`: a
     workspace whose name begins with another's is never taken for it."""
@@ -199,25 +304,7 @@ def _run(ws: Workspace, cfg: Config, now: datetime) -> dict[str, Any]:
             if not base.is_dir():
                 # Never create it: a drive that isn't connected would otherwise get a folder on this computer's disk.
                 raise ValueError(f"{base} isn't there; connect the drive or check the folder")
-            _remove_unfinished(base, ws.root.name)
-            dest = _free_folder(base, f"{ws.root.name}-{stamp}")
-            # The copy is made under a name no listing, pruning or restore takes for a backup, and given its dated name
-            # only when it is whole: a copy that stops midway is never counted, offered or kept.
-            building = base / f".{dest.name}.part"
-            building.mkdir(exist_ok=False)
-            counted = {name: _file_count(ws.root / name) for name in BACKUP_FOLDERS}
-            try:
-                if secret is None:
-                    _copy(ws, building)
-                else:
-                    _copy_encrypted(ws, building, secret)
-                _verify(ws, building, secret, counted)
-                size = _size(building)
-                building.rename(dest)
-            except BaseException:
-                shutil.rmtree(building, ignore_errors=True)
-                raise
-            _prune(base, ws.root.name, cfg.storage.backups.keep)
+            size = _write_copy(ws, base, stamp, secret, cfg.storage.backups.keep)
             before = status.get(key, {}).get("size_bytes")
             status[key] = {
                 "last_success": now.isoformat(),
@@ -239,6 +326,31 @@ def _run(ws: Workspace, cfg: Config, now: datetime) -> dict[str, Any]:
             }
     _save(ws, status)
     return status
+
+
+def _write_copy(ws: Workspace, base: Path, stamp: str, secret: str | None, keep: int) -> int:
+    """Make one dated, verified copy of the workspace in the folder `base`, keep only the newest `keep` of this
+    workspace's own copies there, and return the copy's size in bytes."""
+    _remove_unfinished(base, ws.root.name)
+    dest = _free_folder(base, f"{ws.root.name}-{stamp}")
+    # The copy is made under a name no listing, pruning or restore takes for a backup, and given its dated name
+    # only when it is whole: a copy that stops midway is never counted, offered or kept.
+    building = base / f".{dest.name}.part"
+    building.mkdir(exist_ok=False)
+    counted = {name: _file_count(ws.root / name) for name in BACKUP_FOLDERS}
+    try:
+        if secret is None:
+            _copy(ws, building)
+        else:
+            _copy_encrypted(ws, building, secret)
+        _verify(ws, building, secret, counted)
+        size = _size(building)
+        building.rename(dest)
+    except BaseException:
+        shutil.rmtree(building, ignore_errors=True)
+        raise
+    _prune(base, ws.root.name, keep)
+    return size
 
 
 def _size(folder: Path) -> int:
@@ -340,21 +452,50 @@ def _copy_encrypted(ws: Workspace, dest: Path, secret: str) -> None:
             backup_crypto.seal_tree(sealer, ws.root / name, dest / name, name)
 
 
+def _local_state(ws: Workspace, cfg: Config, now: datetime, encrypted: bool) -> BackupState:
+    """The state while only the copy kept on this computer exists: quiet, unless the last try failed or the newest copy
+    is older than `warn_after_hours`. Not being off the computer yet is the setup line's to say, not a warning."""
+    entry = _load(ws).get(LOCAL_KEY, {})
+    success, error = entry.get("last_success"), entry.get("last_error")
+    age = _hours(now, success) if success else None
+    newest = round(age, 2) if age is not None else None
+    if error:
+        message, problem = f"The last copy kept on this computer failed: {error}", "failed"
+    elif age is not None and age > cfg.storage.backups.warn_after_hours:
+        message, problem = f"The newest copy kept on this computer is {_ago(age)}. That's overdue.", "overdue"
+    else:
+        message = "Backups: this computer only." + (f" The newest copy is {_ago(age)}." if age is not None else "")
+        return BackupState(False, None, None, False, message, None, encrypted, newest_hours=newest)
+    return BackupState(False, None, None, True, message, error, encrypted, problem=problem, newest_hours=newest)
+
+
 def state(ws: Workspace, cfg: Config, now: datetime | None = None) -> BackupState:
     now = now or datetime.now(UTC)
     targets = cfg.storage.backups.targets
     encrypted = bool(cfg.storage.backups.encrypt)
     if not targets:
-        return BackupState(False, None, None, True, "No backup on another device is set up.", encrypted=encrypted)
+        return _local_state(ws, cfg, now, encrypted)
     status = _load(ws)
+    folder = targets[0].label or targets[0].path
+    local_success = status.get(LOCAL_KEY, {}).get("last_success")
     errors = [s["last_error"] for t in targets if (s := status.get(t.path)) and s.get("last_error")]
     successes = [s["last_success"] for t in targets if (s := status.get(t.path)) and s.get("last_success")]
     if not successes:
         why = f" The last try failed: {errors[0]}" if errors else ""
         return BackupState(
-            True, None, None, True, "No successful backup yet." + why, errors[0] if errors else None, encrypted
+            True,
+            None,
+            None,
+            True,
+            "No successful backup yet." + why,
+            errors[0] if errors else None,
+            encrypted,
+            folder=folder,
+            newest_hours=round(_hours(now, local_success), 2) if local_success else None,
         )
+    newest = round(min(_hours(now, x) for x in [*successes, *([local_success] if local_success else [])]), 2)
     every = cfg.storage.backups.every_hours
+    warn_after = cfg.storage.backups.warn_after_hours
     named = len(targets) > 1
     worst: tuple[tuple[float, float], BackupState] | None = None
     for target in targets:
@@ -367,7 +508,7 @@ def state(ws: Workspace, cfg: Config, now: datetime | None = None) -> BackupStat
                 continue  # a place added just now, not tried yet: the schedule tries it, and it isn't a failure
             problem, rank = "never", 4.0
             message = f"{place}: no successful backup yet. The last try failed: {error}"
-        elif age > 2 * every:
+        elif age > warn_after:
             problem, rank = "overdue", 3.0
             message = f"Backed up {_ago(age)}. That's overdue."
         elif error and age > every:
@@ -390,6 +531,8 @@ def state(ws: Workspace, cfg: Config, now: datetime | None = None) -> BackupStat
             encrypted,
             place if named else None,
             problem,
+            folder,
+            newest,
         )
         # The place that has gone longest without a copy is the one the person is told about.
         weight = (rank, age or 0.0)
@@ -400,7 +543,17 @@ def state(ws: Workspace, cfg: Config, now: datetime | None = None) -> BackupStat
     last = max(successes)
     age = (now - datetime.fromisoformat(last)).total_seconds() / 3600
     message = f"Backed up {_ago(age)}." + (" Encrypted." if encrypted else "")
-    return BackupState(True, last, round(age, 2), False, message, errors[0] if errors else None, encrypted)
+    return BackupState(
+        True,
+        last,
+        round(age, 2),
+        False,
+        message,
+        errors[0] if errors else None,
+        encrypted,
+        folder=folder,
+        newest_hours=newest,
+    )
 
 
 @dataclass(frozen=True)
@@ -425,6 +578,8 @@ class Copy:
     name: str
     made_at: str | None
     encrypted: bool
+    #: Kept on this computer rather than in a place the person chose.
+    local: bool = False
 
 
 @dataclass(frozen=True)
@@ -438,6 +593,10 @@ class Overview:
     copies: list[Copy]
     schedule: bool
     switch: bool
+    #: The folder this computer keeps its own copies in, and how the last one went.
+    local_path: str = ""
+    local_last_success: str | None = None
+    local_last_error: str | None = None
 
 
 def _made_at(name: str, root: str) -> str | None:
@@ -478,13 +637,31 @@ def overview(ws: Workspace, cfg: Config, now: datetime | None = None, limit: int
                     backup_crypto.encrypted(folder),
                 )
             )
+    mine = local_folder(ws, settings)
+    if mine.is_dir():
+        for folder in _finished_copies(mine, ws.root.name):
+            if folder.resolve() not in seen:
+                copies.append(
+                    Copy(
+                        "",
+                        str(folder),
+                        folder.name,
+                        _made_at(folder.name, ws.root.name),
+                        backup_crypto.encrypted(folder),
+                        True,
+                    )
+                )
     copies.sort(key=lambda c: c.made_at or "", reverse=True)
+    own = status.get(LOCAL_KEY, {})
     return Overview(
         state(ws, cfg, now),
         targets,
         copies[: max(0, limit)],
         settings.automatic and bool(settings.targets),
         settings.automatic,
+        str(mine),
+        own.get("last_success"),
+        own.get("last_error"),
     )
 
 

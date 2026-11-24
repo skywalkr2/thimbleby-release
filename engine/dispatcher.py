@@ -1234,7 +1234,7 @@ def _rounds(
                 why = (
                     f"Your previous answer was cut off at the output limit ({limit} tokens). Answer more briefly."
                     if result.truncated
-                    else f"Your previous answer couldn't be read: {err}. Answer with only the JSON object."
+                    else _unreadable_feedback(result.text, err)
                 )
                 task = replace(task, request=shown + "\n\n" + why)
                 continue
@@ -1427,6 +1427,32 @@ KEEP = (
 )
 DROPPED_WHY = "The assistant's second answer left out part of its first"
 DROPPED_STOP = "Nothing was applied: the assistant's second answer left out part of its first that was fine."
+
+
+#: The most of an unreadable answer shown back to the assistant, in characters.
+UNREADABLE_SHOWN = 20_000
+
+
+def _unreadable_feedback(text: str, err: Any) -> str:
+    """What an answer that couldn't be read goes back with. When it is a JSON object (one op broke the op reference),
+    the answer is shown with the problem and the rest is kept as it was: a fresh call holds no earlier answer, so
+    without it the assistant answers anew and may change ops that were right. Anything else is only told the
+    problem."""
+    told = f"Your previous answer couldn't be read: {err}."
+    try:
+        shown = json.loads(text)
+    except (TypeError, ValueError):
+        shown = None
+    if not isinstance(shown, dict) or len(text) > UNREADABLE_SHOWN:
+        return told + " Answer with only the JSON object."
+    return (
+        "Your previous answer (its ops are numbered from 0):\n"
+        + text.strip()
+        + "\n\n"
+        + told
+        + " Correct only what the problem names, keep every other op exactly as it was, and answer with only the "
+        "complete JSON object."
+    )
 
 
 def _answer_shown(changeset: Any) -> str:

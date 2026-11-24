@@ -246,11 +246,11 @@ def test_a_chase_is_refused_for_someone_who_doesnt_own_the_action(env):
 # ---- backups ---------------------------------------------------------------------------------------------------------
 
 
-def test_no_target_means_a_nag(env):
+def test_no_target_means_this_computer_only_and_no_warning_until_a_copy_fails_or_ages(env):
     ws, cfg, _ = env
     cfg = ws.config(env={}, flags={"storage.backups.targets": []})
     st = state(ws, cfg, NOW)
-    assert st.needs_attention and not st.configured
+    assert not st.configured and not st.needs_attention and st.folder is None
 
 
 def test_a_backup_copies_the_database_and_reports_its_age(env, tmp_path):

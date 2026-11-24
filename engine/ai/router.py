@@ -17,7 +17,15 @@ from engine.ai.catalog import Catalogs
 from engine.ai.checked import folder_of
 from engine.ai.pauses import NO_RESET, Pauses, pauses_path, unsafe_reason, unsafe_text, waiting_text
 from engine.ai.spending import BudgetReached, Hold
-from engine.ai.task import AiError, AiResult, AiTask, CountNotOffered, ModelInfo, work_in_words
+from engine.ai.task import (
+    AiError,
+    AiResult,
+    AiTask,
+    CountNotOffered,
+    ModelInfo,
+    packet_tokens_by_part,
+    work_in_words,
+)
 from engine.config import Config
 from engine.legacy_names import private_dir
 from engine.secrets import SecretError, resolve_secret
@@ -1066,6 +1074,7 @@ class Router:
             "tier": choice.tier,
             "input_chars": task.size,
             "output_chars": len(result.text) if result else 0,
+            "packet_parts": packet_tokens_by_part(task),
             "input_tokens": result.input_tokens if result else None,
             "output_tokens": result.output_tokens if result else None,
             "cached_input_tokens": result.cached_input_tokens if result else None,

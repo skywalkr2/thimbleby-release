@@ -68,6 +68,16 @@ Today's Start line, which waits for your Start and shows its cost). Each step ca
 be skipped and done later from Settings. Keep workspaces in your home folder, not in a temporary folder.
 [`getting-started.md`](getting-started.md) follows the same path step by step, with what each step costs.
 
+## What leaves your computer
+
+- **The AI service you chose** gets the text the assistant reads for each job: the item, what goes with it and your rules. It goes to the address you set for that account.
+- **Mail and calendar:** you sign in on that service's own page, and the app then reads from that service only. It reaches only the hosts it was given.
+- **The version check** fetches the list of releases from the configured address with an ordinary request. The request carries no workspace data and not even your version number; your version is compared with the list on your computer.
+- **The add-on list** is fetched the same way, from the configured address, with no workspace data.
+- **What you set up or send yourself** goes where you set it: a notification to the target you named, and a problem report to the address it names, which you see in full before you press Send.
+
+Everything you keep is in your workspace folder on this computer.
+
 ## Update
 
 - **A package install:** run the install step above again with the newer package file and its `constraints.txt`.

@@ -33,6 +33,8 @@ ADDED = {
     "away_words",
     "due_span_words",
     "answer_later_words",
+    "message_request_verbs",
+    "message_request_nouns",
     "first_person_words",
 }
 

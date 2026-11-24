@@ -6611,6 +6611,12 @@
             "title": "Encrypted",
             "type": "boolean"
           },
+          "local": {
+            "default": false,
+            "description": "Kept on this computer itself, not in a folder the person chose.",
+            "title": "Local",
+            "type": "boolean"
+          },
           "made_at": {
             "anyOf": [
               {
@@ -6884,6 +6890,12 @@
             "title": "Encrypted",
             "type": "boolean"
           },
+          "folder": {
+            "default": "",
+            "description": "The folder off this computer the copies go to (its label, else its path); empty while the only copies are kept on this computer. `configured` is true exactly when this is set.",
+            "title": "Folder",
+            "type": "string"
+          },
           "last_error": {
             "anyOf": [
               {
@@ -6909,6 +6921,18 @@
           "needs_attention": {
             "title": "Needs Attention",
             "type": "boolean"
+          },
+          "newest_hours": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How old the newest copy is, of either kind (kept here or in the folder); null when none yet.",
+            "title": "Newest Hours"
           }
         },
         "required": [
@@ -6978,6 +7002,30 @@
             },
             "title": "Copies",
             "type": "array"
+          },
+          "local_last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the last try at that copy didn't work.",
+            "title": "Local Last Error"
+          },
+          "local_last_success": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the last copy kept on this computer was made.",
+            "title": "Local Last Success"
           },
           "message": {
             "title": "Message",
@@ -58155,7 +58203,7 @@
     },
     "/api/watch/{source_id}/recent": {
       "post": {
-        "description": "Hand the assistant what the source holds from the recent past or near future that it hasn't seen yet (the\nlast day's mail, today's meetings), after a first read that only noted what was there.",
+        "description": "Hand the assistant what the source holds from the recent past or near future that it hasn't seen yet (the\nlast day's mail, today's meetings), after a first read that only noted what was there. The answer returns at\nonce; the worker hands it in behind any read of the source under way.",
         "operationId": "recent_api_watch__source_id__recent_post",
         "parameters": [
           {

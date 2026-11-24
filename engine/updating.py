@@ -61,8 +61,15 @@ def ensure_closed(ws: Workspace) -> None:
 
 
 def backup(ws: Workspace, version: str, now: datetime | None = None) -> Path:
-    """A consistent copy of the workspace's database (one at a time, the latest replacing the one before), with a
-    note of the version the update came from. Raises `UpdateError` when it can't be made, so nothing is changed."""
+    """A copy kept on this computer with the other local copies (`engine/backup.py`), and a consistent copy of the
+    workspace's database (one at a time, the latest replacing the one before), with a note of the version the update
+    came from. Raises `UpdateError` when it can't be made, so nothing is changed."""
+    from engine import backup as copies
+
+    try:
+        copies.local_backup_before(ws, now)
+    except copies.BackupFirstFailed as err:
+        raise UpdateError(str(err)) from None
     folder = _folder(ws)
     target = folder / DATABASE
     try:

@@ -62,8 +62,13 @@ test.describe("counts, project status and state words", () => {
     await expect(chip).toBeVisible(LOADED);
     const line = page.locator("[data-queue-line='backup']");
     if ((await line.count()) === 0) return;
-    const words = ["Backup not set up", "No backup yet", "Backup failed", "Backup overdue"];
     const said = await line.first().textContent();
+    // The plain nudge to pick a folder is not a warning: the chip stays quiet and carries no backup word.
+    if (said?.includes("Pick a folder") || said?.includes("Backups: local only")) {
+      await expect(chip).not.toContainText(/backup/i);
+      return;
+    }
+    const words = ["No backup yet", "Backup failed", "Backup overdue"];
     const word = words.find((w) => said?.includes(w) || false);
     expect(word, said ?? "").toBeTruthy();
     await expect(chip).toContainText(word!);

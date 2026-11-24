@@ -93,9 +93,9 @@ test("a backup that ran and then stopped is an At risk line", async () => {
 test("with no folder chosen the line's button opens the setup step", async () => {
   const user = userEvent.setup();
   const { onOpenGuide } = show([line("backup", { key: "backup", state: "unset" })]);
-  const found = await screen.findByRole("group", { name: "Set up backups" });
-  expect(found).toHaveTextContent("Backup not set up · No backup folder is chosen yet");
-  await user.click(within(found).getByRole("button", { name: "Set up backups" }));
+  const found = await screen.findByRole("group", { name: "Pick a backup folder" });
+  expect(found).toHaveTextContent("Backups: local only. Pick a folder to protect against losing this computer");
+  await user.click(within(found).getByRole("button", { name: "Pick a folder" }));
   expect(onOpenGuide).toHaveBeenCalledWith("backup");
 });
 

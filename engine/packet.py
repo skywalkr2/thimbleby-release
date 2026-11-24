@@ -16,7 +16,7 @@ from html import escape
 from typing import Any
 
 from engine import areas, audience, days_off, new_terms, related_mail, reply_lines, understand
-from engine.ai.task import AiTask
+from engine.ai.task import AiTask, part_sizes
 from engine.blocked import standing_hold
 from engine.cleaning import Cleaned, clean
 from engine.config import Config
@@ -200,6 +200,14 @@ def build(ws: Workspace, store: Store, cfg: Config, request_id: str, today: date
         learns=request_learns(store, req.data),
         hide=out,
     )
+    open_actions = "# Open actions\n" + _open_actions(store, people, out)
+    open_questions = "# Open questions\n" + _open_questions(
+        store, people, out, cfg.dispatch.knowledge.question_body_chars
+    )
+    closed_questions = _closed_questions(
+        store, people, out, cfg.dispatch.knowledge.closed_questions, _judged_id(req.data)
+    )
+    people_block = "# People\n" + _people(store, cfg)
     stable = "\n\n".join(
         part
         for part in (
@@ -209,10 +217,10 @@ def build(ws: Workspace, store: Store, cfg: Config, request_id: str, today: date
             _value_lists(store),
             learned.stable,
             _calendar_section(store, cfg, today),
-            "# Open actions\n" + _open_actions(store, people, out),
-            "# Open questions\n" + _open_questions(store, people, out, cfg.dispatch.knowledge.question_body_chars),
-            _closed_questions(store, people, out, cfg.dispatch.knowledge.closed_questions, _judged_id(req.data)),
-            "# People\n" + _people(store, cfg),
+            open_actions,
+            open_questions,
+            closed_questions,
+            people_block,
             "# Projects\n" + _projects(store, cfg, people.pm, reach),
         )
         if part.strip()
@@ -299,7 +307,16 @@ def build(ws: Workspace, store: Store, cfg: Config, request_id: str, today: date
             marks = _watched_marks(store, watched, saved.data.get("title") if saved is not None else None, cfg=cfg)
             request_parts.append(outside_block(cleaned.text, src, marks=marks))
     request = "\n\n".join(request_parts)
-    task = replace(_task(cfg, store, kind, instructions, stable, request), knowledge=learned.log.model_dump())
+    task = replace(
+        _task(cfg, store, kind, instructions, stable, request),
+        knowledge=learned.log.model_dump(),
+        parts=part_sizes(
+            knowledge=len(learned.stable) + len(learned.per_input),
+            questions=len(open_questions) + len(closed_questions),
+            todos=len(open_actions),
+            people=len(people_block),
+        ),
+    )
     return Packet(
         task, raw, cleaned, note, too_long=len(cleaned.text) > cfg.dispatch.max_input_chars, knowledge=learned.log
     )
@@ -670,12 +687,17 @@ def _ask_packet(ws: Workspace, store: Store, cfg: Config, req: Stored, kind: Tas
         learns=request_learns(store, req.data),
         about=(place[1],) if place else (),
     )
+    open_actions = "# Open actions\n" + _open_actions(store, people)
+    open_questions = "# Open questions\n" + _open_questions(
+        store, people, None, cfg.dispatch.knowledge.question_body_chars
+    )
+    people_block = "# People\n" + _people(store, cfg)
     records = "\n\n".join(
         part
         for part in (
-            "# Open actions\n" + _open_actions(store, people),
-            "# Open questions\n" + _open_questions(store, people, None, cfg.dispatch.knowledge.question_body_chars),
-            "# People\n" + _people(store, cfg),
+            open_actions,
+            open_questions,
+            people_block,
             "# Projects\n" + _projects(store, cfg, people.pm),
         )
         if part.strip()
@@ -713,7 +735,16 @@ def _ask_packet(ws: Workspace, store: Store, cfg: Config, req: Stored, kind: Tas
     log = learned.log
     if older is not None:
         log = log.model_copy(update={"pack_searches": [PackSearch(**older.log)]})
-    task = replace(_task(cfg, store, kind, instructions, stable, request), knowledge=log.model_dump())
+    task = replace(
+        _task(cfg, store, kind, instructions, stable, request),
+        knowledge=log.model_dump(),
+        parts=part_sizes(
+            knowledge=len(learned.stable) + len(learned.per_input),
+            questions=len(open_questions),
+            todos=len(open_actions),
+            people=len(people_block),
+        ),
+    )
     return Packet(
         task,
         material,

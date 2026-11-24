@@ -29,6 +29,16 @@ uv run thimbleby
 
 The first run makes your workspace and opens a setup walkthrough. Nothing is spent on AI until you press Start.
 
+## What leaves your computer
+
+- **The AI service you chose** gets the text the assistant reads for each job: the item, what goes with it and your rules. It goes to the address you set for that account.
+- **Mail and calendar:** you sign in on that service's own page, and the app then reads from that service only. It reaches only the hosts it was given.
+- **The version check** fetches the list of releases from the configured address with an ordinary request. The request carries no workspace data and not even your version number; your version is compared with the list on your computer.
+- **The add-on list** is fetched the same way, from the configured address, with no workspace data.
+- **What you set up or send yourself** goes where you set it: a notification to the target you named, and a problem report to the address it names, which you see in full before you press Send.
+
+Everything you keep is in your workspace folder on this computer.
+
 ## Checks
 
 ```
@@ -63,12 +73,13 @@ Report a security problem privately, through **Report a vulnerability** on this 
 
 This repository is an export of tested snapshots. The product is developed elsewhere, and each snapshot is published here
 after its checks pass. It takes no pull requests, because a change made here would be overwritten by the next snapshot. It
-welcomes bug reports as issues (see Reporting a bug).
+welcomes bug reports as issues (see Reporting a bug); [`CONTRIBUTING.md`](CONTRIBUTING.md) says more, and
+[`docs/architecture.md`](docs/architecture.md) is a short map of the code.
 
 ## License
 
-[Functional Source License 1.1, Apache 2.0 future license](LICENSE) (FSL-1.1-ALv2). This is source-available, not open
-source, until each release converts. You may use, read, change and run it for any purpose, at home and at work, inside your
+[Functional Source License 1.1, Apache 2.0 future license](LICENSE) (FSL-1.1-ALv2). This is source-available until each
+release converts. You may use, read, change and run it for any purpose, at home and at work, inside your
 organization, except offering it, or something substantially like it, to others as a commercial product or service. Each
 release becomes available under the Apache License 2.0 two years after it is published. Keep the copyright notice and the
 [`NOTICE`](NOTICE) file. The license includes a patent license, which ends for anyone who sues over patents in the

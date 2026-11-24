@@ -1,8 +1,8 @@
 name: checks
 
 # Runs on every push: the Python suite twice (on 3.12, and on 3.13 with the date 40 days ahead, so each supported version
-# runs it once), the web unit tests, build and lint, and the whole browser suite with its accessibility checks. A run by
-# hand does the same.
+# runs it once), the web unit tests, build and lint, the whole browser suite with its accessibility checks, and the Python
+# suite and the web unit tests on macOS in a time zone behind UTC. A run by hand does the same.
 on:
   push:
   workflow_dispatch:
@@ -74,6 +74,31 @@ jobs:
         run: npm --prefix web run build
       - name: Lint the web code (ESLint)
         run: npm --prefix web run lint
+
+  # What a tester on a Mac runs: the Python suite and the web unit tests on macOS, in a time zone behind UTC, which is
+  # where a test that assumes UTC fails.
+  macos:
+    name: macos (time zone America/New_York)
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      TZ: America/New_York
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: uv sync --extra desktop
+      - name: Python tests
+        run: uv run pytest
+      - run: npm --prefix web ci
+      - name: Web unit tests
+        run: npm --prefix web test
 
   browser:
     runs-on: ubuntu-24.04

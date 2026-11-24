@@ -1799,7 +1799,7 @@ def hand_in_recent(
     around now) that it hasn't been handed yet: the person asks for this after a first read that only noted what was
     there. Triage rules and the assistant's sorting of mail apply as for any change. Returns the requests made. It
     waits for a read of the same source under way, and holds that source's lock while it works, so the same item is
-    never handed in twice."""
+    never handed in twice: a press that must answer at once runs it through `Worker.do_apart`."""
     with _read_lock(ws, source_id):
         made = _hand_in_recent(ws, store, cfg, source_id, now, router)
         _after_mail(ws, store, cfg, now or datetime.now(UTC))
@@ -1813,11 +1813,19 @@ def hand_in_snapshot(ws: Any, store: Any, cfg: Any, snapshot_id: str, now: datet
     source = next((s for s in cfg.watch.sources if snap is not None and s.id == snap.data["source"]), None)
     if snap is None or source is None or snap.data.get("deleted"):
         return None
-    with _read_lock(ws, source.id):
+    # The hand-in is one transaction, and a request for an item already waiting is folded into the new one, so a
+    # read of the same source under way can't make it twice: the lock is taken when it is free and never waited for,
+    # so the press doesn't stand behind a long reading.
+    lock = _read_lock(ws, source.id)
+    held = lock.acquire(blocking=False)
+    try:
         with store.transaction() as tx:
             made = hand_in_snapshot_in(ws, store, tx, cfg, snapshot_id, now)
         _after_mail(ws, store, cfg, now or datetime.now(UTC))
         return made
+    finally:
+        if held:
+            lock.release()
 
 
 def hand_in_snapshot_in(

@@ -48,6 +48,8 @@ def change_key(line: Any) -> str:
         return f"{','.join(sorted([*line.questions, *line.actions]))}:{line.count}"
     if line.kind == "stale":
         return ",".join(sorted(line.actions))
+    if line.kind == "backup":
+        return line.state  # the nudge to pick a folder, put off only while nothing but the folder is missing
     return str(line.count)  # a pattern: how many times it has happened
 
 
@@ -74,6 +76,25 @@ def dismissed(view: Any) -> dict[tuple[str, str], str]:
             continue
     # A choice to leave a suggestion keeps it away the same way.
     return {**found, **patterns.stays_off(view)}
+
+
+def put_off_at(view: Any, kind: str, subject: str) -> datetime | None:
+    """When the person last put this line off and hasn't taken it back, or None."""
+    when = None
+    for signal in sorted(view.list("signal"), key=lambda s: int(s.id.rpartition("-")[2])):
+        if signal.data["kind"] != "suggestion_dismissed" or signal.data.get("note") in (None, TAKEN_BACK):
+            continue
+        try:
+            said = json.loads(signal.data["note"])
+        except (ValueError, TypeError):
+            continue
+        if (
+            isinstance(said, dict)
+            and not said.get("until")
+            and (said.get("kind"), said.get("subject")) == (kind, subject)
+        ):
+            when = datetime.fromisoformat(signal.data["at"])
+    return when
 
 
 def fine_clashes(view: Any) -> set[str]:

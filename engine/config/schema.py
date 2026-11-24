@@ -524,6 +524,32 @@ class BackupSettings(ConfigModel):
         24, ge=1, description="How often a full backup is made.", json_schema_extra={"enabled_by": "automatic"}
     )
     keep: int = Field(14, ge=1, description="How many backups to keep in each target.")
+    local_keep: int = Field(
+        14,
+        ge=1,
+        description="How many copies to keep on this computer itself. The app makes one a day there from the first "
+        "day, and one before every update and every change to how records are saved, so a bad update can be undone "
+        "even before a folder off this computer is chosen.",
+    )
+    local_folder: str = Field(
+        "",
+        description="Where the copies on this computer are kept. Empty: a folder beside the workspace's own folder "
+        "(inside the app's data folder in the installed app). It can't be inside the workspace.",
+        json_schema_extra={"advanced": True},
+    )
+    nudge_again_days: int = Field(
+        14,
+        ge=1,
+        description="How many days after Not now the reminder to pick a folder off this computer comes back on Today, "
+        "while there is still none.",
+        json_schema_extra={"advanced": True},
+    )
+    warn_after_hours: int = Field(
+        48,
+        ge=1,
+        description="How old the newest backup copy may be before the header and Today say it is overdue. A copy "
+        "whose last try failed is flagged whatever its age.",
+    )
     shrink_percent: int = Field(
         50,
         ge=1,
@@ -1165,7 +1191,7 @@ class TaskBudget(ConfigModel):
 
 class Budgets(ConfigModel):
     per_run_usd: float = Field(
-        0.25,
+        0.5,
         ge=0,
         description="Never start one thing estimated to cost more than this.",
         json_schema_extra=MONEY,
@@ -1970,6 +1996,7 @@ def _default_lints() -> dict[str, Severity]:
         "due-move-missed": "return",
         "due-reading-differs": "return",
         "undated-todo": "return",
+        "message-as-todo": "return",
         "due-on-day-off": "return",
         "owed-to-missing": "return",
         "project-start-as-fact": "return",
@@ -2641,6 +2668,15 @@ class LanguageFile(FileModel):
     due_span_words: list[str] | None = word_list(
         'The words before a span that says how far ahead a day is ("in 2 days", "in two working days"). With '
         "none, such a span is not read as a day. Case is ignored."
+    )
+    message_request_verbs: list[str] | None = word_list(
+        'The words a note of yours uses to ask for a message ("draft", "write"), read with the message words: '
+        '"Draft a short message to the editor" asks for one. An answer that makes a to-do of it instead of a draft '
+        "goes back once to the assistant. Case is ignored."
+    )
+    message_request_nouns: list[str] | None = word_list(
+        'The words that name a message in a note of yours ("message", "email"), read with the asking words a few '
+        "words before them. Case is ignored."
     )
     answer_later_words: list[str] | None = word_list(
         'The words of an answer that put a question off to a later day ("let\'s follow up on this in 2 days"). '

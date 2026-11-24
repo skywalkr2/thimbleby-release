@@ -464,17 +464,18 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
     @r.post("/watch/{source_id}/recent")
     def recent(source_id: str) -> WatchSourceView:
         """Hand the assistant what the source holds from the recent past or near future that it hasn't seen yet (the
-        last day's mail, today's meetings), after a first read that only noted what was there."""
+        last day's mail, today's meetings), after a first read that only noted what was there. The answer returns at
+        once; the worker hands it in behind any read of the source under way."""
         source = next((s for s in cfg.watch.sources if s.id == source_id), None)
         if source is None:
             raise HTTPException(status_code=404, detail=f"there is no source {source_id}")
-        try:
-            made = watch.hand_in_recent(ws, store, cfg, source_id)
-        except StoreError as err:
-            raise HTTPException(status_code=409, detail=str(err)) from None
+        # The hand-in waits for a read of the source under way and sorts the mail, so it is the worker's: the press
+        # records the word and answers at once, and the screens are told when it ends.
+        worker.do_apart(
+            f"handing in the recent past of {source_id}",
+            lambda: watch.hand_in_recent(ws, store, cfg, source_id, router=worker.router_factory()),
+        )
         events.changed()
-        if made:
-            worker.poke()
         return view(source)
 
     @r.post("/requests/{request_id}/closer-look")

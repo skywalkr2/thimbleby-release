@@ -1,0 +1,8 @@
+{
+  "_note": "The limits stand for a low-end Windows laptop: two slow cores and 4 GB of memory, of which the app may hold about half. The two budgets are provisional until the first release run has measured them on the built app; each run prints its numbers (low_end_check.py), and the budgets are then set a margin above the worst of them.",
+  "cores": 2,
+  "memory_limit_mb": 2048,
+  "seconds_to_today": 45,
+  "memory_after_a_minute_mb": 1024,
+  "stay_seconds": 60
+}

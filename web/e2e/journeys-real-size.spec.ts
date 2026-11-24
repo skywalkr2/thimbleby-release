@@ -174,7 +174,7 @@ test.describe.serial("journey: real-sized mailbox", () => {
     expect(counts, "count requests while the Mail step is open").toBeLessThanOrEqual(reaches * open);
     await fetch(`${FAKE}/__e2e/slow-down`, { method: "POST", body: JSON.stringify({ ends_before: first.looked_back_to, retry_after: RETRY_AFTER }) });
     await fullRead.getByRole("button", { name: "Read it" }).click();
-    // H4-06: one press answers every open source of the account (the inbox and the sent mail), the choice then leaves, and a read that
+    // H4-06: one press answers every source of the account that is open (the inbox and the sent mail), the choice then leaves, and a read that
     // goes through never shows a failure.
     await expect
       .poll(async () => (await watch(page)).filter((w) => w.account === address && w.full_read_open).length, { timeout: 180_000 })

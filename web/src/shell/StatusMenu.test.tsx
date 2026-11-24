@@ -43,25 +43,25 @@ test("all good: the chip says Live in words, and the popover says when the scree
   expect(await chip()).toHaveAttribute("data-status", "live");
   const dialog = await open(user);
   expect(within(dialog).getByText(/Updated /)).toBeInTheDocument();
-  expect(within(dialog).getByText("Backed up less than an hour ago")).toBeInTheDocument();
+  expect(within(dialog).getByText("Backup: drive · Backed up less than an hour ago")).toBeInTheDocument();
 });
 
 test("the popover says the backup is encrypted when it is", async () => {
   const user = userEvent.setup();
   show(statusFixture({}, { backup: { configured: true, age_hours: 0.5, needs_attention: false, encrypted: true } }));
   const dialog = await open(user);
-  expect(within(dialog).getByText("Backed up less than an hour ago · Encrypted")).toBeInTheDocument();
+  expect(within(dialog).getByText("Backup: drive · Backed up less than an hour ago · Encrypted")).toBeInTheDocument();
 });
 
 test("once a backup has succeeded the chip keeps its short label and the popover shows its age", async () => {
   const user = userEvent.setup();
   show(statusFixture({}, { backup: { configured: true, age_hours: 3, needs_attention: false } }));
   await chipText("All good");
-  expect(chipNow()).not.toHaveTextContent("Backed up 3 hours ago");
+  expect(chipNow()).not.toHaveTextContent("Backup: drive · Backed up 3 hours ago");
   expect(await chip()).toHaveAccessibleName("App status: All good");
 
   const dialog = await open(user);
-  expect(within(dialog).getByText("Backed up 3 hours ago")).toBeInTheDocument();
+  expect(within(dialog).getByText("Backup: drive · Backed up 3 hours ago")).toBeInTheDocument();
 });
 
 test("an overdue backup keeps its short warning on the chip and its age in the popover", async () => {
@@ -123,7 +123,7 @@ test("Back up now runs the backup, and without one the popover offers to set bac
   const user = userEvent.setup();
   const calls = show(statusFixture({}, {}, ), { "POST backup": () => statusFixture() });
   const dialog = await open(user);
-  expect(within(dialog).getByText("No backup on another device")).toBeInTheDocument();
+  expect(within(dialog).getByText("Backup: this computer only")).toBeInTheDocument();
   expect(within(dialog).queryByText(/storage\./)).toBeNull();
   expect(within(dialog).queryByRole("button", { name: "Back up now" })).toBeNull();
   expect(calls.some((c) => c.route === "POST backup")).toBe(false);
@@ -500,4 +500,23 @@ test("on a phone the states are a sheet from the bottom edge with a title and a 
   } finally {
     document.documentElement.removeAttribute("data-narrow");
   }
+});
+
+test("with copies only on this computer the chip stays quiet and the popover says what is protected", async () => {
+  const user = userEvent.setup();
+  show(statusFixture({}, { backup: { configured: false, folder: "", age_hours: null, newest_hours: 5, needs_attention: false } }));
+  expect(await chip()).toHaveAttribute("data-status", "live");
+  const dialog = await open(user);
+  expect(within(dialog).getByText("Backup: this computer only · Backed up 5 hours ago")).toBeInTheDocument();
+});
+
+test("a failed or three-day-old copy on this computer is a warning on the chip, folder or not", async () => {
+  show(statusFixture({}, { backup: { configured: false, folder: "", age_hours: null, newest_hours: 72, needs_attention: true } }));
+  await chipIs("backup");
+  await chipText("Backup overdue");
+});
+
+test("a failed copy on this computer says Backup failed on the chip", async () => {
+  show(statusFixture({}, { backup: { configured: false, folder: "", age_hours: null, newest_hours: 5, needs_attention: true, last_error: "No space left" } }));
+  await chipText("Backup failed");
 });

@@ -354,6 +354,7 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
     problems += _due_move_missed(cs, ctx)
     problems += _due_reading_differs(cs, ctx)
     problems += _undated_todo(cs, ctx)
+    problems += _message_as_todo(cs, ctx)
     problems += _due_on_day_off(cs, ctx)
     problems += _project_start_as_fact(cs, ctx)
     problems += _project_unfiled(cs, ctx)
@@ -1388,6 +1389,21 @@ def unstated_day_problem(op: FactOp, ctx: Context) -> str | None:
     return f"the quote doesn't state {op.on.isoformat()} as a full date; quote the words that give the day"
 
 
+def due_unstated(op: ActionAddOp, ctx: Context) -> bool:
+    """Whether the assistant's to-do has a due day that nothing in the input says: no due words (which the rules read
+    and check, `_due`) and a quote that doesn't state the day, with or without its year. Such a day is the assistant's
+    own reckoning (a working day it chose from the input's dates, say), so it is kept and marked for the person to
+    check. A day tied to a calendar entry is the entry's; the person's own to-dos are theirs to date."""
+    if op.due is None or isinstance(op.due, MonthDay) or op.due_at_event or ctx.actor == "pm" or ctx.confirmed_by_pm:
+        return False
+    if (op.due_words or "").strip():
+        return False
+    from engine.dated_facts import states_the_day
+
+    quote = op.evidence.quote
+    return not (states_the_day(ctx.cfg, quote, op.due) or _states_day_without_year(ctx, quote, op.due))
+
+
 def without_unstated_days(cs: ChangesetIn, ctx: Context) -> tuple[ChangesetIn, set[tuple[int, str]]]:
     """A fact whose day the quote doesn't state is kept without the day, not lost: the day is the only thing refused
     about it, so the rest of what the input says is recorded and the day is left out. Called when the answer is
@@ -1445,12 +1461,18 @@ def _states_without_year(ctx: Context, fact: FactOp) -> bool:
     """Whether the fact's quote states its day by month and day with no year, and the year it was given is the one the
     rule gives that month and day from the day the input came (`with_years`): the next such day or the latest before
     it. A year the assistant chose itself is not."""
+    return _states_day_without_year(ctx, fact.evidence.quote, fact.on)
+
+
+def _states_day_without_year(ctx: Context, quote: str, on: Any) -> bool:
+    """Whether a quote states `on` by month and day with no year, in the year the rule gives that month and day from
+    the day the input came (`with_years`)."""
     from engine.document_dates import yearless_days
 
     received = _received_day(ctx, ctx.store.read(), None)
-    for month, day in yearless_days(fact.evidence.quote):
+    for month, day in yearless_days(quote):
         md = MonthDay(month, day)
-        if fact.on in (with_year(md, received), with_year(md, received, past=True)):
+        if on in (with_year(md, received), with_year(md, received, past=True)):
             return True
     return False
 
@@ -2964,6 +2986,7 @@ JUDGMENT_LINTS = frozenset(
         "near-duplicate-promise",
         "due-reading-differs",
         "undated-todo",
+        "message-as-todo",
         "due-on-day-off",
         "ending-reading",
         "reply-not-needed",
@@ -3907,6 +3930,58 @@ def _undated_todo(cs: ChangesetIn, ctx: Context) -> list[Problem]:
             op.evidence.quote,
         )
         for i, op in undated
+    ]
+
+
+def _asks_for_a_message(cfg: Any, text: str) -> str | None:
+    """The words of a note that ask for a message ("Draft a short message to the editor"): an asking word and, at most
+    three words later, a word that names a message, from the language settings. None when it asks for none."""
+    verbs = [w.casefold() for w in language_words(cfg.language, "message_request_verbs") or []]
+    nouns = [w.casefold() for w in language_words(cfg.language, "message_request_nouns") or []]
+    if not verbs or not nouns:
+        return None
+    pattern = (
+        r"\b(?:"
+        + "|".join(map(re.escape, verbs))
+        + r")\b(?:\s+\S+){0,3}?\s+(?:"
+        + "|".join(map(re.escape, nouns))
+        + r")\b"
+    )
+    found = re.search(pattern, text, flags=re.IGNORECASE)
+    return found.group(0) if found else None
+
+
+def _message_as_todo(cs: ChangesetIn, ctx: Context) -> list[Problem]:
+    """The person's own note that asks for a message, answered with a to-do and no draft, goes back once: the message is
+    drafted for them to approve (an `act.draft`, on the Copy channel when no mail channel is offered), not left as a
+    to-do to write it. A rule on the note's words that only points; the assistant's answer to it stands
+    (`JUDGMENT_LINTS`), so a note that asks for both a message and a to-do keeps both."""
+    name = "message-as-todo"
+    level = ctx.cfg.checks.lints.get(name, "off")
+    if level == "off" or ctx.actor == "pm" or ctx.confirmed_by_pm:
+        return []
+    if any(isinstance(op, ActDraftOp) for op in cs.ops):
+        return []
+    todos = [(i, op) for i, op in enumerate(cs.ops) if isinstance(op, ActionAddOp)]
+    if not todos:
+        return []
+    view = ctx.store.read()
+    if not _from_pm(view, ctx):
+        return []
+    words = _asks_for_a_message(ctx.cfg, f"{ctx.inputs.note or ''}\n{ctx.inputs.raw_input or ''}")
+    if words is None:
+        return []
+    return [
+        Problem(
+            name,
+            level,
+            i,
+            f"The person's own note asks for a message ({words!r}). Draft it for them to approve with act.draft (the "
+            "copy channel when no mail channel is offered) instead of a to-do to write it; keep a to-do only if the "
+            "note also asks for one.",
+            op.evidence.quote,
+        )
+        for i, op in todos
     ]
 
 
@@ -4955,6 +5030,8 @@ def _apply_op(
         ev = {"source": w.evidence["source"] or source or "note", "quote": op.evidence.quote}
         named = bool((op.waiting_for or "").strip()) or op.due_at_event
         due, check = _due(tx, ctx, source, op.due_words, op.due, settled=named)
+        # A day nothing in the input says is the assistant's own reckoning: kept, and marked for the person to check.
+        check = check or (due is not None and due_unstated(op, ctx))
         placed = series_module.placement(tx, op.event, op.series, today, zone(ctx.cfg))
         due_event = placed if op.due_at_event and placed else None
         if due_event:
