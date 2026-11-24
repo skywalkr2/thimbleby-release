@@ -42,8 +42,9 @@ describe("web servers started for a run", () => {
 
   it("starts the root server once for the root projects, and the nested one for a nested project", () => {
     expect(commands(["root-shell", "root-a11y"])).toHaveLength(1);
+    // The timeline's project has a fresh demo server of its own.
     const c = commands(["root-*", "nested-shell"]);
-    expect(c).toHaveLength(2);
+    expect(c).toHaveLength(3);
     expect(has(c, "--base-path /admin")).toBe(1);
   });
 

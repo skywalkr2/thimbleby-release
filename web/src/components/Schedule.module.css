@@ -237,11 +237,12 @@
 .clashMarkText { min-width: 0; white-space: nowrap; }
 .clashMarkNum { display: none; }
 .titles .chip { position: relative; height: auto; flex-wrap: wrap; }
-/* A title that does not fit takes more lines, up to three (a Month column at 1440px holds about 16 characters a line, so a common
-   32-character title can need a third line in some fonts); past three it ends in an ellipsis, and the chip's `title` says it whole. */
-.titles .name { flex: 0 1 auto; min-width: 0; max-width: calc(100% - 1.25rem); overflow-wrap: anywhere; white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
-/* A to-do due that day has no time after its title, so its title keeps the whole width the time would have taken. */
+/* A title that does not fit takes another line, and a second; past two lines it ends in an ellipsis, and the chip's `title` says it whole. */
+.titles .name { flex: 0 1 auto; min-width: 0; max-width: calc(100% - 1.25rem); overflow-wrap: anywhere; white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+/* A to-do due that day has no time after its title, so its title keeps the whole width the time would have taken; its check takes room
+   beside the chip, so the chip's side padding is narrower and a common title still fits two lines at 1440px in wider fonts too. */
 .titles .dueRow .name { max-width: 100%; }
+.titles .dueRow .chip { padding-left: var(--space-1); padding-right: var(--space-1); }
 .more { min-height: var(--hit-min); padding: 0 var(--space-3); font: inherit; font-size: var(--text-meta); line-height: var(--lh-meta); font-weight: var(--weight-semibold); color: var(--text); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-full); cursor: pointer; }
 .more:hover { background: var(--surface-hover); }
 .more:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
