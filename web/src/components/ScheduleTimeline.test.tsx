@@ -96,6 +96,13 @@ describe("the Timeline", () => {
     expect(top("Renew the licence")).not.toBe(top("Pay the deposit"));
   });
 
+  test("a stacked overdue to-do shows the day it was due beside its title, never today (U6-3)", async () => {
+    await open([lane("PRJ-1", "Harbor", [todo("Pay the deposit", TODAY, { state: "overdue", detail: addDays(TODAY, -40) })])]);
+    const harbor = screen.getByRole("list", { name: "Items on the Harbor lane" });
+    const mark = within(harbor).getByRole("button", { name: /^To-do: Pay the deposit\./ });
+    expect(mark.textContent).toMatch(/^due [A-Z][a-z]{2} \d{1,2}Pay the deposit$/);
+  });
+
   test("two items on one day take two rows and none overlaps", async () => {
     await open([lane("PRJ-1", "Harbor", [todo("First thing"), todo("Second thing"), todo("Other day", addDays(TODAY, 30))])]);
     const top = (title: string) => Number.parseInt(screen.getByRole("button", { name: new RegExp(`^To-do: ${title}\\.`) }).closest("li")!.style.top, 10);

@@ -71,6 +71,7 @@ def read_both(ws, cfg, store):
 def test_references_are_codes_not_dates_or_words():
     assert references_in("Booking HS48213 on 2026-11-19, order 48213977, tel 555-1212.") == {"HS48213", "48213977"}
     assert references_in("Friday, October 16 at 3:00 PM") == set()
+    assert references_in("your booking hs48213 and order 48213977") == {"HS48213", "48213977"}
 
 
 @pytest.mark.parametrize("sender_differs", [False, True])

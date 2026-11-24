@@ -4,7 +4,7 @@
 // the whole workspace are the add-on's own screen's, never buttons here. With a side beside Personal the list can be
 // narrowed to one side; a file in no project, or in one on no side, shows under every choice.
 import { useQuery } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, type S } from "../lib/api";
 import { fetchBlob, openFile } from "../lib/authed-file";
 import { AuthImage } from "../ui/AuthImage";
@@ -59,6 +59,15 @@ export function Files() {
   const { justMe } = useSides();
   const placeOf = (project: string | null | undefined) => (project && !(justMe && sides.has(project)) ? names.get(project) : undefined);
   const everything = files.data ?? [];
+  // The first file replaces the empty card (and the Add button it held) with the header's button: when the cursor was on the card's
+  // button it is left on nothing, so it goes to the button that is there now. A cursor anywhere else stays where it is.
+  const held = useRef(everything.length);
+  useEffect(() => {
+    const was = held.current;
+    held.current = everything.length;
+    const active = document.activeElement;
+    if (was === 0 && everything.length > 0 && (!active || active === document.body) && !document.querySelector("[data-modal-open]")) addButton.current?.focus();
+  }, [everything.length]);
   const shown = everything.filter((f) => onSide(sideOf(f.project), side.choice));
   const beside = useMediaQuery("(min-width: 1024px)");
   const choice = useListChoice({ keys: shown.map((f) => f.id), beside, reset: side.choice });
@@ -70,10 +79,13 @@ export function Files() {
         id="files-title"
         title={t("files.title")}
         filters={<SideFilter holds={everything.length} />}
+        // With nothing listed the empty card holds the one Add button, so it is not drawn twice.
         primary={
-          <Button variant="primary" ref={addButton} onClick={() => setAdding(true)}>
-            {t("files.add")}
-          </Button>
+          files.isSuccess && everything.length === 0 ? undefined : (
+            <Button variant="primary" ref={addButton} onClick={() => setAdding(true)}>
+              {t("files.add")}
+            </Button>
+          )
         }
       />
       <ListDetail
@@ -116,7 +128,7 @@ export function Files() {
           onClose={() => {
             setAdding(false);
             setDropped(null);
-            restoreFocus(() => addButton.current);
+            restoreFocus(() => addButton.current ?? document.querySelector<HTMLElement>("[data-empty-drop] button"));
           }}
         />
       )}

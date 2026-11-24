@@ -8,21 +8,38 @@ import { useAct } from "../lib/act";
 import { useFirstField } from "../lib/focus";
 import { recordView, viewHref } from "../lib/views";
 import { useWords } from "../lib/wording";
-import { Button } from "../ui/Button";
+import { Actions } from "../ui/Actions";
+import { Button, ButtonLink } from "../ui/Button";
+import { DefinitionList, Definition } from "../ui/DefinitionList";
 import { Drawer } from "../ui/Drawer";
+import { ListDetail } from "../ui/ListDetail";
 import { ListState } from "../ui/ListState";
-import { Row } from "../ui/Row";
-import { RowList } from "../ui/RowList";
+import { RecordsTable, type TableColumn } from "../ui/RecordsTable";
+import { InRowActions } from "../ui/rowContext";
 import { Field } from "./PersonForm";
 import { RowMenu, type MenuAction } from "./RowMenu";
 
 import { EmptyState } from "../ui/EmptyState";
+
+/** The width the priority columns (name, people, side and the menu) need beside the pane. */
+const ORGS_FIT = 420;
+
+/** One labelled fact of the detail; nothing when there is none. */
+const fact = (label: string, value: React.ReactNode) =>
+  value ? (
+    <Definition>
+      <dt>{label}</dt>
+      <dd>{value}</dd>
+    </Definition>
+  ) : null;
+
 export function Organizations() {
   const { t, tn } = useWords();
   const act = useAct();
   const orgs = useQuery({ queryKey: ["organizations"], queryFn: api.organizations });
   const [adding, setAdding] = useState(false);
   const [renaming, setRenaming] = useState<S["OrganizationView"] | null>(null);
+  const [chosen, setChosen] = useState<string | null>(null);
   const rows = [...(orgs.data ?? [])].sort((a, b) => a.name.localeCompare(b.name));
   const menu = (o: S["OrganizationView"]): MenuAction[] => [
     { id: "rename", label: t("setup.rename"), run: () => setRenaming(o) },
@@ -38,11 +55,12 @@ export function Organizations() {
         ),
     },
   ];
-  // One line says what there is to say: how many people work there, whether it is one of the person's own, other names it goes by.
-  const metaOf = (o: S["OrganizationView"]) =>
-    [o.people > 0 ? tn("orgs.people", o.people) : "", o.side ? t(o.side_kind === "job" ? "orgs.side.job" : "orgs.side.business") : "", o.aliases.length > 0 ? t("setup.also_called", { names: o.aliases.join(", ") }) : ""]
-      .filter(Boolean)
-      .join(" \u00b7 ");
+  const selected = rows.find((o) => o.id === chosen) ?? null;
+  const columns: TableColumn<S["OrganizationView"]>[] = [
+    { id: "people", header: t("orgs.col.people"), rank: 1, core: true, numeric: true, cell: (o) => (o.people > 0 ? o.people : "") },
+    { id: "side", header: t("orgs.col.side"), rank: 1, core: true, cell: (o) => (o.side ? t(o.side_kind === "job" ? "orgs.side.job" : "orgs.side.business") : "") },
+    { id: "aliases", header: t("orgs.col.aliases"), rank: 2, weight: 2, cell: (o) => o.aliases.join(", ") },
+  ];
   return (
     <section className="panel-section" aria-labelledby="organizations-title">
       <div className="heading">
@@ -51,26 +69,61 @@ export function Organizations() {
           {t("setup.add_organization")}
         </Button>
       </div>
-      <ListState query={orgs} failed={t("orgs.load_failed")} rows={3} row={{ action: "menu", framed: true }}>
-        {() =>
-          rows.length === 0 ? (
-            <EmptyState text={t("setup.no_organizations")} />
-          ) : (
-            <RowList aria-label={t("setup.organizations")}>
-              {rows.map((o) => (
-                <Row
-                  key={o.id}
-                  title={<a href={viewHref(recordView("organization", o.id))}>{o.name}</a>}
-                  clamp={o.name}
-                  meta={metaOf(o)}
-                  oneLine
-                  menu={<RowMenu label={o.name} actions={menu(o)} />}
-                />
-              ))}
-            </RowList>
-          )
+      <ListDetail
+        title={selected?.name ?? ""}
+        onClose={() => setChosen(null)}
+        fit={ORGS_FIT}
+        detail={
+          selected ? (
+            <>
+              <DefinitionList>
+                {fact(t("orgs.col.people"), selected.people > 0 ? tn("orgs.people", selected.people) : t("orgs.no_people"))}
+                {fact(t("orgs.col.side"), selected.side ? t(selected.side_kind === "job" ? "orgs.side.job" : "orgs.side.business") : null)}
+                {fact(t("orgs.col.aliases"), selected.aliases.join(", "))}
+                {fact(t("orgs.row.notes"), selected.notes)}
+              </DefinitionList>
+              <Actions align="end">
+                <ButtonLink href={viewHref(recordView("organization", selected.id))}>{t("records.open_page", { name: selected.name })}</ButtonLink>
+                <Button variant="primary" onClick={() => setRenaming(selected)}>
+                  {t("setup.rename")}
+                </Button>
+              </Actions>
+            </>
+          ) : null
         }
-      </ListState>
+      >
+        <ListState query={orgs} failed={t("orgs.load_failed")} rows={3} shape="table">
+          {() =>
+            rows.length === 0 ? (
+              <EmptyState text={t("setup.no_organizations")} />
+            ) : (
+              <RecordsTable
+                label={t("setup.organizations")}
+                name={{
+                  header: t("orgs.col.name"),
+                  title: (o) => o.name,
+                  cell: (o, open) => (
+                    <a href={viewHref(recordView("organization", o.id))} onClick={open}>
+                      {o.name}
+                    </a>
+                  ),
+                }}
+                columns={columns}
+                groups={[{ id: "organizations", title: t("setup.organizations"), rows }]}
+                rowKey={(o) => o.id}
+                selected={chosen}
+                onSelect={(o) => setChosen(o.id)}
+                actionsHeader={t("people.col.actions")}
+                actions={(o) => (
+                  <InRowActions.Provider value={true}>
+                    <RowMenu label={o.name} actions={menu(o)} />
+                  </InRowActions.Provider>
+                )}
+              />
+            )
+          }
+        </ListState>
+      </ListDetail>
       {adding && <OrganizationDrawer onClose={() => setAdding(false)} />}
       {renaming && <OrganizationDrawer org={renaming} onClose={() => setRenaming(null)} />}
     </section>

@@ -122,6 +122,8 @@ test("with no files it says so, and offers adding one", async () => {
   // The same empty state as every page: the mark, one sentence, and the one action the header's Add a file is.
   expect(card.querySelector("[data-brand-mark]")).not.toBeNull();
   expect(within(card).getByRole("button", { name: "Add a file" })).toBeInTheDocument();
+  // The button shows once: the card's, not the header's as well (U6-11).
+  expect(screen.getAllByRole("button", { name: "Add a file" })).toHaveLength(1);
   expect(screen.queryByText("New piece")).toBeNull();
 });
 

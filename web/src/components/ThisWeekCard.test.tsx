@@ -52,3 +52,22 @@ test("a week with no day off and no goals draws no This week card", async () => 
   await screen.findByRole("region", { name: /Schedule/ });
   expect(screen.queryByRole("region", { name: /This week/ })).toBeNull();
 });
+
+test("while a line's detail is open in the rail the cards are out of sight and the rail says they come back when it closes", async () => {
+  fakeApi(routes(TUESDAY) as never);
+  const slot = { current: null as HTMLDivElement | null };
+  renderApp(<TodayRail onView={() => undefined} workspace="ws" detailRef={slot} detailOpen />);
+  expect(await screen.findByText("This week, your schedule and setup come back when you close this.")).toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: /This week/ })).toBeNull();
+  cleanup();
+  renderApp(<TodayRail onView={() => undefined} workspace="ws" detailRef={slot} detailOpen={false} />);
+  expect(await screen.findByRole("region", { name: /This week/ })).toBeInTheDocument();
+  expect(screen.queryByText(/come back when you close this/)).toBeNull();
+});
+
+test("a week with days off has one line under Today's date where the rail is below the queue (the browser test checks it goes from 1100px)", async () => {
+  fakeApi(routes(TUESDAY) as never);
+  const { Today } = await import("./Today");
+  renderApp(<Today workspace="ws" onView={() => undefined} onAddSource={() => undefined} onOpenGuide={() => undefined} onOpenRecord={() => undefined} />);
+  expect(await screen.findByText("This week: 2 working days (Thu, Fri off)")).toBeInTheDocument();
+});

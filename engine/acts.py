@@ -22,7 +22,7 @@ import hashlib
 import json
 import re
 import unicodedata
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
@@ -468,9 +468,9 @@ _BLANK_MARKS = frozenset("\u2800\u3164\u115f\u1160\uffa0\u180e")
 
 def has_text(value: Any) -> bool:
     """Whether `value` has anything a reader sees: not only spaces, control or format characters (zero-width marks,
-    joiners, direction marks) or blank-looking marks."""
+    joiners, direction marks), combining and variation marks (they draw nothing on their own) or blank-looking marks."""
     return any(
-        not (c.isspace() or unicodedata.category(c) in ("Cf", "Cc", "Zs", "Zl", "Zp") or c in _BLANK_MARKS)
+        not (c.isspace() or unicodedata.category(c) in ("Cf", "Cc", "Zs", "Zl", "Zp", "Mn", "Me") or c in _BLANK_MARKS)
         for c in str(value or "")
     )
 
@@ -675,6 +675,15 @@ def run_sources(view: Any, ctx: Any, op: ActDraftOp) -> list[str]:
     return list(dict.fromkeys(s for s in drawn if s))
 
 
+def run_records(ctx: Any, op: ActDraftOp) -> list[str]:
+    """The ids of the facts, actions and questions the run that made a draft was given (what its packet showed, set by
+    the engine, never from the model's answer). Nothing for the person's own draft or the engine's own reminders and
+    notices, which have no run."""
+    if getattr(ctx, "actor", "pm") == "pm" or op.reminder is not None or op.notice is not None:
+        return []
+    return sorted(i for (kind, i) in getattr(ctx, "reads", {}) if kind in ("fact", "action", "question"))
+
+
 #: How many words in a row, the same in a limited message and in a draft, show the draft copied from it.
 COPIED_RUN_WORDS = 8
 
@@ -700,14 +709,28 @@ def copied_limited_sources(view: Any, ctx: Any, text: str) -> list[str]:
     return found
 
 
-def audience_problem(view: Any, people: Any, sources: list[str], written: list[str]) -> str | None:
+def audience_problem(
+    view: Any, people: Any, sources: list[str], written: list[str], records: Iterable[str] = ()
+) -> str | None:
     """Why an act can't go to one of these recipients: a saved message it draws on was limited to people they aren't
-    among (design 6.35)."""
+    among, or a record its run was given rests on such a message (design 6.35)."""
+    given = _records_by_id(view, records)
     for who in written:
-        why = audience.recipient_problem(view, people, sources, who)
+        why = audience.recipient_problem(view, people, sources, who) or audience.records_problem(
+            view, people, given, who
+        )
         if why is not None:
             return why
     return None
+
+
+def _records_by_id(view: Any, ids: Iterable[str]) -> list[dict[str, Any]]:
+    """The facts, actions and questions with these ids, as records; an id with no record is left out."""
+    from engine.records import REGISTRY
+
+    kinds = {model.prefix: kind for kind, model in REGISTRY.items() if kind in ("fact", "action", "question")}
+    found = (view.get(kinds[i.rpartition("-")[0]], i) for i in ids if i.rpartition("-")[0] in kinds)
+    return [record.data for record in found if record is not None]
 
 
 def op_recipients(op: ActDraftOp | ActEditOp) -> list[str]:
@@ -873,6 +896,7 @@ def _draft(tx: Tx, op: ActDraftOp, ctx: Any, w: WriteContext) -> list[dict[str, 
             "made_by": "notices" if op.notice else _made_by(ctx),
             "run": ctx.run,
             "sources": sources,
+            "records": run_records(ctx, op),
             "facts": list(dict.fromkeys(op.facts)),
             "in_reply_to": op.in_reply_to,
             "project": op.project,
@@ -972,7 +996,9 @@ def _approve(tx: Tx, op: ActApproveOp, ctx: Any, w: WriteContext) -> list[dict[s
     outward.check_outgoing(tx, ctx.cfg, part_labels(tx, ctx.cfg, data), recipient_names(tx, data))
     if (why := subject_problem(data)) is not None:
         raise StoreError(why)
-    if (why := audience_problem(tx, ctx.people, data["sources"], act_recipients(tx, data))) is not None:
+    if (
+        why := audience_problem(tx, ctx.people, data["sources"], act_recipients(tx, data), data.get("records") or [])
+    ) is not None:
         raise StoreError(why)
     now, parts = current_fingerprint(tx, ctx.store.plugins, data)
     if now != op.fingerprint:

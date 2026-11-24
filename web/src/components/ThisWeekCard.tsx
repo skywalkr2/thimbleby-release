@@ -7,6 +7,8 @@ import { api } from "../lib/api";
 import { useWords } from "../lib/wording";
 import { Failed, RailPanel } from "./RailPanel";
 import { Goals, useBrief } from "./BriefCard";
+import { weekday as weekdayShort } from "../lib/dates";
+import styles from "./Today.module.css";
 import { daysOffSentence } from "./WeekAhead";
 
 /** `hidden`: the Monday briefing is showing, so this card gives way to it. */
@@ -37,4 +39,18 @@ export function useThisWeekCard(hidden: boolean): { settled: boolean; drawn: boo
       </RailPanel>
     ),
   };
+}
+
+/** One line under Today's date when the rail is below the queue (so This week is far down the page): the working days left and
+ * the days off, "This week: 2 working days (Thu, Fri off)". Nothing is drawn for a week with no day off. */
+export function ThisWeekLine() {
+  const { t, tn } = useWords();
+  const week = useQuery({ queryKey: ["week-ahead"], queryFn: api.weekAhead });
+  const data = week.data;
+  if (!data || data.days_off.length === 0) return null;
+  return (
+    <span data-week-line="" className={styles.weekLine}>
+      {t("today.week_line", { days: tn("today.week_line.days", data.working_days), off: data.days_off.map((d) => weekdayShort(d.day)).join(", ") })}
+    </span>
+  );
 }

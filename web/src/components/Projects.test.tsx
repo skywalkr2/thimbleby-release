@@ -75,6 +75,17 @@ test("a project's status is colored by its status list's tone, and the words sta
   expect(screen.getByText("Plain words")).toHaveAttribute("data-tone", "neutral");
 });
 
+test("a status the data disagrees with shows its reasons on their own line under the status, with Update status once (U6-1)", async () => {
+  api([project("PRJ-1", "Harbor", { status: "On track", status_disagrees: true, overdue_actions: 6, quiet_weeks: 6 })]);
+  renderApp(<Projects />);
+  const tr = await row("Harbor");
+  const mark = tr.querySelector("[data-status-disagrees]") as HTMLElement;
+  expect(mark).toHaveTextContent("6 overdue · no change in 6 weeks");
+  // The status and the reasons are two lines of one cell, never beside each other in a cut-off column.
+  expect(mark.parentElement?.firstElementChild).toHaveTextContent("On track");
+  expect(within(tr).getAllByRole("button", { name: /Update status/ })).toHaveLength(1);
+});
+
 test("projects are grouped by their group, those with none after, and finished ones last under Completed with their group kept", () => {
   const rows = [
     project("PRJ-1", "Zebra", { group: "Books" }),

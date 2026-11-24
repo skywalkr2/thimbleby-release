@@ -21,6 +21,9 @@ const layout = { port: 8786 + offset };
 const access = { port: 8787 + offset };
 // And Today's capacity, measured on a fresh demo that no other scenario has added lines to.
 const capacity = { port: 8788 + offset };
+// And the timeline: a fresh demo of its own, because the schedule's tests leave so many meetings on today on the root server that a
+// lane would show as its list by week, with no dated axis left to check.
+const timeline = { port: 8777 + offset };
 // And the late-evening check: its server's clock starts just after midnight UTC, the evening before in the demo's time zone
 // (which is behind UTC), so a day written or counted in the wrong zone shows as a wait below zero.
 const late = { port: 8789 + offset, clockAt: "2026-10-21T00:30:00Z" };
@@ -205,23 +208,17 @@ export const allProjects = [
       ...(s.base === "/" ? [{ name: `${s.name}-settings`, testMatch: /settings-walk\.spec\.ts/, use, dependencies: [s.name] }] : []),
       ...(s.base === "/" ? [{ name: `${s.name}-a11y`, testMatch: /a11y\.spec\.ts/, use, dependencies: [s.name] }] : []),
       // The schedule at a phone, a tablet and a desktop width, and moving through its days (once, at the root).
-      // The timeline runs after the schedule, never beside it: both add the same meetings to the shared server, and two
-      // adds at the same moment would each make their own entry.
-      ...(s.base === "/"
-        ? [
-            { name: `${s.name}-schedule`, testMatch: /schedule\.spec\.ts/, use, dependencies: [s.name] },
-            { name: `${s.name}-timeline`, testMatch: /timeline\.spec\.ts/, use, dependencies: [`${s.name}-schedule`] },
-          ]
-        : []),
+      ...(s.base === "/" ? [{ name: `${s.name}-schedule`, testMatch: /schedule\.spec\.ts/, use, dependencies: [s.name] }] : []),
       // The tables beside the detail pane at 1440px (once, at the root).
       ...(s.base === "/" ? [{ name: `${s.name}-tables`, testMatch: /tables\.spec\.ts/, use, dependencies: [s.name] }] : []),
     ];
   }),
-  { name: "layout", testMatch: /(layout|sh1-shell|handled|guards|internals|changed-rows|changed-widths|today-work|shared-rules|today-todos-46|counts-status|qf1-forms-and-todos|hand-over-one-door|states-phone|w1-today-lines|learned-review|learned-on-its-own|read-back)\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${layout.port}/` } },
+  { name: "layout", testMatch: /(layout|sh1-shell|handled|guards|internals|changed-rows|changed-widths|today-work|shared-rules|today-todos-46|counts-status|qf1-forms-and-todos|hand-over-one-door|states-phone|w1-today-lines|learned-review|learned-on-its-own|read-back|u5-changed|u6-[a-z]+)\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${layout.port}/` } },
   { name: "access", testMatch: /(work-access|ai-costs)\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${access.port}/` } },
   { name: "one-click", testMatch: /today-one-click\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${oneClick.port}/` } },
   { name: "schedule-review", testMatch: /schedule-review\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${scheduleReview.port}/` } },
-  { name: "capacity", testMatch: /today-(capacity|review|rail)\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${capacity.port}/` } },
+  { name: "root-timeline", testMatch: /timeline\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${timeline.port}/` } },
+  { name: "capacity", testMatch: /(today-(capacity|review|rail)|u5-today)\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${capacity.port}/` } },
   { name: "outgoing", testMatch: /outgoing\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${outgoing.port}/` } },
   { name: "report-problem", testMatch: /report-problem\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${reportForm.port}/` } },
   { name: "acts", testMatch: /acts-journey\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${acts.port}/` } },
@@ -359,6 +356,13 @@ export const allServers = [
       command: `uv run python -m tests.e2e_server --port ${scheduleReview.port} --base-path /${clockFlag}`,
       cwd: "..",
       url: `http://127.0.0.1:${scheduleReview.port}/api/health`,
+      reuseExistingServer: false,
+      timeout: 60_000,
+    }),
+    on(timeline.port, {
+      command: `uv run python -m tests.e2e_server --port ${timeline.port} --base-path /${clockFlag}`,
+      cwd: "..",
+      url: `http://127.0.0.1:${timeline.port}/api/health`,
       reuseExistingServer: false,
       timeout: 60_000,
     }),

@@ -137,7 +137,7 @@ test.describe("People and record pages", () => {
     // One line to ask in, with no "nothing has been said" sentence over it.
     await expect(page.getByRole("textbox", { name: "What do you want to know, or have done?" })).toBeVisible(LOADED);
     await expect(page.getByText("Nothing has been said about this yet.")).toHaveCount(0);
-    await page.getByRole("button", { name: "Activity" }).click();
+    await page.getByRole("button", { name: "Activity", exact: true }).click();
     await expect(page.getByRole("region", { name: "Activity" })).toBeVisible(LOADED);
     const results = await new AxeBuilder({ page }).analyze();
     expect(results.violations.map((v) => v.id)).toEqual([]);
@@ -240,6 +240,7 @@ test.describe("People and record pages", () => {
     await go(page, "records/people");
     const organizations = page.getByRole("region", { name: "Organizations", exact: true });
     await organizations.getByRole("link", { name: "Quarry Studio" }).click();
+    await page.getByRole("link", { name: "Open Quarry Studio's page" }).click();
     await expect(page).toHaveURL(/#records\/project\//, LOADED);
     await heading(page, "Quarry Studio");
 

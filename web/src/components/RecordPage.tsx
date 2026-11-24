@@ -466,6 +466,11 @@ export function RecordPage(props: { kind: string; id: string; onBack: () => void
                       </div>
                     ))
                   )}
+                  {kind === "project" && row.name === "status" && projectOut && (
+                    <div data-detail-status-mark="">
+                      <ProjectStatusMark project={projectSeen!} />
+                    </div>
+                  )}
                 </dd>
               </Definition>
             ))}

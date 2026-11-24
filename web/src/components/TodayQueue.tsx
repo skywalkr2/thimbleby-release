@@ -1066,7 +1066,7 @@ export function useLineTitle(): (line: QueueLine) => string {
       case "answer":
         return t("queue.answer", { text: line.text ?? "" });
       case "stale":
-        return t("queue.stale.one_named", { text: shortTitle(line.subject ?? "") });
+        return line.count > 1 ? tn("queue.stale.folded", line.count, { days: line.waiting_days ?? 0 }) : t("queue.stale.one_named", { text: shortTitle(line.subject ?? "") });
       case "needs_date":
         return tn("queue.needs_date", line.count);
       case "pattern": {
@@ -1714,7 +1714,22 @@ function QueueRow(props: {
           menu: [],
         };
       case "stale": {
-        // One line for each to-do: Drop (what the assistant suggests, the line's one button), Keep as a plain link beside it, and Snooze in the menu.
+        // Several to-dos are one line that opens To-dos filtered to the ones nobody has touched, where each is kept or dropped.
+        if (line.count > 1)
+          return {
+            pill: t("queue.pill.stale"),
+            tone: "neutral",
+            meta: null,
+            primary: {
+              label: t("queue.stale.open"),
+              run: () => {
+                chooseFilters({ state: "stale" });
+                props.handlers.onOpenView?.("work/open");
+              },
+            },
+            menu: [],
+          };
+        // One to-do is a line of its own: Drop (what the assistant suggests, the line's one button), Keep as a plain link beside it, and Snooze in the menu.
         const [first, second, ...rest] = [...choices.filter((c) => c.id === "drop"), ...choices.filter((c) => c.id === "keep"), ...choices.filter((c) => c.id !== "drop" && c.id !== "keep")];
         return {
           pill: t("queue.pill.stale"),

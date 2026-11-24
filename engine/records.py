@@ -1900,6 +1900,11 @@ class Request(Record):
         description="For a request taken in from a new source: it came from the read of older mail (the full read the "
         "person chose), not from the source's first window. The first reading does not wait for these.",
     )
+    older_item: bool = Field(
+        False,
+        description="For a request taken in from a changed item whose time is earlier than its saved copy's: it may "
+        "be an older copy put back, which the packet says so the assistant weighs it, and it is filed all the same.",
+    )
     source_role: Literal["deleted"] | None = Field(
         None,
         description="For a request taken in from a source with a role: deleted means the mail was deleted by the "
@@ -3249,6 +3254,11 @@ class Act(Record):
     run: Annotated[str | None, RefTo("run")] = Field(None, description="The AI run that wrote the draft, if one did.")
     sources: list[Annotated[str, RefTo("source")]] = Field(
         default_factory=list, description="The saved inputs the content draws on."
+    )
+    records: list[str] = Field(
+        default_factory=list,
+        description="The ids of the facts, actions and questions the drafting run was given, set by the engine from "
+        "what the run was shown. A recipient outside the limit of one of them holds the act.",
     )
     facts: list[Annotated[str, RefTo("fact")]] = Field(
         default_factory=list,

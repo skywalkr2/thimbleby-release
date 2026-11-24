@@ -298,7 +298,7 @@ test.describe('"Just me" sees no work words', () => {
     // Files: the form to add one.
     await go(page, "records/files");
     await heading(page, "Files");
-    await page.getByRole("button", { name: "Add a file" }).first().click();
+    await page.getByRole("button", { name: "Add a file" }).click();
     await expect(page.getByRole("dialog", { name: /^Add a file/ })).toBeVisible(LOADED);
     await read("Add a file");
     await close();

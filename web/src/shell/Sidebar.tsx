@@ -1,6 +1,6 @@
 // The sidebar (design 7.1, 7.13): Today with its count, then Work, then Records, then Sources, Add-ons and Settings at the
 // bottom. Every entry is a real link, so it can be bookmarked, opened in a new tab and reached with Back. It is 232px with
-// labels from 1280px (below that the list would lose its width to the menu) and a 64px icon rail below that, where each side's dot carries its initial and each icon has a tooltip; the person can collapse or pin it at any
+// labels from 1280px (below that the list would lose its width to the menu) and a 64px icon rail below that, where each side's dot carries its initial and each icon has a tooltip (on hover and on focus); the person can collapse or pin it at any
 // width, remembered on this device.
 import { useState } from "react";
 import { Link } from "react-aria-components";
@@ -72,11 +72,11 @@ function Entry(props: { entry: NavEntry; current: View; rail: boolean; sub?: boo
       <NavCount entry={entry} className={styles.count} />
     </Link>
   );
-  // The whole name shows on hover (the wrapper's title) and on keyboard focus (the tooltip, which stays closed for the pointer so only one shows), since a long label is cut
-  // short, and on the icon rail the name is the only thing that tells the icons apart.
+  // The whole name, and what the count counts, shows in the shared tooltip on hover and on keyboard focus: a long label is cut short,
+  // on the icon rail the name is the only thing that tells the icons apart, and a sighted mouse user sees what a figure counts.
   return (
-    <span className={styles.titled} title={navName(entry)} data-rail-title={props.rail ? "" : undefined}>
-      <Tooltip text={navName(entry)} placement="right" trigger="focus">{link}</Tooltip>
+    <span className={styles.titled}>
+      <Tooltip text={navName(entry)} placement="right">{link}</Tooltip>
     </span>
   );
 }

@@ -489,8 +489,13 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
                     if isinstance(op, ActDraftOp)
                     else (held.data["sources"] if held is not None else [])
                 )
+                given = (
+                    acts.run_records(ctx, op)
+                    if isinstance(op, ActDraftOp)
+                    else (held.data.get("records") or [] if held is not None else [])
+                )
                 who = acts.op_recipients(op)
-                if who and (why := acts.audience_problem(view, ctx.people, drawn, who)) is not None:
+                if who and (why := acts.audience_problem(view, ctx.people, drawn, who, given)) is not None:
                     refuse(i, "audience", why)
                     continue
         # The person's own note saying they already asked is theirs to file; outside content never is.
@@ -678,7 +683,7 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
         if isinstance(op, EventAddOp) and op.start is not None and (why := entry_problem(op.start, op.end)) is not None:
             refuse(i, "targets", f"calendar entry {op.title!r}: {why}")
         if (
-            isinstance(op, (EventAddOp, EventSetOp, EventCancelOp))
+            isinstance(op, (EventAddOp, EventSetOp, EventCancelOp, EventGuestsOp, SeriesAddOp))
             and ctx.actor != "pm"
             and _request_data(ctx).get("source_invitation")
         ):
@@ -822,7 +827,9 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
             target = view.get("question", op.id)
             if target is None:
                 refuse(i, "targets", f"there is no question {op.id}")
-            elif target.data["status"] in ("answered", "dropped"):
+            elif target.data["status"] == "dropped" or (
+                target.data["status"] == "answered" and not _judging_answer(view, ctx, op.id)
+            ):
                 refuse(i, "targets", f"question {op.id} is already closed")
             elif evidence is not None and not _shares_words(evidence.quote, target.data["title"] + " " + op.answer):
                 lint(i, "evidence-fit", f"the quote doesn't seem to answer question {op.id}")
@@ -1692,9 +1699,9 @@ def _openable(url: str) -> bool:
     """Whether a link is one another person could open: a public web address, not this computer or a private network."""
     import ipaddress
 
-    if not re.match(r"^https?://", url):
+    if not re.match(r"^https?://", url, re.I):
         return False
-    authority = re.sub(r"^https?://", "", url).split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    authority = re.sub(r"^https?://", "", url, flags=re.I).split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
     authority = authority.rsplit("@", 1)[-1]
     host = (authority[1:].split("]", 1)[0] if authority.startswith("[") else authority.split(":", 1)[0]).lower()
     host = host.rstrip(".")
@@ -1704,7 +1711,7 @@ def _openable(url: str) -> bool:
         pass
     else:
         return address.is_global
-    if "." not in host or host == "localhost":
+    if "." not in host or host == "localhost" or host.startswith("localhost."):
         return False
     return host.rsplit(".", 1)[-1] not in _NOT_PUBLIC_ENDINGS and not host.endswith(".localhost")
 
@@ -1739,7 +1746,7 @@ def _browser_address(host: str) -> str | None:
 _NOT_PUBLIC_ENDINGS = frozenset(
     {"localhost", "test", "invalid", "local", "internal", "lan", "home", "corp", "intranet", "arpa"}
 )
-_LINK_IN_TEXT = re.compile(r"https?://(?:\[[0-9a-fA-F:.%]+\]|[^\s<>\"'()\[\]])[^\s<>\"'()\[\]]*", re.IGNORECASE)
+_LINK_IN_TEXT = re.compile(r"https?://(?:\[[^\]\s<>\"']+\]|[^\s<>\"'()\[\]])[^\s<>\"'()\[\]]*", re.IGNORECASE)
 
 
 def _links_in_text(text: str) -> list[str]:

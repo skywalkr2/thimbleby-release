@@ -1,0 +1,36 @@
+id: own-note-drafting-a-message-is-a-copy-draft-not-a-todo
+title: The person's own note asking for a message with a day in it makes a Copy draft that waits for their yes, never a to-do to write it
+skills: [use-facts]
+received: '2026-10-14'
+# The person's own words ask for a message and say when they want to send it. A low-cost model turned this into "Write
+# the message to ..." as a to-do; the message is drafted for the person's copy channel instead, and no to-do is added.
+given_file: busy-portfolio.yaml
+note: Draft a short message to Marguerite Osei telling her the walkthrough moves to next Tuesday, I want to send it tomorrow
+summary_voice: true
+expect:
+- held: act.draft
+  text_has:
+  - Marguerite|PER-8
+  - walkthrough
+  - subject
+forbid:
+- op: action.add
+- op: report.draft
+stub_answer:
+  summary: Drafted a message to Marguerite Osei about the walkthrough moving to next Tuesday; it waits for your yes.
+  ops:
+  - op: act.draft
+    channel: copy
+    target:
+      kind: message
+      action: send
+      recipients:
+      - person: PER-8
+    parts:
+      subject: The walkthrough moves to next Tuesday
+      body: |-
+        Hi Marguerite,
+
+        The server room walkthrough moves to next Tuesday.
+
+        Thanks!

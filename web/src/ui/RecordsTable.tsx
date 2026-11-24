@@ -20,6 +20,9 @@ export interface TableColumn<T> {
   /** 1: always shown. 2: hidden under 1280px. 3: hidden under 1024px (tablet and phone: in the detail pane). */
   rank?: 1 | 2 | 3;
   numeric?: boolean;
+  /** How many shares of the table's width a value in this column may take before it ends in an ellipsis (default 1; a column of
+   * words, such as a role or a status with its reasons, takes 2, so it is not cut while a narrow numeric column has room to spare). */
+  weight?: number;
   /** Stays while a detail pane stands beside the table. When no column is marked, every column stays. */
   core?: boolean;
 }
@@ -70,8 +73,9 @@ export function RecordsTable<T>(props: {
   const optional = hasCore && !narrow;
   // How many column-widths the table shares at each window width (the name counts twice), so that a cell's cap leaves room for the
   // others: the columns that drop out by rank are not counted where they are hidden.
-  const hidden = (rank: 2 | 3) => visible.filter((c) => !picked[c.id] && c.rank === rank).length;
-  const shares = (props.actions ? 3 : 2) + visible.length;
+  const weight = (c: TableColumn<T>) => c.weight ?? 1;
+  const hidden = (rank: 2 | 3) => visible.filter((c) => !picked[c.id] && c.rank === rank).reduce((n, c) => n + weight(c), 0);
+  const shares = (props.actions ? 3 : 2) + visible.reduce((n, c) => n + weight(c), 0);
   const widths = {
     "--cols-all": shares,
     "--cols-mid": shares - hidden(2),
@@ -172,7 +176,11 @@ function TableRow<T>(props: { row: T; table: Parameters<typeof RecordsTable<T>>[
         const content = c.cell(row);
         return (
           <td key={c.id} data-label={c.header} title={typeof content === "string" && content ? content : undefined} className={[rank(c), c.numeric ? styles.num : ""].filter(Boolean).join(" ")}>
-            {hasContent(content) ? <div className={styles.cellBox}>{content}</div> : null}
+            {hasContent(content) ? (
+              <div className={styles.cellBox} style={c.weight && c.weight > 1 ? ({ "--w": c.weight } as CSSProperties) : undefined}>
+                {content}
+              </div>
+            ) : null}
           </td>
         );
       })}

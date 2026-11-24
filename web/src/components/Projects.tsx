@@ -135,12 +135,12 @@ export function Projects() {
   // Projects at a glance: the stage, the target day and when it was last updated come first. A health column is for a pack
   // that provides one; the core has none.
   const columns: TableColumn<Project>[] = [
-    { id: "status", header: t("setup.status"), rank: 1, core: true, cell: (p) =>
+    { id: "status", header: t("setup.status"), rank: 1, core: true, weight: 2, cell: (p) =>
         p.status ? (
-          <>
+          <span className={styles.status}>
             <Pill tone={p.status_tone ?? "neutral"}>{p.status}</Pill>
             <ProjectStatusMark project={p} />
-          </>
+          </span>
         ) : (
           ""
         ),

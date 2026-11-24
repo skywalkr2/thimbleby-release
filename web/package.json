@@ -15,6 +15,7 @@
     "lint:css": "stylelint \"src/**/*.css\"",
     "build": "npm run lint:css && npm run gen:api && tsc --noEmit && vite build",
     "test": "vitest run",
+    "test:tz": "TZ=America/New_York vitest run src/lib/dates.test.ts src/components/TodayFirstScreen.test.tsx",
     "e2e": "playwright test",
     "visual:capture": "node --experimental-strip-types --no-warnings visual/capture.ts"
   },

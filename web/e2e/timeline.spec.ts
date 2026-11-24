@@ -1,6 +1,6 @@
 // The Timeline view of the calendar page (design 7.7): at a wide window, lanes of items with their details on focus; at a narrow
-// one, the same items as a list by week. Never wider than the window, and no accessibility violations either way. It shares the
-// root server with the acceptance scenario and runs after it.
+// one, the same items as a list by week. Never wider than the window, and no accessibility violations either way. It has a fresh
+// demo server of its own.
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page } from "@playwright/test";
 import { test } from "./test";

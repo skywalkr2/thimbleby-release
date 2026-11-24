@@ -515,6 +515,87 @@ def test_a_draft_that_copies_a_limited_messages_words_without_naming_its_record_
     assert acts.copied_limited_sources(view, ctx, "the print team is moving") == []  # too short to be a copy
 
 
+def _message_to(who: dict) -> dict:
+    return {
+        "op": "act.draft",
+        "channel": "copy",
+        "target": {"kind": "message", "action": "send", "recipients": [{"person": who["id"]}]},
+        "parts": {"subject": "The date", "body": "The proof date is moving by a few days."},  # names no record
+    }
+
+
+def _run_context(env, source: str, shown: list[tuple[str, str]]) -> Context:
+    """The context of a run on the person's own note, whose packet showed these records."""
+    _, cfg, store = env
+    with store.transaction() as tx:
+        note = tx.create(
+            "source",
+            {
+                "received_at": NOW.isoformat(),
+                "kind": "note:answered",
+                "title": "A note",
+                "content_hash": "0" * 64,
+                "trust": "trusted",
+            },
+            _TEST,
+        )
+        request = tx.create(
+            "request",
+            {"task": "notes", "origin": "pm", "state": "done", "created_at": NOW, "source": note.id},
+            _TEST,
+        )
+    inputs = Inputs(request.id, note.id, "", "", "trusted")
+    ctx = Context(store, cfg, People(store, cfg), tuple(store.plugins.ops), inputs)
+    ctx.reads = {key: 1 for key in shown}
+    return ctx
+
+
+def test_a_message_whose_run_was_given_a_limited_fact_waits_for_a_recipient_outside_it(env):
+    """S-0772: the hold reads the records the drafting run was shown, never the message's words."""
+    _, cfg, store = env
+    text, limited = hand(env, RESTRICTED_BODY)
+    _, open_source = hand(env, OPEN_BODY, subject="Other")
+    secret = fact_from(env, limited, text, RESTRICTED_WORD, "moving the proof date")
+    title = store.read().get("source", limited).data["title"]
+
+    def check_draft(who: dict, shown):
+        cs = CHANGESET.validate_python({"ops": [_message_to(who)]}, context={"op_models": store.plugins.ops})
+        return [p for p in check(cs, _run_context(env, open_source, shown)) if p.check == "audience"]
+
+    (held,) = check_draft(OUTSIDE, [("fact", secret)])
+    assert held.severity == "refuse" and held.message == f"uses restricted information from {title}"
+    assert check_draft(INSIDE, [("fact", secret)]) == []  # every recipient inside the limit
+    assert check_draft(OUTSIDE, []) == []  # the run saw nothing limited
+
+
+def test_an_act_keeps_the_records_its_run_was_given_and_holds_the_edit_and_the_yes(env):
+    from engine import acts
+
+    _, cfg, store = env
+    text, limited = hand(env, RESTRICTED_BODY)
+    _, open_source = hand(env, OPEN_BODY, subject="Other")
+    secret = fact_from(env, limited, text, RESTRICTED_WORD, "moving the proof date")
+    ctx = _run_context(env, open_source, [("fact", secret)])
+    ctx.confirmed_by_pm = True  # the person's yes to the held draft
+    cs = CHANGESET.validate_python({"ops": [_message_to(INSIDE)]}, context={"op_models": store.plugins.ops})
+    cs_id = apply_changeset(cs, [], ctx, run=None)
+    outcome = store.read().get("changeset", cs_id).data["ops"][0]
+    assert outcome["status"] == "applied", outcome
+    act = next(iter(store.read().list("act")))
+    assert act.data["records"] == [secret]
+    # the person's edit to a recipient outside holds, and so does the yes if one got there
+    edit = {"op": "act.edit", "id": act.id, "read_version": act.version, "recipients": [{"person": OUTSIDE["id"]}]}
+    cs = CHANGESET.validate_python({"ops": [edit]}, context={"op_models": store.plugins.ops})
+    pm_ctx = Context(
+        store, cfg, People(store, cfg), tuple(store.plugins.ops), Inputs("REQ-1", None, "", "", "trusted"), actor="pm"
+    )
+    assert [p.check for p in check(cs, pm_ctx) if p.severity == "refuse"] == ["audience"]
+    why = acts.audience_problem(
+        store.read(), People(store, cfg), act.data["sources"], [OUTSIDE["id"]], act.data["records"]
+    )
+    assert why is not None and why.startswith("uses restricted information from")
+
+
 def test_a_packet_for_a_draft_outside_a_limited_message_leaves_it_and_what_was_made_from_it_out(env):
     ws, cfg, store = env
     text, limited = hand(env, RESTRICTED_BODY)

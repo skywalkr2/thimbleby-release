@@ -47,11 +47,10 @@ test.describe("the side picker and the icon rail (S-0362)", () => {
     const missing: string[] = [];
     for (let n = 0; n < count; n += 1) {
       const link = links.nth(n);
-      // The name is the link's own title (a pointer shows it on hover), and the keyboard's tooltip shows it on focus.
-      const name = (await link.locator("xpath=..").getAttribute("title")) ?? "";
-      const spans = await link.locator("span").evaluateAll((els) => els.map((e) => (e.textContent ?? "").trim()));
-      if (!name || !spans.includes(name)) {
-        missing.push(`${spans.join(" / ")} has no title naming it`);
+      // The name is the link's own label (hidden on the rail), and the tooltip shows it on hover and on focus.
+      const name = ((await link.locator("[class*='label']").first().textContent()) ?? "").trim();
+      if (!name) {
+        missing.push(`a link has no label naming it`);
         continue;
       }
       await link.focus();
@@ -62,18 +61,24 @@ test.describe("the side picker and the icon rail (S-0362)", () => {
     expect(missing).toEqual([]);
     // The sides, whose icons are two letters, are told apart by their whole names.
     const sides = ["Willowbrook Handmade Ceramics and Garden Supply Cooperative", "Northfield Mobile Bicycle Repair and Neighborhood Delivery Service"];
-    for (const name of sides) await expect(nav.getByRole("link", { name }).locator("xpath=..")).toHaveAttribute("title", name);
+    for (const name of sides) {
+      const side = nav.getByRole("link", { name });
+      await side.focus();
+      await page.keyboard.press("Shift+Tab");
+      await page.keyboard.press("Tab");
+      await expect(page.getByRole("tooltip").filter({ hasText: name })).toHaveCount(1);
+    }
   });
 
-  test("hovering a menu link shows one name (the browser's title), never the app's own tooltip as well", async ({ page }) => {
+  test("hovering a menu link shows one name, the app's own tooltip, and the browser's title is not drawn as well", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await open(page);
     const link = page.getByRole("navigation", { name: "Views" }).getByRole("link").nth(2);
     await expect(link).toBeVisible(LOADED);
-    await expect(link.locator("xpath=..")).toHaveAttribute("title", /.+/);
-    await link.hover();
-    // Longer than the tooltip's own delay.
-    await page.waitForTimeout(800);
-    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    await expect(link.locator("xpath=..")).not.toHaveAttribute("title", /.+/);
+    const box = (await link.boundingBox())!;
+    await page.mouse.move(box.x + 2, box.y + box.height + 20);
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 6 });
+    await expect(page.getByRole("tooltip")).toHaveCount(1);
   });
 });

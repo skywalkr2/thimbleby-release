@@ -60,6 +60,11 @@ export function TodayRail(props: {
   return (
     <div ref={rail} className={styles.rail} role="group" aria-label={t("today.rail.label")} data-region="" data-sticky={sticks ? "" : undefined}>
       {props.detailRef && <div ref={props.detailRef} className={styles.railSlot} data-rail-detail="" />}
+      {props.detailRef && props.detailOpen && (
+        <p className={styles.railNothing} data-rail-returns="">
+          {t("today.rail.returns")}
+        </p>
+      )}
       <div className={styles.railCards} hidden={props.detailOpen}>
         <RailFolds>
           {briefCard}

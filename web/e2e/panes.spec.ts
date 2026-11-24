@@ -143,9 +143,8 @@ test.describe("Ask", () => {
     const link = page.getByRole("navigation", { name: "Views" }).getByRole("link", { name: /^People/ });
     await link.click();
     await expect(page.getByRole("heading", { level: 1, name: "People" })).toBeVisible();
-    // The pointer rests on another link of the menu. A menu link's own tooltip opens for the keyboard only (the pointer gets the
-    // browser's title), so nothing opens that could take the Escape below.
-    // (review-r2-sides.spec.ts holds that hovering a menu link opens none of the app's own.)
+    // The pointer rests on another link of the menu (placed there in one jump, which opens no tooltip: a tooltip opens on a pointer that
+    // moves over the link), so nothing opens that could take the Escape below, and an open tooltip closes first on Escape in any case.
     await page.getByRole("navigation", { name: "Views" }).getByRole("link", { name: /^Projects/ }).hover();
     // The pointer arrives at the field and Escape follows in the same moment (what a busy page does to the order of things: the key is
     // handled before the draw that the pointer leaving the link caused), so the two are sent in one step.

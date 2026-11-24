@@ -159,7 +159,9 @@ def _checked(env, op, *, invitation, actor="assistant"):
         tx.update("request", request, marks, _TEST, read_version=current.version)
     cs = CHANGESET.validate_python({"ops": [op]}, context={"op_models": store.plugins.ops})
     inputs = applier.Inputs(request, None, "Your order has shipped.", "Your order has shipped.", "untrusted")
-    ctx = applier.Context(store, cfg, People(store, cfg), ("event.add", "event.set"), inputs, actor=actor)
+    ctx = applier.Context(
+        store, cfg, People(store, cfg), ("event.add", "event.set", "event.guests", "series.add"), inputs, actor=actor
+    )
     return [p.check for p in applier.check(cs, ctx) if p.severity == "refuse"]
 
 
@@ -183,6 +185,17 @@ def test_the_checks_refuse_a_change_to_an_entry_from_a_deleted_invitation(env):
         entry = tx.create("event", {"title": "Vendor review", "start": "2030-03-14T14:00:00+00:00"}, _TEST).id
     change = {"op": "event.set", "id": entry, "start": "2030-03-15T14:00:00+00:00", "evidence": ADD["evidence"]}
     assert "from-deleted-mail" in _checked(env, change, invitation=True)
+
+
+def test_the_checks_refuse_guests_and_a_series_from_a_deleted_invitation(env):
+    ws, cfg, store, put = env
+    with store.transaction() as tx:
+        entry = tx.create("event", {"title": "Vendor review", "start": "2030-03-14T14:00:00+00:00"}, _TEST).id
+    guests = {"op": "event.guests", "id": entry, "people": ["Sam"], "evidence": ADD["evidence"]}
+    series = {"op": "series.add", "title": "Vendor review", "repeats": "weekly", "evidence": ADD["evidence"]}
+    for op in (guests, series):
+        assert "from-deleted-mail" in _checked(env, op, invitation=True), op["op"]
+        assert "from-deleted-mail" not in _checked(env, op, invitation=False), op["op"]
 
 
 def test_the_deleted_mail_prompt_says_an_invitation_is_learning_only():

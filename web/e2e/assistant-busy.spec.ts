@@ -45,7 +45,9 @@ test("a run in hand shows in the header as a moving ring and words, and the head
     await page.setViewportSize({ width, height: 800 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth), `at ${width}px`).toBeLessThanOrEqual(0);
     // Where the header has the line (it is left to the status chip on a narrow window), it stays one row.
-    if ((await line.count()) > 0) expect((await line.boundingBox())!.height, `at ${width}px`).toBeLessThan(56);
+    // Read in one step: the header may swap the line for the chip while the window changes.
+    const heights = await line.evaluateAll((els) => els.map((el) => el.getBoundingClientRect().height));
+    for (const height of heights) expect(height, `at ${width}px`).toBeLessThan(56);
   }
   await page.setViewportSize({ width: 1440, height: 900 });
 

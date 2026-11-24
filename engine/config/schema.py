@@ -762,6 +762,10 @@ class AgentOutputFields(ConfigModel):
     cached_input_tokens: str = Field("", description="Dotted path to the cached input token count, if reported.")
     cost_usd: str = Field("", description="Dotted path to the cost the agent reports for the run, if any.")
     model: str = Field("", description="Dotted path to the model the agent says it used, if any.")
+    error_flag: str = Field(
+        "",
+        description="Dotted path to a true-or-false flag in the agent's JSON output that marks the answer as an error.",
+    )
 
 
 class AgentErrorPatterns(ConfigModel):

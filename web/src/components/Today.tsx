@@ -20,6 +20,7 @@ import { LearningNotice } from "./LearningNotice";
 import { TodayQueue, type QueueHandlers, type Selection } from "./TodayQueue";
 import { TodayNext } from "./TodayNext";
 import { TodayRail } from "./TodayRail";
+import { ThisWeekLine } from "./ThisWeekCard";
 import styles from "./Today.module.css";
 
 import { PageHeader } from "../ui/PageHeader";
@@ -135,6 +136,7 @@ export function Today(props: {
                 </>
               )}
               <TodayNext />
+              {!wideWindow && <ThisWeekLine />}
             </>
           }
           filters={

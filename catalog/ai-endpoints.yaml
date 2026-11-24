@@ -176,9 +176,10 @@ endpoints:
           output_tokens: usage.output_tokens
           cached_input_tokens: usage.cache_read_input_tokens
           cost_usd: total_cost_usd
+          error_flag: is_error
         errors:
           report_on_output: true
-          auth: ["not logged in", "please run /login", "invalid api key", "oauth token (?:has )?(?:expired|revoked)", "authentication required", "login expired", "failed to authenticate", "session expired"]
+          auth: ["not logged in", "please run /login", "invalid api key", "oauth token (?:has )?(?:expired|revoked)", "authentication required", "login expired", "failed to authenticate", "session expired", "authentication_error", "credentials (?:have )?expired", "run /login"]
           quota: ["usage limit reached", "hit your [a-z ]{0,30}limit", "credit balance is too low"]
           rate_limited: ["rate limit", "overloaded", "temporarily limiting requests"]
         effort_option: ["--effort", "{effort}"]

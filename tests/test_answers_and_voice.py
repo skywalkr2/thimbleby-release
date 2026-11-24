@@ -79,13 +79,76 @@ def test_an_unclear_answer_leaves_the_question_open_reworded_and_stores_no_answe
     assert len(store.read().list("question")) == before  # reworded, not asked a second time
 
 
+def settle(qid, words="Soft-touch"):
+    return {
+        "summary": "Noted the finish.",
+        "ops": [
+            {
+                "op": "question.done",
+                "id": qid,
+                "answer": f"{words} for the jacket",
+                "evidence": {"quote": words},
+            }
+        ],
+    }
+
+
 def test_a_clear_answer_stays_the_answer(env):
     ws, cfg, store = env
     qid = ask(store, cfg)
     request = answer(ws, store, cfg, qid, "Soft-touch")
-    run(env, request, {"summary": "Noted the finish.", "ops": []})
+    run(env, request, settle(qid))
     found = store.read().get("question", qid).data
-    assert found["status"] == "answered" and found["answer"] == "Soft-touch"
+    assert found["status"] == "answered" and found["answer"] == "Soft-touch for the jacket"
+
+
+def test_a_run_that_neither_closes_nor_rewords_gives_the_answer_back(env):
+    ws, cfg, store = env
+    qid = ask(store, cfg)
+    request = answer(ws, store, cfg, qid, "Yes please")
+    other = {"op": "question.add", "title": "Which finish do you want for the jacket?", "to": cfg.workspace.user.person}
+    run(env, request, {"summary": "Asked which finish.", "ops": [other]})
+    found = store.read().get("question", qid).data
+    assert found["status"] == "open" and found["answer"] is None
+
+
+def test_a_run_that_does_nothing_with_the_answer_gives_it_back_after_the_return_round(env):
+    ws, cfg, store = env
+    qid = ask(store, cfg)
+    request = answer(ws, store, cfg, qid, "Yes please")
+    run(env, request, {"summary": "Nothing.", "ops": []})
+    assert store.read().get("question", qid).data["status"] == "answered"  # sent back once, still being judged
+    redone = store.read().get("request", request).data["superseded_by"]
+    run(env, redone, {"summary": "Nothing.", "ops": []})
+    found = store.read().get("question", qid).data
+    assert found["status"] == "open" and found["answer"] is None
+
+
+def test_closing_an_answered_question_is_refused_when_the_run_is_not_judging_its_answer(env):
+    ws, cfg, store = env
+    qid = ask(store, cfg)
+    answer(ws, store, cfg, qid, "Soft-touch")
+    unrelated = hand_in(ws, store, note="", pasted="Soft-touch it is.", now=NOW).request
+    cs = CHANGESET.validate_python({"ops": [settle(qid)["ops"][0]]}, context={"op_models": store.plugins.ops})
+    ctx = Context(
+        store,
+        cfg,
+        People(store, cfg),
+        ("question.done",),
+        Inputs(unrelated, None, "", "Soft-touch", "untrusted"),
+        actor="assistant",
+    )
+    assert "targets" in [p.check for p in check(cs, ctx) if p.severity == "refuse"]
+
+
+def test_a_question_done_whose_quote_is_not_in_the_input_is_refused(env):
+    ws, cfg, store = env
+    qid = ask(store, cfg)
+    request = answer(ws, store, cfg, qid, "Soft-touch")
+    run(env, request, settle(qid, "Matte, definitely"))  # words the person never wrote
+    ops = [o for c in store.read().list("changeset") for o in c.data["ops"] if o["op"].get("op") == "question.done"]
+    assert ops and all(o["status"] != "applied" for o in ops)
+    assert store.read().get("question", qid).data["answer"] == "Soft-touch"  # never the made-up words
 
 
 def test_a_reword_is_refused_unless_the_run_is_judging_that_questions_answer(env):
@@ -250,6 +313,7 @@ CASES = [
     "note-settling-a-hold-closes-the-plans-questions",
     "note-settling-one-part-leaves-the-other-parts-questions-open",
     "message-request-with-no-mail-account-is-never-refused",
+    "own-note-drafting-a-message-is-a-copy-draft-not-a-todo",
 ]
 
 

@@ -106,7 +106,8 @@ def test_the_same_thirty_meetings_after_fresh_data_stay_one_input_each(tmp_path)
         store.close()
 
 
-def test_a_calendar_file_and_a_calendar_link_say_when_their_data_was_made(tmp_path, monkeypatch):
+def test_a_calendar_file_and_a_calendar_link_say_no_time_of_their_own_so_they_are_never_old_data(tmp_path, monkeypatch):
+    """S-0774: a file's time or a link's Last-Modified is when it was touched, never when its data was made."""
     import os
 
     from engine.connectors import ConnectorContext, checked_poll
@@ -118,8 +119,7 @@ def test_a_calendar_file_and_a_calendar_link_say_when_their_data_was_made(tmp_pa
     made = NOW - timedelta(days=20)
     os.utime(path, (made.timestamp(), made.timestamp()))
     context = ConnectorContext(tmp_path, now=NOW, timezone="UTC")
-    poll = checked_poll(read_calendar(CalendarSettings(file=str(path)), {}, context))
-    assert datetime.fromisoformat(poll.generated_at) == made
+    assert checked_poll(read_calendar(CalendarSettings(file=str(path)), {}, context)).generated_at is None
 
     import httpx
 
@@ -133,5 +133,4 @@ def test_a_calendar_file_and_a_calendar_link_say_when_their_data_was_made(tmp_pa
             lambda _r: httpx.Response(200, text=calendar, headers={"Last-Modified": "Mon, 01 Jan 2029 10:00:00 GMT"})
         ),
     )
-    poll = checked_poll(read_calendar(CalendarSettings(address="env:CAL_ADDRESS"), {}, context))
-    assert datetime.fromisoformat(poll.generated_at) == datetime(2029, 1, 1, 10, tzinfo=UTC)
+    assert checked_poll(read_calendar(CalendarSettings(address="env:CAL_ADDRESS"), {}, context)).generated_at is None

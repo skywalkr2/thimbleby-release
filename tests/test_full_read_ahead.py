@@ -192,6 +192,21 @@ def test_choosing_a_reach_is_the_go_for_the_first_window_and_for_what_the_older_
     assert len(brought) == held + done.taken and all(r.data["approval"] == "granted" for r in brought)
 
 
+def test_a_go_given_while_an_older_read_is_already_queued_covers_that_read_too(env):
+    """A read of older mail already queued without a go (a look further back) keeps its place, and the person's later
+    reach with its go covers it: the slices it brings never wait for a go the person already gave."""
+    ws, cfg, store = env
+    source = cfg.watch.sources[0]
+    refresh(ws, store, cfg, source.id, NOW)
+    source_intake.answer_full_read(ws, store, cfg, source.id, cfg.watch.full_read_choices[1], NOW, go=False)
+    assert not source_intake.intake_run(store.read(), source.id).data["older_read"].get("go")
+    source_intake.answer_full_read(ws, store, cfg, source.id, cfg.watch.full_read_choices[-1], NOW)
+    assert source_intake.intake_run(store.read(), source.id).data["older_read"]["go"] is True
+    done = source_intake.continue_older_read(ws, store, cfg, source.id, NOW)
+    assert done is not None and done.taken > 0
+    assert _intake_lines(ws, cfg, store) == [] and source_intake.waiting(store.read(), source.id) == []
+
+
 def test_not_now_gives_no_go_so_the_first_window_keeps_its_own_ask_on_today(env):
     ws, cfg, store = env
     source = cfg.watch.sources[0]

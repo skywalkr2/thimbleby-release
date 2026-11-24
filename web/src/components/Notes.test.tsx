@@ -40,7 +40,10 @@ test("a note from outside content says so", async () => {
 test("with no notes it says how one is made, in one line", async () => {
   served([]);
   renderApp(<Notes />);
-  expect(await screen.findByText("No notes yet. A note you hand in to be kept shows up here.")).toBeInTheDocument();
+  const card = (await screen.findByText("No notes yet. A note you hand in to be kept shows up here.")).closest("[data-empty]") as HTMLElement;
+  // The one empty-state card every page uses: the page's own surface, not bare text on the page (U6-13).
+  expect(card.className).toMatch(/card/);
+  expect(card.querySelector("[data-brand-mark]")).not.toBeNull();
 });
 
 test("a note the assistant wrote from a data dump reads as words: no id, no code, no ISO date", async () => {

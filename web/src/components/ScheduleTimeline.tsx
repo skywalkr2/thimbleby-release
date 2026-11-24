@@ -41,6 +41,12 @@ function whenOf(item: Item, t: T): string {
   return item.start === item.end ? day(item.start) : t("schedule.timeline.when_range", { start: day(item.start), end: day(item.end) });
 }
 
+/** The day a mark or row shows beside an item's title: its day; for a to-do past its day, drawn at today, the day it was due ("due Oct 14"). */
+function shownDay(item: Item, t: T, withWeekday = false): string {
+  if (item.state === "overdue" && item.detail) return t("schedule.timeline.due_on", { day: monthDay(item.detail) });
+  return withWeekday ? `${weekday(item.start)} ${monthDay(item.start)}` : monthDay(item.start);
+}
+
 /** The words that name an item for a screen reader and for its details: what it is, what it is called, when, and, for a to-do
  * or a promise, where it stands. */
 export function itemName(item: Item, t: T): string {
@@ -194,7 +200,7 @@ export function Timeline(props: {
   const busy = props.lanes.filter((l) => l.items.length > 0);
   const pitch = width === null ? PITCH_MIN * 2 : Math.max(PITCH_MIN, (width - LABEL_W) / data.days);
   // A lane that would need many rows is its items by week, apart from the dated axis: its weeks are not placed on it.
-  const packedOf = (lane: Lane) => packLane(lane.items, data.first, data.days, pitch, (i) => `${monthDay(i.start)} ${i.title}`, labelMaxFor(width));
+  const packedOf = (lane: Lane) => packLane(lane.items, data.first, data.days, pitch, (i) => `${shownDay(i, t)} ${i.title}`, labelMaxFor(width));
   const weekLanes = busy.filter((l) => packedOf(l).rows > GROUP_ROWS);
   const axisLanes = busy.filter((l) => !weekLanes.includes(l));
   const groups = groupsOf(axisLanes);
@@ -286,7 +292,7 @@ export function Timeline(props: {
                                 {point && (
                                   <span className={styles.label}>
                                     <span className={styles.pointDate} aria-hidden="true">
-                                      {monthDay(item.start)}
+                                      {shownDay(item, t)}
                                     </span>
                                     <span className={styles.pointTitle} title={item.title}>{item.title}</span>
                                   </span>
@@ -344,7 +350,7 @@ function WeekList(props: { data: TimelineData; lanes: Lane[]; other: string; sel
                     <span className="sr">{kindWord(item, t)}: </span>
                     <span className={styles.rowTitle}>{item.title}</span>
                     <span className={styles.rowDay}>
-                      {weekday(item.start)} {monthDay(item.start)}
+                      {shownDay(item, t, true)}
                     </span>
                     {props.showLane !== false && <span className={styles.rowLane}>{laneTitle(lane, props.other, t)}</span>}
                     {(item.kind === "todo" || item.kind === "promise") && <span className="sr">. {t(`schedule.timeline.state.${item.state}`)}</span>}

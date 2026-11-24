@@ -35,7 +35,7 @@ export function Notes(props: { onHandIn?: () => void }) {
       <ListState query={notes} failed={t("notes.load_failed")} row={{ lead: false, action: "none", framed: true }}>
         {() =>
           everything.length === 0 ? (
-            <EmptyState text={t("notes.empty")} action={props.onHandIn ? { label: t("notes.write"), onClick: props.onHandIn } : null} />
+            <EmptyState card text={t("notes.empty")} action={props.onHandIn ? { label: t("notes.write"), onClick: props.onHandIn } : null} />
           ) : shown.length === 0 ? (
             <FilteredEmpty text={t("sides.empty.notes", { side: side.named })} label={t("sides.empty.show_all")} onClear={() => side.set("all")} />
           ) : (

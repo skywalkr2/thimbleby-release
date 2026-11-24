@@ -118,18 +118,17 @@ test("one stale to-do asks whether the person is still doing it, with Keep it, D
   await waitFor(() => expect(calls.find((c) => c.route === "POST suggestions/choose")?.body).toMatchObject({ key: "stale:A-1", choice: "snooze" }));
 });
 
-test("each of several stale to-dos is its own line, and a choice names the line it was made on", async () => {
-  const user = userEvent.setup();
-  const { calls } = show(
-    [
-      line("stale", { key: "stale:A-1", count: 1, actions: ["A-1"], waiting_days: 40, subject: "Tidy the style sheet", choices: ["keep", "drop", "snooze"] }),
-      line("stale", { key: "stale:A-2", count: 1, actions: ["A-2"], waiting_days: 35, subject: "Sort the old proofs", choices: ["keep", "drop", "snooze"] }),
-    ],
-    { "POST suggestions/choose": () => ({ signal: "SIG-7", changeset: null }) },
-  );
-  expect(await screen.findByText("Decide whether you are still doing: Tidy the style sheet")).toBeInTheDocument();
-  expect(screen.getByText("Decide whether you are still doing: Sort the old proofs")).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Look over" })).toBeNull();
-  await user.click(within(row("stale:A-2")).getByRole("button", { name: "Keep it" }));
-  await waitFor(() => expect(calls.find((c) => c.route === "POST suggestions/choose")?.body).toMatchObject({ key: "stale:A-2", choice: "keep" }));
+test("several stale to-dos are one line that says the fact once and opens To-dos; no to-do's own choices are drawn on it", async () => {
+  const { calls } = show([
+    line("stale", { key: "stale:A-1", count: 1, actions: ["A-1"], waiting_days: 42, subject: "Tidy the style sheet", choices: ["keep", "drop", "snooze"] }),
+    line("stale", { key: "stale:A-2", count: 1, actions: ["A-2"], waiting_days: 35, subject: "Sort the old proofs", choices: ["keep", "drop", "snooze"] }),
+  ]);
+  const found = await screen.findByRole("group", { name: "2 to-dos untouched, the longest for 42 days" });
+  expect(found).toBe(row("stale"));
+  expect(screen.queryByText(/Decide whether you are still doing/)).toBeNull();
+  expect(within(found).getByRole("button", { name: "Look over" })).toBeInTheDocument();
+  expect(within(found).queryByRole("button", { name: "Keep it" })).toBeNull();
+  expect(within(found).queryByText(/The longest has gone/)).toBeNull();
+  expect(calls.some((c) => c.route === "POST suggestions/choose")).toBe(false);
 });
+

@@ -1778,6 +1778,7 @@ A unit of work for the assistant. The engine creates it when something is handed
 | `may_answer` | list[str] | `[]` | For a message the person sent: the open replies owed (action ids) it may answer, found by the rules from its conversation and recipient. The assistant reads it with them and decides whether it answers each one; the rules close nothing. |
 | `intake` | str \| None | `None` | The id of the watched source this request was taken in from when the source was newly added (or looked at further back): its results are gathered into one line on Today and one list, not one line each. |
 | `intake_older` | bool | `False` | For a request taken in from a new source: it came from the read of older mail (the full read the person chose), not from the source's first window. The first reading does not wait for these. |
+| `older_item` | bool | `False` | For a request taken in from a changed item whose time is earlier than its saved copy's: it may be an older copy put back, which the packet says so the assistant weighs it, and it is filed all the same. |
 | `source_role` | Literal['deleted'] \| None | `None` | For a request taken in from a source with a role: deleted means the mail was deleted by the person and is read for the schedule and for learning only, so it makes no to-do. |
 | `source_invitation` | bool | `False` | For a request taken in from a deleted-mail source: the item carries a calendar invitation (a request, a cancellation or an answer), by its own calendar data. It makes and changes no calendar entry. |
 | `intake_seen` | bool | `False` | For a request taken in from a new source: the person opened the list of what was found (or marked it seen), so its results show on Today one by one again if they still need a look. |
@@ -2711,6 +2712,7 @@ One thing the app does outside the workspace on the person's behalf (design 6.12
 | `reminder_at` | AwareDatetime \| None | `None` | For a reminder act: the reminder time it was drafted for, so one reminder time never gets two acts and a snooze is noticed. |
 | `run` | str \| None | `None` | The AI run that wrote the draft, if one did. |
 | `sources` | list[Annotated[str, RefTo(kind='source', blocks_delete=True)]] | `[]` | The saved inputs the content draws on. |
+| `records` | list[str] | `[]` | The ids of the facts, actions and questions the drafting run was given, set by the engine from what the run was shown. A recipient outside the limit of one of them holds the act. |
 | `facts` | list[Annotated[str, RefTo(kind='fact', blocks_delete=True)]] | `[]` | The facts the content states to its readers. An inferred fact is never one of them, and a fact older than its freshness limit is held for a check. |
 | `in_reply_to` | str \| None | `None` | The message this answers; the people in that thread are people it may address. |
 | `project` | str \| None | `None` | The project it is about, if any. |

@@ -85,6 +85,23 @@ const COUNTED: ReadonlySet<QueueLine["kind"]> = new Set([
 /** Whether a line has something to count: a line that counts things and holds none is left out. */
 export const hasSomething = (line: QueueLine): boolean => !COUNTED.has(line.kind) || line.count > 0;
 
+/** Several to-dos nobody has touched are one line ("3 to-dos untouched, the longest for 42 days"), in the place of the first of them: the
+ * line says the fact once and opens To-dos, where each is kept or dropped. One stale to-do stays its own line with its choices. */
+export function foldStale(lines: QueueLine[]): QueueLine[] {
+  const stale = lines.filter((line) => line.kind === "stale" && line.count > 0);
+  if (stale.length < 2) return lines;
+  const folded: QueueLine = {
+    ...stale[0],
+    key: "stale",
+    count: stale.length,
+    actions: stale.flatMap((line) => line.actions ?? []),
+    waiting_days: Math.max(...stale.map((line) => line.waiting_days ?? 0)),
+    subject: null,
+    choices: [],
+  };
+  return lines.flatMap((line) => (line === stale[0] ? [folded] : line.kind === "stale" && line.count > 0 ? [] : [line]));
+}
+
 /** The queue's lines; with a side picked, only that side's and the lines that belong to neither (the app's own). */
 export function useQueue(side: SideChoice = "all") {
   const picked = useStoredArea();
@@ -94,7 +111,7 @@ export function useQueue(side: SideChoice = "all") {
     // The area filter narrows to one area of life when the person picked one that some line is in.
     select: (lines) => {
       const area = chosenArea(lines, picked);
-      return lines.filter((line) => hasSomething(line) && (line.sides?.length ? onAnySide(line.sides, side, line.views) : onSide(line.side, side, line.views, !!line.project_name)) && inArea(line, area));
+      return foldStale(lines.filter((line) => hasSomething(line) && (line.sides?.length ? onAnySide(line.sides, side, line.views) : onSide(line.side, side, line.views, !!line.project_name)) && inArea(line, area)));
     },
   });
 }

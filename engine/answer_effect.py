@@ -70,18 +70,56 @@ def changed(store: Store, request_id: str, changeset_id: str) -> bool:
     return any(p.data.get("request") == request_id for p in reader.list("setting_proposal"))
 
 
+def _settles(reader: Any, changeset_id: str, question_id: str) -> bool:
+    """Whether the run closed the question with `question.done` (applied, or held for the person), or reworded it."""
+    cs = reader.get("changeset", changeset_id)
+    return cs is not None and any(
+        o.get("status") in ("applied", "held")
+        and o["op"].get("op") in ("question.done", "question.update")
+        and o["op"].get("id") == question_id
+        for o in cs.data["ops"]
+    )
+
+
+def _reopen(tx: Any, request: Any, question_id: str, changeset_id: str) -> None:
+    """Take the stored answer back when the run that judged it neither closed the question nor reworded it: the
+    question is open again (or sent again) with no answer. The words stay in the history and in the person's note."""
+    question = tx.get("question", question_id)
+    if question is None or question.data["status"] != "answered" or not judging_answer(tx, request.id, question_id):
+        return
+    if _settles(tx, changeset_id, question_id):
+        return
+    tx.update(
+        "question",
+        question_id,
+        {"status": "sent" if question.data.get("sent_at") else "open", "answer": None},
+        _ENGINE,
+        read_version=question.version,
+    )
+
+
+def reopen_unsettled(store: Store, request: Any, question_id: str, changeset_id: str) -> None:
+    """Called when a run on the person's answer changed something else but did not settle the question itself."""
+    with store.transaction() as tx:
+        _reopen(tx, request, question_id, changeset_id)
+
+
 def after_run(store: Store, request: Any, changeset_id: str, now: datetime) -> bool:
     """Called once a run on a request was applied. For a request that handles an answer or correction to a question
     and whose run changed nothing: the first time, the request is redone by a new one that tells the assistant so; the
     second time, it stops for the person (Today says so). Returns whether it did either."""
     question = question_of(store, request.data)
-    if question is None or changed(store, request.id, changeset_id):
+    if question is None:
+        return False
+    if changed(store, request.id, changeset_id):
+        reopen_unsettled(store, request, question.id, changeset_id)
         return False
     with store.transaction() as tx:
         cs = tx.get("changeset", changeset_id)
         tx.update("changeset", changeset_id, {"reviewed": True}, _ENGINE, read_version=cs.version)
         cur = tx.get("request", request.id)
         if request.data.get("returned_from"):
+            _reopen(tx, request, question.id, changeset_id)
             tx.update(
                 "request",
                 request.id,

@@ -80,13 +80,14 @@ export function People() {
   // The columns of the table at a glance: who they are, what is open with them, who has kept the person waiting and when they last spoke.
   // A column no one has anything in is not drawn.
   const columns: TableColumn<S["PersonView"]>[] = [
-    { id: "role", header: justMe ? t("people.col.who") : t("people.col.role"), rank: 1, core: true, cell: (p) => who(p) },
+    { id: "role", header: justMe ? t("people.col.who") : t("people.col.role"), rank: 1, core: true, weight: 3, cell: (p) => who(p) },
     { id: "open", header: t("people.col.open"), rank: 1, core: true, numeric: true, cell: (p) => (p.open_items > 0 ? p.open_items : "") },
     {
       id: "waiting",
       header: t("people.col.waiting"),
       rank: 1,
       core: true,
+      weight: 2,
       cell: (p) =>
         p.waiting_on_them > 0 ? (
           <Pill tone="warn" title={tn("people.waiting_on", p.waiting_on_them)}>
@@ -195,6 +196,13 @@ export function People() {
   );
 }
 
+/** "1 thing waiting on them for 44 days"; with several, "3 things waiting on them · the longest for 44 days". */
+function waitingWords(p: S["PersonView"], tn: (key: string, n: number, vars?: Record<string, string | number>) => string): string {
+  if (p.waiting_days == null) return tn("people.waiting_on", p.waiting_on_them);
+  if (p.waiting_on_them === 1) return tn("people.waiting_one_for", p.waiting_days);
+  return [tn("people.waiting_on", p.waiting_on_them), tn("people.waiting_longest", p.waiting_days)].join(" · ");
+}
+
 function PersonDetail(props: { person: S["PersonView"]; justMe: boolean; tags: React.ReactNode; reach: string[]; onEdit: () => void }) {
   const { t, tn } = useWords();
   const p = props.person;
@@ -216,7 +224,7 @@ function PersonDetail(props: { person: S["PersonView"]; justMe: boolean; tags: R
         {fact(t("setup.aliases"), p.aliases.join(", "))}
         {fact(t("people.col.reach"), props.reach.length ? props.reach.map((line) => <div key={line}>{line}</div>) : null)}
         {fact(t("people.col.open"), p.open_items > 0 ? tn("people.open_with", p.open_items) : null)}
-        {fact(t("people.col.waiting"), p.waiting_on_them > 0 ? [tn("people.waiting_on", p.waiting_on_them), p.waiting_days != null ? tn("people.waiting_longest", p.waiting_days) : ""].filter(Boolean).join(" · ") : null)}
+        {fact(t("people.col.waiting"), p.waiting_on_them > 0 ? waitingWords(p, tn) : null)}
         {fact(t("people.col.last"), p.last_contact ? day(p.last_contact) : null)}
       </DefinitionList>
       <Actions align="end">

@@ -150,7 +150,7 @@ export function Handled() {
             ) : side.choice !== "all" ? (
               <FilteredEmpty role="status" text={t("sides.empty.handled", { side: side.named })} label={t("sides.empty.show_all")} onClear={() => side.set("all")} />
             ) : (
-              <EmptyState role="status" text={t(`handled.empty.${tab}`)} />
+              <EmptyState card role="status" text={t(`handled.empty.${tab}`)} />
             )
           ) : (
           <div className={styles.groups}>

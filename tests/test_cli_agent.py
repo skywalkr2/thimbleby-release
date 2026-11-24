@@ -71,6 +71,9 @@ elif mode == "lists":
 elif mode == "pwd":
     open(paths[0], "w").write("ok")
     print(os.getcwd())
+elif mode == "pwd-labelled":
+    open(paths[0], "w").write("ok")
+    print("Working in: " + os.getcwd() + ".")
 elif mode == "lists-home":
     open(paths[0], "w").write("ok")
     print(" ".join(sorted(os.listdir(os.environ["HOME"]))))
@@ -81,6 +84,10 @@ elif mode == "tree":
     print(json.dumps(sorted(found)))
 elif mode == "limit-json":
     print(json.dumps({"result": "You've hit your usage limit. Try again later.", "pad": "x" * 2000, "is_error": True}))
+elif mode == "limit-long-flagged":
+    print(json.dumps({"result": "You've hit your usage limit. " + "Details of the plan. " * 60, "is_error": True}))
+elif mode == "error-flagged-plain":
+    print(json.dumps({"result": "Something went wrong in the agent's own way", "is_error": True}))
 elif mode == "long-json-answer":
     print(json.dumps({"result": "Notes on rate limit handling and usage limit reached cases. " * 40}))
 elif mode == "home":
@@ -245,6 +252,7 @@ def test_the_agent_runs_in_a_home_of_its_own_with_only_its_sign_in_folder(agent_
     (real / ".signin").mkdir(parents=True)
     (real / ".signin" / "token").write_text("old", encoding="utf-8")
     (real / ".signin.json").write_text("old", encoding="utf-8")
+    os.chmod(real / ".signin.json", 0o600)
     (real / "private").mkdir()
     (real / "private" / "keys.txt").write_text("secret", encoding="utf-8")
     monkeypatch.setenv("HOME", str(real))
@@ -255,6 +263,7 @@ def test_the_agent_runs_in_a_home_of_its_own_with_only_its_sign_in_folder(agent_
     adapter._start("go", "m", tmp_path, tmp_path)  # noqa: SLF001 - one run, no answer wanted
     assert (real / ".signin" / "token").read_text(encoding="utf-8") == "refreshed"  # the folder is linked
     assert (real / ".signin.json").read_text(encoding="utf-8") == "refreshed"  # the file was copied back
+    assert stat.S_IMODE((real / ".signin.json").stat().st_mode) == 0o600  # with the permissions it had, never wider
 
 
 def test_the_smoke_test_runs_the_lockdown_test_once_per_agent_account(agent_script, tmp_path):
@@ -476,12 +485,14 @@ def test_an_expired_sign_in_is_read_as_a_sign_in_problem_by_the_preset_that_prin
             "Failed to authenticate: OAuth session expired and could not be refreshed",
             "failed to authenticate",
             "Session expired",
+            'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"Invalid bearer token"}}',
+            "Your credentials have expired. Run /login to sign in again.",
         ):
             err = CliAgentAdapter(account).classify_error(1, said, None)
             assert err.kind == "auth" and err.hint == agent["sign_in_hint"], (preset["id"], said)
 
 
-@pytest.mark.parametrize("mode", ["pwd", "lists-home"])
+@pytest.mark.parametrize("mode", ["pwd", "pwd-labelled", "lists-home"])
 def test_a_program_that_only_prints_its_folder_or_lists_its_home_fails_the_probe(agent_script, mode):
     """S-0721: a command that ran and wrote nothing is still a command that ran."""
     checks = CliAgentAdapter(settings(agent_script, mode, output_via="outbox")).lockdown_test("m")
@@ -555,3 +566,19 @@ def test_a_json_sign_in_file_open_elsewhere_keeps_its_own_keys_and_is_untouched_
     after = json.loads((real / name).read_text(encoding="utf-8"))
     assert after[keys[0]] == "refreshed" and after["theirs"] == "kept"
     assert stat.S_IMODE((real / name).stat().st_mode) == 0o600
+
+
+def test_a_long_limit_notice_and_any_answer_flagged_as_an_error_are_errors_not_answers(agent_script):
+    """F1-1: the JSON's own error flag decides, so a notice past the short-notice length is still the limit, and a
+    flagged answer is never returned as the model's text."""
+    fields = {"text": "result", "error_flag": "is_error"}
+    long = settings(agent_script, "limit-long-flagged", output_json=True, output_fields=fields)
+    with pytest.raises(AiError) as err:
+        CliAgentAdapter(long).run(task(), "m")
+    assert err.value.kind == "quota"
+    plain_error = settings(agent_script, "error-flagged-plain", output_json=True, output_fields=fields)
+    with pytest.raises(AiError) as err:
+        CliAgentAdapter(plain_error).run(task(), "m")
+    assert err.value.kind != "quota"
+    unflagged = settings(agent_script, "error-flagged-plain", output_json=True, output_fields={"text": "result"})
+    assert "went wrong" in CliAgentAdapter(unflagged).run(task(), "m").text

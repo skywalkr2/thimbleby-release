@@ -1053,13 +1053,15 @@ test.describe.serial("acceptance scenario", () => {
       const text = page.getByRole("main").locator(`${plain} [data-pill], ${plain} [class*='_meta_']`);
       if ((await text.count()) > 0) {
         await text.first().click();
-        await expect(page.locator("[data-row]:focus")).toHaveCount(1);
+        // The cursor is in the row, on the row itself or, when the click opened a form (a question's answer box), in its first field.
+        await expect(page.locator("[data-row]:focus-within")).toHaveCount(1);
       } else {
         await page.getByRole("main").locator("[data-row] [data-expander]").first().click();
         await expect(page.locator("[data-row] [data-expander]:focus")).toHaveCount(1);
       }
       // The mouse gets no ring. (On Today a click also opens the line, which marks it as selected with a bar of its own.)
-      expect(await page.evaluate(() => document.activeElement!.matches(":focus-visible"))).toBe(false);
+      // A text field the click opened always draws its ring (the cursor is in it); only the row itself, or a button, must not.
+      expect(await page.evaluate(() => document.activeElement!.matches(":focus-visible") && !document.activeElement!.matches("input, textarea, select, [contenteditable]"))).toBe(false);
       if (view !== "Today") expect((await focusRing(page)).shown).toBe(false);
       // From the keyboard, every row shows a ring, drawn in its padding or outside it, never over its text.
       const count = Math.min(await rows.count(), 12);
@@ -1292,8 +1294,8 @@ test.describe.serial("acceptance scenario", () => {
     await expect(page.locator("[data-definition-list]", { hasText: "Organization" })).toContainText(name);
     await expect(page.locator("[data-definition-list]", { hasText: "Organization" })).not.toContainText(/ORG-/);
     const orgs = page.getByRole("region", { name: "Organizations" });
-    // The organizations are rows: the person count is in the row's one meta line.
-    await expect(orgs.getByRole("listitem").filter({ hasText: name })).toContainText("1 person");
+    // The organizations are table rows: the person count is the row's People cell.
+    await expect(orgs.getByRole("row").filter({ hasText: name }).getByRole("cell", { name: "1", exact: true })).toBeVisible();
     await checkAccessibility(page);
   });
 
@@ -1463,8 +1465,8 @@ test.describe.serial("acceptance scenario", () => {
     const first = "A line to make a note from";
     const body = `\n${first}\nand a second line\n`;
     const words = body.split(/\s+/).filter(Boolean).length;
-    // The page's own button, which the empty page's card repeats beside its words (S-0746); the form gives focus back to this one.
-    const opener = page.getByRole("button", { name: "Add a file", exact: true }).first();
+    // The one Add button: the empty page's card holds it and the header does not repeat it (S-0746); the form gives focus back to it.
+    const opener = page.getByRole("button", { name: "Add a file", exact: true });
     await opener.click();
     const dialog = page.getByRole("dialog", { name: "Add a file" });
     await expect(dialog).toBeVisible();

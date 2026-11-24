@@ -58,6 +58,8 @@ from engine.triage import classify, classify_placed
 
 #: The name a close carries when the change is to an older copy of a document's versions.
 VERSION_RULE = "Older version"
+#: The name a close carries when an item's content matches a version of that same item seen before.
+CAME_BACK_RULE = "Older version came back"
 _WATCHER = WriteContext(actor="watcher", trust="untrusted", op="watch.read")
 _SORTER = WriteContext(actor="engine", trust="trusted", op="watch.sort")
 #: Lines of unchanged text shown around each change in a diff.
@@ -528,9 +530,22 @@ def _record_stale_copy(store: Any, source: Any, worked: list[Any], poll: Any, no
     return Result(source.id, "ok")
 
 
+def _seen_before(store: Any, before: Any, digest: str) -> bool:
+    """Whether an item's content (by its hash) is one the same item had at an earlier read, other than the copy it has
+    now: the saved copy's history holds it."""
+    now = before.data["content_hash"]
+    kept = {
+        row.get("after")
+        for row in store.read().ledger(kind="snapshot", record_id=before.id, fields=["content_hash"])
+        if row.get("after") != now
+    }
+    return digest in kept
+
+
 def _older_item(before: Any, item: Any) -> bool:
-    """Whether a source lists an item with a time earlier than the one its saved copy has: an older copy of that item
-    (a file put back from a backup), never a change. Items that carry no time are never older."""
+    """Whether a source lists an item with a time earlier than the one its saved copy has: it may be an older copy of
+    that item (a file put back from a backup), which its packet says; it is still filed. Items that carry no time are
+    never older."""
     made, kept = _moment(item.changed_at), _moment(before.data.get("changed_at"))
     return made is not None and kept is not None and made < kept
 
@@ -703,6 +718,7 @@ class _Entry:
     handed: bool  # it is handed in now, not only noted
     replaces: str | None = None  # for the current copy of a document's versions: the version it replaces
     personal: bool = False  # a rule says the mail is personal: handed in and filed under the Personal project
+    older: bool = False  # its time is earlier than its saved copy's: it may be an older copy, said in its packet
 
 
 def _own_mail_ids(store: Any) -> set[str]:
@@ -924,13 +940,15 @@ def _compare(
                 with store.transaction() as tx:
                     tx.update("snapshot", before.id, kept_now, _WATCHER, read_version=before.version)
             continue
-        if before is not None and _older_item(before, item):
-            log.info("%s: an older copy of %s was listed and was not compared", source.id, item.key)
-            continue
         change = "new" if before is None else "changed"
         old = _read_text(ws, before.data["content_hash"]) if before is not None else None
         facts = _change(cfg, source, item, change, old)
         closed, kept, personal = classify_placed(store, cfg, facts)
+        if closed is None and before is not None and _seen_before(store, before, digest):
+            # Its content is a version of this same item already seen (a restored or re-synced older copy): not news,
+            # so nothing is read again, and What changed says it came back.
+            closed = {"rule": CAME_BACK_RULE, "reason": word(cfg, "read.version_came_back")}
+        older_item = before is not None and _older_item(before, item)
         older = families.older_than_current(item.key, item.changed_at) if families else None
         if older and closed is None:
             closed = {"rule": VERSION_RULE, "reason": older}
@@ -951,7 +969,9 @@ def _compare(
             closed = _carried_sorting(before)
         if handed and closed is None and not kept and before is None and item.message is not None:
             unplaced[item.key] = facts
-        entries.append(_Entry(item, digest, before, details, change, old, closed, handed, replaces, personal))
+        entries.append(
+            _Entry(item, digest, before, details, change, old, closed, handed, replaces, personal, older_item)
+        )
     marks, personal_keys, result.note, unsorted_keys, kinds = _assistant_sorted(
         ws, store, cfg, source, router, unplaced
     )
@@ -996,6 +1016,8 @@ def _compare(
                 filed = {**(filed or {}), "sort_pending": True}
             if item.key in kinds:
                 filed = {**(filed or {}), "mail_kind": kinds[item.key]}
+            if entry.older and not closed:
+                filed = {**(filed or {}), "older_item": True}
             request = _hand_in(ws, store, tx, cfg, source, item, entry.change, text, now, closed, extra=filed)
         (result.new if entry.change == "new" else result.changed).append(request)
     result.new.extend(_hand_in_burst(ws, store, cfg, source, burst, now, home, personal_keys, save, catching_up))

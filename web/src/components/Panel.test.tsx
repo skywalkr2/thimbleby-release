@@ -203,6 +203,26 @@ test("an empty panel with a way to add one says how and offers that same action 
   await waitFor(() => expect(calls.some((c) => c.route === "POST plugin-actions/demo/goal.add/preview")).toBe(true));
 });
 
+test("the add button shows once: in the empty card when nothing is listed, in the page header at the right when rows are (U6-11, U6-12)", async () => {
+  const addRoutes = (listed: S["PanelRow"][]) =>
+    routes(panel({ new_action: "demo/goal.add" }), {
+      "GET plugin-actions": () => [{ name: "demo/goal.add", label: "Add a goal", on: null }],
+      "GET panels/demo/goals/rows": () => listed,
+    });
+  fakeApi(addRoutes([]));
+  const first = renderApp(<Panel name="demo/goals" onOpenRecord={() => {}} />);
+  await screen.findByText("Nothing here yet. Add the first one and it shows up here.");
+  expect(screen.getAllByRole("button", { name: "Add a goal" })).toHaveLength(1);
+  expect(document.querySelector("[data-page-header]")?.querySelector("button")).toBeNull();
+  first.unmount();
+  fakeApi(addRoutes(rows));
+  renderApp(<Panel name="demo/goals" onOpenRecord={() => {}} />);
+  const add = await screen.findByRole("button", { name: "Add a goal" });
+  expect(screen.getAllByRole("button", { name: "Add a goal" })).toHaveLength(1);
+  // The same place as Files: the header's primary, not a row of its own under the title.
+  expect(add.closest("[data-page-header]")).not.toBeNull();
+});
+
 test("a new action shows as a button above the rows, opens its review with no target and refreshes the rows after it applies", async () => {
   const user = userEvent.setup();
   let added = false;

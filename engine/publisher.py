@@ -166,7 +166,11 @@ class Publisher:
 
         if (
             why := acts.audience_problem(
-                view, People(self.store, self.cfg), data["sources"], acts.act_recipients(view, data)
+                view,
+                People(self.store, self.cfg),
+                data["sources"],
+                acts.act_recipients(view, data),
+                data.get("records") or [],
             )
         ) is not None:
             raise StoreError(why)

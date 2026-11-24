@@ -164,7 +164,7 @@ test("the organization filter is sized to its content", async () => {
   expect(css).toMatch(/\[data-ui="select"\]\s*\{[^}]*width:\s*auto/);
 });
 
-test("the organizations are rows: name, one meta line of how many people work there, whether it is yours and other names, and the row's menu", async () => {
+test("the organizations are table rows: name, how many people work there, whether it is yours and other names, and the row's menu", async () => {
   const user = userEvent.setup();
   fakeApi({
     "GET people": () => [person("P-1", "Ana Person")],
@@ -172,15 +172,15 @@ test("the organizations are rows: name, one meta line of how many people work th
   });
   renderApp(<People />);
   const section = await screen.findByRole("region", { name: "Organizations" });
-  const one = (await within(section).findByText("Org one")).closest("li")!;
-  expect(one).toHaveTextContent("2 people \u00b7 Your business \u00b7 also called Org 1");
-  // The name opens the organization's page.
-  expect(within(one).getByRole("link", { name: "Org one" })).toHaveAttribute("href", expect.stringContaining("organization/ORG-1"));
-  // A person count of zero says nothing, and the menu is the only button on the row.
-  const two = within(section).getByText("Org two").closest("li")!;
+  await within(section).findByRole("table");
+  const one = (await within(section).findByText("Org one")).closest("tr")!;
+  expect(one).toHaveTextContent("2");
+  expect(one).toHaveTextContent("Your business");
+  expect(one).toHaveTextContent("Org 1");
+  // A person count of zero says nothing, and the row's menu offers Rename.
+  const two = within(section).getByText("Org two").closest("tr")!;
   expect(two).not.toHaveTextContent(/\d/);
   expect(two).not.toHaveTextContent("Your");
-  expect(within(two).getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual(["More actions for Org two"]);
   await user.click(within(two).getByRole("button", { name: "More actions for Org two" }));
   expect(await screen.findByRole("menuitem", { name: "Rename" })).toBeInTheDocument();
 });

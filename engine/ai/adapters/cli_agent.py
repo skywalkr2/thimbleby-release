@@ -261,7 +261,9 @@ class CliAgentAdapter:
                 if now == before or not _is_text(now):  # a sign-in kept as text; a binary one is left as it was
                     continue
                 if keys is None:
-                    write_whole(source, now.decode("utf-8"))
+                    # A sign-in file keeps the permissions it had: written back wider, a token would be readable by
+                    # anyone on the computer.
+                    write_whole(source, now.decode("utf-8"), mode=stat.S_IMODE(source.stat().st_mode))
                     continue
                 # The real file may be open in the person's own session of the program, which rewrites it often: it is
                 # read again right before the write, only keys whose value differs are put in, the file is replaced in
@@ -280,6 +282,9 @@ class CliAgentAdapter:
         """The run's result. A program that finished without error but left no answer (nothing on its output, or an
         empty answer file) is its own outcome, never an empty answer."""
         said = plain(answer if answer is not None else self._answer_text(stdout)).strip()
+        if said and self._flagged_error(stdout):
+            # An answer the program itself flags as an error is read like a failed run, whatever its length.
+            raise self.classify_error(None, said, None)
         if said and len(said) <= LIMIT_NOTICE_CHARS and self._is_limit_notice(said):
             # A plan limit the program reported as its answer with exit code 0 is the limit, never the model's answer.
             raise self.classify_error(None, said, None)
@@ -300,6 +305,16 @@ class CliAgentAdapter:
             if isinstance(text, str):
                 return text
         return stdout
+
+    def _flagged_error(self, stdout: str) -> bool:
+        """Whether the JSON output marks itself as an error, by the account's error flag path."""
+        path = self.agent.output_fields.error_flag
+        if not (self.agent.output_json and path):
+            return False
+        try:
+            return _at(json.loads(stdout), path) is True
+        except ValueError:
+            return False
 
     def _is_limit_notice(self, text: str) -> bool:
         patterns = (*self.agent.errors.quota, *COMMON_ERRORS["quota"])
@@ -520,10 +535,11 @@ class CliAgentAdapter:
                     inside.read_text(encoding="utf-8", errors="replace") if inside.is_file() else "",
                 ]
             )
-            # Only a command gives these: a listing that names a hidden file, or the working folder's real path alone
-            # on a line (what printing the working directory gives; the prompt only names files inside it).
+            # Only a command gives these: a listing that names a hidden file, or the working folder's own path with
+            # nothing of a file after it, alone or after a label ("cwd: ..."), which is what printing the working
+            # directory gives; the prompt only ever names files inside the folder.
             folders = {str(scratch), str(scratch.resolve())}
-            printed_folder = any(line.strip() in folders for line in said.splitlines())
+            printed_folder = any(re.search(re.escape(f) + r"(?![/\\\w-])", said) for f in folders)
             ran = shell.exists() or marker in said or home_marker in said or printed_folder
             checks.append(
                 LockdownCheck(

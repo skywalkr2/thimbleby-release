@@ -53,7 +53,7 @@ test("the to-dos past due that no day shown holds are stacked under today's row,
   const user = userEvent.setup();
   const list = await open();
   const today = list.querySelector(":scope > li") as HTMLElement;
-  expect(within(today).getByText("Overdue")).toBeInTheDocument();
+  expect(within(today).getByText("Overdue, yours")).toBeInTheDocument();
   await user.click(today.querySelector("[data-entry-key]") as HTMLElement);
   await screen.findByRole("heading", { name: /Pay the deposit/ });
   // Due 40 days before the Monday of the week: Sep 16, in the page's date words.

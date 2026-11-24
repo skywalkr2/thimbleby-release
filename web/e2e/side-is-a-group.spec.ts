@@ -142,7 +142,7 @@ test.describe("a business is also an organization", () => {
   test("People › Organizations lists the business once, as the person's own, and its page and the business's page name each other", async ({ page }) => {
     await go(page, "records/people");
     const organizations = page.getByRole("region", { name: "Organizations", exact: true });
-    const rows = organizations.getByRole("listitem").filter({ hasText: SIDE });
+    const rows = organizations.getByRole("row").filter({ hasText: SIDE });
     await expect(rows).toHaveCount(1, LOADED);
     await expect(rows).toContainText("Your business");
     // It is the one the person works for, and it can't be removed while it is one of their sides.
@@ -150,7 +150,9 @@ test.describe("a business is also an organization", () => {
     await expect(page.getByRole("menuitem", { name: "Remove" })).toBeDisabled();
     await page.keyboard.press("Escape");
     // The business and its organization are one page: the organization's name opens the business's own page.
+    // A plain click on the name opens its detail beside the table; the detail's link is the page.
     await rows.getByRole("link", { name: SIDE }).click();
+    await page.getByRole("link", { name: `Open ${SIDE}'s page` }).click();
     await expect(page.getByRole("heading", { level: 1, name: SIDE, exact: true })).toBeVisible(LOADED);
     await expect(page).toHaveURL(/#records\/project\//);
     await expect(page.getByRole("region", { name: "Details", exact: true }).getByText("Organization", { exact: true })).toHaveCount(0);

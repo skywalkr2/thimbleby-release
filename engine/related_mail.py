@@ -18,13 +18,14 @@ from engine.triage import sender_address
 from engine.untrusted import outside_block, quoted_attribute
 from engine.workspace import Workspace
 
-#: A code a booking or an order carries: letters and digits together, or a long number, upper case, six or more long.
+#: A code a booking or an order carries: letters and digits together, or a long number, six or more long. It is
+#: matched on the text in upper case, so a code written in lower case is the same code.
 _REFERENCE = re.compile(r"\b(?=[A-Z0-9-]{6,}\b)(?:(?=[A-Z-]*\d)(?=[0-9-]*[A-Z])[A-Z0-9-]+|\d{7,})\b")
 
 
 def references_in(text: str) -> set[str]:
     """The booking or order codes in the text (a date such as 2026-11-19 is not one)."""
-    return {code.strip("-") for code in _REFERENCE.findall(text) if len(code.strip("-")) >= 6}
+    return {code.strip("-") for code in _REFERENCE.findall((text or "").upper()) if len(code.strip("-")) >= 6}
 
 
 def _moment(value: Any) -> datetime | None:

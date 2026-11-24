@@ -23,7 +23,8 @@ const review = {
   title: { kind: "email", person_name: "Robin Sample", topic: "spine options" },
   items: [todo(0, "Send two spine options"), todo(1, "Book the proof run")],
 };
-const stale = (n: number) => ({ ...base, key: `stale:A-${n}`, group: "review", kind: "stale", actions: [`A-${n}`], waiting_days: 30 + n, subject: `Tidy the proofs, round ${n}`, choices: ["keep", "drop", "snooze"] });
+// Fillers that stay one row each (several stale to-dos are one folded row).
+const stale = (n: number) => ({ ...base, key: `decision:Q-${n + 1}`, group: "decide", kind: "decision", text: `Tidy the proofs, round ${n}: ink or toner?`, question: `Q-${n + 1}` });
 const lines = [
   { ...base, key: "decision:Q-1", group: "decide", kind: "decision", text: "Cover finish for the hardcover: matte or soft-touch?", question: "Q-1" },
   review,
@@ -89,8 +90,11 @@ test.describe("Today's rail", () => {
     await expect(row.getByText("Send two spine options")).toHaveCount(0);
     expect(await tops(page)).toEqual(before);
     expect(await filled(page)).toBe(1);
+    // The rail says what is out of sight while the line is open, and says no more once it is closed.
+    await expect(railOf(page).locator("[data-rail-returns]")).toHaveText("This week, your schedule and setup come back when you close this.");
     await page.keyboard.press("Escape");
     await expect(pane).toHaveCount(0);
+    await expect(railOf(page).locator("[data-rail-returns]")).toHaveCount(0);
     expect(await tops(page)).toEqual(before);
     // The cursor is back on the line, so the keyboard carries on from there.
     await expect(row).toContainText("Look over");

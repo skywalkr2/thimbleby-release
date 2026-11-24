@@ -114,7 +114,9 @@ GENERIC_NAMES = frozenset({"assistant", "the assistant", "your assistant"})
 #: Where a generic name attributes: after "by", "from" or "per", or before a date, "'s" or "judgment".
 _BEFORE = (
     r"(?:\b(?:by|from|per|reported by|source:?|according to|drafted (?:with|using)|written with|generated with"
-    r"|thanks to|courtesy of)\s+)"
+    r"|thanks to|courtesy of|credit to|credits? goes to|kudos to|props to|shout-?out to|hat tip to|with help from"
+    r"|with thanks to|(?:written|drafted|prepared|compiled|produced|put together|worked out|co-?written|co-?authored)"
+    r"\s+(?:together\s+)?with)\s+)"
 )
 _AFTER = (
     r"(?=(?:'s|\u2019s)?\s*(?:,\s*\d|\d{1,2}/\d{1,2}|(?:pm\s+)?judge?ment\b"
@@ -122,6 +124,31 @@ _AFTER = (
     r"|(?:says|said|thinks|believes|recommends|suggests|notes|wrote|found|flagged|estimates)\b"
     r"|(?:noted|suggested|recommended|pointed out|reports|reported|estimated|put it|explained|confirmed|advised)\b))"
 )
+
+
+#: Where a name stands as the subject of a clause: at the start of the text or of a sentence, after a comma or after a
+#: word that opens a clause, and followed (after an optional "and I") by a lowercase word that is not a preposition,
+#: article, conjunction, pronoun or a form of "be" or a modal (so "<name> drafted this" credits, "Ask <name> about
+#: it" and "Can we meet, <name>?" do not).
+_CLAUSE_START = (
+    r"(?:(?:^|[.!?;:\n,]|\b(?:that|as|and|but|because|so|when|if|while|since|which|who|then|though|although))\s*)"
+)
+_NOT_A_VERB = (
+    r"(?:a|an|the|to|from|about|for|on|in|at|of|with|by|and|or|but|as|if|so|than|then|that|this|these|those|is|are|was"
+    r"|were|am|be|been|will|would|can|could|should|may|might|must|shall|who|whom|whose|which|where|when|while|because"
+    r"|since|into|onto|over|under|after|before|until|via|per|my|your|our|his|her|their|its|me|us|him|them|you|it"
+    r"|there|here|has|have|had)"
+)
+_SUBJECT_AFTER = (
+    r"(?=(?:\s+(?:and|&)\s+(?:I|we|me|us|the team))?\s+(?:(?:has|have|had)\s+(?:\w+ly\s+)?\w+(?:ed|ten|ne|ught|und)\b"
+    r"|(?!" + _NOT_A_VERB + r"\b)(?-i:[a-z])))"
+)
+#: A possessive that credits work: "<name>'s draft", "<name>'s latest notes".
+_WORK_NOUNS = (
+    r"(?:draft|drafts|notes?|version|wording|text|message|email|reply|report|plan|write-?up|suggestions?|proposal"
+    r"|summary|timeline|minutes|answer|findings?)"
+)
+_POSSESSIVE_AFTER = r"(?=(?:'s|\u2019s)\s+(?:[a-z-]+\s+)?" + _WORK_NOUNS + r"\b)"
 
 
 def _pattern(names: Iterable[str], attribution_only: bool = False) -> re.Pattern[str] | None:
@@ -140,11 +167,14 @@ def _pattern(names: Iterable[str], attribution_only: bool = False) -> re.Pattern
         alternatives = "|".join(generic)
         parts.append(_BEFORE + r"(?P<g1>" + alternatives + r")(?!\w)")
         parts.append(r"(?<!\w)(?P<g2>" + alternatives + r")" + _AFTER)
-    return re.compile("|".join(parts), re.IGNORECASE)
+        if attribution_only:
+            parts.append(_CLAUSE_START + r"(?P<g3>" + alternatives + r")(?!\w)" + _SUBJECT_AFTER)
+            parts.append(r"(?<!\w)(?P<g4>" + alternatives + r")" + _POSSESSIVE_AFTER)
+    return re.compile("|".join(parts), re.IGNORECASE | re.MULTILINE)
 
 
 def _matched(found: re.Match[str]) -> str:
-    return next(found.group(k) for k in ("s", "g1", "g2") if k in found.groupdict() and found.group(k))
+    return next(found.group(k) for k in ("s", "g1", "g2", "g3", "g4") if k in found.groupdict() and found.group(k))
 
 
 def name_in(text: str, names: Iterable[str], attribution_only: bool = False) -> str | None:

@@ -156,7 +156,6 @@ test.describe("S-0336 / S-0359 (X86): a title is two lines and an ellipsis, its 
     const nav = page.getByRole("navigation", { name: "Views" });
     for (const name of ["Willowbrook Handmade Ceramics and Garden Supply Cooperative", "Northfield Mobile Bicycle Repair and Neighborhood Delivery Service"]) {
       const link = nav.getByRole("link", { name });
-      await expect(link.locator("xpath=..")).toHaveAttribute("title", name);
       await link.focus();
       await expect(tip(page, name)).toBeVisible();
     }

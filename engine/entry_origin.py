@@ -79,6 +79,13 @@ def _names_day(text: str, day: Any) -> bool:
     return any(re.search(p, text, re.IGNORECASE) for p in patterns)
 
 
+def _names_place(text: str, place: Any) -> bool:
+    """Whether the text names the entry's place, ignoring case and the spacing between words. False for an entry with
+    no place."""
+    wanted = " ".join(str(place or "").casefold().split())
+    return bool(wanted) and wanted in " ".join(text.casefold().split())
+
+
 def _mail_sender(store: Any, view: Any, ws: Any, source_id: str | None, head: str) -> str:
     """The sender address of the mail a source holds, from the mail service's own record of it (its snapshot); empty
     when there is none. Never from a From line in the text: anyone can write one, and a cancellation is exactly what
@@ -99,8 +106,9 @@ def cancel_match(view: Any, ctx: Any, entry: Any, quote: str, day: Any) -> tuple
     own data, never from the words of the cancellation alone. None: it may. ("refuse", why): it names a different
     reference than the entry's mail, so it is not this booking. ("ask", question): the person decides, because the
     sender differs, can't be told, or the mail doesn't show it is that booking. A call-off applies at once only
-    when the sender has the same domain as the sender of the mail that made the entry AND the two mails share a
-    reference, or the cancellation names the entry's date."""
+    when the sender has the same domain as the sender of the mail that made the entry AND either the two mails share
+    a reference, or the cancellation names both the entry's date and its place (an entry with no place needs the
+    reference); a date alone asks."""
     from engine.intake import source_text
     from engine.related_mail import references_in
     from engine.workspace import Workspace
@@ -130,6 +138,6 @@ def cancel_match(view: Any, ctx: Any, entry: Any, quote: str, day: Any) -> tuple
         return "ask", UNKNOWN_SENDER_ASKS.format(**words)
     if mine != theirs:
         return "ask", OTHER_SENDER_ASKS.format(**words)
-    if (wanted & shown) or _names_day(cancel_text, day):
+    if (wanted & shown) or (_names_day(cancel_text, day) and _names_place(cancel_text, entry.data.get("where"))):
         return None
     return "ask", UNCLEAR_ASKS.format(**words)

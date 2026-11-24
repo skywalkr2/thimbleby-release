@@ -161,7 +161,7 @@ test.describe("the calendar page", () => {
       await pick(page, key);
       const card = page.locator("main [data-week-ahead]");
       await expect(card).toBeVisible(LOADED);
-      await expect(card.getByRole("heading", { name: "The week ahead" })).toBeVisible();
+      await expect(card.getByRole("heading", { name: "This week" })).toBeVisible();
       const [cardBox, gridBox] = await Promise.all([card.boundingBox(), page.locator("main [data-grid]").first().boundingBox()]);
       expect(cardBox).not.toBeNull();
       expect(gridBox).not.toBeNull();

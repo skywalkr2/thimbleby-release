@@ -64,7 +64,8 @@ export function useListChoice(args: {
     }
   }, [beside, chosen, first, args.wait]);
 
-  // The chosen row left the list: its neighbor is chosen in its place (beside the list), or the detail closes.
+  // The chosen row left the list: its neighbor is chosen in its place (beside the list, and only where the pane has room, never to
+  // lay a pane over the list the person did not ask for), or the detail closes.
   useEffect(() => {
     if (chosen === null) return;
     const at = keys.indexOf(chosen);
@@ -74,8 +75,8 @@ export function useListChoice(args: {
     }
     // A list left with nothing in it starts over: what arrives next is chosen as the first.
     if (keys.length === 0) touched.current = false;
-    setChosen(beside && keys.length > 0 ? keys[Math.min(lastIndex.current, keys.length - 1)] : null);
-  }, [chosen, keys, beside]);
+    setChosen(beside && !args.wait && keys.length > 0 ? keys[Math.min(lastIndex.current, keys.length - 1)] : null);
+  }, [chosen, keys, beside, args.wait]);
 
   const choose = useCallback((key: string) => {
     touched.current = true;

@@ -399,7 +399,7 @@ test("another form that is due can be shown from the card", async () => {
 test("the Monday briefing holds the week ahead card in place of a rule-made list of the week, and nothing from Today is repeated", async () => {
   await show({ ...MONDAY, on_today: 0, sections: [] }, { "GET week-ahead": () => WEEK });
   expect(await screen.findByRole("heading", { level: 2, name: "This week's briefing" })).toBeInTheDocument();
-  expect(await screen.findByRole("heading", { level: 3, name: "The week ahead" })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { level: 3, name: "This week" })).toBeInTheDocument();
   expect(headings()).not.toContain("Your promises this week");
   expect(screen.getByText("A light week with a parcel coming.")).toBeInTheDocument();
 });

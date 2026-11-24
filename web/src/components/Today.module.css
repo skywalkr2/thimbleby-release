@@ -203,3 +203,6 @@
 :global([data-narrow]) .rail > * { order: 2; }
 :global([data-narrow]) .queue > :global([data-setup-card]) { order: 3; }
 :global([data-narrow]) .rail > :global([data-brief]) { order: 4; }
+
+/* The one line of the week under the date, drawn when the rail is below the queue. */
+.weekLine { display: block; }

@@ -84,9 +84,10 @@ export function monthDay(iso: string | null | undefined): string {
 
 const longDayFormat = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", weekday: "long", month: "long", day: "numeric" });
 
-/** A date in full words, "Tuesday, October 13", for a heading. */
+/** The day a moment falls on, on the person's own clock, in full words, "Tuesday, October 13", for a heading. */
 export function longDay(when: Date): string {
-  return longDayFormat.format(when);
+  const [y, m, d] = onTheClock(when).date.split("-").map(Number);
+  return longDayFormat.format(new Date(Date.UTC(y, m - 1, d)));
 }
 
 /** A moment as its day and time on the person's clock: "Wed, Oct 28, 7:37 AM". */

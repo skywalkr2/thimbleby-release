@@ -69,7 +69,8 @@ def test_a_file_on_this_computer_is_read_and_read_again_when_it_changes(tmp_path
     first = read_calendar(settings, {}, context(tmp_path))
     (item,) = first.items
     assert item.title == "Floor plan walkthrough" and item.event.where == "Main hall"
-    assert first.complete is False and first.state["modified"]
+    # No file time is kept: a file's time never makes a read old (S-0774); the file is read whole each time.
+    assert first.complete is False and "modified" not in first.state
     path.write_text(path.read_text().replace("Floor plan walkthrough", "Floor plan walkthrough, second round"))
     again = read_calendar(settings, first.state, context(tmp_path))
     assert again.items[0].title.endswith("second round") and again.items[0].key == item.key

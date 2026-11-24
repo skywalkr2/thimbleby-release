@@ -83,6 +83,7 @@ type Tab = "actions" | "questions" | "done";
 /** The width the list needs beside the pane: a round check, a title with its line under it, the primary and the menu. */
 const TODOS_FIT = 480;
 type T = (key: string, vars?: Record<string, string | number>) => string;
+type TN = (key: string, n: number, vars?: Record<string, string | number>) => string;
 
 export function OpenItems() {
   const { t, tn } = useWords();
@@ -544,7 +545,6 @@ function ActionRowBody(props: ActionRowProps) {
     placeMark,
     inViews.length > 0 && <ViewTags key="v" views={a.views} />,
     a.followed_up && <span key="f" data-followed-up="">{t("open.followed_up", { date: day(a.followed_up) })}</span>,
-    a.state === "stale" && a.untouched_days != null && tn("open.untouched", a.untouched_days),
     a.on_hold || a.blocker ? <HoldNote key="h" on_hold={a.on_hold} blocker={a.blocker} due={a.due} /> : null,
   ]);
   // The title opens the to-do's own page.
@@ -565,9 +565,10 @@ function ActionRowBody(props: ActionRowProps) {
       state={a.state === "overdue" ? "danger" : undefined}
       className={a.state === "overdue" ? styles.overdueRow : undefined}
       lead={
-        unowned ? undefined : <RoundCheck label={t("today.todo.done_named", { text: plainTitle(a.text) })} tip={t("followups.mark_done")} data-key="primary" onClick={() => void done()} />
+        // Every to-do has its check; on one waiting for an owner the primary is the picker, so the check is not the row's primary.
+        <RoundCheck label={t("today.todo.done_named", { text: plainTitle(a.text) })} tip={t("followups.mark_done")} data-key={unowned ? undefined : "primary"} onClick={() => void done()} />
       }
-      pill={pillOf(a, t)}
+      pill={pillOf(a, t, tn)}
       title={title}
       meta={
         <>
@@ -649,10 +650,11 @@ function DoneRow(props: { action: OpenAction; onUndone: (id: string) => void }) 
   );
 }
 
-function pillOf(a: OpenAction, t: T): ReactNode {
+function pillOf(a: OpenAction, t: T, tn: TN): ReactNode {
   switch (a.state) {
     case "stale":
-      return <Pill tone="warn">{t("open.state.stale")}</Pill>;
+      // The state and its fact are one pill: how long it has gone untouched, never the same thing said twice on the row.
+      return <Pill tone="warn">{a.untouched_days != null ? tn("open.untouched", a.untouched_days) : t("open.state.stale")}</Pill>;
     case "no_owner":
       return <Pill tone="warn">{t("open.state.no_owner")}</Pill>;
     case "on_hold":

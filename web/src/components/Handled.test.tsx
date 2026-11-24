@@ -278,7 +278,9 @@ test("each list says so when it is empty", async () => {
     "GET handled?tab=set_aside&q=": () => ({ ...ASIDE, groups: [], kinds: [], counts: { set_aside: 0, read: 0 } }),
     "GET handled?tab=read&q=": () => ({ ...READ, groups: [], kinds: [], counts: { set_aside: 0, read: 0 } }),
   });
-  expect(await screen.findByText("Nothing has been set aside yet. Newsletters, sales and automated notices are listed here once mail arrives.")).toBeInTheDocument();
+  const card = (await screen.findByText("Nothing has been set aside yet. Newsletters, sales and automated notices are listed here once mail arrives.")).closest("[data-empty]") as HTMLElement;
+  // The one empty-state card every page uses (U6-13).
+  expect(card.className).toMatch(/card/);
   // With nothing to find there is nothing to search or group, so those controls are not drawn.
   expect(screen.queryByRole("searchbox")).toBeNull();
   expect(screen.queryByRole("radio", { name: "Sender" })).toBeNull();

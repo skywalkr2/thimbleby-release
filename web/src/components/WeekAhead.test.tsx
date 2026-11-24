@@ -16,7 +16,7 @@ const READ: S["WeekAheadView"] = { first: "2026-10-19", last: "2026-10-25", stat
 test("the card has the sentence and one row for each thing, each with its day or window and a link to its source", async () => {
   fakeApi({ "GET week-ahead": () => READ });
   renderApp(<WeekAhead />);
-  expect(await screen.findByRole("heading", { level: 2, name: "The week ahead" })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { level: 2, name: "This week" })).toBeInTheDocument();
   expect(screen.getByText("A light week with a parcel coming.")).toBeInTheDocument();
   const rows = document.querySelectorAll("[data-week-ahead-row]");
   expect(rows).toHaveLength(2);

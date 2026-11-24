@@ -37,10 +37,12 @@ test("Keep, Stop using and Add word pressed twice fast act once and say nothing 
   await expect(toasts(page).getByText(/No longer used/)).toBeVisible();
   await expect(toasts(page).getByText(/didn't work|isn't active|LES-/)).toHaveCount(0);
   expect(posts.filter((p) => p.endsWith("/retire")).length).toBe(1);
-  await page.getByLabel("A word").fill("Zebra");
+  // A serial retry starts this test again on the words the first attempt added, so the word differs per attempt.
+  const word = test.info().retry ? `Zebra${"x".repeat(test.info().retry)}` : "Zebra";
+  await page.getByLabel("A word").fill(word);
   await page.getByRole("button", { name: "Add word" }).dblclick();
-  await expect(toasts(page).getByText(/Added Zebra to your words/)).toBeVisible();
-  await expect(page.getByText("Zebra", { exact: true })).toHaveCount(1);
+  await expect(toasts(page).getByText(`Added ${word} to your words`)).toBeVisible();
+  await expect(page.getByText(word, { exact: true })).toHaveCount(1);
 });
 
 test("a retired entry and one set aside are listed with Use again, which brings them back (T3-10)", async ({ page }) => {
@@ -92,9 +94,11 @@ test("a team: weekday clicked twice sends one change, a blank or repeated name i
 
 test("People lists the teams, a team opens, and a person's page says their teams (T3-09)", async ({ page }) => {
   await openScreen(page, "records/people");
-  const list = page.getByRole("list", { name: "Teams" });
+  // S-0745 and U6: the teams are a table; a name opens the team's detail beside it, whose Open page link goes to the team's page.
+  const list = page.getByRole("table", { name: "Teams" });
   await expect(list.getByRole("link", { name: "Empty team" })).toBeVisible();
   await list.getByRole("link", { name: "Kitchen and front of house" }).click();
+  await page.getByRole("link", { name: "Open Kitchen and front of house's page" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Kitchen and front of house" })).toBeVisible();
   const teams = await json<Array<{ name: string; people: string[] }>>(page, "api/teams");
   const member = teams.find((t) => t.name === "Kitchen and front of house")!.people[0];
@@ -119,7 +123,9 @@ test("a count past what one list holds is refused, and People, the person's page
   await expect(page.getByRole("button", { name: "Save" }).first()).toBeDisabled();
   const me = (await json<Array<{ id: string; is_pm: boolean; open_items: number }>>(page, "api/people")).find((p) => p.is_pm)!;
   await openScreen(page, "records/people");
-  await expect(page.getByRole("list", { name: "People" }).getByRole("listitem").first()).toContainText(`${me.open_items} open item`);
+  // S-0745: People is a table; the person the app is for has the "Open items" cell that says the number their page counts.
+  const mine = page.getByRole("table", { name: "People" }).getByRole("row").filter({ has: page.locator(`a[href$="#records/person/${me.id}"]`) });
+  await expect(mine.getByRole("cell").nth(1)).toHaveText(String(me.open_items));
   await openScreen(page, `record:person:${me.id}`);
   const heading = page.getByRole("heading", { name: "What's waiting for you" });
   await expect(heading).toBeVisible();
@@ -153,6 +159,9 @@ test("the menu's badge beside To-dos is the sum of the two numbers the page says
   const yours = Number(/(\d+) yours/.exec(head)?.[1]);
   const asked = Number(/(\d+) questions? for you/.exec(head)?.[1]);
   expect(yours + asked).toBe(badge);
-  await expect(main.getByRole("button", { name: /^To-dos/ })).toContainText(String(yours));
+  // A tab counts the rows it holds under the filters (none here), which is the "N open" the line says; what is the person's own is the
+  // named pair whose sum is the menu's badge.
+  const open = Number(/(\d+) open/.exec(head)?.[1]);
+  await expect(main.getByRole("button", { name: /^To-dos/ })).toContainText(String(open));
   await expect(main.getByRole("button", { name: /^Questions/ })).toContainText(String(asked));
 });

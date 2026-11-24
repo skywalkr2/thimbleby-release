@@ -408,6 +408,42 @@ def test_more_crediting_phrases_are_refused_and_a_recipient_with_the_name_is_exe
         assert outward.outgoing_problem(view, cfg, {where: credited}, recipients=[name]) is None, credited
 
 
+def test_a_name_that_stands_as_the_subject_of_a_clause_or_after_an_attributing_word_credits_the_assistant(env):
+    """S-0719: crediting is found by where the name stands, not by a list of phrases: the subject of a clause, a
+    possessive of work, or after "kudos to" and the like waits; the object of a verb goes."""
+    _, cfg, store = env
+    view = store.read()
+    where = "the message to Ana"
+    name = name_of(cfg)
+    for credited in (
+        f"{name} drafted this note",
+        f"{name} mentioned the date moved",
+        f"{name} told me the date moved",
+        f"Kudos to {name}",
+        f"Credit to {name} for spotting it",
+        f"{name}'s draft is below",
+        f"{name} helped write this",
+        f"{name} warned us it slips",
+        f"{name} prepared this summary",
+        f"{name} figured out the clash",
+        f"{name} and I worked out the plan",
+        f"The date moved. {name} has confirmed it",
+        f"Ana said that {name} found the clash",
+    ):
+        assert outward.outgoing_problem(view, cfg, {where: credited}) is not None, credited
+        assert outward.outgoing_problem(view, cfg, {where: credited}, recipients=[name]) is None, credited
+    for plain in (
+        f"I'll copy {name} from accounts",
+        f"I spoke with {name} about the meeting",
+        f"Can we meet on Monday, {name}?",
+        f"Ask {name} to send the invoice",
+        f"Hi {name}, thanks for the call",
+        f"{name}'s desk is free",
+        f"Send it to {name}",
+    ):
+        assert outward.outgoing_problem(view, cfg, {where: plain}) is None, plain
+
+
 def test_a_draft_to_a_colleague_with_the_assistants_name_can_be_approved_and_shows_the_warning(api):
     """H5-19, through the person's path: the follow-up message to someone who shares the name is offered with a
     warning (not withheld), and marking it sent works; an attribution in it is still held back."""

@@ -6,6 +6,7 @@ import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 import type { S } from "../lib/api";
+import { todayOn } from "../lib/dates";
 import { fakeApi, renderApp, statusFixture, type Routes } from "../test-utils";
 import { Today } from "./Today";
 
@@ -61,7 +62,7 @@ afterEach(() => {
 const row = (kind: string) => document.querySelector(`[data-queue-line="${kind}"]`) as HTMLElement;
 
 /** A meeting today, so the Schedule card has something to draw. */
-const todayDay = (): string => new Date().toISOString().slice(0, 10);
+const todayDay = (): string => todayOn(new Date());
 const meeting = (): S["AgendaItemView"] => ({ snapshot: "EVT-1", source: "", title: "Print sync", start: new Date().toISOString(), all_day: true, cancelled: false, own: true, open_items: 0, days: [todayDay()] });
 const agenda = { "GET today/agenda": () => [meeting()] };
 

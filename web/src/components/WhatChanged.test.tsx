@@ -723,8 +723,9 @@ describe("the history: rows are past tense, only a change not yet checked has a 
   test("what needed no look reads Filed, and a batch the person said looks good reads Checked", async () => {
     fakeApi({
       "GET changes": () => [
-        change("REQ-1", { review: "filed", source_title: "Email from the printer" }),
+        change("REQ-1", { review: "filed", state: "done", source_title: "Email from the printer" }),
         change("REQ-2", { review: "checked", state: "done", source_title: "Email from the framer" }),
+        change("REQ-3", { review: "filed", source_title: "Email from the bindery" }),
       ],
     });
     renderApp(<WhatChanged />);
@@ -733,6 +734,12 @@ describe("the history: rows are past tense, only a change not yet checked has a 
     expect(within(filed).queryByText("Not yet checked")).toBeNull();
     const checked = await screen.findByRole("listitem", { name: "Email from the framer" });
     expect(within(checked).getByText("Checked")).toBeInTheDocument();
+    // One rule per state: a filed change still waiting for its Looks good reads Not yet checked, so Filed never has the button and the button is never on a Filed row.
+    const waiting = await screen.findByRole("listitem", { name: "Email from the bindery" });
+    expect(within(waiting).getByText("Not yet checked")).toBeInTheDocument();
+    expect(within(waiting).getByRole("button", { name: "Looks good" })).toBeInTheDocument();
+    expect(within(filed).queryByRole("button", { name: "Looks good" })).toBeNull();
+    for (const row of [filed, checked]) expect(within(row).queryByRole("button", { name: "Looks good" })).toBeNull();
   });
 
   test("a correction the menu makes still records its signal: Send back goes through the same route with its note", async () => {
@@ -783,6 +790,9 @@ test("a held drop is decided in the detail, with who was told, the quote and the
     expect(within(op).getByText("Needs you")).toBeInTheDocument();
     // The line's answers are here: the choice is made in the detail.
     for (const name of ["Drop it and tell them", "Keep it"]) expect(within(pane).getByRole("button", { name }), name).toBeInTheDocument();
+    // The same pattern as Today's row: one bordered button, and the answer that keeps things as they are a plain link-weight button beside it.
+    expect(within(pane).getByRole("button", { name: "Keep it" })).toHaveAttribute("data-weight", "plain");
+    expect(within(pane).getByRole("button", { name: "Drop it and tell them" })).toHaveAttribute("data-weight", "outline");
     // Who was told is the reason it is held, so it comes first.
     const told = within(op).getByText(`Casey Moor, Robin Sample were told on ${day("2026-10-10")}`);
     expect(told.tagName).toBe("STRONG");

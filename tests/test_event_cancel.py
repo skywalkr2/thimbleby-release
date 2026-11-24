@@ -320,11 +320,22 @@ def test_a_different_reference_changes_nothing_even_from_the_same_sender(cal):
     assert not after["cancelled"]
 
 
-def test_no_reference_but_the_same_date_and_sender_applies(cal):
+def test_no_reference_but_the_same_date_and_place_from_the_same_sender_applies(cal):
     ws, cfg, store, put = cal
-    entry = make_entry(store, title="Hotel stay")
-    _, outcome, after = run(store, cfg, entry.id, quote="Your stay on March 7 has been canceled")
+    entry = make_entry(store, title="Hotel stay", where="Harbor Stay Inn")
+    quote = "Your stay at the harbor  stay inn on March 7 has been canceled"
+    _, outcome, after = run(store, cfg, entry.id, quote=quote)
     assert outcome["status"] == "applied" and after["cancelled"] is True
+
+
+def test_the_same_date_alone_asks_whether_or_not_the_entry_has_a_place(cal):
+    ws, cfg, store, put = cal
+    for where in (None, "Harbor Stay Inn"):
+        entry = make_entry(store, title="Hotel stay", where=where)
+        quote = "Your stay on March 7 has been canceled"
+        _, outcome, after = run(store, cfg, entry.id, quote=quote)
+        assert outcome["status"] == "held" and "doesn't say which booking" in outcome["reason"], where
+        assert not after["cancelled"]
 
 
 def test_the_same_sender_naming_neither_a_reference_nor_the_date_asks(cal):

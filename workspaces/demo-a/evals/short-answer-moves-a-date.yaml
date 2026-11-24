@@ -30,6 +30,8 @@ expect:
   id: ACT-90
   field: due
   value: '2026-10-20'
+- op: question.done
+  id: Q-90
 forbid:
 - op: event.add
 - op: question.add
@@ -42,5 +44,10 @@ stub_answer:
     id: ACT-90
     field: due
     value: '2026-10-20'
+    evidence:
+      quote: Tuesday works, not Wednesday
+  - op: question.done
+    id: Q-90
+    answer: Tuesday, October 20
     evidence:
       quote: Tuesday works, not Wednesday

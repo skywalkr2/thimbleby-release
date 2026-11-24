@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { clockDay, clockTime, dayAndTime, inputOn, isAfternoon, momentOf, nextMonday, onTheClock, setClockZone, setTimePrefs, shortDay, shortRange, sinceDay, time, timeOfDay, timeStep, todayOn, wallTime, whenText } from "./dates";
+import { longDay, clockDay, clockTime, dayAndTime, inputOn, isAfternoon, momentOf, nextMonday, onTheClock, setClockZone, setTimePrefs, shortDay, shortRange, sinceDay, time, timeOfDay, timeStep, todayOn, wallTime, whenText } from "./dates";
 
 test("the coming Monday is never the day itself: a Monday holds for the Monday a week on", () => {
   // The 19th of October is a Monday in this year.
@@ -150,6 +150,7 @@ describe("the clock setting", () => {
   });
 
   test("an unknown format leaves the setting as it was, and the step is the setting's", () => {
+    setClockZone("UTC");
     setTimePrefs({ format: "24h", step: 30 });
     setTimePrefs({ format: "nonsense", step: 0 });
     expect(time(new Date("2026-11-03T07:05:00Z"))).toMatch(/07:05|7:05/);
@@ -173,5 +174,14 @@ test("a due time written in UTC is the person's own day wherever the screen comp
   expect(dueToday([row], "2026-10-28")).toBe(1); // Wednesday 8 PM in Los Angeles is still Wednesday
   expect(dueToday([row], "2026-10-29")).toBe(0);
   expect(writtenDay("2026-10-29T03:00:00Z")).toBe("2026-10-29"); // an editor shows the day as written beside its time
+  setClockZone(undefined);
+});
+
+test("the heading's day is the person's own day: 11:30 PM in New York on Monday reads Monday, whatever the computer's zone", () => {
+  const lateMonday = new Date("2026-11-24T04:30:00Z");
+  setClockZone("America/New_York");
+  expect(longDay(lateMonday)).toBe("Monday, November 23");
+  setClockZone("Asia/Tokyo");
+  expect(longDay(lateMonday)).toBe("Tuesday, November 24");
   setClockZone(undefined);
 });

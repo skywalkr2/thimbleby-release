@@ -2658,13 +2658,14 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
         orgs = {o.id: o.data["name"] for o in view.list("organization")}
         seen = counts(view, zone_of(cfg))["people"]
         # The number beside a person is the number their page counts, so the table and the page never say two.
-        for person in view.list("person"):
+        people_now = list(view.list("person"))
+        for person in people_now:
             seen[person.id] = {
                 "last_contact": None,
                 **seen.get(person.id, {}),
                 "open_items": open_count(view, person.id, pm),
             }
-        held = {p.id: sides.person_sides(view, cfg, p.data) for p in view.list("person")}
+        held = {p.id: sides.person_sides(view, cfg, p.data) for p in people_now}
         today = worker.now().astimezone(zone_of(cfg)).date()
         waits = waiting_on(store, cfg, today)
         return [
@@ -2688,7 +2689,7 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
                 waiting_days=waits.get(p.id, (0, None))[1],
                 **seen.get(p.id, {}),
             )
-            for p in view.list("person")
+            for p in people_now
         ]
 
     def _same_name(kind: str, field: str, value: str, except_id: str | None = None) -> None:

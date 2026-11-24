@@ -43,6 +43,10 @@ export function Panel(props: { name: string; project?: string; embedded?: boolea
   const headingId = "panel-title";
 
   const content = isDocument ? document : rows;
+  // The panel's one way of adding: in the header at the right, as on Files; with nothing listed it is the empty card's button alone, so it shows once.
+  const emptyList = !isDocument && !panels.isPending && !!panel && !content.isPending && !content.isError && (!rows.data || rows.data.length === 0);
+  const addFocus = () => newButton.current ?? globalThis.document.querySelector<HTMLElement>("[data-panel-empty] button");
+  const add = newAction ? () => run({ name: newAction.name, label: newAction.label, is: "action", on: null }, null, addFocus) : undefined;
   const failure = panels.error ?? content.error;
   let body;
   if (panels.isPending || (!!panel && content.isPending)) body = <Skeleton />;
@@ -62,11 +66,7 @@ export function Panel(props: { name: string; project?: string; embedded?: boolea
   } else if (!rows.data || rows.data.length === 0) {
     // What will appear and how: the panel's own way of adding one, the same one the page offers above, is the card's one action.
     body = (
-      <EmptyState
-        card
-        text={newAction ? t("panel.empty.add") : t("panel.empty")}
-        action={newAction ? { label: newAction.label, onClick: () => run({ name: newAction.name, label: newAction.label, is: "action", on: null }, null, () => newButton.current) } : null}
-      />
+      <EmptyState card data-panel-empty="" text={newAction ? t("panel.empty.add") : t("panel.empty")} action={newAction && add ? { label: newAction.label, onClick: add } : null} />
     );
   }
   else {
@@ -83,14 +83,18 @@ export function Panel(props: { name: string; project?: string; embedded?: boolea
           level={props.project ? 3 : 1}
           title={title}
           subtitle={!isDocument && rows.data && rows.data.length > 0 ? tn("panel.count", rows.data.length) : undefined}
+          primary={
+            newAction && !emptyList ? (
+              <Button variant="primary" ref={newButton} onClick={add}>
+                {newAction.label}
+              </Button>
+            ) : undefined
+          }
         />
       )}
-      {newAction && (
+      {props.embedded && newAction && !emptyList && (
         <div className="panel-new">
-          <Button variant="primary"
-            ref={newButton}
-            onClick={() => run({ name: newAction.name, label: newAction.label, is: "action", on: null }, null, () => newButton.current)}
-          >
+          <Button variant="primary" ref={newButton} onClick={add}>
             {newAction.label}
           </Button>
         </div>

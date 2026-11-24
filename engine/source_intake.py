@@ -1373,6 +1373,10 @@ def answer_full_read(
         changes: dict[str, Any] = {"full_read": reach}
         if not current.data.get("older_read"):
             changes["older_read"] = queued
+        elif go and not current.data["older_read"].get("go"):
+            # A read already under way keeps its place; the person's go now covers it too, so the slices it brings later
+            # never wait for a go the person already gave.
+            changes["older_read"] = {**current.data["older_read"], "go": True}
         tx.update("watch_run", run.id, changes, _MOVED, read_version=current.version)
     forget_full_read_counts(ws, source_id)
     if go:

@@ -48,14 +48,29 @@ def test_a_message_without_a_subject_cannot_be_approved_and_the_channel_never_ad
 
 def test_a_subject_of_only_invisible_characters_is_no_subject(env):  # noqa: F811
     """S-0728: zero-width, joiner, Braille-blank and Hangul-filler characters draw nothing, so they are no subject."""
-    for blank in ("\u200b", "\u200b \u200d\ufeff", "\u2800", "\u3164 ", "\u00a0\u2060"):
+    for blank in (
+        "\u200b",
+        "\u200b \u200d\ufeff",
+        "\u2800",
+        "\u3164 ",
+        "\u00a0\u2060",
+        "\u034f",
+        "\u17b4",
+        "\ufe0f",
+        "\u034f\ufe0f \u17b4",
+    ):
         draft = env.draft(parts={"subject": blank, "body": "The proofs ship on Monday."})
         with pytest.raises(StoreError, match="no subject"):
             env.yes(draft)
         op = env.message(parts={"subject": blank, "body": "Monday."})
         changeset, ctx = env.as_assistant([op], trust="trusted", origin="pm")
         assert [p for p in check(changeset, ctx) if p.check == "message-without-subject"], repr(blank)
-    assert acts.has_text("Proofs") and acts.has_text("\u200bProofs")
+    assert (
+        acts.has_text("Proofs")
+        and acts.has_text("\u200bProofs")
+        and acts.has_text("e\u0301")
+        and acts.has_text("\u2764\ufe0f")
+    )
 
 
 def test_the_mailbox_channel_refuses_a_message_with_no_subject_instead_of_adding_one():

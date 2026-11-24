@@ -67,6 +67,9 @@ def refused(env, url=PUBLIC, text="Which date works?"):
         "http" + "://2130706433/",
         "http" + "://nas.home.arpa/",
         "http" + "://[fe80::1%25eth0]/",
+        "http" + "://[fe80::1%eth0]/",
+        "http" + "://fe80::1%eth0/",
+        "http" + "://localhost.localdomain/",
         "http" + "://[::ffff:127.0.0.1]/",
         "http" + "://[fd00::5]:8080/x",
     ],
@@ -76,7 +79,14 @@ def test_a_local_or_private_address_is_not_a_link_the_recipient_can_open(url):
 
 
 @pytest.mark.parametrize(
-    "url", [PUBLIC, "https" + "://example.com", "http" + "://8.8.8.8/x", "https" + "://a.b.example.org:8443/p?q=1"]
+    "url",
+    [
+        PUBLIC,
+        "Http" + "://docs.example.com/plan",
+        "HTTPS" + "://example.com",
+        "http" + "://8.8.8.8/x",
+        "https" + "://a.b.example.org:8443/p?q=1",
+    ],
 )
 def test_a_public_address_is_openable(url):
     assert _openable(url)
@@ -93,7 +103,16 @@ def test_a_private_link_written_in_the_text_is_refused_though_the_listed_link_is
     assert not refused(env, text=f"Details are at {PUBLIC}. Which date works?")
 
 
-@pytest.mark.parametrize("url", ["http" + "://[::1]/x", "http" + "://[fd00::5]/doc", "http" + "://0x7f.1/"])
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http" + "://[::1]/x",
+        "http" + "://[fd00::5]/doc",
+        "http" + "://0x7f.1/",
+        "http" + "://[fe80::1%eth0]/doc",
+        "Http" + "://localhost.localdomain/x",
+    ],
+)
 def test_a_private_link_in_the_text_is_refused_whatever_its_shape(env, url):
     """S-0724: an IPv6 address in brackets and a browser's shorthand for loopback are found in the question's words."""
     assert refused(env, text=f"Details are at {url} and which date works?")

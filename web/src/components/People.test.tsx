@@ -240,7 +240,8 @@ test("the organizations section has one row each with how many people work there
   api([]);
   renderApp(<People />);
   const section = await screen.findByRole("region", { name: "Organizations" });
-  const rows = await within(section).findAllByRole("listitem");
+  await within(section).findByRole("table");
+  const rows = [...section.querySelectorAll<HTMLElement>("tr[data-row]")];
   expect(rows).toHaveLength(2);
   expect(rows[0]).toHaveTextContent("Org one");
   expect(rows[0]).toHaveTextContent("2");
@@ -254,7 +255,8 @@ test("an organization that is the person's own business says so and cannot be re
   api([], { "GET organizations": () => [{ ...firstOrg, people: 0, side: "PRJ-7", side_kind: "business" }, secondOrg] });
   renderApp(<People />);
   const section = await screen.findByRole("region", { name: "Organizations" });
-  const rows = await within(section).findAllByRole("listitem");
+  await within(section).findByRole("table");
+  const rows = [...section.querySelectorAll<HTMLElement>("tr[data-row]")];
   expect(rows[0]).toHaveTextContent("Your business");
   expect(rows[1]).not.toHaveTextContent("Your");
   await user.click(within(rows[0]).getByRole("button", { name: /More actions for/ }));
@@ -280,7 +282,7 @@ test("an organization is renamed in a drawer, and undo renames it back", async (
   const user = userEvent.setup();
   const calls = api([], { "POST organizations/ORG-2": () => ({ ok: "ORG-2" }) });
   renderApp(<People />);
-  const item = (await screen.findByText("Org two")).closest("li")!;
+  const item = (await screen.findByText("Org two")).closest("tr")!;
   await user.click(within(item).getByRole("button", { name: /More actions for/ }));
   await user.click(await screen.findByRole("menuitem", { name: "Rename" }));
   const dialog = await screen.findByRole("dialog", { name: "Rename organization" });
@@ -300,7 +302,7 @@ test("an organization people still work for can't be removed, and the menu says 
   const user = userEvent.setup();
   const calls = api([]);
   renderApp(<People />);
-  const item = (await screen.findByText("Org one")).closest("li")!;
+  const item = (await screen.findByText("Org one")).closest("tr")!;
   await user.click(within(item).getByRole("button", { name: /More actions for/ }));
   const remove = await screen.findByRole("menuitem", { name: "Remove" });
   expect(remove).toHaveAttribute("aria-disabled", "true");
@@ -317,7 +319,7 @@ test("removing an organization acts at once, undo restores it, and a refusal's o
     "POST organizations/ORG-2/restore": () => ({ ok: "ORG-2" }),
   });
   renderApp(<People />);
-  const item = (await screen.findByText("Org two")).closest("li")!;
+  const item = (await screen.findByText("Org two")).closest("tr")!;
   await user.click(within(item).getByRole("button", { name: /More actions for/ }));
   await user.click(await screen.findByRole("menuitem", { name: "Remove" }));
   await waitFor(() => expect(calls.some((c) => c.route === "POST organizations/ORG-2/remove")).toBe(true));
@@ -461,7 +463,7 @@ test("removing an organization says what was removed, and an organizations list 
   const user = userEvent.setup();
   api([], { "POST organizations/ORG-2/remove": () => ({ ok: "ORG-2" }) });
   renderApp(<People />);
-  const item = (await screen.findByText("Org two")).closest("li")!;
+  const item = (await screen.findByText("Org two")).closest("tr")!;
   await user.click(within(item).getByRole("button", { name: /More actions for/ }));
   await user.click(await screen.findByRole("menuitem", { name: "Remove" }));
   expect(await screen.findByText("Removed organization Org two. Its history is kept until you delete the workspace.")).toBeInTheDocument();
@@ -542,4 +544,14 @@ test("the detail pane says what waits on a person and how long the longest has, 
   const detail = await screen.findByRole("dialog", { name: "Ana Person" });
   expect(within(detail).getByText("2 things waiting on them · the longest for 44 days")).toBeInTheDocument();
   expect(within(detail).getByText("email: ana@example.com")).toBeInTheDocument();
+});
+
+test("with one thing waiting the detail says how long it has waited, and says 'the longest' only with several (U6-10)", async () => {
+  const user = userEvent.setup();
+  api([person("P-1", "Ana Person", { role: "Editor", waiting_on_them: 1, waiting_days: 44 })]);
+  renderApp(<People />);
+  await user.click(within(await row("Ana Person")).getByText(/Editor/));
+  const detail = await screen.findByRole("dialog", { name: "Ana Person" });
+  expect(within(detail).getByText("1 thing waiting on them for 44 days")).toBeInTheDocument();
+  expect(within(detail).queryByText(/the longest/)).toBeNull();
 });

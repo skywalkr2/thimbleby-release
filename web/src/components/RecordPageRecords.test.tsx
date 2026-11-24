@@ -790,3 +790,13 @@ test("a project's page has Add a to-do as its one primary action, and a page wit
   expect(await screen.findByRole("button", { name: "Add a to-do" })).toBeInTheDocument();
   await waitFor(() => expect(container.querySelector("[data-bare]")).not.toBeNull());
 });
+
+test("a project's Details mark a status the data disagrees with, beside the status itself (U6-2)", async () => {
+  api("project", "PRJ-1", { name: "Harbor", status: "On track" }, page(), {
+    "GET projects": () => [project("PRJ-1", "Harbor", { status: "On track", status_disagrees: true, overdue_actions: 6, quiet_weeks: 6 })],
+  });
+  renderApp(<RecordPage kind="project" id="PRJ-1" onBack={() => {}} />);
+  const details = await screen.findByRole("region", { name: "Details" });
+  const status = within(details).getByText("On track").closest("dd") as HTMLElement;
+  expect(status.querySelector("[data-status-disagrees]")).toHaveTextContent("6 overdue · no change in 6 weeks");
+});

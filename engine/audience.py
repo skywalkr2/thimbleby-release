@@ -175,3 +175,25 @@ def recipient_problem(
             who = people.name(person) if person else written
             return f"this draws on a message limited to {names_of(people, audience)}, so it can't go to {who}"
     return None
+
+
+def records_problem(view: Any, people: Any, records: Iterable[Mapping[str, Any]], written: str) -> str | None:
+    """Why something that was given these records (facts, actions, questions) can't go to `written`, or None: a record
+    that rests on a limited source carries its limit, so each recipient must be inside it. Decided from the records
+    alone, never from the words of what is sent."""
+    resolved = people.resolve(written)
+    person = resolved.person if resolved.status == "ok" else None
+    for record in records:
+        limit = limit_of_record(view, record)
+        if limit is None or within(limit, people, person, written):
+            continue
+        for source_id in sources_of(record):
+            source = view.get("source", source_id)
+            if (
+                source is not None
+                and source.data.get("audience")
+                and not within(source.data["audience"], people, person, written)
+            ):
+                return f"uses restricted information from {source.data.get('title') or source_id}"
+        return "uses restricted information"
+    return None

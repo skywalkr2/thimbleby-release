@@ -581,8 +581,9 @@ function stateWord(item: S["ChangeItem"], gated: boolean): string {
   // Work the person took back is not done, whatever its request says.
   if (item.changeset?.status === "undone") return "changes.state.undone";
   if (item.changeset?.status === "partly_undone") return "changes.state.partly_undone";
-  // What needed no look was filed quietly; what did was checked once the person said it looks good.
-  if (item.review === "filed") return "changes.history.filed";
+  // What needed no look was filed quietly; what did was checked once the person said it looks good. A change still waiting for
+  // the person's Looks good is not yet checked, whatever it holds, so "Filed" always means no Looks good and the other way round.
+  if (item.review === "filed" && item.state !== "review") return "changes.history.filed";
   if (item.review === "checked") return "changes.history.checked";
   return item.state === "review" ? "changes.history.review" : `changes.state.${item.state}`;
 }
@@ -1125,7 +1126,7 @@ export function OpRow(props: { op: S["OpView"]; cs: S["ChangesetView"]; source: 
         {history ? null : heldWords ? (
           <>
             {heldWords.other && (
-              <Button onClick={heldWords.other.run}>
+              <Button size="sm" variant="quiet" data-key="other" onClick={heldWords.other.run}>
                 {heldWords.other.label}
               </Button>
             )}

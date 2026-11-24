@@ -227,6 +227,8 @@ def build(ws: Workspace, store: Store, cfg: Config, request_id: str, today: date
             request_parts.append(related)
     elif kind.name == "notes" and req.data.get("intake_older"):
         request_parts.append(render("notes-older", {}, ws.root))
+    if kind.name == "notes" and req.data.get("older_item"):
+        request_parts.append(render("notes-older-item", {}, ws.root))
     place = PLACE_LINES.get(_place_of(store, saved))
     if place:
         request_parts.append(place + ".")

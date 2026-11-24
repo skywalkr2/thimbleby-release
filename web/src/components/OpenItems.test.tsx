@@ -119,6 +119,9 @@ test("every open to-do is a row with its owners, due date, project and the proje
   expect(screen.getByRole("heading", { level: 3, name: "Overdue" })).toBeInTheDocument();
   // Groups: overdue, then what is coming up, then what waits on someone else.
   expect(all[1]).toHaveTextContent("Not touched for 30 days");
+  // The state and its days are one pill: the row never says "Not touched in a while" and then the days again.
+  expect(all[1]).not.toHaveTextContent("Not touched in a while");
+  expect(all[1].textContent!.match(/Not touched/g)).toHaveLength(1);
   expect(all[2]).toHaveTextContent("No owner");
   expect(all[3]).toHaveTextContent("Order the sample copies");
   expect(all[4]).toHaveTextContent("Paused: the printer's quote");
@@ -1197,4 +1200,30 @@ test("To-dos opens on everything, a filter from a Today line lasts that visit on
   const listed = await rows();
   expect(listed.map((r) => r.textContent).join(" ")).toMatch(/Tidy the style sheet.*Send the proof/);
   expect(screen.queryByText("No overdue to-dos.")).toBeNull();
+});
+
+test("every row has its check, a row waiting for an owner too, and one rule says whose owner a row names (U6-6, U6-7)", async () => {
+  api(
+    { "GET people": () => [person("P-1", "Quinn Sample", { is_pm: true }), person("P-2", "Robin Sample")] },
+    {
+      actions: [
+        action("A-1", "Own dated to-do", { due: "2026-10-30", state: "open" }),
+        action("A-2", "Own undated to-do", { due: null, state: "open" }),
+        action("A-3", "Robin's undated to-do", { due: null, owners: [{ person: "P-2", name: "Robin Sample" }], state: "open", needs_you: false }),
+        action("A-4", "Book the room", { owners: [], due: null, state: "no_owner", owner_question: "Q-9" }),
+      ],
+      questions: [],
+    },
+  );
+  renderApp(<OpenItems />);
+  const all = await rows();
+  expect(all).toHaveLength(4);
+  for (const r of all) expect(within(r).getByRole("button", { name: /^Mark done: / })).toBeInTheDocument();
+  const by = (title: string) => all.find((r) => r.textContent?.includes(title))!;
+  // The person's own to-dos never name their owner, dated or not; another person's always does.
+  expect(by("Own dated")).not.toHaveTextContent("Quinn Sample");
+  expect(by("Own undated")).not.toHaveTextContent("Quinn Sample");
+  expect(by("Robin's undated")).toHaveTextContent("Robin Sample");
+  // The row waiting for an owner keeps Pick an owner as its one primary.
+  expect(within(by("Book the room")).getByRole("button", { name: "Pick an owner" })).toBeInTheDocument();
 });
