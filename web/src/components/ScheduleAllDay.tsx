@@ -18,6 +18,8 @@ export function AllDayStrip(props: {
   label: string;
   today: boolean;
   items: Array<{ item: Entry; count: number }>;
+  /** The words for a day nobody works, named first in the band, above the hours, where it covers nothing. */
+  off?: string;
   calendars: Calendars;
   selected: string | null;
   onOpen: (entry: Entry, date: string | null) => void;
@@ -54,6 +56,11 @@ export function AllDayStrip(props: {
   }, [names, tick]);
   return (
     <ul ref={box} className={styles.strip} data-strip="" aria-label={props.label} data-today={props.today ? "" : undefined}>
+      {props.off && (
+        <li className={styles.offLabel} data-day-off="">
+          {props.off}
+        </li>
+      )}
       {props.items.map(({ item: e, count }, n) => (
         <li key={`${entryKey(e, props.date)}:${n}`} data-strip-row="">
           <EntryButton entry={e} date={props.date} calendars={props.calendars} time={false} count={count} selected={props.selected === entryKey(e, props.date)} onOpen={props.onOpen} t={t} />

@@ -60,17 +60,19 @@ test("the to-dos past due that no day shown holds are stacked under today's row,
   expect(await screen.findByText(/Sep 16/)).toBeInTheDocument();
 });
 
-test("with a meeting in the week the grid stays, and the day off is hatched and named under its column's heading, never over the day", async () => {
+test("with a meeting in the week the grid stays, and the day off is hatched and named in its all-day band, never over the day", async () => {
   fakeApi(scheduleRoutes((date) => (date === TODAY ? { timed: [entry({ title: "Standup" })] } : {}), EXTRA));
   renderApp(<Schedule />);
   await waitFor(() => expect(document.querySelector("[data-grid]")).not.toBeNull());
   expect(document.querySelector("[data-agenda]")).toBeNull();
   const lane = document.querySelector(`ul[data-day="${THURSDAY}"]`) as HTMLElement;
   expect(lane).toHaveAttribute("data-off");
-  // Named under the day's heading: a label inside the day itself would cover a meeting at the top of it.
+  // Named in the day's all-day band, above the hours: a label inside the day would cover a meeting at the top of it, and one in the
+  // heading would take the heading to two lines.
   expect(within(lane).queryByText("Day off · Thanksgiving")).toBeNull();
-  const heads = Array.from(document.querySelectorAll("[data-grid] h3"));
-  expect(heads.filter((h) => h.textContent?.includes("Day off · Thanksgiving"))).toHaveLength(1);
+  const bands = Array.from(document.querySelectorAll("[data-grid] [data-strip]"));
+  expect(bands.filter((b) => b.textContent?.includes("Day off · Thanksgiving"))).toHaveLength(1);
+  expect(Array.from(document.querySelectorAll("[data-grid] h3")).some((h) => h.textContent?.includes("Day off"))).toBe(false);
   expect(document.querySelector(`ul[data-day="${TODAY}"]`)).not.toHaveAttribute("data-off");
   // The overdue to-do is in today's all-day band, so it is on the calendar and in its count.
   expect(await screen.findByText(/Pay the deposit/)).toBeInTheDocument();

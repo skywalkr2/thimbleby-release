@@ -334,7 +334,8 @@ export function TimeGrid(props: {
   });
   // Identical all-day entries of a day are one with a count; with none on any day the strip takes no room.
   const strips = props.days.map((d) => foldIdentical(d.all_day, (e) => [e.kind, e.title, e.own, e.cancelled].join("|")));
-  const anyAllDay = strips.some((s) => s.length > 0);
+  // A day nobody works is named in the band too, so the band shows when one is in view.
+  const anyAllDay = strips.some((s) => s.length > 0) || props.days.some((d) => props.off?.has(d.date));
   // The grid's hours and days, as the last drawing had them, for the count of meetings out of the frame.
   const geometry = useRef({ from, to, days: props.days });
   geometry.current = { from, to, days: props.days };
@@ -469,18 +470,12 @@ export function TimeGrid(props: {
       {props.days.map((d) => (
         <h3 key={d.date} className={styles.colHead} data-today={d.date === props.today ? "" : undefined}>
           {label(d.date)}
-          {/* A day nobody works is named under its heading, never over the day, where it would cover a meeting. */}
-          {props.off?.has(d.date) && (
-            <span className={styles.offLabel} data-day-off="">
-              {offWords(props.off.get(d.date) ?? "", t)}
-            </span>
-          )}
         </h3>
       ))}
       {anyAllDay && <div className={styles.stripLabel}>{t("schedule.all_day")}</div>}
       {anyAllDay &&
         props.days.map((d, i) => (
-          <AllDayStrip key={d.date} date={d.date} label={`${t("schedule.all_day")}, ${label(d.date)}`} today={d.date === props.today} items={strips[i]} calendars={props.calendars} selected={props.selected} onOpen={props.onOpen} onMore={props.onOpenGroup} />
+          <AllDayStrip key={d.date} date={d.date} label={`${t("schedule.all_day")}, ${label(d.date)}`} today={d.date === props.today} items={strips[i]} off={props.off?.has(d.date) ? offWords(props.off.get(d.date) ?? "", t) : undefined} calendars={props.calendars} selected={props.selected} onOpen={props.onOpen} onMore={props.onOpenGroup} />
         ))}
       <div className={styles.hours} aria-hidden="true">
         {hours.map((h) => (

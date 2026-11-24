@@ -195,6 +195,8 @@ test.describe("the Schedule, as the review used it", () => {
     // The count appears once Today has been read.
     await expect.poll(badge, LOAD).not.toBeNaN();
     const before = await badge();
+    const lineKeys = async () => ((await (await page.request.get("api/today/queue")).json()) as { key: string }[]).map((l) => l.key);
+    const keysBefore = await lineKeys();
     // The reviewer's four: one meeting runs into three others, two of which overlap each other (four pairs, one group).
     for (const [what, from, to] of [
       ["Venue walk-through", "09:00", "10:30"],
@@ -210,8 +212,11 @@ test.describe("the Schedule, as the review used it", () => {
     // Opened, the one line lists every meeting of the group, not only the first two.
     await page.locator('[data-queue-line="clash"]').click();
     for (const title of ["Venue walk-through", "Catering call", "Budget check", "Supplier call"]) await expect.soft(page.getByRole("group", { name: title, exact: true })).toBeVisible(LOAD);
-    // The menu's count rose by that one line, not by the four pairs.
-    await expect.configure({ soft: true }).poll(badge, LOAD).toBe(before + 1);
+    // The menu's count rose by the lines that are new, one of them the clash, not by the four pairs. (Adding meetings can also
+    // make another line due, such as the standing rules' review after the runs they set off; it is counted as the line it is.)
+    const added = (await lineKeys()).filter((k) => !keysBefore.includes(k));
+    expect.soft(added.filter((k) => k.startsWith("clash:"))).toHaveLength(1);
+    await expect.configure({ soft: true }).poll(badge, LOAD).toBe(before + added.length);
 
     // The Schedule: "1 clash", in every view of the week, and the same on the Timeline.
     for (const key of ["1", "2", "3"] as const) {
