@@ -100,7 +100,7 @@ test("a person's email, phone and sides are changed from their own form later", 
     "POST people/P-1": () => ({ ok: "P-1" }),
   });
   renderApp(<People />);
-  const tr = (await screen.findByRole("link", { name: "Ana Person" })).closest("li")!;
+  const tr = (await screen.findByRole("link", { name: "Ana Person" })).closest("tr")!;
   await user.click(within(tr).getByRole("button", { name: /More actions for/ }));
   await user.click(await screen.findByRole("menuitem", { name: "Edit" }));
   const dialog = await screen.findByRole("dialog", { name: "Edit person" });
@@ -189,7 +189,7 @@ test("a person whose record names no side opens ready to save, with their role i
   const user = userEvent.setup();
   const calls = api([person("P-2", "Pat Printer", { role: "Printer", sides: [], how_to_reach: { email: ["pat@example.com"] } })], { ...sided, "POST people/P-2": () => ({ ok: "P-2" }) });
   renderApp(<People />);
-  const tr = (await screen.findByRole("link", { name: "Pat Printer" })).closest("li")!;
+  const tr = (await screen.findByRole("link", { name: "Pat Printer" })).closest("tr")!;
   await user.click(within(tr).getByRole("button", { name: /More actions for/ }));
   await user.click(await screen.findByRole("menuitem", { name: "Edit" }));
   const dialog = await screen.findByRole("dialog", { name: "Edit person" });

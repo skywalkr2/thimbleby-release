@@ -4,7 +4,16 @@ import pytest
 
 from engine.backup import run_backup, state
 from engine.evaluate import evaluate, load_cases, load_pack_cases
-from engine.followups import FollowUpError, follow_up, mark_sent, sections, they_finished, undo_follow_up, unmark_sent
+from engine.followups import (
+    FollowUpError,
+    follow_up,
+    mark_sent,
+    sections,
+    they_finished,
+    undo_follow_up,
+    unmark_sent,
+    waiting_on,
+)
 from engine.storage import Store, WriteContext
 from engine.workspace import init_workspace
 from engine.written_dates import day_words
@@ -62,6 +71,18 @@ def test_mark_sent_records_questions_and_told_dates_and_edits(env):
     assert all(q["status"] == "sent" and q["waiting_days"] == 3 for q in after.questions)
     assert all(a["told_days"] == 3 for a in after.actions)
     assert [s.data["kind"] for s in store.read().list("signal")] == ["draft_edited"]
+
+
+def test_waiting_on_counts_what_was_sent_or_told_and_the_longest_wait_and_leaves_out_who_is_not_waited_on(env):
+    _, cfg, store = env
+    editor = by_role("Editor")
+    # Nothing has gone out yet: nobody is waited on, and the person's own to-dos never count.
+    assert waiting_on(store, cfg, NOW.date()) == {}
+    sec = next(s for s in sections(store, cfg, NOW.date()) if s.person == editor["id"])
+    counts = mark_sent(store, cfg, editor["id"], sent_text=sec.message, now=NOW)
+    found = waiting_on(store, cfg, (NOW + timedelta(days=3)).date())
+    assert set(found) == {editor["id"]}
+    assert found[editor["id"]] == (counts["questions"] + counts["actions"], 3)
 
 
 def test_sent_questions_carry_their_sent_date_and_the_message_leaves_sent_items_out(env):

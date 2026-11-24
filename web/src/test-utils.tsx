@@ -175,7 +175,13 @@ export function setupView(
 
 /** The window is wide enough (1024px or more) for a list's detail to stand beside it, as the list | detail views lay it out.
  * Stubs the media queries; call `vi.unstubAllGlobals()` after the test (the views' tests do it in `afterEach`). */
-export function besidePane(): void {
+export function besidePane(options: { room?: boolean } = {}): void {
+  // jsdom has no layout: with `room`, the split is wide and the pane 420px, so a list that chooses its first row only where the
+  // pane has room beside it (What changed) does.
+  if (options.room) {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(() => 1200);
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(() => 420);
+  }
   vi.stubGlobal("matchMedia", (query: string) => ({ matches: /min-width:\s*1024px/.test(query), media: query, addEventListener: () => undefined, removeEventListener: () => undefined }));
 }
 

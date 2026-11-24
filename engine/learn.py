@@ -24,6 +24,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from engine.language_words import language_words
+from engine.local_day import day_of, zone_of
 from engine.ops import ChangesetIn
 from engine.records import REGISTRY, RunKnowledge
 from engine.storage import WriteContext
@@ -549,7 +550,8 @@ def _input_block(store: Any, ws: Any, request: Any, limit: int) -> str:
     source = store.read().get("source", request.data["source"]) if request.data.get("source") else None
     if source is not None:
         label = " ".join(str(source.data["title"]).split()).replace('"', "'")
-        received = _when(source.data["received_at"]).date().isoformat()
+        here = zone_of(getattr(getattr(store, "plugins", None), "cfg", None))
+        received = day_of(_when(source.data["received_at"]), here).isoformat()
         text = _cut(source_text(ws, store, source.id), limit)
         tag = "note" if source.data["trust"] == "trusted" else "untrusted"
         parts.append(f'<{tag} source="{label}" received="{received}">\n{_marked(text)}\n</{tag}>')
@@ -653,7 +655,7 @@ def build(ws: Any, store: Any, cfg: Any, req: Any, kind: Any, today: date) -> An
         if part.strip()
     )
 
-    made = _when(data["at"]).date().isoformat()
+    made = day_of(_when(data["at"]), zone_of(cfg)).isoformat()
     parts = [
         f"Today is {today.isoformat()} ({today.strftime('%A')}).",
         f"This is correction {signal.id}, made on {made}.",

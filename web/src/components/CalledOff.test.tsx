@@ -109,3 +109,30 @@ test("a dropped entry asks once about the to-dos held for it: Keep them or Drop 
   await waitFor(() => expect(calls.some((c) => c.route === "POST events/EVT-1/keep-todos")).toBe(true));
   expect(await screen.findByText("Kept the to-dos for Walkthrough")).toBeInTheDocument();
 });
+
+test("an entry called off by a mail reads as its decision: rebook sets a new date, let it go drops it", async () => {
+  const user = userEvent.setup();
+  const { calls } = today([line("called_off", { key: "called_off:EVT-3", group: "decide", text: "Hotel", event: "EVT-3", state: "mail", count: 0, at: "2026-12-04T15:00:00+00:00" })], {
+    "GET record?kind=event&id=EVT-3": () => ({ ...EVENT, id: "EVT-3", fields: { title: "Hotel", start: "2026-12-04T15:00:00+00:00" } }),
+    "POST events/EVT-3/new-date": () => ({ changeset: "CS-3", refused: null }),
+    "POST events/EVT-3/drop": () => ({ changeset: "CS-4", refused: null }),
+  });
+  const row = await rowOf("Hotel for Fri, Dec 4 was canceled: rebook or let it go");
+  expect(within(row).queryByRole("button", { name: "New date" })).toBeNull();
+  await user.click(within(row).getByRole("button", { name: "Rebook" }));
+  await user.click(await within(row).findByRole("button", { name: "Set the new date" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST events/EVT-3/new-date")).toBe(true));
+});
+
+test("Let it go drops a mail-canceled entry with the person's reason, as Drop does", async () => {
+  const user = userEvent.setup();
+  const { calls } = today([line("called_off", { key: "called_off:EVT-3", group: "decide", text: "Hotel", event: "EVT-3", state: "mail", count: 0, at: "2026-12-04T15:00:00+00:00" })], {
+    "POST events/EVT-3/drop": () => ({ changeset: "CS-4", refused: null }),
+  });
+  const row = await rowOf("Hotel for Fri, Dec 4 was canceled: rebook or let it go");
+  await user.click(within(row).getByRole("button", { name: /More actions|Actions|More/ }));
+  await user.click(await screen.findByRole("menuitem", { name: "Let it go" }));
+  await user.type(await within(row).findByRole("textbox", { name: "Why is Hotel dropped?" }), "Staying with friends");
+  await user.click(within(row).getByRole("button", { name: "Drop it" }));
+  await waitFor(() => expect(calls.find((c) => c.route === "POST events/EVT-3/drop")?.body).toEqual({ reason: "Staying with friends" }));
+});

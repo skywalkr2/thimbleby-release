@@ -50,3 +50,60 @@ def test_v3_then_v2_then_v3_files_one_change_and_says_the_older_copy_was_not_com
         assert [bool(r.data.get("older_copy")) for r in runs] == [False, True, False]
     finally:
         store.close()
+
+
+def test_an_item_listed_with_an_earlier_time_than_its_saved_copy_is_not_compared_though_the_source_says_no_time(
+    tmp_path,
+):
+    """S-0723: a folder's file put back from a backup has an older file time; the source as a whole says no time."""
+    ws, cfg, store = make(tmp_path, [])
+    try:
+        t3, t2 = (NOW - timedelta(hours=1)).isoformat(), (NOW - timedelta(hours=5)).isoformat()
+        plan = {"key": "a", "title": "Plan"}
+        other = {"key": "b", "title": "Other", "text": "Stays", "changed_at": t3}
+
+        def read(items, at):
+            nonlocal store
+            store.close()
+            current = yaml.safe_load((ws.config_dir / "watch.yaml").read_text())
+            current["sources"] = [
+                {
+                    "id": "s",
+                    "connector": "fake",
+                    "label": "Board",
+                    "first_run": "all",
+                    "settings": {"items": items},
+                }
+            ]
+            (ws.config_dir / "watch.yaml").write_text(yaml.safe_dump(current))
+            fresh = load_config(ws.config_dir, env={})
+            store = Store(ws.db_path, cfg=fresh)
+            return refresh(ws, store, fresh, "s", at)
+
+        assert len(read([{**plan, "text": "Version three", "changed_at": t3}, other], NOW).new) == 2
+        back = read([{**plan, "text": "Version two", "changed_at": t2}, other], NOW + timedelta(hours=1))
+        assert (back.new, back.changed, back.removed) == ([], [], [])
+        newer = (NOW + timedelta(hours=1)).isoformat()
+        edited = read([{**plan, "text": "Version four", "changed_at": newer}, other], NOW + timedelta(hours=2))
+        assert len(edited.changed) == 1
+    finally:
+        store.close()
+
+
+def test_data_older_than_the_sources_refresh_is_never_filed_as_news_and_the_fresh_read_files_it_once(tmp_path):
+    """S-0723: old data read after a good read files nothing, keeps the earlier state and says its data is old."""
+    ws, cfg, store = make(tmp_path, [])
+    try:
+        fresh = NOW - timedelta(hours=1)
+        store, first, cfg = read_as(ws, store, V3, fresh, NOW)
+        stale = NOW + timedelta(days=30)
+        added = [*V3, {"key": "n", "title": "New", "text": "Brand new"}]
+        store, old, cfg = read_as(ws, store, added, fresh, stale)
+        assert (old.new, old.changed, old.removed) == ([], [], [])
+        last = store.read().find("watch_run", {"source": "s"})[-1].data
+        assert last["old_data"] is True and last["outcome"] == "ok"
+        store, later, cfg = read_as(ws, store, added, stale - timedelta(hours=1), stale + timedelta(hours=1))
+        assert len(later.new) == 1  # what the old read missed, filed once, when the data is fresh
+        assert len(first.new) == 1
+    finally:
+        store.close()

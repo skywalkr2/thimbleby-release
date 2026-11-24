@@ -18,3 +18,7 @@ export const PlainRows = createContext(false);
 
 /** Set by a Row inside PlainRows: a primary or outline button among its actions is drawn as the quiet text button. */
 export const QuietActions = createContext(false);
+
+/** Set around every item of a list after the first when the list's items each have a button for the likeliest answer: only the
+ * first keeps the filled weight, so a pane holds one filled button at a time (a `primary` button inside is drawn as the outline). */
+export const OnlyFirstFilled = createContext(false);

@@ -1,0 +1,42 @@
+id: note-settling-one-part-leaves-the-other-parts-questions-open
+title: A note that settles one part of a plan closes only that part's question and leaves the other part's open
+skills: [close-right-item, evidence]
+received: '2026-11-23'
+# The plan has two parts, the cover review and the interior layout. The note holds only the cover review: its question
+# is closed, citing the note; the question about the layout is not about the settled part and stays open.
+given:
+- kind: question
+  id: Q-90
+  fields:
+    projects: [PRJ-1]
+    title: Is the cover review still on time?
+    text: The cover review is planned for next week with the designer.
+    to: PER-1
+- kind: question
+  id: Q-91
+  fields:
+    projects: [PRJ-1]
+    title: Is the interior layout still on track for the same week?
+    text: The interior layout is due next week, before the proofs go out.
+    to: PER-1
+pasted: |-
+  Hold the cover review until after Thanksgiving. The designer is away until the first week of December.
+summary_voice: true
+expect:
+- op: question.done
+  id: Q-90
+forbid:
+- op: question.done
+  id: Q-91
+- op: question.add
+allow:
+- fact
+- action.hold
+stub_answer:
+  summary: Closed the question about the cover review, since the note holds it until after Thanksgiving; the interior layout question is still open.
+  ops:
+  - op: question.done
+    id: Q-90
+    answer: Held until after Thanksgiving, so it is not on time for next week.
+    evidence:
+      quote: Hold the cover review until after Thanksgiving

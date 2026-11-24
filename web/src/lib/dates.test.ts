@@ -106,7 +106,7 @@ test("a date-time with an offset is moved to the person's clock, and one with no
 
 describe("the clock setting", () => {
   afterEach(() => {
-    setTimePrefs({ format: "auto", step: 15 });
+    setTimePrefs({ format: "auto", step: 15, language: null });
     setClockZone(undefined);
   });
   const evening = new Date("2026-11-03T21:05:00Z");
@@ -117,6 +117,16 @@ describe("the clock setting", () => {
     expect(time(evening)).toMatch(/9:05\s?PM/);
     expect(timeOfDay("21:05", "de-DE")).toBe("21:05");
     expect(timeOfDay("09:30", "en-US")).toMatch(/^9:30\s?AM$/);
+  });
+
+  test("auto takes the clock from the person's language, not the computer's: US English is 12-hour with no leading zero, German 24-hour", () => {
+    setClockZone("UTC");
+    setTimePrefs({ format: "auto", language: "en-US" });
+    expect(time(new Date("2026-11-03T09:02:00Z"))).toMatch(/^9:02\s?AM$/);
+    expect(wallTime("2026-11-03T04:00:00")).toMatch(/^4:00\s?AM$/);
+    setTimePrefs({ language: "de-DE" });
+    expect(time(new Date("2026-11-03T09:02:00Z"))).toBe("09:02");
+    setTimePrefs({ language: null });
   });
 
   test("12h writes every time on the 12-hour clock, whatever the language", () => {
@@ -152,4 +162,16 @@ test("a range on a phone is short: the month once inside one month, both months 
   expect(shortRange("2026-11-02", "2026-11-06")).toEqual({ start: "Nov 2", end: "6" });
   expect(shortRange("2026-11-30", "2026-12-04")).toEqual({ start: "Nov 30", end: "Dec 4" });
   expect(shortDay("2026-11-03")).toBe("Tue, Nov 3");
+});
+
+test("a due time written in UTC is the person's own day wherever the screen compares it (S-0726)", async () => {
+  const { dueToday } = await import("./open-items");
+  const { writtenDay } = await import("./dates");
+  process.env.TZ = "UTC";
+  setClockZone("America/Los_Angeles");
+  const row = { state: "stale", due: "2026-10-29T03:00:00Z" } as never;
+  expect(dueToday([row], "2026-10-28")).toBe(1); // Wednesday 8 PM in Los Angeles is still Wednesday
+  expect(dueToday([row], "2026-10-29")).toBe(0);
+  expect(writtenDay("2026-10-29T03:00:00Z")).toBe("2026-10-29"); // an editor shows the day as written beside its time
+  setClockZone(undefined);
 });

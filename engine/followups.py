@@ -372,6 +372,22 @@ def sections(store: Store, cfg: Config, today: date, waiting: list[Late] | None 
     return sorted(by_person.values(), key=lambda s: (not s.is_pm, s.name.lower()))
 
 
+def waiting_on(store: Store, cfg: Config, today: date) -> dict[str, tuple[int, int | None]]:
+    """For each person something is waiting on, how many things are and how many days the longest has waited: the
+    questions sent to them with no answer and the to-dos they were told about, the same two groups the follow-ups
+    screen calls waiting on them. The person's own to-dos and anyone with nothing waiting are left out."""
+    found: dict[str, tuple[int, int | None]] = {}
+    for s in sections(store, cfg, today):
+        if s.is_pm:
+            continue
+        waits = [q["waiting_days"] for q in s.questions if q["status"] == "sent"]
+        waits += [a["told_days"] for a in s.actions if not a["to_send"]]
+        if waits:
+            known = [w for w in waits if w is not None]
+            found[s.person] = (len(waits), max(known) if known else None)
+    return found
+
+
 def _day(stamp: str, here: tzinfo) -> str:
     """The day a stored time falls on where the workspace is, as an ISO date (a bare day stays as it is)."""
     return day_text(stamp, here)

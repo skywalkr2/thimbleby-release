@@ -1,6 +1,7 @@
 // Editing a record's ordinary fields: which fields the form offers, the values it starts with, and which of them the
 // person changed. Only the changed ones are sent.
 import type { S } from "./api";
+import { writtenDay } from "./dates";
 
 type Field = S["FieldView"];
 export type Draft = Record<string, string | boolean>;
@@ -27,7 +28,7 @@ export function initialValue(field: Field, value: unknown): string | boolean {
     case "yes_no":
       return value === true;
     case "date":
-      return asText(value).slice(0, 10);
+      return writtenDay(asText(value));
     case "list":
       return Array.isArray(value) ? value.map(asText).join("\n") : asText(value);
     default:

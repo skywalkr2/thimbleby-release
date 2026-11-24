@@ -237,14 +237,14 @@ async function openFresh(page: Page, hash: string) {
 }
 
 test.describe("the phone's review mode", () => {
-  test("What changed is the history: it has no review mode on a phone, and no row has a button for the work", async ({ page }) => {
+  test("What changed is the history: it has no review mode on a phone, and the only button on a row is Looks good, on a change not yet checked", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await signIn(page);
     await somethingToLookAt(page);
     await openFresh(page, "work/changed");
     await expect(page.getByRole("heading", { level: 1, name: "What changed" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Review one at a time" })).toHaveCount(0);
-    await expect(page.getByRole("main").getByRole("button", { name: "Looks good" })).toHaveCount(0);
+    for (const name of ["Try again", "Choose another account", "Dismiss", "Send back with a note"]) await expect(page.getByRole("main").getByRole("button", { name })).toHaveCount(0);
     expect(await noSidewaysScroll(page)).toBeLessThanOrEqual(0);
   });
 

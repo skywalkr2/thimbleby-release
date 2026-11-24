@@ -3,3 +3,6 @@
 .orgFilter [data-ui="select"] { width: auto; max-width: 100%; }
 /* An address too long for its column ends in an ellipsis; the whole address is its title. */
 .clip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A person's name cell: their initials, the name (a link to their page) and any tags (You, Left, Only watching), on one line. */
+.who { display: inline-flex; align-items: center; gap: var(--space-2); min-width: 0; max-width: 100%; }
+.who a { min-height: var(--hit-min); line-height: var(--hit-min); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

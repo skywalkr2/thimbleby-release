@@ -37,7 +37,7 @@ export function EntryDetails(props: { entry: Entry; date: string | null; calenda
     ],
     ...(alsoIn(entry, props.calendars).length > 0 ? [[t("schedule.pane.also_in"), alsoIn(entry, props.calendars).join(", ")] as [string, React.ReactNode]] : []),
     ...(entry.side ? [[t("schedule.pane.side"), <SideMark side={entry.side} />] as [string, React.ReactNode]] : []),
-    ...(entry.kind === "due" && props.date ? [[t("schedule.pane.due"), day(props.date)] as [string, React.ReactNode]] : []),
+    ...(entry.kind === "due" && props.date ? [[t("schedule.pane.due"), day(entry.start)] as [string, React.ReactNode]] : []),
     ...(entry.delivery
       ? [
           [
@@ -67,6 +67,9 @@ export function EntryDetails(props: { entry: Entry; date: string | null; calenda
       {calledOff && (
         <p>
           <Pill tone="warn">{t(entry.held || acts.calledOff ? "calledoff.on_hold" : "today.agenda.called_off")}</Pill>
+          {entry.called_off_why && (
+            <span data-called-off-why=""> {t("today.agenda.called_off_why", { why: entry.called_off_why })}</span>
+          )}
         </p>
       )}
       <DefinitionList>

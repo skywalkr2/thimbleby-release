@@ -1,0 +1,1 @@
+{"summary": "Reopened the theme question as you need it, because \"Yes please\" doesn't say which theme you want.", "topic": "status page theme choice", "ops": [{"op": "question.update", "id": "Q-90", "title": "Should the status page use the light theme or the dark theme?", "text": "The status page can use the light theme or the dark theme. Which one should it use?"}]}

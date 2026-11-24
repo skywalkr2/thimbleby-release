@@ -105,7 +105,7 @@ People and Projects are where you add, rename and remove people and projects (Ad
 project's own page has Edit). Records refer to people and projects by id, so a rename changes every place at once.
 Something that other records still point to can't be removed until they don't. A project can sit inside another project
 (a series and its books, a program and its parts), have its own language and its own budget for AI work. A removed person
-can be restored from their page.
+can be restored from their page. People is a table like Projects: Name, Role, Open items, **Waiting on them** (a warning mark with how long the longest has waited, such as "Waiting 44 days") and Last contact; choose a row for the rest, such as how to reach them.
 
 ## Days off and time away
 
@@ -167,7 +167,8 @@ Schedule is under Today in the side menu. Its views are **Day**, **Work week** (
 have no sides), **Week**, **Month** and **Timeline**; click one or press 1 to 5 (never while typing). The arrows and
 **Today** move by the view's unit; Left and Right do the same. Day, Work week and Week are a time grid: each meeting
 stands at its own time, an all-day strip on top holds all-day entries and due dates, and two meetings that overlap
-are drawn side by side, with a Clash mark on a clash. It shows every connected calendar's events, the entries you add,
+are drawn side by side, with a Clash mark on a clash. A day nobody works (a holiday, your team's closure) is hatched and named at the top of its column; the to-dos
+past their day are stacked in today's all-day strip. A Work week or Week with no meeting that has a time is a list by day instead of empty hours: "No meetings", then each day, headed like "Mon 23", with what is due, the projects' target days and any day off. It shows every connected calendar's events, the entries you add,
 the assistant's entries (each says "Added by" the assistant's name; yours say "Added by you"), deliveries and the due day of each open to-do you own. Each calendar has a
 name (by default the side it serves, never the raw account label) and a color mark beside it, never the only sign.
 When the grid is cut at the bottom it says "N more meetings below". Choose an entry to see its details beside the
@@ -187,9 +188,9 @@ allowed. Entering a stage can start work for the assistant, which waits for your
 
 ## Files
 
-Files lists what you added and what add-ons made. Add a file by dropping it on the Files screen or choosing one, or when
+Files lists what you added and what add-ons made. Add a file by dropping it on the Files screen or choosing one (the empty screen says so), or when
 handing something in; a file can be tied to the person it came from (from their page). Some files offer actions from
-add-ons (the example add-on's **Make a note from this file**, a build, a preview); an action shows you exactly what it would do, and you apply it or close it.
+add-ons, in the file's own menu (the example add-on's **Make a note from this file**, a build, a preview; an add-on's action on the whole workspace is on that add-on's screen, never here); an action shows you exactly what it would do, and you apply it or close it.
 Applied actions can be undone. A file's menu has **Rename…**, an edit of its description and **Remove**; each applies at once with Undo, and Remove is refused while another record refers to the file. Not built yet: removing a file also removing its stored copy.
 
 ## Knowledge
@@ -214,7 +215,7 @@ On Today's side, a card gives a **Morning brief**, an **Afternoon brief**, an **
 line on Today. **Close for today** puts it away, and the Show link in the card brings it back. The brief only
 summarizes what Today already holds; it sends nothing. On Mondays it also offers goals for the week: the assistant reads
 what is due, what others promised you and what is on your calendar, with the goals you kept before, and offers a few. You
-confirm them, change them or drop some; **Offer goals** asks again. Reading costs like any other work, so it waits for your
+confirm them, change them or drop some; **Offer goals** asks again. On every other day of the week a **This week** card under it keeps the week in view: its days off with the working days left, and the goals to confirm or the ones you kept (it is not drawn when the week has neither). Reading costs like any other work, so it waits for your
 go above the amount you set.
 
 ## AI accounts and costs

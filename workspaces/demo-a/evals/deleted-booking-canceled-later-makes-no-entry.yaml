@@ -1,0 +1,31 @@
+# A hotel confirmation the person deleted, and a later mail from the same sender, in the inbox, that cancels the
+# reservation (the cancellation was read first or after: the app holds both): the booking is not put on the Schedule.
+# Playbook: "Mail the person deleted is read for the Schedule and for learning only".
+id: deleted-booking-canceled-later-makes-no-entry
+title: A booking confirmed in deleted mail and canceled by a later mail makes no calendar entry
+skills: [recording-only-what-matters, dates]
+received: '2026-10-14'
+given_file: busy-portfolio.yaml
+deleted: true
+later_mail:
+- sender: Harbor Stay <reservations@example.com>
+  subject: Your reservation HS48213 has been canceled
+  folder: inbox
+  received: '2026-10-14T23:00:00+00:00'
+  text: 'Your reservation HS48213 for Friday, October 16 has been canceled, as you asked. No charge was made.'
+pasted: 'From: Harbor Stay <reservations@example.com>
+
+  Subject: Reservation HS48213 confirmed for Friday, October 16
+
+
+  Your reservation HS48213 is confirmed: check in Friday, October 16 at 3:00 PM.'
+forbid:
+- op: action.add
+- op: event.add
+- op: event.set
+allow:
+- fact
+- glossary.add
+stub_answer:
+  summary: A later mail cancels this booking, so Friday is left clear.
+  ops: []

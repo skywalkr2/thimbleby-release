@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from engine import evaluate as ev
@@ -44,10 +45,17 @@ ANSWERS = DEMO / "evals" / "real-answers"
 
 
 def _score(case: str, monkeypatch):
-    answer = (ANSWERS / f"{case}.json").read_text(encoding="utf-8")
+    """Score a real model's saved answers to a case. A file holding a list is the answers of each round in order (the
+    first answer, then its answer to the problems sent back), as the app gets them; the last answers any later call."""
+    found = json.loads((ANSWERS / f"{case}.json").read_text(encoding="utf-8"))
+    rounds = [json.dumps(a) for a in found] if isinstance(found, list) else [json.dumps(found)]
+    calls = iter(range(10_000))
+
+    def answer(task):
+        return rounds[min(next(calls), len(rounds) - 1)]
 
     def replace(responder):
-        stub.set_responder(None if responder is None else (lambda task: answer))
+        stub.set_responder(None if responder is None else answer)
 
     monkeypatch.setattr(ev, "set_responder", replace)
     return ev.evaluate(DEMO, stub=True, runs=1, only=[case])

@@ -2,7 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { S } from "../lib/api";
-import { addDays, fullDay, monthDayLong, monthDayYear, monthYear } from "../lib/dates";
+import { addDays, fullDay, monthYear } from "../lib/dates";
 import { allDay, clash, entry, scheduleRoutes, TODAY, WEEK, type Content } from "../lib/schedule-fixtures";
 import { fakeApi, renderApp, type Routes } from "../test-utils";
 import { Schedule } from "./Schedule";
@@ -40,7 +40,7 @@ async function open(content: Content = WEEK, over: Partial<S["ScheduleView"]> = 
   const calls = fakeApi(scheduleRoutes(content, over, extra));
   const view = renderApp(<Schedule />);
   await screen.findByRole("heading", { level: 2, name: /–|2026/ });
-  await waitFor(() => expect(document.querySelector("[data-grid], [data-month]")).not.toBeNull());
+  await waitFor(() => expect(document.querySelector("[data-grid], [data-month], [data-agenda]")).not.toBeNull());
   // The first page asked for is the computer's week; the server's today (the fixtures') follows. Waiting for its day
   // keeps the tests the same in any week the suite runs.
   await waitFor(() => expect(document.querySelector(`[data-day="${TODAY}"]`)).not.toBeNull());
@@ -60,7 +60,7 @@ describe("the views", () => {
     const first = "2026-10-26";
     expect(lanes()).toEqual([0, 1, 2, 3, 4].map((n) => addDays(first, n)));
     expect(checked()).toBe("Work week");
-    expect(screen.getByRole("heading", { level: 2, name: `${monthDayLong("2026-10-26")} – ${monthDayYear("2026-10-30")}` })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Oct 26 – 30" })).toBeInTheDocument();
     // Today is a word in its heading and on its lane, not only a tint.
     expect(screen.getByRole("heading", { level: 3, name: /^Today · / })).toBeInTheDocument();
     expect(screen.getByRole("list", { name: /^Today · / })).toHaveAttribute("data-today");
@@ -623,7 +623,7 @@ test("the Add drawer's disabled Add says why beside it", async () => {
 });
 
 describe("an empty calendar and the details pane", () => {
-  test("a week, a month or a day with nothing on it is its ordinary empty grid or month, with no card, notice or button over it (S-0525)", async () => {
+  test("a week with nothing on it is the list by day, a month or a day is its ordinary empty grid or month, with no card, notice or button over it (S-0525)", async () => {
     const user = userEvent.setup();
     await open(() => ({}));
     const bare = () => {
@@ -631,7 +631,11 @@ describe("an empty calendar and the details pane", () => {
       expect(screen.queryByText(/^Nothing (this|on this)/)).toBeNull();
       expect(screen.queryByRole("button", { name: /^Look at / })).toBeNull();
     };
-    expect(document.querySelector("[data-grid]")).not.toBeNull();
+    // The work week with no meeting is the list by day (S-0743): "No meetings" once, a row a day, and no empty hours.
+    expect(document.querySelector("[data-agenda]")).not.toBeNull();
+    expect(document.querySelector("[data-grid]")).toBeNull();
+    expect(screen.getByText("No meetings")).toBeInTheDocument();
+    expect(screen.getAllByText("Nothing planned").length).toBeGreaterThan(0);
     bare();
     await user.click(radio("Month"));
     await waitFor(() => expect(document.querySelector("[data-month]")).not.toBeNull());

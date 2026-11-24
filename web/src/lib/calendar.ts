@@ -1,7 +1,7 @@
 // The calendar page's arithmetic (design 7.7): which days each view shows, how far an arrow moves, where an entry sits on
 // the time grid and how entries that overlap share a column. Plain functions of dates and numbers, so the screen only draws.
 // Days are yyyy-mm-dd text on the person's own calendar; weekdays count from Monday as 0.
-import { addDays } from "./dates";
+import { addDays, clockDay } from "./dates";
 
 export type CalendarView = "day" | "work_week" | "week" | "month" | "timeline";
 export const VIEWS: readonly CalendarView[] = ["day", "work_week", "week", "month", "timeline"];
@@ -32,7 +32,7 @@ export function rememberView(view: CalendarView): void {
 }
 
 const parts = (iso: string): [number, number, number] => {
-  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  const [y, m, d] = clockDay(iso).split("-").map(Number);
   return [y, m, d];
 };
 

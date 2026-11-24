@@ -115,6 +115,7 @@ invariants:
       - event.add
       - event.set
       - event.guests
+      - event.cancel
       - series.add
       - series.link
       - agenda.add
@@ -193,6 +194,7 @@ invariants:
       - event.add
       - event.set
       - event.guests
+      - event.cancel
       - series.add
       - series.link
       - agenda.add

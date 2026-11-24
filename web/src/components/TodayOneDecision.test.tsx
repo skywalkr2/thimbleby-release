@@ -111,7 +111,8 @@ const detailOf = (row: HTMLElement) => row.querySelector<HTMLElement>("[id^='det
 test("a review line says what the assistant did in the past tense, with its name, never as an order", async () => {
   show([reviewLine()]);
   const row = await rowOf("Helper dropped 'Settle the endpaper color'");
-  expect(within(row).getByText("Review")).toBeInTheDocument();
+  // The group's header says Review; the row does not repeat it.
+  expect(within(row).queryByText("Review")).toBeNull();
   expect(screen.queryByText("Drop 'Settle the endpaper color'")).toBeNull();
 });
 
@@ -196,7 +197,7 @@ test("a held op the engine doesn't shape as a question opens as its own row, lab
 });
 
 test("a held op's label on its change's card says what it would do, and the op that was done says what it did", async () => {
-  besidePane();
+  besidePane({ room: true });
   const { WhatChanged } = await import("./WhatChanged");
   fakeApi({ "GET changes": () => [change()] });
   renderApp(<WhatChanged />);
@@ -224,4 +225,15 @@ test("an answer to the person's question is a line that starts with Read, opens 
   expect(within(row).queryByRole("button", { name: /looks good/i })).toBeNull();
   await user.click(within(row).getByRole("button", { name: "Read" }));
   expect(openAnswer).toHaveBeenCalledWith("REQ-5");
+});
+
+test("Esc closes a line opened under itself and puts the cursor back on its row", async () => {
+  const user = userEvent.setup();
+  show([heldLine(), reviewLine()]);
+  const row = await rowOf("Close 'Send two spine options'?");
+  await user.click(within(row).getByText("Needs you"));
+  expect(await within(row).findByText("Why it waits")).toBeInTheDocument();
+  await user.keyboard("{Escape}");
+  expect(within(row).queryByText("Why it waits")).toBeNull();
+  expect(row.contains(document.activeElement)).toBe(true);
 });

@@ -1,0 +1,60 @@
+# A hotel confirmation already made its calendar entry on the Schedule (from mail the assistant read), and a later mail
+# from the same sender cancels that reservation: the entry is called off with the quoted words, not removed, not moved
+# and not added a second time. Playbook: "A cancellation of a booking already on the Schedule calls its entry off".
+id: booking-canceled-after-its-entry-was-made-calls-it-off
+title: A cancellation read after the confirmation already made the entry calls that entry off
+skills: [recording-only-what-matters, dates]
+received: '2026-10-14'
+given_file: busy-portfolio.yaml
+given:
+- kind: source
+  id: SRC-95
+  fields:
+    received_at: '2026-10-14T08:00:00+00:00'
+    sent_at: '2026-10-14T08:00:00+00:00'
+    kind: watched:fake
+    title: Reservation HS48213 confirmed for Friday, October 16
+    content_hash: '0000000000000000000000000000000000000000000000000000000000000000'
+    trust: untrusted
+    watched: {source: inbox, key: confirm-1, change: new}
+- kind: snapshot
+  id: SNAP-95
+  fields:
+    source: inbox
+    key: confirm-1
+    title: Reservation HS48213 confirmed for Friday, October 16
+    content_hash: '0000000000000000000000000000000000000000000000000000000000000000'
+    seen_at: '2026-10-14T08:00:00+00:00'
+    message: {sender: Harbor Stay <reservations@example.com>}
+- kind: event
+  id: EVT-95
+  fields:
+    title: Hotel reservation HS48213
+    start: '2026-10-16T15:00:00+00:00'
+    source: SRC-95
+    trust: untrusted
+    evidence: {source: SRC-95, quote: 'check in Friday, October 16 at 3:00 PM'}
+watched:
+  title: Your reservation HS48213 has been canceled
+  source: inbox
+  key: cancel-1
+  change: new
+  sender: Harbor Stay <reservations@example.com>
+pasted: 'Your reservation HS48213 for Friday, October 16 has been canceled, as you asked. No charge was made.'
+expect:
+- op: event.cancel
+  id: EVT-95
+forbid:
+- op: event.add
+- op: event.set
+- op: action.add
+allow:
+- fact
+- glossary.add
+stub_answer:
+  summary: The hotel canceled reservation HS48213, so the Friday entry is called off.
+  ops:
+  - op: event.cancel
+    id: EVT-95
+    evidence:
+      quote: 'Your reservation HS48213 for Friday, October 16 has been canceled'

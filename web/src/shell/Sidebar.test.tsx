@@ -6,7 +6,9 @@ import userEvent from "@testing-library/user-event";
 import type { S } from "../lib/api";
 import { project } from "../lib/records-fixtures";
 import { fakeApi, renderApp } from "../test-utils";
-import { Sidebar } from "./Sidebar";
+import { renderHook } from "@testing-library/react";
+import { vi } from "vitest";
+import { Sidebar, useSidebarMode } from "./Sidebar";
 
 const panel = (name: string, tab: string, title: string): S["PanelView"] => ({
   name,
@@ -116,7 +118,7 @@ test("every entry with something waiting for the person shows its count, and say
   expect(await screen.findByRole("link", { name: "What changed, 2 changes not yet checked" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Handled for you, 1 new since you last looked" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Follow-ups, 3 follow-ups to send" })).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "To-dos, 4 need you" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "To-dos, 4 need you: to-dos of yours and questions for you" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: /^Today, 4 things need you/ })).toBeInTheDocument();
   // The figure itself is drawn but not read a second time.
   const followups = screen.getByRole("link", { name: /^Follow-ups/ });
@@ -329,4 +331,20 @@ test("Stages is in the menu only while some kind of record has stages", async ()
 test("Stages is in the menu when a kind of record has stages", async () => {
   show({ hasStages: true });
   expect(await screen.findByRole("link", { name: "Stages" })).toBeInTheDocument();
+});
+
+// Design 7.13: the labels come from 1280px; from 1024px to 1279px the side menu is the icon rail, which gives a list its width back.
+test("the side menu is the icon rail below 1280px, the labels from 1280px, and the person's own choice wins at any width", () => {
+  const at = (width: number) =>
+    vi.stubGlobal("matchMedia", (query: string) => ({ matches: query.includes("min-width") && width >= Number(/(\d+)px/.exec(query)?.[1]), media: query, addEventListener: () => undefined, removeEventListener: () => undefined }));
+  try {
+    window.localStorage.removeItem("cockpit:sidebar");
+  } catch {
+    // Storage can be blocked: the width alone decides.
+  }
+  for (const [width, expanded] of [[1440, true], [1280, true], [1279, false], [1024, false], [900, false]] as const) {
+    at(width);
+    expect(renderHook(() => useSidebarMode()).result.current.expanded, `${width}px`).toBe(expanded);
+  }
+  vi.unstubAllGlobals();
 });

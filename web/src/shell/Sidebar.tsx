@@ -1,6 +1,6 @@
 // The sidebar (design 7.1, 7.13): Today with its count, then Work, then Records, then Sources, Add-ons and Settings at the
 // bottom. Every entry is a real link, so it can be bookmarked, opened in a new tab and reached with Back. It is 232px with
-// labels from 1024px (below that the main column would fall under its own 720px minimum) and a 64px icon rail below that, where each side's dot carries its initial and each icon has a tooltip; the person can collapse or pin it at any
+// labels from 1280px (below that the list would lose its width to the menu) and a 64px icon rail below that, where each side's dot carries its initial and each icon has a tooltip; the person can collapse or pin it at any
 // width, remembered on this device.
 import { useState } from "react";
 import { Link } from "react-aria-components";
@@ -28,9 +28,9 @@ function saved(): "collapsed" | "expanded" | null {
   }
 }
 
-/** Whether the sidebar shows labels: the person's choice for this device, or else by width (labels from 1024px). */
+/** Whether the sidebar shows labels: the person's choice for this device, or else by width (labels from 1280px, the icon rail from 1024px to 1279px: design 7.13). */
 export function useSidebarMode(): { expanded: boolean; toggle: () => void } {
-  const wide = useMediaQuery("(min-width: 1024px)");
+  const wide = useMediaQuery("(min-width: 1280px)");
   const [pref, setPref] = useState(saved);
   const expanded = pref ? pref === "expanded" : wide;
   const toggle = () => {
@@ -75,8 +75,8 @@ function Entry(props: { entry: NavEntry; current: View; rail: boolean; sub?: boo
   // The whole name shows on hover (the wrapper's title) and on keyboard focus (the tooltip, which stays closed for the pointer so only one shows), since a long label is cut
   // short, and on the icon rail the name is the only thing that tells the icons apart.
   return (
-    <span className={styles.titled} title={entry.label} data-rail-title={props.rail ? "" : undefined}>
-      <Tooltip text={entry.label} placement="right" trigger="focus">{link}</Tooltip>
+    <span className={styles.titled} title={navName(entry)} data-rail-title={props.rail ? "" : undefined}>
+      <Tooltip text={navName(entry)} placement="right" trigger="focus">{link}</Tooltip>
     </span>
   );
 }

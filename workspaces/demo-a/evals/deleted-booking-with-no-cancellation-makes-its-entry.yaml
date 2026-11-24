@@ -1,0 +1,34 @@
+# A hotel confirmation the person deleted, with only an unrelated later mail from the same sender (a newsletter-like
+# offer that does not cancel it): the booking still reaches the Schedule.
+id: deleted-booking-with-no-cancellation-makes-its-entry
+title: A booking confirmed in deleted mail with no cancellation makes its calendar entry
+skills: [recording-only-what-matters, dates]
+received: '2026-10-14'
+given_file: busy-portfolio.yaml
+deleted: true
+later_mail:
+- sender: Harbor Stay <reservations@example.com>
+  subject: Rate your last stay
+  folder: inbox
+  received: '2026-10-14T23:00:00+00:00'
+  text: 'Thanks for staying with us last month. Tell us how it went.'
+pasted: 'From: Harbor Stay <reservations@example.com>
+
+  Subject: Reservation HS48213 confirmed for Friday, October 16
+
+
+  Your reservation HS48213 is confirmed: check in Friday, October 16 at 3:00 PM.'
+forbid:
+- op: action.add
+allow:
+- event.add
+- fact
+- glossary.add
+stub_answer:
+  summary: A hotel booking for Friday.
+  ops:
+  - op: event.add
+    title: Hotel reservation HS48213
+    start: '2026-10-16T15:00'
+    evidence:
+      quote: 'check in Friday, October 16 at 3:00 PM'

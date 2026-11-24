@@ -1,3 +1,4 @@
+import { writtenDay } from "./dates";
 // Reading the dates and times a person types into a date or time box (design 7.12), in their locale: the order of day, month and
 // year the locale writes, month names in its language, and the relative words the wording sheet gives ("today", "tomorrow").
 // Every reader answers the ISO text the callers hold ("yyyy-mm-dd", "hh:mm") or null when the text is no date or time, and
@@ -12,7 +13,7 @@ function isoOf(year: number, month: number, day: number): string | null {
 }
 
 const dateOf = (iso: string): Date => {
-  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  const [y, m, d] = writtenDay(iso).split("-").map(Number);
   return new Date(y, m - 1, d);
 };
 

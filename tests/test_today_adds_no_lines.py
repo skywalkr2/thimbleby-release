@@ -120,6 +120,7 @@ def test_keep_it_open_with_a_note_hands_the_note_in_and_a_refused_note_changes_n
 def test_reassigning_a_today_todo_replaces_it_with_a_tell_line(api):  # noqa: F811
     client, base, worker = api
     store = client.app_store
+    store.plugins.cfg.ui.today.fold_sends_from = 0  # one line for each person, to read the replacement's
     today = worker.now().astimezone(zone(store.plugins.cfg)).date()
     with store.transaction() as tx:
         action = tx.create(

@@ -1,6 +1,7 @@
 // Files (design 5.3, 7.15): what has been added, one row each, with Open as the row's one primary action, and a details pane
 // beside the list for the file chosen: a preview, where it came from and what refers to it. Plugins' actions for a file are
-// in its menu; actions for the whole workspace are buttons above the list. With a side beside Personal the list can be
+// in its menu (a file that can become something says so there, by the action's own label); the actions of an add-on that work on
+// the whole workspace are the add-on's own screen's, never buttons here. With a side beside Personal the list can be
 // narrowed to one side; a file in no project, or in one on no side, shows under every choice.
 import { useQuery } from "@tanstack/react-query";
 import { useRef, useState } from "react";
@@ -25,11 +26,10 @@ import { useFileEdits } from "./FileEdit";
 import { restoreFocus } from "./ModalPanel";
 import { RowMenu, type MenuAction } from "./RowMenu";
 import { SideFilter } from "./SideFilter";
-import { FileDrop } from "../ui/FileDrop";
+import { EmptyState } from "../ui/EmptyState";
 import { PageHeader } from "../ui/PageHeader";
 import { Pill } from "../ui/Pill";
 import { Button, ButtonLink } from "../ui/Button";
-import styles from "./Files.module.css";
 import { Actions } from "../ui/Actions";
 import { RowList } from "../ui/RowList";
 import { Row, ExpandableRow } from "../ui/Row";
@@ -46,8 +46,6 @@ export function Files() {
   const { t } = useWords();
   const files = useQuery({ queryKey: ["files"], queryFn: api.files });
   const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects });
-  const workspace = usePluginActions();
-  const { start, review } = useActionReview();
   const [adding, setAdding] = useState(false);
   // A file dropped on, or chosen in, the empty page is the one the Add form opens with.
   const [dropped, setDropped] = useState<File | null>(null);
@@ -72,18 +70,6 @@ export function Files() {
         id="files-title"
         title={t("files.title")}
         filters={<SideFilter holds={everything.length} />}
-        actionsLabel={t("files.actions_label")}
-        actions={(workspace.data ?? []).map((action) => (
-          <Button
-            key={action.name}
-            onClick={(e) => {
-              const button = e.currentTarget;
-              start(action, null, () => button);
-            }}
-          >
-            {action.label}
-          </Button>
-        ))}
         primary={
           <Button variant="primary" ref={addButton} onClick={() => setAdding(true)}>
             {t("files.add")}
@@ -99,17 +85,18 @@ export function Files() {
         <ListState query={files} failed={t("files.load_failed")} row={{ lead: false, framed: true }}>
           {() =>
             everything.length === 0 ? (
-              <div className={styles.empty} data-empty="">
-                <FileDrop
-                  id="files-drop"
-                  aria-label={t("files.drop_label")}
-                  onChange={(e) => {
-                    const chosen = e.target.files?.[0] ?? null;
-                    setDropped(chosen);
-                    if (chosen) setAdding(true);
-                  }}
-                />
-                <p className="hint">{t("files.empty")}</p>
+              // The empty page is its own drop target: a file dropped anywhere on the card is the one the Add form opens with.
+              <div
+                data-empty-drop=""
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const chosen = e.dataTransfer?.files?.[0] ?? null;
+                  setDropped(chosen);
+                  if (chosen) setAdding(true);
+                }}
+              >
+                <EmptyState card text={t("files.empty")} action={{ label: t("files.add"), onClick: () => setAdding(true) }} />
               </div>
             ) : shown.length === 0 ? (
               <FilteredEmpty text={t("sides.empty.files", { side: side.named })} label={t("sides.empty.show_all")} onClear={() => side.set("all")} />
@@ -133,7 +120,6 @@ export function Files() {
           }}
         />
       )}
-      {review}
     </section>
   );
 }

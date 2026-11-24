@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { addDays, dayOfMonth, monthDay, monthDayLong, monthDayYear, weekday } from "../lib/dates";
+import { addDays, dayOfMonth, monthDay, monthDayLong, shortRange, weekday } from "../lib/dates";
 import { entry, item, lane, timelineRoutes, TODAY } from "../lib/schedule-fixtures";
 import { fakeApi, renderApp } from "../test-utils";
 import { Schedule } from "./Schedule";
@@ -85,6 +85,17 @@ describe("the Timeline", () => {
     expect(screen.getByRole("list", { name: "Key" })).toBeInTheDocument();
   });
 
+  test("the to-dos past due are a stack at today, each saying the day it was due", async () => {
+    const was = addDays(TODAY, -40);
+    await open([lane("PRJ-1", "Harbor", [todo("Pay the deposit", TODAY, { state: "overdue", detail: was }), todo("Renew the licence", TODAY, { state: "overdue", detail: addDays(TODAY, -9) })])]);
+    const harbor = screen.getByRole("list", { name: "Items on the Harbor lane" });
+    const late = within(harbor).getByRole("button", { name: /^To-do: Pay the deposit\. Overdue, was due .*\. Overdue\.$/ });
+    expect(late.querySelector("[data-state='overdue'] svg")).not.toBeNull();
+    // Two on one day take two rows: a stack, none over another.
+    const top = (title: string) => Number.parseInt(screen.getByRole("button", { name: new RegExp(`^To-do: ${title}\\.`) }).closest("li")!.style.top, 10);
+    expect(top("Renew the licence")).not.toBe(top("Pay the deposit"));
+  });
+
   test("two items on one day take two rows and none overlaps", async () => {
     await open([lane("PRJ-1", "Harbor", [todo("First thing"), todo("Second thing"), todo("Other day", addDays(TODAY, 30))])]);
     const top = (title: string) => Number.parseInt(screen.getByRole("button", { name: new RegExp(`^To-do: ${title}\\.`) }).closest("li")!.style.top, 10);
@@ -104,7 +115,7 @@ describe("the Timeline", () => {
     }
     expect(screen.getByText(`${weekday(TODAY)} ${dayOfMonth(TODAY)}`)).toHaveAttribute("data-today");
     expect(screen.getByText("Today", { selector: "span" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 2, name: `${monthDayLong(TODAY)} – ${monthDayYear(addDays(TODAY, 13))}` })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: `${shortRange(TODAY, addDays(TODAY, 13)).start} – ${shortRange(TODAY, addDays(TODAY, 13)).end}` })).toBeInTheDocument();
   });
 
   test("longer ranges label the weeks, and the range pick is remembered and asked for", async () => {
@@ -185,7 +196,7 @@ describe("the Timeline", () => {
     expect(screen.getByRole("heading", { level: 4, name: "Harbor" })).toBeInTheDocument();
   });
 
-  test("nothing in the range draws no notice, and the to-dos with no date are listed under the timeline", async () => {
+  test("nothing in the range draws no notice, and the to-dos with no date are counted under the timeline with a link to where they are listed", async () => {
     await open([], {}, {
       "GET open-items": () => ({
         actions: [{ id: "A-1", version: 1, text: "Tidy the style sheet", state: "open", owners: [], due: null, project: "PRJ-1", project_name: "Harbor", needs_date: true, views: [] }],
@@ -194,8 +205,11 @@ describe("the Timeline", () => {
       }),
     });
     expect(document.querySelector("[data-schedule-empty]")).toBeNull();
-    expect(await screen.findByRole("heading", { name: /Needs a date/ })).toBeInTheDocument();
-    expect(screen.getByText(/not on the timeline/)).toBeInTheDocument();
+    expect(await screen.findByText(/1 to-do needs a date, so it is not on the timeline/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Set dates in To-dos" })).toHaveAttribute("href", expect.stringContaining("work/open"));
+    // The to-dos themselves, with their pickers, are in To-dos only.
+    expect(screen.queryByRole("heading", { name: /Needs a date/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Set" })).toBeNull();
   });
 
   test("in a window too narrow for the weeks the same items are a list by week and nothing needs sideways room", async () => {

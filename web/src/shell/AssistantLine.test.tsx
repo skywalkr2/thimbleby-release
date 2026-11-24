@@ -25,7 +25,7 @@ const open = async (user: ReturnType<typeof userEvent.setup>) => {
   return screen.getByRole("dialog", { name: "Helper" });
 };
 
-const ran = { last_run_at: `${TODAY}T09:42:00+09:00` };
+const ran = { last_run_at: `${TODAY}T09:42:00Z` };
 
 test("fine: the line is a dot and the name, and the last task is in the popover", async () => {
   const user = userEvent.setup();
@@ -64,7 +64,7 @@ test("amber: work waiting for an internet connection has its own icon, and the p
 
 test("amber: a paused account names itself and when its limit resets, in the popover", async () => {
   const user = userEvent.setup();
-  show(statusFixture({}, { assistant: { ...ran, paused: [{ account: "main-account", until: `${TODAY}T11:30:00+09:00` }] } }));
+  show(statusFixture({}, { assistant: { ...ran, paused: [{ account: "main-account", until: `${TODAY}T11:30:00Z` }] } }));
   await waitFor(() => expect(lineNow()).toHaveAttribute("data-alive", "paused"));
   expect(lineNow()).toHaveAttribute("data-tone", "warn");
   const dialog = await open(user);
@@ -127,7 +127,7 @@ test("the popover shows today's runs by account with failures, what waits and si
             { account: "backup-account", count: 1, failed: 0 },
           ],
           queued: 3,
-          oldest_queued_since: `${TODAY}T08:15:00+09:00`,
+          oldest_queued_since: `${TODAY}T08:15:00Z`,
           chains: [
             { tier: "routine", accounts: ["main-account", "backup-account"] },
             { tier: "custom-tier", accounts: ["backup-account"] },
@@ -169,7 +169,7 @@ test("accounts are called by the names the person gave them, in the details, nev
             ...ran,
             runs_today: [{ account: "acct-1", count: 3, failed: 0 }],
             chains: [{ tier: "routine", accounts: ["acct-1", "acct-2"] }],
-            paused: [{ account: "acct-1", until: `${TODAY}T14:20:00+09:00` }],
+            paused: [{ account: "acct-1", until: `${TODAY}T14:20:00Z` }],
           },
         },
       ),
@@ -204,7 +204,7 @@ test("an account with no runs today is not listed as \"0 tasks\"", async () => {
 
 test("amber: background work that stopped and was started again says so and when", async () => {
   const user = userEvent.setup();
-  show(statusFixture({}, { assistant: { ...ran, loop_restarted_at: `${TODAY}T10:05:00+09:00` } }));
+  show(statusFixture({}, { assistant: { ...ran, loop_restarted_at: `${TODAY}T10:05:00Z` } }));
   await waitFor(() => expect(lineNow()).toHaveAttribute("data-alive", "loop_restarted"));
   expect(lineNow()).toHaveAttribute("data-tone", "warn");
   expect(await open(user)).toHaveTextContent(/Background work stopped and was started again 10:05/);
@@ -212,7 +212,7 @@ test("amber: background work that stopped and was started again says so and when
 
 test("red: stuck background work says since when and the card offers Restart now", async () => {
   const user = userEvent.setup();
-  show(statusFixture({ can_restart: true }, { assistant: { ...ran, loop_stuck_since: `${TODAY}T10:05:00+09:00` } }));
+  show(statusFixture({ can_restart: true }, { assistant: { ...ran, loop_stuck_since: `${TODAY}T10:05:00Z` } }));
   await waitFor(() => expect(lineNow()).toHaveAttribute("data-alive", "stuck"));
   expect(lineNow()).toHaveAttribute("data-tone", "bad");
   const card = await open(user);
@@ -231,7 +231,7 @@ test("the words after the icon start with a capital and no stray space, so no AI
 
 test("busy: while work runs the line shows a moving ring and says what is being done with how many wait, and it rests when done (S-0526)", async () => {
   const user = userEvent.setup();
-  let status = statusFixture({}, { assistant: { ...ran, working_on: "reading", working_count: 12, queued: 3, oldest_queued_since: `${TODAY}T09:50:00+09:00` } });
+  let status = statusFixture({}, { assistant: { ...ran, working_on: "reading", working_count: 12, queued: 3, oldest_queued_since: `${TODAY}T09:50:00Z` } });
   fakeApi({ "GET status": () => status, "GET runtime-config": () => ({ instance: null }), "GET today/held": () => ({ count: 0, until: null }) });
   const { client } = renderApp(
     <RestartProvider hellos={1}>
@@ -273,7 +273,7 @@ test("a problem keeps its own mark while work runs: busy never hides a failing a
 
 test("held work is listed in the popover as waiting until the working day's start, and the section is absent when nothing is held (S-0527)", async () => {
   const user = userEvent.setup();
-  fakeApi({ "GET status": () => statusFixture({}, { assistant: ran }), "GET runtime-config": () => ({ instance: null }), "GET today/held": () => ({ count: 3, until: `${TODAY}T23:30:00+09:00` }) });
+  fakeApi({ "GET status": () => statusFixture({}, { assistant: ran }), "GET runtime-config": () => ({ instance: null }), "GET today/held": () => ({ count: 3, until: `${TODAY}T23:30:00Z` }) });
   renderApp(
     <RestartProvider hellos={1}>
       <AssistantLine onOpenGuide={() => undefined} />
@@ -300,4 +300,10 @@ test("nothing held: the popover has no held section (S-0527)", async () => {
   const dialog = await open(user);
   await waitFor(() => expect(dialog.querySelector("[data-section='queue']")).not.toBeNull());
   expect(dialog.querySelector("[data-section='held']")).toBeNull();
+});
+
+test("a practice assistant is the amber mark on the assistant's line, never a green dot beside the popover's 'needs a look' (S-0736)", async () => {
+  show(statusFixture({ ai: { state: "stand_in", detail: null } }, { assistant: ran }));
+  await waitFor(() => expect(lineNow()).toHaveAttribute("data-alive", "stand_in"));
+  expect(lineNow()).toHaveAttribute("data-tone", "warn");
 });

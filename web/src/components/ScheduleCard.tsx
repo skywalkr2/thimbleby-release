@@ -9,6 +9,7 @@ import { addDays, clockDay, clockTime, todayOn, time } from "../lib/dates";
 import { deliveryDetails, deliveryRange, deliveryStatusWord, isOnItsWay } from "../lib/deliveries";
 import { useSideFilter } from "../lib/sides";
 import { useCalendarColor } from "../lib/marks";
+import { useIsNarrow } from "../lib/media";
 import { useQueue, useRailRows } from "../lib/today";
 import { layOutDay } from "../lib/agenda-day";
 import { Icon } from "../ui/Icon";
@@ -111,8 +112,18 @@ export function useScheduleCard(onAddSource?: () => void, connectHref?: string):
   const connect = sourceState.button ? (onAddSource ? sourceState.button : { label: sourceState.button.label, href: connectHref }) : undefined;
   const drawn = agenda.isError || groups.length > 0 || onItsWay.length > 0 || sourceState.problems.length > 0 || (!!sourceState.button && !!onAddSource);
   const summary = count > 0 ? tn("today.agenda.count", count) : "";
+  const narrow = useIsNarrow();
+  // Nothing today or tomorrow, nothing wrong and a calendar connected: the card is one line, never a panel with a heading and two empty sentences.
+  const quiet = !narrow && !!agenda.data && todayGroups.length === 0 && onItsWay.length === 0 && tomorrowCount === 0 && sourceState.problems.length === 0 && !connect;
 
-  const card = (
+  const card = quiet ? (
+    <div data-col="schedule">
+      <section className={styles.scheduleLine} aria-label={t("today.schedule.title")} data-schedule-quiet="">
+        <span>{t("today.agenda.none_both")}</span>
+        <AddMeeting today={today} compact />
+      </section>
+    </div>
+  ) : (
     <RailPanel
       id="schedule"
       title={t("today.schedule.heading")}
@@ -512,6 +523,11 @@ function AgendaRow(props: { event: Event; when: string; past: boolean; source: s
             </>
           )}
         </div>
+        {event.cancelled && event.called_off_why && (
+          <div className="tb-meta" data-called-off-why="">
+            {t("today.agenda.called_off_why", { why: event.called_off_why })}
+          </div>
+        )}
         {(meta || track || props.clash || sideShown) && (
           <div className="tb-meta" title={props.source || undefined}>
             {props.clash && (

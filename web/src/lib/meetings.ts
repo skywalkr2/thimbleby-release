@@ -1,7 +1,7 @@
 // How an item that is for a meeting names it (design 7.14): "for Thursday's print sync" within a week, "for Oct 29's print sync"
 // further out or already past. The title is the person's own words; a title written as a sentence is kept as written, and one
 // that only starts with a capital is lowered to read after "for Thursday's".
-import { monthDay } from "./dates";
+import { clockDay, monthDay } from "./dates";
 
 const weekday = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", weekday: "long" });
 
@@ -9,7 +9,7 @@ const lowerFirst = (title: string): string => (/^\p{Lu}[^\p{Lu}]*$/u.test(title)
 
 /** Whole days from today to a yyyy-mm-dd day on this computer's calendar (negative once it has passed). */
 function daysFrom(today: Date, iso: string): number {
-  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  const [y, m, d] = clockDay(iso).split("-").map(Number);
   const start = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
   return Math.round((Date.UTC(y, m - 1, d) - start) / 86_400_000);
 }
@@ -18,7 +18,7 @@ function daysFrom(today: Date, iso: string): number {
 export function meetingDay(on: string, today: Date = new Date()): string {
   const gap = daysFrom(today, on);
   if (gap >= 0 && gap < 7) {
-    const [y, m, d] = on.slice(0, 10).split("-").map(Number);
+    const [y, m, d] = clockDay(on).split("-").map(Number);
     return weekday.format(new Date(Date.UTC(y, m - 1, d)));
   }
   return monthDay(on);

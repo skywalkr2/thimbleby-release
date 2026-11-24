@@ -16,9 +16,14 @@ from engine.ops import ACT_OPS, KNOWLEDGE_OPS, OP_MODELS, PERSON_ONLY_OPS
 #: question (or who doesn't) can be recorded as a routing entry. Each still applies as a proposal unless the words are
 #: the person's own.
 OFFERED_TO_NOTES = frozenset({"glossary.add", "routing.add"})
-#: The one op only the person makes that reading notes is offered: filing an open question as already asked, which
-#: the applier accepts only when the input is the person's own note.
-PERSON_NOTE_OPS = frozenset({"question.mark_sent"})
+#: The ops only the person makes that reading notes is offered: filing an open question as already asked, which the
+#: applier accepts only when the input is the person's own note, and rewording a question whose answer the run is
+#: judging, which it accepts only for the run on that answer (`answer_effect.judging_answer`).
+PERSON_NOTE_OPS = frozenset({"question.mark_sent", "question.update"})
+#: The outward act's one op reading notes and an ask are offered: drafting a message, for the person's own words only.
+#: The applier refuses it from any run whose input is not the person's own words (`act-from-outside`), and the draft
+#: waits for the person's yes like any other (design 6.12).
+DRAFTED_FROM_OWN_WORDS = frozenset({"act.draft"})
 
 #: Core ops reading notes never offers: deleting is the person's call, file.add is made only by person actions, the
 #: ops only the person makes are theirs alone, and the ops that keep what the assistant learned belong to the work that
@@ -42,9 +47,9 @@ NOT_FROM_NOTES = (
         "area.offer",
         "person.offer",
     }
-    # Drafting something to send is the person's, or an add-on's action they apply; outward acts are never offered to
-    # the assistant's reading of notes (design 6.12).
-    | ACT_OPS
+    # The outward act's other ops are the person's, the publisher's or an add-on's action they apply; only drafting
+    # a message is offered (`DRAFTED_FROM_OWN_WORDS`), and only the person's own words may use it (design 6.12).
+    | (ACT_OPS - DRAFTED_FROM_OWN_WORDS)
 )
 #: Ops reading notes is offered that an ask is not: a project the input names, which waits for the person as a
 #: system op, a person's part in a project, which waits the same way, a contact detail from a signature, which
@@ -52,7 +57,7 @@ NOT_FROM_NOTES = (
 NOTES_ONLY = frozenset({"project.add", "project.role", "person.contact", "person.away"})
 #: What an ask may do besides what reading notes does: answer, suggest a setting, draft a report to the maintainers,
 #: and ask for the writing a to-do stands for to be drafted.
-ASK_OPS = ("answer", "setting.propose", "report.draft", "work.draft")
+ASK_OPS = ("answer", "setting.propose", "report.draft", "work.draft", *sorted(DRAFTED_FROM_OWN_WORDS))
 #: What learning from a correction may propose (design 6.22): one entry to keep, or a change to a lesson that should
 #: have caught the mistake, or who a person is to the person (a stance, which waits for the person's Keep). None of
 #: these depends on the account that runs it.
@@ -169,7 +174,11 @@ TASKS: dict[str, TaskKind] = {
         name="ask",
         ops=(
             *ASK_OPS,
-            *(n for n in OP_MODELS if n not in NOT_FROM_NOTES | OFFERED_TO_NOTES | NOTES_ONLY | PERSON_NOTE_OPS),
+            *(
+                n
+                for n in OP_MODELS
+                if n not in NOT_FROM_NOTES | OFFERED_TO_NOTES | NOTES_ONLY | PERSON_NOTE_OPS | DRAFTED_FROM_OWN_WORDS
+            ),
         ),
         prompt="ask",
         playbook="notes",

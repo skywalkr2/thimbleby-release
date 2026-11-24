@@ -259,12 +259,18 @@ def test_the_same_thing_on_consecutive_days_is_one_band_over_those_days(env):
     ]
 
 
-def test_a_to_do_that_is_overdue_is_not_folded_into_one_that_is_open(env):
-    todo(env, "Pay the deposit", env.both, "2026-10-12")  # before today: overdue
-    todo(env, "Pay the deposit", env.both, "2026-10-13")
-    todo(env, "Pay the deposit", env.both, "2026-10-14")
-    states = [(i.start, i.end, i.state) for i in sorted(lanes(env)[env.both].items, key=lambda i: i.start)]
-    assert len(states) == 2 and states[0][2] == "overdue" and states[1][2] != "overdue"
+def test_overdue_to_dos_are_one_stack_at_today_whenever_they_were_due_and_are_never_folded(env):
+    old = todo(env, "Pay the deposit", env.both, "2026-08-03")  # weeks before this week's first day
+    todo(env, "Pay the deposit", env.both, "2026-10-12")
+    todo(env, "Pay the deposit", env.both, "2026-10-14")  # today: open
+    items = lanes(env)[env.both].items
+    assert sorted((i.start, i.end, i.state) for i in items) == [
+        (date(2026, 10, 14), date(2026, 10, 14), s) for s in ("open", "overdue", "overdue")
+    ]
+    stacked = {i.id: i.detail for i in items if i.state == "overdue"}
+    assert stacked[old] == "2026-08-03" and sorted(stacked.values()) == ["2026-08-03", "2026-10-12"]
+    # A range that does not hold today holds none of them.
+    assert lanes(env, "two_weeks", date(2026, 11, 2)) == {}
 
 
 def test_a_daily_repeat_is_one_band_not_a_mark_for_each_day(env):
@@ -280,3 +286,31 @@ def test_a_daily_repeat_is_one_band_not_a_mark_for_each_day(env):
     )
     items = [i for i in lanes(env)[env.both].items if i.title == "Stand-up"]
     assert len(items) == 1 and items[0].start == date(2026, 10, 19) and items[0].end == date(2026, 10, 23)
+
+
+def test_the_schedule_carries_the_days_off_the_overdue_to_dos_and_the_target_days_no_day_holds(env):
+    from engine.schedule import overdue, targets
+
+    late = todo(env, "Send the invoice", env.both, "2026-08-03")
+    todo(env, "Send the quote", env.both, "2026-10-16")
+    todo(
+        env,
+        "Wait for the printer",
+        env.both,
+        "2026-10-01",
+        on_hold={"waiting_for": "the printer", "since": "2026-09-01"},
+    )
+    todo(env, "Maybe the 1st", env.both, "2026-10-01", due_check=True)
+    with env.store.transaction() as tx:
+        found = tx.get("project", env.both)
+        tx.update("project", env.both, {"target": "2026-12-01"}, CTX, read_version=found.version)
+    [entry] = overdue(env.store, env.cfg, NOW)
+    assert (entry.kind, entry.action, entry.item.title, entry.slot) == ("due", late, "Send the invoice", "all_day")
+    assert entry.item.days == [date(2026, 8, 3)]
+    [(day, project, name, _side, _views)] = targets(env.store, env.cfg, date(2026, 11, 23), date(2026, 12, 4))
+    assert (day, project) == (date(2026, 12, 1), env.both) and name
+    assert targets(env.store, env.cfg, date(2026, 12, 2), date(2026, 12, 4)) == []
+    body = env.client.get("/api/schedule", params={"from": "2026-11-23", "days": 14}).json()
+    assert [d["day"] for d in body["off_days"]][:1] == ["2026-11-26"] and body["off_days"][0]["kind"] == "holiday"
+    assert [t["day"] for t in body["targets"]] == ["2026-12-01"] and body["targets"][0]["project"] == env.both
+    assert isinstance(body["overdue"], list)

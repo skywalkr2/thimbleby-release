@@ -16,7 +16,9 @@ TOKEN = "t"
 @pytest.fixture
 def worst_app(tmp_path):
     ws = init_workspace(tmp_path / "ws", git=False, you=the_person())
-    cfg = ws.config(env={}, flags={"steward.hold_outside_hours": False})
+    cfg = ws.config(
+        env={}, flags={"steward.hold_outside_hours": False, "ui.today.fold_sends_from": 0}
+    )  # one send line for each person
     app = create_app(ws, cfg, TOKEN, start_worker=False)
     try:
         client = TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"})
@@ -104,7 +106,9 @@ def test_every_to_do_with_no_owner_is_a_pick_an_owner_line_on_today(worst_app):
 # H1-08 (the restart state): adding sides while the app runs asks for no restart, and no "restart" line is on Today.
 def test_adding_sides_while_the_app_runs_asks_for_no_restart(tmp_path):
     ws = init_workspace(tmp_path / "ws", git=False, you=the_person())
-    cfg = ws.config(env={}, flags={"steward.hold_outside_hours": False})
+    cfg = ws.config(
+        env={}, flags={"steward.hold_outside_hours": False, "ui.today.fold_sends_from": 0}
+    )  # one send line for each person
     app = create_app(ws, cfg, TOKEN, start_worker=False)
     try:
         client = TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"})

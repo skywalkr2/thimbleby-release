@@ -42,6 +42,9 @@ export function project(id: string, name: string, extra: Partial<S["ProjectView"
     completed: false,
     open_actions: 0,
     open_questions: 0,
+    overdue_actions: 0,
+    status_disagrees: false,
+    target_passed: false,
     owner: null,
     owner_name: null,
     phase: null,
@@ -54,5 +57,5 @@ export function project(id: string, name: string, extra: Partial<S["ProjectView"
 }
 
 export function person(id: string, name: string): S["PersonView"] {
-  return { id, name, aliases: [], is_pm: false, open_items: 0, role: null, status: "active", track_only: false };
+  return { id, name, aliases: [], is_pm: false, open_items: 0, waiting_on_them: 0, role: null, status: "active", track_only: false };
 }

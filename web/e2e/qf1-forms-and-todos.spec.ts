@@ -9,6 +9,8 @@ test.describe("QF1", () => {
   });
 
   test("a question's Drop is the only form on it, and Cancel brings the answer back", async ({ page }) => {
+    // The form opens under the line below 1280px, where these checks look for it; from 1280px it opens in the rail (today-rail.spec.ts).
+    await page.setViewportSize({ width: 1200, height: 900 });
     await openScreen(page, "today");
     const line = page.locator('[data-queue-line="decision"]').first();
     await line.getByRole("button", { name: "Answer", exact: true }).click();
@@ -23,6 +25,8 @@ test.describe("QF1", () => {
   });
 
   test("a dropped question is listed under Dropped on Follow-ups and Ask again opens it again", async ({ page }) => {
+    // The form opens under the line below 1280px, where these checks look for it; from 1280px it opens in the rail (today-rail.spec.ts).
+    await page.setViewportSize({ width: 1200, height: 900 });
     await openScreen(page, "today");
     const line = page.locator('[data-queue-line="decision"]').first();
     await line.getByRole("button", { name: "Answer", exact: true }).click();
@@ -30,10 +34,15 @@ test.describe("QF1", () => {
     await page.getByRole("menuitem", { name: "Drop" }).click();
     await line.getByRole("textbox", { name: "Why isn't it needed?" }).fill("Decided in the meeting.");
     await line.getByRole("button", { name: "Drop it" }).click();
+    // The drop is saved before the screen is left: the line is gone from Today only once the server has answered it.
+    await expect(line.getByRole("textbox", { name: "Why isn't it needed?" })).toHaveCount(0, { timeout: 20_000 });
     await openScreen(page, "work/followups");
-    await page.getByRole("group", { name: "Show" }).getByRole("button", { name: "Dropped" }).click();
+    // Follow-ups draws after its own reads, as the file's other page loads do (20 s), before its filter is there to press.
+    const show = page.getByRole("group", { name: "Show" });
+    await expect(show.getByRole("button", { name: "Dropped" })).toBeVisible({ timeout: 20_000 });
+    await show.getByRole("button", { name: "Dropped" }).click();
     const row = page.locator("[data-dropped-item]", { hasText: "Cover finish" });
-    await expect(row).toContainText("Decided in the meeting.");
+    await expect(row).toContainText("Decided in the meeting.", { timeout: 20_000 });
     await row.getByRole("button", { name: /^Ask again/ }).click();
     await expect(row).toHaveCount(0);
     await expect(page.getByText("Asked again.")).toBeVisible();

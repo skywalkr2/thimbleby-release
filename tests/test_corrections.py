@@ -297,10 +297,13 @@ def test_the_question_ops_only_the_person_makes_are_never_offered_to_the_assista
     mine = {"question.update", "question.move", "question.mark_sent"}
     assert mine <= PERSON_ONLY_OPS and "question.drop" not in PERSON_ONLY_OPS  # a drop may be proposed, with evidence
     assert not mine & set(TASKS["ask"].ops)
-    assert mine & set(TASKS["notes"].ops) == {"question.mark_sent"}  # only the person's own note may file one as asked
+    # Notes are offered two: the person's own note may file one as asked, and the run judging an answer may reword that
+    # question (refused for any other run: `tests/test_answers_and_voice.py`).
+    assert mine & set(TASKS["notes"].ops) == {"question.mark_sent", "question.update"}
     for op in (
         {"op": "question.move", "id": FIXTURE_DECISION["id"], "to": other_of(cfg)},
         {"op": "question.mark_sent", "id": FIXTURE_DECISION["id"]},
+        {"op": "question.update", "id": FIXTURE_DECISION["id"], "title": "Reworded?"},
     ):
         assert [p.check for p in problems(env, op, "person-only")] == ["person-only"]
 

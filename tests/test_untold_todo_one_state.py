@@ -25,6 +25,7 @@ _TEST = WriteContext(actor="pm", trust="trusted", op="test.one-state")
 def env(tmp_path):
     ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
     cfg = ws.config(env={"COCKPIT__WORKSPACE__USER__TIMEZONE": "UTC"})
+    cfg.ui.today.fold_sends_from = 0  # one line for each person
     store = Store(ws.db_path, cfg=cfg, clock=lambda: NOW.isoformat(timespec="seconds"))
     yield ws, cfg, store
     store.close()

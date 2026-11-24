@@ -415,14 +415,10 @@ def test_a_standing_rule_to_reply_alone_is_met_by_a_draft_reply_and_no_act_of_th
     case = case_of(DEMO_B, STANDING_RULE)
     assert [r["kind"] for r in case["given"]] == ["rule"] and case["given"][0]["fields"]["status"] == "active"
     assert run_edited(monkeypatch, DEMO_B, STANDING_RULE).passed
-    # A note's run has no act among the ops it may propose, whatever a rule says, so an attempt is refused ...
-    assert "act.draft" not in task_kind("notes").ops
-    act = {
-        "op": "act.draft",
-        "channel": "copy",
-        "target": {"kind": "message", "action": "send", "recipients": [{"person": "PER-6", "kind": "email"}]},
-        "parts": {"subject": "Proofs", "body": "They ship on Monday."},
-    }
+    # A note's run may draft a message from the person's own words, but never approve or send one, whatever a rule
+    # says, so an attempt to approve is refused ...
+    assert "act.draft" in task_kind("notes").ops and "act.approve" not in task_kind("notes").ops
+    act = {"op": "act.approve", "id": "ACT-1", "fingerprint": "x"}
     tried = run_edited(
         monkeypatch,
         DEMO_B,
@@ -430,7 +426,7 @@ def test_a_standing_rule_to_reply_alone_is_met_by_a_draft_reply_and_no_act_of_th
         stub_answer={**case["stub_answer"], "ops": [*case["stub_answer"]["ops"], act]},
     )
     # ... and the case counts the attempt as the failure it is, though nothing was applied.
-    assert not tried.passed and tried.forbidden == ["op=act.draft, attempted=True"] and tried.refused == 1
+    assert not tried.passed and tried.forbidden == ["op=act.approve, attempted=True"] and tried.refused == 1
 
 
 def test_a_handed_over_action_must_be_one_the_case_starts_with(tmp_path):

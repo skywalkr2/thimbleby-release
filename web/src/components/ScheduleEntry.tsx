@@ -160,7 +160,8 @@ export function EntryButton(props: {
   const color = !props.calendars.bySide && !entry.own && entry.kind !== "due" ? props.calendars.color(entry.source) : undefined;
   const stale = !entry.own && entry.kind !== "due" && !!props.calendars.stale?.(entry.source);
   const line = props.block && !props.clash ? blockLineParts(entry, props.calendars, t) : null;
-  const full = [entryTitle(entry, t), shortWhen(entry, t), calendarWords(entry, props.calendars, t)].filter(Boolean).join(" · ");
+  const calledOffWhy = entry.cancelled && entry.called_off_why ? t("today.agenda.called_off_why", { why: entry.called_off_why }) : "";
+  const full = [entryTitle(entry, t), shortWhen(entry, t), calendarWords(entry, props.calendars, t), calledOffWhy].filter(Boolean).join(" · ");
   const attrs = {
     className: [props.clash ? styles.clashRow : styles.chip, props.block ? styles.block : "", entry.own || entry.kind === "due" ? styles.own : "", props.selected ? styles.selected : ""].filter(Boolean).join(" "),
     "data-entry-key": entryKey(entry, props.date),

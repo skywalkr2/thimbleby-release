@@ -9,7 +9,7 @@
 // filled ones in view. `ButtonLink` is the same button drawn as a link, for something that opens a page.
 import { useContext, useId, type AnchorHTMLAttributes, type ButtonHTMLAttributes, type ReactNode, type Ref } from "react";
 import { Icon, type IconName } from "./Icon";
-import { InRowActions, QuietActions } from "./rowContext";
+import { InRowActions, OnlyFirstFilled, QuietActions } from "./rowContext";
 import styles from "./Button.module.css";
 
 export type ButtonVariant = "primary" | "tonal" | "secondary" | "quiet" | "danger";
@@ -19,6 +19,11 @@ export type ButtonWeight = "filled" | "tonal" | "outline" | "plain";
 export function weightOf(variant: ButtonVariant, inRow: boolean): ButtonWeight {
   if (variant === "primary" || variant === "danger") return inRow && variant === "primary" ? "outline" : "filled";
   return variant === "tonal" ? "tonal" : variant === "quiet" ? "plain" : "outline";
+}
+/** The look a variant takes: a primary among a row's actions is the outline in the page's own styles as well, not only in a row's (a
+ * table's rows have none), so it is never a second solid button beside the screen's primary. A disabled one keeps its primary look. */
+function drawnAs(variant: ButtonVariant, inRow: boolean, disabled?: boolean): ButtonVariant {
+  return !disabled && variant === "primary" && weightOf(variant, inRow) === "outline" ? "secondary" : variant;
 }
 export type ButtonSize = "md" | "sm";
 
@@ -47,14 +52,15 @@ export function Button(props: ButtonProps) {
   const hintId = useId();
   const inRow = useContext(InRowActions);
   // A plain line's one action (Row inside PlainRows) is the quiet text button, whatever weight it asked for.
-  const variant: ButtonVariant = useContext(QuietActions) && (asked === "primary" || asked === "secondary") ? "quiet" : asked;
+  const notFirst = useContext(OnlyFirstFilled);
+  const variant: ButtonVariant = useContext(QuietActions) && (asked === "primary" || asked === "secondary") ? "quiet" : notFirst && asked === "primary" ? "secondary" : asked;
   const hint = disabled && reason ? reason : null;
   const button = (
     <button
       type="button"
       {...rest}
       ref={ref}
-      className={classesOf(variant, size, [loading && styles.loading, className])}
+      className={classesOf(drawnAs(variant, inRow, disabled), size, [loading && styles.loading, className])}
       disabled={disabled}
       aria-busy={loading || rest["aria-busy"]}
       aria-describedby={[rest["aria-describedby"], hint ? hintId : null].filter(Boolean).join(" ") || undefined}
@@ -88,7 +94,7 @@ export function ButtonLink(props: ButtonLinkProps) {
   const { variant = "secondary", size = "md", icon, className, children, ref, ...rest } = props;
   const inRow = useContext(InRowActions);
   return (
-    <a {...rest} ref={ref} className={classesOf(variant, size, [className])} data-variant={variant} data-weight={weightOf(variant, inRow)}>
+    <a {...rest} ref={ref} className={classesOf(drawnAs(variant, inRow), size, [className])} data-variant={variant} data-weight={weightOf(variant, inRow)}>
       {icon ? <Icon name={icon} /> : null}
       {children}
     </a>

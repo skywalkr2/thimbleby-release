@@ -1,7 +1,7 @@
 // Made-up schedule answers for the calendar page's tests: a week of entries on days the tests name, answered for whatever days a
 // request asks for. Only dates and titles written here; no real calendar, person or address.
 import type { S } from "./api";
-import { addDays } from "./dates";
+import { addDays, clockDay } from "./dates";
 import type { Routes } from "../test-utils";
 
 /** A Monday. */
@@ -53,7 +53,7 @@ export const WEEK: Content = (date) =>
 export const clash = (first: Entry, second: Entry, over: Partial<S["ScheduleClashView"]> = {}): S["ScheduleClashView"] => ({
   // Each pair is a group of its own unless `over` says it shares one.
   group: `${first.snapshot}#${first.start}|${second.snapshot}#${second.start}`,
-  day: (second.begins ?? second.start).slice(0, 10),
+  day: clockDay(second.begins ?? second.start),
   first: { snapshot: first.snapshot, start: first.start },
   second: { snapshot: second.snapshot, start: second.start },
   kind: "overlap",

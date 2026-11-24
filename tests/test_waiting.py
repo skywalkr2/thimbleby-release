@@ -143,3 +143,44 @@ def test_a_sides_count_is_its_own_things_and_those_on_no_side():
     assert [(s.side, s.count) for s in found.sides] == [("PRJ-a", 3), ("PRJ-b", 2), ("PRJ-c", 1)]
     # With no side beside Personal there is nothing to count by.
     assert counted([Thing("PRJ-a"), Thing(None)], []).sides == []
+
+
+def test_every_count_matches_the_rows_it_labels(env):
+    """The menu badge, Projects' two columns and the project page count the rows To-dos lists, for the same things."""
+    from engine import open_items, record_page
+
+    ws, cfg, store = env
+    view = store.read()
+    project = view.list("project")[0].id
+    with store.transaction() as tx:
+        tx.create("action", {"text": "Mine, in it", "owners": [{"person": ME["id"]}], "project": project}, _TEST)
+        tx.create("action", {"text": "Theirs, in it", "owners": [{"person": OTHER["id"]}], "project": project}, _TEST)
+        tx.create(
+            "question", {"to": ME["id"], "title": "Which date?", "kind": "decision", "projects": [project]}, _TEST
+        )
+        tx.create(
+            "question",
+            {
+                "to": OTHER["id"],
+                "title": "Who owns it?",
+                "kind": "question",
+                "projects": [project],
+                "resolves": {"kind": "owner"},
+            },
+            _TEST,
+        )
+    today = NOW.date()
+    actions = open_items.open_actions(store, cfg, today, light=True)
+    questions = open_items.open_questions(store, cfg, today)
+    # The badge is the to-dos that need the person plus the questions put to them.
+    needs_you = sum(1 for a in actions if open_items.waits_on_person(a, cfg.workspace.user.person or None)) + sum(
+        1 for q in questions if q.state == "yours"
+    )
+    assert counted(env, "open") == needs_you
+    for p in store.read().list("project"):
+        row = record_page.counts(store.read())["projects"].get(p.id, {})
+        assert row.get("open_actions", 0) == sum(1 for a in actions if a.project == p.id), p.id
+        assert row.get("open_questions", 0) == sum(1 for q in questions if p.id in q.projects), p.id
+        found = record_page.page(store, "project", p.id, pm=cfg.workspace.user.person, today=today, cfg=cfg)
+        assert len(found["open_actions"]) == row.get("open_actions", 0), p.id
+        assert len(found["open_questions"]) == row.get("open_questions", 0), p.id

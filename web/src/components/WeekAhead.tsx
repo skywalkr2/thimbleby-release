@@ -23,6 +23,17 @@ export function rowHref(row: Row): string {
   return viewHref(kind === "snapshot" ? eventPageView(id, row.from_day) : recordView(kind, id));
 }
 
+type T = ReturnType<typeof useWords>["t"];
+
+/** The week's days off and the working days left, as one sentence; empty when no day is off. Shared by the card and Today's rail. */
+export function daysOffSentence(data: S["WeekAheadView"], t: T): string {
+  if (data.days_off.length === 0) return "";
+  return t(data.working_days === 0 ? "week_ahead.days_off_none" : data.working_days === 1 ? "week_ahead.days_off_one" : "week_ahead.days_off", {
+    days: data.days_off.map((d) => `${shortDay(d.day)} (${d.reason})`).join(", "),
+    count: data.working_days,
+  });
+}
+
 /** `leaveOutAgenda`: on Today, a row whose record Today's agenda already lists is left out, so the card is never a copy of Today. */
 export function WeekAhead(props: { headingLevel?: 2 | 3; leaveOutAgenda?: boolean }) {
   const { t } = useWords();
@@ -46,13 +57,7 @@ export function WeekAhead(props: { headingLevel?: 2 | 3; leaveOutAgenda?: boolea
   const when = (row: Row) => (row.to_day && row.to_day !== row.from_day ? t("week_ahead.when.window", { start: shortDay(row.from_day), end: shortDay(row.to_day) }) : shortDay(row.from_day));
   // A row's words as Today shows a to-do's: a day written out as year-month-day reads as a day.
   const wordsOf = (row: Row) => shortTitle(row.words, row.from_day);
-  const daysOffWords =
-    data.days_off.length === 0
-      ? ""
-      : t(data.working_days === 0 ? "week_ahead.days_off_none" : data.working_days === 1 ? "week_ahead.days_off_one" : "week_ahead.days_off", {
-          days: data.days_off.map((d) => `${shortDay(d.day)} (${d.reason})`).join(", "),
-          count: data.working_days,
-        });
+  const daysOffWords = daysOffSentence(data, t);
   const status =
     data.state === "working" ? t("week_ahead.reading") : data.state === "needs_go" ? (data.estimate_usd != null ? t("week_ahead.needs_go_cost", { cost: money(data.estimate_usd) }) : t("week_ahead.needs_go")) : null;
   return (

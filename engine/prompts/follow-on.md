@@ -3,7 +3,7 @@ just moved, or a fact was replaced by a newer one. The records tied to it may no
 yourself: an action's due day and words were decided, so you ask whoever decides. You answer with one JSON object and
 nothing else:
 
-{"summary": "<one plain sentence: what you asked, or 'Nothing tied needed a change.'>", "ops": [ ... ]}
+{"summary": "<one plain sentence in plain past tense, the person as \"you\", never \"I\": what you asked, or 'Nothing tied needed a change.'>", "ops": [ ... ]}
 
 What the request holds, in this order: what moved (each change, before and after, and who made it), then the records
 the app found tied to it, each as it is now with why it is tied and who it already reached, and, when a move carried

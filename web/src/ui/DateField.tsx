@@ -10,7 +10,7 @@ import { useContext, useEffect, useRef, useState, type ReactNode, type Ref } fro
 import { Button as AriaButton, Calendar, CalendarCell, CalendarGrid, CalendarStateContext, useLocale, CalendarGridBody, CalendarGridHeader, CalendarHeaderCell, Dialog, Heading, I18nProvider, Popover as AriaPopover } from "react-aria-components";
 import { useDatePrefs } from "../lib/date-prefs";
 import { parseDay } from "../lib/date-input";
-import { fieldDay, todayOn } from "../lib/dates";
+import { fieldDay, todayOn, writtenDay } from "../lib/dates";
 import { useWords } from "../lib/wording";
 import { contained } from "./containEvents";
 import { Icon } from "./Icon";
@@ -65,7 +65,7 @@ export function DateField(props: DateFieldProps) {
 function DayAndTime(props: DateFieldProps) {
   const { id, name, className, value, defaultValue, onChange, step, required, disabled, autoFocus, ref } = props;
   const { t } = useWords();
-  const split = (v: string | undefined) => ({ day: v ? v.slice(0, 10) : "", time: v && v.length >= 16 ? v.slice(11, 16) : "" });
+  const split = (v: string | undefined) => ({ day: v ? writtenDay(v) : "", time: v && v.length >= 16 ? v.slice(11, 16) : "" });
   const compose = (p: { day: string; time: string }) => (p.day && p.time ? `${p.day}T${p.time}` : "");
   const [own, setOwn] = useState(defaultValue ?? "");
   const held = value === undefined ? own : value;
@@ -130,7 +130,7 @@ function Day(props: DateFieldProps) {
   const { id, name, className, value, defaultValue, min, max, daysOff, required, disabled, autoFocus, onChange, onBlur, ref } = props;
   const { t, locale } = useWords();
   const [own, setOwn] = useState(defaultValue ?? "");
-  const held = value === undefined ? own : value.slice(0, 10);
+  const held = value === undefined ? own : writtenDay(value);
   const [draft, setDraft] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [problem, setProblem] = useState<"invalid" | null>(null);
@@ -141,8 +141,8 @@ function Day(props: DateFieldProps) {
   const ariaLabel = props["aria-label"];
   const helpId = `${id ?? "date"}-help`;
   const today = todayOn(new Date());
-  const lowest = min ? min.slice(0, 10) : null;
-  const highest = max ? max.slice(0, 10) : null;
+  const lowest = min ? writtenDay(min) : null;
+  const highest = max ? writtenDay(max) : null;
   const words = { today: t("datefield.today"), tomorrow: t("datefield.tomorrow"), yesterday: t("datefield.yesterday") };
   const who = (v: string) => ({ value: v, name: name ?? "", id: id ?? "" });
   const inRange = (iso: string) => (!lowest || iso >= lowest) && (!highest || iso <= highest);

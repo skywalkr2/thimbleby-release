@@ -15,7 +15,7 @@ from datetime import date
 from html import escape
 from typing import Any
 
-from engine import areas, audience, days_off, new_terms, reply_lines, understand
+from engine import areas, audience, days_off, new_terms, related_mail, reply_lines, understand
 from engine.ai.task import AiTask
 from engine.blocked import standing_hold
 from engine.cleaning import Cleaned, clean
@@ -211,6 +211,7 @@ def build(ws: Workspace, store: Store, cfg: Config, request_id: str, today: date
             _calendar_section(store, cfg, today),
             "# Open actions\n" + _open_actions(store, people, out),
             "# Open questions\n" + _open_questions(store, people, out, cfg.dispatch.knowledge.question_body_chars),
+            _closed_questions(store, people, out, cfg.dispatch.knowledge.closed_questions, _judged_id(req.data)),
             "# People\n" + _people(store, cfg),
             "# Projects\n" + _projects(store, cfg, people.pm, reach),
         )
@@ -221,6 +222,9 @@ def build(ws: Workspace, store: Store, cfg: Config, request_id: str, today: date
         request_parts.append(_received_line(store, cfg, req))
     if kind.name == "notes" and req.data.get("source_role") == "deleted":
         request_parts.append(render("notes-deleted", {}, ws.root))
+        related = related_mail.packet_section(ws, store, cfg, saved)
+        if related:
+            request_parts.append(related)
     elif kind.name == "notes" and req.data.get("intake_older"):
         request_parts.append(render("notes-older", {}, ws.root))
     place = PLACE_LINES.get(_place_of(store, saved))
@@ -1163,6 +1167,46 @@ def _open_questions(
     return "\n".join(lines) or "(none)"
 
 
+def _judged_id(request: Mapping) -> str | None:
+    """The question a note's run is about, whose answer it is judging: it is shown as the item, not as a closed one."""
+    about = request.get("about") or {}
+    return about.get("id") if about.get("kind") == "question" else None
+
+
+def _closed_questions(
+    store: Store,
+    people: People,
+    left_out: Callable[[Mapping], bool] | None = None,
+    limit: int = 15,
+    judged: str | None = None,
+) -> str:
+    """The questions already answered or dropped, newest first, one line each with the answer or the reason: what the
+    assistant may be about to ask again in other words, which it must not (a dropped question stays dropped unless the
+    person asks again). Empty when there are none or `limit` is 0."""
+    closed = [
+        q
+        for q in store.read().list("question")
+        if q.data["status"] in ("answered", "dropped")
+        and q.id != judged
+        and not (left_out is not None and left_out(q.data))
+    ]
+    if limit <= 0 or not closed:
+        return ""
+    closed.sort(key=lambda q: (len(q.id), q.id), reverse=True)
+    lines = []
+    for q in closed[:limit]:
+        d = q.data
+        if d["status"] == "answered":
+            end = f"answered: {_marked_if_outside(store.read(), q, d.get('answer') or '(no words)')}"
+        else:
+            end = f"dropped: {d.get('dropped_reason') or 'no reason given'}"
+        keys = list(dict.fromkeys(ID.findall(f"{d['title']} {d.get('text') or ''}")))
+        named = f"; names {', '.join(keys)}" if keys else ""
+        title = _marked_if_outside(store.read(), q, d["title"])
+        lines.append(f"- {q.id} to {people.name(d['to'])}: {title}{named}; {end}")
+    return "# Questions already closed (never ask these again, in any words)\n" + "\n".join(lines)
+
+
 def _marked_name(reader: Any, record: Any, words: str) -> str:
     """A name as a list shows it; see `engine.origin.marked_name`."""
     return marked_name(reader, record, words)
@@ -1215,7 +1259,8 @@ def _calendar_section(store: Store, cfg: Config, today: date) -> str:
             if proposed
             else ""
         )
-        lines.append(f"- {entry.id} {d['title']} ({d['start']}{until}{of}{who})")
+        off = "; called off" if d.get("cancelled") else ""
+        lines.append(f"- {entry.id} {d['title']} ({d['start']}{until}{of}{who}{off})")
     return "# Calendar entries and series\n" + "\n".join(lines) if lines else ""
 
 

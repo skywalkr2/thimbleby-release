@@ -279,6 +279,7 @@ from engine.followups import (
     undo_follow_up,
     unmark_followed_up,
     unmark_sent,
+    waiting_on,
 )
 from engine.intake import IntakeError, hand_in, note_as_input, source_text
 from engine.language_words import language_words
@@ -2664,6 +2665,8 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
                 "open_items": open_count(view, person.id, pm),
             }
         held = {p.id: sides.person_sides(view, cfg, p.data) for p in view.list("person")}
+        today = worker.now().astimezone(zone_of(cfg)).date()
+        waits = waiting_on(store, cfg, today)
         return [
             PersonView(
                 id=p.id,
@@ -2681,6 +2684,8 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
                 side=sides.side_word_of(view, cfg, held[p.id]) or p.data.get("side"),
                 sides=held[p.id],
                 forgotten_on=str(p.data["forgotten_on"]) if p.data.get("forgotten_on") else None,
+                waiting_on_them=waits.get(p.id, (0, None))[0],
+                waiting_days=waits.get(p.id, (0, None))[1],
                 **seen.get(p.id, {}),
             )
             for p in view.list("person")
@@ -3098,6 +3103,25 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
         done = cfg.workspace.project.completed_status.strip().casefold()
         meant = {p.id: describe(view, "project-status", p.data.get("status")) for p in view.list("project")}
         groups = set(sides.side_ids(view, cfg))
+        from engine import project_health
+        from engine.open_items import open_actions as _open_actions
+
+        today = datetime.now(zone_of(cfg)).date()
+        late: dict[str, int] = {}
+        for row in _open_actions(store, cfg, today, light=True):
+            if row.state == "overdue" and row.project:
+                late[row.project] = late.get(row.project, 0) + 1
+        health = {
+            p.id: project_health.read(
+                meaning=meant[p.id].meaning,
+                overdue=late.get(p.id, 0),
+                last_change=seen.get(p.id, {}).get("last_change"),
+                target=str(p.data["target"]) if p.data.get("target") else None,
+                today=today,
+                quiet_after_weeks=cfg.workspace.project.quiet_weeks,
+            )
+            for p in view.list("project")
+        }
         return [
             ProjectView(
                 side=p.id in groups,
@@ -3125,6 +3149,12 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
                 status_meaning=meant[p.id].meaning,
                 status_rank=status_rank(view, "project-status", p.data.get("status")),
                 no_end=sides.has_no_end(view, cfg, p.id),
+                overdue_actions=health[p.id].overdue,
+                quiet_weeks=health[p.id].quiet_weeks
+                if (health[p.id].quiet_weeks or 0) >= cfg.workspace.project.quiet_weeks
+                else None,
+                target_passed=health[p.id].target_passed,
+                status_disagrees=health[p.id].disagrees,
                 **seen.get(p.id, {}),
             )
             for p in view.list("project")

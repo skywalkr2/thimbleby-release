@@ -309,7 +309,7 @@ test.describe.serial("journey: new start", () => {
     for (const title of [...mail, ...events, ...sent]) expect(asked.inputs.filter((input) => input.includes(title))).toHaveLength(1);
     // The first backup was made while setting up, so Today doesn't ask for one and the header chip doesn't say one is needed.
     await expect(page.getByRole("region", { name: "Backup", exact: true })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: /^App status: / })).not.toContainText("Backup needed");
+    await expect(page.getByRole("button", { name: /^App status: / })).not.toContainText(/No backup yet|Backup (not set up|failed|overdue)/);
 
     // 9. The recent mail is on Came in within seconds; what is older isn't.
     const came = page.getByRole("region", { name: "Came in" });
@@ -338,7 +338,8 @@ test.describe.serial("journey: new start", () => {
     for (const label of ["Your inbox", "Your calendar", "Your sent mail"]) {
       await found.filter({ hasText: label }).getByRole("button", { name: "Look over", exact: true }).click();
       await expect(page).toHaveURL(/#today$/);
-      await found.filter({ hasText: label }).getByRole("button", { name: /^Keep (it|all \d+)$/ }).click();
+      // The items open under the line, or in the rail's column from 1280px.
+      await found.filter({ hasText: label }).or(page.locator("[data-queue-inspector]")).getByRole("button", { name: /^Keep (it|all \d+)$/ }).click();
     }
     await expect(found).toHaveCount(0);
     await expect(page.locator('[data-queue-line="review"]')).toHaveCount(0);

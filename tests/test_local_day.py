@@ -50,6 +50,20 @@ def test_no_engine_or_api_code_cuts_ten_characters_off_a_timestamp():
     )
 
 
+def test_no_screen_code_cuts_ten_characters_off_a_timestamp():
+    """S-0726: the web takes a day through the shared date helpers (`clockDay`, `writtenDay`), never by slicing."""
+    found = []
+    for path in sorted((ROOT / "web" / "src").rglob("*.ts*")):
+        if ".test." in path.name or path.name == "test-utils.tsx":
+            continue
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            if re.search(r"\.(?:slice|substring|substr)\(\s*0\s*,\s*10\s*\)", line):
+                found.append(f"{path.relative_to(ROOT)}:{number}")
+    assert found == [], "take a day with the date helpers in web/src/lib/dates.ts, never by slicing: " + ", ".join(
+        found
+    )
+
+
 # ---- the places that took a day from a timestamp (S-0689) ----------------------------------------------------------
 
 

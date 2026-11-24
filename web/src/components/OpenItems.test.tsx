@@ -844,9 +844,10 @@ test("the tabs and the line under the title say what is yours and how many quest
   const user = userEvent.setup();
   api();
   renderApp(<OpenItems />);
-  // Five to-dos are listed: three wait on the person (two of theirs and one with no owner yet), two don't; one question is for them.
-  expect(await screen.findByRole("button", { name: /^To-dos\b.*3/ })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: /^Questions\b/ })).toHaveTextContent("1");
+  // Five to-dos and two questions are listed, under no filter: each tab says the rows it holds. Three of the to-dos wait on the person
+  // (two of theirs and one with no owner yet), two don't; one question is for them, and those two numbers are what the line and the menu say.
+  expect(await screen.findByRole("button", { name: /^To-dos\b.*5/ })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /^Questions\b/ })).toHaveTextContent("2");
   expect(await screen.findByText("· 3 yours")).toBeInTheDocument();
   expect(screen.getByText("· 1 question for you")).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: /^Questions\b/ }));
@@ -859,7 +860,7 @@ test("under the title it says how many the open tab holds and how many of them a
   api();
   renderApp(<OpenItems />);
   expect(await screen.findByText("5 open")).toBeInTheDocument();
-  expect(screen.getByText(/· 1 overdue/)).toBeInTheDocument();
+  expect(document.querySelector("[data-open-parts]")).toHaveTextContent(/: 1 overdue/);
   // The questions tab counts questions, with no to-do figures beside it.
   await user.click(screen.getByRole("button", { name: /^Questions\b/ }));
   expect(await screen.findByText("2 open")).toBeInTheDocument();
@@ -886,10 +887,14 @@ test("the to-dos are grouped Overdue, Today, Coming up and Waiting on others, ea
   await screen.findByRole("list", { name: "Open to-dos" });
   expect(groupLabels().map((g) => g.textContent)).toEqual(["Overdue1", "Today2", "Coming up2", "Waiting on others1"]);
   expect(groupLabels()[0]).toHaveAttribute("data-tone", "danger");
-  const names = (await rows()).map((r) => r.querySelector("[data-row-title]")?.textContent);
+  const names = (await rows()).filter((r) => !r.hasAttribute("data-needs-row")).map((r) => r.querySelector("[data-row-title]")?.textContent);
   expect(names).toEqual(["Pay the deposit", "Get a catering quote", "Take the tablets", "Mail the claim forms", "Book the fitting", "Revised offsite budget"]);
-  // The undated one is in the slim "needs a date" section at the foot, not among the rows.
-  expect(within(screen.getByRole("region", { name: /Needs a date/ })).getByRole("link", { name: "Print the agenda" })).toBeInTheDocument();
+  // The undated one is in the slim "needs a date" section at the foot, as the same kind of row (a circle to tick it done, its title,
+  // the date picker as its primary and the menu), not among the dated groups.
+  const needs = within(screen.getByRole("region", { name: /Needs a date/ }));
+  const undated = needs.getByRole("link", { name: "Print the agenda" }).closest("[data-row]") as HTMLElement;
+  expect(within(undated).getByRole("button", { name: /^Mark done|Done: Print the agenda/ })).toBeInTheDocument();
+  expect(within(undated).getByRole("button", { name: /More actions for Print the agenda/ })).toBeInTheDocument();
   // The overdue line says its day with an icon; the group says it too, so the row has no Overdue pill of its own.
   const first = (await rows())[0];
   expect(first.querySelector("[data-due=late] [data-icon=alert]")).not.toBeNull();
@@ -901,12 +906,11 @@ test("the counts agree: the tab, the line under the title, the groups with the l
   api({}, { actions: mixed, questions });
   renderApp(<OpenItems />);
   await screen.findByRole("list", { name: "Open to-dos" });
-  // 7 to-dos and 2 questions are open; the line counts the tab shown (the to-dos); one is overdue and two are due today; the line says at most three things, so with the person's own count it gives up "due today".
-  expect(screen.getByRole("button", { name: /^To-dos/ })).toHaveTextContent("6");
-  expect(screen.getByRole("button", { name: /^Questions/ })).toHaveTextContent("1");
+  // 7 to-dos and 2 questions are open: each tab says the rows it holds, and the line says the facts the list can be narrowed by, which add up to its number.
+  expect(screen.getByRole("button", { name: /^To-dos/ })).toHaveTextContent("7");
+  expect(screen.getByRole("button", { name: /^Questions/ })).toHaveTextContent("2");
   expect(screen.getByText("7 open")).toBeInTheDocument();
-  expect(screen.getByText(/· 1 overdue/)).toBeInTheDocument();
-  expect(screen.queryByText(/due today/)).toBeNull();
+  expect(document.querySelector("[data-open-parts]")).toHaveTextContent(": 1 overdue · 2 due today · 2 coming up · 1 waiting on others · 1 needs a date");
   const grouped = groupLabels().reduce((n, g) => n + Number(g.querySelector("[data-group-count]")?.textContent), 0);
   expect(grouped).toBe(6);
   expect(screen.getByText("1 to-do needs a date")).toBeInTheDocument();

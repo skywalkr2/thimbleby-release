@@ -143,12 +143,15 @@ test("a person row has no Details button either, and a long address is clipped w
     "GET organizations": () => [firstOrg],
   });
   renderApp(<People />);
-  const tr = (await screen.findByRole("link", { name: "Ana Person" })).closest("li")!;
+  const tr = (await screen.findByRole("link", { name: "Ana Person" })).closest("tr")!;
   expect(within(tr).queryByRole("button", { name: /Details/ })).toBeNull();
-  // The meta line keeps to one line, ending in an ellipsis, with the whole line as its title.
-  expect(within(tr).getByTitle(/a\.long\.address\.for\.someone@example\.org$/)).toBeInTheDocument();
+  // The table row holds no address (S-0745): the name and the role are clipped with the whole value as their title, and
+  // the pane opened by the row shows the whole address.
+  expect(within(tr).getByTitle("Editor")).toBeInTheDocument();
+  expect(within(tr).queryByText(/a\.long\.address/)).toBeNull();
   await user.click(within(tr).getByText(/^Editor/));
-  expect(await screen.findByRole("dialog", { name: "Ana Person" })).toBeInTheDocument();
+  const pane = await screen.findByRole("dialog", { name: "Ana Person" });
+  expect(within(pane).getByText(/a\.long\.address\.for\.someone@example\.org$/)).toBeInTheDocument();
 });
 
 test("the organization filter is sized to its content", async () => {

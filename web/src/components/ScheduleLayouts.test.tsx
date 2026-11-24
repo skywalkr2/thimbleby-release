@@ -174,7 +174,7 @@ test("wide, Add to schedule is the header's button and the range is written out"
   await open("week");
   expect(screen.getByRole("button", { name: "Add to schedule" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "More actions for Schedule" })).toBeNull();
-  expect(within(document.querySelector("[data-nav-row]") as HTMLElement).getByRole("heading", { level: 2 })).toHaveTextContent("October 26 – November 1, 2026");
+  expect(within(document.querySelector("[data-nav-row]") as HTMLElement).getByRole("heading", { level: 2 })).toHaveTextContent("Oct 26 – Nov 1");
 });
 
 describe("the grid opens on what matters", () => {
@@ -251,7 +251,7 @@ test("identical all-day entries of a day are one with a count, and a day with no
   const user = userEvent.setup();
   window_({ wide: true });
   window.localStorage.setItem("cockpit:schedule-view", "week");
-  fakeApi(scheduleRoutes((date) => (date === TODAY ? { all_day: [holiday(1), holiday(2), holiday(3), allDay("Offsite", TODAY, { source: "cal-a" })] } : {}), {}, { "GET watch": () => CALENDARS }));
+  fakeApi(scheduleRoutes((date) => (date === TODAY ? { all_day: [holiday(1), holiday(2), holiday(3), allDay("Offsite", TODAY, { source: "cal-a" })], timed: [venue] } : {}), {}, { "GET watch": () => CALENDARS }));
   renderApp(<Schedule />);
   const strip = await screen.findByRole("list", { name: /^All day, Today/ });
   const buttons = within(strip).getAllByRole("button");

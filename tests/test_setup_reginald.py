@@ -45,7 +45,7 @@ def api(tmp_path):
     held.setdefault("budgets", {})["first_go"] = True
     path.write_text(yaml.safe_dump(held))
     cfg = ws.config(env={}, flags={"server.base_path": "/", "storage.backups.automatic": False})
-    _price(cfg, 10.0)
+    _price(cfg, 2.0)
     app = create_app(ws, cfg, TOKEN, ui_dist=tmp_path / "no-ui")
     with TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"}) as client:
         yield client, app.state.worker

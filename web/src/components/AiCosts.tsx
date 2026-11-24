@@ -9,7 +9,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { api, ApiError, type S } from "../lib/api";
 import { useAccountActs } from "../lib/ai-account-acts";
 import { useAccountNames } from "../lib/account-names";
-import { monthDay, wallWhen } from "../lib/dates";
+import { monthDay, todayOn, wallWhen } from "../lib/dates";
 import { useMoney, usePrice } from "../lib/money";
 import { problemText } from "../lib/problem";
 import { useWords } from "../lib/wording";
@@ -26,7 +26,7 @@ export const DAYS_SHOWN = 7;
 /** The hours a read can be asked every, besides off. */
 export const HOUR_CHOICES = [1, 2, 4, 6, 12, 24];
 
-const todayUtc = () => new Date().toISOString().slice(0, 10);
+const todayUtc = () => todayOn(new Date());
 
 /** The side-by-side of one account: each UTC day with what the service charged and what the app worked out. */
 export function CostsTable(props: { entry: Entry }) {

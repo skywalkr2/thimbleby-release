@@ -512,7 +512,11 @@ def test_p135_a_retry_whose_result_says_why_it_left_an_op_out_raises_nothing(env
     asked, cs_id = run(
         env_pipeline,
         {"ops": [GOOD, BAD, JACKET]},
-        {"summary": why, "omitted": [{"op": "fact", "reason": why}], "ops": [FIXED, JACKET]},
+        {
+            "summary": "Left out the proof date: the first answer's quote for it was not in the input.",
+            "omitted": [{"op": "fact", "reason": why}],
+            "ops": [FIXED, JACKET],
+        },
         {"ops": [GOOD, FIXED, JACKET]},
     )
     assert DROPPED.split("{")[0] not in asked[-1].request, "the explained omission was sent back as a problem"

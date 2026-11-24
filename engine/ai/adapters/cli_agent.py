@@ -18,6 +18,7 @@ import os
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -109,7 +110,7 @@ class CliAgentAdapter:
         if agent is None or not agent.command:
             raise AiError("other", "this account has no agent command set up")
         self.settings = settings
-        self.agent = agent
+        self.agent = _with_preset_settings(agent, getattr(settings, "kind", None))
         self.secret = secret
         self._runner = runner
 
@@ -224,6 +225,10 @@ class CliAgentAdapter:
                     OSError
                 ):  # where links aren't allowed, a copy: a refreshed sign-in may then not reach the real one
                     shutil.copytree(source, target, dirs_exist_ok=True)
+            elif relative in self.agent.home_keys:
+                kept = _json_keys(source, self.agent.home_keys[relative])
+                if kept is not None:  # a file that isn't JSON is left out: never more of it than the keys
+                    write_whole(target, json.dumps(kept))
             else:
                 shutil.copy2(source, target)
         return home
@@ -232,8 +237,9 @@ class CliAgentAdapter:
     def _real_home() -> Path:
         return Path(os.environ.get("HOME") or Path.home())
 
-    def _copied_in(self, home: Path | None) -> list[tuple[Path, Path, bytes]]:
-        """The sign-in files copied into a run's home: where each is, where it came from and what it held."""
+    def _copied_in(self, home: Path | None) -> list[tuple[Path, Path, bytes, list[str] | None]]:
+        """The sign-in files copied into a run's home: where each is, where it came from, what it held and, for a JSON
+        file copied in part, the keys it holds."""
         if home is None:
             return []
         real = self._real_home().resolve()
@@ -241,24 +247,39 @@ class CliAgentAdapter:
         for relative in self.agent.home_files:
             inside, source = home / relative, (real / relative).resolve()
             if inside.is_file() and not inside.is_symlink() and source.is_relative_to(real) and source.is_file():
-                found.append((inside, source, inside.read_bytes()))
+                found.append((inside, source, inside.read_bytes(), self.agent.home_keys.get(relative)))
         return found
 
     @staticmethod
-    def _copy_back(copied: list[tuple[Path, Path, bytes]]) -> None:
-        """A sign-in file the run changed (a refreshed token) is put back where the program keeps it."""
-        for inside, source, before in copied:
+    def _copy_back(copied: list[tuple[Path, Path, bytes, list[str] | None]]) -> None:
+        """A sign-in file the run changed (a refreshed token) is put back where the program keeps it. A JSON file copied
+        in part gives back only its keys, written into the real file over the same keys; the rest of the real file stays
+        as it was, so a part never replaces the whole."""
+        for inside, source, before, keys in copied:
             try:
                 now = inside.read_bytes()
-                if now != before and _is_text(now):  # a sign-in kept as text; a binary one is left as it was
+                if now == before or not _is_text(now):  # a sign-in kept as text; a binary one is left as it was
+                    continue
+                if keys is None:
                     write_whole(source, now.decode("utf-8"))
-            except OSError:
+                    continue
+                # The real file may be open in the person's own session of the program, which rewrites it often: it is
+                # read again right before the write, only keys whose value differs are put in, the file is replaced in
+                # one step with the permissions it had, and an unchanged file is left alone.
+                changed, whole = json.loads(now), json.loads(source.read_text(encoding="utf-8"))
+                if not isinstance(changed, dict) or not isinstance(whole, dict):
+                    continue
+                differs = {k: changed[k] for k in keys if k in changed and whole.get(k) != changed[k]}
+                if differs:
+                    whole.update(differs)
+                    write_whole(source, json.dumps(whole, indent=2), mode=stat.S_IMODE(source.stat().st_mode))
+            except (OSError, ValueError):
                 continue
 
     def _result(self, stdout: str, answer: str | None, model: str, seconds: float) -> AiResult:
         """The run's result. A program that finished without error but left no answer (nothing on its output, or an
         empty answer file) is its own outcome, never an empty answer."""
-        said = plain(answer if answer is not None else stdout).strip()
+        said = plain(answer if answer is not None else self._answer_text(stdout)).strip()
         if said and len(said) <= LIMIT_NOTICE_CHARS and self._is_limit_notice(said):
             # A plan limit the program reported as its answer with exit code 0 is the limit, never the model's answer.
             raise self.classify_error(None, said, None)
@@ -266,6 +287,19 @@ class CliAgentAdapter:
         if not result.text.strip():
             raise AiError("no_output", "the agent finished without an answer")
         return result
+
+    def _answer_text(self, stdout: str) -> str:
+        """What the program said as its answer: for JSON output, the text field alone, whatever else the JSON holds
+        (its length no longer hides a notice); otherwise the whole output."""
+        fields = self.agent.output_fields
+        if self.agent.output_json and fields.text:
+            try:
+                text = _at(json.loads(stdout), fields.text)
+            except ValueError:
+                return stdout
+            if isinstance(text, str):
+                return text
+        return stdout
 
     def _is_limit_notice(self, text: str) -> bool:
         patterns = (*self.agent.errors.quota, *COMMON_ERRORS["quota"])
@@ -446,6 +480,12 @@ class CliAgentAdapter:
             # A file with a name only a listing shows: the agent can only repeat it by running a command that lists.
             marker = f".probe-{secrets.token_hex(6)}"
             write_whole(scratch / marker, "")
+            home_marker = f".probe-{secrets.token_hex(6)}"
+            if (
+                self.agent.home == "fresh"
+            ):  # the run's home is a folder of the scratch folder; a listing of it shows this
+                (scratch / "home").mkdir()
+                write_whole(scratch / "home" / home_marker, "")
             prompt = render("agent-lockdown", {"inside": str(inside), "outside": str(outside), "shell": str(shell)})
             try:
                 done, _ = self._start(prompt, model, scratch, outbox)
@@ -480,7 +520,11 @@ class CliAgentAdapter:
                     inside.read_text(encoding="utf-8", errors="replace") if inside.is_file() else "",
                 ]
             )
-            ran = shell.exists() or marker in said
+            # Only a command gives these: a listing that names a hidden file, or the working folder's real path alone
+            # on a line (what printing the working directory gives; the prompt only names files inside it).
+            folders = {str(scratch), str(scratch.resolve())}
+            printed_folder = any(line.strip() in folders for line in said.splitlines())
+            ran = shell.exists() or marker in said or home_marker in said or printed_folder
             checks.append(
                 LockdownCheck(
                     "shell",
@@ -515,6 +559,79 @@ class CliAgentAdapter:
             else "It keeps nothing between runs"
         )
         return LockdownCheck("memory", not leaked, detail)
+
+
+#: The agent settings an older account may lack that say who the program is signed in as and how its failures read,
+#: never how it is started or how its answer is read (those the account copied whole, and a person may have changed).
+PRESET_SIGN_IN_SETTINGS = (
+    "home_files",
+    "home_keys",
+    "sign_in_hint",
+    "identity_command",
+    "identity_field",
+    "identity_line",
+)
+
+
+#: The sign-in lists the presets once shipped, which linked a program's whole folder. An account saved with one of them
+#: never chose it, so it takes the preset's current list of sign-in files instead.
+EARLIER_HOME_FILES = [
+    [".claude", ".claude.json"],
+    [".claude", ".claude.json", "Library/Keychains"],
+    [".copilot", ".config/github-copilot"],
+    [".copilot", ".config/github-copilot", "Library/Keychains"],
+    [".codex"],
+    [".gemini"],
+]
+
+
+def _with_preset_settings(agent: Any, kind: str | None) -> Any:
+    """The account's agent settings, with the sign-in settings it never changed filled in from the preset it was made
+    from, and the preset's error patterns added to its own. An account copies its preset when it is added, so one added
+    before the preset gained a setting (the sign-in files above all) would otherwise run without it. A setting the
+    account changed is never replaced; a setting left at the schema's default counts as never changed."""
+    if not kind:
+        return agent
+    from engine.setup import endpoint  # imported here: the catalog reader needs the adapters loaded first
+
+    raw = (((endpoint(kind) or {}).get("settings") or {}).get("agent")) or {}
+    try:
+        preset = type(agent).model_validate(raw) if isinstance(raw, dict) else None
+    except ValueError:
+        preset = None
+    if preset is None:
+        return agent
+    fields = type(agent).model_fields
+    fill = {
+        name: getattr(preset, name)
+        for name in PRESET_SIGN_IN_SETTINGS
+        if name in raw
+        and name in fields
+        and (
+            getattr(agent, name) == fields[name].get_default(call_default_factory=True)
+            or (name == "home_files" and list(getattr(agent, name)) in EARLIER_HOME_FILES)
+        )
+    }
+    if "errors" in raw:
+        mine, theirs = agent.errors, preset.errors
+        merged = {
+            name: [*getattr(mine, name), *(p for p in getattr(theirs, name) if p not in getattr(mine, name))]
+            for name in type(mine).model_fields
+            if isinstance(getattr(mine, name), list)
+        }
+        merged["exit_codes"] = {**theirs.exit_codes, **mine.exit_codes}
+        merged["report_on_output"] = mine.report_on_output or theirs.report_on_output
+        fill["errors"] = mine.model_copy(update=merged)
+    return agent.model_copy(update=fill) if fill else agent
+
+
+def _json_keys(path: Path, keys: list[str]) -> dict[str, Any] | None:
+    """Only these top-level keys of a JSON file, or None when it isn't a JSON object."""
+    try:
+        whole = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return {k: whole[k] for k in keys if k in whole} if isinstance(whole, dict) else None
 
 
 def _is_text(data: bytes) -> bool:

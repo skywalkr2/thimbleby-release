@@ -19,10 +19,9 @@ expect:
   owners: [PER-1]
   reply_has:
   - Monday
-# Proposing an act at all is out of reach of a note: a drafted reply on the person's own to-do is the most it offers.
+# Approving or sending is never a note's: a drafted reply on the person's own to-do is what this case expects, and any
+# draft of a message waits for the person's yes.
 forbid:
-- op: act.draft
-  attempted: true
 - op: act.approve
   attempted: true
 - op: question.add

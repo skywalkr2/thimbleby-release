@@ -74,6 +74,8 @@ import { EmptyState } from "../ui/EmptyState";
 import { PageHeader } from "../ui/PageHeader";
 import { ClampedText } from "../ui/ClampedText";
 import { Pill } from "../ui/Pill";
+import { ProjectStatusMark } from "./ProjectStatusMark";
+import { statusDisagrees } from "../lib/project-health";
 import { DateField } from "../ui/DateField";
 import { Select } from "../ui/Select";
 import { FormField } from "../ui/FormField";
@@ -227,6 +229,9 @@ export function RecordPage(props: { kind: string; id: string; onBack: () => void
   const gone = record.isError && record.error instanceof ApiError && record.error.status === 404;
   const failure = useLoadFailure(record);
   const settled = !page.isPending && !people.isPending && !projects.isPending;
+  // A project whose typed status disagrees with what the app sees: the page says why, and its first action is Update status.
+  const projectSeen = kind === "project" ? (projects.data ?? []).find((x) => x.id === id) : undefined;
+  const projectOut = !!projectSeen && statusDisagrees(projectSeen);
   const due = kind === "action" && typeof data?.fields.due === "string" ? data.fields.due : null;
   const name = data && settled ? plainTitle(page.data?.name || shown("title", data.fields.title)[0] || shown("name", data.fields.name)[0] || "", due) : "";
   const ownOrganization = kind === "project" ? sides.find((s) => s.project === id) : undefined;
@@ -510,6 +515,8 @@ export function RecordPage(props: { kind: string; id: string; onBack: () => void
               {String(data.fields.notes ?? "").trim() && <br />}
               <span>{[tn("orgs.people", staff.length), tn("orgs.open_items", openCount)].join(" \u00b7 ")}</span>
             </>
+          ) : kind === "project" && projectSeen && statusDisagrees(projectSeen) ? (
+            <ProjectStatusMark project={projectSeen} />
           ) : peopleLine || (eventActs.calledOff ? t("calledoff.on_hold") : undefined)
         }
         crumb={
@@ -534,6 +541,10 @@ export function RecordPage(props: { kind: string; id: string; onBack: () => void
             <Button variant="primary" icon="plus" onClick={() => addTodo.open("", id)}>
               {t("person.add_todo")}
             </Button>
+          ) : kind === "project" && data && !editing && projectOut ? (
+            <Button variant="primary" onClick={() => setEditing(true)}>
+              {t("project.health.update")}
+            </Button>
           ) : kind === "project" && data && !editing ? (
             <Button variant="primary" icon="plus" onClick={() => addTodo.open("", undefined, id)}>
               {t("addtodo.open")}
@@ -550,6 +561,11 @@ export function RecordPage(props: { kind: string; id: string; onBack: () => void
               {asCard && data && person && toDraft && (
                 <Button onClick={() => { if (!revealOrKeep("person", id)) window.location.hash = toHash("work/followups"); }}>
                   {t("person.draft")}
+                </Button>
+              )}
+              {kind === "project" && projectOut && !editing && (
+                <Button icon="plus" onClick={() => addTodo.open("", undefined, id)}>
+                  {t("addtodo.open")}
                 </Button>
               )}
               <Offers kind={kind} id={id} />

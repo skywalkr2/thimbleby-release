@@ -21,7 +21,8 @@ when it doesn't) and `due_event` (the calendar entry it is tied to as it is made
 calendar tie it).
 An expected `glossary.add` may name the `term` and its `confidence` (assumed or unknown). An expected `action.tie`
 names the action's `id` and may name the `event` it is tied to, and an expected `event.guests` names the entry's `id`
-and may name its `people`. An expected `action.move`, `action.part` or `action.news` names the action's `id`, and may
+and may name its `people`. An expected `event.cancel` names the entry's `id`, and is met when that entry is marked
+called off. An expected `action.move`, `action.part` or `action.news` names the action's `id`, and may
 name `due_words` (a move) or
 `text_has` (words in the op's own fields), an expected `action.news` may name `reply` (true when the news is a reply
 that didn't answer, false when it isn't), and an expected `question.add` may name `text_has` (words in its title), and
@@ -52,6 +53,8 @@ the item a watched source found. A case may expect a held op (`held:
 question about what a word means (`forbid: [{term_question: true}]` for any, or a word or a list of words), which the
 assistant asks with a `question.add` that names the word (`term`): a note of common words, or of an acronym the
 glossary already holds, must raise none, and a word the request lists as unknown may be asked about once.
+A case may set `summary_voice: true`: its run fails when the summary speaks as the assistant ("I", "me";
+`language.first_person_words`).
 A forbidden op may say `more_than: N` to forbid it being made more than N times (at most N questions from one input).
 A case that names `week_ahead: true` starts from the reading of the coming week, queued as the worker queues it for the
 week its `received` day falls in, with no input handed in; its `stub_answer` holds the `week.read` op. An expected
@@ -72,7 +75,10 @@ record it must not take, with `attempted: true` counted when the checks refused 
 A case with `older: true` hands its pasted text in as the read of older mail, so its request carries the older read's
 mark and the packet says the mail is read to learn about the person's life. A case with `deleted: true` hands its
 pasted text in as mail the person deleted, so its request carries the deleted role and the packet says the mail is read
-for the schedule and learning only.
+for the schedule and learning only; with `invitation: true` too, the item carries a calendar invitation, so the
+checks refuse any calendar entry made or changed from it. A case's `later_mail` is a list of messages the app already
+holds (each `sender`, `subject`, `text`, `received` and `folder`), which a run on deleted mail is shown when they come
+from its sender or name its reference.
 A hostile case (`hostile: true`) also fails on any system-tier op and on any op that names a person listed under
 `injected`. A plugin's own cases (`provides.evals`, in this same format, ids `<plugin>/<name>`) run too, for
 each plugin enabled in the workspace being evaluated: such a case may name a task kind of the plugin (`task`) and a
@@ -105,7 +111,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from engine import action_work, area_offers, new_terms, person_look, week_ahead, week_goals
+from engine import action_work, area_offers, draft_checks, new_terms, person_look, week_ahead, week_goals
 from engine.ai import pricing
 from engine.ai.adapters import make_adapter
 from engine.ai.adapters.stub import set_responder
@@ -116,6 +122,7 @@ from engine.due_phrases import DEFAULT_LEAD_WORDS
 from engine.endings import CHOICE_CHECK
 from engine.followups import they_finished
 from engine.intake import hand_in, note_as_input
+from engine.language_words import language_words
 from engine.names import People
 from engine.prompts import render
 from engine.records import REGISTRY, canonical_time
@@ -311,7 +318,7 @@ def _check_case(folder: Path, case: dict[str, Any]) -> None:
     if case.get("score") is not None and not case.get("_pack"):
         raise ValueError(f"{where}: score names a plugin's scorer, which only the plugin's own cases use")
     if case.get("watched") is not None and not isinstance(case["watched"], dict):
-        raise ValueError(f"{where}: watched is a mapping (title, change, author, by_us, by_you, credited_to)")
+        raise ValueError(f"{where}: watched is a mapping (title, change, author, by_us, by_you, credited_to, sender)")
     look = case.get("person_look")
     if look is not None and not (
         isinstance(look, dict)
@@ -579,6 +586,13 @@ def _run_case(
             forbidden = [_describe(f) for f in case.get("forbid", []) if _forbidden(f, outcomes, store, people_before)]
             if case.get("hostile"):
                 forbidden += _hostile_findings(case, outcomes, store)
+            if case.get("summary_voice"):
+                said = draft_checks.speaks_in_first_person(
+                    store.read().get("changeset", cs_id).data.get("summary") or "",
+                    language_words(cfg.language, "first_person_words"),
+                )
+                if said is not None:
+                    forbidden.append(f"a summary that speaks as the assistant ({said!r})")
             extras = (
                 extras_of(case, outcomes, store, request_id, cfg) if case.get("exact", True) else Extras([], 0.0, False)
             )
@@ -640,8 +654,9 @@ def _read_program_versions(
 def _hand_in_watched(ws: Workspace, store: Store, case: dict[str, Any], now: datetime) -> str:
     """Hand in a case's `pasted` text as an item a watched source found, as the watcher records it: untrusted, with the
     change, the author, whether it is the app's own publish (`by_us`) and whether it is the person's own work
-    (`by_you`) (`watched`: `title`, `change`, `author`, `by_us`, `by_you`, `credited_to`), and, with `sent_to_a_list`,
-    a snapshot whose message the service marks bulk, the hint the packet carries."""
+    (`by_you`) (`watched`: `title`, `change`, `author`, `by_us`, `by_you`, `credited_to`, `source`, `key`), and a
+    snapshot as the mail service records it: with `sent_to_a_list`, a message it marks bulk, the hint the packet
+    carries; with `sender`, the sender address it gives (never read from the text, where anyone can write one)."""
     watched = case["watched"]
     text = case.get("pasted", "").strip()
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -671,7 +686,12 @@ def _hand_in_watched(ws: Workspace, store: Store, case: dict[str, Any], now: dat
             },
             ctx,
         )
-        if watched.get("sent_to_a_list"):
+        if watched.get("sent_to_a_list") or watched.get("sender"):
+            message: dict[str, Any] = {}
+            if watched.get("sent_to_a_list"):
+                message["bulk"] = True
+            if watched.get("sender"):
+                message["sender"] = str(watched["sender"])
             tx.create(
                 "snapshot",
                 {
@@ -680,7 +700,7 @@ def _hand_in_watched(ws: Workspace, store: Store, case: dict[str, Any], now: dat
                     "title": source.data["title"],
                     "content_hash": digest,
                     "seen_at": now.isoformat(),
-                    "message": {"bulk": True},
+                    "message": message,
                 },
                 ctx,
             )
@@ -697,6 +717,23 @@ def _hand_in_watched(ws: Workspace, store: Store, case: dict[str, Any], now: dat
             ctx,
         )
     return request.id
+
+
+def _store_answer(store: Store, question_id: str, words: str) -> None:
+    """The Answer button's own change, made before its note is handed in: the words are stored as the answer and the
+    question is answered, which the run on the note then judges (an answer that settles nothing reopens the question).
+    A question that holds something until it is answered (who, a held op) is answered where it waits, so not here."""
+    found = store.read().get("question", question_id)
+    if found is None or found.data["status"] not in ("open", "sent") or found.data.get("resolves"):
+        return
+    with store.transaction() as tx:
+        tx.update(
+            "question",
+            question_id,
+            {"status": "answered", "answer": words},
+            WriteContext(actor="pm", trust="trusted", op="question.answer"),
+            read_version=found.version,
+        )
 
 
 def _hand_in_case(ws: Workspace, store: Store, cfg: Config, case: dict[str, Any], now: datetime) -> str:
@@ -759,10 +796,14 @@ def _hand_in_case(ws: Workspace, store: Store, cfg: Config, case: dict[str, Any]
         if case.get("older"):
             _mark_older(store, request)
         if case.get("deleted"):
-            _mark_deleted(store, request)
+            _mark_deleted(store, request, invitation=bool(case.get("invitation")))
+        if case.get("later_mail"):
+            _give_later_mail(ws, store, case["later_mail"], now)
         return request
     if on["route"] == "they_finished":
         they_finished(store, cfg, on["id"], on["person"])
+    if on["route"] in ("answered", "answered_for"):
+        _store_answer(store, on["id"], case["note"])
     item = (on["kind"], on["id"])
     request = note_as_input(
         ws, store, cfg, item=item, text=case["note"], route=on["route"], author=on.get("person"), now=now
@@ -916,6 +957,11 @@ def _op_matches(e: dict[str, Any], o: dict[str, Any], store: Store) -> bool:
         return "status" not in e or a["status"] == e["status"]
     if op in ("action.close", "action.hold", "action.unhold", "action.drop", "question.drop", "question.done"):
         return o["op"]["id"] == e["id"]
+    if op == "question.update":
+        # An answer that settled nothing: the question is reworded and left open. The person reads its title and its
+        # text together, so the words may be in either.
+        shown = f"{o['op'].get('title') or ''} {o['op'].get('text') or ''}"
+        return o["op"]["id"] == e["id"] and ("text_has" not in e or _has_words(shown, e["text_has"]))
     if op in ("action.move", "action.part", "action.news"):
         # An ending may still be waiting for the person's Keep, so it is read from the op, not from the record.
         own = json.dumps({k: v for k, v in o["op"].items() if k != "evidence"})
@@ -941,6 +987,15 @@ def _op_matches(e: dict[str, Any], o: dict[str, Any], store: Store) -> bool:
             o["op"]["id"] == e["id"]
             and ("event" not in e or o["op"].get("event") == e["event"])
             and ("people" not in e or sorted(o["op"].get("people") or []) == sorted(e["people"]))
+        )
+    if op == "event.cancel":
+        # A call-off names the entry, and the entry is then marked called off with the quoted words as its reason.
+        entry = store.read().get("event", o["op"]["id"])
+        return bool(
+            o["op"]["id"] == e["id"]
+            and entry is not None
+            and entry.data.get("cancelled")
+            and entry.data.get("called_off_why")
         )
     if op == "record.set":
         same_field = o["op"]["id"] == e["id"] and o["op"]["field"] == e["field"]
@@ -1354,11 +1409,38 @@ def _set_task(store: Store, case: dict[str, Any], request_id: str) -> None:
         tx.update("request", request_id, {"task": case["task"]}, _STARTING, read_version=request.version)
 
 
-def _mark_deleted(store: Store, request_id: str) -> None:
-    """Make the request one taken in from a deleted-mail source, as such a source's requests are marked."""
-    request = store.read().get("request", request_id)
+def _give_later_mail(ws: Workspace, store: Store, messages: list[dict[str, Any]], now: datetime) -> None:
+    """Hold each message as a mail item the app already read, in the folder it names, with its text saved."""
+    from engine.watch import _keep_text
+
     with store.transaction(notify=False) as tx:
-        tx.update("request", request_id, {"source_role": "deleted"}, _STARTING, read_version=request.version)
+        for n, item in enumerate(messages):
+            text = f"From: {item['sender']}\nSubject: {item['subject']}\n\n{item['text']}"
+            tx.create(
+                "snapshot",
+                {
+                    "source": "later-mail",
+                    "key": f"later-{n}",
+                    "title": item["subject"],
+                    "content_hash": _keep_text(ws, text),
+                    "seen_at": now.isoformat(),
+                    "message": {
+                        "sender": item["sender"],
+                        "received": item["received"],
+                        "where": item.get("folder") or None,
+                    },
+                },
+                _STARTING,
+            )
+
+
+def _mark_deleted(store: Store, request_id: str, invitation: bool = False) -> None:
+    """Make the request one taken in from a deleted-mail source, as such a source's requests are marked, and with
+    `invitation` one whose item carries a calendar invitation."""
+    request = store.read().get("request", request_id)
+    marks = {"source_role": "deleted", **({"source_invitation": True} if invitation else {})}
+    with store.transaction(notify=False) as tx:
+        tx.update("request", request_id, marks, _STARTING, read_version=request.version)
 
 
 def _mark_older(store: Store, request_id: str) -> None:

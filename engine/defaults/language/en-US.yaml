@@ -67,6 +67,8 @@ rule_report_phrases: [from now on, going forward, from here on, in future, shoul
 # Words that show a project's summary holds findings instead of its status.
 findings_words: [found, finding, findings, discovered, discrepancy, discrepancies, inconsistency, inconsistencies,
   mismatch, turns out]
+# Words with which a run's summary speaks as the assistant instead of in plain past tense with the person as "you".
+first_person_words: [I, I'm, I've, I'll, I'd, me, my, myself, mine]
 # Phrases that say a change made a draft, a write-up or a file.
 made_phrases: [drafted, wrote up, write-up, writeup, created a draft, made a draft, prepared a draft, saved a draft,
   created a file, made a file, saved a file, generated a file, created a document, made a document, saved a document,

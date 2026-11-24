@@ -8,6 +8,7 @@ from __future__ import annotations
 from engine.applier import Context, Inputs, check
 from engine.names import People
 from engine.ops import CHANGESET
+from engine.storage import WriteContext
 from tests import test_scope_slice
 from tests.test_scope_slice import PLAIN, outsider, pm_of, pm_record, problems, question
 
@@ -154,7 +155,13 @@ def drafted(env, op):
     """The singling-out problems of an act drafted by the assistant on the person's own request."""
     _, cfg, store = env
     cs = CHANGESET.validate_python({"ops": [op]}, context={"op_models": store.plugins.ops})
-    ctx = Context(store, cfg, People(store, cfg), tuple(store.plugins.ops), Inputs("REQ-1", None, "", "", "trusted"))
+    with store.transaction() as tx:  # a message is drafted only from the person's own words (S-0731)
+        own = tx.create(
+            "request",
+            {"task": "notes", "origin": "pm", "state": "queued", "created_at": "2030-01-01T00:00:00+00:00"},
+            WriteContext("pm", "trusted", "ui"),
+        ).id
+    ctx = Context(store, cfg, People(store, cfg), tuple(store.plugins.ops), Inputs(own, None, "", "", "trusted"))
     return [p for p in check(cs, ctx) if p.check == "singling-out"]
 
 

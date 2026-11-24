@@ -122,6 +122,17 @@ def test_a_promise_they_made_is_still_listed_as_theirs(sided):
     ]
 
 
+def test_the_people_list_says_what_waits_on_each_person_and_nothing_for_the_rest(sided):
+    """A promise someone made is waited on (they know it, so it is never to send); the route carries the count for
+    the people table's Waiting on them column, and none for a person nothing waits on."""
+    client, _store, _cfg, seeded = sided
+    people = {p["name"]: p for p in client.get("/api/people").json()}
+    owes = people[seeded["owed_by"]["personal"]]
+    assert owes["waiting_on_them"] == 1 and owes["waiting_days"] is None
+    idle = [p for p in people.values() if p["id"] != owes["id"] and p["waiting_on_them"] == 0]
+    assert idle and all(p["waiting_days"] is None for p in idle)
+
+
 def test_what_the_person_promised_someone_is_open_with_them_on_their_page(sided):
     """The page lists everything open between the two of them, both ways: what they own, and what the person promised
     them (which the person owns), so none of it needs a second list."""

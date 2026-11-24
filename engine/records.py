@@ -1905,6 +1905,11 @@ class Request(Record):
         description="For a request taken in from a source with a role: deleted means the mail was deleted by the "
         "person and is read for the schedule and for learning only, so it makes no to-do.",
     )
+    source_invitation: bool = Field(
+        False,
+        description="For a request taken in from a deleted-mail source: the item carries a calendar invitation (a "
+        "request, a cancellation or an answer), by its own calendar data. It makes and changes no calendar entry.",
+    )
     intake_seen: bool = Field(
         False,
         description="For a request taken in from a new source: the person opened the list of what was found (or "
@@ -2368,6 +2373,11 @@ class CalendarEntry(Record):
         description="With `repeat`: the dates that are moved or called off, each by the time the rule had it.",
     )
     cancelled: bool = Field(False, description="The calendar says it was called off, or the series skips this date.")
+    called_off_why: str | None = Field(
+        None,
+        description="For an entry the assistant called off because a later mail cancelled it (`event.cancel`): the "
+        "exact words of that mail. The schedule shows them as the reason.",
+    )
     dropped: str | None = Field(
         None,
         description="Why a called-off entry was dropped, in the person's words. A called-off entry that is not dropped "

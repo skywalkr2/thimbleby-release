@@ -2,14 +2,17 @@
 outbox, its errors read from its exit code and error stream only, and a lockdown test in the smoke test."""
 
 import json
+import os
+import stat
 import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from engine.ai.adapters import make_adapter
-from engine.ai.adapters.cli_agent import CliAgentAdapter
+from engine.ai.adapters.cli_agent import EARLIER_HOME_FILES, CliAgentAdapter
 from engine.ai.task import AiError, AiTask
 from engine.config.schema import AgentSettings, ProviderSettings
 
@@ -65,6 +68,21 @@ elif mode == "lists":
     # can run a command, but only reads: it writes nothing anywhere except its answer
     open(paths[0], "w").write("ok")
     print(" ".join(sorted(os.listdir(os.getcwd()))))
+elif mode == "pwd":
+    open(paths[0], "w").write("ok")
+    print(os.getcwd())
+elif mode == "lists-home":
+    open(paths[0], "w").write("ok")
+    print(" ".join(sorted(os.listdir(os.environ["HOME"]))))
+elif mode == "tree":
+    found = []
+    for folder, _, names in os.walk(os.environ["HOME"]):
+        found += [os.path.relpath(os.path.join(folder, n), os.environ["HOME"]) for n in names]
+    print(json.dumps(sorted(found)))
+elif mode == "limit-json":
+    print(json.dumps({"result": "You've hit your usage limit. Try again later.", "pad": "x" * 2000, "is_error": True}))
+elif mode == "long-json-answer":
+    print(json.dumps({"result": "Notes on rate limit handling and usage limit reached cases. " * 40}))
 elif mode == "home":
     print(json.dumps(sorted(os.listdir(os.environ["HOME"]))))
 elif mode == "refresh":
@@ -384,3 +402,156 @@ def test_the_version_check_runs_with_the_agents_small_environment(agent_script, 
     show = [sys.executable, "-c", "import os; print(','.join(sorted(os.environ)))"]
     seen = CliAgentAdapter(settings(agent_script, "stdout", version_command=show)).program_version()
     assert "PATH" in seen and "COCKPIT_SECRET_THING" not in seen
+
+
+# ---- S-0714, S-0715, S-0721, S-0722 ----------------------------------------------------------------------------------
+
+
+def _presets():
+    from engine.setup import known_endpoints
+
+    return [e for e in known_endpoints() if e["adapter"] == CliAgentAdapter.name and e["settings"].get("agent")]
+
+
+def _preset_account(script, mode, kind, **agent):
+    """An account as an earlier version saved it: the kind it was made from, and only the agent settings that existed
+    then (the program swapped for the stand-in)."""
+    return ProviderSettings(
+        adapter=CliAgentAdapter.name,
+        kind=kind,
+        models={"default": "agent-model"},
+        timeout_seconds=5,
+        agent=AgentSettings(command=[sys.executable, script, mode], **agent),
+    )
+
+
+def test_an_account_saved_before_its_preset_named_sign_in_files_still_finds_its_sign_in(
+    agent_script, tmp_path, monkeypatch
+):
+    """S-0714: an account that never had `home_files` takes them from the preset it was made from, so it runs in a home
+    holding its sign-in and nothing else of the real home."""
+    presets = [e for e in _presets() if any("/" in f for f in e["settings"]["agent"].get("home_files", []))]
+    assert presets
+    for number, preset in enumerate(presets):
+        real = tmp_path / f"real-home-{number}"
+        files = [f for f in preset["settings"]["agent"]["home_files"] if f != "Library/Keychains"]
+        for name in files:
+            (real / name).parent.mkdir(parents=True, exist_ok=True)
+            (real / name).write_text(json.dumps({"signed": "in"}), encoding="utf-8")
+        (real / Path(files[0]).parent / "history.jsonl").write_text("another session", encoding="utf-8")
+        (real / "private").mkdir()
+        (real / "private" / "keys.txt").write_text("secret", encoding="utf-8")
+        monkeypatch.setenv("HOME", str(real))
+        old = _preset_account(agent_script, "tree", preset["id"])
+        assert old.agent.home_files == []  # what the earlier settings held
+        assert json.loads(CliAgentAdapter(old).run(task(), "m").text) == sorted(files), preset["id"]
+        # An account saved with a list a preset once shipped (a whole program folder) takes the current sign-in files.
+        for earlier in [e for e in EARLIER_HOME_FILES if e[0] == Path(files[0]).parts[0]]:
+            saved = _preset_account(agent_script, "tree", preset["id"], home_files=earlier)
+            assert json.loads(CliAgentAdapter(saved).run(task(), "m").text) == sorted(files), (preset["id"], earlier)
+        # An account that changed the setting keeps its own, and one made from no preset gets nothing.
+        own = _preset_account(agent_script, "tree", preset["id"], home_files=[files[0]])
+        assert json.loads(CliAgentAdapter(own).run(task(), "m").text) == [files[0]]
+        none = _preset_account(agent_script, "tree", None)
+        assert json.loads(CliAgentAdapter(none).run(task(), "m").text) == []
+
+
+def test_every_agent_preset_names_sign_in_files_not_whole_program_folders():
+    """S-0721: a linked folder would give the program every session history in it."""
+    for preset in _presets():
+        for name in preset["settings"]["agent"].get("home_files", []):
+            assert name == "Library/Keychains" or "/" in name or name.endswith(".json"), (preset["id"], name)
+            assert not (name.startswith(".") and "/" not in name and not name.endswith(".json")), (preset["id"], name)
+
+
+def test_an_expired_sign_in_is_read_as_a_sign_in_problem_by_the_preset_that_prints_it(agent_script):
+    """S-0715: the exact text a program prints when its sign-in has expired gives the sign-in hint."""
+    mine = [e for e in _presets() if e["settings"]["agent"].get("errors", {}).get("report_on_output")]
+    assert mine
+    for preset in mine:
+        agent = dict(preset["settings"]["agent"])
+        agent["command"] = [sys.executable, agent_script, "stdout"]
+        account = ProviderSettings(adapter=CliAgentAdapter.name, models={"default": "m"}, agent=agent)
+        for said in (
+            "Failed to authenticate: OAuth session expired and could not be refreshed",
+            "failed to authenticate",
+            "Session expired",
+        ):
+            err = CliAgentAdapter(account).classify_error(1, said, None)
+            assert err.kind == "auth" and err.hint == agent["sign_in_hint"], (preset["id"], said)
+
+
+@pytest.mark.parametrize("mode", ["pwd", "lists-home"])
+def test_a_program_that_only_prints_its_folder_or_lists_its_home_fails_the_probe(agent_script, mode):
+    """S-0721: a command that ran and wrote nothing is still a command that ran."""
+    checks = CliAgentAdapter(settings(agent_script, mode, output_via="outbox")).lockdown_test("m")
+    assert {c.name: c.ok for c in checks}["shell"] is False
+
+
+def test_a_limit_notice_inside_long_json_is_the_limit_and_a_long_real_answer_is_not(agent_script):
+    """S-0722: the program's text field is what is read, so the JSON's size neither hides a notice nor makes a long
+    answer that mentions limits one."""
+    fields = {"text": "result"}
+    limited = settings(agent_script, "limit-json", output_json=True, output_fields=fields)
+    with pytest.raises(AiError) as err:
+        CliAgentAdapter(limited).run(task(), "m")
+    assert err.value.kind == "quota"
+    fine = settings(agent_script, "long-json-answer", output_json=True, output_fields=fields)
+    assert "usage limit reached" in CliAgentAdapter(fine).run(task(), "m").text
+
+
+def test_a_json_sign_in_file_reaches_the_run_with_only_its_keys_and_a_refresh_is_merged_back(
+    agent_script, tmp_path, monkeypatch
+):
+    """S-0721: a preset that names keys of a JSON sign-in file copies only those into the run's home (never the rest of
+    the file, such as the person's repository paths), and a refreshed key goes back into the real file, whose other keys
+    stay as they were."""
+    preset = next(e for e in _presets() if e["settings"]["agent"].get("home_keys"))
+    name, keys = next(iter(preset["settings"]["agent"]["home_keys"].items()))
+    real = tmp_path / "real-home"
+    real.mkdir()
+    whole = {key: f"{key}-before" for key in keys} | {"elsewhere": ["a private path"]}
+    (real / name).write_text(json.dumps(whole), encoding="utf-8")
+    monkeypatch.setenv("HOME", str(real))
+    adapter = CliAgentAdapter(_preset_account(agent_script, "tree", preset["id"]))
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    home = adapter._fresh_home(scratch)
+    assert json.loads((home / name).read_text(encoding="utf-8")) == {key: f"{key}-before" for key in keys}
+    copied = adapter._copied_in(home)
+    (home / name).write_text(json.dumps({keys[0]: "refreshed", "added by the run": 1}), encoding="utf-8")
+    adapter._copy_back(copied)
+    after = json.loads((real / name).read_text(encoding="utf-8"))
+    assert after[keys[0]] == "refreshed" and after["elsewhere"] == ["a private path"]
+    assert "added by the run" not in after
+
+
+def test_a_json_sign_in_file_open_elsewhere_keeps_its_own_keys_and_is_untouched_when_nothing_differs(
+    agent_script, tmp_path, monkeypatch
+):
+    """S-0721: the person's own session of the program rewrites the real file while a run is going; the write-back reads
+    it again right before writing, so that session's keys stay; it keeps the file's permissions; and a run that changed
+    nothing of the named keys leaves the file alone."""
+    preset = next(e for e in _presets() if e["settings"]["agent"].get("home_keys"))
+    name, keys = next(iter(preset["settings"]["agent"]["home_keys"].items()))
+    real = tmp_path / "real-home"
+    real.mkdir()
+    (real / name).write_text(json.dumps({key: "before" for key in keys}), encoding="utf-8")
+    os.chmod(real / name, 0o600)
+    monkeypatch.setenv("HOME", str(real))
+    adapter = CliAgentAdapter(_preset_account(agent_script, "tree", preset["id"]))
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    home = adapter._fresh_home(scratch)
+    copied = adapter._copied_in(home)
+    # The person's own session writes the real file while the run goes on.
+    (real / name).write_text(json.dumps({key: "before" for key in keys} | {"theirs": "kept"}), encoding="utf-8")
+    os.chmod(real / name, 0o600)
+    unchanged = (real / name).stat().st_mtime_ns
+    adapter._copy_back(copied)  # the run changed nothing: the file is left alone
+    assert (real / name).stat().st_mtime_ns == unchanged
+    (home / name).write_text(json.dumps({key: "before" for key in keys} | {keys[0]: "refreshed"}), encoding="utf-8")
+    adapter._copy_back(copied)
+    after = json.loads((real / name).read_text(encoding="utf-8"))
+    assert after[keys[0]] == "refreshed" and after["theirs"] == "kept"
+    assert stat.S_IMODE((real / name).stat().st_mode) == 0o600

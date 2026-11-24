@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { S } from "../lib/api";
 import { setSideChoice } from "../lib/sides";
@@ -43,6 +43,9 @@ const project: S["ProjectView"] = {
   spent_usd: 0,
   open_actions: 0,
   open_questions: 0,
+  overdue_actions: 0,
+  status_disagrees: false,
+  target_passed: false,
 };
 
 const action = { name: "demo/make-note", label: "Make a note from this file", on: "file" };
@@ -115,8 +118,26 @@ test("one row per file, with its facts in words and Open as the one primary acti
 test("with no files it says so, and offers adding one", async () => {
   fakeApi({ "GET files": () => [], "GET projects": () => [], "GET plugin-actions": () => [] });
   renderApp(<Files />);
-  expect(await screen.findByText(/^Keep a document, picture or sound file here/)).toBeInTheDocument();
-  expect(screen.getByLabelText("Add a file: choose one or drop it here")).toBeInTheDocument();
+  const card = (await screen.findByText(/^A document, picture or sound file you add appears here/)).closest("[data-empty]") as HTMLElement;
+  // The same empty state as every page: the mark, one sentence, and the one action the header's Add a file is.
+  expect(card.querySelector("[data-brand-mark]")).not.toBeNull();
+  expect(within(card).getByRole("button", { name: "Add a file" })).toBeInTheDocument();
+  expect(screen.queryByText("New piece")).toBeNull();
+});
+
+test("a file dropped on the empty page opens the Add form with it", async () => {
+  fakeApi({
+    "GET files": () => [],
+    "GET projects": () => [],
+    "GET plugin-actions": () => [],
+    "GET file-kinds": () => [{ name: "attachment", label: "Attachment", accept: ["text/plain"], max_mb: 1, details_schema: { type: "object", properties: {} } }],
+  });
+  renderApp(<Files />);
+  const card = (await screen.findByText(/^A document, picture or sound file you add appears here/)).closest("[data-empty-drop]") as HTMLElement;
+  const dropped = new File(["x"], "plan.txt", { type: "text/plain" });
+  fireEvent.drop(card, { dataTransfer: { files: [dropped] } });
+  expect(await screen.findByRole("dialog", { name: /Add a file/ })).toBeInTheDocument();
+  expect(await screen.findByText("plan.txt")).toBeInTheDocument();
 });
 
 test("when the files don't load it says so and Try again asks again", async () => {
@@ -163,21 +184,19 @@ test("a file's actions are in its menu and open the review for that file", async
   await waitFor(() => expect(more).toHaveFocus());
 });
 
-test("actions for the whole workspace are buttons that review with no target", async () => {
-  const user = userEvent.setup();
+test("an add-on's action on the whole workspace is not a button on Files, and one that works on a file is in the file's menu (S-0746)", async () => {
   const calls = fakeApi({
-    "GET files": () => [],
+    "GET files": () => [file("FILE-1", "notes.txt")],
     "GET projects": () => [],
     "GET plugin-actions": () => [workspaceAction],
-    "POST plugin-actions/demo/tidy/preview": () => ({ ...proposal("Tidy up the workspace"), action: workspaceAction.name }),
+    "GET plugin-actions?kind=file&id=FILE-1": () => [action],
   });
   renderApp(<Files />);
-  const button = await screen.findByRole("button", { name: "Tidy up" });
-  await user.click(button);
-  await screen.findByRole("dialog", { name: "Tidy up the workspace" });
-  expect(calls.find((c) => c.route === "POST plugin-actions/demo/tidy/preview")?.body).toEqual({ target: null, choices: {} });
-  await user.click(screen.getByRole("button", { name: "Cancel" }));
-  await waitFor(() => expect(button).toHaveFocus());
+  await screen.findByRole("listitem", { name: "notes.txt" });
+  expect(screen.queryByRole("button", { name: "Tidy up" })).toBeNull();
+  // The page never asks for the workspace's actions at all: its one primary is Add a file.
+  expect(calls.some((c) => c.route === "GET plugin-actions")).toBe(false);
+  expect(screen.getByRole("button", { name: "Add a file" })).toBeInTheDocument();
 });
 
 function editable(extra: Partial<S["FileView"]> = {}) {

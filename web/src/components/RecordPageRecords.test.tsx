@@ -59,7 +59,7 @@ test("a project's page shows what is open with it, what was finished and by whom
     }),
   );
   renderApp(<RecordPage kind="project" id="PRJ-1" onBack={() => {}} />);
-  const open = await screen.findByRole("region", { name: "Open items" });
+  const open = await screen.findByRole("region", { name: "Open to-dos and questions" });
   expect(within(open).getByRole("link", { name: "Send the proof" })).toBeInTheDocument();
   expect(within(open).getAllByText(/Robin Sample/).length).toBeGreaterThan(0);
   expect(within(open).getByRole("link", { name: "Which trim size?" })).toBeInTheDocument();
@@ -158,7 +158,7 @@ test("a meta line joins only the parts it has: no dot beside nothing, no lone do
     }),
   );
   renderApp(<RecordPage kind="project" id="PRJ-1" onBack={() => {}} />);
-  const open = await screen.findByRole("region", { name: "Open items" });
+  const open = await screen.findByRole("region", { name: "Open to-dos and questions" });
   const rows = within(open).getAllByRole("listitem");
   expect(rows).toHaveLength(4);
   expect(rows[0]).toHaveTextContent(`Robin Sample · due ${day("2026-10-20")}`);
@@ -507,7 +507,7 @@ test("a page opens with what is open, then what finished, the facts and the hist
     { "GET records/project/PRJ-1/conversation": () => ({ kind: "project", id: "PRJ-1", turns: [] }) },
   );
   renderApp(<RecordPage kind="project" id="PRJ-1" onBack={() => {}} />);
-  const open = await screen.findByRole("region", { name: "Open items" });
+  const open = await screen.findByRole("region", { name: "Open to-dos and questions" });
   const talk = await screen.findByRole("region", { name: /^Talk to/ });
   const done = await screen.findByRole("region", { name: "Completed" });
   const activity = await screen.findByRole("region", { name: "Activity" });

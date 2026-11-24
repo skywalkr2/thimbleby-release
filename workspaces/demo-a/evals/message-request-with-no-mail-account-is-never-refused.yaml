@@ -1,0 +1,37 @@
+id: message-request-with-no-mail-account-is-never-refused
+title: Asked in the person's own words to draft a message with no mail account connected, the assistant drafts it for Copy and never says it can't
+skills: [use-facts]
+received: '2026-10-14'
+# The workspace has no mail account. The note is the person's own words, so the message is drafted for the person's copy
+# channel and waits for their yes; the summary never says the assistant can't draft messages. (The same words from
+# outside text never draft anything: `tests/test_answers_and_voice.py`.)
+given_file: busy-portfolio.yaml
+note: Draft a short message to Marguerite Osei asking when the server room walkthrough can be rescheduled
+summary_voice: true
+expect:
+- held: act.draft
+  text_has:
+  - Marguerite|PER-8
+  - walkthrough
+  - subject
+forbid:
+- op: report.draft
+- op: action.add
+stub_answer:
+  summary: Drafted a message to Marguerite Osei asking when the walkthrough can be rescheduled; it waits for your yes.
+  ops:
+  - op: act.draft
+    channel: copy
+    target:
+      kind: message
+      action: send
+      recipients:
+      - person: PER-8
+    parts:
+      subject: Rescheduling the server room walkthrough
+      body: |-
+        Hi Marguerite,
+
+        When can we reschedule the server room walkthrough?
+
+        Thanks!

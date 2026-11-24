@@ -107,7 +107,7 @@ test.describe("The side filter changes what the screens show", () => {
     const main = page.locator("main");
     // The backup line is the app's own: on no side, so under every choice. The clash is between two meetings of the business
     // calendar: on the business side alone. The meetings are tomorrow, so the card lists none of them; its footer counts them.
-    await expect(main.getByText("Back up your work")).toBeVisible(LOADED);
+    await expect(main.locator("[data-queue-line='backup']")).toBeVisible(LOADED);
     const { shown, hidden } = bySide({ personal: [], job: [], business: ["overlap"] }, []);
     await expectUnder(page, main, shown, hidden);
     // The Tomorrow footer counts only the chosen side's meetings.
@@ -118,7 +118,7 @@ test.describe("The side filter changes what the screens show", () => {
     }
     for (const choice of ["all", ...SIDES] as const) {
       await choose(page, choice);
-      await expect(main.getByText("Back up your work"), `${choice} shows the backup line`).toBeVisible(LOADED);
+      await expect(main.locator("[data-queue-line='backup']"), `${choice} shows the backup line`).toBeVisible(LOADED);
     }
     // The evening wrap-up lists the promises owed; it is there at some hours only, and where it is, each is under its side.
     await choose(page, "all");

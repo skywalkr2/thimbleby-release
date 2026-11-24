@@ -68,7 +68,7 @@ test("an overdue backup keeps its short warning on the chip and its age in the p
   const user = userEvent.setup();
   show(statusFixture({}, { backup: { configured: true, age_hours: 100, needs_attention: true } }));
   await chipIs("backup");
-  await chipText("Backup needed");
+  await chipText("Backup overdue");
   expect(chipNow()).not.toHaveTextContent("Last backup 4 days ago");
   const dialog = await open(user);
   expect(within(dialog).getByText("Backup overdue · last 4 days ago")).toBeInTheDocument();
@@ -76,14 +76,37 @@ test("an overdue backup keeps its short warning on the chip and its age in the p
 
 test("with no backup yet the chip has no age to show", async () => {
   show(statusFixture({}, { backup: { configured: true, age_hours: null, needs_attention: true } }));
-  await chipText("Backup needed");
+  await chipText("No backup yet");
   expect(chipNow()).not.toHaveTextContent("ago");
 });
 
 test("the worst state wins on the chip: backup needed", async () => {
   show(statusFixture({}, { backup: { configured: true, needs_attention: true, age_hours: null } }));
   await chipIs("backup");
-  await chipText("Backup needed");
+  await chipText("No backup yet");
+});
+
+// S-0736: one word per state, the same in the header chip, the popover and (from the server's state) Today's line.
+test("a failed backup is one word, Backup failed, in the chip and as the popover's name for the state", async () => {
+  const user = userEvent.setup();
+  show(statusFixture({}, { backup: { configured: true, age_hours: 30, needs_attention: true, last_error: "The folder is full" } }));
+  await chipText("Backup failed");
+  const dialog = await open(user);
+  const backup = dialog.querySelector("[data-state='backup']") as HTMLElement;
+  expect(within(backup).getByText("Backup failed")).toBeInTheDocument();
+  expect(backup).not.toHaveTextContent("needs a look");
+  expect(dialog).not.toHaveTextContent("Backup needed");
+});
+
+test("a practice assistant needs a look, so the chip never says All good beside it", async () => {
+  show(statusFixture({}, { ai: { state: "stand_in", detail: null } }));
+  await chipIs("assistant_held");
+  await chipText("needs a look");
+});
+
+test("a practice assistant does not hide a backup state on the chip", async () => {
+  show(statusFixture({}, { ai: { state: "stand_in", detail: null }, backup: { configured: true, age_hours: 100, needs_attention: true } }));
+  await chipIs("backup");
 });
 
 test("offline shows as soon as the connection is lost, and Refresh asks for everything again", async () => {

@@ -1,0 +1,1 @@
+{"summary": "Marked the Harbor Stay reservation HS48213 for Friday, October 16 called off, as the booking was canceled.", "topic": "Harbor Stay reservation canceled", "ops": [{"op": "event.cancel", "id": "EVT-95", "evidence": {"quote": "Your reservation HS48213 for Friday, October 16 has been canceled, as you asked."}}]}

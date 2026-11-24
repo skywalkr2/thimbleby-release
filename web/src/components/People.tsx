@@ -1,10 +1,13 @@
-// People (design 7.13, 7.14): everyone the workspace works with, as a table. A row, Enter on it or its name opens the detail
+// People (design 7.13, 7.14): everyone the workspace works with, as the same table with a detail pane that Projects is: Name,
+// Role (who they are, beside a side of work), Open items, Waiting on them (how long the longest has waited, a warning pill) and
+// Last contact, with the row's menu at the end. A row, Enter on it or its name opens the detail
 // pane beside the table (over it when the priority columns would not fit, a drawer on a narrower window); the name's link is
 // the person's page for a new tab. Adding and editing happen in a drawer, so the table
 // stays in view and the new row appears beside the form. Organizations are kept here too, since a person works for one.
 import { useQuery } from "@tanstack/react-query";
-import { useRef, useState, type MouseEvent } from "react";
+import { useState } from "react";
 import { api, type S } from "../lib/api";
+import { useAgo } from "../lib/ago";
 import { day } from "../lib/dates";
 import { whoTheyAre } from "../lib/people-who";
 import { onSides, useSideFilter, useSides } from "../lib/sides";
@@ -15,11 +18,10 @@ import { EmptyState } from "../ui/EmptyState";
 import { FormField } from "../ui/FormField";
 import { ListDetail } from "../ui/ListDetail";
 import { Pill } from "../ui/Pill";
-import { Row } from "../ui/Row";
-import { RowList } from "../ui/RowList";
+import { RecordsTable, type TableColumn } from "../ui/RecordsTable";
+import { InRowActions } from "../ui/rowContext";
 import { PersonAvatar } from "./PersonAvatar";
 import { filterBarShown } from "../lib/filterbar";
-import { useRowKeys } from "../lib/keys";
 import { useSideSlot } from "../lib/marks";
 import { FilteredEmpty } from "../ui/FilteredEmpty";
 import { ListState } from "../ui/ListState";
@@ -74,10 +76,28 @@ export function People() {
   );
   const reach = (p: S["PersonView"]) => Object.entries(heldReach(p.how_to_reach)).flatMap(([kind, values]) => values.map((value) => `${kind}: ${value}`));
   const slotOf = useSideSlot();
-  // A person is one row: their initials, their name, and one line that says what there is to say (open items, who they are, how to
-  // reach them); a person with nothing to say has the name alone.
-  const metaOf = (p: S["PersonView"]) =>
-    [p.open_items > 0 ? tn("people.open_with", p.open_items) : "", who(p), Object.values(heldReach(p.how_to_reach)).flat()[0] ?? ""].filter(Boolean).join(" \u00b7 ");
+  const ago = useAgo();
+  // The columns of the table at a glance: who they are, what is open with them, who has kept the person waiting and when they last spoke.
+  // A column no one has anything in is not drawn.
+  const columns: TableColumn<S["PersonView"]>[] = [
+    { id: "role", header: justMe ? t("people.col.who") : t("people.col.role"), rank: 1, core: true, cell: (p) => who(p) },
+    { id: "open", header: t("people.col.open"), rank: 1, core: true, numeric: true, cell: (p) => (p.open_items > 0 ? p.open_items : "") },
+    {
+      id: "waiting",
+      header: t("people.col.waiting"),
+      rank: 1,
+      core: true,
+      cell: (p) =>
+        p.waiting_on_them > 0 ? (
+          <Pill tone="warn" title={tn("people.waiting_on", p.waiting_on_them)}>
+            {p.waiting_days != null ? tn("people.waiting_days", p.waiting_days) : tn("people.waiting_on", p.waiting_on_them)}
+          </Pill>
+        ) : (
+          ""
+        ),
+    },
+    { id: "last", header: t("people.col.last"), rank: 2, cell: (p) => (p.last_contact ? ago(p.last_contact) : "") },
+  ];
   const orgFilterShown = !justMe && (orgs.data ?? []).length > 1 && filterBarShown(all.length, org !== ALL);
   const filter = orgFilterShown ? (
     <FormField id="people-org" label={t("people.filter_org")} labelHidden className={styles.orgFilter} data-size="content">
@@ -121,7 +141,7 @@ export function People() {
         fit={PEOPLE_FIT}
         detail={selected ? <PersonDetail person={selected} justMe={justMe} tags={tags(selected)} reach={reach(selected)} onEdit={() => setEditing(selected)} /> : null}
       >
-        <ListState query={people} failed={t("people.load_failed")} rows={4} row={{ action: "menu", framed: true }}>
+        <ListState query={people} failed={t("people.load_failed")} rows={4} shape="table">
           {() =>
             all.length === 0 ? (
               side.choice !== "all" ? (
@@ -134,20 +154,33 @@ export function People() {
                 {rows.length === 0 ? (
                   <FilteredEmpty text={t("people.none_here")} onClear={() => setOrg(ALL)} />
                 ) : (
-                  <RowList aria-label={t("setup.people")}>
-                    {rows.map((p) => (
-                      <PersonRow
-                        key={p.id}
-                        person={p}
-                        selected={chosen === p.id}
-                        slot={slotOf((p.sides ?? [])[0])}
-                        meta={metaOf(p)}
-                        tags={tags(p)}
-                        onSelect={() => setChosen(p.id)}
-                        menu={<RowMenu label={p.name} actions={menu(p)} />}
-                      />
-                    ))}
-                  </RowList>
+                  <RecordsTable
+                    label={t("setup.people")}
+                    name={{
+                      header: t("people.col.name"),
+                      title: (p) => p.name,
+                      cell: (p, open) => (
+                        <span className={styles.who}>
+                          <PersonAvatar name={p.name} slot={slotOf((p.sides ?? [])[0])} size="md" />
+                          <a href={viewHref(recordView("person", p.id))} onClick={open}>
+                            {p.name}
+                          </a>
+                          {tags(p)}
+                        </span>
+                      ),
+                    }}
+                    columns={columns}
+                    groups={[{ id: "people", title: t("setup.people"), rows }]}
+                    rowKey={(p) => p.id}
+                    selected={chosen}
+                    onSelect={(p) => setChosen(p.id)}
+                    actionsHeader={t("people.col.actions")}
+                    actions={(p) => (
+                      <InRowActions.Provider value={true}>
+                        <RowMenu label={p.name} actions={menu(p)} />
+                      </InRowActions.Provider>
+                    )}
+                  />
                 )}
               </>
             )
@@ -159,39 +192,6 @@ export function People() {
       {adding && <PersonDrawer onClose={() => setAdding(false)} onSaved={(id) => setChosen(id)} />}
       {editing && <PersonDrawer person={editing} onClose={() => setEditing(null)} />}
     </section>
-  );
-}
-
-/** One person in the list: a click, Enter on the row or the name opens their details beside it; the name is also their page's link. */
-function PersonRow(props: { person: S["PersonView"]; selected: boolean; slot: number | null; meta: string; tags: React.ReactNode; onSelect: () => void; menu: React.ReactNode }) {
-  const p = props.person;
-  const ref = useRef<HTMLElement>(null);
-  useRowKeys(ref, { toggle: props.onSelect, primary: props.onSelect });
-  const open = (event: MouseEvent) => {
-    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    event.preventDefault();
-    props.onSelect();
-  };
-  return (
-    <Row
-      ref={ref}
-      lead={<PersonAvatar name={p.name} slot={props.slot} size="md" />}
-      title={
-        <a href={viewHref(recordView("person", p.id))} onClick={open}>
-          {p.name}
-        </a>
-      }
-      clamp={p.name}
-      pill={props.tags}
-      meta={props.meta}
-      oneLine
-      selected={props.selected}
-      menu={props.menu}
-      onClick={(event) => {
-        if ((event.target as HTMLElement).closest("a, button, input, select, textarea, [role='menuitem']")) return;
-        props.onSelect();
-      }}
-    />
   );
 }
 
@@ -216,6 +216,7 @@ function PersonDetail(props: { person: S["PersonView"]; justMe: boolean; tags: R
         {fact(t("setup.aliases"), p.aliases.join(", "))}
         {fact(t("people.col.reach"), props.reach.length ? props.reach.map((line) => <div key={line}>{line}</div>) : null)}
         {fact(t("people.col.open"), p.open_items > 0 ? tn("people.open_with", p.open_items) : null)}
+        {fact(t("people.col.waiting"), p.waiting_on_them > 0 ? [tn("people.waiting_on", p.waiting_on_them), p.waiting_days != null ? tn("people.waiting_longest", p.waiting_days) : ""].filter(Boolean).join(" · ") : null)}
         {fact(t("people.col.last"), p.last_contact ? day(p.last_contact) : null)}
       </DefinitionList>
       <Actions align="end">

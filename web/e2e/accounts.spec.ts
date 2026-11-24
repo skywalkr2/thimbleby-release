@@ -283,6 +283,10 @@ test.describe.serial("several accounts", () => {
     }
     // The other accounts are read.
     for (const address of [addresses[0], addresses[2]]) await expect(connections(page).getByRole("listitem", { name: `Your inbox, ${address}` })).toContainText("Read");
+    // A restart waiting would take the header's place ("Restart to finish" outranks a failed connection), and it is not what this
+    // test is about: if one waits, the failure names what it is for (settings keys, or "code") instead of showing a wrong chip.
+    const waiting = (await (await page.request.get("api/status", { headers: { Authorization: `Bearer ${info.token}` } })).json()) as { restart_needed?: string | null; restart_for?: string[] };
+    expect(waiting.restart_needed ?? null, `a restart waits for: ${(waiting.restart_for ?? []).join(", ") || "nothing named"}`).toBeNull();
     // The header never says all good beside it; its popover names the account once.
     await expect(page.locator("[data-status]").first()).toHaveAttribute("data-status", "connection_failed", LOADED);
     await page.locator("[data-status]").first().click();

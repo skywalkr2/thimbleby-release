@@ -22,6 +22,7 @@ from api.schemas import (
     ScheduleClashView,
     ScheduleDayView,
     ScheduleEntryView,
+    ScheduleTargetView,
     ScheduleView,
     ThisWeekView,
     TimelineItemView,
@@ -32,7 +33,7 @@ from api.schemas import (
     WeekDueView,
     WeekWaitingView,
 )
-from engine import day_clashes, sides
+from engine import day_clashes, days_off, sides
 from engine import schedule as schedule_module
 from engine import timeline as timeline_module
 from engine.config import Config
@@ -245,6 +246,17 @@ def build_today_router(ws: Workspace, cfg: Config, store: Store, events: Events,
             grid_ends=cfg.ui.schedule.day_ends,
             month_entries=cfg.ui.schedule.month_entries,
             event_minutes=cfg.ui.schedule.event_minutes,
+            off_days=[
+                TimelineOffView(day=d, kind="holiday", reason=reason)
+                for d, reason in days_off.week_days_off(
+                    store.read(), cfg, People(store, cfg).pm, found[0].date, found[-1].date
+                )
+            ],
+            overdue=[_entry_view(e) for e in schedule_module.overdue(store, cfg, now)],
+            targets=[
+                ScheduleTargetView(day=d, project=pid, name=name, side=side, views=views)
+                for d, pid, name, side, views in schedule_module.targets(store, cfg, found[0].date, found[-1].date)
+            ],
         )
 
     @r.get("/schedule/timeline")

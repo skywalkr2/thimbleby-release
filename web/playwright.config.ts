@@ -217,11 +217,11 @@ export const allProjects = [
       ...(s.base === "/" ? [{ name: `${s.name}-tables`, testMatch: /tables\.spec\.ts/, use, dependencies: [s.name] }] : []),
     ];
   }),
-  { name: "layout", testMatch: /(layout|sh1-shell|handled|guards|internals|changed-rows|today-work|shared-rules|today-todos-46|qf1-forms-and-todos|hand-over-one-door|states-phone|w1-today-lines|learned-review|learned-on-its-own|read-back)\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${layout.port}/` } },
+  { name: "layout", testMatch: /(layout|sh1-shell|handled|guards|internals|changed-rows|changed-widths|today-work|shared-rules|today-todos-46|counts-status|qf1-forms-and-todos|hand-over-one-door|states-phone|w1-today-lines|learned-review|learned-on-its-own|read-back)\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${layout.port}/` } },
   { name: "access", testMatch: /(work-access|ai-costs)\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${access.port}/` } },
   { name: "one-click", testMatch: /today-one-click\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${oneClick.port}/` } },
   { name: "schedule-review", testMatch: /schedule-review\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${scheduleReview.port}/` } },
-  { name: "capacity", testMatch: /today-(capacity|review)\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${capacity.port}/` } },
+  { name: "capacity", testMatch: /today-(capacity|review|rail)\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${capacity.port}/` } },
   { name: "outgoing", testMatch: /outgoing\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${outgoing.port}/` } },
   { name: "report-problem", testMatch: /report-problem\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${reportForm.port}/` } },
   { name: "acts", testMatch: /acts-journey\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${acts.port}/` } },
@@ -433,7 +433,7 @@ export const allServers = [
       timeout: 60_000,
     }),
     on(assistantBusy.port, {
-      command: `uv run python -m tests.e2e_server --port ${assistantBusy.port} --base-path /${clockFlag}`,
+      command: `uv run python -m tests.e2e_server --port ${assistantBusy.port} --base-path / --assistant-ready${clockFlag}`,
       cwd: "..",
       url: `http://127.0.0.1:${assistantBusy.port}/api/health`,
       reuseExistingServer: false,

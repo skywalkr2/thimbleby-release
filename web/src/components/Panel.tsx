@@ -59,7 +59,16 @@ export function Panel(props: { name: string; project?: string; embedded?: boolea
     ) : (
       <EmptyState text={t("panel.document_empty")} />
     );
-  } else if (!rows.data || rows.data.length === 0) body = <EmptyState text={t("panel.empty")} />;
+  } else if (!rows.data || rows.data.length === 0) {
+    // What will appear and how: the panel's own way of adding one, the same one the page offers above, is the card's one action.
+    body = (
+      <EmptyState
+        card
+        text={newAction ? t("panel.empty.add") : t("panel.empty")}
+        action={newAction ? { label: newAction.label, onClick: () => run({ name: newAction.name, label: newAction.label, is: "action", on: null }, null, () => newButton.current) } : null}
+      />
+    );
+  }
   else {
     const shared = { panel, rows: rows.data, run, onOpenRecord: props.onOpenRecord };
     body =

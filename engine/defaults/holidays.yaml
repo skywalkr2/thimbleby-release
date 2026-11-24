@@ -3,7 +3,8 @@
 # the last). `names` are the whole phrases that name it, in lower case. A day that moves with the moon (Easter) is not
 # listed: it cannot be given by a rule here, so a phrase naming it stays for the person to check. A language with no
 # calendar here reads no holiday names. A day people don't take off (Halloween) says `day_off: false`: the date reader
-# knows it, and it is never a day off for a team.
+# knows it, and it is never a day off for a team. A day that follows another by a fixed number of days says `after`
+# (a name of a day listed before it) and `days`.
 calendars:
   en-US:
     - {names: [new year's day, new years day, new year's, new years], month: 1, day: 1}
@@ -18,7 +19,7 @@ calendars:
     - {names: [halloween], month: 10, day: 31, day_off: false}
     - {names: [veterans day, veterans' day], month: 11, day: 11}
     - {names: [thanksgiving, thanksgiving day], month: 11, weekday: 3, nth: 4}
-    - {names: [day after thanksgiving], month: 11, weekday: 4, nth: 4}
+    - {names: [day after thanksgiving], after: thanksgiving, days: 1}
     - {names: [christmas eve], month: 12, day: 24, day_off: false}
     - {names: [christmas, christmas day], month: 12, day: 25}
     - {names: [new year's eve, new years eve], month: 12, day: 31, day_off: false}

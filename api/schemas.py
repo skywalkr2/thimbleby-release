@@ -1619,6 +1619,14 @@ class PersonView(BaseModel):
     track_only: bool = False
     open_items: int = Field(0, description="Open actions and questions with them.")
     last_contact: str | None = Field(None, description="When something was last sent or told to them (a date).")
+    waiting_on_them: int = Field(
+        0,
+        description="How many things wait on them: questions sent to them with no answer and to-dos they were told "
+        "about (the follow-ups screen's Waiting on them).",
+    )
+    waiting_days: int | None = Field(
+        None, description="How many days the longest of those has waited; none when nothing waits on them."
+    )
     how_to_reach: dict[str, list[str]] = Field(
         default_factory=dict,
         description="How to reach them: a kind of contact detail mapped to every address, number or handle they have "
@@ -1866,6 +1874,18 @@ class ProjectView(BaseModel):
         "done.",
     )
     no_end: bool = Field(False, description="The personal project or an area: ongoing, so it has no target day.")
+    overdue_actions: int = Field(0, description="Its open to-dos that are past their day.")
+    quiet_weeks: int | None = Field(
+        None,
+        description="Whole weeks since the project last changed, once that reaches `workspace.project.quiet_weeks`; "
+        "none before.",
+    )
+    target_passed: bool = Field(False, description="Its target day is behind it.")
+    status_disagrees: bool = Field(
+        False,
+        description="Its status says all is well (open or not started) while the app sees overdue to-dos, no change "
+        "for `workspace.project.quiet_weeks` weeks or more, or a target day that has passed.",
+    )
     side: bool = Field(
         False,
         description="Personal or another side: a group that holds projects, never a project itself. A screen lists "
@@ -3268,6 +3288,11 @@ class AgendaItemView(BaseModel):
         description="True when it is called off and waiting for a new date or a drop (design 6.33): the screen says it "
         "is on hold, and its to-dos wait with it.",
     )
+    called_off_why: str | None = Field(
+        None,
+        description="For an own entry the assistant called off because a later mail cancelled it (`event.cancel`): the "
+        "exact words of that mail, shown as the reason beside 'Called off'. None otherwise.",
+    )
     own: bool = Field(
         False,
         description="An entry in the app's own calendar (recorded from what came in), not an event read from a "
@@ -3431,6 +3456,29 @@ class ScheduleClashView(BaseModel):
     )
 
 
+class TimelineOffView(BaseModel):
+    """A day people don't work, on the timeline."""
+
+    day: date
+    kind: Literal["weekend", "holiday", "team", "away"] = Field(
+        description="weekend: a weekly rest day of the workspace; holiday: a named holiday of its calendar; team: a "
+        "day off of the team the lane's owner is in; away: a period the lane's owner is away."
+    )
+    reason: str = Field(
+        "", description="Why, in words for a reader (a holiday's name, a closure's label); empty for a weekend."
+    )
+
+
+class ScheduleTargetView(BaseModel):
+    """A project's target day that falls in the days of the schedule."""
+
+    day: date
+    project: str = Field(description="The project's id; its page is at GET /api/records/{id}.")
+    name: str
+    side: str | None = Field(None, description="The id of the side it is on; none when it is on none.")
+    views: list[str] = Field(default_factory=list, description="The ids of the views its project is in.")
+
+
 class ScheduleView(BaseModel):
     """The schedule (GET /api/schedule): a run of days from `first`, in the person's time zone."""
 
@@ -3460,18 +3508,18 @@ class ScheduleView(BaseModel):
     month_entries: int = Field(
         description="How many entries a day lists in the month view (`ui.schedule.month_entries`)."
     )
-
-
-class TimelineOffView(BaseModel):
-    """A day people don't work, on the timeline."""
-
-    day: date
-    kind: Literal["weekend", "holiday", "team", "away"] = Field(
-        description="weekend: a weekly rest day of the workspace; holiday: a named holiday of its calendar; team: a "
-        "day off of the team the lane's owner is in; away: a period the lane's owner is away."
+    off_days: list[TimelineOffView] = Field(
+        default_factory=list,
+        description="The days of the working week in these days that are holidays or the person's team's closures, "
+        "each with its reason, so the calendar can mark them (weekly rest days are left out).",
     )
-    reason: str = Field(
-        "", description="Why, in words for a reader (a holiday's name, a closure's label); empty for a weekend."
+    overdue: list[ScheduleEntryView] = Field(
+        default_factory=list,
+        description="The person's open to-dos past their due date, each a `due` entry whose day is the day it was "
+        "due, which no day shown holds: the calendar lists them at today.",
+    )
+    targets: list[ScheduleTargetView] = Field(
+        default_factory=list, description="The target days of projects that fall in these days."
     )
 
 
@@ -3490,7 +3538,9 @@ class TimelineItemView(BaseModel):
     state: Literal["open", "overdue", "done"]
     owners: list[OwnerNameView]
     detail: str | None = Field(
-        None, description="For a dated fact: what kind of day it is (deadline, renewal, expiry, warranty, bill)."
+        None,
+        description="For a dated fact: what kind of day it is (deadline, renewal, expiry, warranty, bill). For an "
+        "overdue to-do or promise, which the timeline draws at today: the day it was due.",
     )
     entry: ScheduleEntryView | None = Field(
         None, description="For a calendar entry: the schedule's own entry, to open its details."
@@ -3868,7 +3918,10 @@ class QueueLineView(BaseModel):
     something to look over, `outcome` their results counted, `items` what needs a look), one line in place of a line
     for each; the list opens on Today and "All looks good" confirms it (POST /api/changesets/confirm); `batches` is
     the batches left unopened for `ui.today.fold_batches_after_days`, folded into one line (`count` of them, each in
-    `parts`, oldest first); `credential` is a key or sign-in that stops working on
+    `parts`, oldest first); `sends` is the lines of messages to send, one for each person, folded into one when
+    `ui.today.fold_sends_from` or more people have some (`count` the items in all, each person's line in `parts`,
+    `ready_since` the oldest day any became ready; it opens Follow-ups, To send); `credential` is a key or sign-in that
+    stops working on
     `due` or already has (`credential_kind`, `credential_name`, `waiting_days` left, below zero once past, and
     `places`, everywhere the same credential is used); `switch_failed` is a switch of the `tier`'s account or model
     whose check found problems or couldn't finish (the new `account`, the earlier one in `text`, `count` and `names`
@@ -4028,6 +4081,7 @@ class QueueLineView(BaseModel):
         "people_offers",
         "catch_up",
         "send",
+        "sends",
         "nudge",
         "escalate",
         "stale",
@@ -4309,6 +4363,7 @@ class QueueLineView(BaseModel):
             "no_person",
             "own",
             "connected",
+            "mail",
             "no_agenda",
             "manual",
             "auth",
@@ -4346,7 +4401,9 @@ class QueueLineView(BaseModel):
         "or workspace, which folder is offered a rename. For a restore line: pending (a restore waits for the "
         "restart that swaps it in), restored (the swap was made; `text` is the folder holding what was there before) "
         "or not_restored (it wasn't; `text` says why and the workspace is as it was). For a refused or failed line "
-        "that stands for several requests with one cause: no_person when no one is set as the person the app is for.",
+        "that stands for several requests with one cause: no_person when no one is set as the person the app is for. "
+        "For a called_off line: own (the person's own entry), connected (a connected calendar holds it) or mail (the "
+        "assistant called it off because a mail cancels the booking it was made from).",
     )
     choices: list[str] = Field(
         default_factory=list,

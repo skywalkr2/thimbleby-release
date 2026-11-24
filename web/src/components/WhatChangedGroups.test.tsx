@@ -6,7 +6,7 @@ import { besidePane, fakeApi, renderApp } from "../test-utils";
 import { ChangeRow, WhatChanged } from "./WhatChanged";
 
 // The window is wide, so a change's detail stands beside the list (design 7.13).
-beforeEach(() => besidePane());
+beforeEach(() => besidePane({ room: true }));
 afterEach(() => vi.unstubAllGlobals());
 
 const op = (index: number, status: S["OpView"]["status"], answerGroup: string | null, title: string): S["OpView"] => ({
@@ -61,10 +61,10 @@ test("an answer the task kind grouped is one row for each group, and the ops in 
   expect(screen.getByText("Looked at everything")).toBeInTheDocument(); // an op with no group keeps its own row
   expect(screen.queryByText("First aside")).toBeNull();
   expect(screen.queryByText("Closing chapter")).toBeNull();
-  // The history has no Keep: where something waits, its row links to the line on Today that asks it.
-  expect(within(asides).queryByRole("link", { name: "Answer on Today" })).toBeNull();
-  expect(screen.queryByRole("button", { name: "Keep" })).toBeNull();
-  expect(await within(structure).findByRole("link", { name: "Answer on Today" })).toBeInTheDocument();
+  // Where something waits, its group is decided here with Keep, as on Today's line: nothing sends the person there to act.
+  expect(within(asides).queryByRole("button", { name: "Keep" })).toBeNull();
+  expect(await within(structure).findByRole("button", { name: "Keep" })).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Answer on Today" })).toBeNull();
 });
 
 test("Drop is in the group's menu, drops the whole group, and says what it left", async () => {
@@ -80,14 +80,14 @@ test("Drop is in the group's menu, drops the whole group, and says what it left"
   expect(await screen.findByText("Done, except 1 item, which need a look.")).toBeInTheDocument();
 });
 
-test("the history has no Release all, however many changes wait: each is answered on its line on Today", async () => {
+test("a change with several items waiting is decided in its detail: Release all and each item's own answer, with nothing said to answer on Today", async () => {
   const waiting = [op(0, "held", null, "First waiting"), op(1, "held", null, "Second waiting")];
   fakeApi({ "GET changes": () => [grouped(waiting, [])], "GET today/queue": () => [todayLine("held:CS-1:0", 0), todayLine("held:CS-1:1", 1)] });
   renderApp(<WhatChanged />);
   expect(await screen.findByText("First waiting")).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Release all" })).toBeNull();
-  expect(screen.queryByRole("button", { name: "Do it anyway" })).toBeNull();
-  expect(await screen.findAllByRole("link", { name: "Answer on Today" })).toHaveLength(2);
+  expect(await screen.findByRole("button", { name: "Release all" })).toBeInTheDocument();
+  expect(await screen.findAllByRole("button", { name: "Do it anyway" })).toHaveLength(2);
+  expect(screen.queryByRole("link", { name: "Answer on Today" })).toBeNull();
 });
 
 // The same change opened from Today's review line keeps its buttons: that is where it is answered.

@@ -41,6 +41,9 @@ knowledge:
   correction_reach_items: 20   # the most other open items a correction's request shows after the corrected item
   follow_on_match: 0.67
   question_body_chars: 400     # the most characters of an open question's detail the assistant is shown beside its title
+  closed_questions: 15         # the most answered or dropped questions the assistant is shown, so it never asks one again
+  related_mail_items: 5        # the most later messages (any folder) a run on deleted mail is shown, from the same sender or naming the same reference
+  related_mail_chars: 600      # the most characters of each such message the assistant is shown
   check_on_switch: true
   person_look: true            # the weekly look at who you deal with (mail headers' counts and repeating calendar entries)
   person_look_every_days: 7    # days between one look and the next

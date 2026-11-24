@@ -438,7 +438,7 @@ test("with calendar sources reading and nothing in them, only Schedule is drawn,
   expect(await screen.findByText("Nothing else needs you today")).toBeInTheDocument();
   const regions = within(screen.getByRole("group", { name: "Briefing, schedule and mail" })).getAllByRole("region");
   expect(regions).toHaveLength(1);
-  expect(within(regions[0]).getByText("Nothing on your calendar today.")).toBeInTheDocument();
+  expect(within(regions[0]).getByText("No meetings today or tomorrow")).toBeInTheDocument();
   expect(screen.queryByText(/^Checked /)).toBeNull();
   expect(screen.queryByText("Not checked yet")).toBeNull();
   expect(screen.queryByRole("link", { name: "Connect a calendar" })).toBeNull();
@@ -596,14 +596,14 @@ test("an empty mail card says the mailbox wasn't read when there was no network,
   expect(within(col).getByRole("alert")).toHaveTextContent("Work mail couldn't be checked without an internet connection. It will retry automatically.");
   expect(within(col).queryByText("No mail has come in lately.")).toBeNull();
   // The calendar card has no unread source of its own and nothing in it, so it says nothing is on today.
-  expect(within(await column("Schedule")).getByText("Nothing on your calendar today.")).toBeInTheDocument();
+  expect(within(await column("Schedule")).getByText("No meetings today or tomorrow")).toBeInTheDocument();
 });
 
 test("a source that is off is not reported, so a calendar with nothing in it says nothing is on today", async () => {
   open({ ...EMPTY, "GET watch": () => [unread("cal", ["calendar"], "failed", { enabled: false }), watched("b", { reads: ["calendar"] })] }, vi.fn(), vi.fn(), true);
   expect(await screen.findByText("Nothing else needs you today")).toBeInTheDocument();
   const schedule = await column("Schedule");
-  expect(within(schedule).getByText("Nothing on your calendar today.")).toBeInTheDocument();
+  expect(within(schedule).getByText("No meetings today or tomorrow")).toBeInTheDocument();
   expect(within(schedule).queryByRole("alert")).toBeNull();
 });
 
@@ -633,7 +633,8 @@ test("the week's due items alone put nothing in the Schedule card, and no count 
     }),
   });
   await screen.findByRole("group", { name: "Briefing, schedule and mail" });
-  expect(await within(await column("Schedule")).findByText("Nothing on your calendar today.")).toBeInTheDocument();
+  // The card is one line once it has answered, so it is looked for by its words, not through the panel that stood there loading.
+  expect(await screen.findByText("No meetings today or tomorrow")).toBeInTheDocument();
   expect(document.body).not.toHaveTextContent(/\b0 (events|things|messages)/);
   expect(screen.queryByText("Send the estimate")).toBeNull();
 });
@@ -1044,14 +1045,12 @@ test("a source the card's own sentence does not name is named in a short sentenc
   expect(await within(col).findByRole("alert")).toHaveTextContent("Studio calendar couldn't be read.");
 });
 
-test("the Briefing card is the rail's last card, or sits in the slot given for it under the queue", async () => {
-  const slot = document.createElement("div");
-  document.body.appendChild(slot);
+test("the Briefing card is the rail's first card, before the Schedule", async () => {
   fakeApi(routes({ "GET brief": () => ({ form: "afternoon", day: "2026-10-11", forms: ["afternoon"], quiet: false, afternoon_from_hour: 12, on_today: 0, sections: [{ key: "changed", more: 0, lines: [{ key: "since:1", kind: "moved", ready: false, you: false, on_today_line: false, text: "Send the draft", change: "said", day: "2026-10-12" }] }] }) }));
-  renderApp(<TodayRail onView={vi.fn()} workspace="Workspace" briefSlot={slot} />);
+  renderApp(<TodayRail onView={vi.fn()} workspace="Workspace" />);
   await column("Schedule");
-  await waitFor(() => expect(within(slot).getByRole("heading", { name: /brief/i })).toBeInTheDocument());
-  const rail = screen.getByRole("group", { name: "Briefing, schedule and mail" });
-  expect(within(rail).queryByRole("heading", { name: /brief/i })).toBeNull();
-  slot.remove();
+  const rail = await screen.findByRole("group", { name: "Briefing, schedule and mail" });
+  const brief = await within(rail).findByRole("heading", { name: /brief/i });
+  const schedule = within(rail).getByRole("heading", { name: /schedule/i });
+  expect(brief.compareDocumentPosition(schedule) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });

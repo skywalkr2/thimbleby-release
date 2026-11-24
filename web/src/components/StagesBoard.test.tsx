@@ -57,12 +57,12 @@ function show(extra: Record<string, (body: unknown) => unknown> = {}, records: S
 afterEach(() => window.localStorage.clear());
 
 describe("the board", () => {
-  test("is the way the stages are shown, a column for Not started and each stage, each item under the stage it is in", async () => {
+  test("is the way the stages are shown, a column for No stage yet and each stage, each item under the stage it is in", async () => {
     show();
     await board();
     const names = screen.getAllByRole("heading", { level: 3 }).map((h) => h.firstElementChild?.textContent);
-    expect(names).toEqual(["Not started", "First step", "Second step", "Third step"]);
-    expect(within(column("Not started")).getByRole("listitem", { name: "Gamma item" })).toBeInTheDocument();
+    expect(names).toEqual(["No stage yet", "First step", "Second step", "Third step"]);
+    expect(within(column("No stage yet")).getByRole("listitem", { name: "Gamma item" })).toBeInTheDocument();
     expect(within(column("First step")).getByRole("listitem", { name: "Beta item" })).toBeInTheDocument();
     expect(within(column("Second step")).getByRole("listitem", { name: "Alpha item" })).toBeInTheDocument();
     expect(within(column("Third step")).getByText("Nothing here")).toBeInTheDocument();
@@ -138,12 +138,12 @@ describe("the board", () => {
     expect(calls.filter((c) => c.route === "POST stages/move")).toHaveLength(1);
   });
 
-  test("a drop on Not started, or on the stage it is already in, moves nothing", async () => {
+  test("a drop on No stage yet, or on the stage it is already in, moves nothing", async () => {
     const calls = show();
     await board();
     const data = { setData: vi.fn(), effectAllowed: "" };
     fireEvent.dragStart(card("Alpha item"), { dataTransfer: data });
-    fireEvent.drop(column("Not started"), { dataTransfer: data });
+    fireEvent.drop(column("No stage yet"), { dataTransfer: data });
     fireEvent.dragStart(card("Alpha item"), { dataTransfer: data });
     fireEvent.drop(column("Second step"), { dataTransfer: data });
     expect(calls.filter((c) => c.route === "POST stages/move")).toHaveLength(0);

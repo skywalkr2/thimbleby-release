@@ -113,12 +113,14 @@ def not_people(view: Any, names: list[str], also: Iterable[str] = ()) -> list[st
 GENERIC_NAMES = frozenset({"assistant", "the assistant", "your assistant"})
 #: Where a generic name attributes: after "by", "from" or "per", or before a date, "'s" or "judgment".
 _BEFORE = (
-    r"(?:\b(?:by|from|per|reported by|source:?|according to|drafted (?:with|using)|written with|generated with)\s+)"
+    r"(?:\b(?:by|from|per|reported by|source:?|according to|drafted (?:with|using)|written with|generated with"
+    r"|thanks to|courtesy of)\s+)"
 )
 _AFTER = (
     r"(?=(?:'s|\u2019s)?\s*(?:,\s*\d|\d{1,2}/\d{1,2}|(?:pm\s+)?judge?ment\b"
     r"|(?:analysis|view|assessment|take|opinion|recommendation|advice|reading|estimate|forecast|summary)\b"
-    r"|(?:says|said|thinks|believes|recommends|suggests|notes|wrote|found|flagged|estimates)\b))"
+    r"|(?:says|said|thinks|believes|recommends|suggests|notes|wrote|found|flagged|estimates)\b"
+    r"|(?:noted|suggested|recommended|pointed out|reports|reported|estimated|put it|explained|confirmed|advised)\b))"
 )
 
 

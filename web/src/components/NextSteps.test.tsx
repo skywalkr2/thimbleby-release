@@ -122,7 +122,7 @@ test("Add a person… is in the owner list too: the form opens in place and the 
     ...personRoutes,
     "GET people": () => people,
     "POST people": () => {
-      people = [{ id: "PER-9", name: "Casey Moor", role: null, org: null, org_name: null, aliases: [], status: "active", is_pm: false, track_only: false, open_items: 0, how_to_reach: {} } as S["PersonView"]];
+      people = [{ id: "PER-9", name: "Casey Moor", role: null, org: null, org_name: null, aliases: [], status: "active", is_pm: false, track_only: false, open_items: 0, waiting_on_them: 0, how_to_reach: {} } as S["PersonView"]];
       return { id: "PER-9" };
     },
     "POST questions/Q-2/answer": () => ({ request: null }),
@@ -300,17 +300,17 @@ test("Today's line for a project the assistant found has its three choices, so W
   expect(screen.queryByRole("button", { name: "Do it anyway" })).toBeNull();
 });
 
-test("What changed shows a project the assistant found as information with a link to Today, and no Add", async () => {
-  besidePane();
+test("What changed decides a project the assistant found in its detail, with Add and no link to Today (S-0742)", async () => {
+  besidePane({ room: true });
   const line = { key: "held:CS-5:1", group: "decide", kind: "held", count: 1, untrusted: false, unpriced: 0, actions: [], questions: [], outcome: {}, request: "REQ-5", changeset: "CS-5", op: 1 } as S["QueueLineView"];
   fakeApi({ ...projectRoutes, "GET today/queue": () => [line] });
   renderApp(<WhatChanged />);
   const pane = await screen.findByRole("complementary");
-  expect(await within(pane).findByText("Would add a project")).toBeInTheDocument();
+  expect(await within(pane).findByText("Add a project “Harvest Fair”?")).toBeInTheDocument();
   expect(within(pane).getByText("Needs you")).toBeInTheDocument();
   expect(within(pane).getByText("The Harvest Fair needs a plan")).toBeInTheDocument();
-  expect(within(pane).queryByRole("button", { name: "Add" })).toBeNull();
-  expect(await within(pane).findByRole("link", { name: "Answer on Today" })).toBeInTheDocument();
+  expect(within(pane).getByRole("button", { name: "Add" })).toBeInTheDocument();
+  expect(within(pane).queryByRole("link", { name: "Answer on Today" })).toBeNull();
 });
 
 test("a name question offers This is me first, and it answers with the person themselves", async () => {

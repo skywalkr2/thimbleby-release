@@ -1183,14 +1183,14 @@ const briefing: S["BriefView"] = {
 const meeting = (): S["AgendaItemView"] => ({ snapshot: "EVT-1", source: "", title: "Print sync", start: todayIso(), all_day: true, cancelled: false, own: true, open_items: 0, days: [todayIso()] });
 const mail = (): S["InboxView"] => ({ items: [{ snapshot: "SNAP-1", source: "mail-1", title: "Proof is ready", sender: "Robin Sample", received: new Date().toISOString(), unread: true, version: 1 }], left_out: 0, set_aside: 0 });
 
-test("the rail is at most three cards, Briefing, Schedule and Came in, and has no Top priorities or Your to-dos", async () => {
+test("the rail is at most three cards, Briefing first, then Schedule and Came in, and has no Top priorities or Your to-dos", async () => {
   show([decision], { "GET brief": () => briefing, "GET today/agenda": () => [meeting()], "GET today/arrived": () => mail(), "GET today/week": () => busyWeek });
   const rail = await screen.findByRole("group", { name: RAIL });
   await within(rail).findByRole("region", { name: /^(Morning|Afternoon) brief$/ });
   await within(rail).findByRole("region", { name: "Schedule" });
   await within(rail).findByRole("region", { name: "Came in" });
   expect(within(rail).getAllByRole("region")).toHaveLength(3);
-  expect(within(rail).getAllByRole("region").map((r) => r.parentElement?.getAttribute("data-col") ?? "briefing")).toEqual(["schedule", "arrived", "briefing"]);
+  expect(within(rail).getAllByRole("region").map((r) => r.parentElement?.getAttribute("data-col") ?? "briefing")).toEqual(["briefing", "schedule", "arrived"]);
   for (const gone of ["Top priorities", "Your to-dos", "This week", "Agenda"]) {
     expect(screen.queryByRole("heading", { name: gone })).toBeNull();
   }

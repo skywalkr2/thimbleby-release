@@ -72,6 +72,7 @@ const COUNTED: ReadonlySet<QueueLine["kind"]> = new Set([
   "people_offers",
   "catch_up",
   "send",
+  "sends",
   "nudge",
   "stale",
   "unfiled",
@@ -108,10 +109,22 @@ export function useTodayCount(side: SideChoice = "all"): number | null {
   const outgoing = useActToday();
   const accounts = useAccountToday(side);
   const failed = useTodayReadFailures().length > 0;
+  const pending = useTodayReadsPending();
   if (!queue.data) return null;
   const count = queue.data.filter((line) => !isSetupLine(line)).length + (plugins.data?.length ?? 0) + stage.count + outgoing.count + accounts.count;
-  // A read that failed counts as nothing known, never as nothing: a zero from reads that could not answer is "can't tell".
-  return count === 0 && failed ? null : count;
+  // A read that failed or has not answered counts as nothing known, never as nothing: a zero from reads that could not
+  // answer yet is "can't tell", so the empty card waits until every read has answered.
+  return count === 0 && (failed || pending) ? null : count;
+}
+
+/** Whether any read Today's count depends on is still loading (no answer yet, and not failed). */
+export function useTodayReadsPending(): boolean {
+  const queue = useQuery({ queryKey: ["today", "queue"], queryFn: api.todayQueue });
+  const plugins = useQuery({ queryKey: ["plugin-today"], queryFn: api.pluginToday });
+  const watch = useQuery({ queryKey: ["watch"], queryFn: api.watchSources });
+  const stage = useStageToday();
+  const outgoing = useActToday();
+  return [queue, plugins, watch, outgoing.read, ...stage.reads].some((read) => read.isPending);
 }
 
 /** A read Today depends on that failed, with the words for what it was and the error it failed with. */

@@ -24,6 +24,7 @@ import { ProjectEndingDetail } from "./ProjectEndingDetail";
 import { ChangeRow, OpRow } from "./WhatChanged";
 import { RowList } from "../ui/RowList";
 import { ItemList } from "../ui/ItemList";
+import { OnlyFirstFilled } from "../ui/rowContext";
 
 /** The kinds of line that open to items; the rest are a single act on the line itself. */
 const OPENS = new Set<QueueLine["kind"]>(["capacity", "clash", "decision", "question", "who_is", "owner", "held", "moved", "terms", "project_ending", "go", "refused", "failed", "review", "intake_review", "batches", "send", "nudge", "escalate", "promise"]);
@@ -105,8 +106,10 @@ function StoppedDetail(props: { line: QueueLine; sendBack?: boolean; onOpenGuide
   if (!found.length) return <Gone />;
   return (
     <RowList as="ol">
-      {found.map((item) => (
-        <ChangeRow key={item.id} item={item} reveal={0} sendBack={props.sendBack} onOpenGuide={props.onOpenGuide} />
+      {found.map((item, n) => (
+        <OnlyFirstFilled.Provider key={item.id} value={n > 0}>
+          <ChangeRow item={item} reveal={0} sendBack={props.sendBack} onOpenGuide={props.onOpenGuide} />
+        </OnlyFirstFilled.Provider>
       ))}
     </RowList>
   );
@@ -199,8 +202,10 @@ function MovedDetail(props: { line: QueueLine }) {
     <>
       <Seen move={props.line.after_move?.request} total={(props.line.questions ?? []).length} />
       <ItemList>
-        {rows.map((question) => (
-          <DecisionRow key={question.id} question={question} reveal={0} check={checks.get(question.id)} move={props.line.after_move} />
+        {rows.map((question, n) => (
+          <OnlyFirstFilled.Provider key={question.id} value={n > 0}>
+            <DecisionRow question={question} reveal={0} check={checks.get(question.id)} move={props.line.after_move} />
+          </OnlyFirstFilled.Provider>
         ))}
       </ItemList>
     </>

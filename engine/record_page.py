@@ -375,6 +375,9 @@ def _open_with(view: Any, kind: str, record_id: str, pm: str | None = None) -> t
             continue
         if kind == "person" and record_id == pm and (d.get("resolves") or {}).get("kind") in (*ABOUT_THE_APP, *ROUTING):
             continue
+        # A project's questions are the ones To-dos lists for it: not one that only places a name or picks an owner.
+        if kind == "project" and (d.get("resolves") or {}).get("kind") in ROUTING:
+            continue
         if d.get("to") in people or (kind == "project" and record_id in (d.get("projects") or [])):
             questions.append(q)
     actions.sort(key=lambda a: (a.data.get("due") is None, str(a.data.get("due") or ""), a.data["text"]))
@@ -499,8 +502,9 @@ def counts(view: Any, here: Any = None) -> dict[str, dict[str, Any]]:
         d = q.data
         if d.get("status") in ("open", "sent") and d.get("to"):
             person(d["to"])["open_items"] += 1
-            for pid in d.get("projects") or []:
-                project(pid)["open_questions"] += 1
+            if (d.get("resolves") or {}).get("kind") not in ROUTING:
+                for pid in d.get("projects") or []:
+                    project(pid)["open_questions"] += 1
         if d.get("sent_at") and d.get("to"):
             entry = person(d["to"])
             sent = day_text(d["sent_at"], here or UTC)

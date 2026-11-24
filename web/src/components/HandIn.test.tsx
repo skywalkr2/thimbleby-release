@@ -26,6 +26,9 @@ const project = (id: string, name: string, extra: Partial<S["ProjectView"]> = {}
   spent_usd: 0,
   open_actions: 0,
   open_questions: 0,
+  overdue_actions: 0,
+  status_disagrees: false,
+  target_passed: false,
   ...extra,
 });
 const PROJECTS = [

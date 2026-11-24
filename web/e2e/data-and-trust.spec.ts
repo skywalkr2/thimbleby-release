@@ -274,12 +274,23 @@ test("S-0349 (X74). on Today's review panel, Not right then Send back on one ite
     .toBe(true);
   // The line of the redone request replaces the first one; it is the only line that is new since the hand-in was made.
   const reopened = await (async () => {
-    await page.reload();
-    await expect(page.getByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening)/ })).toBeVisible(LOADED);
-    await expect(reviews.first()).toBeVisible(LOADED);
-    const all = await keys();
-    const fresh = all.filter((k) => !known.includes(k));
-    expect(fresh, `one review line for the hand-in: ${all.join(", ")}`).toHaveLength(1);
+    // The redone request's line takes the first one's place when the second run is recorded, which can land after the queue
+    // reads empty: Today is read again until the hand-in has one line, and a line that never settles to one still fails.
+    let all: string[] = [];
+    let fresh: string[] = [];
+    await expect
+      .poll(
+        async () => {
+          await page.reload();
+          await expect(page.getByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening)/ })).toBeVisible(LOADED);
+          await expect(reviews.first()).toBeVisible(LOADED);
+          all = await keys();
+          fresh = all.filter((k) => !known.includes(k));
+          return fresh.length;
+        },
+        { timeout: 60_000, message: `one review line for the hand-in: ${all.join(", ")}` },
+      )
+      .toBe(1);
     await page.locator(`[data-queue-line="review"][data-line-key="${fresh[0]}"]`).getByRole("button", { name: "Look over", exact: true }).click();
     const found = page.locator("[data-batch-detail]");
     await expect(found.first()).toBeVisible(LOADED);

@@ -71,8 +71,8 @@
      fixed column with empty margins. Only running prose is limited, by --measure, inside its pane. */
   --header-row-h: 56px;        /* the header's main row */
   --header-h: var(--header-row-h);
-  --sidebar-w: 232px;          /* left navigation, expanded (>= 1024px) */
-  --sidebar-w-collapsed: 64px; /* icons only (below 1024px, or collapsed by the person) */
+  --sidebar-w: 232px;          /* left navigation, expanded (>= 1280px) */
+  --sidebar-w-collapsed: 64px; /* icons only (below 1280px, or collapsed by the person) */
   --bottombar-h: 64px;         /* phone bottom bar */
   --gutter: 24px;              /* between panes and grid columns */
   --page-pad: 24px;            /* inside the content area */

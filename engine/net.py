@@ -114,7 +114,7 @@ class WebClient:
                 if gate is not None and err.kind == "throttled":
                     gate.close(err.retry_after, err.status, reason_code(err))
                 raise
-            except httpx.ConnectError as err:
+            except (httpx.ConnectError, httpx.ConnectTimeout) as err:  # no connection could be made, in time or not
                 raise ConnectorError("offline", f"couldn't connect: {err}") from None
             except httpx.TimeoutException:
                 raise ConnectorError("outage", "it didn't answer in time") from None

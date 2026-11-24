@@ -1568,7 +1568,13 @@ def _everything(
                 count=len(called_off.held_todos(reader, held.id)),
                 text=held.data["title"],
                 event=held.id,
-                state="connected" if held.data.get("source") else "own",
+                state=(
+                    "mail"
+                    if held.data.get("called_off_why") and not held.data.get("key")
+                    else "connected"
+                    if held.data.get("source")
+                    else "own"
+                ),
                 at=str(held.data["start"]),
                 untrusted=held.data.get("trust") == "untrusted",
                 since=str(held.data["start"]),
@@ -2170,6 +2176,7 @@ def _everything(
         caused = release_hours.causes(lines, reader, requests, by_changeset, sources)
         lines = release_hours.keep_hours(lines, caused, cfg, now, Line, held_out)
     lines = review_batches.fold(once_each(lines), now, cfg.ui.today.fold_batches_after_days, Line)
+    lines = _fold_sends(lines, cfg.ui.today.fold_sends_from)
     return sorted(lines, key=_rank)
 
 
@@ -2527,6 +2534,7 @@ _KIND_ORDER = {
     "pattern": 5.5,
     "moved": 6,
     "send": 0,
+    "sends": 0,
     "nudge": 1,
     "quiet_promise": 1.5,
     "escalate": 2,
@@ -2599,6 +2607,37 @@ def _aware(stamp: str) -> datetime:
     """A stored time as a moment with a zone."""
     at = datetime.fromisoformat(stamp)
     return at if at.tzinfo else at.replace(tzinfo=UTC)
+
+
+def _fold_sends(lines: list[Line], from_count: int) -> list[Line]:
+    """Messages to send, one line for each person, become one line when there are `from_count` or more of them (`sends`:
+    `parts` the person lines, `count` the items in all, `ready_since` the oldest day any became ready). Zero turns
+    folding off. Follow-up lines are never folded: each is about one person's wait."""
+    sending = [line for line in lines if line.kind == "send"]
+    if from_count <= 0 or len(sending) < from_count:
+        return lines
+    dated = [line.ready_since for line in sending if line.ready_since]
+    folded = Line(
+        key="sends",
+        group="send",
+        kind="sends",
+        count=sum(line.count for line in sending),
+        parts=sending,
+        questions=[q for line in sending for q in line.questions],
+        actions=[a for line in sending for a in line.actions],
+        ready_since=min(dated) if dated else None,
+        since=min(line.since for line in sending),
+    )
+    out: list[Line] = []
+    placed = False
+    for line in lines:
+        if line.kind == "send":
+            if not placed:
+                out.append(folded)
+                placed = True
+            continue
+        out.append(line)
+    return out
 
 
 def _rank(line: Line) -> tuple[Any, ...]:

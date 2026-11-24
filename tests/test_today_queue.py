@@ -208,7 +208,13 @@ def test_messages_to_send_are_one_line_per_person_with_their_name(api):
     client, base, worker = api
     hand_in(client, base, worker, "production-checkin")
     lines = client.get(f"{base}/today/queue").json()
-    sends = [line for line in lines if line["kind"] == "send"]
+    # With many people to send to the lines are one (`sends`) holding a line for each person in `parts`.
+    sends = [
+        part
+        for line in lines
+        for part in (line["parts"] if line["kind"] == "sends" else [line])
+        if part["kind"] == "send"
+    ]
     assert sends and all(line["person_name"] and line["count"] >= 1 for line in sends)
     assert len({line["person"] for line in sends}) == len(sends)
 

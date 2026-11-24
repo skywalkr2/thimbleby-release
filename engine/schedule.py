@@ -13,9 +13,9 @@ from zoneinfo import ZoneInfo
 from engine import day_clashes, suggestions
 from engine.config.schema import WEEKDAYS
 from engine.connectors import moment
-from engine.sides import side_of_agenda_item, side_of_item, sides_of_entries
+from engine.sides import project_names, side_of_agenda_item, side_of_item, side_of_project, sides_of_entries
 from engine.today import AgendaItem, agenda, event_dates, todo, zone
-from engine.views import views_of_agenda_item, views_of_item
+from engine.views import views_of_agenda_item, views_of_item, views_of_project
 
 #: The most days one request may ask for: six weeks, what a month view needs.
 MOST_DAYS = 42
@@ -65,6 +65,54 @@ def _due_items(store: Any, cfg: Any, now: datetime, first: date, through: date) 
         item = AgendaItem(t.action, "", t.text, t.due.isoformat(), None, True, None, None, False, days=[t.due])
         found.append((item, t.action))
     return found
+
+
+def overdue(store: Any, cfg: Any, now: datetime) -> list[Entry]:
+    """The open to-dos the person owns that are past their firm due date, each as an all-day due entry on the day it was
+    due, with the to-do's id: the schedule lists them at today because no day shown holds them. A to-do on hold, or one
+    whose date is still to be checked, is not overdue."""
+    view = store.read()
+    out = []
+    for t in todo(store, cfg, now):
+        if t.due is None or t.due_check or t.on_hold or not t.overdue:
+            continue
+        item = AgendaItem(t.action, "", t.text, t.due.isoformat(), None, True, None, None, False, days=[t.due])
+        record = view.get("action", t.action)
+        out.append(
+            Entry(
+                item,
+                "all_day",
+                kind="due",
+                side=side_of_item(view, cfg, record) if record is not None else None,
+                views=views_of_item(view, record) if record is not None else [],
+                action=t.action,
+            )
+        )
+    return out
+
+
+def targets(store: Any, cfg: Any, first: date, last: date) -> list[tuple[date, str, str, str | None, list[str]]]:
+    """The target days of the projects (not areas) from `first` through `last`: (day, project id, name, side, views), in
+    day order."""
+    view = store.read()
+    names = project_names(view, cfg)
+    found = []
+    for p in view.list("project"):
+        target = p.data.get("target")
+        if not target or p.data.get("area"):
+            continue
+        day = date.fromisoformat(str(target))
+        if first <= day <= last:
+            found.append(
+                (
+                    day,
+                    p.id,
+                    str(p.data.get("name") or names.get(p.id, "")),
+                    side_of_project(view, cfg, p.id),
+                    views_of_project(view, p.id),
+                )
+            )
+    return sorted(found, key=lambda f: (f[0], f[2].casefold(), f[1]))
 
 
 def _local(value: str, here: ZoneInfo) -> datetime | None:

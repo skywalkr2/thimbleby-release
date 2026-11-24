@@ -1,5 +1,5 @@
 // How a to-do's date is said where it matters: past, today or ahead, always in words (never by color alone).
-import { day } from "./dates";
+import { clockDay, day } from "./dates";
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
@@ -8,7 +8,7 @@ type T = (key: string, vars?: Record<string, string | number>) => string;
 export function dueState(due: string | null | undefined, check: boolean | null | undefined, today: string, t: T): string {
   if (!due) return "";
   if (check) return t("op.meta.due_check", { date: day(due) });
-  const on = due.slice(0, 10);
+  const on = clockDay(due);
   if (on < today) return t("followups.due_overdue", { date: day(on) });
   if (on === today) return t("followups.due_today");
   return t("op.meta.due", { date: day(on) });

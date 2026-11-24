@@ -9,7 +9,7 @@ import { useEffect, useMemo, useRef, useState, type TouchEvent } from "react";
 import { ApiError, api, type S } from "../lib/api";
 import { calendarNames, withoutAddress, clashesOf, clashPhrase, minutesOf, moveBy, rangeOf, rememberView, SHORT, startOfWeek, storedView, VIEWS, type CalendarView } from "../lib/calendar";
 import { RANGE_DAYS, RANGES, rememberRange, storedRange, type TimelineRange } from "../lib/timeline";
-import { addDays, fullDay, shortDay, shortRange, todayOn, monthDayLong, monthDayYear, monthYear, weekday, weekdayLong } from "../lib/dates";
+import { addDays, fullDay, shortDay, shortRange, todayOn, monthDayLong, monthYear, weekday, weekdayLong } from "../lib/dates";
 import { typing } from "../lib/keys";
 import { useIsNarrow, useMediaQuery, useWidth } from "../lib/media";
 import { signInNeed } from "../lib/connections";
@@ -36,6 +36,7 @@ import { EntryButton, entryKey, entryTitle, type Calendars, type Entry } from ".
 import { ScheduleLegend, useHiddenCalendars } from "./ScheduleLegend";
 import { EntryDetails } from "./ScheduleEntryPane";
 import { clashCards, TimeGrid, type DayEntries } from "./ScheduleGrid";
+import { ScheduleAgenda } from "./ScheduleAgenda";
 import { ScheduleList } from "./ScheduleList";
 import { GroupDetails } from "./ScheduleGroupPane";
 import { groupKey, type GroupRef } from "./ScheduleGroupCard";
@@ -43,7 +44,7 @@ import { ScheduleStale } from "./ScheduleStale";
 import { WeekAhead } from "./WeekAhead";
 import { ScheduleSides, type KeySide } from "./ScheduleSides";
 import { MonthGrid } from "./ScheduleMonth";
-import { NeedsADate } from "./NeedsADate";
+import { NeedsADateLink } from "./NeedsADate";
 import { Timeline, type Lane } from "./ScheduleTimeline";
 import styles from "./Schedule.module.css";
 
@@ -149,20 +150,31 @@ export function Schedule() {
   const shownUnder = (e: { side?: string | null; sides?: string[] | null; views?: string[] | null }) =>
     e.sides && e.sides.length > 0 ? onAnySide(e.sides, filter.picked, e.views) : filter.shows(e.side, e.views);
   // What each shown day holds under the side filter: an entry on no side shows under every choice.
+  // The to-dos past due that no day shown holds (they were due before the days shown) are stacked in today's all-day entries, when today
+  // is shown, so they are on the calendar and in its counts.
+  const stacked = useMemo(() => {
+    const held = new Set((data?.days ?? []).flatMap((d) => [...d.all_day, ...d.timed]).flatMap((e) => (e.kind === "due" && e.action ? [e.action] : [])));
+    return range.shown.includes(today) ? (data?.overdue ?? []).filter((e) => e.action && !held.has(e.action)) : [];
+  }, [data, range, today]);
   const days: DayEntries[] = useMemo(() => {
     const byDate = new Map((data?.days ?? []).map((d) => [d.date, d]));
     return range.shown.map((d) => {
       const found = byDate.get(d);
       return {
         date: d,
-        all_day: (found?.all_day ?? []).filter((e) => shownUnder(e) && visible(e)),
+        all_day: [...(found?.all_day ?? []), ...(d === today ? stacked : [])].filter((e) => shownUnder(e) && visible(e)),
         timed: (found?.timed ?? []).filter((e) => shownUnder(e) && visible(e)),
         clashes: (data?.clashes ?? []).filter((c) => c.day === d),
       };
     });
     // shownUnder and visible are rebuilt every render from filter.picked and hidden, which the memo is keyed on.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, range, filter.picked, hidden]);
+  }, [data, range, filter.picked, hidden, stacked, today]);
+  // The days nobody works, the target days under the side filter, and which entries are the stack of overdue ones.
+  const off = useMemo(() => new Map((data?.off_days ?? []).map((o) => [o.day, o.reason])), [data]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const targets = useMemo(() => (data?.targets ?? []).filter((x) => shownUnder(x)), [data, filter.picked]);
+  const overdueKeys = useMemo(() => new Set(stacked.map((e) => entryKey(e, today))), [stacked, today]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const onItsWay = useMemo(() => (data?.on_its_way ?? []).filter((e) => shownUnder(e)), [data, filter.picked]);
 
@@ -330,8 +342,8 @@ export function Schedule() {
     );
   const back = { day: t("schedule.back.day"), week: t("schedule.back.week"), month: t("schedule.back.month"), timeline: t("schedule.back.timeline") }[unit];
   const forward = { day: t("schedule.forward.day"), week: t("schedule.forward.week"), month: t("schedule.forward.month"), timeline: t("schedule.forward.timeline") }[unit];
-  // On a phone the range is short ("Nov 2 – 6") so the row of moves and the range stays one line.
-  const rangeText = (first: string, last: string) => (phone ? t("schedule.range", shortRange(first, last)) : t("schedule.range", { start: monthDayLong(first), end: monthDayYear(last) }));
+  // A range is short everywhere ("Nov 2 – 6"), so the row of moves and the range stays one line.
+  const rangeText = (first: string, last: string) => t("schedule.range", shortRange(first, last));
   const heading = isTimeline
     ? tl
       ? rangeText(tl.first, tl.last)
@@ -358,6 +370,8 @@ export function Schedule() {
     return found && drawnSides.has(o.id) ? [{ id: o.id, name: found.name, slot: found.slot }] : [];
   });
   const empty = days.every((d) => d.all_day.length === 0 && d.timed.length === 0);
+  // A week with no meeting that has a time is a list by day (what is due, what is off), not an empty grid of hours.
+  const agendaOnly = (view === "week" || view === "work_week") && days.every((d) => d.timed.length === 0);
 
   return (
     <section className="panel-section" aria-labelledby="schedule-title" ref={region}>
@@ -467,13 +481,18 @@ export function Schedule() {
                 <ScheduleSides sides={keySides} />
                 <ScheduleList days={days} today={data.today} calendars={calendars} selected={picked} onOpen={open} />
               </>
+            ) : agendaOnly ? (
+              <>
+                <ScheduleSides sides={keySides} />
+                <ScheduleAgenda summaryHasIt={empty} days={days} today={data.today} off={off} targets={targets} overdueKeys={overdueKeys} calendars={calendars} selected={picked} onOpen={open} />
+              </>
             ) : (
-              <TimeGrid lead={<ScheduleSides sides={keySides} />} onOpenGroup={openGroup} days={days} today={data.today} startsAt={data.grid_starts} endsAt={data.grid_ends} now={now} calendars={calendars} selected={picked} onOpen={open} />
+              <TimeGrid off={off} lead={<ScheduleSides sides={keySides} />} onOpenGroup={openGroup} days={days} today={data.today} startsAt={data.grid_starts} endsAt={data.grid_ends} now={now} calendars={calendars} selected={picked} onOpen={open} />
             )}
             {view === "week" && weekdaysOnly && !phone && !empty && <p className={styles.none} data-weekdays-only="">{t("schedule.weekdays_only")}</p>}
           </div>
         )}
-        {isTimeline && <NeedsADate rows={needDate} hint="schedule.timeline.needs_hint" />}
+        {isTimeline && <NeedsADateLink rows={needDate} note="schedule.timeline.needs_link" />}
         {!isTimeline && data && onItsWay.length > 0 && (
           <section className={styles.waiting} aria-labelledby="schedule-on-its-way">
             <h2 id="schedule-on-its-way" className={styles.caption}>

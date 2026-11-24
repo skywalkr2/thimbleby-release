@@ -6,6 +6,7 @@
 // copied, and nothing here calls an AI.
 import type { S } from "./api";
 import { escapeHtml } from "./copy";
+import { clockDay } from "./dates";
 
 export interface TableLink {
   label: string;
@@ -72,7 +73,7 @@ export function tablesOf(section: S["FollowupSection"], w: TableWords, today: st
       columns: heads([w.action, w.due, w.link, w.update]),
       fill,
       rows: actions.map((a) => {
-        const late = !!a.due && a.due.slice(0, 10) < today;
+        const late = !!a.due && clockDay(a.due) < today;
         return where(
           [
             { text: a.text },

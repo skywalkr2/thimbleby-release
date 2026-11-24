@@ -5,7 +5,7 @@
 import { useId, useState } from "react";
 import { ApiError, api, type S } from "../lib/api";
 import { useAct } from "../lib/act";
-import { addDays } from "../lib/dates";
+import { addDays, writtenDay } from "../lib/dates";
 import { useSides } from "../lib/sides";
 import { useWords } from "../lib/wording";
 import { Button } from "../ui/Button";
@@ -22,7 +22,7 @@ const text = (value: unknown): string => (typeof value === "string" ? value : ""
 /** The day and the time of day a stored start or end reads as ("2026-11-11T18:30:00" is Nov 11 at 18:30); a bare day has no time. */
 export const splitMoment = (value: unknown): { day: string; time: string } => {
   const stored = text(value);
-  return { day: stored.slice(0, 10), time: stored.length > 10 ? stored.slice(11, 16) : "" };
+  return { day: writtenDay(stored), time: stored.length > 10 ? stored.slice(11, 16) : "" };
 };
 /** A stored start or end from a day and a time of day: the day alone is an all-day entry. */
 export const joinMoment = (day: string, time: string): string => (time ? `${day}T${time}:00` : day);

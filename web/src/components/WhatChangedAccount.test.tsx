@@ -7,7 +7,7 @@ import type { S } from "../lib/api";
 import { besidePane, fakeApi, renderApp } from "../test-utils";
 import { WhatChanged } from "./WhatChanged";
 
-beforeEach(() => besidePane());
+beforeEach(() => besidePane({ room: true }));
 
 function change(summary: string, trust: "trusted" | "untrusted" = "trusted", opStatus = "applied"): S["ChangeItem"] {
   return {

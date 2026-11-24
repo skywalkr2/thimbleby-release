@@ -1,7 +1,7 @@
 // The Timeline's arithmetic (design 7.7, "Timeline"): the ranges, which one a person last chose, where each item sits on its
 // lane in pixels, and how items that would touch take separate rows. Plain functions of days and numbers, so the screen only
 // draws. Days are yyyy-mm-dd text on the person's own calendar.
-import { addDays } from "./dates";
+import { addDays, clockDay } from "./dates";
 
 export type TimelineRange = "two_weeks" | "ten_weeks" | "quarter";
 export const RANGES: readonly TimelineRange[] = ["two_weeks", "ten_weeks", "quarter"];
@@ -44,7 +44,7 @@ export const PITCH_MIN = 10;
 /** Whole days from one day to a later one (negative when it is earlier). */
 export function daysBetween(from: string, to: string): number {
   const at = (iso: string) => {
-    const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+    const [y, m, d] = clockDay(iso).split("-").map(Number);
     return Date.UTC(y, m - 1, d);
   };
   return Math.round((at(to) - at(from)) / 86_400_000);

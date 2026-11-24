@@ -107,3 +107,17 @@ test("an entry that takes something away is marked as a danger, and its words ar
   expect(screen.getByRole("menuitem", { name: "Drop it" })).toHaveAttribute("data-danger");
   expect(screen.getByRole("menuitem", { name: "Edit" })).not.toHaveAttribute("data-danger");
 });
+
+test("an open menu holds the cursor, and a press anywhere outside it closes it (UI/UX review S10)", async () => {
+  const user = userEvent.setup();
+  render(
+    <div>
+      <p>Another row</p>
+      <MenuButton groups={[{ id: "a", entries: [{ id: "one", label: "First" }] }]} trigger={<IconButton icon="more" label="Open the menu" tooltip={false} />} />
+    </div>,
+  );
+  await user.click(screen.getByRole("button", { name: "Open the menu" }));
+  await waitFor(() => expect(screen.getByRole("menu").contains(document.activeElement)).toBe(true));
+  await user.click(screen.getByText("Another row"));
+  await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+});

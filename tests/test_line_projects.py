@@ -125,6 +125,7 @@ def an_unsent_question(store, to, project):
 
 def test_a_send_line_carries_the_project_all_its_questions_share_and_none_when_they_differ(env):
     _, cfg, store = env
+    cfg.ui.today.fold_sends_from = 0  # one line for each person, to read each one's project
     first, second, *_ = projects(store)
     who = other(cfg)
     an_unsent_question(store, who, first)

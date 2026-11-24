@@ -8,7 +8,7 @@ import { RestartNotice, useRestart } from "../lib/restart";
 import { useRestartWhat } from "../lib/restart-for";
 import { api, type S } from "../lib/api";
 import { useAct } from "../lib/act";
-import { backupText } from "../lib/backup";
+import { backupState, backupText, backupWord } from "../lib/backup";
 import { time, whenText } from "../lib/dates";
 import type { LiveState } from "../lib/live";
 import { useTotal } from "../lib/money";
@@ -64,18 +64,18 @@ const CHIP_WORD: Record<StatusKind, string> = {
   connection_failed: "status.chip_connection_failed",
   connection_signed_out: "status.chip_connection_signed_out",
   connection_retrying: "status.chip_connection_retrying",
-  backup: "status.chip_backup",
+  backup: "backup.word.failed",
   spend: "status.chip_spend",
   live: "status.chip_live",
 };
 
 /** A state's name with a dot, and in words when it needs a look (the dot's colour is never the only sign). */
-function StateName(props: { name: string; warn?: boolean }) {
+function StateName(props: { name: string; warn?: boolean; /** The name already says the state ("Backup failed"). */ said?: boolean }) {
   const { t } = useWords();
   return (
     <p className={styles.name}>
       {props.name}
-      {props.warn && <span className={styles.needs}> · {t("status.needs_look")}</span>}
+      {props.warn && !props.said && <span className={styles.needs}> · {t("status.needs_look")}</span>}
     </p>
   );
 }
@@ -107,11 +107,12 @@ export function StatusMenu(props: {
   const kind = worstState({ live: props.live.state, status: status.data, restartPhase: restart.phase, connections: connectionState(found), assistant });
   const ai = status.data?.ai;
   // The assistant's own section below says an account that is missing or failing; the line above it would say the same twice.
-  const accountSaid = !!ai && ai.state !== "ok" && (alive?.kind === "not_set_up" || alive?.kind === "failing");
+  const accountSaid = !!ai && ai.state !== "ok" && (alive?.kind === "not_set_up" || alive?.kind === "failing" || alive?.kind === "stand_in" || alive?.kind === "untested");
   const assistantShown = !!alive && (props.narrow || assistant !== undefined) && !accountSaid;
   // Where the assistant's own line is not drawn (a narrow window), the chip says what it is doing while all is well, in place of "Live".
   const doing = props.narrow && kind === "live" ? (alive?.doing ?? null) : null;
-  const word = doing ?? ((kind === "connection_failed" || kind === "connection_signed_out") && needing.length > 0 ? tn("status.chip_accounts_need", needing.length) : t(CHIP_WORD[kind]));
+  const backupWordNow = status.data ? backupWord(backupState(status.data.backup), t) : "";
+  const word = doing ?? (kind === "backup" ? backupWordNow : (kind === "connection_failed" || kind === "connection_signed_out") && needing.length > 0 ? tn("status.chip_accounts_need", needing.length) : t(CHIP_WORD[kind]));
   const b = status.data?.backup;
   const spend = status.data ? spendText(status.data.spend, t, total) : null;
   const wait = status.data?.network_wait;
@@ -193,7 +194,7 @@ export function StatusMenu(props: {
             )}
             {b && (
               <li className={[styles.state, b.needs_attention ? styles.warn : ""].join(" ")} data-state="backup">
-                <StateName name={t("status.backup")} warn={b.needs_attention} />
+                <StateName name={b.needs_attention ? backupWord(backupState(b), t) : t("status.backup")} warn={b.needs_attention} said />
                 <p className={styles.text}>{backupText(b, t)}</p>
                 {b.configured ? (
                   <Button size="sm" onClick={backupNow}>

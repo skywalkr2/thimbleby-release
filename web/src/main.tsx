@@ -49,7 +49,7 @@ function LiveWording(props: { rc: S["RuntimeConfig"]; children: ReactNode }) {
   // Every moment on every screen is written on the person's own clock, not the computer's.
   setClockZone(rc.timezone);
   setTitleWords(rc.title_words);
-  setTimePrefs({ format: rc.time_format, step: rc.time_step, shortWait: rc.short_wait_minutes });
+  setTimePrefs({ format: rc.time_format, step: rc.time_step, shortWait: rc.short_wait_minutes, language: rc.language });
   return (
     <WordingProvider
       overrides={rc.wording}

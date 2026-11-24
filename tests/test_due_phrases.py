@@ -1002,3 +1002,26 @@ def test_the_demo_workspaces_language_settings_read_the_new_words(tmp_path):
         assert resolve("within two days", NOW_IN_NEW_YORK, ZONE, number_words=settings.due_number_words).end == date(
             2026, 11, 6
         )
+
+
+def test_the_day_after_thanksgiving_is_the_day_after_it_in_every_year():
+    """S-0716: it is Thanksgiving plus one day, not the fourth Friday (which is the day before it in 2024 and 2030)."""
+    from types import SimpleNamespace
+
+    from engine.days_off import holidays_off
+    from engine.due_phrases import holiday_date, load_holidays
+
+    by_name = {name: day for day in load_holidays("en-US") for name in day.names}
+    after = by_name["day after thanksgiving"]
+    assert [holiday_date(after, y) for y in (2024, 2026, 2030)] == [
+        date(2024, 11, 29),
+        date(2026, 11, 27),
+        date(2030, 11, 29),
+    ]
+    cfg = SimpleNamespace(
+        language=SimpleNamespace(holiday_calendar="en-US"), workspace=SimpleNamespace(language="en-US")
+    )
+    off = {day for day, _ in holidays_off(cfg, None, date(2024, 11, 20), date(2024, 11, 30))}
+    assert date(2024, 11, 29) in off and date(2024, 11, 22) not in off
+    off = {day for day, _ in holidays_off(cfg, None, date(2030, 11, 20), date(2030, 11, 30))}
+    assert date(2030, 11, 29) in off and date(2030, 11, 22) not in off

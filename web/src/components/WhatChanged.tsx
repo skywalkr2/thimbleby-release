@@ -19,11 +19,11 @@ import { useEstimate, useSpent } from "../lib/money";
 import { useSetAside } from "../lib/set-aside";
 import { useWaiting, waitingUnder } from "../lib/waiting";
 import { useActSaved } from "../lib/settings-save";
-import { useQueue, useTodayCount } from "../lib/today";
+import { useTodayCount } from "../lib/today";
 import { useFactLine } from "../lib/fact-line";
 import { plainDates } from "../lib/read";
 import { useReadable } from "../lib/readable";
-import { shortTitle } from "../lib/title-dates";
+import { fullTitle, shortTitle } from "../lib/title-dates";
 import { useWords } from "../lib/wording";
 import { Button, ButtonLink } from "../ui/Button";
 import { ListDetail } from "../ui/ListDetail";
@@ -32,7 +32,6 @@ import { ProjectProposalRow } from "./NextSteps";
 import { NoteBox } from "./NoteBox";
 import { Because } from "./Because";
 import { LearnedLines } from "./Learned";
-import { AnswerOnToday } from "./AnswerOnToday";
 import { useChangeThis, type ChangeKind } from "./ChangeThis";
 import { PromiseWhy } from "./PromiseWhy";
 import { RowMenu, type MenuAction } from "./RowMenu";
@@ -190,7 +189,7 @@ export function WhatChanged(props: { compact?: boolean; onOpenGuide?: (step: str
     if (changes.data && waiting.length > 0 && rows.length === 0) setShown(new Set(changes.data.flatMap((c) => [c.id, ...(c.edits ?? []).map((e) => e.id)])));
   }, [changes.data, waiting.length, rows.length]);
 
-  // The list | detail choice (design 7.13): beside the list the newest change is chosen as the list opens; below 1024px the
+  // The list | detail choice (design 7.13): beside the list, where the pane has room, the newest change is chosen as the list opens; below 1024px the
   // detail is a drawer that opens when a change is chosen.
   const beside = useMediaQuery("(min-width: 1024px)") && !props.compact;
   // What needs the person first, then what is with the assistant, then the rest under the day it was handed in; rows that read the
@@ -218,7 +217,9 @@ export function WhatChanged(props: { compact?: boolean; onOpenGuide?: (step: str
     if (picked && !ordered.some((c) => c.id === picked.id)) drawItem(picked.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [picked, groups]);
-  const choice = useListChoice({ keys: ordered.map((c) => c.id), beside, first: null, reset: `${filter}|${intake ?? ""}` });
+  // No row is chosen on arrival where its detail would cover the list (until ListDetail says the pane has room beside it).
+  const [room, setRoom] = useState(false);
+  const choice = useListChoice({ keys: ordered.map((c) => c.id), beside, first: null, wait: !room, reset: `${filter}|${intake ?? ""}` });
   useEffect(() => {
     if (picked) choice.choose(picked.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -291,6 +292,7 @@ export function WhatChanged(props: { compact?: boolean; onOpenGuide?: (step: str
           titleHref={selected?.mail_item && selected.source ? viewHref(recordView("source", selected.source)) : undefined}
           onClose={choice.close}
           fit={CHANGES_FIT}
+          onRoom={setRoom}
           detail={
             selected && folded(selected) ? (
               <FoldedEditsPane item={selected} />
@@ -424,7 +426,8 @@ export function waitsForGo(c: S["ChangeItem"]): boolean {
  * person typed, their words are shown as their note and never as the title; until then (waiting, or stopped) they are all that
  * says what the change is. */
 export function changeTitle(item: S["ChangeItem"], t: T, has: (key: string) => boolean): string {
-  return shortTitle(titleWords(item.title, t, has) || item.source_title || (item.changeset ? "" : firstLine(item.note)) || t("changes.untitled"));
+  // The whole title: a row cuts it by its own width (two lines, then an ellipsis, the whole on hover), never by a count of characters.
+  return fullTitle(titleWords(item.title, t, has) || item.source_title || (item.changeset ? "" : firstLine(item.note)) || t("changes.untitled"));
 }
 
 /** What a change asks the screen to open in its detail: the note to send it back with, or the choice of another account. */
@@ -544,18 +547,6 @@ function useChangeActions(item: S["ChangeItem"], hooks: { onOpenGuide?: (step: s
  * review line; Undo stays here, in each row's menu. */
 function historyMenu(primary: { label: string; run: () => void } | null, menu: MenuAction[]): MenuAction[] {
   return primary ? [{ id: "first-choice", label: primary.label, run: primary.run }, ...menu] : menu;
-}
-
-/** A change that waits for the person is decided on Today: the pane links to its line there, or to Today when the line is not found. */
-function OnTodayLink(props: { item: S["ChangeItem"] }) {
-  const { t } = useWords();
-  const queue = useQueue();
-  const line = (queue.data ?? []).find((l) => !!props.item.changeset && l.changeset === props.item.changeset.id);
-  return (
-    <p className="hint" data-on-today="">
-      {line ? <AnswerOnToday line={line.key} /> : <ButtonLink size="sm" href={viewHref("today")}>{t("changes.decide_on_today")}</ButtonLink>}
-    </p>
-  );
 }
 
 /** The glyph in a row's leading slot for what the change came from, so an email and a calendar entry are not the same row. */
@@ -701,8 +692,11 @@ function SingleChangeListRow(props: ChangeListRowProps) {
   useEffect(() => {
     if (props.reveal) showRow(ref.current);
   }, [props.reveal]);
+  // A change not yet checked has its likeliest next step on the row; a filed one has none (its other choices are in the menu).
+  const next = item.state === "review" && !gated && cs ? primary : null;
   useRowKeys(ref, {
     toggle: () => choice.enter(item.id),
+    primary: next?.run,
     send_back: canSendBack ? () => props.onWant("sendback") : undefined,
   });
   return (
@@ -713,6 +707,7 @@ function SingleChangeListRow(props: ChangeListRowProps) {
       {...choice.rowProps(item.id)}
       lead={kindIcon(item.title?.kind) ? <Icon name={kindIcon(item.title?.kind)!} size={18} /> : undefined}
       title={subject}
+      clamp={subject}
       titleId={`t-${item.id}`}
       meta={withStatus(
         statusOf(item, gated, t),
@@ -725,9 +720,16 @@ function SingleChangeListRow(props: ChangeListRowProps) {
         ),
       )}
       expand={{ expanded: choice.chosen === item.id, inert: choice.chosen === item.id, onToggle: () => choice.choose(item.id) }}
+      primary={
+        next ? (
+          <Button variant="primary" data-key="primary" onClick={next.run}>
+            {next.label}
+          </Button>
+        ) : undefined
+      }
       menu={
         <>
-          <RowMenu label={title} actions={historyMenu(primary, menu)} />
+          <RowMenu label={title} actions={next ? menu : historyMenu(primary, menu)} />
           {undoAllDialog}
         </>
       }
@@ -775,7 +777,7 @@ export function ChangeRow(props: {
   open?: boolean;
   sendBack?: boolean;
   pane?: boolean;
-  /** What changed's own detail: the history, with every choice in the menu and no button (Today's inspector has them). */
+  /** What changed's own detail: the history, with every choice in the menu and no button, except for what waits for the person (Today's inspector has them all). */
   history?: boolean;
   want?: ChangeWant | null;
 }) {
@@ -783,6 +785,10 @@ export function ChangeRow(props: {
   const spentLine = useSpent();
   const { item } = props;
   const cs = item.changeset;
+  // In the detail beside the list, a change that waits for the person is decided where it is read: its buttons are the ones its
+  // line on Today has, so nothing sends the person to another screen to act. Everything else stays the history.
+  const decidesHere = !!props.pane && (item.state === "needs_you" || !!cs?.ops.some((o) => o.status === "held" || (o.ask && o.ask.status === "open")));
+  const history = !!props.history && !decidesHere;
   // Every row that holds a question for the person starts open, whatever state its request is in, so none sits closed.
   const asks = !!cs?.ops.some((o) => o.ask?.status === "open");
   const gated = waitsForGo(item);
@@ -819,7 +825,7 @@ export function ChangeRow(props: {
 
   useRowKeys(ref, {
     toggle: props.pane ? undefined : () => setOpen((v) => !v),
-    primary: props.history ? undefined : primary?.run,
+    primary: history ? undefined : primary?.run,
     send_back: canSendBack ? () => {
       setOpen(true);
       setSendingBack(true);
@@ -828,12 +834,12 @@ export function ChangeRow(props: {
 
   const actions = (
     <Actions>
-      {primary && !props.history && (
+      {primary && !history && (
         <Button variant="primary" onClick={primary.run}>
           {primary.label}
         </Button>
       )}
-      <RowMenu label={title} actions={props.history ? historyMenu(primary, menu) : menu} />
+      <RowMenu label={title} actions={history ? historyMenu(primary, menu) : menu} />
       {undoAllDialog}
     </Actions>
   );
@@ -847,15 +853,15 @@ export function ChangeRow(props: {
   const list = cs && cs.ops.length > 0 && (
             <ItemList pane={props.pane} aria-label={tn(item.own ? "changes.did_own" : "changes.did", cs.ops.length)}>
               {(cs.groups ?? []).map((group) => (
-                <GroupRow key={`g-${group.id}`} group={group} cs={cs} history={props.history} />
+                <GroupRow key={`g-${group.id}`} group={group} cs={cs} history={history} />
               ))}
               {cs.ops
                 .filter((op) => !op.answer_group)
                 .map((op) =>
-                  op.op === "project.add" && op.status === "held" && !props.history ? (
+                  op.op === "project.add" && op.status === "held" && !history ? (
                     <ProjectProposalRow key={op.index} op={op} changeset={cs.id} />
                   ) : (
-                    <OpRow key={op.index} op={op} cs={cs} source={item.source} history={props.history} />
+                    <OpRow key={op.index} op={op} cs={cs} source={item.source} history={history} />
                   ),
                 )}
             </ItemList>
@@ -876,7 +882,7 @@ export function ChangeRow(props: {
           )}
           {cs && <Because cs={cs} />}
           {cs && cs.ops.length === 0 && <p className="hint">{t("changes.nothing_done")}</p>}
-          {cs && !props.history && cs.ops.filter((o) => o.status === "held").length > 1 && <ReleaseAll cs={cs} />}
+          {cs && !history && cs.ops.filter((o) => o.status === "held").length > 1 && <ReleaseAll cs={cs} />}
           {cs && cs.ops.length > 0 && (account && !foldOpen ? <Fold label={t("changes.account.fold", { n: cs.ops.length })}>{list}</Fold> : list)}
           {sendingBack && cs && <SendBackForm cs={cs.id} onDone={() => setSendingBack(false)} />}
           {choosing && <AccountChooser request={item.id} onDone={() => setChoosing(false)} />}
@@ -897,7 +903,6 @@ export function ChangeRow(props: {
           actions={actions}
         />
         {secondOpinion && <p className="hint">{secondOpinion}</p>}
-        {item.state === "needs_you" && !gated && !item.dismissed && <OnTodayLink item={item} />}
         {open && <RowBody pane id={`b-${item.id}`}>{opened}</RowBody>}
       </DetailItem>
     );
@@ -912,7 +917,7 @@ export function ChangeRow(props: {
       metaLines={[withStatus(status, sub), secondOpinion]}
       expand={{ expanded: open, controls: `b-${item.id}`, onToggle: () => setOpen(!open) }}
       primary={
-        primary && !props.history ? (
+        primary && !history ? (
           <Button variant="primary" onClick={primary.run}>
             {primary.label}
           </Button>
@@ -920,7 +925,7 @@ export function ChangeRow(props: {
       }
       menu={
         <>
-          <RowMenu label={title} actions={props.history ? historyMenu(primary, menu) : menu} />
+          <RowMenu label={title} actions={history ? historyMenu(primary, menu) : menu} />
           {undoAllDialog}
         </>
       }
@@ -985,6 +990,7 @@ const DID: Record<string, string> = {
   fact: "recorded",
   "event.add": "recorded",
   "event.set": "recorded",
+  "event.cancel": "recorded",
   "series.add": "recorded",
   "series.link": "recorded",
   "agenda.add": "recorded",
@@ -1045,24 +1051,8 @@ const CHANGEABLE: ChangeKind[] = ["action", "question", "decision", "event", "fa
 /** The ops about a promise: the row shows why it exists and how it ended, beside the words the op rests on. */
 const PROMISE_OPS = new Set(["action.add", "action.close", "action.drop", "action.move", "action.part", "action.news"]);
 
-/** What changed's one link for a held item: the item is answered on its line on Today, so here it is information and this
- * opens that line. Every held item has its line, so a missing one (the queue not loaded yet) shows no link for now. */
-function HeldOnToday(props: { changeset: string; op: number; question?: string }) {
-  const queue = useQueue();
-  const all = queue.data ?? [];
-  const lines = all.filter((l) => l.changeset === props.changeset);
-  // A question about an item (who owns it) is a line of its own, found by the question; a hold, by the change and its op.
-  const line = (props.question ? all.find((l) => l.question === props.question) : undefined) ?? lines.find((l) => l.op === props.op) ?? lines.find((l) => l.kind === "project_ending");
-  if (!line) return null;
-  return (
-    <div className="full">
-      <AnswerOnToday line={line.key} />
-    </div>
-  );
-}
-
-/** One thing the assistant did. In the history (`history`) a held item has no button: it is shown as information with a
- * link to its line on Today, and Undo is in the row's menu. */
+/** One thing the assistant did. In the history (`history`) the row has no button and Undo is in its menu; a held item is not
+ * history, it is decided in its row with the answers its line on Today has. */
 export function OpRow(props: { op: S["OpView"]; cs: S["ChangesetView"]; source: string | null; history?: boolean }) {
   const { t, tn, has } = useWords();
   const act = useAct();
@@ -1185,7 +1175,6 @@ export function OpRow(props: { op: S["OpView"]; cs: S["ChangesetView"]; source: 
         </div>
       )}
       {changeKind && change.form}
-      {history && (op.status === "held" || ask) && <HeldOnToday changeset={cs.id} op={op.index} question={ask?.id} />}
       {ask && !history && (
         <div className="full">
           <AskChooser ask={ask} fold={{ changeset: cs.id, index: op.index }} />
@@ -1232,7 +1221,6 @@ function GroupRow(props: { group: S["AnswerGroupView"]; cs: S["ChangesetView"]; 
   const menu: MenuAction[] = [];
   if (group.applied || group.held) menu.push({ id: "drop", danger: true, label: t("changes.group.drop"), run: () => void drop() });
   useRowKeys(ref, { primary: group.held && !props.history ? () => void keep() : undefined });
-  const firstHeld = props.history && group.held ? cs.ops.find((o) => o.answer_group === group.label && o.status === "held") : undefined;
   return (
     <Item row ref={ref}>
       <div>
@@ -1247,7 +1235,6 @@ function GroupRow(props: { group: S["AnswerGroupView"]; cs: S["ChangesetView"]; 
         )}
         <RowMenu label={group.label} actions={menu} />
       </Actions>
-      {firstHeld && <HeldOnToday changeset={cs.id} op={firstHeld.index} />}
     </Item>
   );
 }

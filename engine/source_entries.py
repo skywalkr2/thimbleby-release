@@ -36,6 +36,12 @@ def keep(store: Any, cfg: Any, source: Any, items: list[SourceItem], now: dateti
     view = store.read()
     people = People(store, cfg)
     mine, names = entry_rules.identity(view, cfg)
+    if getattr(source, "role", None) == "deleted":
+        # Deleted mail is read for the schedule and for learning only: an invitation in it, whatever it asks, is no
+        # entry (the person declined it, it was called off, or they dropped it), decided by its own calendar data.
+        wanted = [i for i in wanted if not entry_rules.carries_invitation(i.event, mine, names)]
+        if not wanted:
+            return []
     made: list[str] = []
     try:
         with store.transaction() as tx:

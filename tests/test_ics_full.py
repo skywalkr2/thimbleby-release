@@ -3,6 +3,7 @@ over a window that is a setting, invitations and their attendees kept on calenda
 a changed or cancelled occurrence touching only that occurrence. Read through the connector and through a source's
 read, with no network and no AI."""
 
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -269,6 +270,7 @@ def source(tmp_path):
 
     def put(name_or_text, at=NOW):
         path.write_text(text_of(name_or_text) if name_or_text.endswith(".ics") else name_or_text)
+        os.utime(path, (at.timestamp(), at.timestamp()))  # changed at the test's own time, so the copy is fresh (R3)
         return refresh(ws, store, cfg, "calendar", at)
 
     yield ws, cfg, store, put

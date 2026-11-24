@@ -8,8 +8,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { api, type S } from "../lib/api";
 import { useAct } from "../lib/act";
-import { useAgo } from "../lib/ago";
-import { day, dayAndTime } from "../lib/dates";
+import { Ago } from "../ui/Ago";
+import { day } from "../lib/dates";
 import { useTotal } from "../lib/money";
 import { useSides } from "../lib/sides";
 import { recordView, viewHref } from "../lib/views";
@@ -27,6 +27,9 @@ import { RowMenu, type MenuAction } from "./RowMenu";
 import { SafeText } from "./SafeText";
 import { Unfiled } from "./Unfiled";
 import { Views } from "./Views";
+import { InRowActions } from "../ui/rowContext";
+import { ProjectStatusMark } from "./ProjectStatusMark";
+import { statusDisagrees } from "../lib/project-health";
 import styles from "./Projects.module.css";
 
 import { PageHeader } from "../ui/PageHeader";
@@ -105,7 +108,6 @@ export function Projects() {
   const { t, tn } = useWords();
   const act = useAct();
   const total = useTotal();
-  const ago = useAgo();
   const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects });
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<Project | null>(null);
@@ -133,10 +135,19 @@ export function Projects() {
   // Projects at a glance: the stage, the target day and when it was last updated come first. A health column is for a pack
   // that provides one; the core has none.
   const columns: TableColumn<Project>[] = [
-    { id: "status", header: t("setup.status"), rank: 1, core: true, cell: (p) => (p.status ? <Pill tone={p.status_tone ?? "neutral"}>{p.status}</Pill> : "") },
+    { id: "status", header: t("setup.status"), rank: 1, core: true, cell: (p) =>
+        p.status ? (
+          <>
+            <Pill tone={p.status_tone ?? "neutral"}>{p.status}</Pill>
+            <ProjectStatusMark project={p} />
+          </>
+        ) : (
+          ""
+        ),
+    },
     { id: "stage", header: t("projects.col.stage"), rank: 1, cell: (p) => p.phase ?? "" },
     { id: "target", header: t("projects.col.target"), rank: 1, core: true, cell: (p) => (p.target ? day(p.target) : "") },
-    { id: "updated", header: t("projects.col.updated"), rank: 2, cell: (p) => ago(p.last_change) },
+    { id: "updated", header: t("projects.col.updated"), rank: 2, cell: (p) => <Ago iso={p.last_change} /> },
     { id: "group", header: t("projects.col.group"), rank: 2, cell: (p) => p.group ?? "" },
     { id: "owner", header: t("setup.owner"), rank: 2, core: true, cell: (p) => p.owner_name ?? "" },
     { id: "actions", header: t("projects.col.actions"), rank: 1, core: true, numeric: true, cell: (p) => (p.open_actions > 0 ? p.open_actions : "") },
@@ -208,7 +219,16 @@ export function Projects() {
                 selected={chosen}
                 onSelect={(p) => setChosen(p.id)}
                 actionsHeader={t("people.col.actions")}
-                actions={(p) => <RowMenu label={p.name} actions={menu(p)} />}
+                actions={(p) => (
+                  <InRowActions.Provider value={true}>
+                    {statusDisagrees(p) && (
+                      <Button size="sm" variant="primary" onClick={() => setEditing(p)} aria-label={`${t("project.health.update")}: ${p.name}`}>
+                        {t("project.health.update")}
+                      </Button>
+                    )}
+                    <RowMenu label={p.name} actions={menu(p)} />
+                  </InRowActions.Provider>
+                )}
               />
               {real.length > 0 && <p className="hint">{tn("projects.count", real.length)}</p>}
             </>
@@ -241,6 +261,7 @@ function ProjectDetail(props: { project: Project; parent?: Project; total: (n: n
       <Actions align="end">
         {p.completed && <Pill tone="ok">{t("projects.group.completed")}</Pill>}
         {p.status && !p.completed && <Pill tone={p.status_tone ?? "neutral"}>{p.status}</Pill>}
+        <ProjectStatusMark project={p} />
       </Actions>
       {p.summary && <SafeText text={p.summary} />}
       <DefinitionList>
@@ -254,7 +275,7 @@ function ProjectDetail(props: { project: Project; parent?: Project; total: (n: n
         {fact(t("setup.budget"), p.budget_usd != null ? t("projects.budget_spent", { budget: props.total(p.budget_usd), spent: props.total(p.spent_usd) }) : null)}
         {fact(t("projects.col.actions"), p.open_actions > 0 ? tn("projects.open_actions", p.open_actions) : null)}
         {fact(t("projects.col.questions"), p.open_questions > 0 ? tn("projects.open_questions", p.open_questions) : null)}
-        {fact(t("projects.col.changed"), p.last_change ? dayAndTime(p.last_change) : null)}
+        {fact(t("projects.col.changed"), p.last_change ? <Ago iso={p.last_change} /> : null)}
       </DefinitionList>
       {mine.length > 0 && (
         <section aria-label={t("projects.notes")}>
@@ -273,7 +294,7 @@ function ProjectDetail(props: { project: Project; parent?: Project; total: (n: n
           {t("records.open_page", { name: p.name })}
         </ButtonLink>
         <Button variant="primary" onClick={props.onEdit}>
-          {t("setup.edit")}
+          {statusDisagrees(p) ? t("project.health.update") : t("setup.edit")}
         </Button>
       </Actions>
       <RecordConversation key={p.id} kind="project" id={p.id} />

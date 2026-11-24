@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { api, type S } from "./api";
 import { useWords } from "./wording";
+import { clockDay } from "./dates";
 
 type Say = (key: string, vars?: Record<string, string | number>) => string;
 export type Shape = S["RepeatShapeView"];
@@ -70,7 +71,7 @@ const startFormat = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", month:
 
 /** The whole sentence: "Every Monday and Thursday, starting November 2". */
 export function saidRepeat(t: Say, shape: Shape, start: string): string {
-  const [y, m, d] = start.slice(0, 10).split("-").map(Number);
+  const [y, m, d] = clockDay(start).split("-").map(Number);
   return t("repeat.starting", { said: saidShape(t, shape), date: startFormat.format(new Date(Date.UTC(y, m - 1, d))) });
 }
 

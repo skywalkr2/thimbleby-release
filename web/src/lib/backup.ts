@@ -19,6 +19,21 @@ export function backupText(b: S["BackupStatus"], t: T): string {
   return b.encrypted ? `${text} · ${t("backup.encrypted")}` : text;
 }
 
+export type BackupState = "unset" | "never" | "failed" | "overdue" | "smaller" | "ok";
+
+/** The backup's one state, named the same in the header chip, Today's line and the popover. */
+export function backupState(b: S["BackupStatus"]): BackupState {
+  if (!b.configured) return "unset";
+  if (b.age_hours === null) return b.last_error ? "failed" : "never";
+  if (b.last_error && b.needs_attention) return "failed";
+  return b.needs_attention ? "overdue" : "ok";
+}
+
+/** The one word for a backup state (wording `backup.word.<state>`): "Backup failed", "Backup overdue". */
+export function backupWord(state: BackupState | string, t: T): string {
+  return t(`backup.word.${state}`);
+}
+
 /** How the backup stands, for the state mark: a danger when the last try failed, a warning when one is due, fine when it is
  * recent, and quiet when none is set up. */
 export function backupTone(b: S["BackupStatus"]): "ok" | "warn" | "danger" | "neutral" {

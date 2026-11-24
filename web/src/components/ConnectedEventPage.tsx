@@ -3,7 +3,7 @@
 // domain. It uses the record page's layout. Everything on it is the calendar's own words, so it is shown as text only.
 import { useQuery } from "@tanstack/react-query";
 import { api, type S } from "../lib/api";
-import { day, wallTime } from "../lib/dates";
+import { clockDay, day, wallTime } from "../lib/dates";
 import { useQueue } from "../lib/today";
 import { useWords } from "../lib/wording";
 import { ClashDetail } from "./ClashDetail";
@@ -29,7 +29,7 @@ function whenText(event: S["ConnectedEventView"], t: T): string {
     return event.end ? t("schedule.event.all_day_range", { start: day(event.start), end: day(event.end) }) : t("schedule.event.all_day", { date: day(event.start) });
   }
   if (!event.end) return t("schedule.event.day_and_time", { date: day(event.start), time: wallTime(event.start) });
-  if (event.end.slice(0, 10) === event.start.slice(0, 10)) {
+  if (clockDay(event.end) === clockDay(event.start)) {
     return t("schedule.event.range_same_day", { date: day(event.start), start: wallTime(event.start), end: wallTime(event.end) });
   }
   return t("schedule.event.range_other_day", {

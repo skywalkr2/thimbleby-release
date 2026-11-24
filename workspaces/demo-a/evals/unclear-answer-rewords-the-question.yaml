@@ -1,0 +1,38 @@
+id: unclear-answer-rewords-the-question
+title: A "Yes please" to an either-or question is not the answer; the same question is reworded to ask which and stays open
+skills: [evidence, close-right-item]
+received: '2026-10-14'
+# The person's answer is stored when they give it and the run judges it: one that picks nothing leaves the original
+# question open, reworded, with no answer, and no second question is asked beside it.
+given:
+- kind: question
+  id: Q-90
+  fields:
+    kind: decision
+    projects: [PRJ-1]
+    title: Should the status page use the light or the dark theme?
+    text: The status page can use the light theme or the dark theme.
+    to: PER-1
+typed_on:
+  route: answered
+  kind: question
+  id: Q-90
+note: Yes please
+summary_voice: true
+expect:
+- op: question.update
+  id: Q-90
+  text_has:
+  - which
+  - light|dark
+forbid:
+- op: question.add
+- op: question.done
+- op: fact
+stub_answer:
+  summary: Asked which theme you want, since the answer didn't pick one.
+  ops:
+  - op: question.update
+    id: Q-90
+    title: Which theme should the status page use, light or dark?
+    text: Your answer didn't pick one. The status page can use the light theme or the dark theme.

@@ -29,18 +29,35 @@ _ENGINE = WriteContext(actor="engine", trust="trusted", op="answer.effect")
 
 def question_of(store: Store, request: dict[str, Any]) -> Any | None:
     """The question a request handles the person's answer or correction to, or None for any other request."""
+    return judged_question(store.read(), request)
+
+
+def judged_question(reader: Any, request: dict[str, Any]) -> Any | None:
+    """`question_of`, read from any reader of the records."""
     if request.get("task") != "notes" or request.get("origin") != "pm" or not request.get("source"):
         return None
     about = request.get("about") or {}
     if about.get("kind") != "question":
         return None
-    source = store.read().get("source", request["source"])
+    source = reader.get("source", request["source"])
     if source is None or source.data.get("kind") not in {f"note:{route}" for route in ROUTES}:
         return None
-    question = store.read().get("question", about["id"])
+    question = reader.get("question", about["id"])
     if question is None or (question.data.get("resolves") or {}).get("kind") in SELF_ACTING:
         return None
     return question
+
+
+def judging_answer(reader: Any, request_id: str, question_id: str) -> bool:
+    """Whether the run on `request_id` is the one judging the person's answer to `question_id`: the answer is stored
+    when the person gives it, and this run decides whether it settles the question. A run that finds it doesn't (a
+    "yes please" to an either-or question) rewords the question, which leaves it open with no answer."""
+    request = reader.get("request", request_id)
+    found = judged_question(reader, request.data) if request is not None else None
+    if found is None or found.id != question_id:
+        return False
+    source = reader.get("source", request.data["source"])
+    return source.data.get("kind") in ("note:answered", "note:answered_for")
 
 
 def changed(store: Store, request_id: str, changeset_id: str) -> bool:

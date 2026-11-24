@@ -147,6 +147,8 @@ away_words: [vacation, holiday, leave, out of office, ooo, away, pto, time off, 
 version_patterns: ['\b[vV]\d+(?:\.\d+){0,3}\b', '\b\d{1,3}\.\d{1,3}\.\d{1,3}(?:\.\d{1,5})?\b', '(?i)\b(?:version|ver\.?|release|build)\s+\d+(?:\.\d+)*\b']
 # Words that show a project's summary holds findings instead of its status (see the summary-is-status check).
 findings_words: [found, finding, findings, discovered, discrepancy, discrepancies, inconsistency, inconsistencies, mismatch, turns out]
+# Words with which a run's summary speaks as the assistant (see the summary-first-person check).
+first_person_words: [I, I'm, I've, I'll, I'd, me, my, myself, mine]
 # Phrases that say a change made a draft, a write-up or a file (see the unlinked-made check).
 made_phrases: [drafted, wrote up, write-up, writeup, created a draft, made a draft, prepared a draft, saved a draft, created a file, made a file, saved a file, generated a file, created a document, made a document, saved a document, created minutes, wrote minutes, made minutes]
 # Phrases with which a request asks someone else to remove, replace or stop something (see the asks-to-take-away check).

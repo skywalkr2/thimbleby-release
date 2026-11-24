@@ -140,7 +140,10 @@ def test_a_fact_with_no_source_and_no_day_of_its_own_is_dated_by_the_day_it_was_
     fact = make(store, "fact", {"text": "Both spines are in the folder.", "project": prj})
     [shown] = seen(store, cfg, prj)["facts"]
     assert shown["id"] == fact and shown["source"]["kind"] is None and shown["source"]["basis"] is None
-    assert shown["source"]["on"] == str(store.read().ledger(kind="fact", record_id=fact)[0]["at"])[:10]
+    from engine.local_day import day_of, zone_of
+
+    filed = store.read().ledger(kind="fact", record_id=fact)[0]["at"]
+    assert shown["source"]["on"] == day_of(filed, zone_of(cfg)).isoformat()  # the person's day, never a UTC slice
 
 
 def test_a_fact_about_a_series_of_books_reaches_the_book_only_when_it_says_so(env):

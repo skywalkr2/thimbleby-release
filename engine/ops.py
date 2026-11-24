@@ -339,6 +339,22 @@ class EventGuestsOp(OpModel):
         return f"Say who is on {named(view, 'event', self.id)}"
 
 
+class EventCancelOp(OpModel):
+    """Mark a calendar entry in the list called off, when a later input cancels the booking, appointment or delivery
+    that entry was made from ("your reservation has been canceled"). Only an entry the assistant made from mail: never
+    the person's own entry, never one a connected calendar holds (the calendar says so itself), and never one the
+    person has changed. The entry stays on the schedule, struck through with the quoted words as the reason, and the
+    person can Undo. Leave the entry as it is when the input leaves it unclear that it is the same booking. Evidence is
+    required."""
+
+    op: Literal["event.cancel"] = "event.cancel"
+    id: Annotated[str, RefTo("event")] = Field(description="The id of the calendar entry that is called off.")
+    evidence: EvidenceIn = Field(description="The exact words from the input that cancel it.")
+
+    def describe(self, view: Any = None) -> str | None:
+        return f"Call off {named(view, 'event', self.id)}"
+
+
 class SeriesAddOp(OpModel):
     """A meeting or check-in that repeats, when the input says so ("every Tuesday"). `events` names existing entries
     that are instances of it. Never add one that is already in the lists. Evidence is required."""
@@ -2369,6 +2385,7 @@ Op = Annotated[
     | EventAddOp
     | EventSetOp
     | EventGuestsOp
+    | EventCancelOp
     | SeriesAddOp
     | SeriesLinkOp
     | AgendaAddOp
@@ -2466,6 +2483,7 @@ OP_MODELS: dict[str, type[OpModel]] = {
     "event.add": EventAddOp,
     "event.set": EventSetOp,
     "event.guests": EventGuestsOp,
+    "event.cancel": EventCancelOp,
     "series.add": SeriesAddOp,
     "series.link": SeriesLinkOp,
     "agenda.add": AgendaAddOp,
@@ -2565,6 +2583,7 @@ OVERWRITING_OPS: frozenset[str] = frozenset(
     {
         "record.set",
         "event.set",
+        "event.cancel",
         "action.move",
         "action.hold",
         "action.unhold",
@@ -2671,7 +2690,7 @@ def overwritten_by(op: Any) -> list[tuple[str, str]]:
         return []
     if name == "record.set":
         return [(op.kind, op.id)]
-    if name == "event.set":
+    if name in ("event.set", "event.cancel"):
         return [("event", op.id)]
     if name == "person.stance":
         return [("person", op.id)]
@@ -2765,6 +2784,7 @@ NEEDS_EVIDENCE = {
     "event.add",
     "event.set",
     "event.guests",
+    "event.cancel",
     "series.add",
     "series.link",
     "agenda.add",

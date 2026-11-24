@@ -261,6 +261,7 @@ FILES_ONLY = (
     "ui.today.schedule_days",
     "ui.today.stale_after_days",
     "ui.today.fold_batches_after_days",
+    "ui.today.fold_sends_from",
     "ui.today.top_priorities_lines",
     "ui.today.top_priorities_ahead_days",
     "ui.today.heavy_day_from",

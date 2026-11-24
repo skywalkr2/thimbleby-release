@@ -1,0 +1,28 @@
+id: refused-day-keeps-what-the-note-said
+title: A need stated "before then" keeps a fact or a to-do about it; the day the words don't state is not recorded
+skills: [dates, evidence]
+received: '2026-10-14'
+summary_voice: true
+# The thread's earlier line gives the day (December 4). The sentence the assistant quotes does not, so a day it works
+# out is left out of the fact; what the sentence says about the jacket copy is kept.
+pasted: |-
+  Ana Reyes: The launch event is on December 4.
+  Ana Reyes: The marketing group needs the jacket copy before then.
+expect:
+- op: fact
+  text_has:
+  - jacket copy
+forbid:
+- op: question.add
+allow:
+- action.add
+- event.add
+stub_answer:
+  summary: Recorded that the marketing group needs the jacket copy before the launch event.
+  ops:
+  - op: fact
+    text: The marketing group needs the jacket copy before the launch event on December 4
+    "on": '2026-12-03'
+    on_kind: deadline
+    evidence:
+      quote: The marketing group needs the jacket copy before then

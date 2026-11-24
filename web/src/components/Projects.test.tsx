@@ -471,3 +471,24 @@ test("a finished project stays under Completed after the sides", async () => {
   const bodies = screen.getAllByRole("rowgroup").filter((g) => g.tagName === "TBODY");
   expect(bodies.map((b) => b.getAttribute("aria-label"))).toEqual(["Orchard Press", "Completed"]);
 });
+
+// S-0735: a typed status that disagrees with what the app sees says so, in words, and its row's primary is Update status.
+test("a status that says all is well beside overdue to-dos is marked with the reasons and the row offers Update status, and one that agrees has neither", async () => {
+  const user = userEvent.setup();
+  api([
+    project("PRJ-1", "Harbor", { status: "On track", status_tone: "ok", status_meaning: "open", status_disagrees: true, overdue_actions: 6, quiet_weeks: 6, open_actions: 11 }),
+    project("PRJ-2", "Dock", { status: "On track", status_tone: "ok", status_meaning: "open" }),
+  ]);
+  renderApp(<Projects />);
+  const harbor = await row("Harbor");
+  expect(within(harbor).getByText("On track")).toBeInTheDocument();
+  expect(within(harbor).getByText("6 overdue · no change in 6 weeks")).toBeInTheDocument();
+  expect(within(harbor).getByRole("img", { name: "The status may be out of date" })).toBeInTheDocument();
+  const update = within(harbor).getByRole("button", { name: /^Update status/ });
+  expect(update).toHaveAttribute("data-weight", "outline");
+  const dock = await row("Dock");
+  expect(within(dock).queryByRole("button", { name: /^Update status/ })).toBeNull();
+  expect(within(dock).queryByText(/overdue/)).toBeNull();
+  await user.click(update);
+  expect(await screen.findByRole("dialog", { name: "Edit project" })).toBeInTheDocument();
+});

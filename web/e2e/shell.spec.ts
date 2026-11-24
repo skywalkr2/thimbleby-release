@@ -448,7 +448,8 @@ test.describe("screen use and the shell", () => {
       await expect(popover).toBeVisible();
       await expect(async () => {
         const inHeader = (await line.count()) > 0 && (await line.first().isVisible());
-        const inPopover = await popover.locator('[data-state="alive"]').isVisible();
+        // Its row in the popover: the assistant's own state, or, where an account is missing or a practice one, the account's section.
+        const inPopover = await popover.locator('[data-state="alive"], [data-state="assistant"]').first().isVisible();
         expect(inHeader || inPopover, "the assistant's state is in the header line or the status popover").toBe(true);
       }).toPass(SAVED);
       await expectNoViolations(page);
@@ -458,11 +459,13 @@ test.describe("screen use and the shell", () => {
     });
   }
 
-  test("the sidebar keeps its labels from 1024px and is an icon rail below that, with a name for each icon, and can be pinned open", async ({ page }) => {
+  test("the sidebar keeps its labels from 1280px and is an icon rail below that (1024 to 1279 too), with a name for each icon, and can be pinned open", async ({ page }) => {
     await withStages(page);
-    await page.setViewportSize({ width: 1024, height: 800 });
+    await page.setViewportSize({ width: 1280, height: 800 });
     await signIn(page);
     expect((await page.getByRole("navigation", { name: "Views" }).boundingBox())!.width).toBeGreaterThan(200);
+    await page.setViewportSize({ width: 1024, height: 800 });
+    await expect.poll(async () => (await page.getByRole("navigation", { name: "Views" }).boundingBox())!.width).toBeLessThan(80);
     await page.setViewportSize({ width: 900, height: 800 });
     const nav = page.getByRole("navigation", { name: "Views" });
     // The window's new width reaches the menu with the next draw, so the width is read until it has.

@@ -3,6 +3,7 @@
 // a line's title its width (at least 25 characters at 390px), and a row's action is tonal in both themes with only the line
 // that has the cursor filled. The queue is served by the test, so the checks are of the screen and not of the demo's data;
 // it has the server of Today's capacity, which no other scenario has added lines to.
+// The line opens under itself at 1200px (below the width from which a line opens in the rail, see today-rail.spec.ts).
 import { expect, type Page } from "@playwright/test";
 import { test } from "./test";
 import { openScreen } from "./open-screen";
@@ -71,7 +72,7 @@ test.describe("A review happens on Today", () => {
       gone = true;
       await route.fulfill({ json: { changesets: ["CS-1"], signals: ["SIG-1"] } });
     });
-    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.setViewportSize({ width: 1200, height: 900 });
     await signIn(page);
     const rows = page.locator("[data-queue-line]");
     await expect(rows.first()).toBeVisible();
@@ -112,7 +113,7 @@ test.describe("A review happens on Today", () => {
       items: [{ ...draft, request: "REQ-2", changeset: "CS-2" }],
     };
     await serve(page, () => [line]);
-    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.setViewportSize({ width: 1200, height: 900 });
     await signIn(page);
     const row = page.locator('[data-queue-line="review"]');
     await row.getByRole("button", { name: "Look over", exact: true }).click();
@@ -127,7 +128,7 @@ test.describe("A review happens on Today", () => {
     await page.unrouteAll({ behavior: "ignoreErrors" });
   });
 
-  for (const size of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+  for (const size of [{ width: 1200, height: 900 }, { width: 390, height: 844 }]) {
     test(`Not right opens its note with Send back fully in view at ${size.width}px, with the box at most 72 characters wide`, async ({ page }) => {
       await serve(page, () => lines);
       await page.setViewportSize(size);

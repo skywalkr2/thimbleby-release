@@ -17,6 +17,7 @@ import styles from "./ReminderWhere.module.css";
 import { Select } from "../ui/Select";
 import { CheckboxGroup } from "../ui/CheckboxGroup";
 import { useWrite } from "../lib/write";
+import { clockDay } from "../lib/dates";
 
 const WHERE_KEY = "steward.reminders.where";
 const ACCOUNT_KEY = "steward.reminders.where_account";
@@ -124,7 +125,7 @@ export function ReminderWhere() {
     ? t("reminders.where.state.going", {
         where: whereWords(going.form, t),
         account: going.account_label ?? going.account,
-        since: going.given_at.slice(0, 10),
+        since: clockDay(going.given_at),
       })
     : outward && chosenAccount && data.where === outward && data.account === chosenAccount
       ? t("reminders.where.state.ask")

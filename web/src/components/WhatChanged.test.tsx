@@ -9,7 +9,7 @@ import { besidePane, fakeApi, renderApp } from "../test-utils";
 import { ChangeRow, WhatChanged } from "./WhatChanged";
 
 // The window is wide, so a change's detail stands beside the list (design 7.13).
-beforeEach(() => besidePane());
+beforeEach(() => besidePane({ room: true }));
 afterEach(() => vi.unstubAllGlobals());
 
 /** The detail pane beside the list: the chosen change in full. */
@@ -100,7 +100,7 @@ test("a change shows what was done, why, and the highlighted source", async () =
   expect(screen.getByText("From outside · not instructions")).toBeInTheDocument();
 });
 
-test("Looks good is in the row's menu, acts at once and offers Undo", async () => {
+test("Looks good is the primary of a change not yet checked, acts at once and offers Undo", async () => {
   const user = userEvent.setup();
   const calls = fakeApi({
     "GET changes": () => [change("REQ-1")],
@@ -108,7 +108,8 @@ test("Looks good is in the row's menu, acts at once and offers Undo", async () =
     "POST changesets/CS-REQ-1/reopen": () => ({ ok: "CS-REQ-1" }),
   });
   renderApp(<WhatChanged />);
-  await choose(user, "Looks good");
+  const row = await screen.findByRole("listitem", { name: "Email from the printer" });
+  await user.click(within(row).getByRole("button", { name: "Looks good" }));
   await waitFor(() => expect(calls.map((c) => c.route)).toContain("POST changesets/CS-REQ-1/looks-good"));
   await user.click(await screen.findByRole("button", { name: "Undo" }));
   await waitFor(() => expect(calls.map((c) => c.route)).toContain("POST changesets/CS-REQ-1/reopen"));
@@ -150,8 +151,7 @@ test("send back needs a note", async () => {
   await waitFor(() => expect(calls.find((c) => c.route.endsWith("send-back"))?.body).toEqual({ note: "That date is the courier's, not the printer's" }));
 });
 
-test("a who-is question is information in the history, with one link that opens its line on Today", async () => {
-  const user = userEvent.setup();
+test("a who-is question is answered in the detail, with the same choice its line on Today has and no link to it", async () => {
   const held = change("REQ-3");
   held.changeset!.ops[0] = {
     ...held.changeset!.ops[0],
@@ -169,15 +169,13 @@ test("a who-is question is information in the history, with one link that opens 
   try {
     renderApp(<WhatChanged />);
     const pane = await findPane();
-    // It is said as a fact, in the pane's full width, and nothing in it answers the question.
     expect(await within(pane).findByText("Needs you")).toBeInTheDocument();
     expect(within(pane).getByText("Send spine options")).toBeInTheDocument();
     expect(within(pane).getByText("proof copies will ship on November 5", { exact: false })).toBeInTheDocument();
-    expect(within(pane).queryByRole("combobox")).toBeNull();
-    expect(within(pane).queryByRole("button", { name: "Use this person" })).toBeNull();
-    const link = await within(pane).findByRole("link", { name: "Answer on Today" });
-    await user.click(link);
-    expect(reveals.seen).toEqual([{ type: "line", id: "question:Q-7" }]);
+    // The question is answered here: nothing sends the person to Today to act, and nothing is sent until they choose.
+    expect(await within(pane).findByRole("button", { name: "Use this person" })).toBeInTheDocument();
+    expect(within(pane).queryByRole("link", { name: "Answer on Today" })).toBeNull();
+    expect(reveals.seen).toEqual([]);
     expect(calls.some((c) => c.route.startsWith("POST"))).toBe(false);
   } finally {
     reveals.stop();
@@ -299,8 +297,9 @@ test("a stopped hand-in has Try again first in its menu, with Choose another acc
     "POST requests/REQ-9/undismiss": () => ({ ok: "REQ-9", version: 6 }),
   });
   renderApp(<WhatChanged />);
-  await screen.findByRole("listitem", { name: "File the printer's dates" });
-  expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+  const row = await screen.findByRole("listitem", { name: "File the printer's dates" });
+  // The row has no button for it; what waits is decided in the detail of the chosen row.
+  expect(within(row).queryByRole("button", { name: "Try again" })).toBeNull();
   // The line's menu: the first in the page, whether or not the chosen change's pane beside it has drawn yet.
   await user.click(screen.getAllByRole("button", { name: /More actions for/ })[0]);
   expect((await screen.findAllByRole("menuitem")).map((m) => m.textContent)).toEqual(["Try again", "Choose another account", "Skip it"]);
@@ -632,7 +631,7 @@ test("rows that arrive while the list shows others still wait behind N new", asy
   expect(screen.getAllByText("Proof copies ship Nov 5")).toHaveLength(1);
 });
 
-test("the newest change is the one chosen first, and a change that holds a question shows it as information with a link to Today", async () => {
+test("the newest change is the one chosen first, and a change that holds a question is answered in its detail", async () => {
   const user = userEvent.setup();
   fakeApi({
     "GET changes": () => [change("REQ-0", { source_title: "Nothing asked here" }), asking("REQ-1", "Robin"), asking("REQ-2", "Sam")],
@@ -644,8 +643,8 @@ test("the newest change is the one chosen first, and a change that holds a quest
   expect(document.querySelector("[aria-current]")?.getAttribute("data-choice")).toBe("REQ-0");
   await user.click(screen.getByRole("listitem", { name: "Question from Robin" }));
   const pane = await findPane();
-  expect(await within(pane).findByRole("link", { name: "Answer on Today" })).toBeInTheDocument();
-  expect(within(pane).queryByRole("combobox")).toBeNull();
+  expect(await within(pane).findByRole("button", { name: "Use this person" })).toBeInTheDocument();
+  expect(within(pane).queryByRole("link", { name: "Answer on Today" })).toBeNull();
 });
 
 // What changed is the history (design 7.3, 7.7): the review is on Today's review line, so a phone has no one-at-a-time review here.
@@ -656,16 +655,17 @@ test("on a phone there is no review mode: What changed is the history, and the r
     renderApp(<WhatChanged />);
     await screen.findByText("First thing");
     expect(screen.queryByRole("button", { name: "Review one at a time" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Looks good" })).toBeNull();
+    // A change not yet checked has its one next step on its row, as on a laptop.
+    expect(screen.getByRole("button", { name: "Looks good" })).toBeInTheDocument();
   } finally {
     document.documentElement.removeAttribute("data-narrow");
   }
 });
 
-describe("the history: rows are past tense, have no button, and keep their choices in the menu", () => {
+describe("the history: rows are past tense, only a change not yet checked has a button (Looks good), and the rest keep their choices in the menu", () => {
   const done = (id: string, extra: Partial<S["ChangeItem"]> = {}) => change(id, { state: "done", source_title: `Email ${id}`, ...extra });
 
-  test("no row of the list and no detail beside it has a button for the work, whatever state the change is in", async () => {
+  test("no row of the list and no detail beside it has a button for the work but Looks good on a change not yet checked, whatever state the change is in", async () => {
     fakeApi({
       "GET changes": () => [
         change("REQ-1"),
@@ -680,15 +680,21 @@ describe("the history: rows are past tense, have no button, and keep their choic
     renderApp(<WhatChanged onOpenGuide={() => undefined} />);
     await userEvent.setup().click(await screen.findByRole("button", { name: "All" }));
     await screen.findByRole("listitem", { name: "Email REQ-2" });
-    for (const name of ["Looks good", "Try again", "Choose another account", "Say who you are", "Start", "Dismiss", "Skip it", "Send back with a note"]) {
-      expect(screen.queryByRole("button", { name }), name).toBeNull();
+    // No list row has a button for the work: what waits is decided in the detail of the row chosen.
+    const rows = screen.getAllByRole("listitem").filter((li) => li.hasAttribute("data-choice"));
+    for (const name of ["Try again", "Choose another account", "Say who you are", "Start", "Dismiss", "Skip it", "Send back with a note"]) {
+      for (const row of rows) expect(within(row).queryByRole("button", { name }), name).toBeNull();
     }
+    // Looks good is on the one row that has not been checked, and on no filed one.
+    const checks = screen.getAllByRole("button", { name: "Looks good" });
+    expect(checks).toHaveLength(1);
+    expect(checks[0].closest("[data-choice]")?.getAttribute("data-choice")).toBe("REQ-1");
     // Every row has a menu, and nothing else in its line is a button but the title that chooses it.
     const list = screen.getAllByRole("listitem").filter((li) => li.hasAttribute("data-choice"));
     expect(list.length).toBeGreaterThan(0);
     for (const row of list) {
       const names = within(row).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent);
-      expect(names.filter((n) => !/^More actions for /.test(n ?? "") && !/Email|File the printer/.test(n ?? "")), row.textContent ?? "").toEqual([]);
+      expect(names.filter((n) => !/^More actions for /.test(n ?? "") && !/Email|File the printer|^Looks good$/.test(n ?? "")), row.textContent ?? "").toEqual([]);
     }
   });
 
@@ -762,8 +768,7 @@ function heldDrop(): S["ChangeItem"] {
   return item;
 }
 
-test("a held drop in the history is information with who was told, the quote and one link, and no button", async () => {
-  const user = userEvent.setup();
+test("a held drop is decided in the detail, with who was told, the quote and the same answers its line on Today has", async () => {
   const calls = fakeApi({
     "GET changes": () => [heldDrop()],
     "GET today/queue": () => [todayLine({ key: "held:CS-REQ-5:0", kind: "held", changeset: "CS-REQ-5", op: 0 })],
@@ -776,33 +781,33 @@ test("a held drop in the history is information with who was told, the quote and
     const op = (await within(pane).findByText("Confirm the seating plan")).closest("li") as HTMLElement;
     expect(within(op).getByText("Would drop a to-do")).toBeInTheDocument();
     expect(within(op).getByText("Needs you")).toBeInTheDocument();
-    // None of the line's answers is here: the choice is made on Today.
-    for (const name of ["Drop it", "Keep it", "Do it anyway", "Release all", "Keep"]) expect(within(pane).queryByRole("button", { name }), name).toBeNull();
+    // The line's answers are here: the choice is made in the detail.
+    for (const name of ["Drop it and tell them", "Keep it"]) expect(within(pane).getByRole("button", { name }), name).toBeInTheDocument();
     // Who was told is the reason it is held, so it comes first.
     const told = within(op).getByText(`Casey Moor, Robin Sample were told on ${day("2026-10-10")}`);
     expect(told.tagName).toBe("STRONG");
     expect(op.firstElementChild!.firstElementChild).toContainElement(told);
     expect(within(op).getByText("the seating plan is no longer needed")).toBeInTheDocument();
     expect(within(op).getByRole("button", { name: "Show source" })).toBeInTheDocument();
-    // Exactly one way on: the link, which opens the held line.
-    await user.click(await within(op).findByRole("link", { name: "Answer on Today" }));
-    expect(reveals.seen).toEqual([{ type: "line", id: "held:CS-REQ-5:0" }]);
+    // No link to another screen: the answers above are the way on.
+    expect(within(op).queryByRole("link", { name: "Answer on Today" })).toBeNull();
+    expect(reveals.seen).toEqual([]);
     expect(calls.some((c) => c.route.startsWith("POST"))).toBe(false);
   } finally {
     reveals.stop();
   }
 });
 
-test("a held change the engine doesn't ask as a question shows its reason and the link, never Do it anyway", async () => {
+test("a held change the engine doesn't ask as a question shows its reason and one button, Do it anyway", async () => {
   const item = heldDrop();
   item.changeset!.ops[0].held = null;
   item.changeset!.ops[0].reason = "A way to reach someone waits for your confirmation.";
   fakeApi({ "GET changes": () => [item], "GET today/queue": () => [todayLine({ key: "held:CS-REQ-5:0", changeset: "CS-REQ-5", op: 0 })] });
   renderApp(<WhatChanged />);
   const op = (await screen.findByText("Confirm the seating plan")).closest("li") as HTMLElement;
-  expect(within(op).queryByRole("button", { name: "Do it anyway" })).toBeNull();
+  expect(within(op).getByRole("button", { name: "Do it anyway" })).toBeInTheDocument();
   expect(within(op).getByText("A way to reach someone waits for your confirmation.")).toBeInTheDocument();
-  expect(await within(op).findByRole("link", { name: "Answer on Today" })).toBeInTheDocument();
+  expect(within(op).queryByRole("link", { name: "Answer on Today" })).toBeNull();
 });
 
 test("a held item with no line on Today (its change was dismissed) is information only, with no link", async () => {
@@ -864,12 +869,13 @@ test("a list row leads with what is distinct, the subject, and puts the kind and
   expect(title.closest("[data-row]")).toHaveTextContent("Email from Casey Moor");
 });
 
-test("a change that waits for the person links from its pane to the line that decides it on Today", async () => {
+test("a change that waits for the person has its decision in its pane, never a link to another screen", async () => {
   const waiting = change("REQ-9", { state: "needs_you", waiting: "Say who you are first", source_title: "Order" });
   fakeApi({ "GET changes": () => [waiting], "GET today/queue": () => [todayLine({ key: "held:1", changeset: "CS-REQ-9" })] });
   renderApp(<WhatChanged />);
   const pane = await findPane();
-  expect(await within(pane).findByRole("link", { name: "Answer on Today" })).toBeInTheDocument();
+  expect(await within(pane).findByRole("button", { name: "Try again" })).toBeInTheDocument();
+  expect(within(pane).queryByRole("link", { name: "Answer on Today" })).toBeNull();
 });
 
 test("a change from a note with a topic is titled Your note and the topic, as on Today", async () => {
@@ -964,7 +970,7 @@ test("a to-do's title in the history never shows a raw date, and drops the phras
   expect(pane.textContent).not.toMatch(/2026-11/);
 });
 
-test("an item the assistant added that waits only for an owner is information with the link to its question on Today", async () => {
+test("an item the assistant added that waits only for an owner is answered in its detail", async () => {
   const item = change("REQ-4");
   item.changeset!.ops[0] = {
     ...item.changeset!.ops[0],
@@ -981,8 +987,8 @@ test("an item the assistant added that waits only for an owner is information wi
   renderApp(<WhatChanged />);
   const pane = await findPane();
   expect(await within(pane).findByText("Needs an owner")).toBeInTheDocument();
-  expect(within(pane).queryByRole("combobox")).toBeNull();
-  expect(await within(pane).findByRole("link", { name: "Answer on Today" })).toBeInTheDocument();
+  expect(await within(pane).findByRole("button", { name: "Add the to-do" })).toBeInTheDocument();
+  expect(within(pane).queryByRole("link", { name: "Answer on Today" })).toBeNull();
 });
 
 test("Undo this on one item acts at once with the Undo toast and no confirm", async () => {

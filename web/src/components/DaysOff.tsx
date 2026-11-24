@@ -5,7 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useId, useRef, useState } from "react";
 import { api, type S } from "../lib/api";
 import { useAct } from "../lib/act";
-import { day } from "../lib/dates";
+import { day, writtenDay } from "../lib/dates";
 import { useWords } from "../lib/wording";
 import { Actions } from "../ui/Actions";
 import { Button } from "../ui/Button";
@@ -25,7 +25,7 @@ export const DAYS_OFF_FIELDS = new Set(["away", "days_off", "working_days", "hol
 
 function periodsOf(value: unknown): Period[] {
   if (!Array.isArray(value)) return [];
-  return value.map((p) => ({ start: String(p.start ?? "").slice(0, 10), end: p.end ? String(p.end).slice(0, 10) : null, label: p.label ? String(p.label) : null }));
+  return value.map((p) => ({ start: writtenDay(String(p.start ?? "")), end: p.end ? writtenDay(String(p.end)) : null, label: p.label ? String(p.label) : null }));
 }
 
 export function DaysOff(props: { kind: "person" | "team"; record: S["GenericRecordView"] }) {

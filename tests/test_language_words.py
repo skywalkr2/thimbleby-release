@@ -33,6 +33,7 @@ ADDED = {
     "away_words",
     "due_span_words",
     "answer_later_words",
+    "first_person_words",
 }
 
 

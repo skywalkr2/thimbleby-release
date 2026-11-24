@@ -69,7 +69,7 @@ const line = (title: string) => screen.findByRole("listitem", { name: title });
 const chosenId = () => document.querySelector("[aria-current]")?.getAttribute("data-choice");
 
 describe("beside the list", () => {
-  beforeEach(() => besidePane());
+  beforeEach(() => besidePane({ room: true }));
 
   test("a change is one line, its detail is beside it, and the first change is chosen as the list opens", async () => {
     fakeApi(routes(() => [change("A", "First thing"), change("B", "Second thing")]));
@@ -78,11 +78,11 @@ describe("beside the list", () => {
     expect(within(pane).getByText("Send First thing")).toBeInTheDocument();
     expect(within(pane).getByText("Send First thing")).toBeInTheDocument();
     expect(chosenId()).toBe("A");
-    // The line holds the state, the title, one line of what was done and the menu, with no button for the work: nothing of the details.
+    // The line holds the state, the title, one line of what was done, Looks good and the menu: nothing of the details.
     const second = await line("Second thing");
     expect(within(second).getByText("Second thing")).toBeInTheDocument();
     expect(within(second).getByText(/Recorded 1 thing|Recorded a fact|Handed in/)).toBeInTheDocument();
-    expect(within(second).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual([expect.stringMatching(/^Second thing/), "More actions for Second thing"]);
+    expect(within(second).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual([expect.stringMatching(/^Second thing/), "Looks good", "More actions for Second thing"]);
     expect(within(second).queryByText("Send Second thing")).toBeNull();
     expect(screen.queryByText("Send Second thing")).toBeNull();
   });
@@ -182,7 +182,7 @@ describe("beside the list", () => {
     await waitFor(() => expect(calls.find((c) => c.route === "POST changesets/CS-B/send-back")?.body).toEqual({ note: "Change the dates" }));
   });
 
-  test("the detail has the source with its highlighted words, and a question for the person is a link to Today, not a form", async () => {
+  test("the detail has the source with its highlighted words, and a question for the person is answered in it, not by a link to Today", async () => {
     const user = userEvent.setup();
     const held = change("A", "First thing");
     held.source = "SRC-1";
@@ -202,8 +202,8 @@ describe("beside the list", () => {
     expect(chosenId()).toBe("A");
     await user.click(within(pane).getByRole("button", { name: "Show source" }));
     expect((await within(pane).findByText((_, el) => el?.tagName === "MARK")).textContent).toContain("ship on November 5");
-    expect(within(pane).queryByRole("combobox")).toBeNull();
-    expect(await within(pane).findByRole("link", { name: "Answer on Today" })).toBeInTheDocument();
+    expect(await within(pane).findByRole("button", { name: "Use this person" })).toBeInTheDocument();
+    expect(within(pane).queryByRole("link", { name: "Answer on Today" })).toBeNull();
     expect(calls.some((c) => c.route.startsWith("POST"))).toBe(false);
   });
 });
@@ -222,5 +222,22 @@ describe("below 1024px", () => {
     await user.click(within(drawer).getByRole("button", { name: "Close" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     await waitFor(async () => expect(await line("Second thing")).toHaveFocus());
+  });
+});
+
+describe("at 1024px, where the detail would cover the list", () => {
+  test("nothing is chosen on arrival, and a line the person picks opens its detail", async () => {
+    const user = userEvent.setup();
+    besidePane();
+    // The pane would leave the list narrower than it needs: the split is only as wide as the pane and its gap plus a little.
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(() => 900);
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(() => 520);
+    fakeApi(routes(() => [change("A", "First thing"), change("B", "Second thing")]));
+    renderApp(<WhatChanged />);
+    const row = await line("Second thing");
+    expect(chosenId()).toBeUndefined();
+    await user.click(within(row).getByRole("button", { name: /^Second thing/ }));
+    await waitFor(() => expect(chosenId()).toBeDefined());
+    vi.restoreAllMocks();
   });
 });

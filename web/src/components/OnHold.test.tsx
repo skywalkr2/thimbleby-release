@@ -6,7 +6,7 @@ import { reveal, useReveal } from "../lib/reveal";
 import { fakeApi, renderApp, snapshotOf } from "../test-utils";
 import { HoldNote, HoldPill, useHold } from "./OnHold";
 
-const person = (id: string, name: string): S["PersonView"] => ({ id, name, role: null, org: null, aliases: [], status: "active", is_pm: false, track_only: false, open_items: 0 });
+const person = (id: string, name: string): S["PersonView"] => ({ id, name, role: null, org: null, aliases: [], status: "active", is_pm: false, track_only: false, open_items: 0, waiting_on_them: 0 });
 const people = [person("P-1", "Quinn Sample"), person("P-2", "Robin Sample"), person("P-3", "Sam Twin"), person("P-4", "Sam Twin")];
 
 function Listener(props: { on: (id: string) => void }) {

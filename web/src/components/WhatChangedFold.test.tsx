@@ -10,7 +10,7 @@ import { besidePane, fakeApi, renderApp } from "../test-utils";
 import { WhatChanged } from "./WhatChanged";
 
 // The window is wide, so a change's detail stands beside the list (design 7.13).
-beforeEach(() => besidePane());
+beforeEach(() => besidePane({ room: true }));
 afterEach(() => vi.unstubAllGlobals());
 
 function change(id: string, title: string, extra: Partial<S["ChangeItem"]> = {}): S["ChangeItem"] {
@@ -101,8 +101,9 @@ test("only the first item is chosen, so its details are shown; the others are on
   expect(rowButton("Third thing")).toHaveAttribute("aria-expanded", "false");
   expect(screen.queryByText("Send Second thing")).toBeNull();
   expect(screen.queryByText("Send Third thing")).toBeNull();
-  // What changed is the history: no line and no detail has a button for Looks good, which is on Today's review line.
-  expect(screen.queryByRole("button", { name: "Looks good" })).toBeNull();
+  // Looks good is each unchecked line's own button; the detail beside the list has none.
+  expect(screen.getAllByRole("button", { name: "Looks good" })).toHaveLength(3);
+  expect(within(screen.getByRole("complementary")).queryByRole("button", { name: "Looks good" })).toBeNull();
 });
 
 test("another item is chosen by its line, and its details replace the first's", async () => {

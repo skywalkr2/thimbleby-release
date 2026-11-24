@@ -7,12 +7,14 @@ import { useAct } from "../lib/act";
 import { day } from "../lib/dates";
 import type { OpenAction } from "../lib/open-items";
 import { shortTitle } from "../lib/title-dates";
-import { recordView, viewHref } from "../lib/views";
+import { viewHref } from "../lib/views";
 import { useWords } from "../lib/wording";
-import { Button } from "../ui/Button";
+import { Button, ButtonLink } from "../ui/Button";
 import { DateField } from "../ui/DateField";
 import { Icon } from "../ui/Icon";
 import { GroupLabel } from "../ui/GroupLabel";
+import { RowList } from "../ui/RowList";
+import { ActionRow } from "./OpenItems";
 import styles from "./OpenItems.module.css";
 
 /** A day typed or picked in full: four digits for the year, so a year half typed is never saved. */
@@ -133,17 +135,18 @@ export function NeedsADate(props: { rows: OpenAction[]; first?: boolean; hint?: 
           <p className="hint">{tn(props.hint ?? "open.needs_date.hint", props.rows.length)}</p>
         </>
       )}
-      <ul className={styles.needsRows} aria-label={t("open.needs_date.list")} data-needs-rows="">
+      {/* The same row as every other to-do (circle, title, meta, menu), with the date picker as its one primary. */}
+      <RowList aria-label={t("open.needs_date.list")} data-needs-rows="">
         {shown.map((a) => (
-          <li key={a.id} className={styles.needsRow} data-needs-row="">
-            <span className={styles.needsWho}>
-              <a href={viewHref(recordView("action", a.id))}>{shortTitle(a.text)}</a>
-              <span className={styles.needsMeta}>{[a.owners.length > 0 ? a.owners.map((o) => o.name).join(", ") : t("open.nobody"), a.project_name || a.side_name].filter(Boolean).join(" · ")}</span>
-            </span>
-            <DayAndSet id={`needs-date-${a.id}`} label={t("open.needs_date.pick", { text: shortTitle(a.text) })} setLabel={t("open.needs_date.set")} onSet={(d) => setDay(a, d)} />
-          </li>
+          <ActionRow
+            key={a.id}
+            action={a}
+            inlineOrigin
+            data-needs-row=""
+            primary={<DayAndSet id={`needs-date-${a.id}`} label={t("open.needs_date.pick", { text: shortTitle(a.text) })} setLabel={t("open.needs_date.set")} onSet={(d) => setDay(a, d)} />}
+          />
         ))}
-      </ul>
+      </RowList>
       {(hidden > 0 || props.rows.length > 1) && (
         <div className={styles.needsFoot}>
           {hidden > 0 && (
@@ -162,6 +165,21 @@ export function NeedsADate(props: { rows: OpenAction[]; first?: boolean; hint?: 
         </div>
       )}
     </section>
+  );
+}
+
+/** Where "Needs a date" is only counted: a line that says how many to-dos have no date and links to the one place they are listed
+ * in full, To-dos, where each has its date picker. Nothing at all with none. */
+export function NeedsADateLink(props: { rows: OpenAction[]; note: string }) {
+  const { t, tn } = useWords();
+  if (props.rows.length === 0) return null;
+  return (
+    <p className="hint" data-needs-date-link="">
+      {tn(props.note, props.rows.length)}{" "}
+      <ButtonLink variant="quiet" size="sm" href={viewHref("work/open")}>
+        {t("schedule.timeline.needs_open")}
+      </ButtonLink>
+    </p>
   );
 }
 

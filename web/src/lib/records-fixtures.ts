@@ -20,6 +20,9 @@ export const project = (id: string, name: string, extra: Partial<S["ProjectView"
   spent_usd: 0,
   open_actions: 0,
   open_questions: 0,
+  overdue_actions: 0,
+  status_disagrees: false,
+  target_passed: false,
   ...extra,
 });
 
@@ -31,6 +34,7 @@ export const person = (id: string, name: string, extra: Partial<S["PersonView"]>
   is_pm: false,
   track_only: false,
   open_items: 0,
+  waiting_on_them: 0,
   status: "active",
   how_to_reach: {},
   ...extra,

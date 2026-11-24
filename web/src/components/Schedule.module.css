@@ -184,6 +184,26 @@
   background-image: repeating-linear-gradient(to bottom, transparent 0, transparent calc(var(--hour) - 1px), var(--border) calc(var(--hour) - 1px), var(--border) var(--hour));
 }
 .lane[data-today] { background-color: var(--today-tint); }
+/* A day nobody works: hatched under the hour lines, named at the top of the day (the same hatch the Timeline gives a holiday). */
+.lane[data-off] {
+  background-image:
+    repeating-linear-gradient(135deg, transparent 0 4px, color-mix(in srgb, var(--border-strong) 40%, transparent) 4px 5px),
+    repeating-linear-gradient(to bottom, transparent 0, transparent calc(var(--hour) - 1px), var(--border) calc(var(--hour) - 1px), var(--border) var(--hour));
+}
+.offLabel { display: block; margin-top: var(--space-1); color: var(--text-muted); font-size: var(--text-meta); line-height: var(--lh-meta); font-weight: var(--weight-regular); white-space: normal; overflow-wrap: anywhere; }
+/* The week as a list, for a week with no meeting in it: a row for each day with what is due and what is off. */
+.agenda { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; min-width: 0; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); }
+.agendaDay { display: grid; grid-template-columns: minmax(6rem, 9rem) minmax(0, 1fr); gap: var(--space-2) var(--space-4); padding: var(--space-3); min-width: 0; border-top: 1px solid var(--border); }
+.agendaDay:first-child { border-top: 0; }
+.agendaDay[data-today] { background: var(--today-tint); }
+.agendaDay[data-off] { background-image: repeating-linear-gradient(135deg, transparent 0 4px, color-mix(in srgb, var(--border-strong) 40%, transparent) 4px 5px); }
+.agendaHead { margin: 0; font-size: var(--text-sm); line-height: var(--lh-sm); font-weight: var(--weight-semibold); overflow-wrap: anywhere; }
+.agendaBody { display: grid; gap: var(--space-1); min-width: 0; align-content: start; }
+.agendaBody > ul { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-1); min-width: 0; }
+.agendaBody > ul > li { min-width: 0; }
+.agendaNote { margin: 0; color: var(--text-muted); font-size: var(--text-sm); line-height: var(--lh-sm); overflow-wrap: anywhere; }
+.agendaSub { margin: var(--space-1) 0 0; font-size: var(--text-xs); line-height: var(--lh-xs); font-weight: var(--weight-semibold); color: var(--danger); }
+@media (max-width: 719.98px) { .agendaDay { grid-template-columns: minmax(0, 1fr); } }
 .slot { position: absolute; min-width: 0; min-height: 2rem; padding: 0 var(--hairline) var(--hairline) 0; box-sizing: border-box; border: 0; }  /* a 1px gap under and beside it: back-to-back meetings stay apart, with their times true */
 .hour[data-first] { transform: none; margin-top: var(--space-1); }
 .now { position: absolute; left: 0; right: 0; height: 0; border-top: 2px solid var(--danger); z-index: 2; pointer-events: none; }
@@ -219,6 +239,8 @@
 .titles .chip { position: relative; height: auto; flex-wrap: wrap; }
 /* A title that does not fit takes another line, and a second; past two lines it ends in an ellipsis, and the chip's `title` says it whole. */
 .titles .name { flex: 0 1 auto; min-width: 0; max-width: calc(100% - 1.25rem); overflow-wrap: anywhere; white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+/* A to-do due that day has no time after its title, so its title keeps the whole width the time would have taken. */
+.titles .dueRow .name { max-width: 100%; }
 .more { min-height: var(--hit-min); padding: 0 var(--space-3); font: inherit; font-size: var(--text-meta); line-height: var(--lh-meta); font-weight: var(--weight-semibold); color: var(--text); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-full); cursor: pointer; }
 .more:hover { background: var(--surface-hover); }
 .more:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }

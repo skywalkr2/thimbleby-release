@@ -185,9 +185,11 @@ test.describe.serial("journeys", () => {
     // the assistant did is one line with Not right. My own words filed the action, and nothing asks who owns it.
     await review.getByRole("button", { name: "Look over", exact: true }).click();
     await expect(page).toHaveURL(/#today$/);
-    await expect(review.getByText(/Send the venue list/).first()).toBeVisible();
-    await expect(review.getByRole("button", { name: /^Not right/ }).first()).toBeVisible();
-    await expect(review.getByRole("button", { name: /^Keep (it|all \d+)$/ })).toBeVisible();
+    // The details open under the line, or in the rail's column from 1280px: where they are is the window's, what they say is the same.
+    const opened = review.or(page.locator("[data-queue-inspector]"));
+    await expect(opened.getByText(/Send the venue list/).first()).toBeVisible();
+    await expect(opened.getByRole("button", { name: /^Not right/ }).first()).toBeVisible();
+    await expect(opened.getByRole("button", { name: /^Keep (it|all \d+)$/ })).toBeVisible();
     await expect(page.getByText("Who owns this?")).toHaveCount(0);
     await visit(page);
     await expect(page.getByText(/stopped, see why below/)).toHaveCount(0);
@@ -302,7 +304,8 @@ test.describe.serial("journeys", () => {
       await expect(page.locator("main [data-skeleton]")).toHaveCount(0);
       // The changes already listed, so the one just handed in is found by what is new, whatever else (a lesson from a
       // correction) is listed above it.
-      const known = await page.locator("main [data-row-list] > li[data-row]").evaluateAll((els) => els.map((el) => el.getAttribute("data-choice") ?? ""));
+      // Read from the server, not the page: the page's list may not yet show a change made a moment ago, which would then be taken for the new one.
+      const known = (await json<{ id: string }[]>("api/changes")).map((c) => c.id);
       await page.getByRole("link", { name: /^Today/ }).first().click();
       // A hand-in shows as a review line, or, when all of it waits for the person, as its decisions alone.
       const lines = page.locator('[data-queue-line="review"], [data-queue-line="who_is"], [data-queue-line="held"]');
@@ -326,39 +329,24 @@ test.describe.serial("journeys", () => {
       await expect(detail).toBeVisible();
       return detail;
     };
-    // What changed is the history: a held item is information there, with one link that opens its line on Today, which is where
-    // it is answered. This follows the link (from the change's detail, or from the one item of it that has `hasText`) and
-    // returns what Today shows, where the item's answers are.
+    // A held item is decided in the detail of its change, with the answers its line on Today has and no link to it. This returns
+    // the detail (or the one item of it that has `hasText`), where the item's answers are.
     const onToday = async (scope: Locator, hasText?: string) => {
       const item = hasText ? scope.locator("li[data-item]", { hasText }) : scope;
-      await expect(item.getByRole("button", { name: /^(Add|Keep it|Drop it|Do it anyway|Use this person)/ })).toHaveCount(0);
-      await item.getByRole("link", { name: "Answer on Today" }).first().click();
-      await expect(page.getByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening)/ })).toBeVisible();
-      const main = page.getByRole("main");
-      if (hasText) {
-        // The line is open when it was selected by the link; when Today drew it again unselected it is one line with Decide.
-        const opened = main.locator("li[data-item]", { hasText });
-        const closed = main.getByRole("group").filter({ hasText }).getByRole("button", { name: "Decide", exact: true });
-        await expect(opened.or(closed).first()).toBeVisible();
-        if (!(await opened.first().isVisible())) await closed.first().click();
-      }
-      return main;
+      await expect(item.getByRole("link", { name: "Answer on Today" })).toHaveCount(0);
+      return item;
     };
-    // A line that comes back after Undo is not selected on Today, so its link on What changed is followed again. The change
-    // that holds it is the first of the newest changes whose details have the link (an answer made since is newer, and each Undo adds a
-    // lesson from the correction above it, so more than a few are looked at).
+    // The change's detail on What changed again (a line that comes back after Undo is a new line, so the newest changes are
+    // looked at until one has the item).
     const backToToday = async (hasText?: string) => {
       await openView(page, "What changed");
       const detail = page.locator("aside[data-detail-pane] [data-detail-item]");
       await expect(detail).toBeVisible();
-      const holder = (hasText ? detail.locator("li[data-item]", { hasText }) : detail).getByRole("link", { name: "Answer on Today" });
+      const holder = hasText ? detail.locator("li[data-item]", { hasText }) : detail;
       const rows = page.getByRole("main").locator("[data-row-list] > li[data-row]");
       for (let i = 0; i < Math.min(await rows.count(), 15); i++) {
         await rows.nth(i).locator("[data-expander]").first().click();
         if (await holder.first().isVisible({ timeout: 3000 }).catch(() => false)) break;
-        // The link is drawn once the queue has loaded; try again before moving to the next change.
-        await page.waitForTimeout(1500);
-        if (await holder.first().isVisible().catch(() => false)) break;
       }
       return onToday(detail, hasText);
     };
@@ -467,7 +455,7 @@ test.describe.serial("journeys", () => {
     const partyNote = async () =>
       (await json<{ text: string; project_name: string | null }[]>("api/notes")).find((n) => n.text === "The party plans are due Friday.")?.project_name || null;
     for (const keep of [false, true]) {
-      await row.locator("li[data-item]", { hasText: `Add a project “${party}”?` }).getByRole("button", { name: `More actions for ${party}` }).click();
+      await row.getByRole("button", { name: `More actions for ${party}` }).click();
       await page.getByRole("menuitem", { name: "It's part of…" }).click();
       await choose(row.getByLabel(`“${party}” is part of`), { label: festival });
       await row.getByRole("button", { name: "File it there" }).click();
@@ -478,7 +466,7 @@ test.describe.serial("journeys", () => {
       await undo();
       await expect.poll(partyNote).toBeNull();
       row = await backToToday(party);
-      await expect(row.locator("li[data-item]", { hasText: `Add a project “${party}”?` })).toBeVisible();
+      await expect(row).toContainText(`Add a project “${party}”?`);
     }
 
     // 5. Not a project: nothing is filed anywhere and no project is made; the words are kept as not one; Undo brings it back.
@@ -490,7 +478,7 @@ test.describe.serial("journeys", () => {
     row = await handIn(trip);
     await settled();
     row = await onToday(row, tour);
-    let tourProposal = row.locator("li[data-item]", { hasText: `Add a project “${tour}”?` });
+    let tourProposal = row;
     for (const keep of [false, true]) {
       await tourProposal.getByRole("button", { name: `More actions for ${tour}` }).click();
       await page.getByRole("menuitem", { name: "Not a project" }).click();
@@ -532,8 +520,7 @@ test.describe.serial("journeys", () => {
     await expect(toasts).toContainText("Added to Print the agenda.");
     expect((await actionsOf()).filter((a) => a.text === "Print the agenda.")).toHaveLength(1);
     await undo();
-    // The question is a line on Today again (not opened, as the one answered a moment ago was).
-    await row.getByRole("button", { name: "Pick an owner" }).first().click();
+    // The question is back in the change's detail, already open to be answered there (a held item is decided in place).
     await expect(row.getByText("Who owns this?")).toBeVisible();
     await visit(page);
   });

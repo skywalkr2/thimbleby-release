@@ -146,16 +146,25 @@ def _items(store: Any, cfg: Any, now: datetime, first: date, last: date) -> list
         if not done and data.get("due_check"):
             continue  # a date still to be checked is not a deadline
         due = date.fromisoformat(str(data["due"]))
-        if not first <= due <= last:
-            continue
         firm = firm_due(data)
         state: State = (
             "done" if done else "overdue" if firm is not None and firm < today and not data.get("on_hold") else "open"
         )
         kind: Kind = "promise" if data.get("promised_to") else "todo"
-        found.append(
-            (_first_project(view, a), Item(kind, a.id, data["text"], due, due, state, list(data.get("owners") or [])))
-        )
+        owners = list(data.get("owners") or [])
+        if state == "overdue":
+            # Whatever is past due is one stack at today, whenever it was due; it says that day in its details.
+            if first <= today <= last:
+                found.append(
+                    (
+                        _first_project(view, a),
+                        Item(kind, a.id, data["text"], today, today, state, owners, detail=due.isoformat()),
+                    )
+                )
+            continue
+        if not first <= due <= last:
+            continue
+        found.append((_first_project(view, a), Item(kind, a.id, data["text"], due, due, state, owners)))
     replaced = {f.data["supersedes"] for f in view.list("fact") if f.data.get("supersedes")}
     for f in view.list("fact"):
         on = f.data.get("on")
@@ -183,14 +192,15 @@ def _folded(found: list[tuple[str | None, Item]]) -> list[tuple[str | None, Item
     state stays apart, and a thing already over several days is left as it is."""
     foldable = ("entry", "todo", "promise")
 
+    def folds(p: tuple[str | None, Item]) -> bool:
+        return p[1].kind in foldable and p[1].state != "overdue"
+
     def key(pair: tuple[str | None, Item]) -> tuple[Any, ...]:
         project, i = pair
         return (project, i.kind, i.id if i.kind == "entry" else "", i.title, i.state)
 
-    kept: list[tuple[str | None, Item]] = [p for p in found if p[1].kind not in foldable or p[1].start != p[1].end]
-    singles = sorted(
-        (p for p in found if p[1].kind in foldable and p[1].start == p[1].end), key=lambda p: (str(key(p)), p[1].start)
-    )
+    kept: list[tuple[str | None, Item]] = [p for p in found if not folds(p) or p[1].start != p[1].end]
+    singles = sorted((p for p in found if folds(p) and p[1].start == p[1].end), key=lambda p: (str(key(p)), p[1].start))
     band: tuple[str | None, Item] | None = None
     for pair in singles:
         project, i = pair

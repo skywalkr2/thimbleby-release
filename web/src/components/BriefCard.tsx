@@ -11,7 +11,7 @@ import { api, type S } from "../lib/api";
 import { useAct } from "../lib/act";
 import { useAttention } from "../lib/attention";
 import { copyMessage } from "../lib/copy";
-import { day, isAfternoon, wallTime } from "../lib/dates";
+import { clockDay, day, isAfternoon, wallTime } from "../lib/dates";
 import { durationWords } from "../lib/duration";
 import { chooseFilters } from "../lib/open-items";
 import { onSide, useSideFilter } from "../lib/sides";
@@ -113,7 +113,7 @@ export function briefClosed(data: Brief | undefined, workspace: string): boolean
 
 const longWeekdayFormat = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", weekday: "long" });
 const longWeekday = (iso: string) => {
-  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  const [y, m, d] = clockDay(iso).split("-").map(Number);
   return longWeekdayFormat.format(new Date(Date.UTC(y, m - 1, d)));
 };
 
@@ -337,7 +337,7 @@ function LineRow(props: { line: Line; queue: QueueLine | undefined; showAgain?: 
 }
 
 /** The goals for the week: the proposed or confirmed ones, and a small form to set them (the cursor in the first field). */
-function Goals(props: { goals: NonNullable<Brief["goals"]> }) {
+export function Goals(props: { goals: NonNullable<Brief["goals"]> }) {
   const { t } = useWords();
   const filter = useSideFilter();
   const act = useAct();
@@ -595,10 +595,14 @@ export function BriefCard(props: {
   onOpenView?: (view: View) => void;
   /** Called when the card is closed for the day, so the screen around it can count it gone. */
   onClosed?: () => void;
+  /** Called with the form the person asked for (or none), so the rail's own This week card gives way to the Monday form. */
+  onAsked?: (form: Form | null) => void;
 }) {
   const { t, tn } = useWords();
   const act = useAct();
   const [asked, setAsked] = useState<Form | null>(null);
+  const { onAsked } = props;
+  useEffect(() => onAsked?.(asked), [asked, onAsked]);
   useBriefClosings();
   const [unfolded, setUnfolded] = useState<boolean | null>(null);
   // The card holds `ui.today.rail_rows` lines before one button says how many more there are, so a long day never makes the rail longer than the queue.
@@ -696,6 +700,8 @@ export function BriefCard(props: {
       )}
       <div id={`${id}-body`} hidden={!isUnfolded}>
         {form === "monday" && <WeekAhead headingLevel={3} leaveOutAgenda />}
+        {/* The goals ask for a decision, so they come straight after the week, before the lines that follow. */}
+        {data.goals && <Goals goals={data.goals} />}
         {data.message && (data.message.state === "ask" ? <WhoFor message={data.message} /> : <Message message={data.message} />)}
         {(() => {
           const filtered = data.sections
@@ -734,7 +740,6 @@ export function BriefCard(props: {
           );
         })()}
         {data.quiet && <p className={styles.quiet}>{quiet}</p>}
-        {data.goals && <Goals goals={data.goals} />}
       </div>
     </section>
   );

@@ -1779,6 +1779,7 @@ A unit of work for the assistant. The engine creates it when something is handed
 | `intake` | str \| None | `None` | The id of the watched source this request was taken in from when the source was newly added (or looked at further back): its results are gathered into one line on Today and one list, not one line each. |
 | `intake_older` | bool | `False` | For a request taken in from a new source: it came from the read of older mail (the full read the person chose), not from the source's first window. The first reading does not wait for these. |
 | `source_role` | Literal['deleted'] \| None | `None` | For a request taken in from a source with a role: deleted means the mail was deleted by the person and is read for the schedule and for learning only, so it makes no to-do. |
+| `source_invitation` | bool | `False` | For a request taken in from a deleted-mail source: the item carries a calendar invitation (a request, a cancellation or an answer), by its own calendar data. It makes and changes no calendar entry. |
 | `intake_seen` | bool | `False` | For a request taken in from a new source: the person opened the list of what was found (or marked it seen), so its results show on Today one by one again if they still need a look. |
 | `held_on_today` | list[str] \| None | `None` | For a reading of the week ahead: the ids of the records Today held a line for when the run's packet was built. The reading is checked against these, not against lines that reached Today after the packet was made, so a first answer is never refused for what its packet could not have told it. |
 | `asked_about` | list[str] \| None | `None` | For a reading of the person's items for areas of their life: the ids of the items its packet listed; for a look at who they deal with: the addresses its packet listed. The reading is checked against these, and the same items or addresses are not asked about again while they stand. |
@@ -1912,6 +1913,7 @@ Something dated in the app's own calendar: a day or a moment, or a range of days
 | `exceptions[].end` | str \| None | `None` | Where its end moved to, in the same form, when it has one. |
 | `exceptions[].cancelled` | bool | `False` | True when this date is skipped. |
 | `cancelled` | bool | `False` | The calendar says it was called off, or the series skips this date. |
+| `called_off_why` | str \| None | `None` | For an entry the assistant called off because a later mail cancelled it (`event.cancel`): the exact words of that mail. The schedule shows them as the reason. |
 | `dropped` | str \| None | `None` | Why a called-off entry was dropped, in the person's words. A called-off entry that is not dropped is held: it waits for a new date, and the to-dos tied to it wait with it. Only the person sets it. |
 | `role` | Literal['run', 'attend', 'brief_only'] \| None | `None` | For an entry the person adds: whether they run it, attend it or only want it in the brief (a daily stand-up has no prep page). None reads as attend. Only the person sets it. |
 | `invitation` | bool | `False` | It came as an invitation: someone else asked the person to it. |
@@ -3210,6 +3212,17 @@ A date or a range of dates the input gives for something (a delivery window, a d
 | `repeat.until` | str \| None | `None` | The last day it can happen, written 2026-12-31; empty for no end. Never before the day it starts. |
 | `role` | Literal['run', 'attend', 'brief_only'] \| None | `None` | Leave out: only the person says whether they run, attend or only want an entry in the brief, from the Schedule; one from an input is refused. |
 | `evidence` | EvidenceIn | required | The exact words from the input that give the date. |
+| `evidence.quote` | str | required | The exact words from the input that justify this op. |
+
+### `event.cancel`
+
+Mark a calendar entry in the list called off, when a later input cancels the booking, appointment or delivery that entry was made from ("your reservation has been canceled"). Only an entry the assistant made from mail: never the person's own entry, never one a connected calendar holds (the calendar says so itself), and never one the person has changed. The entry stays on the schedule, struck through with the quoted words as the reason, and the person can Undo. Leave the entry as it is when the input leaves it unclear that it is the same booking. Evidence is required.
+
+| Field | Type | Default | What it is |
+|---|---|---|---|
+| `group` | str \| None | `None` | Ops that must be undone together share a group name. |
+| `id` | str | required | The id of the calendar entry that is called off. |
+| `evidence` | EvidenceIn | required | The exact words from the input that cancel it. |
 | `evidence.quote` | str | required | The exact words from the input that justify this op. |
 
 ### `event.guests`

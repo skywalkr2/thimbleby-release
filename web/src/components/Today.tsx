@@ -1,6 +1,6 @@
 // The Today screen (design 7.7): what needs the person as a ranked queue, the line that has the cursor in the inspector
-// (from 1680px; below that a line's items open under it), and the rail of at most three cards: the briefing, the schedule and
-// what came in.
+// (from 1680px; from 1280px up to it a line's items open in the rail's column, below that under the line), and the rail:
+// the week and its goals, the schedule, what came in and how far setup is.
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
@@ -25,8 +25,10 @@ import styles from "./Today.module.css";
 import { PageHeader } from "../ui/PageHeader";
 /** The width from which the inspector sits beside the queue (the layout's third column). */
 const INSPECTOR_FROM = "(min-width: 1680px)";
-/** The width from which the rail sits beside the queue, and the Briefing card under the queue instead of in the rail. */
+/** The width from which the rail sits beside the queue. */
 const RAIL_BESIDE = "(min-width: 1100px)";
+/** The width from which a line's items open in the rail's column, so the queue holds still (below the inspector's width). */
+const RAIL_DETAIL = "(min-width: 1280px)";
 
 export function Today(props: {
   workspace: string;
@@ -45,9 +47,13 @@ export function Today(props: {
   const { t, tn } = useWords();
   const beside = useMediaQuery(INSPECTOR_FROM);
   const wideWindow = useMediaQuery(RAIL_BESIDE);
+  const roomForDetail = useMediaQuery(RAIL_DETAIL);
   const narrowLayout = useIsNarrow();
   const railBeside = wideWindow && !narrowLayout;
-  const [briefSlot, setBriefSlot] = useState<HTMLElement | null>(null);
+  const inRail = railBeside && roomForDetail && !beside;
+  // Where the rail takes a line's items and the setup card, once drawn (null until then).
+  const [detailSlot, setDetailSlot] = useState<HTMLElement | null>(null);
+  const [setupSlot, setSetupSlot] = useState<HTMLElement | null>(null);
   const filter = useSideFilter();
   const queue = useQueue();
   const count = useTodayCount(filter.picked);
@@ -140,10 +146,26 @@ export function Today(props: {
         />
       </div>
       <LearningNotice />
-      <TodayQueue selected={selected} onSelect={setSelected} beside={beside} handlers={handlers} shortcuts={props.shortcuts} workspace={props.workspace} />
-      {/* The briefing is the last card: under the queue beside it, at the end of the rail below it, so the queue's own lines stay first. */}
-      <div ref={setBriefSlot} className={styles.briefBelow} data-brief-slot="" />
-      <TodayRail briefSlot={railBeside ? briefSlot : null} onView={props.onView} onAddSource={props.onAddSource} workspace={props.workspace} onOpenRecord={props.onOpenRecord} queueEmpty={count === 0} />
+      <TodayQueue
+        selected={selected}
+        onSelect={setSelected}
+        beside={beside}
+        handlers={handlers}
+        shortcuts={props.shortcuts}
+        workspace={props.workspace}
+        detailSlot={inRail ? detailSlot : undefined}
+        setupSlot={railBeside ? setupSlot : undefined}
+      />
+      <TodayRail
+        onView={props.onView}
+        onAddSource={props.onAddSource}
+        workspace={props.workspace}
+        onOpenRecord={props.onOpenRecord}
+        queueEmpty={count === 0}
+        detailRef={inRail ? setDetailSlot : undefined}
+        detailOpen={inRail && selected !== null}
+        setupRef={railBeside ? setSetupSlot : undefined}
+      />
     </div>
   );
 }

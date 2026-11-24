@@ -50,6 +50,22 @@ def is_invitation(details: EventDetails, mine: set[str], names: set[str]) -> boo
     )
 
 
+def carries_invitation(details: EventDetails | dict[str, Any], mine: set[str], names: set[str]) -> bool:
+    """Whether an item's own calendar data makes it an invitation or an answer to one, decided from that data only
+    (never from the words of the mail): it was sent with a calendar method other than a plain publication (request,
+    cancel, reply, counter...), it is called off, someone answers on it, or it came as an invitation (`is_invitation`).
+    Takes the details as read or as a snapshot keeps them."""
+    if isinstance(details, dict):
+        details = EventDetails.from_dict(details)
+    method = (details.method or "").strip().upper()
+    return (
+        bool(method and method != "PUBLISH")
+        or details.cancelled
+        or any(a.response for a in details.attendees)
+        or is_invitation(details, mine, names)
+    )
+
+
 def is_plain(details: EventDetails | None, mine: set[str], names: set[str]) -> bool:
     """Whether an event is plain by what it is: a connector that keeps entries says it has no description, it isn't
     an invitation, and nobody but the person is on its attendee list."""

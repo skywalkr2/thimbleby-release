@@ -234,3 +234,18 @@ def test_a_plugin_never_reaches_a_host_it_didnt_declare(tmp_path, monkeypatch):
         assert "isn't a host" in last_run(store, "b").data["error"]
     finally:
         store.close()
+
+
+def test_a_connection_that_times_out_is_offline_never_an_outage_of_the_add_on():
+    """S-0722: no connection could be made in time is the network being away; a slow answer is still an outage."""
+
+    def no_connection_in_time(request):
+        raise httpx.ConnectTimeout("no connection", request=request)
+
+    def slow_answer(request):
+        raise httpx.ReadTimeout("slow", request=request)
+
+    for handler, kind in ((no_connection_in_time, "offline"), (slow_answer, "outage")):
+        with pytest.raises(ConnectorError) as err:
+            WebClient([API], transport=httpx.MockTransport(handler)).get(f"https://{API}/a")
+        assert err.value.kind == kind

@@ -385,6 +385,29 @@ def test_outgoing_content_is_refused_only_where_it_attributes_something_to_the_a
     assert outward.outgoing_mention(view, cfg, {where: "Nothing here"}) is None
 
 
+def test_more_crediting_phrases_are_refused_and_a_recipient_with_the_name_is_exempt(env):
+    """S-0719: "As <name> noted", "<name> suggested", "pointed out", "reports", "estimated", "Thanks to <name>",
+    "Courtesy of <name>" and "As <name> put it" credit the assistant like the first list; the same exemption holds
+    for a recipient who shares the name."""
+    _, cfg, store = env
+    view = store.read()
+    where = "the message to Ana"
+    name = name_of(cfg)
+    for credited in (
+        f"As {name} noted, the date moved",
+        f"{name} suggested we wait",
+        f"{name} recommended the later date",
+        f"{name} pointed out the clash",
+        f"{name} reports a delay",
+        f"{name} estimated two days",
+        f"Thanks to {name} we caught it",
+        f"Courtesy of {name}",
+        f"As {name} put it, soon",
+    ):
+        assert outward.outgoing_problem(view, cfg, {where: credited}) is not None, credited
+        assert outward.outgoing_problem(view, cfg, {where: credited}, recipients=[name]) is None, credited
+
+
 def test_a_draft_to_a_colleague_with_the_assistants_name_can_be_approved_and_shows_the_warning(api):
     """H5-19, through the person's path: the follow-up message to someone who shares the name is offered with a
     warning (not withheld), and marking it sent works; an attribution in it is still held back."""

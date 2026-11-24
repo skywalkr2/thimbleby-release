@@ -6,7 +6,7 @@ import { besidePane, fakeApi, renderApp } from "../test-utils";
 import { WhatChanged } from "./WhatChanged";
 
 // The window is wide, so a change's detail stands beside the list (design 7.13).
-beforeEach(() => besidePane());
+beforeEach(() => besidePane({ room: true }));
 afterEach(() => vi.unstubAllGlobals());
 
 function changeWith(made: S["MadeView"][]): S["ChangeItem"] {

@@ -9,6 +9,7 @@ returns plain data and raises `ConnectorError` with a kind: `auth` (sign in agai
 from __future__ import annotations
 
 import base64
+import fnmatch
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -562,8 +563,16 @@ def _read_folder(settings: FolderSettings, state: dict[str, Any], context: Conne
     items = []
     found = set()
     unreadable = _unread_documents(folder, settings)
+    # A pattern matches whatever the case of a file's name ("*.pdf" finds "Scan.PDF"), which a glob does not on every
+    # system, so the names are listed and matched here.
+    listed = sorted(folder.rglob("*") if settings.subfolders else folder.glob("*"))
     for pattern in settings.patterns:
-        for path in sorted(folder.rglob(pattern) if settings.subfolders else folder.glob(pattern)):
+        wanted = pattern.lower()
+        for path in (
+            p
+            for p in listed
+            if fnmatch.fnmatchcase((p.relative_to(folder).as_posix() if "/" in wanted else p.name).lower(), wanted)
+        ):
             if not path.is_file() or path in found or any(part.startswith(".") for part in path.parts[-3:]):
                 continue
             found.add(path)

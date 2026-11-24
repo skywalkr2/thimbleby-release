@@ -114,3 +114,17 @@
 :global([data-menu-slot]) .buttons :global([data-variant]) { min-width: 7rem; justify-content: center; }
 @media (max-width: 639.98px) { :global([data-menu-slot]) .buttons :global([data-variant]) { min-width: 0; } }
 :global([data-narrow]) :global([data-menu-slot]) .buttons :global([data-variant]) { min-width: 0; }
+
+/* A row in a narrow column (Today's rail, which holds setup's rows beside the queue): the parts stack as on a phone, so a title never
+   shrinks to a sliver beside a long action. A column opts in by naming itself the container `narrowcol`. */
+@container narrowcol (max-width: 26rem) {
+  .row { grid-template-columns: var(--row-lead-w) minmax(0, 1fr); row-gap: var(--space-1); }
+  .hasMenu { padding-right: calc(var(--space-1) + var(--hit-icon) + var(--space-1)); }
+  .actions { display: contents; }
+  .buttons { grid-column: 2; justify-content: flex-start; margin-top: var(--space-1); }
+  .menu { position: absolute; top: var(--space-1); right: var(--space-1); }
+  .clamp { display: block; -webkit-line-clamp: unset; line-clamp: unset; overflow: visible; }
+  .oneLine { white-space: normal; overflow: visible; text-overflow: clip; }
+  :where(:not(:has(> .row > .lead:not(:empty)))) > .row { grid-template-columns: minmax(0, 1fr); }
+  :where(:not(:has(> .row > .lead:not(:empty)))) > .row > .actions > .buttons { grid-column: 1; }
+}

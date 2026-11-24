@@ -387,6 +387,8 @@ def _refresh(ws: Any, store: Any, cfg: Any, source_id: str, now: datetime | None
         return _read_absence(store, cfg, source, poll, settings, now, clock)
     if _served_older_copy(worked, poll.generated_at):
         return _record_older_copy(store, source, worked, now, clock)
+    if worked and _is_old(source, poll.generated_at, now):
+        return _record_stale_copy(store, source, worked, poll, now, clock)
     read_before = any(
         r.data["outcome"] in ("ok", "baseline") for r in store.read().find("watch_run", {"source": source.id})
     )
@@ -505,6 +507,32 @@ def _record_older_copy(store: Any, source: Any, worked: list[Any], now: datetime
         old_data=bool(last.get("old_data")),
     )
     return Result(source.id, "ok", note=word(None, "read.older_copy"))
+
+
+def _record_stale_copy(store: Any, source: Any, worked: list[Any], poll: Any, now: datetime, clock: float) -> Result:
+    """Keep a read of data older than the source's normal refresh as one that compared nothing: it is never filed as
+    news, the state stays as the last good read left it, and the read after it that finds fresh data files what was
+    missed together. The read says its data is old, which is what Today's line is made from."""
+    _record(
+        store,
+        source.id,
+        now,
+        clock,
+        "ok",
+        state=dict(worked[-1].data.get("state") or {}),
+        generated_at=poll.generated_at,
+        old_data=True,
+        unreadable=unreadable_dicts(poll.unreadable),
+        skipped=skipped_counts(poll.unreadable),
+    )
+    return Result(source.id, "ok")
+
+
+def _older_item(before: Any, item: Any) -> bool:
+    """Whether a source lists an item with a time earlier than the one its saved copy has: an older copy of that item
+    (a file put back from a backup), never a change. Items that carry no time are never older."""
+    made, kept = _moment(item.changed_at), _moment(before.data.get("changed_at"))
+    return made is not None and kept is not None and made < kept
 
 
 def refusal(err: ConnectorError) -> dict[str, Any]:
@@ -895,6 +923,9 @@ def _compare(
             if any(before.data.get(k) != v for k, v in kept_now.items()):
                 with store.transaction() as tx:
                     tx.update("snapshot", before.id, kept_now, _WATCHER, read_version=before.version)
+            continue
+        if before is not None and _older_item(before, item):
+            log.info("%s: an older copy of %s was listed and was not compared", source.id, item.key)
             continue
         change = "new" if before is None else "changed"
         old = _read_text(ws, before.data["content_hash"]) if before is not None else None
@@ -1465,6 +1496,8 @@ def _hand_in(
         data.update(state="done", waiting=f"Closed by {closed['rule']}: {closed['reason']}", auto_closed=closed)
     if getattr(source, "role", None) == "deleted":
         data["source_role"] = "deleted"
+        if item.event is not None and entry_rules.carries_invitation(item.event, *entry_rules.identity(tx, cfg)):
+            data["source_invitation"] = True
     if extra:
         data.update({k: v for k, v in extra.items() if not closed or k == "intake"})
     request = tx.create("request", data, ctx)

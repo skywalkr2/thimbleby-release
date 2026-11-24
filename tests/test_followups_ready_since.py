@@ -94,6 +94,7 @@ def test_todays_send_line_carries_the_day_its_message_became_ready(tmp_path):
 
     ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
     cfg = ws.config(env={"COCKPIT__WORKSPACE__USER__TIMEZONE": "UTC"})
+    cfg.ui.today.fold_sends_from = 0  # one line for each person
     clock = Clock()
     store = Store(ws.db_path, cfg=cfg, clock=clock)
     try:

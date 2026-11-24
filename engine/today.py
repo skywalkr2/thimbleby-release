@@ -54,6 +54,8 @@ class AgendaItem:
     #: For an own entry: who made it, "assistant" when the change that added it was an AI run's (found in something
     #: that came in) and "person" otherwise (typed, or made from a screen). None for an event read from a calendar.
     made_by: str | None = None
+    #: For an own entry the assistant called off because a later mail cancelled it: that mail's words.
+    called_off_why: str | None = None
 
 
 @dataclass
@@ -122,12 +124,16 @@ def agenda(
         (e.data["source"], e.data["key"]): e for e in view.list("event") if e.data.get("key") and e.data.get("source")
     }
     with_todo = {a.data["event"] for a in view.list("action") if a.data.get("event")}
+    deleted_sources = {s.id for s in cfg.watch.sources if getattr(s, "role", None) == "deleted"}
+    mine, names = entry_rules.identity(view, cfg) if deleted_sources else (set(), set())
     uids: dict[int, str] = {}
     for snap in view.marked("snapshot", "event"):
         data = snap.data
         event = data.get("event")
         if data.get("gone") or not event:
             continue
+        if data["source"] in deleted_sources and entry_rules.carries_invitation(event, mine, names):
+            continue  # an invitation in deleted mail never puts a meeting on the schedule
         for date_ in _dates(event, data["title"], data["key"]):
             on = [d for d in days if _falls_on(date_, d, here)]
             if not on:
@@ -304,6 +310,7 @@ def _own_entries(
                     repeats=(data["repeat"]["every"] if data.get("repeat") else None),
                     occurrence=_local_text(was, here) if was is not None else None,
                     made_by="assistant" if entry.id in made else "person",
+                    called_off_why=data.get("called_off_why") if data.get("cancelled") else None,
                 )
             )
     return sorted(

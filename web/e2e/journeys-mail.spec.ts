@@ -207,13 +207,16 @@ test.describe.serial("journey: mail", () => {
     // into lines of its own. All looks good reviews the list and the line leaves.
     await inbox.getByRole("button", { name: "Look over", exact: true }).click();
     await expect(page).toHaveURL(/#today$/);
-    await expect(inbox.getByRole("button", { name: /^Not right/ }).first()).toBeVisible();
+    // The items open under the line, or in the rail's column from 1280px.
+    const pane = page.locator("[data-queue-inspector]");
+    await expect(inbox.or(pane).getByRole("button", { name: /^Not right/ }).first()).toBeVisible();
     await expect(page.locator('[data-queue-line="review"]')).toHaveCount(0);
     await expect(found).toHaveCount(2);
-    await inbox.getByRole("button", { name: /^Keep (it|all \d+)$/ }).click();
+    await inbox.or(pane).getByRole("button", { name: /^Keep (it|all \d+)$/ }).click();
     await expect(found).toHaveCount(1);
-    await page.locator('[data-queue-line="intake_review"]').filter({ hasText: "Your calendar" }).getByRole("button", { name: "Look over", exact: true }).click();
-    await page.locator('[data-queue-line="intake_review"]').filter({ hasText: "Your calendar" }).getByRole("button", { name: /^Keep (it|all \d+)$/ }).click();
+    const calendarLine = page.locator('[data-queue-line="intake_review"]').filter({ hasText: "Your calendar" });
+    await calendarLine.getByRole("button", { name: "Look over", exact: true }).click();
+    await calendarLine.or(pane).getByRole("button", { name: /^Keep (it|all \d+)$/ }).click();
     await expect(found).toHaveCount(0);
     // Reviewing added nothing to Today: no line of its own for any item, and no "N new" waiting.
     await expect(page.locator('[data-queue-line="review"]')).toHaveCount(0);

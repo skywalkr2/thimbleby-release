@@ -307,7 +307,7 @@ test.describe.serial("acceptance scenario", () => {
   test("signing in, the backup nag, and a clean first screen", async ({ page }) => {
     await signIn(page);
     people = await (await page.request.get("api/people")).json();
-    await expect(page.getByRole("button", { name: /^App status: / })).toContainText("Backup needed");
+    await expect(page.getByRole("button", { name: /^App status: / })).toContainText("No backup yet");
     const status = await openStatus(page);
     await expect(status).toContainText("No successful backup yet");
     await page.keyboard.press("Escape");
@@ -647,21 +647,17 @@ test.describe.serial("acceptance scenario", () => {
     await row.getByRole("button", { name: "Show source" }).first().click();
     await expect(row.locator("mark").first()).toBeVisible();
     await checkAccessibility(page);
-    // What changed is the history, so the choice is in the menu of the change itself (the first menu of its detail, ahead of
-    // those of the items it made); the button is on Today's review line.
-    await row.getByRole("button", { name: /^More actions for/ }).first().click();
-    await page.getByRole("menuitem", { name: "Looks good" }).click();
+    // A change not yet checked has its Looks good on its own line of What changed.
+    await page.getByRole("main").locator("[data-row-list] > li[data-row]").getByRole("button", { name: "Looks good" }).first().click();
     await expect(page.getByText("Reviewed and filed.")).toBeVisible();
 
     // A first name two contributors share is one decision, and nothing is filed under either until the person picks.
     const sharedCase = byId("shared-first-name");
     const guestList = String(sharedCase.stub_answer!.ops[0].text);
     const shared = await handIn(page, sharedCase);
-    // What changed is the history: the question is information there, answered on its line on Today, which the link opens.
-    await expect(shared.getByRole("combobox", { name: /Who is/ })).toHaveCount(0);
-    await shared.getByRole("link", { name: "Answer on Today" }).click();
-    await expect(page.getByRole("heading", { level: 1, name: /^Good (morning|afternoon|evening)/ })).toBeVisible();
-    const picker = page.getByRole("main").getByRole("combobox", { name: /Who is/ });
+    // The question is answered in the change's detail, with the choice its line on Today has, and nothing sends the person there.
+    await expect(shared.getByRole("link", { name: "Answer on Today" })).toHaveCount(0);
+    const picker = shared.getByRole("combobox", { name: /Who is/ });
     await expect(picker).toHaveCount(1);
     // The first group of the list holds the two people who share the name.
     const all = await choicesOf(picker);
@@ -671,7 +667,7 @@ test.describe.serial("acceptance scenario", () => {
     expect(before.flatMap((s) => s.actions).filter((a) => a.text === guestList)).toEqual([]);
     const choice = sharing[0].value;
     await choose(picker, choice);
-    await page.getByRole("main").getByRole("button", { name: "Use this person" }).click();
+    await shared.getByRole("button", { name: "Use this person" }).click();
     await expect(picker).toHaveCount(0);
     const after = await getJson<Section[]>(page, "api/followups");
     expect(after.filter((s) => s.actions.some((a) => a.text === guestList)).map((s) => s.person)).toEqual([choice]);
@@ -998,29 +994,33 @@ test.describe.serial("acceptance scenario", () => {
     await helperJson(page, "backup-targets?configured=0", "POST");
     await signIn(page);
     const chip = page.getByRole("button", { name: /^App status: / });
-    await expect(chip).toContainText("Backup needed");
+    await expect(chip).toContainText("Backup not set up");
     const none = await openStatus(page);
     await expect(none).toContainText("No backup on another device");
     await page.keyboard.press("Escape");
-    const line = page.getByRole("group", { name: "Back up your work", exact: true });
-    await expect(line).toContainText("No backup folder is chosen yet");
+    const line = page.getByRole("group", { name: "Set up backups", exact: true });
+    await expect(line).toContainText("Backup not set up · No backup folder is chosen yet");
     await expect(line.getByRole("button", { name: "Set up backups" })).toBeVisible();
     await checkAccessibility(page);
 
     // A folder is chosen but nothing has been copied yet: both still say a backup is needed.
     await helperJson(page, "backup-targets?configured=1", "POST");
     await signIn(page);
-    await expect(chip).toContainText("Backup needed");
+    await expect(chip).toContainText("No backup yet");
     await expect(chip).not.toContainText("ago");
-    await expect(line).toContainText("No backup has worked yet");
+    const waiting = page.getByRole("group", { name: "Back up your work", exact: true });
+    await expect(waiting).toContainText("No backup yet · No backup has worked yet");
 
     // After one succeeds Today's line goes; the chip stays concise and the popover shows how long ago it ran.
-    await line.getByRole("button", { name: "Back up now" }).click();
+    await waiting.getByRole("button", { name: "Back up now" }).click();
     await screenReady(page);
-    await expect(line).toHaveCount(0);
-    await expect(chip).toHaveText("All good");
+    await expect(waiting).toHaveCount(0);
+    // The acceptance workspace runs on the practice assistant, which the popover lists as needing a look, so the chip says that
+    // and never "All good" (S-0758); what it no longer says is a backup state.
+    await expect(chip).toContainText("needs a look");
+    await expect(chip).not.toContainText(/backup/i);
     await expect(chip).not.toContainText("Backed up less than an hour ago");
-    await expect(chip).toHaveAccessibleName("App status: All good");
+    await expect(chip).toHaveAccessibleName(/^App status: .*needs a look$/);
     const status = await openStatus(page);
     await expect(status).toContainText("Backed up less than an hour ago");
     await checkAccessibility(page);
@@ -1168,8 +1168,8 @@ test.describe.serial("acceptance scenario", () => {
     await signIn(page);
     await expect(page.getByRole("region", { name: /^Finish setting up/ })).toBeVisible();
     await expect(page.getByRole("heading", { level: 2, name: "Needs you", exact: true })).toBeVisible();
-    // The rail holds at most three cards, and never Top priorities, Your to-dos, This week or Agenda.
-    for (const gone of ["Top priorities", "Your to-dos", "This week", "Agenda"]) {
+    // The rail holds at most three cards, and never Top priorities, Your to-dos or Agenda (This week is its card on every day, S-0762).
+    for (const gone of ["Top priorities", "Your to-dos", "Agenda"]) {
       await expect(page.getByRole("heading", { name: gone, exact: true })).toHaveCount(0);
     }
     expect(await page.locator('[aria-label="Briefing, schedule and mail"] > section, [aria-label="Briefing, schedule and mail"] > [data-col]:not([data-col="plugin-panels"])').count()).toBeLessThanOrEqual(3);
@@ -1245,18 +1245,18 @@ test.describe.serial("acceptance scenario", () => {
     await adding.getByLabel(/^Role/).fill("Proofreader");
     await checkAccessibility(page);
     await adding.getByRole("button", { name: "Add a person" }).click();
-    const row = page.getByRole("listitem").filter({ hasText: /Test Person/ });
+    const row = page.getByRole("row").filter({ hasText: /Test Person/ });
     await expect(row).toContainText("Proofreader");
     await row.getByRole("button", { name: /More actions for/ }).click();
     await page.getByRole("menuitem", { name: "Edit" }).click();
     const editing = page.getByRole("dialog", { name: "Edit person" });
     await editing.getByLabel(/Full name/).fill("Renamed Person");
     await editing.getByRole("button", { name: "Save" }).click();
-    await expect(page.getByRole("listitem").filter({ hasText: /Renamed Person/ })).toBeVisible();
+    await expect(page.getByRole("row").filter({ hasText: /Renamed Person/ })).toBeVisible();
     // The rename's own toast, not whichever Undo happens to be last on screen.
     const renamed = page.getByRole("region", { name: "Notifications" }).locator("div", { hasText: /^Saved Renamed Person/ });
     await renamed.getByRole("button", { name: "Undo" }).click();
-    await expect(page.getByRole("listitem").filter({ hasText: /Test Person/ })).toBeVisible();
+    await expect(page.getByRole("row").filter({ hasText: /Test Person/ })).toBeVisible();
     await checkAccessibility(page);
     await page.reload();
     await expect(page.getByRole("heading", { level: 1, name: "People", exact: true })).toBeVisible();
@@ -1285,7 +1285,7 @@ test.describe.serial("acceptance scenario", () => {
     await field.press("Enter");
     await expect(org).toContainText(name);
     await page.getByRole("dialog", { name: "Add a person" }).getByRole("button", { name: "Add a person" }).click();
-    const row = page.getByRole("listitem").filter({ hasText: /Org Person/ });
+    const row = page.getByRole("row").filter({ hasText: /Org Person/ });
     await expect(row).toBeVisible();
     // The row says who they are; the organization is in the person's details, by name, never by its id.
     await expect(row).not.toContainText(/ORG-/);
@@ -1381,12 +1381,12 @@ test.describe.serial("acceptance scenario", () => {
     await expect(page.locator("[data-row-list] > li", { hasText: item.title }).first()).toBeVisible({ timeout: 20_000 });
     await checkAccessibility(page);
     const row = page.locator("[data-row-list] > li", { hasText: item.title }).first();
-    await expect(row.locator("[data-pill]")).toHaveText(item.current_label ?? "Not started");
+    await expect(row.locator("[data-pill]")).toHaveText(item.current_label ?? "No stage yet");
     await row.getByRole("button", { name: `Move to ${item.next!.label}` }).click();
     await expect(page.getByText(`Moved ${item.title} to ${item.next!.label}.`)).toBeVisible();
     await expect(row.locator("[data-pill]")).toHaveText(item.next!.label);
     await page.getByRole("button", { name: "Undo" }).last().click();
-    await expect(row.locator("[data-pill]")).toHaveText(item.current_label ?? "Not started");
+    await expect(row.locator("[data-pill]")).toHaveText(item.current_label ?? "No stage yet");
     await row.getByRole("button", { name: /More actions for/ }).click();
     await page.getByRole("menuitem", { name: "History" }).click();
     await expect(row.getByRole("list", { name: "Where it has been" })).toContainText("after undoing a change");
@@ -1463,7 +1463,8 @@ test.describe.serial("acceptance scenario", () => {
     const first = "A line to make a note from";
     const body = `\n${first}\nand a second line\n`;
     const words = body.split(/\s+/).filter(Boolean).length;
-    const opener = page.getByRole("button", { name: "Add a file", exact: true });
+    // The page's own button, which the empty page's card repeats beside its words (S-0746); the form gives focus back to this one.
+    const opener = page.getByRole("button", { name: "Add a file", exact: true }).first();
     await opener.click();
     const dialog = page.getByRole("dialog", { name: "Add a file" });
     await expect(dialog).toBeVisible();

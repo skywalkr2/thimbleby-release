@@ -375,17 +375,19 @@ test.describe("the calendar page", () => {
     {
       await page.setViewportSize({ width, height: 900 });
       await seed(page);
-      const ahead = async () => {
+      // A week with no timed meeting is the agenda's list of days, and one with a meeting the grid (S-0743): the days are read from either.
+      const dayList = "main [data-grid] ul[data-day], main [data-agenda] li[data-day]";
+      const ahead = async (list = dayList) => {
         await open(page);
         await pick(page, "3");
         for (let i = 0; i < 10; i++) {
           await page.locator("body").press("ArrowRight");
           await expect(page.locator("main [data-skeleton]")).toHaveCount(0, { timeout: 15_000 });
         }
-        await expect(page.locator("main [data-grid] ul[data-day]").first()).toBeVisible(LOADED);
+        await expect(page.locator(list).first()).toBeVisible(LOADED);
       };
       await ahead();
-      const days = await page.locator("main [data-grid] ul[data-day]").evaluateAll((els) => els.map((el) => el.getAttribute("data-day") as string));
+      const days = await page.locator(dayList).evaluateAll((els) => els.map((el) => el.getAttribute("data-day") as string));
       expect(days.length).toBeGreaterThanOrEqual(5);
       const ends = [days[0], days[days.length - 1]];
       // At different times of day, so a card as wide as three days' columns (a 1024px window) has a place beside each that
@@ -395,7 +397,7 @@ test.describe("the calendar page", () => {
         expect(made.ok()).toBe(true);
       }
       await page.reload();
-      await ahead();
+      await ahead("main [data-grid] ul[data-day]");
       for (const day of ends) {
         const entry = page.getByRole("button", { name: new RegExp(`Meeting on ${day}`) });
         await entry.scrollIntoViewIfNeeded();

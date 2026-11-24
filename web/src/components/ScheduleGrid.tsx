@@ -5,7 +5,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { S } from "../lib/api";
 import { clashGroups, foldIdentical, gridHours, hourLabel, mergeClashSpans, minutesOf, placeOverlaps, SHORT, type ClashGroup, type Span } from "../lib/calendar";
-import { day, dayOfMonth, onTheClock, wallTime, weekdayDay, weekdayLong } from "../lib/dates";
+import { clockDay, day, dayOfMonth, onTheClock, wallTime, weekday, weekdayLong } from "../lib/dates";
 import { useIsNarrow, useMediaQuery } from "../lib/media";
 import { useWords } from "../lib/wording";
 import { Icon } from "../ui/Icon";
@@ -13,6 +13,12 @@ import { EntryButton, entryKey, type Calendars, type Entry } from "./ScheduleEnt
 import { AllDayStrip } from "./ScheduleAllDay";
 import { GroupCard, type GroupRef } from "./ScheduleGroupCard";
 import styles from "./Schedule.module.css";
+
+/** A day as its short weekday and then its number, "Mon 23", for a column heading where six days share the width. */
+const weekdayAndDay = (iso: string): string => `${weekday(iso)} ${dayOfMonth(iso)}`;
+
+/** A day off in words: "Day off · Thanksgiving", or "Day off" when no reason is given. */
+export const offWords = (reason: string, t: (key: string, values?: Record<string, string | number>) => string): string => (reason ? t("schedule.day_off", { reason }) : t("schedule.day_off_plain"));
 
 export interface DayEntries {
   date: string;
@@ -34,7 +40,7 @@ function spanOf(entry: Entry, date: string, nextStart = Infinity): Span {
 }
 
 function continuesPast(entry: Entry, date: string): boolean {
-  return !!entry.end && entry.end.slice(0, 10) > date;
+  return !!entry.end && clockDay(entry.end) > date;
 }
 
 const clashId = (e: { snapshot: string; start: string }): string => `${e.snapshot}#${e.start}`;
@@ -122,6 +128,8 @@ export function TimeGrid(props: {
   onOpenGroup: (group: GroupRef) => void;
   /** What stands at the left of the line above the grid, where "Show all hours" is at the right: the key to the sides' colors. */
   lead?: ReactNode;
+  /** The days nobody works (a holiday, a team's closure) by day, with the reason: hatched in the grid and named at the top of the day. */
+  off?: ReadonlyMap<string, string>;
 }) {
   const { t, tn } = useWords();
   const phone = useIsNarrow();
@@ -391,7 +399,7 @@ export function TimeGrid(props: {
   // Seven columns (the whole week, shown on a weekend) in a window under 1280px are about 95px each: they take the short form too, and
   // today's heading says "Today" and the day number.
   const tight = props.days.length > 6 && below1280;
-  const said = props.days.length <= 6 || tight ? weekdayDay : day;
+  const said = props.days.length <= 6 || tight ? weekdayAndDay : day;
   const label = (date: string) =>
     single
       ? date === props.today ? t("today.agenda.today") : weekdayLong(date)
@@ -403,7 +411,7 @@ export function TimeGrid(props: {
   useEffect(() => {
     const box = scrollerRef.current;
     if (!box) return;
-    const target = box.querySelector<HTMLElement>("[data-clash]") ?? box.querySelector<HTMLElement>("[data-now]") ?? box.querySelector<HTMLElement>("ul[data-day] > li");
+    const target = box.querySelector<HTMLElement>("[data-clash]") ?? box.querySelector<HTMLElement>("[data-now]") ?? box.querySelector<HTMLElement>("ul[data-day] > li:not([data-day-off])");
     if (!target) return;
     const head = box.querySelector<HTMLElement>("[data-grid] h3")?.getBoundingClientRect().height ?? 0;
     const strip = box.querySelector<HTMLElement>("[data-strip]")?.getBoundingClientRect().height ?? 0;
@@ -412,7 +420,7 @@ export function TimeGrid(props: {
     let wanted = above - head - strip - 2 * 16;
     // The grid opens on the earliest entry of any day when the clash or now is still in the frame from there, so nothing early in the
     // week is scrolled out of sight for no reason.
-    const firsts = Array.from(box.querySelectorAll<HTMLElement>("ul[data-day] > li:not([data-now])")).map((el) => el.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop);
+    const firsts = Array.from(box.querySelectorAll<HTMLElement>("ul[data-day] > li:not([data-now]):not([data-day-off])")).map((el) => el.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop);
     const first = firsts.length > 0 ? Math.max(0, Math.min(...firsts) - head - strip - 2 * 16) : null;
     const hourPx = (box.querySelector<HTMLElement>("ul[data-day]")?.getBoundingClientRect().height ?? 0) / Math.max(1, to - from);
     // "Still in the frame" is the target's first hour: its heading and first rows show, and the rest is a scroll away.
@@ -461,6 +469,12 @@ export function TimeGrid(props: {
       {props.days.map((d) => (
         <h3 key={d.date} className={styles.colHead} data-today={d.date === props.today ? "" : undefined}>
           {label(d.date)}
+          {/* A day nobody works is named under its heading, never over the day, where it would cover a meeting. */}
+          {props.off?.has(d.date) && (
+            <span className={styles.offLabel} data-day-off="">
+              {offWords(props.off.get(d.date) ?? "", t)}
+            </span>
+          )}
         </h3>
       ))}
       {anyAllDay && <div className={styles.stripLabel}>{t("schedule.all_day")}</div>}
@@ -476,7 +490,7 @@ export function TimeGrid(props: {
         ))}
       </div>
       {props.days.map((d, i) => (
-        <ul key={d.date} className={styles.lane} aria-label={label(d.date)} data-day={d.date} data-today={d.date === props.today ? "" : undefined}>
+        <ul key={d.date} className={styles.lane} aria-label={label(d.date)} data-day={d.date} data-today={d.date === props.today ? "" : undefined} data-off={props.off?.has(d.date) ? "" : undefined}>
           {layout[i].singles.map((p, n) => (
             <li
               key={`${entryKey(p.item, d.date)}:${n}`}

@@ -36,6 +36,8 @@ const kindWord = (item: Item, t: T) => (item.kind === "fact" && item.detail ? t(
 /** When an item is, in words: its day, or its days, and for a calendar entry its time. */
 function whenOf(item: Item, t: T): string {
   if (item.entry && item.start === item.end) return fullWhen(item.entry, item.start, t);
+  // A to-do past its day is drawn at today with the day it was due.
+  if (item.state === "overdue" && item.detail) return t("schedule.timeline.when_overdue", { day: day(item.detail) });
   return item.start === item.end ? day(item.start) : t("schedule.timeline.when_range", { start: day(item.start), end: day(item.end) });
 }
 

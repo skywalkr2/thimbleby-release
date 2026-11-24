@@ -184,7 +184,7 @@ def api(tmp_path):
     ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
     cfg = ws.config(env={}, flags={"server.base_path": "/", "storage.backups.automatic": False})
     cfg.ai.budgets.first_go = True
-    _price(cfg, 10.0)
+    _price(cfg, 2.0)  # a price that keeps a run under the per-run limit as the packet grows
     app = create_app(ws, cfg, TOKEN, ui_dist=tmp_path / "no-ui")
     with TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"}) as client:
         yield client, app.state.worker

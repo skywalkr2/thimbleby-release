@@ -9,6 +9,7 @@ import { DateField } from "../ui/DateField";
 import { FormField } from "../ui/FormField";
 import { Select } from "../ui/Select";
 import { Actions } from "../ui/Actions";
+import { writtenDay } from "../lib/dates";
 
 type Every = "" | "day" | "week" | "two_weeks" | "month";
 type Role = "attend" | "run" | "brief_only";
@@ -31,7 +32,7 @@ export function EntryEditForm(props: { entry: string; version: number; fields: E
   // An entry with no part stays so until the person picks one: the list shows "attend" as its first choice, not as a choice made.
   const [roleTouched, setRoleTouched] = useState(false);
   const [busy, setBusy] = useState(false);
-  const first = (props.fields.start ?? "").slice(0, 10);
+  const first = writtenDay(props.fields.start ?? "");
   const stopsBad = repeat !== "" && stops !== "" && first !== "" && stops < first;
   const submit = async () => {
     if (busy || stopsBad) return;

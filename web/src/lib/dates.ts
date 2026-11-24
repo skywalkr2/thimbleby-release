@@ -21,10 +21,20 @@ export type TimeFormat = "auto" | "12h" | "24h";
 let timeFormatSetting: TimeFormat = "auto";
 let timeStepSetting = 15;
 let shortWaitSetting = 5;
+/** Whether the person's language writes times on a 12-hour clock; unknown until the language is set. */
+let languageClock12: boolean | undefined;
 
 /** How times of day are written (`ui.time_format`) and how far apart a time box lists them (`ui.time_step`); set from the runtime
  * configuration, like the clock's zone. A value that is none of the known ones leaves the setting as it was. */
-export function setTimePrefs(prefs: { format?: string | null; step?: number | null; shortWait?: number | null }): void {
+export function setTimePrefs(prefs: { format?: string | null; step?: number | null; shortWait?: number | null; language?: string | null }): void {
+  if (prefs.language !== undefined) {
+    languageClock12 = undefined;
+    if (prefs.language) try {
+      languageClock12 = new Intl.DateTimeFormat(prefs.language, { hour: "numeric" }).resolvedOptions().hour12;
+    } catch {
+      languageClock12 = undefined;
+    }
+  }
   if (prefs.shortWait && prefs.shortWait > 0) shortWaitSetting = Math.floor(prefs.shortWait);
   if (prefs.format === "auto" || prefs.format === "12h" || prefs.format === "24h") timeFormatSetting = prefs.format;
   if (prefs.step && prefs.step > 0) timeStepSetting = Math.floor(prefs.step);
@@ -36,10 +46,13 @@ export const shortWaitMinutes = (): number => shortWaitSetting;
 /** The minutes between the times a time box lists. */
 export const timeStep = (): number => timeStepSetting;
 
-/** The options that make an hour and minute read on the chosen clock: the locale's own, 12-hour, or 24-hour with two digits. */
-function clockOptions(): Intl.DateTimeFormatOptions {
+/** The options that make an hour and minute read on the chosen clock: the language's own, 12-hour, or 24-hour with two digits. */
+function clockOptions(useLanguage = true): Intl.DateTimeFormatOptions {
   if (timeFormatSetting === "12h") return { hour: "numeric", minute: "2-digit", hour12: true };
   if (timeFormatSetting === "24h") return { hour: "2-digit", minute: "2-digit", hourCycle: "h23" };
+  // Left to the language: the person's own (en-US is 12-hour), never the computer's, with no leading zero on a 12-hour clock.
+  if (useLanguage && languageClock12 === true) return { hour: "numeric", minute: "2-digit", hour12: true };
+  if (useLanguage && languageClock12 === false) return { hour: "2-digit", minute: "2-digit", hourCycle: "h23" };
   return { hour: "numeric", minute: "2-digit" };
 }
 
@@ -56,7 +69,7 @@ export function isAfternoon(when: Date, fromHour: number): boolean {
 
 export function day(iso: string | null | undefined): string {
   if (!iso) return "";
-  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  const [y, m, d] = clockDay(iso).split("-").map(Number);
   return dayFormat.format(new Date(Date.UTC(y, m - 1, d)));
 }
 
@@ -65,7 +78,7 @@ const monthDayFormat = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", mon
 /** The day of a date, or of a time as the server wrote it on the person's own clock, as a month and a day: "Oct 14". */
 export function monthDay(iso: string | null | undefined): string {
   if (!iso) return "";
-  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  const [y, m, d] = clockDay(iso).split("-").map(Number);
   return monthDayFormat.format(new Date(Date.UTC(y, m - 1, d)));
 }
 
@@ -153,7 +166,7 @@ export function nextMonday(from: Date): string {
  * for today or a day not yet come, since a batch ready today is not a stale one. */
 export function sinceDay(iso: string | null | undefined, today: Date): string {
   if (!iso) return "";
-  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  const [y, m, d] = clockDay(iso).split("-").map(Number);
   const then = new Date(Date.UTC(y, m - 1, d));
   const ago = Math.round((Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()) - then.getTime()) / 86_400_000);
   if (ago <= 0) return "";
@@ -162,7 +175,7 @@ export function sinceDay(iso: string | null | undefined, today: Date): string {
 
 /** The date n days after a yyyy-mm-dd date, as yyyy-mm-dd. */
 export function addDays(iso: string, n: number): string {
-  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  const [y, m, d] = clockDay(iso).split("-").map(Number);
   return localDate(new Date(y, m - 1, d + n));
 }
 
@@ -178,9 +191,16 @@ const hasOffset = (iso: string): boolean => /T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?
 /** The calendar day of a date-time the server wrote, on the person's clock: an instant with an offset is moved to their zone
  * first, a date or a time with no offset is already theirs. */
 export function clockDay(iso: string): string {
-  if (!hasOffset(iso)) return iso.slice(0, 10);
+  const written = writtenDay(iso);
+  if (!hasOffset(iso)) return written;
   const parsed = new Date(iso);
-  return Number.isNaN(parsed.getTime()) ? iso.slice(0, 10) : onTheClock(parsed).date;
+  return Number.isNaN(parsed.getTime()) ? written : onTheClock(parsed).date;
+}
+
+/** The calendar day a date or date-time is written with, exactly as written and never moved to another zone: for the fields
+ * where a day and a time are edited together. */
+export function writtenDay(iso: string): string {
+  return /^\d{4}-\d{2}-\d{2}/.exec(iso)?.[0] ?? iso;
 }
 
 /** The time of day of a date-time the server wrote, on the person's clock (an instant with an offset is moved to their zone;
@@ -194,7 +214,7 @@ export function clockTime(iso: string): string {
 /** A time as the server wrote it, on the person's own clock: the time alone today, otherwise the day and the time. */
 export function wallWhen(iso: string): string {
   const clock = wallTime(iso);
-  return iso.slice(0, 10) === localDate(new Date()) ? clock : `${day(iso)}, ${clock}`;
+  return clockDay(iso) === localDate(new Date()) ? clock : `${day(iso)}, ${clock}`;
 }
 
 /** Whether an account's pause has no reset to wait for (out of credit): the server writes its end far ahead. */
@@ -204,7 +224,7 @@ export function noReset(iso: string | null | undefined): boolean {
 
 /** The weekday of a yyyy-mm-dd date, short, in the reader's language. */
 export function weekday(iso: string): string {
-  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  const [y, m, d] = clockDay(iso).split("-").map(Number);
   return weekdayFormat.format(new Date(Date.UTC(y, m - 1, d)));
 }
 
@@ -214,7 +234,7 @@ const monthDayYearFormat = new Intl.DateTimeFormat(undefined, { timeZone: "UTC",
 const monthYearFormat = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", month: "long", year: "numeric" });
 
 const dateOf = (iso: string): Date => {
-  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  const [y, m, d] = clockDay(iso).split("-").map(Number);
   return new Date(Date.UTC(y, m - 1, d));
 };
 
@@ -296,5 +316,5 @@ export function fieldDay(iso: string | null | undefined, locale?: string): strin
 /** A time of day written as HH:MM, in the reader's own clock (12-hour or 24-hour): "9:30 AM" or "09:30". */
 export function timeOfDay(hhmm: string | null | undefined, locale?: string): string {
   const found = /^(\d{2}):(\d{2})/.exec(hhmm ?? "");
-  return found ? formatter(locale, clockOptions()).format(new Date(Date.UTC(2000, 0, 1, Number(found[1]), Number(found[2])))) : "";
+  return found ? formatter(locale, clockOptions(!locale)).format(new Date(Date.UTC(2000, 0, 1, Number(found[1]), Number(found[2])))) : "";
 }

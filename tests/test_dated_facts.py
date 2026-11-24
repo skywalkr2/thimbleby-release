@@ -11,7 +11,7 @@ from datetime import UTC, date, datetime, time, timedelta
 import pytest
 
 from engine import dated_facts, held_ask, today_queue
-from engine.applier import Context, Inputs, apply_changeset, decline_held, release
+from engine.applier import Context, Inputs, apply_changeset, check, decline_held, release
 from engine.names import People
 from engine.ops import CHANGESET
 from engine.storage import Store, WriteContext
@@ -142,12 +142,33 @@ def test_the_setting_turns_the_offer_off_and_the_fact_is_kept_all_the_same(tmp_p
         store.close()
 
 
-def test_a_quote_that_does_not_state_the_day_is_refused(env):
-    _, outcomes = apply(env, [fact_op(quote="Your plan renews soon.")], raw="Your plan renews soon.")
-    assert outcomes[0]["status"] == "refused" and "full date" in outcomes[0]["reason"]
+def day_problems(env, ops, raw=WORDS):
+    """What the checks say about the answer: the day the quote doesn't state is refused here, so the answer goes back to
+    the assistant once to quote it."""
+    _, cfg, store = env
+    cs = CHANGESET.validate_python({"ops": ops}, context={"op_models": store.plugins.ops})
+    ctx = Context(
+        store,
+        cfg,
+        People(store, cfg),
+        tuple(store.plugins.ops),
+        Inputs("REQ-1", None, raw, "", "untrusted", cites="mail:1"),
+        actor="assistant",
+    )
+    return [p for p in check(cs, ctx) if p.severity == "refuse"]
+
+
+def test_a_quote_that_does_not_state_the_day_goes_back_and_then_keeps_the_fact_without_the_day(env):
+    gone = "Your plan renews soon."
+    (problem,) = day_problems(env, [fact_op(quote=gone)], raw=gone)
+    assert "full date" in problem.message
     # A different day than the one written beside it is no full date either.
-    _, outcomes = apply(env, [fact_op(on="2026-12-16")])
-    assert outcomes[0]["status"] == "refused"
+    assert day_problems(env, [fact_op(on="2026-12-16")])
+    # After the return round the fact is kept; only the day it couldn't quote is left out (S-0718).
+    _, outcomes = apply(env, [fact_op(quote=gone)], raw=gone)
+    assert outcomes[0]["status"] == "applied"
+    kept = env[2].read().get("fact", outcomes[0]["records"][0]["id"]).data
+    assert kept.get("on") is None and kept.get("on_kind") is None
 
 
 def test_a_day_stated_with_no_year_takes_the_year_a_person_would_and_no_other(env):
@@ -160,8 +181,10 @@ def test_a_day_stated_with_no_year_takes_the_year_a_person_would_and_no_other(en
     # assistant chose another.
     _, outcomes = apply(env, [fact_op(quote=quote)], raw=quote)
     assert outcomes[0]["status"] == "applied"
+    (problem,) = day_problems(env, [fact_op(quote=quote, on="2027-12-15")], raw=quote)
+    assert "full date" in problem.message
     _, outcomes = apply(env, [fact_op(quote=quote, on="2027-12-15")], raw=quote)
-    assert outcomes[0]["status"] == "refused" and "full date" in outcomes[0]["reason"]
+    assert env[2].read().get("fact", outcomes[0]["records"][0]["id"]).data.get("on") is None
 
 
 def test_a_to_do_and_a_fact_with_a_day_of_no_year_are_read_from_the_day_the_input_came_never_kept_as_written(env):

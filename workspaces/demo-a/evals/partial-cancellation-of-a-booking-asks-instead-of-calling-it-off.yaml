@@ -1,0 +1,68 @@
+# A mail from the booking's own sender cancels only one night of three and names no reference: it is not clear that the
+# whole entry is off, so the assistant asks the person rather than calling it off. Playbook: "A cancellation of a booking
+# already on the Schedule calls its entry off".
+id: partial-cancellation-of-a-booking-asks-instead-of-calling-it-off
+title: A partial or unclear cancellation asks the person, never calls the entry off
+skills: [recording-only-what-matters, dates]
+received: '2026-10-14'
+given_file: busy-portfolio.yaml
+given:
+- kind: source
+  id: SRC-97
+  fields:
+    received_at: '2026-10-14T08:00:00+00:00'
+    sent_at: '2026-10-14T08:00:00+00:00'
+    kind: watched:fake
+    title: Reservation HS48213 confirmed, three nights from Friday, October 16
+    content_hash: '0000000000000000000000000000000000000000000000000000000000000000'
+    trust: untrusted
+    watched: {source: inbox, key: confirm-3, change: new}
+- kind: snapshot
+  id: SNAP-97
+  fields:
+    source: inbox
+    key: confirm-3
+    title: Reservation HS48213 confirmed, three nights from Friday, October 16
+    content_hash: '0000000000000000000000000000000000000000000000000000000000000000'
+    seen_at: '2026-10-14T08:00:00+00:00'
+    message: {sender: Harbor Stay <reservations@example.com>}
+- kind: event
+  id: EVT-97
+  fields:
+    title: Hotel reservation HS48213
+    start: '2026-10-16T15:00:00+00:00'
+    source: SRC-97
+    trust: untrusted
+    evidence: {source: SRC-97, quote: 'check in Friday, October 16 at 3:00 PM'}
+watched:
+  title: One night canceled
+  source: inbox
+  key: cancel-3
+  change: new
+  sender: Harbor Stay <reservations@example.com>
+pasted: 'We have canceled one night of your stay, the last one. The other two nights are unchanged.'
+expect:
+- op: question.add
+forbid:
+- op: event.cancel
+- op: event.add
+- op: event.set
+allow:
+- fact
+- glossary.add
+stub_answer:
+  summary: The hotel canceled one night of three, so you are asked whether the whole booking is off.
+  ops:
+  - op: question.add
+    title: The hotel canceled one night of your three-night stay. Is the whole reservation off?
+    to: PER-1
+    event: EVT-97
+    asks_about: decision
+    would_change:
+      what: field
+      record: EVT-97
+      field: cancelled
+    kind: decision
+    text: 'The hotel canceled the last of the three nights from October 16 and kept the other two. Is the whole reservation off?'
+    evidence:
+      quote: 'We have canceled one night of your stay, the last one.'

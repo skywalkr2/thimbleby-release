@@ -58,6 +58,7 @@ from engine.config import Config, ConfigError, load_config
 from engine.config.yaml_edit import set_key
 from engine.contacts import reach_lists, with_value
 from engine.dates import MonthDay, is_month_day_maybe_timed, resolve_range, with_year
+from engine.entry_origin import cancel_match, not_from_mail_problem
 from engine.intake import is_reported, source_text
 from engine.language_words import language_words
 from engine.learning import request_learns
@@ -95,6 +96,7 @@ from engine.ops import (
     AwayReadOp,
     ChangesetIn,
     EventAddOp,
+    EventCancelOp,
     EventGuestsOp,
     EventSetOp,
     EvidenceIn,
@@ -438,6 +440,16 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
                     "content from outside never adds an act or a recipient: the person drafts it, or says to",
                 )
                 continue
+            # An assistant's run drafts a message only from the person's own words (a note they typed, an Ask): a run
+            # on anything else, trusted or not, never drafts one by itself.
+            if name == "act.draft" and ctx.actor == "assistant" and not _from_pm(view, ctx):
+                refuse(
+                    i,
+                    "act-from-outside",
+                    "a message is drafted only from the person's own words; this input isn't, so keep the writing as "
+                    "a to-do for the person",
+                )
+                continue
             if isinstance(op, ActDraftOp) and ctx.actor != "pm" and (why := acts.stranger_problem(ctx, op)) is not None:
                 refuse(i, "act-recipient", why)
                 continue
@@ -448,7 +460,7 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
                 and ctx.actor != "pm"
                 and op.target.kind == "message"
                 and op.target.what in acts.SUBJECT_ACTIONS
-                and not op.parts.get("subject", "").strip()
+                and not acts.has_text(op.parts.get("subject"))
             ):
                 lint(
                     i,
@@ -482,7 +494,12 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
                     refuse(i, "audience", why)
                     continue
         # The person's own note saying they already asked is theirs to file; outside content never is.
-        if name in PERSON_ONLY_OPS and ctx.actor != "pm" and not (name == "question.mark_sent" and _from_pm(view, ctx)):
+        if (
+            name in PERSON_ONLY_OPS
+            and ctx.actor != "pm"
+            and not (name == "question.mark_sent" and _from_pm(view, ctx))
+            and not (isinstance(op, QuestionUpdateOp) and _judging_answer(view, ctx, op.id))
+        ):
             refuse(i, "person-only", f"only the person can use {name}")
             continue
         # A document the person said is still being edited yields facts only until they say it is ready.
@@ -627,11 +644,11 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
                 ctx.cfg.dispatch.knowledge.routing_match,
             )
             if discarded is not None:
+                on = day_of(discarded[1], zone_of(ctx.cfg))
                 refuse(
                     i,
                     "discarded-routing",
-                    f"you discarded {discarded[0].id}, which says the same, on {discarded[1].date().isoformat()}; "
-                    "only your own words bring it back",
+                    f"you discarded {discarded[0].id}, which says the same, on {on}; only your own words bring it back",
                 )
         reach = getattr(op, "applies_to", None)
         if reach is not None and (why := reach_problem(reach, reach_choices(plugins), plugins.records)) is not None:
@@ -660,6 +677,17 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
                 refuse(i, "targets", f"there is no project {project}")
         if isinstance(op, EventAddOp) and op.start is not None and (why := entry_problem(op.start, op.end)) is not None:
             refuse(i, "targets", f"calendar entry {op.title!r}: {why}")
+        if (
+            isinstance(op, (EventAddOp, EventSetOp, EventCancelOp))
+            and ctx.actor != "pm"
+            and _request_data(ctx).get("source_invitation")
+        ):
+            refuse(
+                i,
+                "from-deleted-mail",
+                "this is an invitation in mail that was deleted, so it is read for learning only and puts no meeting "
+                "on the schedule and changes none: leave the calendar entry out",
+            )
         if isinstance(op, EventAddOp) and op.series is not None and view.get("series", op.series) is None:
             refuse(i, "targets", f"there is no series {op.series}")
         if isinstance(op, EventAddOp) and op.repeat is not None:
@@ -683,6 +711,20 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
             refuse(i, "targets", why)
         if isinstance(op, EventGuestsOp) and (why := event_guests_problem(view, ctx, op)) is not None:
             refuse(i, "targets", why)
+        if isinstance(op, EventCancelOp) and (why := event_cancel_problem(view, ctx, op)) is not None:
+            refuse(i, "targets", why)
+        elif isinstance(op, EventCancelOp) and ctx.actor == "assistant" and not ctx.confirmed_by_pm:
+            found = cancel_match(
+                view,
+                ctx,
+                view.get("event", op.id),
+                op.evidence.quote,
+                day_of(view.get("event", op.id).data["start"], zone(ctx.cfg)),
+            )
+            if found is not None and found[0] == "refuse":
+                refuse(i, "targets", found[1])
+            elif found is not None:
+                problems.append(Problem("cancel-match", "hold", i, found[1]))
         if isinstance(op, ActionTieOp):
             why = action_tie_problem(view, op)
             if why:
@@ -1032,6 +1074,10 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
                     "a question to someone else names which of the user's decisions, designs or dated items depends on "
                     "the answer (matters_for); without one, record it as a fact and say so in the change's note",
                 )
+            if lints.get("question-reworded-before", "off") != "off" and (
+                said := _reworded_closed_question(ctx, view, op, resolved.person)
+            ):
+                lint(i, "question-reworded-before", said)
             if lints.get("near-duplicate-question", "off") != "off":
                 match = _near_duplicate_question(ctx, view, op.title, resolved.person)
                 if match is not None:
@@ -1276,6 +1322,7 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
     problems = [p for p in problems if not (p.check == "ending-confirm" and p.op in held_else)]
     if ctx.actor != "pm":
         problems += _made_problems(cs, ctx, lints)
+        problems += _summary_voice(cs, ctx, lints)
     return problems
 
 
@@ -1323,17 +1370,39 @@ INFERENCE_WAITS = "This rests on something worked out, not something anyone said
 DATE_OR_OWNER_FIELDS = frozenset({"due", "target", "owner", "owners"})
 
 
+def unstated_day_problem(op: FactOp, ctx: Context) -> str | None:
+    """Why a fact's day isn't kept: its quote doesn't state that day as a full date, or None."""
+    if op.on is None or op.on_kind is None:
+        return None
+    from engine.dated_facts import states_the_day
+
+    if states_the_day(ctx.cfg, op.evidence.quote, op.on) or _states_without_year(ctx, op):
+        return None
+    return f"the quote doesn't state {op.on.isoformat()} as a full date; quote the words that give the day"
+
+
+def without_unstated_days(cs: ChangesetIn, ctx: Context) -> tuple[ChangesetIn, set[tuple[int, str]]]:
+    """A fact whose day the quote doesn't state is kept without the day, not lost: the day is the only thing refused
+    about it, so the rest of what the input says is recorded and the day is left out. Called when the answer is
+    applied, after the assistant has had its round to quote the day. Returns the changeset and the (op index,
+    message) of each refusal this settles."""
+    ops = list(cs.ops)
+    settled: set[tuple[int, str]] = set()
+    for i, op in enumerate(ops):
+        if isinstance(op, FactOp) and (why := unstated_day_problem(op, ctx)) is not None:
+            ops[i] = op.model_copy(update={"on": None, "on_kind": None})
+            settled.add((i, why))
+    return (cs.model_copy(update={"ops": ops}) if settled else cs), settled
+
+
 def _fact_problem(op: FactOp, ctx: Context) -> str | None:
     """Why a fact's `basis`, `said_by` and `reaches_children` don't fit with the rest, or None."""
     if op.reaches_children and not op.project:
         return "a fact that reaches the projects inside one needs the project it is about"
     if (op.on is None) != (op.on_kind is None):
         return "a dated fact needs both on (the day) and on_kind (what kind of day it is)"
-    if op.on is not None:
-        from engine.dated_facts import states_the_day
-
-        if not states_the_day(ctx.cfg, op.evidence.quote, op.on) and not _states_without_year(ctx, op):
-            return f"the quote doesn't state {op.on.isoformat()} as a full date; quote the words that give the day"
+    if (why := unstated_day_problem(op, ctx)) is not None:
+        return why
     if op.said_by is None:
         return None
     if op.basis != "said":
@@ -1444,6 +1513,13 @@ def contact_kind(cfg: Config, kind: str) -> str | None:
     """The configured spelling of a kind of contact detail, matched ignoring case and spaces, or None."""
     wanted = " ".join(kind.split()).casefold()
     return next((k for k in cfg.workspace.contact_kinds if " ".join(k.split()).casefold() == wanted), None)
+
+
+def _judging_answer(view: Any, ctx: Context, question_id: str) -> bool:
+    """Whether the run is the one deciding if the person's answer to this question settles it (`answer_effect`)."""
+    from engine import answer_effect
+
+    return answer_effect.judging_answer(view, ctx.inputs.request, question_id)
 
 
 def _from_pm(view: Any, ctx: Context) -> bool:
@@ -1623,7 +1699,7 @@ def _openable(url: str) -> bool:
     host = (authority[1:].split("]", 1)[0] if authority.startswith("[") else authority.split(":", 1)[0]).lower()
     host = host.rstrip(".")
     try:
-        address = ipaddress.ip_address(host)
+        address = ipaddress.ip_address(host.partition("%")[0] if ":" in host else _browser_address(host) or host)
     except ValueError:
         pass
     else:
@@ -1633,10 +1709,37 @@ def _openable(url: str) -> bool:
     return host.rsplit(".", 1)[-1] not in _NOT_PUBLIC_ENDINGS and not host.endswith(".localhost")
 
 
+def _browser_address(host: str) -> str | None:
+    """The dotted address a browser reads a host as when it is all numbers: one to four parts, each decimal, hex
+    (`0x7f`) or octal (`0177`), the last part filling the bytes left (`127.1` is 127.0.0.1). None when the host isn't
+    one."""
+    parts = host.split(".")
+    if not 1 <= len(parts) <= 4:
+        return None
+    numbers: list[int] = []
+    for part in parts:
+        try:
+            if re.fullmatch(r"0[xX][0-9a-fA-F]*", part):
+                numbers.append(int(part[2:] or "0", 16))
+            elif re.fullmatch(r"0[0-7]*", part):
+                numbers.append(int(part or "0", 8))
+            elif part.isdecimal() and part.isascii():
+                numbers.append(int(part))
+            else:
+                return None
+        except ValueError:
+            return None
+    *head, last = numbers
+    if any(n > 255 for n in head) or last >= 256 ** (4 - len(head)):
+        return None
+    value = sum(n << (8 * (3 - i)) for i, n in enumerate(head)) + last
+    return ".".join(str((value >> shift) & 255) for shift in (24, 16, 8, 0))
+
+
 _NOT_PUBLIC_ENDINGS = frozenset(
-    {"localhost", "test", "invalid", "local", "internal", "lan", "home", "corp", "intranet"}
+    {"localhost", "test", "invalid", "local", "internal", "lan", "home", "corp", "intranet", "arpa"}
 )
-_LINK_IN_TEXT = re.compile(r"https?://[^\s<>\"'()\[\]]+", re.IGNORECASE)
+_LINK_IN_TEXT = re.compile(r"https?://(?:\[[0-9a-fA-F:.%]+\]|[^\s<>\"'()\[\]])[^\s<>\"'()\[\]]*", re.IGNORECASE)
 
 
 def _links_in_text(text: str) -> list[str]:
@@ -2115,6 +2218,17 @@ def event_guests_problem(view: Any, ctx: Context, op: EventGuestsOp) -> str | No
     return None
 
 
+def event_cancel_problem(view: Any, ctx: Context, op: EventCancelOp) -> str | None:
+    """Why the assistant can't call a calendar entry off, or None. The entry must exist, not be called off already, and
+    be one the assistant made from a mail message that no one has changed (`engine.entry_origin`)."""
+    entry = view.get("event", op.id)
+    if entry is None:
+        return f"there is no calendar entry {op.id}"
+    if entry.data.get("cancelled"):
+        return f"calendar entry {op.id} is called off already"
+    return not_from_mail_problem(view, entry)
+
+
 def action_unhold_problem(view: Any, op: ActionUnholdOp) -> str | None:
     """Why an action can't be taken off hold, or None. It must exist, be open and be on hold."""
     found = view.get("action", op.id)
@@ -2150,7 +2264,10 @@ def question_correction_problem(ctx: Context, view: Any, op: OpModel) -> str | N
         return f"there is no question {qid}"
     if isinstance(op, QuestionAskAgainOp):
         return None if found.data["status"] == "dropped" else f"question {qid} wasn't dropped"
-    if found.data["status"] not in ("open", "sent"):
+    reopens = (
+        isinstance(op, QuestionUpdateOp) and found.data["status"] == "answered" and _judging_answer(view, ctx, qid)
+    )
+    if found.data["status"] not in ("open", "sent") and not reopens:
         return f"question {qid} is already closed"
     ended = isinstance(op, QuestionDropOp) and op.reason == endings.PROJECT_ENDED
     if found.data.get("resolves") and not (
@@ -2218,6 +2335,39 @@ def _newer_than_close(ctx: Context, view: Any, question: Any) -> bool:
         if e["field"] == "status" and e["after"] in ("answered", "dropped")
     ]
     return bool(closed) and datetime.fromisoformat(str(source.data["received_at"])) > datetime.fromisoformat(closed[-1])
+
+
+def _reworded_closed_question(ctx: Context, view: Any, op: QuestionAddOp, to: str | None) -> str | None:
+    """The words that tell the assistant a new question may be one already answered or dropped, asked again in other
+    words (`_closed_question_problem` refuses only the same key): an answered or dropped question to the same person, of
+    any age, whose title is as alike as `closed_similarity`, or half of it when both name the same ticket or record.
+    None when there is none. A rule that only points; what the question means stays the assistant's call, which stands
+    after the return (`JUDGMENT_LINTS`)."""
+    if to is None or op.term or ctx.actor == "pm":
+        return None
+    tuning = ctx.cfg.checks.tuning.near_duplicate_question
+    own = set(id_words.ID.findall(f"{op.title} {op.text}"))
+    for question in view.list("question"):
+        data = question.data
+        if data["status"] not in ("answered", "dropped") or data["to"] != to:
+            continue
+        if (data.get("key") or question_key(to, data["title"])) == question_key(to, op.title):
+            continue  # the same key is the invariant's
+        if op.asks_about == "mistake" and _newer_than_close(ctx, view, question):
+            continue
+        shares = bool(own & set(id_words.ID.findall(f"{data['title']} {data.get('text') or ''}")))
+        if _similar(op.title, data["title"]) < tuning.closed_similarity * (0.5 if shares else 1):
+            continue
+        if data["status"] == "answered":
+            said = f"answered: {data.get('answer') or '(no words)'!r}"
+        else:
+            why = data.get("dropped_reason") or "no reason given"
+            said = f"dropped ({why}) and stays dropped unless the person asks again"
+        return (
+            f"this looks like {question.id} ({data['title']!r}), already {said}. Don't ask it again in other words; "
+            "if it is a different question, say what is different in its text"
+        )
+    return None
 
 
 def _near_duplicate_question(ctx: Context, view: Any, title: str, to: str | None) -> Any | None:
@@ -2566,6 +2716,8 @@ def apply_changeset(
     now = now or datetime.now(UTC)
     ctx.run = run
     cs = endings.wind_down(restatements(with_years(cs, ctx, now), ctx), ctx)
+    cs, undated = without_unstated_days(cs, ctx)
+    problems = [p for p in problems if (p.op, p.message) not in undated]
     # Recheck at the write boundary: callers cannot bypass plugin validators or tiers.
     problems = list(dict.fromkeys([*problems, *check(cs, ctx)]))
     # The day an op is written under is the person's own day, not the server's: a to-do's news, log line or hold is
@@ -2811,6 +2963,8 @@ JUDGMENT_LINTS = frozenset(
         "fact-from-notice",
         "project-unfiled",
         "vague-question",
+        "question-reworded-before",
+        "summary-first-person",
     }
 )
 #: Wording lints on an action, which reach whoever owns it: they are told it, in a message worded from its text.
@@ -4722,6 +4876,13 @@ def _apply_op(
         made("event", op.id)
         for action_id in follow_event(tx, op.id, w, ctx.cfg):
             made("action", action_id)
+    elif isinstance(op, EventCancelOp):
+        cur = tx.get("event", op.id)
+        why = " ".join(op.evidence.quote.split())[:300]
+        tx.update("event", op.id, {"cancelled": True, "called_off_why": why}, w, read_version=cur.version)
+        made("event", op.id)
+        for action_id in called_off.sync(tx, op.id, w, ctx.cfg):
+            made("action", action_id)
     elif isinstance(op, SeriesAddOp):
         ev = {"source": w.evidence["source"] or source or "note", "quote": op.evidence.quote}
         data = {
@@ -5234,6 +5395,9 @@ def _correct_question(tx: Tx, op: OpModel, ctx: Context, w: WriteContext) -> lis
         changes = {k: v for k, v in (("title", op.title), ("text", op.text)) if v is not None}
         kind = "reworded"
         note = "\n".join(f"{k}: was {cur.data.get(k) or ''!r}, now {v!r}" for k, v in changes.items())
+        if cur.data["status"] == "answered":
+            # The answer being judged didn't settle it: the question stays open, reworded, and holds no answer.
+            changes |= {"status": "open", "answer": None}
     elif isinstance(op, QuestionMoveOp):
         person = people.resolve(op.to).person
         changes = {"to": person}
@@ -5258,7 +5422,7 @@ def _correct_question(tx: Tx, op: OpModel, ctx: Context, w: WriteContext) -> lis
         changes = {"status": "sent", "sent_at": when.isoformat()}
     tx.update("question", qid, changes, w, read_version=cur.version)
     # A drop the assistant proposes is its own work, not a correction; only the person's own drop is one.
-    if kind is not None and (kind != "dropped" or ctx.actor == "pm"):
+    if kind is not None and (kind not in ("dropped", "reworded") or ctx.actor == "pm"):
         learn.record(
             tx,
             ctx.cfg,
@@ -6453,6 +6617,27 @@ class _FirstWeek:
                     "Use a name as its person's record or the input has it; if you don't know it, ask instead.",
                 )
         return found
+
+
+def _summary_voice(cs: ChangesetIn, ctx: Context, lints: dict[str, Any]) -> list[Problem]:
+    """A run's summary that speaks as the assistant ("I put ...", "You asked me to ..."): every summary is in one voice,
+    plain past tense about what was done, the person as "you", never "I". Returned once; the answer to it stands."""
+    severity = lints.get("summary-first-person", "off")
+    if severity == "off" or not cs.summary.strip():
+        return []
+    word = draft_checks.speaks_in_first_person(cs.summary, language_words(ctx.cfg.language, "first_person_words"))
+    if word is None:
+        return []
+    return [
+        Problem(
+            "summary-first-person",
+            severity,
+            None,
+            f"The summary says {word!r}: it speaks as the assistant.",
+            guidance='Write the summary in plain past tense about what was done, with the person as "you" and '
+            'never "I" or "me" ("Put two actions on hold", "You asked for the date to move").',
+        )
+    ]
 
 
 def _made_problems(cs: ChangesetIn, ctx: Context, lints: dict[str, Any]) -> list[Problem]:

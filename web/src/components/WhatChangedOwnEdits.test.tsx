@@ -8,7 +8,7 @@ import type { S } from "../lib/api";
 import { besidePane, fakeApi, renderApp } from "../test-utils";
 import { WhatChanged } from "./WhatChanged";
 
-beforeEach(() => besidePane());
+beforeEach(() => besidePane({ room: true }));
 afterEach(() => vi.unstubAllGlobals());
 
 function edit(id: string, name: string, at: string, extra: Partial<S["ChangeItem"]> = {}): S["ChangeItem"] {

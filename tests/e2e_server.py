@@ -406,6 +406,12 @@ def main() -> None:
         "/__e2e/sides says what was seeded",
     )
     parser.add_argument(
+        "--assistant-ready",
+        action="store_true",
+        help="the status route reports the assistant's account as set up and checked (the stand-in account is a "
+        "practice assistant, which the header's chip says needs a look), so the header draws the assistant's own line",
+    )
+    parser.add_argument(
         "--assistant-found",
         action="store_true",
         help="seed three promises of the person's own that the assistant found, made at the server's own clock so they "
@@ -675,6 +681,10 @@ def main() -> None:
         sided = None
     review_r3 = seed_review_r3(ws, store, cfg, many_sided["ids"]) if args.review_r3 else None
     review_r4 = seed_review_r4(ws, store, cfg, many_sided["ids"]) if args.review_r4 else None
+    if args.assistant_ready:
+        import api.routes as routes_module
+
+        routes_module.ai_state = lambda *_a, **_k: ("ok", None)
     if args.assistant_found:
         seed_found_promises(store, cfg)
     if args.first_day:

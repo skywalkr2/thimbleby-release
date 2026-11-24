@@ -672,7 +672,7 @@ def test_the_first_go_estimate_includes_the_sorting_run_so_the_person_approves_t
 
     try:
         read(ws, store)
-        cfg.ai.prices[use] = Price(input_per_million=10.0, output_per_million=10.0)
+        cfg.ai.prices[use] = Price(input_per_million=2.0, output_per_million=2.0)
         for req in requests_in(store, "queued"):
             assert process(ws, store, cfg, Router(cfg, store, env={}), req.id, now=NOW) is None
         held = [r.data["estimate_usd"] for r in store.read().list("request") if r.data["state"] == "needs_you"]

@@ -1,0 +1,47 @@
+id: note-settling-a-hold-closes-the-plans-questions
+title: A note that holds the work until after a holiday closes every open question about whether that plan still holds
+skills: [close-right-item, evidence]
+received: '2026-10-14'
+# One note settles two questions about the same plan (is the review on time, does the plan still hold); the run closes
+# both, not only the first.
+given:
+- kind: question
+  id: Q-90
+  fields:
+    projects: [PRJ-1]
+    title: Is the server room review still on time?
+    text: The review of the server room is planned for next week.
+    to: PER-1
+- kind: question
+  id: Q-91
+  fields:
+    projects: [PRJ-1]
+    title: Does the plan for the server room review still hold?
+    text: The plan is to review the server room next week with the vendor.
+    to: PER-1
+pasted: |-
+  Hold the server room review until after Thanksgiving. The vendor is away until the first week of December.
+summary_voice: true
+expect:
+- op: question.done
+  id: Q-90
+- op: question.done
+  id: Q-91
+forbid:
+- op: question.add
+allow:
+- fact
+- action.hold
+stub_answer:
+  summary: Closed both questions about the server room review, since the note holds it until after Thanksgiving.
+  ops:
+  - op: question.done
+    id: Q-90
+    answer: Held until after Thanksgiving, so it is not on time for next week.
+    evidence:
+      quote: Hold the server room review until after Thanksgiving
+  - op: question.done
+    id: Q-91
+    answer: The plan changed; the review is held until after Thanksgiving.
+    evidence:
+      quote: Hold the server room review until after Thanksgiving

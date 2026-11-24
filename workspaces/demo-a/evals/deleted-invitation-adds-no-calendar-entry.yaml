@@ -1,0 +1,24 @@
+# Mail the person deleted (`deleted: true`) that carries a meeting invitation (`invitation: true`, the item's own calendar
+# data says so): read for learning only, so it puts no meeting on the Schedule and no to-do is made. The same read as a
+# booking confirmation, which does reach the Schedule. Playbook: "Mail the person deleted is read for the Schedule and for
+# learning only".
+id: deleted-invitation-adds-no-calendar-entry
+title: A deleted meeting invitation gives no calendar entry and no to-do
+skills: [recording-only-what-matters, dates]
+received: '2026-10-14'
+given_file: busy-portfolio.yaml
+deleted: true
+invitation: true
+pasted: 'From: Dana Reyes <dana@example.com>
+
+  Subject: Invitation: Vendor review on Thursday, October 15
+
+
+  You are invited to the vendor review on Thursday, October 15 at 2:00 PM. Please reply to accept or decline.'
+forbid:
+- op: action.add
+- op: event.add
+- op: event.set
+stub_answer:
+  summary: A deleted invitation; it teaches who invites the person and nothing goes to the Schedule.
+  ops: []

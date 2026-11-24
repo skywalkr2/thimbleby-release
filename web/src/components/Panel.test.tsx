@@ -183,7 +183,24 @@ test("an action the record isn't offered is not shown, and an empty panel says s
 test("no rows says there is nothing yet", async () => {
   fakeApi({ "GET panels": () => [panel()], "GET panels/demo/goals/rows": () => [] });
   renderApp(<Panel name="demo/goals" onOpenRecord={() => {}} />);
-  expect(await screen.findByText("Nothing here yet.")).toBeInTheDocument();
+  expect(await screen.findByText(/^Nothing here yet\./)).toBeInTheDocument();
+  expect(document.querySelector("[data-empty] [data-brand-mark]")).not.toBeNull();
+});
+
+test("an empty panel with a way to add one says how and offers that same action in the card (S-0746)", async () => {
+  const user = userEvent.setup();
+  const calls = fakeApi({
+    ...routes(panel({ new_action: "demo/goal.add" }), {
+      "GET plugin-actions": () => [{ name: "demo/goal.add", label: "Add a goal", on: null }],
+      "GET panels/demo/goals/rows": () => [],
+      "POST plugin-actions/demo/goal.add/preview": () => ({ token: "t", action: "demo/goal.add", summary: "Add a goal", ops: [], files: [], previews: [], choices: [], notes: [], expires_at: "2026-10-09T15:00:00Z" }),
+    }),
+  });
+  renderApp(<Panel name="demo/goals" onOpenRecord={() => {}} />);
+  const card = (await screen.findByText("Nothing here yet. Add the first one and it shows up here.")).closest("[data-empty]") as HTMLElement;
+  expect(card.querySelector("[data-brand-mark]")).not.toBeNull();
+  await user.click(within(card).getByRole("button", { name: "Add a goal" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST plugin-actions/demo/goal.add/preview")).toBe(true));
 });
 
 test("a new action shows as a button above the rows, opens its review with no target and refreshes the rows after it applies", async () => {

@@ -271,7 +271,8 @@ test.describe("The Done tab", () => {
 
 test.describe("Today", () => {
   test("the opened review is an inset card whose Keep all is the screen's one filled button, and Decide has none while it is open", async ({ page }) => {
-    await page.setViewportSize({ width: 1440, height: 900 });
+    // Under 1280px a line opens under its row as an inset card; from 1280px it opens in the rail's column (today-rail.spec.ts).
+    await page.setViewportSize({ width: 1200, height: 900 });
     await openToday(page);
     const row = page.locator('[data-queue-line="review"]').first();
     await row.getByRole("button", { name: /^Look over/ }).click();

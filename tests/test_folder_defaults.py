@@ -71,3 +71,35 @@ def test_a_document_of_a_kind_that_cant_be_read_is_listed_with_why(tmp_path):
         assert "can't be read" in last.data["unreadable"][0]["reason"]
     finally:
         store.close()
+
+
+def test_a_file_with_an_upper_case_ending_is_read_like_its_lower_case_kin(tmp_path):
+    """S-0725: `Scan.PDF` and `Report.DOCX` match `*.pdf` and `*.docx`; a file in a subfolder does too."""
+    from engine.extract import fixtures
+    from engine.watch import refresh
+
+    folder = tmp_path / "shared"
+    (folder / "Sub").mkdir(parents=True)
+    (folder / "plan.md").write_text("Line one\n")
+    ws, cfg, store = make(
+        tmp_path,
+        [
+            {
+                "id": "shared",
+                "connector": "folder",
+                "label": "Docs",
+                "first_run": "baseline",
+                "settings": {"path": str(folder), "subfolders": True},
+            }
+        ],
+    )
+    try:
+        refresh(ws, store, cfg, "shared", NOW)
+        (folder / "Report.DOCX").write_bytes(fixtures.document())
+        (folder / "Sub" / "NOTES.TXT").write_text("Notes\n")
+        result = refresh(ws, store, cfg, "shared", NOW + timedelta(hours=1))
+        assert len(result.new) == 2
+        keys = {s.data["key"] for s in store.read().find("snapshot", {"source": "shared"})}
+        assert {"Report.DOCX", "Sub/NOTES.TXT"} <= keys
+    finally:
+        store.close()

@@ -10,6 +10,7 @@ come from the fixtures; the calendar is a file."""
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -97,6 +98,7 @@ def cal(tmp_path):
 
     def put(text, at=NOW):
         path.write_text(text)
+        os.utime(path, (at.timestamp(), at.timestamp()))  # the file was changed at the test's own time, so it is fresh
         return refresh(ws, store, cfg, "calendar", at)
 
     put(EMPTY, NOW - timedelta(hours=2))  # the first read only notes what is there

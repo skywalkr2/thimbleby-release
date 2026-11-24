@@ -22,6 +22,7 @@ from engine import proposals
 from engine.ai.router import LEVELS
 from engine.cleaning import normalize
 from engine.knowledge import KINDS as KNOWLEDGE_KINDS
+from engine.local_day import day_of, zone_of
 from engine.origin import name_from_outside
 from engine.storage import Store
 from engine.untrusted import neutralize
@@ -286,7 +287,8 @@ def _input_docs(ws: Workspace, store: Store, view: Any, exclude: Iterable[str]) 
         discarded = None
         if source.id in discards:
             kind, day = discards[source.id]
-            discarded = f"{proposals.DISCARDED_WORDS[kind]} proposal discarded on {day.date().isoformat()}"
+            on = day_of(day, zone_of(getattr(getattr(store, "plugins", None), "cfg", None))).isoformat()
+            discarded = f"{proposals.DISCARDED_WORDS[kind]} proposal discarded on {on}"
         for passage in _passages(path.read_text(encoding="utf-8")):
             docs.append(
                 _Doc(

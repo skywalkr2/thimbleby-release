@@ -83,25 +83,29 @@ test("a backup that has never worked is a gap in setup, a plain line whose one a
 test("a backup that ran and then stopped is an At risk line", async () => {
   show([line("backup", { key: "backup", state: "overdue", age_hours: 100 })]);
   const found = await screen.findByRole("group", { name: "Back up your work" });
-  expect(within(found).getByText("At risk")).toBeInTheDocument();
+  expect(found).toHaveTextContent("Backup overdue");
+  // The group says it; the row does not say the same word again.
+  expect(within(found).queryByText("At risk")).toBeNull();
   expect(found.closest("section")).toHaveAccessibleName("At risk");
 });
 
 test("with no folder chosen the line's button opens the setup step", async () => {
   const user = userEvent.setup();
   const { onOpenGuide } = show([line("backup", { key: "backup", state: "unset" })]);
-  const found = await screen.findByRole("group", { name: "Back up your work" });
-  expect(found).toHaveTextContent("No backup folder is chosen yet");
+  const found = await screen.findByRole("group", { name: "Set up backups" });
+  expect(found).toHaveTextContent("Backup not set up · No backup folder is chosen yet");
   await user.click(within(found).getByRole("button", { name: "Set up backups" }));
   expect(onOpenGuide).toHaveBeenCalledWith("backup");
 });
 
 test("a failed backup and an overdue one are each said in words, the overdue one with how long ago", async () => {
   show([line("backup", { key: "backup", state: "failed" })]);
-  expect(await screen.findByRole("group", { name: "Back up your work" })).toHaveTextContent("The last backup failed");
+  // The title is the verb (S-0759); the line under it names the state once, then says what happened in other words.
+  const failed = await screen.findByRole("group", { name: "Back up your work" });
+  expect(failed).toHaveTextContent("Backup failed · The last try didn't work");
   cleanup();
   show([line("backup", { key: "backup", state: "overdue", age_hours: 100 })]);
-  expect(await screen.findByRole("group", { name: "Back up your work" })).toHaveTextContent("The last backup was 4 days ago");
+  expect(await screen.findByRole("group", { name: "Back up your work" })).toHaveTextContent("Backup overdue · The last backup was 4 days ago");
 });
 
 // ---- the week is not in the Schedule card ------------------------------------------------------------------------------
@@ -202,14 +206,15 @@ test("one dated to-do among others waiting says how many more wait", async () =>
 
 test("a follow-up with no dated to-do reads as waiting: the count and the longest wait", async () => {
   show([line("nudge", { key: "nudge:PER-2", person: "PER-2", person_name: "Robin Sample", count: 2, waiting_days: 6, questions: ["Q-1", "Q-2"] })]);
-  expect(await screen.findByRole("group", { name: "Follow up with Robin Sample" })).toHaveTextContent("2 items awaiting a reply · waiting up to 6 days");
+  expect(await screen.findByRole("group", { name: "Follow up with Robin Sample" })).toHaveTextContent("Waiting 6 days · 2 items awaiting a reply");
 });
 
 test("a follow-up that went out today says so, never a wait of zero days", async () => {
   show([line("nudge", { key: "nudge:PER-2", person: "PER-2", person_name: "Robin Sample", count: 2, waiting_days: 0, questions: ["Q-1", "Q-2"] })]);
   const found = await screen.findByRole("group", { name: "Follow up with Robin Sample" });
   expect(found).toHaveTextContent("Sent today");
-  expect(found).toHaveTextContent("2 items awaiting a reply · sent today");
+  expect(found).toHaveTextContent("Sent today · 2 items awaiting a reply");
+  expect(found.textContent?.match(/sent today/gi)).toHaveLength(1);
   expect(found).not.toHaveTextContent(/0 days/);
 });
 

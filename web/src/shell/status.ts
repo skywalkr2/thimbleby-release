@@ -1,7 +1,7 @@
 // The status chip's one state (design 7.1, 7.12): the worst thing going on, so the header says one word, with a dot that is a
 // warning or a danger. In order: offline, work waiting for the network, a restart to finish, a connection that can't be read
 // or is trying again (read from the connections themselves, as the Connections screen and Today show them), a backup needed,
-// the assistant stopped or held up (so there is never an "all good" beside a stopped assistant), spend near a limit, otherwise live.
+// the assistant stopped (so there is never an "all good" beside a stopped assistant), spend near a limit, otherwise live.
 import type { S } from "../lib/api";
 import type { Coverage } from "../lib/coverage";
 import type { LiveState } from "../lib/live";
@@ -56,20 +56,21 @@ export function worstState(input: {
   if (input.assistant === "bad") return "assistant_stopped";
   if (input.connections === "failed") return "connection_failed";
   if (input.connections === "signed_out") return "connection_signed_out";
-  if (input.assistant === "warn") return "assistant_held";
   if (input.connections === "retrying") return "connection_retrying";
+  // A backup state outranks an assistant that only needs a look (a practice assistant, a paused account), as the chip names the most urgent state its popover lists.
   if (input.status?.backup.needs_attention) return "backup";
+  if (input.assistant === "warn") return "assistant_held";
   if (input.status?.spend.warn) return "spend";
   if (input.live === "connecting") return "connecting";
   return "live";
 }
 
 /** The assistant's states the chip says itself (network and restarts are the chip's own kinds already). */
-export const ASSISTANT_OWN: AliveKind[] = ["failing", "run_failed", "stuck", "loop_restarted", "paused", "not_set_up"];
+export const ASSISTANT_OWN: AliveKind[] = ["failing", "run_failed", "stuck", "loop_restarted", "paused", "not_set_up", "stand_in", "untested"];
 
 /** What the assistant's own line says, worst first: a failing account or run (bad), then the states the chip knows that
  * hold work up (warn), otherwise fine. */
-export type AliveKind = "fine" | "failing" | "run_failed" | "network" | "restarting" | "restart" | "restart_failed" | "paused" | "not_set_up" | "stuck" | "loop_restarted";
+export type AliveKind = "fine" | "failing" | "run_failed" | "network" | "restarting" | "restart" | "restart_failed" | "paused" | "not_set_up" | "stand_in" | "untested" | "stuck" | "loop_restarted";
 export type AliveTone = "ok" | "warn" | "bad";
 
 export function aliveState(input: { status: S["Status"]; restartPhase: string }): { kind: AliveKind; tone: AliveTone } {
@@ -84,6 +85,9 @@ export function aliveState(input: { status: S["Status"]; restartPhase: string })
   if (status.assistant.loop_restarted_at) return { kind: "loop_restarted", tone: "warn" };
   if (status.assistant.paused.length) return { kind: "paused", tone: "warn" };
   if (status.ai.state === "not_set_up") return { kind: "not_set_up", tone: "warn" };
+  // A practice assistant, or settings changed since the last test: the popover says it needs a look, so the dot does too.
+  if (status.ai.state === "stand_in") return { kind: "stand_in", tone: "warn" };
+  if (status.ai.state === "untested") return { kind: "untested", tone: "warn" };
   return { kind: "fine", tone: "ok" };
 }
 

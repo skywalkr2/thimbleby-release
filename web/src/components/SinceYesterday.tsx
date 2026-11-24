@@ -7,7 +7,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type S } from "../lib/api";
 import { useAct } from "../lib/act";
-import { day, dayAndTime } from "../lib/dates";
+import { clockDay, day, dayAndTime } from "../lib/dates";
 import { useWords } from "../lib/wording";
 import { Button, ButtonLink } from "../ui/Button";
 import { viewHref } from "../lib/views";
@@ -116,7 +116,7 @@ export function SinceYesterday(props: { onOpenRecord: (kind: string, id: string)
   // The list is grouped by the day each thing was done, newest first; a day shows its first rows and the rest on "Show more".
   const days: Array<{ key: string; label: string; entries: Entry[] }> = [];
   for (const e of entries) {
-    const key = e.when.slice(0, 10);
+    const key = clockDay(e.when);
     const last = days[days.length - 1];
     if (last?.key === key) last.entries.push(e);
     else days.push({ key, label: day(e.when), entries: [e] });

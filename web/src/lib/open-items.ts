@@ -1,6 +1,7 @@
 // The to-dos and questions screen's filters, in one place so the screen and its tests agree (design 7.5): a list is
 // narrowed by project, by person and by state, each chosen from a list built from what is open, never typed.
 import type { S } from "./api";
+import { clockDay } from "./dates";
 
 export type OpenAction = S["OpenActionView"];
 export type OpenQuestion = S["OpenQuestionView"];
@@ -71,7 +72,7 @@ export type TodoGroup = (typeof TODO_GROUPS)[number];
 export function groupOf(a: OpenAction, today: string): TodoGroup {
   if (a.state === "overdue") return "overdue";
   if (a.needs_you === false) return "waiting";
-  if (a.due && a.due.slice(0, 10) <= today) return "today";
+  if (a.due && clockDay(a.due) <= today) return "today";
   return "coming";
 }
 
@@ -81,7 +82,7 @@ export function groupActions(rows: OpenAction[], today: string): Array<{ group: 
 }
 
 /** How many of the rows are due today, for the line under the title. */
-export const dueToday = (rows: OpenAction[], today: string): number => rows.filter((a) => a.state !== "overdue" && !!a.due && a.due.slice(0, 10) === today).length;
+export const dueToday = (rows: OpenAction[], today: string): number => rows.filter((a) => a.state !== "overdue" && !!a.due && clockDay(a.due) === today).length;
 
 /** What waits on the person across To-dos: their own to-dos (the server marks each `needs_you`) and the questions put to them.
  * The tabs, the line under the title and the side menu's badge all say these numbers, so the badge is always their sum. */

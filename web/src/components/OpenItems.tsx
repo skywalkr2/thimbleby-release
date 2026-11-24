@@ -10,14 +10,13 @@ import { useReviewTime } from "../lib/review-time";
 import { ActScope, useAct } from "../lib/act";
 import { useIsNarrow, useMediaQuery } from "../lib/media";
 import { useListChoice, type ListChoice } from "../lib/list-choice";
-import { day, monthDay, todayOn } from "../lib/dates";
+import { clockDay, day, monthDay, todayOn } from "../lib/dates";
 import { useRowKeys } from "../lib/keys";
 import {
   ACTION_STATES,
   NO_FILTERS,
   QUESTION_STATES,
   actionsShown,
-  dueToday,
   groupActions,
   questionsShown,
   takeFilters,
@@ -123,32 +122,43 @@ export function OpenItems() {
   const sidesHeld = new Set(
     (tab === "done" ? (finished.data?.actions ?? []) : tab === "actions" ? (items.data?.actions ?? []) : (items.data?.questions ?? [])).map((r) => r.side).filter(Boolean),
   ).size;
-  // What waits on the person is one pair of numbers, the same on both tabs and in the menu's badge, which is their sum.
+  // A tab's count is the number of rows the tab holds under the filters chosen (a state belongs to its own tab, so the other tab
+  // leaves it out). What waits on the person is a named pair of its own: the menu's badge is its sum, and the line under the title
+  // says it after the rows.
   const mine = workCounts(actions, questions);
-  const tabNumbers = workCounts(
-    actionsShown(actions, tab === "actions" ? filters : { ...filters, state: "" }),
-    questionsShown(questions, tab === "questions" ? filters : { ...filters, state: "" }),
-  );
-  const total = tab === "done" ? 0 : tab === "actions" ? actions.length : questions.length;
-
-  // "12 open · 1 overdue · 2 due today": the to-dos and the questions, the same rows the tabs count.
-  const late = actions.filter((a) => a.state === "overdue").length;
+  const tabNumbers = {
+    actions: actionsShown(actions, tab === "actions" ? filters : { ...filters, state: "" }).length,
+    questions: questionsShown(questions, tab === "questions" ? filters : { ...filters, state: "" }).length,
+  };
   const today = todayOn(new Date());
-  const dueNow = dueToday(actions, today);
-  const openAll = actions.length + questions.length;
-  // The line under the title counts what the open tab holds: the to-dos (and how many are late or due today), or the questions.
-  // At most three things: the open count (the tab's number), then what is late and what is the person's own (the number the menu
-  // shows); "due today" is the part given up when all four would stand, since the list has its own "Today" group.
+  // The rows of the open tab shown now, the same rows as the list below and the tab's number: the to-dos with no day are a group of
+  // their own at the top of the list.
+  const narrowed = actionsShown(actions, filters);
+  const needDate = narrowed.filter((a) => a.needs_date);
+  const shownActions = narrowed.filter((a) => !a.needs_date);
+  const shownQuestions = questionsShown(questions, filters);
+  const total = tab === "done" ? 0 : tab === "actions" ? narrowed.length : shownQuestions.length;
+
+  // "11 open: 6 overdue · 1 coming up · 4 need a date": the facts the list can be narrowed by come first, and they add up to the
+  // number before them. Then the person's own count, the number the menu's badge is made of.
+  const groupCount = (g: string) => groupActions(shownActions, today).find((x) => x.group === g)?.rows.length ?? 0;
+  const parts =
+    tab === "actions"
+      ? [
+          groupCount("overdue") > 0 && t("open.subtitle.overdue", { n: groupCount("overdue") }),
+          groupCount("today") > 0 && t("open.subtitle.today", { n: groupCount("today") }),
+          groupCount("coming") > 0 && tn("open.subtitle.coming", groupCount("coming")),
+          groupCount("waiting") > 0 && t("open.subtitle.waiting", { n: groupCount("waiting") }),
+          needDate.length > 0 && tn("open.subtitle.needs_date", needDate.length),
+        ].filter((x): x is string => !!x)
+      : [];
   const yours = ` · ${tn("open.subtitle.need", mine.yours)}`;
   const askedText = mine.asked > 0 ? ` · ${tn("open.subtitle.asked", mine.asked)}` : "";
-  const lateText = tab === "actions" && late > 0 ? ` · ${t("open.subtitle.overdue", { n: late })}` : "";
-  const dueText = tab === "actions" && dueNow > 0 && !(lateText && yours) ? ` · ${t("open.subtitle.today", { n: dueNow })}` : "";
   const subtitle =
-    openAll === 0 || total === 0 ? undefined : (
+    total === 0 ? undefined : (
       <>
         <strong>{tn("open.subtitle", total)}</strong>
-        {lateText}
-        {dueText}
+        {parts.length > 0 && <span data-open-parts="">{`: ${parts.join(" · ")}`}</span>}
         {yours && <span data-need-count="">{yours}</span>}
         {askedText && <span data-asked-count="">{askedText}</span>}
       </>
@@ -179,10 +189,6 @@ export function OpenItems() {
   const narrowedBy = [filters.person, filters.state, filters.project].filter(Boolean).length + (side.picked !== "all" ? 1 : 0);
 
   // The to-dos that need a date are a group of their own at the top of the to-dos, and not in the list below it.
-  const narrowed = actionsShown(actions, filters);
-  const needDate = narrowed.filter((a) => a.needs_date);
-  const shownActions = narrowed.filter((a) => !a.needs_date);
-  const shownQuestions = questionsShown(questions, filters);
   const shown = tab === "actions" ? shownActions.length : shownQuestions.length;
   const set = (patch: Partial<Filters>) => {
     setSettled(new Map());
@@ -258,8 +264,8 @@ export function OpenItems() {
             value={tab}
             onChange={choose}
             options={[
-              { value: "actions", label: t("open.tab.actions"), count: items.data === undefined ? undefined : tabNumbers.yours },
-              { value: "questions", label: t("open.tab.questions"), count: items.data === undefined ? undefined : tabNumbers.asked },
+              { value: "actions", label: t("open.tab.actions"), count: items.data === undefined ? undefined : tabNumbers.actions },
+              { value: "questions", label: t("open.tab.questions"), count: items.data === undefined ? undefined : tabNumbers.questions },
               // A count of finished things is not a need, so this tab has none.
               { value: "done", label: t("open.tab.done") },
             ]}
@@ -315,7 +321,7 @@ export function OpenItems() {
             <>
               {shown + (tab === "actions" ? needDate.length : 0) === 0 ? (
                 // A tab with nothing in it says so; "nothing matches" is only for rows the filters hid.
-                total === 0 ? (
+                (tab === "actions" ? actions.length : questions.length) === 0 ? (
                   <EmptyState text={t(`open.empty.${tab}`)} />
                 ) : (
                   <FilteredEmpty card text={filters.state ? t(`open.none.${tab}.${filters.state}`) : t("open.none_match")} onClear={() => setFilters(NO_FILTERS)} />
@@ -389,10 +395,10 @@ function Choice(props: { id: string; label: string; value: string; onChange: (v:
   return <FilterChip label={props.label} value={props.value} onChange={props.onChange} options={[["", props.none], ...props.options]} />;
 }
 
-type ActionRowProps = { action: OpenAction; inlineOrigin: boolean; choice?: ListChoice; onDone?: (a: OpenAction) => void; onPressed?: (a: OpenAction) => void; onUndone?: (id: string) => void };
+type ActionRowProps = { action: OpenAction; inlineOrigin: boolean; "data-needs-row"?: string; /** The row's one primary, in place of the one its state gives (the date picker of a to-do that needs a date). */ primary?: ReactNode; choice?: ListChoice; onDone?: (a: OpenAction) => void; onPressed?: (a: OpenAction) => void; onUndone?: (id: string) => void };
 
 /** One to-do's row: what is done to it goes one at a time, so a second press while the first is out is ignored. */
-function ActionRow(props: ActionRowProps) {
+export function ActionRow(props: ActionRowProps) {
   return (
     <ActScope.Provider value={`todo:${props.action.id}`}>
       <ActionRowBody {...props} />
@@ -496,7 +502,7 @@ function ActionRowBody(props: ActionRowProps) {
       ? t("op.meta.due_check", { date: day(a.due) })
       : a.state === "overdue"
         ? t("open.due", { date: day(a.due) })
-        : a.due.slice(0, 10) === today
+        : clockDay(a.due) === today
           ? t("open.due_today")
           : t("open.due", { date: day(a.due) })
     : null;
@@ -506,7 +512,7 @@ function ActionRowBody(props: ActionRowProps) {
         <Icon name="alert" size={16} />
         <NoBreak>{dueWords}</NoBreak>
       </span>
-    ) : dueWords && a.due?.slice(0, 10) === today && !a.due_check ? (
+    ) : dueWords && (a.due ? clockDay(a.due) : "") === today && !a.due_check ? (
       <strong key="d" className={styles.dueToday} data-due="today">
         <NoBreak>{dueWords}</NoBreak>
       </strong>
@@ -551,6 +557,7 @@ function ActionRowBody(props: ActionRowProps) {
     <Row
       ref={ref}
       {...props.choice?.rowProps(a.id)}
+      data-needs-row={props["data-needs-row"]}
       onKeyDown={escape}
       failedId={a.id}
       clamp={fullTitle(a.text, a.due)}
@@ -569,7 +576,9 @@ function ActionRowBody(props: ActionRowProps) {
         </>
       }
       primary={
-        unowned && a.owner_question ? (
+        props.primary ? (
+          props.primary
+        ) : unowned && a.owner_question ? (
           <Button variant="primary" data-key="primary" aria-expanded={asking} onClick={() => setAsking(!asking)}>
             {t("queue.act.pick_owner")}
           </Button>

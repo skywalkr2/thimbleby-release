@@ -120,7 +120,7 @@ describe("the cue for meetings out of sight", () => {
     Object.defineProperty(Element.prototype, "clientWidth", { configurable: true, get: () => 1440 });
     fakeApi(content);
     renderApp(<Schedule />);
-    await screen.findByRole("heading", { level: 2, name: /2026/ });
+    await screen.findByRole("heading", { level: 2, name: /–|2026/ });
     await screen.findAllByRole("button", { name: wait });
   }
   const cue = (which: "above" | "below") => screen.queryByRole("button", { name: new RegExp(`more meetings? ${which}$`) });

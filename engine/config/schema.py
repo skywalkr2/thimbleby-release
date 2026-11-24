@@ -98,6 +98,15 @@ class ProjectSettings(ConfigModel):
         "Completed at the bottom of the projects list, with everything about them kept; nothing is removed.",
         json_schema_extra={"choices": "project_status"},
     )
+    quiet_weeks: int = Field(
+        4,
+        ge=1,
+        le=52,
+        description="How many weeks a project can go with no change before the projects list says so beside its "
+        "status. "
+        "A status that says all is well, shown beside overdue to-dos, a project quiet this long or a target day "
+        "that has passed, is marked with a warning and the reasons, and offers Update status.",
+    )
     personal: str | None = Field(
         None,
         description="The project that holds the person's own life (family, home, friends): what names only people on "
@@ -847,6 +856,12 @@ class AgentSettings(ConfigModel):
         description="With a fresh home: the folders or files, relative to this user's home, that hold the program's "
         "sign-in. A folder is linked into each run's home, so a sign-in the program refreshes reaches the real "
         "folder; a file is copied in and copied back when the run changed it.",
+    )
+    home_keys: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="With a fresh home: for a JSON file of home_files, only these top-level keys are copied in (which "
+        "account is signed in, say), so the rest of the file never reaches the run; when the run changed them, only "
+        "they are written back into the real file, whose other keys stay as they were.",
     )
     version_command: list[str] = Field(
         default_factory=list,
@@ -1690,6 +1705,28 @@ class KnowledgeSettings(ConfigModel):
         "input that settles the problem the question asks about closes it. Longer detail is cut and says so. 0 shows "
         "only the title and the ticket or record keys the question names.",
     )
+    related_mail_items: int = Field(
+        5,
+        ge=0,
+        le=50,
+        description="The most later messages, from any folder, that a run on mail the person deleted is shown when "
+        "they come from the same sender or name the same booking or order reference, so a booking they called off "
+        "is not put on the schedule. Newest first. 0 shows none.",
+    )
+    related_mail_chars: int = Field(
+        600,
+        ge=100,
+        le=5000,
+        description="The most characters of each such later message the assistant is shown, from its start. Longer "
+        "text is cut.",
+    )
+    closed_questions: int = Field(
+        15,
+        ge=0,
+        le=200,
+        description="The most questions answered or dropped before that the assistant is shown, newest first, with the "
+        "answer or the reason, so it never asks one again in other words. 0 shows none.",
+    )
     follow_on_match: float = Field(
         0.67,
         gt=0,
@@ -1890,6 +1927,8 @@ def _default_lints() -> dict[str, Severity]:
         "evidence-fit": "return",
         "already-known": "return",
         "near-duplicate-question": "warn",
+        "question-reworded-before": "return",
+        "summary-first-person": "return",
         "several-questions": "return",
         "question-without-stake": "return",
         "unnamed-recipient": "return",
@@ -1998,6 +2037,14 @@ class NearDuplicateQuestionTuning(ConfigModel):
         le=3650,
         description="How many days back a question answered by the same person is still compared with a new one. "
         "Open questions are always compared.",
+    )
+    closed_similarity: float = Field(
+        0.5,
+        ge=0,
+        le=1,
+        description="How alike a new question's words must be to one answered or dropped before, of any age, for the "
+        "assistant to be told it may be asking it again in other words. Questions that name the same ticket or record "
+        "need only half this likeness. The assistant decides whether it is the same question.",
     )
 
 
@@ -2690,6 +2737,11 @@ class LanguageFile(FileModel):
         "Words that show a project's summary holds findings instead of its status (a discrepancy found, "
         "a mismatch). The summary says where the project stands; what was found goes to facts. Case is ignored."
     )
+    first_person_words: list[str] | None = word_list(
+        "Words (whole words, ignoring case, outside quotation marks) with which a run's summary speaks as the "
+        'assistant. Every summary is plain past tense about what was done, with the person as "you"; one that says '
+        '"I" or "me" is returned once to be written again.'
+    )
     made_phrases: list[str] | None = word_list(
         "Phrases that say a change made a draft, a write-up or a file. When a change's summary says so "
         "and the change holds nothing it made, it is returned: the draft or file is made where the person can open "
@@ -2908,6 +2960,13 @@ class TodaySettings(ConfigModel):
         le=365,
         description="Batches of the assistant's work to look over that have waited this many days fold into one line, "
         '"3 batches to look over", oldest first, once there are two or more. Zero never folds them.',
+    )
+    fold_sends_from: int = Field(
+        3,
+        ge=0,
+        le=100,
+        description="When this many people or more have messages ready to send, Today shows one line, 'Send to 5 "
+        "people', that opens the Follow-ups to send, in place of a line for each person. Zero never folds them.",
     )
     top_priorities_lines: int = Field(
         5,

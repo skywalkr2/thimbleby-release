@@ -7,8 +7,11 @@ import { HeldDetail } from "./HeldDetail";
 import { WhatChanged } from "./WhatChanged";
 
 // A rule the person stated shows its read-back beside Undo; a rule that contradicts one in force asks which wins.
-beforeEach(() => besidePane());
-afterEach(() => vi.unstubAllGlobals());
+beforeEach(() => besidePane({ room: true }));
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 const back = (over: Partial<S["ReadBackView"]> = {}): S["ReadBackView"] => ({
   applies: {

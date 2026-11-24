@@ -81,7 +81,7 @@ test("a ready item shows where it is and one action to move on, and moving offer
   const alpha = await screen.findByRole("listitem", { name: "Alpha item" });
   expect(within(alpha).getByText("Second step")).toBeInTheDocument();
   expect(within(alpha).getByText("Can move to Third step")).toBeInTheDocument();
-  expect(within(row("Gamma item")).getByText("Not started")).toBeInTheDocument();
+  expect(within(row("Gamma item")).getByText("No stage yet")).toBeInTheDocument();
   await user.click(within(alpha).getByRole("button", { name: "Move to Third step" }));
   await waitFor(() =>
     expect(calls.find((c) => c.route === "POST stages/move")?.body).toEqual({
@@ -128,7 +128,7 @@ test("the menu moves back to each earlier stage and shows the history in plain w
   const lines = within(list).getAllByRole("listitem").map((li) => li.textContent ?? "");
   expect(lines[0]).toMatch(/^Second step to First step · .* · after undoing a change$/);
   expect(lines[1]).toMatch(/^First step to Second step · .* · by a rule$/);
-  expect(lines[2]).toMatch(/^Not started to First step · .* · by you$/);
+  expect(lines[2]).toMatch(/^No stage yet to First step · .* · by you$/);
   await user.click(within(alpha).getByRole("button", { name: /More actions for Alpha item/ }));
   await user.click(await screen.findByRole("menuitem", { name: "Move back to First step" }));
   await waitFor(() => expect(calls.find((c) => c.route === "POST stages/move")?.body).toMatchObject({ to: "first", read_version: 3 }));

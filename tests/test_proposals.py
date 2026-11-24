@@ -325,7 +325,7 @@ def search_inputs(ws, store, words):
     return {h.id: h for h in workspace_search.search(ws, store, query, limit=10)}, query
 
 
-def test_search_flags_an_input_whose_proposal_was_discarded_but_not_one_kept_or_set_aside(app):
+def test_search_flags_an_input_whose_proposal_was_discarded_but_not_one_kept_or_set_aside(moment, app):
     client, store, cfg, tmp_path = app
     ws = Workspace(tmp_path / "ws")
     gone, gone_entry = from_a_saved_input(
@@ -342,7 +342,10 @@ def test_search_flags_an_input_whose_proposal_was_discarded_but_not_one_kept_or_
     discarded = post(client, gone_entry, "discard")
     assert discarded.status_code == 200
     assert post(client, aside_entry, "just-this-time").status_code == 200
-    day = signals(store, "discarded")[0].data["at"][:10]
+    from engine.local_day import day_of, zone_of
+
+    # The person's day the discard was made on, never the UTC date: at 00:30 UTC a zone behind UTC is on yesterday.
+    day = day_of(signals(store, "discarded")[0].data["at"], zone_of(cfg)).isoformat()
     hits, query = search_inputs(ws, store, "cover finish questions")
     assert hits[gone].discarded == f"routing proposal discarded on {day}"
     assert hits[aside].discarded is None and hits[plain].discarded is None

@@ -22,7 +22,7 @@ async function open(view: string, content: Content = WEEK, over = {}, extra: Rou
   window.localStorage.setItem("cockpit:schedule-view", view);
   fakeApi(scheduleRoutes(content, over, extra));
   renderApp(<Schedule />);
-  await screen.findByRole("heading", { level: 2, name: /2026/ });
+  await screen.findByRole("heading", { level: 2, name: /–|2026/ });
   await waitFor(() => expect(document.querySelector(`[data-day="${TODAY}"]`)).not.toBeNull());
 }
 

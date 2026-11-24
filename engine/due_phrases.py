@@ -82,7 +82,8 @@ _MONTH_WORD = re.compile(r"\b(?:" + "|".join(sorted(MONTH_NUMBERS, key=len, reve
 
 @dataclass(frozen=True)
 class Holiday:
-    """A named day of the year: a fixed month and day, or the nth weekday of a month (nth -1 is the last)."""
+    """A named day of the year: a fixed month and day, the nth weekday of a month (nth -1 is the last), or a number of
+    days after another named day of the calendar (`after`, with `offset`)."""
 
     names: tuple[str, ...]
     month: int
@@ -91,6 +92,8 @@ class Holiday:
     nth: int | None = None
     #: False for a named day people don't take off (Halloween), which the date reader still knows.
     off: bool = True
+    after: Holiday | None = None
+    offset: int = 0
 
 
 def _plain(text: str) -> str:
@@ -113,21 +116,24 @@ def load_holidays(calendar_tag: str) -> tuple[Holiday, ...]:
     """The holidays of a calendar (a language tag such as en-US) from the shipped data; none for a tag with no
     calendar."""
     entries = _holiday_file().get(calendar_tag.replace("_", "-")) or []
-    return tuple(
-        Holiday(
-            tuple(_plain(str(n)) for n in entry["names"]),
-            int(entry["month"]),
-            entry.get("day"),
-            entry.get("weekday"),
-            entry.get("nth"),
-            entry.get("day_off", True) is not False,
-        )
-        for entry in entries
-    )
+    found: list[Holiday] = []
+    for entry in entries:
+        names = tuple(_plain(str(n)) for n in entry["names"])
+        off = entry.get("day_off", True) is not False
+        if entry.get("after"):
+            base = next((h for h in found if _plain(str(entry["after"])) in h.names), None)
+            if base is None:
+                raise ValueError(f"The holiday {names[0]} follows {entry['after']}, which isn't listed before it.")
+            found.append(Holiday(names, base.month, off=off, after=base, offset=int(entry.get("days", 1))))
+            continue
+        found.append(Holiday(names, int(entry["month"]), entry.get("day"), entry.get("weekday"), entry.get("nth"), off))
+    return tuple(found)
 
 
 def holiday_date(holiday: Holiday, year: int) -> date:
     """The day a holiday falls on in a year."""
+    if holiday.after is not None:
+        return holiday_date(holiday.after, year) + timedelta(days=holiday.offset)
     if holiday.day is not None:
         return date(year, holiday.month, holiday.day)
     first = date(year, holiday.month, 1)

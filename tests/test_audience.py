@@ -497,6 +497,24 @@ def test_a_draft_naming_a_record_made_from_a_limited_message_is_refused_outside_
     assert f"can't go to {OUTSIDE['full_name']}" in refused.message
 
 
+def test_a_draft_that_copies_a_limited_messages_words_without_naming_its_record_draws_on_it(env):
+    """S-0719: restricted text pasted into a message counts as drawing on its source, so the audience check holds it
+    from a recipient outside."""
+    from engine import acts
+
+    _, cfg, store = env
+    _, limited = hand(env, RESTRICTED_BODY)
+    _, open_source = hand(env, OPEN_BODY, subject="Other")
+    ctx = Context(
+        store, cfg, People(store, cfg), tuple(store.plugins.ops), Inputs("REQ-1", open_source, "", "", "untrusted")
+    )
+    view = store.read()
+    copied = "FYI the print team is moving the proof date, so please keep this among us."
+    assert acts.copied_limited_sources(view, ctx, copied) == [limited]
+    assert acts.copied_limited_sources(view, ctx, "The schedule changed; I will send the new dates soon.") == []
+    assert acts.copied_limited_sources(view, ctx, "the print team is moving") == []  # too short to be a copy
+
+
 def test_a_packet_for_a_draft_outside_a_limited_message_leaves_it_and_what_was_made_from_it_out(env):
     ws, cfg, store = env
     text, limited = hand(env, RESTRICTED_BODY)

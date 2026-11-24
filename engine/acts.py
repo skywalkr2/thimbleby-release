@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -36,6 +37,7 @@ from engine import (
     standing_yes,
 )
 from engine.channels import COPY, OutgoingAbout, OutgoingAct, OutgoingRecipient
+from engine.cleaning import normalize
 from engine.contacts import reach_lists
 from engine.ops import (
     ACT_ACTIONS,
@@ -460,13 +462,26 @@ def _target_name(view: Any, data: Mapping[str, Any]) -> str:
 SUBJECT_ACTIONS = ("send", "reply", "reply_all", "forward")
 
 
+#: Characters that draw nothing though they are not spaces (a Braille blank, Hangul fillers).
+_BLANK_MARKS = frozenset("\u2800\u3164\u115f\u1160\uffa0\u180e")
+
+
+def has_text(value: Any) -> bool:
+    """Whether `value` has anything a reader sees: not only spaces, control or format characters (zero-width marks,
+    joiners, direction marks) or blank-looking marks."""
+    return any(
+        not (c.isspace() or unicodedata.category(c) in ("Cf", "Cc", "Zs", "Zl", "Zp") or c in _BLANK_MARKS)
+        for c in str(value or "")
+    )
+
+
 def subject_problem(data: Mapping[str, Any]) -> str | None:
     """Why a message can't be approved yet: it has no subject, and a subject the person never saw is never added at
     send. None for anything else, and for a message that has one."""
     target = data.get("target") or {}
     if target.get("kind") != "message" or what(data) not in SUBJECT_ACTIONS:
         return None
-    if str((data.get("parts") or {}).get("subject") or "").strip():
+    if has_text((data.get("parts") or {}).get("subject")):
         return None
     return "this message has no subject: write one in the draft before approving it"
 
@@ -656,7 +671,33 @@ def run_sources(view: Any, ctx: Any, op: ActDraftOp) -> list[str]:
     drawn = [inputs.source] if inputs.source else []
     for record in named_records(view, " ".join(op.parts.values())):
         drawn.extend(audience.sources_of(record))
+    drawn.extend(copied_limited_sources(view, ctx, " ".join(op.parts.values())))
     return list(dict.fromkeys(s for s in drawn if s))
+
+
+#: How many words in a row, the same in a limited message and in a draft, show the draft copied from it.
+COPIED_RUN_WORDS = 8
+
+
+def copied_limited_sources(view: Any, ctx: Any, text: str) -> list[str]:
+    """The saved messages limited to some people whose own words `text` repeats (a run of `COPIED_RUN_WORDS` words
+    in a row), whether or not the draft names the record they came through."""
+    words = normalize(text).split()
+    if len(words) < COPIED_RUN_WORDS:
+        return []
+    runs = {" ".join(words[i : i + COPIED_RUN_WORDS]) for i in range(len(words) - COPIED_RUN_WORDS + 1)}
+    from engine.intake import source_text
+    from engine.workspace import Workspace
+
+    found: list[str] = []
+    ws = Workspace(ctx.store.path.parent)
+    for source in view.list("source"):
+        if not source.data.get("audience"):
+            continue
+        read = normalize(source_text(ws, ctx.store, source.id)).split()
+        if any(" ".join(read[i : i + COPIED_RUN_WORDS]) in runs for i in range(len(read) - COPIED_RUN_WORDS + 1)):
+            found.append(source.id)
+    return found
 
 
 def audience_problem(view: Any, people: Any, sources: list[str], written: list[str]) -> str | None:

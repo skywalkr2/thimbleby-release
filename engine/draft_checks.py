@@ -255,3 +255,17 @@ def says_it_made(summary: str, phrases: Iterable[str]) -> str | None:
         if needle and re.search(rf"(?<![a-z0-9]){re.escape(needle)}(?![a-z0-9])", shown):
             return phrase
     return None
+
+
+_QUOTED = re.compile(r'"[^"]*"|\u201c[^\u201d]*\u201d')
+
+
+def speaks_in_first_person(summary: str, words: Iterable[str]) -> str | None:
+    """The word (one of `words`, as whole words, ignoring case) with which a run's summary speaks as the assistant, or
+    None. Words inside quotation marks are someone else's and are left out."""
+    shown = normalize(_QUOTED.sub(" ", summary).replace("\u2019", "'"))
+    for word in words:
+        needle = normalize(word).replace("\u2019", "'")
+        if needle and re.search(r"(?<![a-z0-9'])" + re.escape(needle) + r"(?![a-z0-9'])", shown):
+            return word
+    return None

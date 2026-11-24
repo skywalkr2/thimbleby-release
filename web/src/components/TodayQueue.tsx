@@ -7,11 +7,12 @@
 import { narrowCameIn } from "../lib/came-in-window";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { api, ApiError, type S } from "../lib/api";
 import { LoadFailed } from "../ui/LoadFailed";
 import { ActScope, useAct } from "../lib/act";
-import { clockTime, day, sinceDay, time, todayOn, wallTime, weekday } from "../lib/dates";
-import { backupAge } from "../lib/backup";
+import { clockDay, clockTime, day, sinceDay, time, todayOn, wallTime, weekday } from "../lib/dates";
+import { backupAge, backupWord } from "../lib/backup";
 import { useCoverage } from "../lib/coverage";
 import { useFirstGoText } from "../lib/first-go";
 import { durationWords } from "../lib/duration";
@@ -44,6 +45,7 @@ import { isRestoreLine, RestoreLine } from "./RestoreLine";
 import { useQuietChoices } from "./QuietLine";
 import { Item, ItemList } from "../ui/ItemList";
 import { Button } from "../ui/Button";
+import { IconButton } from "../ui/IconButton";
 import { Icon, type IconName } from "../ui/Icon";
 import { MarkDot } from "../ui/MarkDot";
 import { SideMark } from "../ui/SideMark";
@@ -116,8 +118,13 @@ export function TodayQueue(props: {
   shortcuts?: Record<string, string>;
   /** The workspace the setup group's hiding is remembered for. */
   workspace?: string;
+  /** Where a line's items open: an element in the rail's column (the queue then holds still), or none, under the line. */
+  detailSlot?: HTMLElement | null;
+  /** Where the setup card is drawn, at the end of the rail: undefined draws it under the queue, and null waits for the rail. */
+  setupSlot?: HTMLElement | null;
 }) {
   const { t, tn } = useWords();
+  const paned = !!props.detailSlot && !props.beside;
   const filter = useSideFilter();
   const queue = useQueue(filter.picked);
   const accountsToday = useAccountToday(filter.picked);
@@ -397,7 +404,10 @@ export function TodayQueue(props: {
   const selectedLine = selectedAt >= 0 ? ordered[selectedAt] : undefined;
   // A review that is open has the screen's one filled button ("Keep all"), so the first Decide line is drawn as the others are.
   const firstDecision = inGroup(shown, "decide").find((line) => !isHeld(line) && !isRestoreLine(line) && !isLearned(line))?.key;
+  // A line that is open has the screen's one filled button inside it (a review's "Keep all", a decision's answer), so the first Decide
+  // line is drawn as the others are.
   const reviewOpen = !!selectedLine && OPEN_REVIEW_KINDS.has(selectedLine.kind);
+  const detailOpen = !props.beside && !!props.selected && !!(live.get(props.selected.key) ?? known.current.get(props.selected.key)) && opensItems(live.get(props.selected.key) ?? known.current.get(props.selected.key)!);
   // With no decision of the usual kind (only a stop or a check of the assistant's own work, or only something at risk), the first
   // line that can be acted on carries the screen's one filled button instead.
   const actable = (line: QueueLine) => !ghosts.has(line.key) && (isHeld(line) || (!isRestoreLine(line) && !isLearned(line)));
@@ -415,10 +425,11 @@ export function TodayQueue(props: {
       emphasis={false}
       screenPrimary={line.key === onlyPrimary}
       tinted={line.key === riskFirst}
-      demote={reviewOpen}
+      demote={reviewOpen || detailOpen}
       ghost={ghosts.has(line.key)}
       selection={props.selected?.key === line.key ? props.selected : null}
       beside={props.beside}
+      paned={paned}
       mixed={mixed}
       everySideTag={!sideBare}
       areasMixed={areasMixed}
@@ -426,6 +437,28 @@ export function TodayQueue(props: {
       handlers={props.handlers}
     />
   );
+  const setupCard = (
+    <SetupGroup card workspace={props.workspace ?? ""} onOpenGuide={(step) => props.handlers.onOpenGuide?.(step)} gaps={inGroup(shown, "setup").length}>
+      {inGroup(shown, "setup").map(lineItem)}
+    </SetupGroup>
+  );
+  // The line that is open, wherever it sits in the list (the rail shows it as the inspector does).
+  const openLine = props.selected ? (live.get(props.selected.key) ?? known.current.get(props.selected.key)) : undefined;
+  // Esc closes the line that is open, from anywhere in the queue or in its pane, and puts the cursor back on its row. A key a menu or
+  // a field has already used is theirs, and a field with words in it keeps them.
+  const closeOpened = () => {
+    const key = props.selected?.key;
+    props.onSelect(null);
+    if (key) window.setTimeout(() => document.querySelector<HTMLElement>(`[data-line-key="${CSS.escape(key)}"] [data-key="primary"], [data-line-key="${CSS.escape(key)}"]`)?.focus(), 0);
+  };
+  const onEscape = (event: React.KeyboardEvent) => {
+    if (event.key !== "Escape" || event.defaultPrevented || props.beside || !props.selected) return;
+    const target = event.target as HTMLElement;
+    if (target.closest("[role=menu], [role=dialog], [role=listbox]")) return;
+    if ((target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) && target.value.trim() !== "") return;
+    event.preventDefault();
+    closeOpened();
+  };
   return (
     <>
       <div
@@ -433,6 +466,7 @@ export function TodayQueue(props: {
         className={styles.queue}
         data-region=""
         data-menu-slot=""
+        onKeyDown={onEscape}
         onFocus={onFocus}
         onBlur={(event) => {
           if (!pane.current?.contains(event.relatedTarget as Node | null)) releaseIfFree();
@@ -502,10 +536,11 @@ export function TodayQueue(props: {
                         emphasis={group === "decide" && line.key === firstDecision}
                         screenPrimary={line.key === onlyPrimary}
                         tinted={line.key === riskFirst}
-                        demote={reviewOpen}
+                        demote={reviewOpen || detailOpen}
                         ghost={ghosts.has(line.key)}
                         selection={props.selected?.key === line.key ? props.selected : null}
                         beside={props.beside}
+                        paned={paned}
                         mixed={mixed}
                         everySideTag={!sideBare}
                         areasMixed={areasMixed}
@@ -568,12 +603,24 @@ export function TodayQueue(props: {
             )}
           </ListState>
         </Panel>
-        {queue.data && (
-          <SetupGroup card workspace={props.workspace ?? ""} onOpenGuide={(step) => props.handlers.onOpenGuide?.(step)} gaps={inGroup(shown, "setup").length}>
-            {inGroup(shown, "setup").map(lineItem)}
-          </SetupGroup>
-        )}
+        {queue.data && props.setupSlot === undefined && setupCard}
       </div>
+      {/* Beside the queue the setup card is the rail's last card, so the queue holds only what needs the person. */}
+      {queue.data && props.setupSlot && createPortal(setupCard, props.setupSlot)}
+      {/* A line opened from 1280px shows in the rail's column. */}
+      {paned && props.detailSlot && openLine && createPortal(
+        <QueueInspector
+          line={openLine}
+          title={lineTitle(openLine)}
+          position={null}
+          sendBack={props.selected?.sendBack}
+          shortcuts={props.shortcuts}
+          empty={false}
+          onOpenGuide={props.handlers.onOpenGuide}
+          onClose={closeOpened}
+        />,
+        props.detailSlot,
+      )}
       {props.beside && (
         <QueueInspector
           line={selectedLine}
@@ -611,6 +658,8 @@ function QueueInspector(props: {
   shortcuts?: Record<string, string>;
   empty: boolean;
   onOpenGuide?: (step: string) => void;
+  /** Set where the pane is the rail's column: it has a Close button, and Esc inside it closes it. */
+  onClose?: () => void;
 }) {
   const { t } = useWords();
   const { line } = props;
@@ -621,8 +670,28 @@ function QueueInspector(props: {
       : t("queue.inspector.position", { ...props.position })
     : undefined;
   return (
-    <aside className={styles.inspector} aria-label={t("queue.inspector.title")} data-queue-inspector="" data-region="">
-      <Panel title={line ? props.title : props.empty ? t("queue.inspector.nothing") : t("queue.inspector.title")} count={where}>
+    <aside
+      className={styles.inspector}
+      aria-label={t("queue.inspector.title")}
+      data-queue-inspector=""
+      data-region=""
+      tabIndex={props.onClose ? -1 : undefined}
+      onKeyDown={(event) => {
+        if (!props.onClose || event.key !== "Escape" || event.defaultPrevented) return;
+        const target = event.target as HTMLElement;
+        if (target.closest("[role=menu], [role=dialog], [role=listbox]")) return;
+        if ((target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) && target.value.trim() !== "") return;
+        event.preventDefault();
+        props.onClose();
+      }}
+    >
+      <Panel
+        title={line ? props.title : props.empty ? t("queue.inspector.nothing") : t("queue.inspector.title")}
+        count={where}
+        actions={
+          props.onClose ? <IconButton icon="close" size="sm" label={t("action.close")} onPress={props.onClose} /> : undefined
+        }
+      >
         {line ? (
           <div className={styles.detail}>
             {opensItems(line) ? <LineDetail line={line} sendBack={props.sendBack} onOpenGuide={props.onOpenGuide} /> : <><MadeBy line={line} /><p className="hint">{t("queue.inspector.nothing_more")}</p></>}
@@ -678,6 +747,8 @@ type LineItemProps = {
   ghost: boolean;
   selection: Selection | null;
   beside: boolean;
+  /** A line's items open in the rail's column, not under the line. */
+  paned: boolean;
   mixed: boolean;
   /** A line on no side says "Every side" under a side's filter, when the list also holds lines of that side to tell it from. */
   everySideTag: boolean;
@@ -798,6 +869,7 @@ const KIND_ICONS: Record<QueueLine["kind"], IconName> = {
   reminder_digest: "flag",
   reply: "send",
   send: "send",
+  sends: "send",
   sent_check: "send",
   rule_review: "book",
   learned: "book",
@@ -836,7 +908,8 @@ interface Described {
   pill: string;
   tone: Tone;
   meta: ReactNode;
-  primary: { label: string; run?: () => void } | null;
+  /** `messages`: pressing it also tells someone, so it is never drawn filled. */
+  primary: { label: string; run?: () => void; messages?: boolean } | null;
   /** The other answer to a question the line asks, as a visible button (7.6: a held line may show two). */
   other?: { label: string; run: () => void };
   menu: MenuAction[];
@@ -982,10 +1055,12 @@ export function useLineTitle(): (line: QueueLine) => string {
         const a = (line.actions ?? []).length;
         return q && a ? tn("queue.send.items", q + a, { name }) : q ? tn("queue.send.questions", q, { name }) : tn("queue.send.actions", a || line.count, { name });
       }
+      case "sends":
+        return tn("queue.sends.title", (line.parts ?? []).length, { items: tn("queue.sends.items", line.count) });
       case "nudge":
         return t("queue.nudge", { name });
       case "backup":
-        return t("queue.backup");
+        return t(line.state === "unset" ? "queue.backup.title.unset" : "queue.backup.title");
       case "escalate":
         return t("queue.escalate", { text: shortTitle(line.text ?? "").replace(/[?.!\s]+$/, "") });
       case "answer":
@@ -1047,7 +1122,7 @@ export function useLineTitle(): (line: QueueLine) => string {
       case "meeting_capture":
         return t("queue.meeting_capture", { title: line.text ?? "" });
       case "called_off":
-        return t("queue.called_off", { title: line.text ?? "" });
+        return line.state === "mail" ? t("queue.called_off.mail", { title: line.text ?? "", day: day(line.at) }) : t("queue.called_off", { title: line.text ?? "" });
       case "called_off_todos":
         return t("queue.called_off_todos", { title: line.text ?? "" });
       case "quiet_promise":
@@ -1069,6 +1144,8 @@ function QueueRow(props: {
   ghost: boolean;
   selection: Selection | null;
   beside: boolean;
+  /** A line's items open in the rail's column, not under the line. */
+  paned: boolean;
   mixed: boolean;
   areasMixed: boolean;
   everySideTag: boolean;
@@ -1082,6 +1159,9 @@ function QueueRow(props: {
   const titleWords = useTitleWords();
   const lineTitle = useLineTitle();
   const noAccount = useQuery({ queryKey: ["status"], queryFn: api.status }).data?.ai.state === "not_set_up";
+  // A status word that only repeats the group's header ("Review" under REVIEW, "Send" under SEND AND FOLLOW UP) says nothing.
+  const header = t(`queue.group.${props.line.group}`);
+  const repeatsHeader = (word: string) => word === header || header.startsWith(`${word} `);
   const reviewCount = useReviewCount();
   const intakeWords = useIntakeWords();
   const { justMe } = useSides();
@@ -1097,7 +1177,7 @@ function QueueRow(props: {
   const [cursor, setCursor] = useState(false);
   const keyboard = useKeyboardInput();
   const opens = opensItems(line);
-  const inPlace = open && !props.beside;
+  const inPlace = open && !props.beside && !props.paned;
   const detailId = `detail-${line.key.replace(/[^A-Za-z0-9_-]/g, "-")}`;
   const select = (next: boolean, sendBack = false) => props.onSelect(next ? { key: line.key, sendBack } : null);
   // Beside the queue the inspector always shows a line, so choosing one never closes it; the cursor goes to its first field.
@@ -1105,14 +1185,19 @@ function QueueRow(props: {
     let tries = 0;
     const look = () => {
       const inner = document.querySelector<HTMLElement>("[data-queue-inspector] textarea, [data-queue-inspector] input, [data-queue-inspector] [data-ui=select]");
+      const pane = document.querySelector<HTMLElement>("[data-queue-inspector]");
       if (inner) inner.focus();
-      else if (tries++ < 20) window.setTimeout(look, 50);
+      else {
+        // A pane with no field (yet) takes the cursor itself, so the keyboard is where the line opened and Esc closes it from there.
+        if (tries === 0 && pane && !pane.contains(document.activeElement)) pane.focus();
+        if (tries++ < 20) window.setTimeout(look, 50);
+      }
     };
     look();
   };
   const choose = () => {
     select(true);
-    if (props.beside) intoPane();
+    if (props.beside || props.paned) intoPane();
   };
   const show: MenuAction = { id: "look", label: t("queue.look_closer"), run: choose };
   const promiseRow = usePromiseChoices(line, () => ref.current?.focus());
@@ -1175,7 +1260,7 @@ function QueueRow(props: {
           pill: t("queue.pill.waiting"),
           tone: "warn",
           meta: heldMeta(ask, t),
-          primary: heldWords.primary,
+          primary: { ...heldWords.primary, messages: ask.ask === "drop" && (ask.told ?? []).length > 0 },
           other: heldWords.other,
           menu: [
             ...heldWords.menu,
@@ -1398,7 +1483,7 @@ function QueueRow(props: {
         return {
           pill: t("queue.pill.review"),
           tone: "neutral",
-          meta: meta(line.at && t("queue.batches.oldest", { date: day(line.at.slice(0, 10)) })),
+          meta: meta(line.at && t("queue.batches.oldest", { date: day(clockDay(line.at)) })),
           primary: { label: t("queue.act.look_over") },
           menu: [],
         };
@@ -1417,6 +1502,15 @@ function QueueRow(props: {
           menu: [],
         };
       }
+      case "sends":
+        // The people who have messages ready, as one line that opens the list of them in Follow-ups (To send).
+        return {
+          pill: t("queue.pill.send"),
+          tone: "need",
+          meta: meta(sinceDay(line.ready_since, new Date()) && t("queue.send.ready_since", { day: sinceDay(line.ready_since, new Date()) })),
+          primary: { label: t("queue.act.review_copy"), run: () => props.handlers.onOpenView?.("work/followups") },
+          menu: [],
+        };
       case "nudge": {
         // One line for the person: the first two to-dos that are overdue or due soon with their days, earliest first, and how
         // many more wait; with no dated to-do, how many wait for a reply and for how long.
@@ -1456,7 +1550,8 @@ function QueueRow(props: {
           // Never set up or never run is a gap in setup; once it ran and stopped, or fails, it is a risk.
           pill: t(state === "unset" ? "queue.pill.backup.unset" : state === "never" ? "queue.pill.backup.never" : "queue.pill.backup"),
           tone: state === "failed" || state === "overdue" ? "danger" : "warn",
-          meta: words,
+          // The title is what the person does; the state keeps its one word, then what happened.
+          meta: `${backupWord(state ?? "failed", t)} · ${words}`,
           primary: state === "unset" ? { label: t("status.backup_set_up"), run: () => props.handlers.onOpenGuide?.("backup") } : { label: t("backup.now"), run },
           menu: [],
         };
@@ -1527,7 +1622,7 @@ function QueueRow(props: {
         // When the two meetings overlap: the day and the minutes they share (the day alone when the clock times are not known).
         const startsAt = [line.starts, line.other_starts].filter((x): x is string => !!x).sort().pop();
         const endsAt = [line.ends, line.other_ends].filter((x): x is string => !!x).sort()[0];
-        const dayWord = line.due && line.due.slice(0, 10) === todayOn(new Date()) ? t("today.agenda.today") : day(line.due);
+        const dayWord = line.due && clockDay(line.due) === todayOn(new Date()) ? t("today.agenda.today") : day(line.due);
         const whenWords = startsAt && endsAt && line.state !== "travel" ? `${dayWord} ${t("today.agenda.range", { start: clockTime(startsAt), end: clockTime(endsAt) })}` : dayWord;
         const how = line.state === "travel" ? travel : tn("queue.clash.meta.overlap", line.minutes ?? 0);
         return {
@@ -1619,8 +1714,8 @@ function QueueRow(props: {
           menu: [],
         };
       case "stale": {
-        // One line for each to-do: Keep, Drop and Snooze right on the line.
-        const [first, second, ...rest] = choices;
+        // One line for each to-do: Drop (what the assistant suggests, the line's one button), Keep as a plain link beside it, and Snooze in the menu.
+        const [first, second, ...rest] = [...choices.filter((c) => c.id === "drop"), ...choices.filter((c) => c.id === "keep"), ...choices.filter((c) => c.id !== "drop" && c.id !== "keep")];
         return {
           pill: t("queue.pill.stale"),
           tone: "neutral",
@@ -1715,16 +1810,17 @@ function QueueRow(props: {
         };
       }
       case "called_off": {
-        const own = line.state === "own";
+        const mail = line.state === "mail";
+        const own = line.state === "own" || mail;
         const event = line.event ?? "";
         return {
           pill: t("queue.pill.called_off"),
           tone: "warn",
           meta: meta(line.at && dateAndTime(line.at), own ? undefined : t("queue.called_off.connected"), line.count > 0 && tn("queue.called_off.todos", line.count)),
           primary: own
-            ? { label: t("queue.act.new_date"), run: () => setCalledOff("date") }
+            ? { label: t(mail ? "queue.act.rebook" : "queue.act.new_date"), run: () => setCalledOff("date") }
             : { label: t("queue.act.open_entry"), run: () => props.handlers.onOpenRecord?.("event", event) },
-          menu: [{ id: "drop-entry", label: t("queue.act.drop_entry"), run: () => setCalledOff("drop") }],
+          menu: [{ id: "drop-entry", label: t(mail ? "queue.act.let_go" : "queue.act.drop_entry"), run: () => setCalledOff("drop") }],
         };
       }
       case "called_off_todos": {
@@ -1774,7 +1870,7 @@ function QueueRow(props: {
 
   // A suggestion can be put off until something about it changes; what is due cannot.
   const menu: MenuAction[] = SUGGESTION_KINDS.has(line.kind) ? [...d.menu, { id: "not-now", label: t("queue.notnow"), run: () => notNow(line.key) }] : d.menu;
-  useRowKeys(ref, { toggle: props.beside ? choose : opens ? () => select(!open) : undefined });
+  useRowKeys(ref, { toggle: props.beside ? choose : opens ? () => (props.paned && !open ? choose() : select(!open)) : undefined });
   // Under one side's filter, a line that is on no side (the app's own, or about all of them) says so, so it is never read as that side's.
   const everySide = props.everySideTag && sideFilter.choice !== "all" && line.side == null && !(line.sides ?? []).length ? <span className={styles.tag} data-every-side="">{t("queue.every_side")}</span> : null;
   const area = props.areasMixed && line.area_name ? <span className={styles.tag} data-area={line.area}>{t("queue.area_tag", { area: line.area_name })}</span> : null;
@@ -1795,19 +1891,23 @@ function QueueRow(props: {
   // (an empty span) so a group of plain lines does not give up the width the next group's icons need.
   const lead: ReactNode = icon ? <Icon name={icon} /> : slot !== null ? <MarkDot kind="side" slot={slot} /> : <span aria-hidden="true" />;
   // The first Decide line carries the screen's one filled button; a review that is open has it instead.
-  const filled = (props.emphasis || props.screenPrimary) && !props.demote && !!d.primary;
+  const filled = (props.emphasis || props.screenPrimary) && !props.demote && !!d.primary && !d.primary.messages;
   // Work that stopped is a line at risk, but not a risk of its own: it carries no tint or edge, so the red goes only to what is
   // wrong now (an account not read, a clash) and "Stopped" is said in words.
   const state = line.group === "risk" && line.kind !== "refused" ? (props.tinted ? "danger" : undefined) : props.emphasis ? "decide" : undefined;
   const onClick = (event: React.MouseEvent) => {
     if ((event.target as HTMLElement).closest("button, a, input, textarea, select, [role='menuitem']")) return;
     if (props.beside) select(true);
-    else if (opens) select(!open);
+    else if (opens) {
+      select(!open);
+      if (props.paned && !open) intoPane();
+    }
   };
   const primary: ReactNode = d.primary ? (
     <InRowActions.Provider value={!filled}>
+      {/* The other answer is always a plain text button to the left of the one button, so the choice that keeps things as they are is in the same place on every row. */}
       {d.other && (
-        <Button size="sm" aria-describedby={`${detailId}-title`} onClick={d.other.run}>
+        <Button size="sm" variant="quiet" data-key="other" aria-describedby={`${detailId}-title`} onClick={d.other.run}>
           {d.other.label}
         </Button>
       )}
@@ -1816,7 +1916,7 @@ function QueueRow(props: {
         variant="primary"
         data-key="primary"
         aria-expanded={!d.primary.run && opens && !props.beside ? open : undefined}
-        aria-controls={!d.primary.run && opens && !props.beside ? detailId : undefined}
+        aria-controls={!d.primary.run && opens && !props.beside && !props.paned ? detailId : undefined}
         aria-describedby={`${detailId}-title`}
         onClick={d.primary.run ?? choose}
       >
@@ -1873,7 +1973,7 @@ function QueueRow(props: {
           )}
         </>
       }
-      meta={withStatus(d.pill ? { tone: d.tone, word: d.pill } : null, metaNode)}
+      meta={withStatus(d.pill && !repeatsHeader(d.pill) ? { tone: d.tone, word: d.pill } : null, metaNode)}
       // A line's detail is one short clause that wraps at a word; it is never cut with an ellipsis.
       primary={primary}
       menu={menu.length > 0 || (d.groups?.length ?? 0) > 0 ? <RowMenu label={title} actions={menu} groups={d.groups} /> : undefined}

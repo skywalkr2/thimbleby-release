@@ -236,7 +236,8 @@ export function RecordActivity(props: {
         </Section>
       )}
       {wants("activity") && wants("completed") && open === 0 && completed.length === 0 && !page.repeat && earlier.length === 0 && page.activity.length === 0 && <p className="hint">{t("record.nothing_yet")}</p>}
-      {showOpen && <span className="sr">{tn("record.items_count", open)}</span>}
+      {/* A count is said only when there is something to count, and never for a to-do's own page, which holds the to-do and no items. */}
+      {showOpen && open > 0 && !props.self && <span className="sr">{tn("record.items_count", open)}</span>}
     </div>
   );
 }

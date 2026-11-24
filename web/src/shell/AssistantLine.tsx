@@ -135,7 +135,7 @@ export function AssistantLine(props: { onOpenGuide: (step?: string) => void }) {
                       {t("restart.now")}
                     </Button>
                   )}
-                  {(kind === "failing" || kind === "not_set_up") && (
+                  {(kind === "failing" || kind === "not_set_up" || kind === "stand_in" || kind === "untested") && (
                     <Button size="sm" onClick={() => toGuide(close)}>
                       {t("alive.open")}
                     </Button>

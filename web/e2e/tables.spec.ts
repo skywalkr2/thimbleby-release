@@ -42,10 +42,16 @@ for (const [name, hash] of [
     await open(page, hash);
     expect(await brokenWords(page)).toEqual([]);
     const table = page.getByRole("main").getByRole("table").first();
-    // No row has a filled (primary) button: its menu is the only button.
+    // No row has a filled (primary) button: its menu is the only button, and a project whose status disagrees with its data has Update status
+    // before it (S-0735), drawn as an outline.
     const rows = table.locator("tbody tr[data-row]");
     await expect(rows.first()).toBeVisible();
-    for (const row of await rows.all()) await expect(row.getByRole("button")).toHaveCount(1);
+    for (const row of await rows.all()) {
+      const buttons = row.getByRole("button");
+      const count = await buttons.count();
+      expect(count === 1 || (count === 2 && /^Update status/.test((await buttons.first().getAttribute("aria-label")) ?? ""))).toBe(true);
+    }
+    await expect(table.locator("tbody button[data-weight='filled']")).toHaveCount(0);
     await expect(table.locator("tbody button[data-key='primary']")).toHaveCount(0);
     // A click on the first row opens the pane beside the table.
     await rows.first().locator("td").nth(1).click();

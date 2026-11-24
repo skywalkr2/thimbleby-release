@@ -29,6 +29,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from engine import act_accounts, itip
+from engine.acts import has_text
 from engine.channels import (
     ChannelContext,
     ChannelFailed,
@@ -153,7 +154,7 @@ class MailboxChannel:
     def _compose(self, act: OutgoingAct, settings: MailboxSettings, key: str) -> EmailMessage:
         sender = self._sender(settings)
         subject = str(act.parts.get("subject") or "").strip()
-        if not subject:
+        if not has_text(subject):
             raise _refused("the message has no subject, and one the person never saw is never added")
         message = self._envelope(act, settings, key, sender, subject)
         body = act.parts.get("body") or ""

@@ -18,7 +18,7 @@ function api(people: S["PersonView"][], extra: Routes = {}) {
   });
 }
 
-const row = async (name: string) => (await screen.findByRole("link", { name })).closest("li")!;
+const row = async (name: string) => (await screen.findByRole("link", { name })).closest("tr")!;
 const undoToast = async (user: ReturnType<typeof userEvent.setup>) => user.click(await screen.findByRole("button", { name: "Undo" }));
 
 /** Opens a person's form in its drawer, from the row's menu. */
@@ -29,22 +29,40 @@ async function edit(user: ReturnType<typeof userEvent.setup>, name: string) {
   return screen.findByRole("dialog", { name: "Edit person" });
 }
 
-test("people are rows with one line of who they are, open items and how to reach them; the name links to the person's page, and the organization is in the details", async () => {
+test("people are a table of Name, Role, Open items, Waiting on them and Last contact, with the menu at the end and the name linking to the page (S-0745)", async () => {
   api([
-    person("P-1", "Ana Person", { role: "Editor", org: firstOrg.id, org_name: firstOrg.name, open_items: 4, last_contact: "2026-10-08", how_to_reach: { email: ["ana@example.com"] } }),
+    person("P-1", "Ana Person", { role: "Editor", org: firstOrg.id, org_name: firstOrg.name, open_items: 4, waiting_on_them: 2, waiting_days: 44, last_contact: "2026-10-08", how_to_reach: { email: ["ana@example.com"] } }),
     person("P-2", "Ben Person"),
   ]);
   renderApp(<People />);
   const tr = await row("Ana Person");
+  const heads = Array.from(document.querySelectorAll("thead th")).map((th) => th.textContent?.trim());
+  expect(heads).toEqual(expect.arrayContaining(["Name", "Role", "Open items", "Waiting on them", "Last contact"]));
   expect(within(tr).getByRole("link", { name: "Ana Person" }).getAttribute("href")).toMatch(/#records\/person\/P-1$/);
   expect(tr).toHaveTextContent("Editor");
+  expect(tr).toHaveTextContent("4");
+  // The waiting age is the row's warning pill, in words, never a bare number.
+  const pill = within(tr).getByText("Waiting 44 days");
+  expect(pill.closest("[data-tone]")).toHaveAttribute("data-tone", "warn");
   expect(tr).not.toHaveTextContent("Org one");
   expect(tr).not.toHaveTextContent(firstOrg.id);
-  expect(tr).toHaveTextContent("ana@example.com");
-  expect(tr).toHaveTextContent("4 open items");
+  expect(tr).not.toHaveTextContent("ana@example.com");
+  // The menu is the row's last cell, beside the content.
+  expect(tr.querySelector("td:last-child")?.querySelector("button")).not.toBeNull();
   const bare = await row("Ben Person");
-  expect(within(bare).queryByText(/open item/)).toBeNull();
+  expect(within(bare).queryByText(/Waiting/)).toBeNull();
   expect(bare).not.toHaveTextContent(/\d/);
+});
+
+test("a person waited on with no known age says how many things wait, and with nothing waiting the column is not drawn", async () => {
+  api([person("P-1", "Ana Person", { waiting_on_them: 3, waiting_days: null })]);
+  renderApp(<People />);
+  expect(within(await row("Ana Person")).getByText("3 things waiting on them")).toBeInTheDocument();
+  document.body.innerHTML = "";
+  api([person("P-1", "Ana Person")]);
+  renderApp(<People />);
+  await row("Ana Person");
+  expect(Array.from(document.querySelectorAll("thead th")).map((th) => th.textContent?.trim())).not.toContain("Waiting on them");
 });
 
 test("the person themselves is first and tagged, and someone who left or is only watched is tagged, with no Active tag on anyone", async () => {
@@ -99,6 +117,7 @@ test("a row opens its detail with what is known, never zero, and a link to the p
   expect(within(detail).getByText("phone: 555-0100")).toBeInTheDocument();
   expect(within(detail).getByText("1 open item")).toBeInTheDocument();
   expect(within(detail).queryByText(/Last contact/)).not.toBeInTheDocument();
+  expect(within(detail).queryByText(/Waiting on them/)).not.toBeInTheDocument();
   expect(within(detail).getByRole("link", { name: "Open Ana Person's page" }).getAttribute("href")).toMatch(/#records\/person\/P-1$/);
 });
 
@@ -317,7 +336,7 @@ const justMe = {
   "GET projects": () => [project("PRJ-personal", "Personal")],
 };
 
-test("with no side besides Personal people have Name, Who they are and How to reach, with no Role, Organization or Organizations", async () => {
+test("with no side besides Personal people have Name and Who they are, with no Role, Organization or Organizations", async () => {
   api(
     [person("P-1", "Ana Person", { relation: "my sister", role: "Editor", org: firstOrg.id, org_name: firstOrg.name, how_to_reach: { email: ["ana@example.com"] } }), person("P-2", "Ben Person")],
     justMe,
@@ -326,7 +345,7 @@ test("with no side besides Personal people have Name, Who they are and How to re
   const tr = await row("Ana Person");
   await waitFor(() => expect(screen.queryByRole("combobox", { name: "Organization" })).toBeNull());
   expect(tr).toHaveTextContent("my sister");
-  expect(tr).toHaveTextContent("ana@example.com");
+  expect(Array.from(document.querySelectorAll("thead th")).map((th) => th.textContent?.trim())).toContain("Who they are");
   expect(tr).not.toHaveTextContent("Editor");
   expect(tr).not.toHaveTextContent(firstOrg.name);
   // No organization filter, no Organizations section.
@@ -513,4 +532,14 @@ describe("the weekly look's line under People's title (S-0655)", () => {
     await user.click(screen.getByRole("button", { name: "Change" }));
     expect(await screen.findByText("Included in your plan, so no money a week (7 looks a week).")).toBeInTheDocument();
   });
+});
+
+test("the detail pane says what waits on a person and how long the longest has, and how to reach them", async () => {
+  const user = userEvent.setup();
+  api([person("P-1", "Ana Person", { role: "Editor", waiting_on_them: 2, waiting_days: 44, how_to_reach: { email: ["ana@example.com"] } })]);
+  renderApp(<People />);
+  await user.click(within(await row("Ana Person")).getByText(/Editor/));
+  const detail = await screen.findByRole("dialog", { name: "Ana Person" });
+  expect(within(detail).getByText("2 things waiting on them · the longest for 44 days")).toBeInTheDocument();
+  expect(within(detail).getByText("email: ana@example.com")).toBeInTheDocument();
 });

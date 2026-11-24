@@ -178,12 +178,13 @@ endpoints:
           cost_usd: total_cost_usd
         errors:
           report_on_output: true
-          auth: ["not logged in", "please run /login", "invalid api key", "oauth token (?:has )?(?:expired|revoked)", "authentication required", "login expired"]
+          auth: ["not logged in", "please run /login", "invalid api key", "oauth token (?:has )?(?:expired|revoked)", "authentication required", "login expired", "failed to authenticate", "session expired"]
           quota: ["usage limit reached", "hit your [a-z ]{0,30}limit", "credit balance is too low"]
           rate_limited: ["rate limit", "overloaded", "temporarily limiting requests"]
         effort_option: ["--effort", "{effort}"]
         system_option: ["--system-prompt-file", "{system}"]  # our instructions in place of its coding-assistant ones
-        home_files: [.claude, .claude.json, Library/Keychains]  # a Mac keeps this program's sign-in in the keychain
+        home_files: [.claude/.credentials.json, .claude.json, Library/Keychains]  # the sign-in files only, never its session histories; a Mac keeps the sign-in in the keychain
+        home_keys: {.claude.json: [oauthAccount, hasCompletedOnboarding]}  # which account is signed in, and that it was set up; nothing else of that file
         sign_in_hint: Open a terminal, run claude and sign in, then press Test again.
         identity_command: [claude, auth, status]
         identity_field: email
@@ -203,7 +204,7 @@ endpoints:
         effort_option: ["--effort", "{effort}"]
         errors:
           quota: ["exceeded your monthly quota"]  # as it printed, out of quota
-        home_files: [.copilot, .config/github-copilot, Library/Keychains]  # a Mac keeps this program's sign-in in the keychain
+        home_files: [.copilot/config.json, .config/github-copilot/apps.json, .config/github-copilot/hosts.json, Library/Keychains]  # the sign-in files only; a Mac keeps the sign-in in the keychain
         sign_in_hint: Open a terminal, run copilot and sign in with /login, then press Test again.
     note: Uses your Copilot plan through the Copilot CLI, with its tools denied.
   - id: codex
@@ -221,7 +222,7 @@ endpoints:
         effort_option: ["-c", "model_reasoning_effort={effort}"]
         errors:
           auth: ["not logged in", "401 unauthorized", "missing bearer or basic authentication"]  # as it printed, signed out
-        home_files: [.codex]
+        home_files: [.codex/auth.json]  # the sign-in file only, never its session histories
         sign_in_hint: Open a terminal, run codex and sign in, then press Test again.
     note: Uses your ChatGPT plan or account through the Codex CLI, read-only.
   - id: gemini-cli
@@ -241,7 +242,7 @@ endpoints:
           text: response
         errors:
           unsupported: ["ineligibletiererror", "unsupported_client", "no longer supported for"]  # as it printed, on a personal account
-        home_files: [.gemini]
+        home_files: [.gemini/oauth_creds.json, .gemini/google_accounts.json, .gemini/settings.json]  # the sign-in files only
         sign_in_hint: Open a terminal, run gemini and sign in, then press Test again.
     summary: Uses your Google account through the Gemini CLI. A key or a paid plan is needed.
     note: Uses your Google account through the Gemini CLI. It refuses personal free Google accounts, so a key or a paid plan is needed. Its documentation says it asks before writing files or running commands; it names no option that stops it reading files or fetching pages.
