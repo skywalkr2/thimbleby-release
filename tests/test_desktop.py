@@ -372,7 +372,9 @@ def test_an_older_copy_that_does_not_finish_in_its_time_is_stuck_and_the_window_
     import engine.launcher as launcher
 
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    root = tmp_path / "share" / "thimbleby" / desktop.WORKSPACE_FOLDER
+    # Where the app itself looks on this system (on a Mac, Application Support; elsewhere the data folder), so the
+    # copy the test starts is the one the window's own second look finds.
+    root, _ = desktop.places(env_for(tmp_path), tmp_path / "home")
     older = {"version": "0.1.0", "build": 51, "commit": "def5678"}
     lock, control, quit_asked, shown = _running_copy(root, tmp_path, monkeypatch, identity=older, finishes=False)
     try:
