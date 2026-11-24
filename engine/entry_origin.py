@@ -106,11 +106,13 @@ def cancel_match(view: Any, ctx: Any, entry: Any, quote: str, day: Any) -> tuple
     own data, never from the words of the cancellation alone. None: it may. ("refuse", why): it names a different
     reference than the entry's mail, so it is not this booking. ("ask", question): the person decides, because the
     sender differs, can't be told, or the mail doesn't show it is that booking. A call-off applies at once only
-    when the sender has the same domain as the sender of the mail that made the entry AND either the two mails share
+    when the sender has the same domain as the sender of the mail that made the entry (the very same address when
+    that domain is a public mail domain anyone can sign up on) AND either the two mails share
     a reference, or the cancellation names both the entry's date and its place (an entry with no place needs the
     reference); a date alone asks."""
     from engine.intake import source_text
     from engine.related_mail import references_in
+    from engine.set_aside import is_public_domain
     from engine.workspace import Workspace
 
     store = ctx.store
@@ -130,13 +132,16 @@ def cancel_match(view: Any, ctx: Any, entry: Any, quote: str, day: Any) -> tuple
     wanted, shown = references_in(booking_text), references_in(cancel_text)
     if wanted and shown and not (wanted & shown):
         return "refuse", OTHER_REFERENCE
-    mine = _domain(_mail_sender(store, view, ws, made.id if made else None, ""))
-    theirs = _domain(_mail_sender(store, view, ws, ctx.inputs.source, raw[:1000]))
+    mine_address = _mail_sender(store, view, ws, made.id if made else None, "").strip().lower()
+    theirs_address = _mail_sender(store, view, ws, ctx.inputs.source, raw[:1000]).strip().lower()
+    mine, theirs = _domain(mine_address), _domain(theirs_address)
     shown_day = day.strftime("%a %b ") + str(day.day)
     words = {"title": " ".join(str(entry.data["title"]).split()), "day": shown_day}
     if not mine or not theirs:
         return "ask", UNKNOWN_SENDER_ASKS.format(**words)
-    if mine != theirs:
+    # At a public mail domain anyone can have an address, so there only the very address that sent the booking counts as
+    # its sender.
+    if mine != theirs or (is_public_domain(mine, ctx.cfg) and mine_address != theirs_address):
         return "ask", OTHER_SENDER_ASKS.format(**words)
     if (wanted & shown) or (_names_day(cancel_text, day) and _names_place(cancel_text, entry.data.get("where"))):
         return None

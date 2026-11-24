@@ -376,3 +376,69 @@ test("a burst of 50 request events reads each Today query a handful of times, no
     vi.useRealTimers();
   }
 });
+
+test("news that arrives while a read is out does not throw that read's answer away: a line the person closed leaves when the first read answers, and is read once more after (S-0776)", async () => {
+  vi.useFakeTimers();
+  try {
+    const client = new QueryClient();
+    // The server's answer is what stood when the read began; a read takes a second, as it does while the assistant works.
+    const server = { held: true };
+    let reads = 0;
+    const observer = new QueryObserver(client, {
+      queryKey: ["today", "queue"],
+      queryFn: async () => {
+        reads += 1;
+        const seen = server.held;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        return seen;
+      },
+    });
+    const stop = observer.subscribe(() => undefined);
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(client.getQueryData(["today", "queue"])).toBe(true);
+    // The person closes the line; the answer is in, and the write's own read begins after it.
+    server.held = false;
+    const { refreshFamilies } = await import("./write");
+    void refreshFamilies(client, ["today/queue"]);
+    // Four hundred milliseconds later the stream's news of the assistant's later work (past the write's place) arrives.
+    await vi.advanceTimersByTimeAsync(400);
+    invalidateFor(client, '{"version": 9, "kinds": ["request"], "position": 99}');
+    // The write's own read answers: its answer is on screen now, not after a second read that the news started.
+    await vi.advanceTimersByTimeAsync(650);
+    expect(client.getQueryData(["today", "queue"])).toBe(false);
+    // And the news is not lost: the query is read once more after that read.
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(reads).toBe(3);
+    expect(client.getQueryState(["today", "queue"])!.isInvalidated).toBe(false);
+    stop();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("after a write the lines read first and the other screens only once they have answered, so a closed line never waits behind every other read (S-0776)", async () => {
+  vi.useFakeTimers();
+  try {
+    const client = new QueryClient();
+    const started: string[] = [];
+    const answer = (name: string) => async () => {
+      started.push(name);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return name;
+    };
+    const keys = [["status"], ["changes"], ["today", "queue"], ["brief"]];
+    const observers = keys.map((key) => new QueryObserver(client, { queryKey: key, queryFn: answer(key.join("/")) }));
+    const stops = observers.map((o) => o.subscribe(() => undefined));
+    await vi.advanceTimersByTimeAsync(600);
+    started.length = 0;
+    const { refreshFamilies } = await import("./write");
+    void refreshFamilies(client, ["status", "changes", "today/queue", "brief"]);
+    expect(started).toEqual(["today/queue"]);
+    await vi.advanceTimersByTimeAsync(600);
+    expect(started.slice(1).sort()).toEqual(["brief", "changes", "status"]);
+    // Every one of them is marked out of date at once, whatever order they are read in.
+    stops.forEach((stop) => stop());
+  } finally {
+    vi.useRealTimers();
+  }
+});

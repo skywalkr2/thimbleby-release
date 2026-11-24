@@ -284,6 +284,37 @@ def test_same_domain_with_a_shared_reference_applies_at_once_even_from_another_a
     assert outcome["status"] == "applied" and after["cancelled"] is True
 
 
+def _public_domain() -> str:
+    from engine.set_aside import shipped_public_domains
+
+    return sorted(shipped_public_domains())[0]
+
+
+def test_at_a_public_mail_domain_another_address_with_the_right_reference_asks(cal):
+    ws, cfg, store, put = cal
+    domain = _public_domain()
+    entry = make_entry(store, sender=f"smallbnb@{domain}")
+    _, outcome, after = run(store, cfg, entry.id, sender=f"other@{domain}")
+    assert outcome["status"] == "held" and not after["cancelled"]
+    assert "from a different sender" in outcome["reason"]
+
+
+def test_at_a_public_mail_domain_the_very_address_that_booked_still_calls_it_off(cal):
+    ws, cfg, store, put = cal
+    address = f"SmallBnB@{_public_domain()}"
+    entry = make_entry(store, sender=address)
+    _, outcome, after = run(store, cfg, entry.id, sender=address.lower())
+    assert outcome["status"] == "applied" and after["cancelled"] is True
+
+
+def test_a_domain_the_person_added_as_public_also_needs_the_very_address(cal):
+    ws, cfg, store, put = cal
+    cfg.watch.public_mail_domains_extra = ["hotel.example.com"]
+    entry = make_entry(store)
+    _, outcome, after = run(store, cfg, entry.id, sender="bookings@hotel.example.com")
+    assert outcome["status"] == "held" and not after["cancelled"]
+
+
 def test_a_different_domain_for_the_same_date_leaves_the_entry_and_asks(cal):
     ws, cfg, store, put = cal
     entry = make_entry(store)

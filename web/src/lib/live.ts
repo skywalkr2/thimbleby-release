@@ -222,6 +222,48 @@ function invalidateWith(client: QueryClient, data: string, done?: Set<Query>): P
   return applyEvent(client, data, done);
 }
 
+/** The queries whose lines the person is looking at and answering: read before the rest, because the server answers the reads
+ * of a busy moment more or less together, and a line that has been dealt with must not wait behind every other screen's read. */
+const READ_FIRST: ReadonlySet<string> = new Set(["today/queue"]);
+/** How long the rest waits for the first reads before it starts anyway, so a slow first read never holds the others back for long. */
+export const READ_FIRST_HEAD_START_MS = 1500;
+
+/** Marks every query the predicate names as out of date, then reads the ones on screen: the lines first, the others once those have
+ * answered (or after a short head start). With `joinOut`, a read already out is not cancelled: its answer is used the moment it
+ * comes (a cancelled read's answer is thrown away, and under load each cancel started a read that took as long again), and the
+ * query is read once more after it, so news the read began too early to see is not lost. Without it, a read out is replaced, as a
+ * read that began before the person's own write has nothing of it. */
+export function readInOrder(client: QueryClient, wanted: (query: Query) => boolean, joinOut = false, started?: () => void): Promise<void> {
+  void client.invalidateQueries({ predicate: wanted, refetchType: "none" });
+  const active = client.getQueryCache().findAll({ predicate: wanted, type: "active" });
+  const first = active.filter((query) => inFamilies(query.queryKey, READ_FIRST));
+  const rest = active.filter((query) => !first.includes(query));
+  const readOne = (one: Query): Promise<unknown> =>
+    joinOut && one.state.fetchStatus === "fetching"
+      ? client
+          .refetchQueries({ predicate: (query) => query === one }, { cancelRefetch: false })
+          .catch(() => undefined)
+          .then(() => client.refetchQueries({ predicate: (query) => query === one }))
+      : client.refetchQueries({ predicate: (query) => query === one });
+  // `started` is called each time a group's reads have been sent, for a caller that marks the reads under way.
+  const readAll = (queries: Query[]) => {
+    const done = Promise.all(queries.map(readOne)).then(() => undefined);
+    started?.();
+    return done;
+  };
+  if (!first.length) return readAll(rest);
+  const firstDone = readAll(first);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const headStart = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, READ_FIRST_HEAD_START_MS);
+  });
+  const restDone = Promise.race([firstDone, headStart]).then(() => {
+    clearTimeout(timer);
+    return readAll(rest);
+  });
+  return Promise.all([firstDone, restDone]).then(() => undefined);
+}
+
 /** An event that only repeats the kinds the person's own write just wrote leaves alone a query that is reading right now (the
  * write's own refresh), so a write is not read twice at once. A query already refreshed is read again: the assistant may have
  * written the same kind meanwhile, and a read that started before that would otherwise stay on screen. A read that returns the
@@ -264,10 +306,10 @@ function applyEvent(client: QueryClient, data: string, done?: Set<Query>): Promi
     // A query already read again for an earlier event of the same burst is not read a second time.
     .filter((query) => !done?.has(query));
   for (const query of matching) done?.add(query);
-  const reads = client.invalidateQueries({ predicate: (query) => matching.includes(query) });
+  // A read already out is not cancelled by news that arrives after it started (see `readInOrder`).
   // A change this page did not make: its reads are not what the ready mark waits for. The page's own write just before it (the echo)
   // is read by that write, which counts.
-  if (!echo) leaveFetching(client);
+  const reads = readInOrder(client, (query) => matching.includes(query), true, echo ? undefined : () => leaveFetching(client));
   return reads;
 }
 

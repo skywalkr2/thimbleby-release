@@ -34,8 +34,15 @@ beforeEach(() => closeEveryEditor());
 type User = ReturnType<typeof userEvent.setup>;
 async function chooseIn(user: User, select: Element, wanted: unknown): Promise<void> {
   if (select.getAttribute("aria-expanded") !== "true") await user.click(select);
-  const list = document.getElementById(select.getAttribute("aria-controls") ?? "");
-  if (!list) throw new Error("The list did not open. " + document.body.innerHTML.slice(0, 1500));
+  // The panel draws after the click's own render, which on a busy machine can be a moment later (as `snapshotOf` waits too).
+  const list = await waitFor(
+    () => {
+      const found = document.getElementById(select.getAttribute("aria-controls") ?? "");
+      if (!found) throw new Error("The list did not open. " + document.body.innerHTML.slice(0, 1500));
+      return found;
+    },
+    { timeout: 3000 },
+  );
   for (const want of Array.isArray(wanted) ? wanted : [wanted]) {
     const text = want instanceof HTMLElement ? (want.getAttribute("data-value") ?? want.textContent?.trim()) : String(want);
     // The choices of a list that loads are there a moment after the list is: wait for the one asked for, as a person would.
