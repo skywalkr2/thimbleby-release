@@ -18,6 +18,7 @@ from typing import Any, Literal
 
 from engine.ai.adapters import make_adapter
 from engine.ai.presets import suggest_models
+from engine.ai.program_age import older_note
 from engine.ai.smoke import SmokeResult, smoke_test, where_of
 from engine.ai.task import RETIRED_PLAIN, UNSUPPORTED_ADVICE, UNSUPPORTED_PLAIN, ModelInfo, work_in_words
 from engine.config import Config
@@ -48,6 +49,7 @@ class KeyCheck:
     identity_unknown: str | None = None  # why that can't be told, in plain words, when it can't
     model: str | None = None  # for model_retired: the id of the model the service no longer offers
     next_model: str | None = None  # for model_retired: the id of the next model that fits, when the listing has one
+    program_note: str | None = None  # an agent program older than the tested versions: the line saying so
 
 
 #: What a failure means for an account reached with a key, by the kind the call itself gave.
@@ -134,12 +136,16 @@ def check_account(
     if bad is not None:
         reason, words = _failure(bad, where)
         return KeyCheck(False, reason, words)
+    note = None
+    if entry and entry.get("tested_versions"):
+        read = getattr(adapter_factory(provider.adapter, provider, key), "program_version", None)
+        note = older_note(entry, read() if callable(read) else None)
     identity = next((r.identity for r in results if r.part == "identity" and r.identity), None) or {}
     if "account" in identity:
-        return KeyCheck(True, "works", "", identity=identity["account"])
+        return KeyCheck(True, "works", "", identity=identity["account"], program_note=note)
     unknown = identity.get("unknown")
     if unknown:
-        return KeyCheck(True, "works", "", identity_unknown=unknown)
+        return KeyCheck(True, "works", "", identity_unknown=unknown, program_note=note)
     return KeyCheck(
         True,
         "works",
@@ -149,4 +155,5 @@ def check_account(
             if where == "hosted"
             else "it doesn't say whose account this is"
         ),
+        program_note=note,
     )

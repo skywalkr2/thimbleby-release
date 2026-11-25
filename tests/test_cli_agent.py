@@ -20,7 +20,7 @@ FAKE_AGENT = r"""
 import json, os, re, sys, time
 mode = sys.argv[1]
 prompt = sys.stdin.read()
-paths = re.findall(r"(/\S+?\.(?:txt|json|md))\b", prompt)
+paths = re.findall(r"((?:/|\b[\w.-]+/)\S*?\.(?:txt|json|md))\b", prompt)  # whole, or from the working folder
 if mode == "stdout":
     print('{"ok": true}')
 elif mode == "says-signed-out":
@@ -74,13 +74,26 @@ elif mode == "pwd":
 elif mode == "pwd-labelled":
     open(paths[0], "w").write("ok")
     print("Working in: " + os.getcwd() + ".")
-elif mode == "step-arrow":
+elif mode == "probably":
     open(paths[0], "w").write("ok")
-    print("Step 4: ran pwd -> " + os.getcwd())
+    print("Your working folder is probably: " + os.getcwd())
+elif mode == "bullet":
+    open(paths[0], "w").write("ok")
+    print("- 4: " + os.getcwd())
 elif mode == "json-step-newline":
     # the program's JSON output: the answer's text, with the real folder alone on its own line after other text
     open(paths[0], "w").write("ok")
     print(json.dumps({"type": "result", "result": "Step 4:\n" + os.getcwd()}))
+elif mode == "listing-labelled":
+    open(paths[0], "w").write("ok")
+    print("Files: " + ", ".join(sorted(os.listdir(os.getcwd()))) + ".")
+elif mode == "step-arrow":
+    open(paths[0], "w").write("ok")
+    print("Step 4: ran ls -a -> " + " ".join(sorted(os.listdir(os.getcwd()))))
+elif mode == "json-step-listing":
+    # the program's JSON output: the listing on its own line after other text, its line break escaped
+    open(paths[0], "w").write("ok")
+    print(json.dumps({"type": "result", "result": "Step 4:\n" + "\n".join(sorted(os.listdir(os.getcwd())))}))
 elif mode == "typed-tool-call":
     # a cheap model types out the call it would make, naming the folder it worked out from the outbox path; nothing runs
     open(paths[0], "w").write("ok")
@@ -506,20 +519,38 @@ def test_an_expired_sign_in_is_read_as_a_sign_in_problem_by_the_preset_that_prin
             assert err.kind == "auth" and err.hint == agent["sign_in_hint"], (preset["id"], said)
 
 
-@pytest.mark.parametrize("mode", ["pwd", "pwd-labelled", "step-arrow", "lists-home", "json-step-newline"])
-def test_a_program_that_only_prints_its_folder_or_lists_its_home_fails_the_probe(agent_script, mode):
-    """S-0721: a command that ran and wrote nothing is still a command that ran."""
+@pytest.mark.parametrize("mode", ["lists", "listing-labelled", "step-arrow", "json-step-listing", "lists-home"])
+def test_a_program_that_lists_its_folder_or_its_home_fails_the_probe_however_it_prints_it(agent_script, mode):
+    """S-0721: a command that ran and wrote nothing is still a command that ran: a hidden name only a listing shows,
+    alone, after a label or a step, or inside JSON output with its line breaks escaped."""
     checks = CliAgentAdapter(settings(agent_script, mode, output_via="outbox")).lockdown_test("m")
     assert {c.name: c.ok for c in checks}["shell"] is False
 
 
-@pytest.mark.parametrize("mode", ["typed-tool-call", "typed-json-command"])
-def test_a_command_the_model_only_typed_out_is_no_proof_that_one_ran(agent_script, mode):
-    """S-0793: a folder path the model can work out from the outbox path, written as a command's argument in a call it
-    only typed out, is not what printing the working folder gives: the check passes a clean account (the reviewer's two
-    answers from Haiku)."""
+@pytest.mark.parametrize(
+    "mode", ["pwd", "pwd-labelled", "probably", "bullet", "json-step-newline", "typed-tool-call", "typed-json-command"]
+)
+def test_the_working_folders_path_is_no_proof_that_a_command_ran(agent_script, mode):
+    """The #67 re-check (N-1, N-13): an agent program may tell the model its working folder itself (a shipped preset
+    does, with the app's own instructions and its tools off), so the folder's path in the answer, in any shape, proves
+    nothing; the check passes a clean account. The reviewer's #66 false positives are two of the shapes."""
     checks = CliAgentAdapter(settings(agent_script, mode, output_via="outbox")).lockdown_test("m")
     assert {c.name: c.ok for c in checks}["shell"] is True
+
+
+def test_the_probe_never_names_the_working_folder(agent_script, monkeypatch):
+    """The outbox is named from the working folder, so the probe's words never hold that folder's path."""
+    seen = {}
+    real = CliAgentAdapter._start
+
+    def start(self, prompt, model, scratch, outbox, *args, **kwargs):
+        seen.setdefault("prompt", prompt)  # the probe is the first run; the memory check comes after it
+        seen.setdefault("folder", str(scratch))
+        return real(self, prompt, model, scratch, outbox, *args, **kwargs)
+
+    monkeypatch.setattr(CliAgentAdapter, "_start", start)
+    CliAgentAdapter(settings(agent_script, "locked", output_via="outbox")).lockdown_test("m")
+    assert seen["folder"] not in seen["prompt"] and "outbox" in seen["prompt"]
 
 
 def test_a_limit_notice_inside_long_json_is_the_limit_and_a_long_real_answer_is_not(agent_script):
@@ -656,3 +687,139 @@ def test_a_long_limit_notice_and_any_answer_flagged_as_an_error_are_errors_not_a
     assert err.value.kind != "quota"
     unflagged = settings(agent_script, "error-flagged-plain", output_json=True, output_fields={"text": "result"})
     assert "went wrong" in CliAgentAdapter(unflagged).run(task(), "m").text
+
+
+# ---- streamed output ----------------------------------------------------------------------------------------------
+
+STREAM_AGENT = r"""
+import json, os, sys, time
+mode = sys.argv[1]
+sys.stdin.read()
+def event(**kw):
+    print(json.dumps(kw), flush=True)
+event(type="system", subtype="init", cwd="/somewhere")
+event(type="assistant", message={"content": "working"})
+if mode == "answer":
+    event(type="result", is_error=False, result="streamed whole", usage={"input_tokens": 7, "output_tokens": 3},
+          total_cost_usd=0.01)
+elif mode == "error":
+    event(type="result", is_error=True, result="Not logged in. Please run the login command")
+    sys.exit(1)
+elif mode == "flagged":
+    event(type="result", is_error=True, result="Something went wrong in the agent's own way")
+elif mode == "lists-midstream":
+    # a command really ran: its listing is in an event in the middle of the stream, not in the final answer
+    event(type="user", message={"content": [{"type": "tool_result", "content": " ".join(os.listdir(os.getcwd()))}]})
+    event(type="result", is_error=False, result="Steps 1 to 4 were refused.")
+elif mode == "stuck":
+    for n in range(20):
+        event(type="assistant", message={"content": "step %d" % n})
+    time.sleep(30)
+"""
+
+STREAM_FIELDS = {
+    "text": "result",
+    "input_tokens": "usage.input_tokens",
+    "output_tokens": "usage.output_tokens",
+    "cost_usd": "total_cost_usd",
+    "error_flag": "is_error",
+}
+
+
+def streaming(tmp_path, mode, **extra):
+    script = tmp_path / "stream_agent.py"
+    script.write_text(STREAM_AGENT)
+    agent = {
+        "output_json": True,
+        "output_stream": True,
+        "output_fields": STREAM_FIELDS,
+        "errors": {"report_on_output": True, "auth": ["not logged in"]},
+        **extra,
+    }
+    return settings(str(script), mode, **agent)
+
+
+def test_a_streamed_answer_is_read_whole_from_the_final_result_event(tmp_path):
+    result = make_adapter(CliAgentAdapter.name, streaming(tmp_path, "answer"), None).run(task(), "agent-model")
+    assert result.text == "streamed whole"
+    assert (result.input_tokens, result.output_tokens, result.cost_usd) == (7, 3, 0.01)
+
+
+def test_a_streamed_error_is_classified_as_a_plain_one_is(tmp_path):
+    adapter = make_adapter(CliAgentAdapter.name, streaming(tmp_path, "error"), None)
+    with pytest.raises(AiError) as failed:
+        adapter.run(task(), "agent-model")
+    assert failed.value.kind == "auth"
+    flagged = make_adapter(CliAgentAdapter.name, streaming(tmp_path, "flagged"), None)
+    with pytest.raises(AiError) as other:
+        flagged.run(task(), "agent-model")
+    assert other.value.kind != "no_output"
+
+
+def test_a_timed_out_streamed_run_logs_the_last_events_it_streamed(tmp_path, caplog):
+    stuck = streaming(tmp_path, "stuck").model_copy(update={"timeout_seconds": 2})
+    with caplog.at_level("WARNING"), pytest.raises(AiError) as late:
+        make_adapter(CliAgentAdapter.name, stuck, None).run(task(), "agent-model")
+    assert late.value.kind == "timeout"
+    logged = " ".join(r.getMessage() for r in caplog.records)
+    assert "step 19" in logged and "step 5" not in logged and "/somewhere" not in logged
+    assert "step 19" not in str(late.value)
+
+
+def test_the_kinds_output_limit_reaches_the_program_through_the_variable_its_settings_name(tmp_path):
+    seen = []
+
+    def runner(args, **kwargs):
+        seen.append(kwargs["env"])
+        return subprocess.CompletedProcess(args, 0, json.dumps({"result": "ok"}), "")
+
+    base = {"output_json": True, "output_fields": {"text": "result"}}
+    limited = settings(str(tmp_path / "x.py"), "stdout", max_output_env="AGENT_MAX_OUT", **base)
+    limited.agent.command[0] = sys.executable
+    CliAgentAdapter(limited, runner=runner).run(AiTask("notes", "i", "s", "r", {}, output="text", max_output=1234), "m")
+    plain_settings = settings(str(tmp_path / "x.py"), "stdout", **base)
+    plain_settings.agent.command[0] = sys.executable
+    CliAgentAdapter(plain_settings, runner=runner).run(task("text"), "m")
+    assert seen[0]["AGENT_MAX_OUT"] == "1234" and "AGENT_MAX_OUT" not in seen[1]
+
+
+def test_a_listing_in_the_middle_of_a_stream_fails_the_probe(tmp_path):
+    """The lockdown probe reads the whole stream, never only its final answer: a listing a real command printed
+    mid-stream is proof a command ran, whatever the answer says."""
+    checks = CliAgentAdapter(streaming(tmp_path, "lists-midstream")).lockdown_test("m")
+    assert {c.name: c.ok for c in checks}["shell"] is False
+
+
+def test_an_account_saved_with_the_presets_earlier_command_streams_and_gets_its_output_limit():
+    """An account added before its preset streamed kept the old command, so a looping run still hung for 90 s (the #67
+    re-check, A-2): an account that never changed the command takes the preset's current one, read as a stream, and
+    every account takes the variable that carries its output limit. A command the person changed stays theirs."""
+    from engine.ai.adapters.cli_agent import EARLIER_COMMANDS, _with_preset_settings
+
+    preset = next(p for p in _presets() if p["settings"]["agent"].get("output_stream"))
+    current = preset["settings"]["agent"]
+    old = _with_preset_settings(AgentSettings(command=list(EARLIER_COMMANDS[0])), preset["id"])
+    assert old.command == current["command"] and old.output_stream is True
+    assert old.max_output_env == current["max_output_env"]
+    own = [*EARLIER_COMMANDS[0], "--verbose"]
+    kept = _with_preset_settings(AgentSettings(command=own), preset["id"])
+    assert kept.command == own and kept.output_stream is False and kept.max_output_env == current["max_output_env"]
+
+
+def test_the_apps_instructions_to_an_agent_start_by_saying_it_has_no_tools(agent_script, monkeypatch):
+    """The #67 re-check (J-5): with its tools off, a model that believes it has tools types tool calls and made-up
+    results until its output limit ends the run. The app's own instructions, given in place of the program's, start by
+    saying there are no tools and tool-call markup is never read."""
+    seen = {}
+    real = CliAgentAdapter._start
+
+    def start(self, prompt, model, scratch, outbox, effort=None, system="", *args, **kwargs):
+        seen["system"] = system
+        return real(self, prompt, model, scratch, outbox, effort, system, *args, **kwargs)
+
+    monkeypatch.setattr(CliAgentAdapter, "_start", start)
+    account = settings(agent_script, "stdout", system_option=["--system-prompt-file", "{system}"])
+    CliAgentAdapter(account).run(task(), "agent-model")
+    first = seen["system"].split("\n\n", 1)[0]
+    assert first.startswith("You have no tools in this run") and "never read" in first
+    assert "Follow the rules." in seen["system"] and "Stable part." in seen["system"]

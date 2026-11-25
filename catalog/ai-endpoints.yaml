@@ -163,16 +163,19 @@ endpoints:
     model_examples: [haiku, sonnet, opus]
     model_roles: {haiku: recommended, sonnet: stronger, opus: strongest}
     model_labels: {haiku: Haiku, sonnet: Sonnet, opus: Opus}
+    tested_versions: {oldest: "2.1.326", newest: "2.1.332"}
+    update_hint: brew upgrade --cask claude-code, or claude update for a native install
     tier_presets:
       routine: {family: haiku}
       deep: {family: sonnet}
       hardest: {family: opus}
     settings:
       agent:
-        command: [claude, -p, --output-format, json, --model, "{model}", --tools, "", --disallowedTools, "mcp__*", --strict-mcp-config, --no-session-persistence]
+        command: [claude, -p, --output-format, stream-json, --verbose, --model, "{model}", --tools, "", --disallowedTools, "mcp__*", --strict-mcp-config, --no-session-persistence]
         packet_via: stdin
         output_via: stdout
         output_json: true
+        output_stream: true
         output_fields:
           text: result
           input_tokens: usage.input_tokens
@@ -186,6 +189,7 @@ endpoints:
           quota: ["usage limit reached", "hit your [a-z ]{0,30}limit", "credit balance is too low"]
           rate_limited: ["rate limit", "overloaded", "temporarily limiting requests"]
         effort_option: ["--effort", "{effort}"]
+        max_output_env: CLAUDE_CODE_MAX_OUTPUT_TOKENS  # a run that loops ends at the task's output limit, not at the time limit
         system_option: ["--system-prompt-file", "{system}"]  # our instructions in place of its coding-assistant ones
         home_files: [.claude/.credentials.json, .claude.json, Library/Keychains]  # the sign-in files only, never its session histories; a Mac keeps the sign-in in the keychain
         home_keys: {.claude.json: [oauthAccount, hasCompletedOnboarding]}  # which account is signed in, and that it was set up; nothing else of that file

@@ -858,6 +858,12 @@ class AgentSettings(ConfigModel):
         "stdout", description="Where the agent puts its answer: its output, or a file in {outbox}."
     )
     output_json: bool = Field(False, description="The agent prints JSON; output_fields says where the answer is.")
+    output_stream: bool = Field(
+        False,
+        description="The agent prints one JSON event per line as it works (with output_json). The answer, usage and "
+        "error flag are read from the last event whose type is result, by output_fields; a run that is stopped "
+        "keeps the end of what it streamed in the log, so it shows how far it got.",
+    )
     output_fields: AgentOutputFields = Field(
         default_factory=AgentOutputFields, description="Where the answer and usage are in the agent's JSON output."
     )
@@ -880,6 +886,12 @@ class AgentSettings(ConfigModel):
         description="The arguments added to the command when the tier's work has an effort (low, medium or high), "
         "with {effort} replaced by it, such as an option name followed by {effort}. Empty: the program has no such "
         "option, or it isn't confirmed for it, and the effort is never passed on.",
+    )
+    max_output_env: str = Field(
+        "",
+        description="The environment variable the program reads its most output tokens from, set for each run to the "
+        "kind of work's most output (ai.tasks.<kind>.max_output), so a run that never stops ends at that limit as a "
+        "failed run. Empty: the program has no such variable, or it isn't confirmed for it, and no limit is passed.",
     )
     system_option: list[str] = Field(
         default_factory=list,
@@ -2019,6 +2031,7 @@ def _default_lints() -> dict[str, Severity]:
         "undated-todo": "return",
         "message-as-todo": "return",
         "hold-as-note": "return",
+        "undecided-as-note": "return",
         "due-on-day-off": "return",
         "owed-to-missing": "return",
         "project-start-as-fact": "return",
@@ -2721,6 +2734,22 @@ class LanguageFile(FileModel):
         'The words a note of yours uses to hold something until a condition is met ("hold", "park"), read with a '
         'condition word after them ("Hold the venue deposit until the board signs off"). An answer to such a note '
         "of notes and facts alone goes back once (the lint `hold-as-note`). Case is ignored."
+    )
+    project_name_leads: list[str] | None = word_list(
+        "The words that, right before a word of a project's name, show you mean that project by its short form (\"the "
+        'gala" for "Volunteer Gala"). A short form also counts when it is written with a capital in the middle of a '
+        "sentence. Case is ignored."
+    )
+    undecided_words: list[str] | None = word_list(
+        'The phrases of a note of yours that say a choice is still open ("I haven\'t decided", "we still have to '
+        'pick"). An answer to such a note of notes and facts alone goes back once, asking whether it is a decision '
+        "for you to make (the lint `undecided-as-note`). Case is ignored."
+    )
+    message_recipient_followers: list[str] | None = word_list(
+        'The words that can follow the person or role a message goes to ("write the editor about the cover", "email '
+        'the printer that the proofs are late"). A role in your notes counts as who a message goes to only when it '
+        'ends its phrase or one of these words follows it, never inside another ("the cover letter", '
+        '"the contact form"). Case is ignored.'
     )
     hold_condition_words: list[str] | None = word_list(
         'The words that lead the condition of a hold, at most eight words after the holding word ("until", "till"). '

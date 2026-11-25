@@ -1482,7 +1482,7 @@
   "welcome.ai.model_harder": "AI model for harder work (optional)",
   "welcome.ai.model_pick": "Pick a model",
   "welcome.ai.model_same": "Same as the everyday model",
-  "welcome.ai.model_harder_hint": "Where learning from your corrections and the checks of its own work happen. A stronger model here costs a little more and makes what it learns better.",
+  "welcome.ai.model_harder_hint": "Where learning from your corrections happens. A stronger model here costs a little more and makes what it learns better.",
   "welcome.ai.model_find": "Find a model",
   "welcome.ai.model_none": "No model matches.",
   "welcome.ai.model_context": "Reads up to about {n} text units at once.",

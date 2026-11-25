@@ -474,9 +474,9 @@ def _failed_runs(
 
 
 def _stopped_requests(store: Any, since: datetime, hide: Masker) -> list[Problem]:
-    """Requests stopped for the person after their return rounds: one line each with the reasons of every round that
-    was sent back or refused, masked. The assistant's answer itself stays on the request and is never in the problem
-    lines."""
+    """Requests stopped for the person after their return rounds: one line each naming, for every round sent back or
+    refused, the checks that found it. The reasons' words stay on the request: they can quote the answer, which leaves
+    only when the person includes it."""
     out = []
     for stored in store.read().since("request", "created_at", since.date().isoformat()):
         req = stored.data
@@ -485,7 +485,9 @@ def _stopped_requests(store: Any, since: datetime, hide: Masker) -> list[Problem
         if req.get("state") not in ("needs_you", "failed") or not rounds or when is None:
             continue
         text = "; ".join(
-            f"try {r['attempt']}, round {r['round']}: {' '.join(r['reasons']) or 'no reason given'}" for r in rounds
+            f"try {r.get('attempt', 1)}, round {r['round']}: sent back by "
+            + (", ".join(r.get("checks") or []) or "a check")
+            for r in rounds
         )
         out.append(
             Problem(at=when, doing="task", what=req.get("task"), error_kind="stopped", text=_cut(hide(text), 2000))

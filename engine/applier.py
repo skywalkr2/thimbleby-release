@@ -357,6 +357,7 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
     problems += _undated_todo(cs, ctx)
     problems += _message_as_todo(cs, ctx)
     problems += _hold_as_note(cs, ctx)
+    problems += _undecided_as_note(cs, ctx)
     problems += _due_on_day_off(cs, ctx)
     problems += _project_start_as_fact(cs, ctx)
     problems += _project_unfiled(cs, ctx)
@@ -709,7 +710,8 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
                 op.repeat.until is not None and op.repeat.until < day_text(op.start, zone(ctx.cfg))
             ):
                 refuse(i, "targets", f"calendar entry {op.title!r}: it can't stop repeating before it starts")
-        if isinstance(op, EventAddOp) and op.role is not None and ctx.actor != "pm":
+        if isinstance(op, EventAddOp) and op.role is not None and ctx.actor != "pm" and not _from_pm(view, ctx):
+            # The person's own note saying they run or attend it says so; outside content never does.
             refuse(i, "targets", "only you say whether you run or attend a calendar entry")
         if isinstance(op, EventSetOp):
             entry = view.get("event", op.id)
@@ -2694,6 +2696,14 @@ def edit_problem(store: Store, view: Any, op: Any) -> str | None:
     return None
 
 
+def _without_guess(cur: Any, changes: dict[str, Any]) -> dict[str, Any]:
+    """A change of a to-do's owners ends the guess from what was learned that set them: the owners are no longer the
+    guess, so taking it back can never put the guessed owner over the ones given since."""
+    if cur is None or not cur.data.get("by_kind") or "owners" not in changes:
+        return changes
+    return {**changes, "by_kind": None}
+
+
 def edit_record(store: Store, tx: Tx, op: Any, w: WriteContext) -> None:
     why = edit_problem(store, tx, op)
     if why:
@@ -2707,6 +2717,8 @@ def edit_record(store: Store, tx: Tx, op: Any, w: WriteContext) -> None:
     if op.record.kind == "action" and "due" in fields and "text" not in fields:
         was = tx.get("action", op.record.id)
         before_due = was.data.get("due") if was is not None else None
+    if op.record.kind == "action":
+        fields = _without_guess(tx.get("action", op.record.id), fields)
     tx.update(op.record.kind, op.record.id, fields, w, read_version=op.read_version)
     if before_due is not None and fields["due"] != before_due:
         # The words that ended in the old day lose it: the new due date alone says the day. Written under its own op
@@ -3073,6 +3085,7 @@ JUDGMENT_LINTS = frozenset(
         "undated-todo",
         "message-as-todo",
         "hold-as-note",
+        "undecided-as-note",
         "due-on-day-off",
         "ending-reading",
         "reply-not-needed",
@@ -4034,17 +4047,42 @@ def _undated_todo(cs: ChangesetIn, ctx: Context) -> list[Problem]:
     ]
 
 
+class _Role(str):
+    """A recipient word that is a person's role, not their name: it names someone only as the end of its phrase."""
+
+
 def message_recipients(people: Any) -> list[str]:
     """The words that name someone a message could go to: each person on file other than the user, by full name, alias
-    and first name, and by their role, whole and by its first and last word ("Printer account contact": "printer")."""
-    forms: set[str] = set()
+    and first name, and by their role, whole and by its first and last word ("Printer account contact": "printer").
+    The role words are `_Role`s."""
+    names: set[str] = set()
+    roles: set[str] = set()
     for pid, data in people.records.items():
         if pid == people.pm:
             continue
         name = " ".join(str(data.get("full_name") or "").split())
         role = " ".join(str(data.get("role") or "").replace(",", " ").split())
-        forms |= {name, *name.split()[:1], *(data.get("aliases") or []), role, *role.split()[:1], *role.split()[-1:]}
-    return sorted((f.casefold() for f in forms if len(f.strip()) > 2), key=len, reverse=True)
+        names |= {name, *name.split()[:1], *(data.get("aliases") or [])}
+        roles |= {role, *role.split()[:1], *role.split()[-1:]}
+    found = [f.casefold() for f in names if len(f.strip()) > 2]
+    found += [_Role(f.casefold()) for f in roles if len(f.strip()) > 2]
+    return sorted(found, key=len, reverse=True)
+
+
+def _names_recipient(text: str, start: int, end: int, known: list[str], followers: list[str]) -> bool:
+    """Whether a person or role on file is named between `start` and `end` of `text` as someone to write to: never in
+    the possessive ("the editor's note", "the editor's bio"), and a role only as the end of its phrase (followed by the
+    text's end, a mark, or one of the words that lead on from a recipient), never inside another phrase ("cover
+    letter", "contact form")."""
+    lead = "|".join(map(re.escape, followers))
+    for r in known:
+        ends = ""
+        if isinstance(r, _Role):
+            ends = r"(?=\s*$|\s*[,.;:!?)\n]" + (rf"|\s+(?:{lead})\b" if lead else "") + ")"
+        for found in re.finditer(rf"(?<!\w){re.escape(r)}(?!\w)(?!['\u2019]s\b){ends}", text, re.IGNORECASE):
+            if found.start() >= start and found.end() <= end:
+                return True
+    return False
 
 
 _ADDRESS = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
@@ -4062,6 +4100,7 @@ def _asks_for_a_message(cfg: Any, text: str, recipients: Iterable[str] = ()) -> 
     nouns = [w.casefold() for w in language_words(cfg.language, "message_request_nouns") or []]
     alone = [w.casefold() for w in language_words(cfg.language, "message_request_alone") or []]
     never = [w.casefold() for w in language_words(cfg.language, "message_request_not") or []]
+    followers = [w.casefold() for w in language_words(cfg.language, "message_recipient_followers") or []]
     known = [r for r in recipients if r.strip()]
     if never:
         text = re.sub("|".join(rf"\b{re.escape(w)}\b" for w in never), " · ", text, flags=re.IGNORECASE)
@@ -4082,7 +4121,8 @@ def _asks_for_a_message(cfg: Any, text: str, recipients: Iterable[str] = ()) -> 
         words = span.group(span.lastindex or 0)
         after = re.match(r"(?:\s+(?!·)\S+){0,6}", text[span.end() :])
         near = f"{span.group(0)}{after.group(0) if after else ''}"
-        if _ADDRESS.search(near) or any(re.search(rf"(?<!\w){re.escape(r)}(?!\w)", near, re.IGNORECASE) for r in known):
+        reach = span.end() + (len(after.group(0)) if after else 0)
+        if _ADDRESS.search(near) or _names_recipient(text, span.start(), reach, known, followers):
             return words.strip()
     return None
 
@@ -4098,7 +4138,7 @@ def _asks_to_hold(cfg: Any, text: str) -> str | None:
     pattern = (
         r"\b(?:"
         + "|".join(map(re.escape, verbs))
-        + r")\b(?:\s+\S+){1,8}?\s+(?:"
+        + r")\b(?:\s+\S+){0,8}?\s+(?:"
         + "|".join(map(re.escape, until))
         + r")\b"
     )
@@ -4130,6 +4170,44 @@ def _hold_as_note(cs: ChangesetIn, ctx: Context) -> list[Problem]:
             'it is met, add it with "action.add" and the condition as its "waiting_for" (it starts on hold), or put an '
             'open action on hold with "action.hold". If it isn\'t, answer again with what you had: your answer stands '
             "either way.",
+        )
+    ]
+
+
+def _says_undecided(cfg: Any, text: str) -> str | None:
+    """The words of a note that say a choice is still open ("I haven't decided", "we still have to pick"), from the
+    language settings, whole phrases with curly apostrophes read as straight ones. None when it says none."""
+    words = [w.casefold().replace("\u2019", "'") for w in language_words(cfg.language, "undecided_words") or []]
+    if not words:
+        return None
+    flat = text.replace("\u2019", "'")
+    found = re.search(r"(?<!\w)(?:" + "|".join(map(re.escape, words)) + r")(?!\w)", flat, flags=re.IGNORECASE)
+    return found.group(0) if found else None
+
+
+def _undecided_as_note(cs: ChangesetIn, ctx: Context) -> list[Problem]:
+    """The person's own note that says a choice is still open, answered only with notes or facts, goes back once: an
+    open choice is usually a decision for the person to make, asked as a decision question. A rule on the note's words
+    that only points; the assistant's answer to it stands (`JUDGMENT_LINTS`)."""
+    name = "undecided-as-note"
+    level = ctx.cfg.checks.lints.get(name, "off")
+    if level == "off" or ctx.actor == "pm" or ctx.confirmed_by_pm:
+        return []
+    if any(not isinstance(op, (NoteOp, FactOp)) for op in cs.ops):
+        return []  # it asked or did something with the open choice: its own judgment
+    if not _from_pm(ctx.store.read(), ctx):
+        return []
+    words = _says_undecided(ctx.cfg, f"{ctx.inputs.note or ''}\n{ctx.inputs.raw_input or ''}")
+    if words is None:
+        return []
+    return [
+        Problem(
+            name,
+            level,
+            0 if cs.ops else None,
+            f"The person's own note says a choice is still open ({words!r}). If it is a decision for the person to "
+            'make, ask it with "question.add" and "kind": "decision", naming the options, in place of a note. If it '
+            "isn't, answer again with what you had: your answer stands either way.",
         )
     ]
 
@@ -5192,6 +5270,8 @@ def _apply_op(
         if w.actor != "pm" and model_for(op.kind).needs_person(op.field, value):
             raise NeedsPerson(f"only you can set {op.field} on a {op.kind}")
         changes = {op.field: value}
+        if op.kind == "action":
+            changes = _without_guess(cur, changes)
         if op.kind == "person" and op.field in ("side", "sides"):
             from engine import sides
 
@@ -5464,7 +5544,11 @@ def _apply_op(
         }
         if op.first_name:
             data["first_name"] = " ".join(op.first_name.split())
-        made("person", tx.create("person", data, w).id)
+        new_person = tx.create("person", data, w).id
+        made("person", new_person)
+        if w.changeset != "dry-run":
+            # The steps after this one in the same answer name the person by name: the directory knows them now.
+            ctx.people.add(new_person, data)
     elif isinstance(op, PersonStanceOp):
         found = tx.get("person", op.id)
         if found is None:
@@ -5835,11 +5919,15 @@ def _mark_by_kind(
     marks nothing."""
     kind = learn.kind_of_id(REGISTRY, entry_id)
     found = tx.get(kind, entry_id) if kind in ("lesson", "routing_entry") else None
-    if found is None or found.data.get("status") != "active" or not found.data.get("kind_of_work"):
+    if found is None:
+        return None
+    waiting = found.data.get("status") == "proposed" and found.data.get("guess_until_kept")
+    if not waiting and (found.data.get("status") != "active" or not found.data.get("kind_of_work")):
         return None
     learned = found.data.get("learned_at")
     when = datetime.fromisoformat(str(learned)).date() if learned else None
-    mark = {"entry": entry_id, "kind_of_work": " ".join(str(found.data["kind_of_work"]).split())}
+    named = found.data.get("kind_of_work") or found.data.get("topic") or found.data.get("text") or ""
+    mark = {"entry": entry_id, "kind_of_work": " ".join(str(named).split())[:120]}
     if when is not None:
         mark["learned_on"] = when.isoformat()
     if isinstance(op, ActionAddOp) and when is not None:
@@ -6291,13 +6379,29 @@ def decline_held_many(store: Store, changeset_id: str, indices: list[int], *, no
     for index in chosen:
         if not 0 <= index < len(outcomes) or outcomes[index]["status"] != "held":
             raise StoreError("that item isn't waiting for you")
-    # A step that would have come in with one kept as it was goes with it (it names what that step would have made).
+    # A step that would have come in with one kept as it was goes with it: it names what that step would have made,
+    # by `$new:<n>`, whether it waits only for it or for a reason of its own too.
     for index in chosen:
         chosen += [
             o["index"]
             for o in outcomes
-            if o.get("waits_for") == index and o["status"] == "held" and o["index"] not in chosen
+            if o["status"] == "held"
+            and o["index"] not in chosen
+            and (o.get("waits_for") == index or any(n == index for n, _ in referenced(o["op"])))
         ]
+    # A new person kept out: a question to them goes too, and a to-do that names them comes in without them.
+    kept_out = [outcomes[i]["op"].get("full_name") for i in chosen if outcomes[i]["op"].get("op") == "person.add"]
+    without: list[int] = []
+    for o in outcomes:
+        if o["status"] != "held" or o["index"] in chosen or not kept_out:
+            continue
+        names = [*(o["op"].get("owners") or []), *(o["op"].get("promised_to") or [])]
+        if o["op"].get("op") == "question.add" and any(_same_name(o["op"].get("to"), n) for n in kept_out):
+            chosen.append(o["index"])
+        elif o["op"].get("op") == "action.add" and any(_same_name(a, n) for a in names for n in kept_out):
+            for key in ("owners", "promised_to"):
+                o["op"][key] = [a for a in o["op"].get(key) or [] if not any(_same_name(a, n) for n in kept_out)]
+            without.append(o["index"])
     declined = []
     for index in chosen:
         outcome = outcomes[index]
@@ -6313,6 +6417,18 @@ def decline_held_many(store: Store, changeset_id: str, indices: list[int], *, no
             WriteContext(actor="pm", trust="trusted", op="changeset.decline"),
             read_version=cs.version,
         )
+        for index in without:
+            # Its "who is this?" question asked about the person kept out: it is answered by the "no".
+            question = outcomes[index].pop("question", None)
+            found = tx.get("question", question) if question else None
+            if found is not None and found.data["status"] == "open":
+                tx.update(
+                    "question",
+                    question,
+                    {"status": "answered", "answer": "not added"},
+                    WriteContext(actor="pm", trust="trusted", op="question.answer"),
+                    read_version=found.version,
+                )
         for outcome, target in declined:
             learn.record(
                 tx,
@@ -6328,6 +6444,9 @@ def decline_held_many(store: Store, changeset_id: str, indices: list[int], *, no
                 WriteContext(actor="pm", trust="trusted", op="held_declined"),
                 now,
             )
+    for index in without:
+        # It comes in without the person kept out; with no owner left it waits for "Pick an owner", never for ever.
+        release(store, store.plugins.cfg, changeset_id, index, now=now)
 
 
 def undecline_held(store: Store, changeset_id: str, index: int) -> None:

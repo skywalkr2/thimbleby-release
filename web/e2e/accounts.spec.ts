@@ -126,7 +126,9 @@ test.describe.serial("several accounts", () => {
     const review = page.getByRole("button", { name: /Quarterly review/ });
     await expect(review.first()).toBeVisible(LOADED);
     await expect(review).toHaveCount(1);
-    await expect(review.first()).toContainText(/also in Your calendar \(\d\)/);
+    // It names both calendars, told apart by a number, in whichever order they were read.
+    await expect(review.first()).toContainText(/From Your calendar( \(\d\))?, also in Your calendar/);
+    await expect(review.first()).toContainText(/Your calendar \(\d\)/);
     for (const address of addresses) await expect(review.first()).not.toContainText(address.split("@")[0]);
     // The legend: the calendars are one button that opens their list; in it, a button for each calendar with its name,
     // pressed while its entries show.

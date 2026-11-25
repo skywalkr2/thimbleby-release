@@ -899,8 +899,16 @@ class _Trail:
     def keep(self, text: str) -> None:
         self.answer = text[: self.limit] if text else None
 
-    def turned_down(self, reasons: list[str]) -> None:
-        self.rounds.append({"round": len(self.rounds) + 1, "reasons": [r for r in reasons if r.strip()]})
+    def turned_down(self, reasons: list[str], checks: list[str]) -> None:
+        """A round sent back or refused: its reasons in words, for the person, and the names of the checks that found
+        them, which are all a report carries (the words can quote the answer)."""
+        self.rounds.append(
+            {
+                "round": len(self.rounds) + 1,
+                "reasons": [r for r in reasons if r.strip()],
+                "checks": list(dict.fromkeys(checks)),
+            }
+        )
 
 
 def _reasons(problems: list) -> list[str]:
@@ -910,6 +918,26 @@ def _reasons(problems: list) -> list[str]:
         for p in problems
         if p.severity in ("refuse", "return")
     ]
+
+
+#: The marks of a tool call or a tool's result a model typed out as text instead of answering: an agent with its tools
+#: off sometimes writes one, invents its result, and repeats both until its output limit ends the run.
+_TYPED_TOOL_MARKS = ("<invoke name=", "<tool_result>", "<function_calls>", "<parameter name=", "</tool_use>")
+TYPED_TOOLS_WHY = "The answer typed out tool calls and their results instead of answering."
+TYPED_TOOLS = (
+    "Your previous answer typed out tool calls and made-up tool results instead of the answer. You have no tools here, "
+    "and nothing you type is run. Answer again with the JSON object only."
+)
+
+
+def _typed_tool_calls(text: str) -> bool:
+    """Whether an answer that couldn't be read holds tool calls or tool results the model typed out as text."""
+    return any(mark in (text or "") for mark in _TYPED_TOOL_MARKS)
+
+
+def _checks(problems: list) -> list[str]:
+    """The names of the checks that sent an answer back or refused it: what a report may carry of a round."""
+    return [p.check for p in problems if p.severity in ("refuse", "return")]
 
 
 def _keep_stopped(store: Store, request_id: str, trail: _Trail, tries: int) -> None:
@@ -1272,7 +1300,7 @@ def _rounds(
                     added = len(draft["split"](text)) if text.strip() else 0
                     text, mapping = splice_after(draft["base_text"], draft["units"], part["after"], text, added)
             except AnchorProblem as err:
-                trail.turned_down([f"The draft didn't follow the format asked for: {err}."])
+                trail.turned_down([f"The draft didn't follow the format asked for: {err}."], ["draft-format"])
                 if not last:
                     why = f"Your draft doesn't follow the format asked for: {err}. Write it all again."
                     task = replace(task, request=shown + "\n\n" + why)
@@ -1291,7 +1319,7 @@ def _rounds(
                 fallback=out.fallback,
             )
             if needs_another_round(problems, judgment_asked=judgment_asked):
-                trail.turned_down(_reasons(problems))
+                trail.turned_down(_reasons(problems), _checks(problems))
                 if not last:
                     judgment_asked = judgment_asked or asks_judgment(problems)
                     task = replace(task, request=shown + "\n\n" + _answer_shown(changeset) + feedback(problems))
@@ -1306,10 +1334,22 @@ def _rounds(
             changeset = parse(result.text, store.plugins.ops)
         except Unreadable as err:
             limit = task.max_output
-            trail.turned_down([UNREADABLE_CUT if result.truncated else f"The answer couldn't be read: {err}."])
+            typed = _typed_tool_calls(result.text)
+            trail.turned_down(
+                [
+                    TYPED_TOOLS_WHY
+                    if typed
+                    else UNREADABLE_CUT
+                    if result.truncated
+                    else f"The answer couldn't be read: {err}."
+                ],
+                ["typed-tool-calls" if typed else "cut-off" if result.truncated else "unreadable"],
+            )
             if not last:
                 why = (
-                    f"Your previous answer was cut off at the output limit ({limit} tokens). Answer more briefly."
+                    TYPED_TOOLS
+                    if typed
+                    else f"Your previous answer was cut off at the output limit ({limit} tokens). Answer more briefly."
                     if result.truncated
                     else _unreadable_feedback(result.text, err)
                 )
@@ -1337,14 +1377,14 @@ def _rounds(
             request = store.read().get("request", request_id)
             changeset = learn.link_signal(changeset, learn.signal_of(request.data) if request is not None else None)
         if previous_ops is not None and _ops_of(changeset) == previous_ops:
-            trail.turned_down([SAME_ANSWER])
+            trail.turned_down([SAME_ANSWER], ["same-answer"])
             if not last:
                 task = replace(task, request=shown + "\n\n" + REPEATED)
                 continue
             stop = "The assistant gave the same answer again after your note. Look at it with them."
             return _Outcome(run_id=out.run_id, stop=stop)
         if fine and (lost := unexplained_drops(dropped_ops(fine, changeset), changeset)):
-            trail.turned_down([f"{DROPPED_WHY}: {', '.join(lost)}."])
+            trail.turned_down([f"{DROPPED_WHY}: {', '.join(lost)}."], ["dropped-ops"])
             # A return round that dropped an op which was fine is refused and sent back, never applied.
             if not last:
                 task = replace(
@@ -1364,7 +1404,7 @@ def _rounds(
             changeset=changeset, problems=problems, run_id=out.run_id, searched=searches > 0, fallback=out.fallback
         )
         if needs_another_round(problems, judgment_asked=judgment_asked):
-            trail.turned_down(_reasons(problems))
+            trail.turned_down(_reasons(problems), _checks(problems))
             if not last:
                 judgment_asked = judgment_asked or asks_judgment(problems)
                 fine, wrong = fine_ops(changeset, problems), feedback(problems)

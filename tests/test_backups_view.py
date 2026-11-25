@@ -40,8 +40,11 @@ def test_choosing_a_folder_and_backing_up_now_shows_the_last_backup_and_the_copy
     assert target["last_success"] and body["state"]["last_success"] == target["last_success"]
     assert body["message"].startswith("Backed up") and body["state"]["needs_attention"] is False
     assert len(body["copies"]) >= len(before["copies"]) >= 1
-    newest = body["copies"][0]
-    assert newest["path"].startswith(str(folder)) and (folder / newest["name"] / "thimbleby.db").is_file()
+    # The copy in the chosen folder is listed; the local copy made the same second may sort before it.
+    in_folder = [c for c in body["copies"] if c["path"].startswith(str(folder))]
+    assert in_folder, body["copies"]
+    newest = in_folder[0]
+    assert (folder / newest["name"] / "thimbleby.db").is_file()
     assert newest["encrypted"] is False and datetime.fromisoformat(newest["made_at"])
 
 

@@ -119,7 +119,16 @@ def build_feedback_router(ws: Workspace, cfg: Config, store: Store, worker: Work
         to = report_send.address(cfg.ui.report_to)
         if to is None:
             raise HTTPException(status_code=404, detail="Report a problem isn't set up here.")
-        answer = body.answer_block if body.include_answer else ""
+        answer = ""
+        if body.include_answer:
+            # Only the preview this server made goes: a block it didn't make, or one older than the newest, is refused.
+            kept = problems.last_stopped_answer(store, current(), worker.now())
+            shown = report_send.answer_block(kept[1], kept[0].date().isoformat()) if kept is not None else ""
+            if not shown or body.answer_block != shown:
+                raise HTTPException(
+                    status_code=409, detail="The answer shown is no longer the one kept. Open the report again."
+                )
+            answer = shown
         room = report_send.ANSWER_MAX + report_send.ANSWER_HEADING_ROOM if body.answer_block else 0
         done = report_send.send(
             to,

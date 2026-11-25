@@ -230,3 +230,27 @@ def test_keeping_a_new_project_as_it_was_takes_the_steps_that_named_it_with_it(e
     cs, _ = apply(store, cfg, [NEW_PROJECT, project_samples(me)["event.add"]], **given)
     decline_held(store, cs, 0)
     assert [o["status"] for o in store.read().get("changeset", cs).data["ops"]] == ["undone", "undone"]
+
+
+def test_no_to_a_new_person_leaves_nothing_of_theirs_waiting_for_ever(env):
+    """The #67 re-check (N-9): after "no" to a new person, the to-do they would own and a question to them stayed
+    waiting for ever. The question goes with the person; the to-do comes in without them, waiting for "Pick an
+    owner"; its "who is this?" question is answered by the "no"."""
+    from engine.applier import decline_held
+
+    ws, cfg, store = env
+    samples = person_samples()
+    given = {"origin": "input", "trust": "untrusted", "source_id": source(store), "raw": NOTE}
+    cs, done = apply(store, cfg, [NEW_PERSON, samples["action.add"], samples["question.add"]], **given)
+    assert done == ["held", "held", "held"]
+    decline_held(store, cs, 0)
+    ops = store.read().get("changeset", cs).data["ops"]
+    assert [o["status"] for o in ops] == ["undone", "applied", "undone"], [(o["status"], o.get("reason")) for o in ops]
+    action = store.read().get("action", ops[1]["records"][0]["id"]).data
+    assert action["owners"] == [] and action["status"] == "held"  # waiting for "Pick an owner"
+    open_who_is = [
+        q
+        for q in store.read().list("question")
+        if q.data["status"] == "open" and (q.data.get("resolves") or {}).get("kind") == "held-op"
+    ]
+    assert open_who_is == []

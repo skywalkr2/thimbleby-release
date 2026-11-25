@@ -221,3 +221,136 @@ def test_a_hold_answered_with_a_to_do_on_hold_or_a_note_with_no_hold_is_not_sent
         assert len(_hold_answers(env, plain, _note_only(plain), _note_only(plain))) == 1
     finally:
         set_responder(None)
+
+
+def test_a_to_do_owed_to_someone_the_same_note_adds_comes_in_at_once_never_on_who_is_this(env):
+    """The #67 re-check (N-7): "Marco Reyes… is waiting on our crate dimensions" added Marco and then held the
+    person's own to-do on "Waiting for you to say who this is": the name lookup didn't know the person just added."""
+    ws, cfg, store = env
+    me = People(store, cfg).pm
+    name = "Quillon " + "Varga"
+    said = f"{name}, the conservator, is waiting on our crate dimensions."
+    ops = [
+        {"op": "person.add", "full_name": name, "role": "Conservator"},
+        {
+            "op": "action.add",
+            "text": "Send the crate dimensions",
+            "owners": [me],
+            "promised_to": [name],
+            "evidence": {"quote": said},
+        },
+    ]
+    cs, done = apply(store, cfg, ops, origin="pm", trust="trusted", source_id=source(store, trust="trusted"), raw=said)
+    assert done == ["applied", "applied"]
+    made = store.read().get("changeset", cs).data["ops"]
+    added = made[0]["records"][0]["id"]
+    action = store.read().get("action", made[1]["records"][0]["id"]).data
+    assert action["promised_to"] == [added] and [o["person"] for o in action["owners"]] == [me]
+
+
+@pytest.mark.parametrize("origin, trust, applied", [("pm", "trusted", True), ("input", "untrusted", False)])
+def test_whether_the_person_runs_a_calendar_entry_comes_from_their_own_note_never_from_outside(
+    env, origin, trust, applied
+):
+    """The #67 re-check (N-8): the person's own note's opening day as a calendar entry was refused with "only you say
+    whether you run or attend a calendar entry"; their own note says so. Outside content still never does."""
+    ws, cfg, store = env
+    said = "I'm running the fair, which opens on March 14 at 10am."
+    entry = {
+        "op": "event.add",
+        "title": "The fair opens",
+        "start": "2027-03-14T10:00:00+00:00",
+        "role": "run",
+        "evidence": {"quote": "I'm running the fair, which opens on March 14 at 10am"},
+    }
+    cs, done = apply(store, cfg, [entry], origin=origin, trust=trust, source_id=source(store, trust=trust), raw=said)
+    assert (done[0] != "refused") is applied, done
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        "Put the fair invitations on hold until the board approves the guest list.",
+        "Pause the fair mailing until the board approves the guest list.",
+        "Don't send the fair invitations until the board approves the guest list.",
+        "Don’t send the fair invitations until the board approves the guest list.",
+    ],
+)
+def test_the_other_ways_to_hold_until_a_condition_answered_with_a_note_go_back_once(env, note):
+    """The #67 re-check (B-12): "on hold until", "pause ... until" and "don't send ... until" hold like "hold"."""
+    from engine.ai.adapters.stub import set_responder
+
+    try:
+        asked = _hold_answers(env, note, _note_only(note), _note_only(note))
+        assert len(asked) == 2 and "holds something until a condition" in asked[1].request
+    finally:
+        set_responder(None)
+
+
+def test_a_hold_of_a_meeting_that_does_something_with_it_is_never_sent_back(env):
+    """The net is for notes and facts alone: "Hold the meeting until Friday" answered with the to-do on hold goes
+    through, and a note with no hold in it is not sent back."""
+    from engine.ai.adapters.stub import set_responder
+
+    ws, cfg, store = env
+    note = "Hold the vendor meeting until Friday."
+    held = {
+        "op": "action.add",
+        "text": "Hold the vendor meeting",
+        "waiting_for": "Friday",
+        "evidence": {"quote": "Hold the vendor meeting until Friday"},
+    }
+    try:
+        assert len(_hold_answers(env, note, {"summary": "Held it.", "ops": [held]}, {"summary": "x", "ops": []})) == 1
+    finally:
+        set_responder(None)
+
+
+UNDECIDED = "I haven't decided between matte and soft-touch for the cover yet."
+
+
+def _decision(text: str) -> dict:
+    return {
+        "summary": "Asked you to choose between matte and soft-touch for the cover.",
+        "ops": [
+            {
+                "op": "question.add",
+                "to": "me",
+                "kind": "decision",
+                "title": "Cover finish: matte or soft-touch?",
+                "text": text,
+                "project": "PRJ-1",
+                "would_change": {"what": "field", "record": "PRJ-1", "field": "summary"},
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    "note", [UNDECIDED, "We still have to pick the cover paper, A or B.", "Still undecided on the date."]
+)
+def test_a_choice_still_open_answered_with_only_a_note_goes_back_once_and_the_second_answer_stands(env, note):
+    """The #67 re-check (B-6): "I haven't decided" became a note. It goes back once asking whether it is a decision
+    for the person; the decision stays with the model."""
+    from engine.ai.adapters.stub import set_responder
+
+    ws, cfg, store = env
+    try:
+        asked = _hold_answers(env, note, _note_only(note), _note_only(note))
+        assert len(asked) == 2
+        assert "choice is still open" in asked[1].request and "your answer stands either way" in asked[1].request
+        assert any(n.data["text"] == note for n in store.read().list("note"))
+    finally:
+        set_responder(None)
+
+
+def test_a_decision_question_for_an_open_choice_or_a_note_with_no_open_choice_is_not_sent_back(env):
+    from engine.ai.adapters.stub import set_responder
+
+    ws, cfg, store = env
+    try:
+        assert len(_hold_answers(env, UNDECIDED, _decision("Matte or soft-touch."), _decision("x"))) == 1
+        plain = "The fair needs more volunteers this year."
+        assert len(_hold_answers(env, plain, _note_only(plain), _note_only(plain))) == 1
+    finally:
+        set_responder(None)

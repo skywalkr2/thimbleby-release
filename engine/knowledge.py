@@ -40,6 +40,8 @@ OWN_FIELDS = {
     "routing_entry": ("topic", "person", "team", "negative", "look_up", "kind_of_work"),
     "style_note": ("audience", "observation"),
 }
+#: The kinds a run may use as a guess while they wait for the person's Keep.
+GUESS_KINDS = ("lesson", "routing_entry")
 #: The states an entry can still be changed in.
 EDITABLE = ("proposed", "active")
 
@@ -212,6 +214,10 @@ def apply(tx: Any, op: Any, w: WriteContext, st: Standing) -> list[dict[str, Any
         "applies_to": join_scope(tx, op.applies_to.model_dump(mode="json", by_alias=True)),
         **{name: _stored(getattr(op, name)) for name in OWN_FIELDS[kind]},
     }
+    if not kept and st.corrected and kind in GUESS_KINDS and learning_effects.grants_power(kind, data):
+        # What the person's own correction taught waits for their Keep when it grants power, and is used meanwhile only
+        # as a guess the person sees marked, never silently.
+        data["guess_until_kept"] = True
     if not kept and (st.corrected or st.origin == "person") and not learning_effects.grants_power(kind, data):
         # The person's own typed words, and what one of their corrections taught, apply at once when they only
         # describe. Whatever grants power waits for the person, as any proposal does.

@@ -31,7 +31,8 @@ first:
         owners: [Ines Albescu]
         evidence:
           quote: the gala invitations are Ines's to send
-  keep: true
+  # The person never presses Keep: what their own correction taught is used as a marked guess meanwhile.
+  keep: false
 later:
   received: '2026-10-12'
   note: We also need to send the gala sponsor thank-you letters.
@@ -45,7 +46,7 @@ later:
     text_has: [sponsor]
     owners: [PER-1]
   # The note names the project only by a short form ("the gala"); what was learned for it reaches the run all the same.
-  packet_has: ['# Lessons for this input|# Who answers what']
+  packet_has: ["# Learned from the user's corrections, not yet kept"]
 ideal:
   learn:
     summary: Ines sends what goes out for the Volunteer Gala.

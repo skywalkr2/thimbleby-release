@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 
 from engine.storage import WriteContext
@@ -42,14 +43,49 @@ def _make_changes_big(store) -> None:
 
 
 def _slowest_of_three(client, path: str) -> float:
-    """The slowest of three answers in this process's own CPU time (the test client serves in this process), so other
-    processes sharing the machine, as in a parallel run, don't count against the screen."""
+    """The slowest of three answers in the route's own processor time: the thread that serves it, without the app's
+    other threads in the same process or garbage collection, so neither other work on a busy machine nor the app's
+    background threads count against the screen (a macOS runner counted 3.18 s of the whole process against 0.46 s
+    for the route here)."""
+    import gc
+
+    import fastapi.routing
+
+    real = fastapi.routing.run_in_threadpool
+    work: list[float] = []
+    swept = threading.local()
+
+    def sweep(phase: str, info: dict) -> None:
+        if phase == "start":
+            swept.began = time.thread_time()
+        elif getattr(swept, "began", None) is not None:
+            swept.total = getattr(swept, "total", 0.0) + time.thread_time() - swept.began
+            swept.began = None
+
+    def timed(fn, /, *args, **kwargs):
+        swept.total = 0.0
+        began = time.thread_time()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            work.append(time.thread_time() - began - swept.total)
+
+    async def run(fn, /, *args, **kwargs):
+        return await real(timed, fn, *args, **kwargs)
+
     assert client.get(path).status_code == 200
+    fastapi.routing.run_in_threadpool = run
+    gc.callbacks.append(sweep)
     times = []
-    for _ in range(3):
-        began = time.process_time()
-        assert client.get(path).status_code == 200
-        times.append(time.process_time() - began)
+    try:
+        for _ in range(3):
+            work.clear()
+            assert client.get(path).status_code == 200
+            assert work, f"{path} was not served on a worker thread, so its own time can't be read"
+            times.append(sum(work))
+    finally:
+        fastapi.routing.run_in_threadpool = real
+        gc.callbacks.remove(sweep)
     return max(times)
 
 

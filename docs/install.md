@@ -50,6 +50,19 @@ records of the workspace you used last (close the app first; it refuses while th
 workspace once with the new version. If any of that fails, it puts the version you had back and the copy of your records,
 and says so. A plain install touches no workspace.
 
+## Claude Code: the tested versions
+
+If you use Claude Code as your AI account, Thimbleby was tested with versions **2.1.326 to 2.1.332** (the range is in
+`catalog/ai-endpoints.yaml`). An older program still works but can be several times slower: 2.1.285 answered a meeting
+note about five times slower than 2.1.326. When setup's check or an account's Test finds an older version, it says so,
+for example "Claude Code 2.1.285 is older than the tested 2.1.326: update it with brew upgrade --cask claude-code, or
+claude update for a native install."
+
+- **Homebrew** (most Mac users) follows the `stable` channel, which was 2.1.326 when this was written. Update with
+  `brew upgrade --cask claude-code`.
+- **The native installer** follows the `latest` channel, which was 2.1.332. Update with `claude update`.
+- A newer version than the range is not flagged; it is only untested.
+
 ## Start your own workspace
 
 ```sh

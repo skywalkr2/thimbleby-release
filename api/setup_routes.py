@@ -2131,7 +2131,23 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
                 line.ok, line.detail = False, x.detail
                 if x.error_kind == "model_retired":
                     retired_by_check(now, name, tier, x, line)
+        line.program_note = program_note_of(now, name)
         return [line]
+
+    def program_note_of(now: Config, name: str) -> str | None:
+        """The line saying an account's agent program is older than the tested versions, read from the program now
+        (never the few minutes' kept answer, so a program just updated stops saying so); None for any other account."""
+        from engine.ai import model_watch
+        from engine.ai.adapters import make_adapter
+        from engine.ai.program_age import older_note
+
+        provider = now.ai.providers.get(name)
+        if provider is None or provider.adapter != "cli-agent":
+            return None
+        entry = model_watch.entry_of(provider, setup.known_endpoints())
+        if not entry or not entry.get("tested_versions"):
+            return None
+        return older_note(entry, make_adapter(provider.adapter, provider, None).program_version())
 
     def retired_by_check(now: Config, name: str, tier: str | None, result: Any, line: AiTestResult) -> None:
         """A check that stopped on a model the service no longer offers: the refusal is remembered on the account, and
@@ -2938,6 +2954,7 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
             next_model=found.next_model,
             identity=found.identity,
             identity_unknown=found.identity_unknown,
+            program_note=found.program_note,
         )
 
     @r.get("/ai/local")
@@ -2998,6 +3015,8 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
             )
             if not x.ok and line.ok:
                 line.ok, line.detail = False, x.detail
+        for line in lines.values():
+            line.program_note = program_note_of(current, line.account)
         return list(lines.values())
 
     return r

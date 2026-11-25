@@ -3630,6 +3630,18 @@
             "title": "Ok",
             "type": "boolean"
           },
+          "program_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When an agent program is older than the versions the catalog says were tested: one line naming its version and how to update it. Advice only; the account still works.",
+            "title": "Program Note"
+          },
           "reason": {
             "enum": [
               "works",
@@ -4015,7 +4027,7 @@
                 "type": "null"
               }
             ],
-            "description": "Its quick, everyday jobs and its harder jobs (learning from corrections, the checks) are on different models of this account, so its summary says the harder ones have a stronger model.",
+            "description": "Its quick, everyday jobs and its harder jobs (learning from corrections) are on different models of this account, so its summary says the harder ones have a stronger model.",
             "title": "Splits Work"
           },
           "used_for": {
@@ -5307,6 +5319,18 @@
           "ok": {
             "title": "Ok",
             "type": "boolean"
+          },
+          "program_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the account's agent program is older than the versions the catalog says were tested: one line naming its version and how to update it. Advice only; the result is still its own.",
+            "title": "Program Note"
           },
           "reason": {
             "anyOf": [

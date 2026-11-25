@@ -303,7 +303,16 @@ def test_the_result_is_json_the_screen_can_read(tmp_path, monkeypatch):
     ws, cfg, store = make(tmp_path)
     c, api = client(ws, cfg, store)
     got = c.post(f"{api}/ai/account-check", json=check_body(HOSTED[0]))
-    assert set(got.json()) == {"ok", "reason", "message", "identity", "identity_unknown", "model", "next_model"}
+    assert set(got.json()) == {
+        "ok",
+        "reason",
+        "message",
+        "identity",
+        "identity_unknown",
+        "model",
+        "next_model",
+        "program_note",
+    }
     json.dumps(got.json())
 
 

@@ -1785,6 +1785,7 @@ A unit of work for the assistant. The engine creates it when something is handed
 | `stopped_rounds[].attempt` | int | `1` | Which try of the request this round belongs to, from 1. |
 | `stopped_rounds[].round` | int | required | The round's number within its try, from 1. |
 | `stopped_rounds[].reasons` | list[str] | `[]` | Why the round's answer was sent back or refused. |
+| `stopped_rounds[].checks` | list[str] | `[]` | The names of the checks that sent it back or refused it; a report carries these, never the reasons' words, which can quote the answer. |
 | `may_answer` | list[str] | `[]` | For a message the person sent: the open replies owed (action ids) it may answer, found by the rules from its conversation and recipient. The assistant reads it with them and decides whether it answers each one; the rules close nothing. |
 | `intake` | str \| None | `None` | The id of the watched source this request was taken in from when the source was newly added (or looked at further back): its results are gathered into one line on Today and one list, not one line each. |
 | `intake_older` | bool | `False` | For a request taken in from a new source: it came from the read of older mail (the full read the person chose), not from the source's first window. The first reading does not wait for these. |
@@ -2012,6 +2013,7 @@ What went wrong, why, and the guard that prevents a repeat. Added by `lesson.add
 | Field | Type | Default | What it is |
 |---|---|---|---|
 | `text` | str | required | The entry in plain words: what is kept, and what is shown. |
+| `guess_until_kept` | bool | `False` | Learned from the person's own correction and waiting for their Keep (it grants power): until kept, a run is given it only as a guess, and everything it decides is marked for the person with one click to take it back. |
 | `kind_of_work` | str \| None | `None` | The kind of work the entry's item stands for, in a few words, when a later item of that kind may be meant too ("what goes out for the gala" for "the gala invitations"). The entry applies to its own item as it stands; to an item only of this kind it applies as a guess, marked for the person with one click to undo. |
 | `evidence` | KnowledgeEvidence \| None | see below | What it was learned from: the exact words and the records they came from. |
 | `evidence.quote` | str \| None | `None` | The exact words in the source that the entry rests on, as they appear there. |
@@ -2052,6 +2054,7 @@ A term or acronym and what it means here. Added by `glossary.add`, changed by `g
 | Field | Type | Default | What it is |
 |---|---|---|---|
 | `text` | str | required | The entry in plain words: what is kept, and what is shown. |
+| `guess_until_kept` | bool | `False` | Learned from the person's own correction and waiting for their Keep (it grants power): until kept, a run is given it only as a guess, and everything it decides is marked for the person with one click to take it back. |
 | `kind_of_work` | str \| None | `None` | The kind of work the entry's item stands for, in a few words, when a later item of that kind may be meant too ("what goes out for the gala" for "the gala invitations"). The entry applies to its own item as it stands; to an item only of this kind it applies as a guess, marked for the person with one click to undo. |
 | `evidence` | KnowledgeEvidence \| None | see below | What it was learned from: the exact words and the records they came from. |
 | `evidence.quote` | str \| None | `None` | The exact words in the source that the entry rests on, as they appear there. |
@@ -2099,6 +2102,7 @@ Who answers a kind of question, or who doesn't. Added by `routing.add`.
 | Field | Type | Default | What it is |
 |---|---|---|---|
 | `text` | str | required | The entry in plain words: what is kept, and what is shown. |
+| `guess_until_kept` | bool | `False` | Learned from the person's own correction and waiting for their Keep (it grants power): until kept, a run is given it only as a guess, and everything it decides is marked for the person with one click to take it back. |
 | `kind_of_work` | str \| None | `None` | The kind of work the entry's item stands for, in a few words, when a later item of that kind may be meant too ("what goes out for the gala" for "the gala invitations"). The entry applies to its own item as it stands; to an item only of this kind it applies as a guess, marked for the person with one click to undo. |
 | `evidence` | KnowledgeEvidence \| None | see below | What it was learned from: the exact words and the records they came from. |
 | `evidence.quote` | str \| None | `None` | The exact words in the source that the entry rests on, as they appear there. |
@@ -2142,6 +2146,7 @@ What a recipient or audience wants or avoids in what is written for them. Added 
 | Field | Type | Default | What it is |
 |---|---|---|---|
 | `text` | str | required | The entry in plain words: what is kept, and what is shown. |
+| `guess_until_kept` | bool | `False` | Learned from the person's own correction and waiting for their Keep (it grants power): until kept, a run is given it only as a guess, and everything it decides is marked for the person with one click to take it back. |
 | `kind_of_work` | str \| None | `None` | The kind of work the entry's item stands for, in a few words, when a later item of that kind may be meant too ("what goes out for the gala" for "the gala invitations"). The entry applies to its own item as it stands; to an item only of this kind it applies as a guess, marked for the person with one click to undo. |
 | `evidence` | KnowledgeEvidence \| None | see below | What it was learned from: the exact words and the records they came from. |
 | `evidence.quote` | str \| None | `None` | The exact words in the source that the entry rests on, as they appear there. |

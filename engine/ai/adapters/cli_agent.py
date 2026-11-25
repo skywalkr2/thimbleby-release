@@ -49,6 +49,11 @@ BASE_ENV = (
     "LC_CTYPE",
 )
 ERROR_TAIL = 4000
+#: The most output a lockdown probe may give: its answer is a few lines, and a model that loops on tool calls it only
+#: types out ends at this instead of at the time limit.
+PROBE_MAX_OUTPUT = 2000
+#: How many of the last streamed events a stopped run's log line keeps.
+STREAM_LOG_EVENTS = 6
 VERSION_CHARS = 200
 IDENTITY_CHARS = 200
 
@@ -102,26 +107,6 @@ def plain(text: str) -> str:
 
 
 #: What a command line or a typed-out tool call has before an argument, and a printed answer never has.
-_COMMAND_LINE = re.compile(r"""<parameter|"command"\s*:|&&|\|\||[|;`$]|(?<![-=])>""")
-#: A label a printed answer gives a path: "cwd:", "Working in:", "ran pwd ->", "folder =".
-_LABEL_END = (":", "->", "=>", "=")
-
-
-def _printed_as_output(said: str, folders: set[str]) -> bool:
-    """Whether the working folder's own path stands where printing it puts it: alone on its line, or after a label
-    ("cwd: ...", "Step 4: ran pwd -> ..."), with nothing of a file after it. Never as an argument in a command line or a
-    typed-out tool call ("ls -laR <folder>", `"command": "... <folder>"`)."""
-    for folder in folders:
-        for found in re.finditer(re.escape(folder) + r"(?![/\\\w-])", said):
-            line = said[: found.start()].rpartition("\n")[2]
-            if _COMMAND_LINE.search(line):
-                continue
-            before = line.rstrip(" \t\"'(")
-            if not before or before.endswith(_LABEL_END):
-                return True
-    return False
-
-
 log = logging.getLogger(__name__)
 
 
@@ -132,31 +117,21 @@ def _text(value: Any) -> str:
     return value or ""
 
 
-def _decoded(output: str) -> str:
-    """A program's output as text a person would read: JSON output (one document, or one per line) gives its strings
-    with their line breaks restored, each on a line of its own; any other line is kept as it is. A check that reads
-    lines then sees a path printed alone on its line in JSON output as it sees it in plain output."""
-
-    def strings(value: Any) -> list[str]:
-        if isinstance(value, str):
-            return [value]
-        if isinstance(value, dict):
-            return [s for v in value.values() for s in strings(v)]
-        if isinstance(value, list):
-            return [s for v in value for s in strings(v)]
-        return []
-
-    try:
-        return "\n".join(strings(json.loads(output)))
-    except ValueError:
-        pass
-    lines = []
-    for line in output.splitlines():
+def _final_event(output: str | None) -> str:
+    """The last event of a streamed run (one JSON event per line) whose type is result, as the one JSON document the
+    settings' fields read; the output as it was when the stream holds no such event, so a program that doesn't stream
+    is read as before and a stream cut short reads as the failure it is."""
+    for line in reversed((output or "").splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
         try:
-            lines += strings(json.loads(line)) if line.strip().startswith(("{", "[")) else [line]
+            event = json.loads(line)
         except ValueError:
-            lines.append(line)
-    return "\n".join(lines)
+            continue
+        if isinstance(event, dict) and event.get("type") == "result":
+            return line
+    return output or ""
 
 
 class CliAgentAdapter:
@@ -185,11 +160,17 @@ class CliAgentAdapter:
             outbox = scratch / "outbox"
             outbox.mkdir()
             system = "\n\n".join(p for p in (task.instructions, task.stable) if p) if self.agent.system_option else ""
+            if system:
+                # First of all: the program runs with its tools off, so tool calls typed as text are never run.
+                system = render("agent-no-tools", {}).strip() + "\n\n" + system
             parts = (task.request,) if system else (task.instructions, task.stable, task.request)
             prompt = "\n\n".join(p for p in parts if p)
             if self.agent.output_via == "outbox":
                 prompt += "\n\n" + render("agent-answer", {"answer": str(outbox / answer_name)})
-            done, seconds = self._start(prompt, model, scratch, outbox, task.effort, system)
+            done, seconds = self._start(prompt, model, scratch, outbox, task.effort, system, task.max_output)
+            if self.agent.output_stream:
+                # The answer is the stream's final result event; the lockdown probe reads the whole stream instead.
+                done = subprocess.CompletedProcess(done.args, done.returncode, _final_event(done.stdout), done.stderr)
             if done.returncode != 0:
                 raise self.classify_error(done.returncode, self._error_report(done), None)
             if self.agent.output_via == "outbox":
@@ -200,7 +181,14 @@ class CliAgentAdapter:
             return self._result(done.stdout, None, model, seconds)
 
     def _start(
-        self, prompt: str, model: str, scratch: Path, outbox: Path, effort: str | None = None, system: str = ""
+        self,
+        prompt: str,
+        model: str,
+        scratch: Path,
+        outbox: Path,
+        effort: str | None = None,
+        system: str = "",
+        max_output: int | None = None,
     ) -> tuple[subprocess.CompletedProcess, float]:
         packet = scratch / "packet.md"
         write_whole(packet, prompt)
@@ -220,13 +208,16 @@ class CliAgentAdapter:
             args += [part.replace("{system}", str(system_file)) for part in self.agent.system_option]
         if shutil.which(args[0], path=self._env(home).get("PATH")) is None and not Path(args[0]).is_file():
             raise AiError("provider_down", f"the agent program {args[0]} isn't installed on this computer", sent=False)
+        env = self._env(home)
+        if self.agent.max_output_env and max_output:
+            env[self.agent.max_output_env] = str(max_output)
         started = time.monotonic()
         try:
             done = self._runner(  # noqa: S603 - the account's own program, arguments as a list, no shell
                 args,
                 input=prompt if self.agent.packet_via == "stdin" else "",
                 cwd=scratch,
-                env=self._env(home),
+                env=env,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -237,7 +228,10 @@ class CliAgentAdapter:
             self._copy_back(copied)
             # What the program had printed when it was stopped goes to the log, so a run that keeps timing out shows
             # where it was; it never reaches the screen, which says only that it didn't finish.
-            printed = [_text(late.stdout)[-2000:], _text(late.stderr)[-2000:]]
+            streamed = _text(late.stdout)
+            if self.agent.output_stream:
+                streamed = "\n".join(line[:400] for line in streamed.splitlines()[-STREAM_LOG_EVENTS:])
+            printed = [streamed[-2000:], _text(late.stderr)[-2000:]]
             log.warning(
                 "the agent was stopped after %s seconds; it had printed: %r", self.settings.timeout_seconds, printed
             )
@@ -568,6 +562,8 @@ class CliAgentAdapter:
             outbox = scratch / "outbox"
             outbox.mkdir()
             inside, outside, shell = outbox / "lockdown.txt", elsewhere / "outside.txt", elsewhere / "shell.txt"
+            # The outbox is named from the working folder, so the prompt never names that folder.
+            told_inside = str(Path(outbox.name) / inside.name)
             # A file with a name only a listing shows: the agent can only repeat it by running a command that lists.
             marker = f".probe-{secrets.token_hex(6)}"
             write_whole(scratch / marker, "")
@@ -577,9 +573,9 @@ class CliAgentAdapter:
             ):  # the run's home is a folder of the scratch folder; a listing of it shows this
                 (scratch / "home").mkdir()
                 write_whole(scratch / "home" / home_marker, "")
-            prompt = render("agent-lockdown", {"inside": str(inside), "outside": str(outside), "shell": str(shell)})
+            prompt = render("agent-lockdown", {"inside": told_inside, "outside": str(outside), "shell": str(shell)})
             try:
-                done, _ = self._start(prompt, model, scratch, outbox)
+                done, _ = self._start(prompt, model, scratch, outbox, max_output=PROBE_MAX_OUTPUT)
             except AiError as err:
                 return [LockdownCheck("outbox", False, f"The app could not start it: {err}")]
             checks = []
@@ -606,17 +602,15 @@ class CliAgentAdapter:
             )
             said = "\n".join(
                 [
-                    _decoded(done.stdout or ""),
+                    done.stdout or "",
                     done.stderr or "",
                     inside.read_text(encoding="utf-8", errors="replace") if inside.is_file() else "",
                 ]
             )
-            # Only a command gives these: a listing that names a hidden file, or the working folder's own path where a
-            # command's output stands (`_printed_as_output`). The prompt names files inside the folder, so the model can
-            # work the folder out and write it into a call it only types out; that is no proof anything ran.
-            folders = {str(scratch), str(scratch.resolve())}
-            printed_folder = _printed_as_output(said, folders)
-            ran = shell.exists() or marker in said or home_marker in said or printed_folder
+            # Only a command gives these: a file only a shell wrote, or a hidden name only a listing shows. The working
+            # folder's own path proves nothing: an agent program may tell the model its folder itself, so a model that
+            # ran nothing can print it.
+            ran = shell.exists() or marker in said or home_marker in said
             checks.append(
                 LockdownCheck(
                     "shell",
@@ -639,7 +633,9 @@ class CliAgentAdapter:
             outbox = scratch / "outbox"
             outbox.mkdir()
             try:
-                self._start(render("agent-memory", {"name": probe}), model, scratch, outbox)
+                self._start(
+                    render("agent-memory", {"name": probe}), model, scratch, outbox, max_output=PROBE_MAX_OUTPUT
+                )
             except AiError as err:
                 return LockdownCheck("memory", False, f"The app could not start it: {err}")
         leaked = not existed and (real / probe).exists()
@@ -662,6 +658,7 @@ PRESET_SIGN_IN_SETTINGS = (
     "identity_command",
     "identity_field",
     "identity_line",
+    "max_output_env",
 )
 
 
@@ -674,6 +671,26 @@ EARLIER_HOME_FILES = [
     [".copilot", ".config/github-copilot", "Library/Keychains"],
     [".codex"],
     [".gemini"],
+]
+
+
+#: The commands the presets once shipped that printed one JSON document at the end. An account saved with one of them
+#: never chose it, so it takes the preset's current command, which streams, with the stream read as the preset says.
+EARLIER_COMMANDS = [
+    [
+        "claude",
+        "-p",
+        "--output-format",
+        "json",
+        "--model",
+        "{model}",
+        "--tools",
+        "",
+        "--disallowedTools",
+        "mcp__*",
+        "--strict-mcp-config",
+        "--no-session-persistence",
+    ],
 ]
 
 
@@ -704,6 +721,8 @@ def _with_preset_settings(agent: Any, kind: str | None) -> Any:
             or (name == "home_files" and list(getattr(agent, name)) in EARLIER_HOME_FILES)
         )
     }
+    if "command" in raw and list(agent.command) in EARLIER_COMMANDS and list(agent.command) != list(preset.command):
+        fill |= {"command": list(preset.command), "output_stream": preset.output_stream}
     if "errors" in raw:
         mine, theirs = agent.errors, preset.errors
         merged = {

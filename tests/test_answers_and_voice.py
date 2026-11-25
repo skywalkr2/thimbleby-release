@@ -577,6 +577,12 @@ def test_the_words_that_ask_for_a_message_come_from_the_language_settings(env):
         ("Send the sponsors thank-you letters", False),
         ("Send thank-you letters to the sponsors", False),
         ("Email the venue about the date", False),
+        # The #67 re-check (B-10): a role's word inside another phrase, or a name in the possessive, names no recipient.
+        ("Draft the cover letter for the grant", False),
+        ("Write the {editor_role}'s note for the website", False),
+        ("Write a reply card for the contact form", False),
+        ("Write {editor}'s bio for the website", False),
+        ("Write the {editor_role} about the cover", True),
     ],
 )
 def test_the_ways_a_note_asks_for_a_message_and_the_ways_it_does_not(env, note, asks):
@@ -591,5 +597,5 @@ def test_the_ways_a_note_asks_for_a_message_and_the_ways_it_does_not(env, note, 
         for p in store.read().list("person")
         if p.data.get("role")
     }
-    note = note.format(editor=first["Editor"], designer=first["Cover designer"])
+    note = note.format(editor=first["Editor"], designer=first["Cover designer"], editor_role="editor")
     assert (_asks_for_a_message(cfg, note, _recipients(store, cfg)) is not None) is asks, note

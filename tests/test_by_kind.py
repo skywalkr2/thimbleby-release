@@ -171,3 +171,67 @@ def test_a_to_do_with_no_guess_has_no_mark_on_its_row(api):
     outcome, _ = letters(store, cfg, None)
     row = next(a for a in client.get("/api/open-items").json()["actions"] if a["id"] == outcome["records"][0]["id"])
     assert row["guess"] is None
+
+
+def test_the_persons_own_change_of_owners_ends_the_guess_so_take_it_back_never_undoes_it(env):
+    """The #67 re-check (N-4): reassigning a guessed to-do from its row left the mark, and Take it back then put the
+    guessed owner back over the person's choice."""
+    from engine.applier import apply_as_person
+
+    ws, cfg, store = env
+    entry = learned(store, cfg)
+    outcome, action = letters(store, cfg, entry)
+    action_id = outcome["records"][0]["id"]
+    me = People(store, cfg).pm
+    chosen = next(p.id for p in store.read().list("person") if p.id not in (me, action["owners"][0]["person"]))
+    current = store.read().get("action", action_id)
+    edit = {
+        "op": "record.edit",
+        "record": {"kind": "action", "id": action_id},
+        "fields": {"owners": [{"person": chosen}]},
+        "read_version": current.version,
+    }
+    apply_as_person(store, cfg, [edit], "Changed on screen")
+    after = store.read().get("action", action_id).data
+    assert [o["person"] for o in after["owners"]] == [chosen] and after.get("by_kind") is None
+
+
+def waiting_guess(store, cfg, *, flagged: bool = True) -> str:
+    """A lesson the person's correction taught that waits for their Keep (it grants power)."""
+    from engine.storage import WriteContext
+
+    pid, name = someone(store, cfg)
+    with store.transaction() as tx:
+        return tx.create(
+            "lesson",
+            {
+                "text": f"The fair invitations are {name}'s to send.",
+                "kind_of_work": KIND,
+                "origin": "assistant",
+                "status": "proposed",
+                "guess_until_kept": flagged,
+                "learned_at": "2026-10-09T09:00:00+00:00",
+                "applies_to": {},
+            },
+            WriteContext("engine", "trusted", "test"),
+        ).id
+
+
+def test_what_a_correction_taught_and_waits_for_keep_is_given_as_a_guess_and_marks_what_it_decides(env):
+    """The #67 re-check (N-3): row 10's lesson stayed proposed, so row 11's letters came to the person. Until it is
+    kept, a run is given it only as a guess, and the to-do it decides is marked with Take it back."""
+    from engine.knowledge_section import _guess_line
+
+    ws, cfg, store = env
+    entry = waiting_guess(store, cfg)
+    line = _guess_line(store.read().get("lesson", entry))
+    assert "Not yet kept" in line and '"by_kind"' in line and KIND in line
+    outcome, action = letters(store, cfg, entry)
+    assert action["by_kind"]["entry"] == entry and action["by_kind"]["owners_before"] == [People(store, cfg).pm]
+
+
+def test_a_proposal_that_is_not_from_the_persons_correction_is_never_given_or_marked(env):
+    ws, cfg, store = env
+    entry = waiting_guess(store, cfg, flagged=False)
+    outcome, action = letters(store, cfg, entry)
+    assert action.get("by_kind") is None

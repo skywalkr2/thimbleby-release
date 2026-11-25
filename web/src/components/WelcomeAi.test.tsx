@@ -786,7 +786,7 @@ test("Save adds the account with the model chosen, tests it, and lists one plain
   expect(document.body.textContent ?? "").not.toMatch(/temperature|max output|stub|routine|deep|restart/i);
 });
 
-test("a key account starts the harder work (learning, the checks) on the stronger model the app suggests, and the same model for everything stays a choice", async () => {
+test("a key account starts the harder work (learning) on the stronger model the app suggests, and the same model for everything stays a choice", async () => {
   const user = userEvent.setup();
   const calls = api({ "POST ai/models": () => ({ models: MODELS, suggested: "model-a", suggested_harder: "model-b" }) });
   open();
@@ -1588,4 +1588,41 @@ test("an account the person addressed themselves is never called by the menu's o
   await screen.findByRole("heading", { name: /AI accounts/ });
   expect(visibleText(document.body)).toContain("Your own AI service");
   expect(visibleText(document.body)).not.toContain("Another service account");
+});
+
+// ---- an agent program older than the tested versions ---------------------------------------------------------------------
+
+const OLDER = "Service A 1.0.1 is older than the tested 1.0.5: update it with the package manager's upgrade, or its own update for a native install.";
+
+test("a check that works on an older program passes and shows the advice line under it", async () => {
+  const user = userEvent.setup();
+  api({ "POST ai/account-check": () => ({ ...WORKS, program_note: OLDER }) });
+  open();
+  await pasted(user);
+  expect(await screen.findByText("Works. Ready to use.")).toBeInTheDocument();
+  expect(document.querySelector("[data-program-note]")).toHaveTextContent(OLDER);
+});
+
+test("a check on a tested program shows no advice line", async () => {
+  const user = userEvent.setup();
+  api({ "POST ai/account-check": () => ({ ...WORKS, program_note: null }) });
+  open();
+  await pasted(user);
+  expect(await screen.findByText("Works. Ready to use.")).toBeInTheDocument();
+  expect(document.querySelector("[data-program-note]")).toBeNull();
+});
+
+test("the setup test lists the advice beside the account's line, and the line still passes", async () => {
+  const user = userEvent.setup();
+  api({ "POST ai/test": () => [{ tier: "routine", account: "service-a", main: true, ok: true, detail: "answered", program_note: OLDER }] });
+  open();
+  await ready(user);
+  await user.click(save());
+  const note = await waitFor(() => {
+    const el = document.querySelector(".test-results [data-program-note]");
+    expect(el).not.toBeNull();
+    return el!;
+  });
+  expect(note).toHaveTextContent(OLDER);
+  expect(note.closest("li")).toHaveClass("result-ok");
 });

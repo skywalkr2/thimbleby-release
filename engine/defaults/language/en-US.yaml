@@ -208,8 +208,15 @@ code_label_words: [room, suite, floor, level, gate, seat, row, table, page, unit
 code_lead_words: [confirmation, booking, reservation, order, reference, ref, conf, ticket, itinerary, invoice]
 message_request_alone: [email, e-mail, text, reply to, message, write]
 message_request_not: [write down, note down, jot down, mail merge, text for, text of, note to remember, note to self, note for myself, a note of]
-hold_request_words: [hold, park]
+hold_request_words: [hold, park, pause, don't send, do not send, don’t send]
 hold_condition_words: [until, till]
+# Phrases of a note that say a choice is still open, and the words that can follow who a message goes to.
+project_name_leads: [the, our, this, that, these, those, my, your]
+undecided_words: [haven't decided, have not decided, hasn't been decided, not decided yet, undecided, can't decide, cannot decide,
+  haven't picked, haven't chosen, still have to decide, still need to decide, still have to pick, still need to pick,
+  still have to choose, still need to choose, yet to decide, yet to pick]
+message_recipient_followers: [about, re, regarding, that, "on", of, to, and, so, if, when, because, with, in, at, by, from, for,
+  before, after, as, whether, how, what, why, saying, asking, please, today, tomorrow]
 # The words of an answer that put a question off to a later day ("let's follow up on this in 2 days").
 answer_later_words: [follow up, follow-up, followup, revisit, circle back, come back to this, come back to it, check back,
   ask me again, remind me, pick this up, look at this again, look at it again, talk about this again]

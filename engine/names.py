@@ -192,6 +192,18 @@ class People:
             for alias in self_words:
                 self._index[alias.lower()] = {self.pm}
 
+    def add(self, person_id: str, data: Mapping[str, Any]) -> None:
+        """A person added during the work at hand, so the steps after the one that added them find them by name."""
+        self.records = {**self.records, person_id: data}
+        for name in [data.get("full_name") or "", *data.get("aliases", [])]:
+            if name:
+                self._named.setdefault(name.lower(), set()).add(person_id)
+                self._index.setdefault(name.lower(), set()).add(person_id)
+        words = (data.get("full_name") or "").split()
+        if words:
+            self._firsts.setdefault(words[0].lower(), set()).add(person_id)
+        self.in_context = self.in_context | {person_id}
+
     def resolve(self, name: str) -> Resolved:
         text = " ".join(name.split())
         if text in self.records:

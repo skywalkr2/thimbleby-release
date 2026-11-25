@@ -296,18 +296,20 @@ def test_hiding_many_names_does_not_cost_a_pass_per_name():
     assert "person00001" not in done and done.count(problems.NAME) == 250
 
 
-def test_a_stopped_request_shows_its_rounds_reasons_and_the_report_holds_them_but_never_the_answer(api):
+def test_a_stopped_request_shows_its_rounds_reasons_and_the_report_names_only_the_checks(api):
     """The person's path: a request stopped after its return rounds. What changed lists each round's reasons and the
-    last answer; the problem lines a report carries name the reasons, with a name masked, and not the answer."""
+    last answer; the problem lines a report carries name only the checks that sent each round back. The reasons' words
+    can quote the answer (an event title went out with the answer's choice off, the #67 re-check N-5), so none of them
+    leaves, and neither does the answer."""
     client, store, worker, ws, cfg, account = api
     who = person()
     assert client.post("/api/handin", json={"note": PACKET_TEXT, "pasted": ""}).status_code == 200
     [item] = [{"id": r.id} for r in store.read().find("request", {})]
-    reason = f"The quote isn't in the input; ask {who['full_name']} again."
+    reason = f"calendar entry 'Harbour lantern supper': the quote isn't in the input; ask {who['full_name']} again."
     answer = "The answer exactly as the assistant gave it."
     rounds = [
-        {"attempt": 1, "round": 1, "reasons": [reason]},
-        {"attempt": 1, "round": 2, "reasons": ["Nothing cut off."]},
+        {"attempt": 1, "round": 1, "reasons": [reason], "checks": ["evidence", "targets"]},
+        {"attempt": 1, "round": 2, "reasons": ["Nothing cut off."], "checks": ["cut-off"]},
     ]
     with store.transaction() as tx:
         cur = tx.get("request", item["id"])
@@ -318,5 +320,6 @@ def test_a_stopped_request_shows_its_rounds_reasons_and_the_report_holds_them_bu
     assert shown["stopped_answer"] == answer
     lines = client.get("/api/feedback/problems").json()["problems"]
     [line] = [p for p in lines if p["error_kind"] == "stopped"]
-    assert "round 1" in line["text"] and "round 2: Nothing cut off." in line["text"]
-    assert who["full_name"] not in line["text"] and answer not in json.dumps(lines)
+    assert "round 1: sent back by evidence, targets" in line["text"] and "round 2: sent back by cut-off" in line["text"]
+    sent = json.dumps(lines)
+    assert "Harbour lantern supper" not in sent and "Nothing cut off" not in sent and answer not in sent

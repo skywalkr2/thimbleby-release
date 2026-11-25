@@ -301,13 +301,16 @@ def test_off_nothing_of_the_answer_is_sent_and_on_exactly_the_previewed_text_is(
         client.post("/api/report/send", json={**base, "include_answer": False})
         client.post("/api/report/send", json={**base, "include_answer": True})
         client.post("/api/report/send", json={**base, "include_answer": True, "include_details": False})
-        client.post("/api/report/send", json={**base, "include_answer": True, "answer_block": ""})
-    off_default, off, on, on_alone, on_empty = (body for _url, body in seen)
+        # Only the preview the server made goes: an empty or a changed block with the choice on is refused, and
+        # nothing is sent (the #67 re-check, N-5).
+        empty = client.post("/api/report/send", json={**base, "include_answer": True, "answer_block": ""})
+        forged = client.post("/api/report/send", json={**base, "include_answer": True, "answer_block": shown + " more"})
+    assert empty.status_code == 409 and forged.status_code == 409
+    off_default, off, on, on_alone = (body for _url, body in seen)
     assert ANSWER not in json.dumps([off_default, off])
     assert off["details"] == details
     assert on["details"] == f"{details}\n\n{shown}" and ANSWER in on["details"]
     assert on_alone["details"] == shown
-    assert on_empty["details"] == details
     assert all(set(body) <= set(report_send.LIMITS) for _url, body in seen)
 
 

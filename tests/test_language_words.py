@@ -41,6 +41,9 @@ ADDED = {
     "code_lead_words",
     "hold_request_words",
     "hold_condition_words",
+    "undecided_words",
+    "project_name_leads",
+    "message_recipient_followers",
     "first_person_words",
 }
 

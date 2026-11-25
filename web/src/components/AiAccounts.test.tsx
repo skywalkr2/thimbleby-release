@@ -345,6 +345,17 @@ test("Test calls the account's own test and shows its one result line", async ()
   expect(await row("Main account")).toHaveTextContent("Answered");
 });
 
+test("Test of an account on an older program passes and shows the advice line", async () => {
+  const user = userEvent.setup();
+  const note = "Some Agent 1.0.1 is older than the tested 1.0.5: update it with its own update.";
+  api({ "POST ai/accounts/main/test": () => [{ tier: "account", account: "main", main: true, ok: true, detail: "answered", program_note: note }] });
+  open();
+  await menu(user, "Main account", "Test");
+  const shown = await row("Main account");
+  expect(await within(shown).findByText("Answered")).toBeInTheDocument();
+  expect(shown.querySelector("[data-program-note]")).toHaveTextContent(note);
+});
+
 test("See why runs the check again and shows what went wrong", async () => {
   const user = userEvent.setup();
   api({

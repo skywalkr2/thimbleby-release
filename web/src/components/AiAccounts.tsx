@@ -1026,6 +1026,7 @@ function AccountRow(props: {
               <Icon name={result.ok ? "check" : "close"} size={14} />
             </p>
           )}
+          {result?.program_note && <p className="hint" data-program-note="">{result.program_note}</p>}
           {result && refusal === result && replaceOffer}
         </div>
       </div>

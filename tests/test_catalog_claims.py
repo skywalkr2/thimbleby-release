@@ -456,3 +456,11 @@ def test_a_program_that_takes_system_instructions_from_a_file_gets_ours_there_an
     assert "Unmistakable request." not in seen["system"]
     stdin = run.calls[0]["input"]
     assert "Unmistakable request." in stdin and "Unmistakable instructions." not in stdin
+
+
+def test_an_agent_preset_that_streams_asks_for_streamed_json_and_reads_the_final_event():
+    streaming = [e for e in known_endpoints() if ((e["settings"].get("agent") or {}).get("output_stream"))]
+    assert streaming
+    for kind in streaming:
+        agent = settings_of(kind["id"]).agent
+        assert agent.output_json and "stream-json" in agent.command and "--verbose" in agent.command

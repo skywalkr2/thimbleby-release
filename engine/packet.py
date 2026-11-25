@@ -391,7 +391,7 @@ def _learned(
     named = [*projects, *(source.data.get("projects", []) if source is not None else [])]
     if learns:
         # A project the input names in its words brings what was learned for it, as the people it names do.
-        named += projects_named_in(view, text)
+        named += projects_named_in(view, text, cfg)
     in_input = [p for p in dict.fromkeys(named) if view.get("project", p) is not None]
     # What a draft about an area draws on stops at that area (design 6.32): a sibling area's facts are left out.
     hide = areas.either(hide, areas.outside(areas.reach(view, in_input)))

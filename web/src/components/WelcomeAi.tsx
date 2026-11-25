@@ -82,7 +82,7 @@ function examplesOf(kind: Kind): string[] {
 const firstExample = (kind: Kind): string => examplesOf(kind)[0] ?? "";
 
 /** The harder model a program starts with: the example its preset names for harder work (where learning from corrections
- * and the checks go), when it is another than the everyday one; otherwise the same model does everything. */
+ * goes), when it is another than the everyday one; otherwise the same model does everything. */
 const startHarder = (kind: Kind): string => {
   const deep = kind.model_deep ?? "";
   return !kind.model_optional && deep !== "" && deep !== firstExample(kind) && (kind.model_examples ?? []).includes(deep) ? deep : HARDER_SAME;
@@ -108,7 +108,7 @@ type WorkData = "allow" | "not_now";
 type Verdict =
   | { state: "idle" }
   | { state: "checking" }
-  | { state: "works"; identity: string | null; unknown: string | null }
+  | { state: "works"; identity: string | null; unknown: string | null; note?: string | null }
   | { state: "failed"; message: string; retired?: { model: string; next: string | null } };
 /** What "Allow" lets a new account read: open material, the internal kind notes and meetings are, and the private kind a
  * connection to the person's own life is (a connection takes the privacy of the side it serves, 6.32). */
@@ -340,7 +340,7 @@ export function WelcomeAi(props: {
       // Only the app's suggestion is chosen for the person, never the list's first model: a service lists its newest
       // and dearest first.
       const suggested = got.some((m) => m.id === answer.suggested) ? (answer.suggested as string) : "";
-      // The harder work (learning from corrections, the checks) starts on the stronger model the app suggests, when it is
+      // The harder work (learning from corrections) starts on the stronger model the app suggests, when it is
       // another than the everyday one; the person can still choose the same model for everything.
       const suggestedHarder = got.some((m) => m.id === answer.suggested_harder) && answer.suggested_harder !== suggested ? (answer.suggested_harder as string) : HARDER_SAME;
       setModels(got);
@@ -435,7 +435,7 @@ export function WelcomeAi(props: {
       if (mine !== verifying.current) return;
       setVerdict(
         answer.ok
-          ? { state: "works", identity: answer.identity ?? null, unknown: answer.identity_unknown ?? null }
+          ? { state: "works", identity: answer.identity ?? null, unknown: answer.identity_unknown ?? null, note: answer.program_note ?? null }
           : answer.reason === "model_retired" && answer.model
             ? { state: "failed", message: answer.message, retired: { model: answer.model, next: answer.next_model ?? null } }
             : { state: "failed", message: answer.message },
@@ -731,7 +731,7 @@ export function WelcomeAi(props: {
     const outcome = r.ok ? t("welcome.ai.answered") : r.detail ? t("welcome.ai.failed", { detail: r.detail }) : t("welcome.ai.failed_plain");
     const work = has(`welcome.ai.tier.${r.tier}`) ? t(`welcome.ai.tier.${r.tier}`) : r.tier;
     const text = t(r.main ? "welcome.ai.result" : "welcome.ai.result_backup", { work, account: r.account, outcome });
-    return { key: `${r.tier}:${r.account}:${r.main}`, ok: r.ok, text };
+    return { key: `${r.tier}:${r.account}:${r.main}`, ok: r.ok, text, note: r.program_note ?? null };
   });
 
   const all = endpoints.data ?? [];
@@ -1014,6 +1014,9 @@ export function WelcomeAi(props: {
           {kind && <span className="key-label">{kind.name}</span>}
           <span>{t("welcome.ai.works")}</span>
         </p>
+      )}
+      {verdict.state === "works" && verdict.note && (
+        <p className="hint" data-program-note="">{verdict.note}</p>
       )}
       {verdict.state === "failed" && (
         <p className="problem-note key-state" role="alert" data-key-state="rejected">
@@ -1729,6 +1732,7 @@ export function WelcomeAi(props: {
                       {r.text}
                       {" "}
                       <Icon name={r.ok ? "check" : "close"} size={14} />
+                      {r.note && <span className="hint" data-program-note=""> {r.note}</span>}
                     </li>
                   ))}
                 </ul>

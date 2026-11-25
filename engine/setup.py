@@ -29,6 +29,7 @@ import yaml
 
 from engine import folder_rules
 from engine.ai.presets import clean_presets, match_family
+from engine.ai.program_age import cleaned_tested
 from engine.ai.task import UNSUPPORTED_ADVICE, UNSUPPORTED_PLAIN
 from engine.connectors import CORE, declared_reads, reads
 from engine.legacy_names import private_dir
@@ -813,6 +814,8 @@ def known_endpoints() -> list[dict[str, Any]]:
                     if str(name) in examples and str(label).strip()
                 },
                 "model_optional": bool(e.get("model_optional", False)),
+                "tested_versions": cleaned_tested(e.get("tested_versions")),
+                "update_hint": str(e.get("update_hint") or "").strip(),
                 "tier_presets": presets,
                 "model_deep": deep,
                 "note": str(e.get("note") or ""),

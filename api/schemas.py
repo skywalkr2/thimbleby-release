@@ -5750,7 +5750,7 @@ class AiAccountView(BaseModel):
     backup_for: list[str] = Field(default_factory=list, description="The tiers it stands in for as a backup.")
     splits_work: bool | None = Field(
         None,
-        description="Its quick, everyday jobs and its harder jobs (learning from corrections, the checks) are on "
+        description="Its quick, everyday jobs and its harder jobs (learning from corrections) are on "
         "different models of this account, so its summary says the harder ones have a stronger model.",
     )
     has_key: bool = Field(description="A key or a reference to one is set.")
@@ -6290,6 +6290,11 @@ class AiAccountChecked(BaseModel):
     identity_unknown: ScreenText | None = Field(
         None, description="Why that can't be told, in plain words, when the account works but it can't."
     )
+    program_note: ScreenText | None = Field(
+        None,
+        description="When an agent program is older than the versions the catalog says were tested: one line naming "
+        "its version and how to update it. Advice only; the account still works.",
+    )
 
 
 class AiModelView(BaseModel):
@@ -6436,6 +6441,11 @@ class AiTestResult(BaseModel):
         None,
         description="With model_retired: the id of the next model the service's own listing says fits that kind of "
         "work, never the one refused or one it refused before; none when the listing has no other. Never shown.",
+    )
+    program_note: ScreenText | None = Field(
+        None,
+        description="When the account's agent program is older than the versions the catalog says were tested: one "
+        "line naming its version and how to update it. Advice only; the result is still its own.",
     )
 
 

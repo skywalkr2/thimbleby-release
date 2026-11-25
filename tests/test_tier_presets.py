@@ -469,3 +469,14 @@ def test_the_recommended_service_is_sent_no_temperature():
     entries = yaml.safe_load(setup.CATALOG.read_text(encoding="utf-8"))["endpoints"]
     entry = next(e for e in entries if e.get("recommended"))
     assert entry["settings"]["send_temperature"] is False
+
+
+def test_the_words_about_the_harder_model_promise_only_the_work_it_does():
+    """The setup text names what the harder model does: no core kind of work has the check role, so the text says
+    learning and never "the checks"; the core's learning runs on the harder tier."""
+    from engine.tasks import TASKS
+
+    assert [name for name, kind in TASKS.items() if kind.role == "check"] == []
+    assert TASKS["learn-correction"].defaults["tier"] == "deep"
+    wording = json.loads(Path("web/src/wording/en.json").read_text(encoding="utf-8"))
+    assert "checks" not in wording["welcome.ai.model_harder_hint"]

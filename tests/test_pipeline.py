@@ -982,3 +982,28 @@ def test_a_run_that_keeps_running_out_of_time_stops_saying_two_shorter_notes_may
     handed, _ = run(env, "A long meeting note.")
     waiting = store.read().get("request", handed.request).data["waiting"]
     assert TIMEOUT_HINT in waiting, waiting
+
+
+def test_an_answer_that_typed_out_tool_calls_is_asked_again_once_saying_there_are_no_tools(env):
+    """The #67 re-check (J-5, A-2): with its tools off, a model sometimes typed a tool call and a made-up result and
+    repeated them until its output limit ended the run. That answer is lost, so the run is asked again once, told it
+    has no tools and to answer with the JSON object only, and a good second answer comes in, never "needs you"."""
+    from engine.dispatcher import TYPED_TOOLS
+
+    ws, cfg, store = env
+    cfg.dispatch.retries = 0
+    loop = '<invoke name="Bash"><parameter name="command">pwd</parameter></invoke>\n<tool_result>Error</tool_result>\n'
+    good = json.dumps({"summary": "Noted the checkup.", "ops": [{"op": "note", "text": "The checkup is in October."}]})
+    asked: list = []
+
+    def respond(task):
+        asked.append(task)
+        return loop * 40 if len(asked) == 1 else good
+
+    set_responder(respond)
+    try:
+        handed, cs_id = run(env, "", note="The checkup is in October.")
+    finally:
+        set_responder(None)
+    assert len(asked) == 2 and TYPED_TOOLS in asked[1].request
+    assert cs_id is not None and store.read().get("request", handed.request).data["state"] != "needs_you"

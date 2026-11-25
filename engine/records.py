@@ -1744,6 +1744,11 @@ class StoppedRound(BaseModel):
     attempt: int = Field(1, description="Which try of the request this round belongs to, from 1.")
     round: int = Field(description="The round's number within its try, from 1.")
     reasons: list[str] = Field(default_factory=list, description="Why the round's answer was sent back or refused.")
+    checks: list[str] = Field(
+        default_factory=list,
+        description="The names of the checks that sent it back or refused it; a report carries these, never the "
+        "reasons' words, which can quote the answer.",
+    )
 
 
 class StopCause(BaseModel):
@@ -2642,6 +2647,12 @@ class KnowledgeRecord(Record):
     fixed_fields: ClassVar[tuple[str, ...]] = ("origin", "pack", "trust", "learned_at", "evidence", "more_evidence")
 
     text: str = Field(min_length=1, description="The entry in plain words: what is kept, and what is shown.")
+    guess_until_kept: bool = Field(
+        False,
+        description="Learned from the person's own correction and waiting for their Keep (it grants power): until "
+        "kept, a run is given it only as a guess, and everything it decides is marked for the person with one click "
+        "to take it back.",
+    )
     kind_of_work: str | None = Field(
         None,
         description="The kind of work the entry's item stands for, in a few words, when a later item of that kind may "

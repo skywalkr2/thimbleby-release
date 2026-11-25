@@ -24,6 +24,10 @@ def view(tmp_path):
             "gala": tx.create("project", {"name": GALA}, _TEST).id,
             "exhibit": tx.create("project", {"name": EXHIBIT}, _TEST).id,
             "spring_fair": tx.create("project", {"name": "Spring Fair"}, _TEST).id,
+            "office_move": tx.create("project", {"name": "Office Move"}, _TEST).id,
+            "book_launch": tx.create("project", {"name": "Book Launch"}, _TEST).id,
+            "kitchen": tx.create("project", {"name": "Kitchen Remodel"}, _TEST).id,
+            "report": tx.create("project", {"name": "Annual Report"}, _TEST).id,
         }
     yield store.read(), ids
     store.close()
@@ -35,7 +39,15 @@ def view(tmp_path):
         ("We also need to send the gala sponsor thank-you letters.", {"gala"}),
         ("The Volunteer Gala needs a caterer.", {"gala"}),
         ("Book the hall for the exhibit.", {"exhibit"}),
-        ("Two exhibits open in March.", {"exhibit"}),
+        ("The exhibits open in March.", {"exhibit"}),
+        ("Plans for our Exhibit are late.", {"exhibit"}),
+        # An ordinary word (a verb at a sentence's start, a noun on its own) is no project's short form (#67, B-11).
+        ("Move the meeting to Friday.", set()),
+        ("We need office chairs.", set()),
+        ("Buy a book for Sam.", set()),
+        ("Paint kitchen walls on Sunday.", set()),
+        ("Send report to Dana.", set()),
+        ("Two exhibits open in March.", set()),
         # A word two projects' names share names neither; the word that only one holds names it.
         ("Plans for spring are late.", set()),
         ("The spring fair stalls are booked.", {"spring_fair"}),

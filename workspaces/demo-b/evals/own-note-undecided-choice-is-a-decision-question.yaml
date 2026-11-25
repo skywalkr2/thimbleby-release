@@ -1,0 +1,28 @@
+id: own-note-undecided-choice-is-a-decision-question
+title: The person's own note that a choice is still open is a decision question for them, not only a note
+skills: [owners]
+received: '2026-11-25'
+# The #67 re-check, row 3: "I haven't decided" was filed as a note on the cheapest model. An answer of notes and facts
+# alone goes back once (the lint `undecided-as-note`); a decision question is a good answer and is never sent back
+# (tests/test_own_note_holds.py).
+note: I haven't decided between matte and soft-touch for the cover yet.
+summary_voice: true
+expect:
+- op: question.add
+  kind: decision
+allow:
+- note
+- fact
+stub_answer:
+  summary: Asked you to choose between matte and soft-touch for the cover.
+  ops:
+  - op: question.add
+    to: me
+    kind: decision
+    title: 'Cover finish: matte or soft-touch?'
+    text: You have not decided the cover finish yet. The choices are matte and soft-touch.
+    project: PRJ-1
+    would_change:
+      what: field
+      record: PRJ-1
+      field: summary

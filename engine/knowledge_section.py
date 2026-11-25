@@ -17,6 +17,7 @@ from datetime import UTC, date
 from typing import Any, NamedTuple
 
 from engine.config.schema import KnowledgeSettings
+from engine.language_words import language_words, shipped
 from engine.local_day import day_of
 from engine.records import Scope
 from engine.untrusted import neutralize, outside_block, quoted_attribute
@@ -27,6 +28,7 @@ HEADINGS = {
     "glossary": "# Glossary",
     "input_rules": "# Standing rules for this input",
     "input_lessons": "# Lessons for this input",
+    "guesses": "# Learned from the user's corrections, not yet kept",
     "routing": "# Who answers what",
     "style": "# How to write for them",
     "input_glossary": "# Terms this input uses",
@@ -90,11 +92,31 @@ def _in_scope_of_projects(scope: Scope, projects: set[str], also: str | None = N
     return not (set(scope.except_) & projects)
 
 
-def projects_named_in(view: Any, text: str) -> list[str]:
+def _words_said_as_names(text: str, leads: set[str]) -> set[str]:
+    """The words of a text that read as someone's name for a thing: a word right after a leading word ("the gala",
+    "our exhibit"), a word written with a capital in the middle of a sentence, or an id with a digit. An ordinary word
+    at the start of a sentence ("Move the meeting") or on its own ("office chairs") is not one."""
+    found: set[str] = set()
+    for token in _WORD.finditer(text):
+        word = token.group(0)
+        if any(c.isdigit() for c in word):
+            found.add(word.lower())
+            continue
+        before = text[: token.start()].rstrip()
+        previous = _WORD.findall(before[-40:])[-1:] if before and before[-1].isalnum() else []
+        starts_sentence = not before or before[-1] in ".!?:;\n\"'(" or text[token.start() - 1 : token.start()] == "\n"
+        if (previous and previous[0].lower() in leads) or (word[0].isupper() and not starts_sentence):
+            found |= _overlap_words(word)
+    return found
+
+
+def projects_named_in(view: Any, text: str, cfg: Any = None) -> list[str]:
     """The projects an input names in its own words: by name or alias as a whole phrase, or by a short form, a word of
-    four letters or more that only this project's name holds ("the gala" for "Volunteer Gala", "the exhibit" for
-    "Spring Exhibit"), plurals folded, case ignored. It leans toward naming: a project named by mistake sends a few
-    lines of what was learned for it, and one missed makes the person repeat a correction."""
+    four letters or more that only this project's name holds, read as a name where it follows a leading word
+    (`language.project_name_leads`: "the gala" for "Volunteer Gala", "the exhibit" for "Spring Exhibit") or is written
+    with a capital in the middle of a sentence, plurals folded, case ignored; never an ordinary word on its own ("Move
+    the meeting" for "Office Move"). It leans toward naming: a project named by mistake sends a few lines of what was
+    learned for it, and one missed makes the person repeat a correction."""
     said = " ".join((text or "").casefold().split())
     if not said:
         return []
@@ -103,7 +125,13 @@ def projects_named_in(view: Any, text: str) -> list[str]:
         p.id: _overlap_words(" ".join([p.data.get("name") or "", *(p.data.get("aliases") or [])])) for p in projects
     }
     shared = {w for p in projects for w in words[p.id] if sum(w in words[q.id] for q in projects) > 1}
-    in_text = _overlap_words(said)
+    leads = {
+        w.casefold()
+        for w in (
+            language_words(cfg.language, "project_name_leads") if cfg is not None else shipped("project_name_leads")
+        )
+    }
+    in_text = _words_said_as_names(text or "", leads)
     found = []
     for project in projects:
         names = [project.data.get("name") or "", *(project.data.get("aliases") or [])]
@@ -185,6 +213,16 @@ def _entry_line(stored: Any) -> str:
             f' "by_kind" ({{"op": <its index>, "entry": "{stored.id}"}}).'
         )
     return line
+
+
+def _guess_line(stored: Any) -> str:
+    """A learned entry not yet kept: its words, and that whatever it decides is only a guess the run names."""
+    kind = " ".join(str(stored.data.get("kind_of_work") or "").split())
+    reach = f" (and for {kind})" if kind else ""
+    return (
+        f"- {stored.id}: {stored.data['text']}{reach}. Not yet kept: apply it only as a guess, and name each step it "
+        f'decides in "by_kind" ({{"op": <its index>, "entry": "{stored.id}"}}).'
+    )
 
 
 def _term_line(stored: Any) -> str:
@@ -390,6 +428,18 @@ def per_input_section(
         if about_input:
             routing.append((entry, _entry_line(entry)))
     add(HEADINGS["routing"], routing)
+
+    # What the person's corrections taught that waits for their Keep: given as a guess, every step it decides marked.
+    guesses = []
+    for kind in ("lesson", "routing_entry"):
+        for entry in sorted(view.list(kind), key=_key):
+            data = entry.data
+            if data.get("status") != "proposed" or not data.get("guess_until_kept"):
+                continue
+            scope = _scope(entry)
+            if passes(entry, scope) and (_whole_workspace(scope) or bool(set(scope.projects) & scoped) or people_set):
+                guesses.append((entry, _guess_line(entry)))
+    add(HEADINGS["guesses"], guesses)
 
     # Style notes for the people this input names, and those for a kind of audience in words (design 6.22).
     style = []
