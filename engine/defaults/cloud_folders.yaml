@@ -1,7 +1,8 @@
 # The cloud drives the backup step looks for on the person's computer, in the order they are offered (the first one found
-# is recommended). Each entry: the drive's name as the screen shows it, and where its folder lives on each system, as
+# that is not a work account's is recommended). Each entry: the drive's name as the screen shows it, and where its folder lives on each system, as
 # places inside the person's home folder (a `*` matches any characters in one name, for drives that put an account in the
-# folder's name). A system with no place is skipped. The workspace's own list (`storage.backups.cloud_folders`) replaces
+# folder's name). `personal` lists accounts that are the person's own, matched at the end of the account's name; any
+# other account in a folder's name is a work account, listed by name and never recommended. A system with no place is skipped. The workspace's own list (`storage.backups.cloud_folders`) replaces
 # this one.
 folders:
   - name: iCloud Drive
@@ -12,6 +13,7 @@ folders:
     macos: ["Library/CloudStorage/OneDrive*", "OneDrive"]
     windows: ["OneDrive", "OneDrive - *"]
     linux: ["OneDrive"]
+    personal: ["Personal"]
   - name: Dropbox
     macos: ["Dropbox", "Library/CloudStorage/Dropbox"]
     windows: ["Dropbox"]
@@ -20,3 +22,4 @@ folders:
     macos: ["Library/CloudStorage/GoogleDrive-*/My Drive", "Google Drive"]
     windows: ["Google Drive", "My Drive"]
     linux: ["Google Drive"]
+    personal: ["@gmail.com", "@googlemail.com"]

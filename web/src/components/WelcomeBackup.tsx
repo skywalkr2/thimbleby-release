@@ -25,6 +25,9 @@ import styles from "./WelcomeBackup.module.css";
 /** The choice that is not one of the drives found: a folder of the person's own. */
 const OTHER = "\u0001other";
 
+/** A drive found, as one choice: its name and its account together, so two accounts of one drive stay apart. */
+const keyOf = (drive: { name: string; account?: string }) => `${drive.name}\u0001${drive.account ?? ""}`;
+
 function size(mb: number, t: (key: string, vars?: Record<string, string | number>) => string): string {
   return mb >= 1024 ? t("welcome.backup.gb", { n: (mb / 1024).toFixed(1) }) : t("welcome.backup.mb", { n: Math.round(mb) });
 }
@@ -49,6 +52,9 @@ export function WelcomeBackup(props: {
   const hasSlot = useHasContinueSlot();
   const drives = useQuery({ queryKey: ["cloud-folders"], queryFn: api.cloudFolders, enabled: props.local, retry: false });
   const found = drives.data?.folders ?? [];
+  // The drive named after an account says which kind: a work account's is never chosen for the person.
+  const driveName = (drive: { name: string; account?: string; work?: boolean }) =>
+    drive.work ? t("welcome.backup.drive.work", { name: drive.name, account: drive.account ?? "" }) : t("welcome.backup.drive.personal", { name: drive.name });
   const [choice, setChoice] = useState<string | null>(null);
   const [removing, setRemoving] = useState<{ path: string; where: string } | null>(null);
   const [removeBusy, setRemoveBusy] = useState(false);
@@ -77,7 +83,8 @@ export function WelcomeBackup(props: {
 
   // Folders already chosen are kept unless the person chooses another way; with none, the first drive found is chosen.
   const looking = props.local && drives.isPending;
-  const picked = choice ?? (existing.length > 0 || looking ? null : (found[0]?.name ?? OTHER));
+  const recommended = found.find((d) => d.recommended);
+  const picked = choice ?? (existing.length > 0 || looking ? null : recommended ? keyOf(recommended) : found.length > 0 ? null : OTHER);
   const ownFolder = picked === OTHER;
 
   /** Makes the choice real: the drive's folder is made and saved, or the typed folder is. True when it went through. */
@@ -90,10 +97,11 @@ export function WelcomeBackup(props: {
         const saved = await api.saveBackupFolder({ path: path.trim(), label: "", fingerprint: settings.data.fingerprint });
         setPath("");
         setChecked(null);
-        void afterSave(saved, { message: t("welcome.backup.saved", { path: path.trim() }) });
+        void afterSave(saved, { message: t("welcome.backup.saved", { path: folderName(path.trim()) }) });
       } else {
-        const saved = await api.backupToCloudFolder({ name: picked, fingerprint: settings.data.fingerprint });
-        void afterSave(saved, { message: t("welcome.backup.saved_drive", { name: picked }) });
+        const drive = found.find((d) => keyOf(d) === picked);
+        const saved = await api.backupToCloudFolder({ name: drive?.name ?? "", account: drive?.account ?? "", fingerprint: settings.data.fingerprint });
+        void afterSave(saved, { message: t("welcome.backup.saved_drive", { name: drive ? driveName(drive) : "" }) });
       }
       setChoice(null);
       // The step goes on when the server has answered: the screens read again behind it, and a step that waited for every one
@@ -135,7 +143,9 @@ export function WelcomeBackup(props: {
     ? t("welcome.backup.looking")
     : ownFolder && !path.trim()
       ? t("welcome.backup.why_path")
-      : refused
+      : picked === null && existing.length === 0
+        ? t("welcome.backup.why_path")
+        : refused
         ? t("welcome.backup.why_refused")
         : !settings.data ? t("welcome.backup.getting_ready") : "";
   useContinue(hasSlot ? { run: save, label: t("welcome.backup.go"), disabled: !!missing, why: missing } : null);
@@ -153,7 +163,7 @@ export function WelcomeBackup(props: {
           <ul className="plain-list">
             {existing.map((e) => (
               <li key={e.path} className="inline-field">
-                <span className="path" title={props.settings ? e.path : undefined}>
+                <span className="path">
                   {props.settings ? e.label || folderName(e.path) : e.label ? t("welcome.backup.target", { label: e.label, path: e.path }) : e.path}
                 </span>
                 <Button
@@ -190,7 +200,7 @@ export function WelcomeBackup(props: {
           <CheckboxGroup legend={t("welcome.backup.where")}>
             <RadioCards>
             {found.map((drive) => (
-              <RadioCard key={drive.name} name="backup-where" checked={picked === drive.name} onChange={() => setChoice(drive.name)} title={drive.name} description={drives.data?.shown} tag={drive.recommended && <Pill>{t("welcome.ai.recommended")}</Pill>} />
+              <RadioCard key={keyOf(drive)} name="backup-where" checked={picked === keyOf(drive)} onChange={() => setChoice(keyOf(drive))} title={driveName(drive)} description={drives.data?.shown} tag={drive.recommended && <Pill>{t("welcome.ai.recommended")}</Pill>} />
             ))}
             <RadioCard name="backup-where" checked={ownFolder} onChange={() => setChoice(OTHER)} title={t("welcome.backup.other")} description={t("welcome.backup.other_note")} />
             </RadioCards>
@@ -258,7 +268,13 @@ export function WelcomeBackup(props: {
             {problem}
           </p>
         )}
-        {!hasSlot && (
+        {found.some((d) => d.work) && (
+          <p className="hint" data-work-drive="">
+            {t("welcome.backup.work_note")}
+          </p>
+        )}
+        {/* In Settings the button appears once there is something to save: never a disabled one before a choice. */}
+        {!hasSlot && !(props.settings && (!!missing || picked === null)) && (
           <Actions align={props.settings ? "start" : "end"}>
             <Button variant="primary" loading={busy} disabled={!!missing || picked === null} reason={missing || undefined} onClick={() => void save()}>
               {props.saveLabel ?? t("welcome.backup.go_here")}

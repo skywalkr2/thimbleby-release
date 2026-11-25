@@ -160,7 +160,12 @@ def _checked(env, op, *, invitation, actor="assistant"):
     cs = CHANGESET.validate_python({"ops": [op]}, context={"op_models": store.plugins.ops})
     inputs = applier.Inputs(request, None, "Your order has shipped.", "Your order has shipped.", "untrusted")
     ctx = applier.Context(
-        store, cfg, People(store, cfg), ("event.add", "event.set", "event.guests", "series.add"), inputs, actor=actor
+        store,
+        cfg,
+        People(store, cfg),
+        ("event.add", "event.set", "event.guests", "series.add", "series.link"),
+        inputs,
+        actor=actor,
     )
     return [p.check for p in applier.check(cs, ctx) if p.severity == "refuse"]
 
@@ -196,6 +201,32 @@ def test_the_checks_refuse_guests_and_a_series_from_a_deleted_invitation(env):
     for op in (guests, series):
         assert "from-deleted-mail" in _checked(env, op, invitation=True), op["op"]
         assert "from-deleted-mail" not in _checked(env, op, invitation=False), op["op"]
+
+
+def test_the_checks_refuse_linking_an_entry_to_a_series_from_a_deleted_invitation(env):
+    ws, cfg, store, put = env
+    with store.transaction() as tx:
+        entry = tx.create("event", {"title": "Vendor review", "start": "2030-03-14T14:00:00+00:00"}, _TEST).id
+        series = tx.create("series", {"title": "Vendor review"}, _TEST).id
+    for link in ({"series": series}, {}):
+        op = {"op": "series.link", "event": entry, **link, "evidence": ADD["evidence"]}
+        assert "from-deleted-mail" in _checked(env, op, invitation=True), link
+        assert "from-deleted-mail" not in _checked(env, op, invitation=False), link
+
+
+def test_every_op_that_touches_the_schedule_is_refused_from_a_deleted_invitation():
+    """A calendar op added later is in the list the check reads, or this fails: the family, not one op at a time."""
+    from engine import ops
+
+    scheduled = {
+        model
+        for model in vars(ops).values()
+        if isinstance(model, type)
+        and issubclass(model, ops.OpModel)
+        and "op" in model.model_fields
+        and str(model.model_fields["op"].annotation).split("[", 1)[-1].strip("'\"]").startswith(("event.", "series."))
+    }
+    assert scheduled and scheduled <= set(applier.SCHEDULE_OPS), scheduled - set(applier.SCHEDULE_OPS)
 
 
 def test_the_deleted_mail_prompt_says_an_invitation_is_learning_only():

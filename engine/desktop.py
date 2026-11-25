@@ -89,6 +89,16 @@ def _shown_path(path: Path) -> str:
         return str(path)
 
 
+def _swap_staged(ws: Any) -> None:
+    """Swap in a restore the person staged, before the workspace is opened (the same call `thimbleby serve` makes);
+    how it went is in the log, and Today tells the person."""
+    from engine import launcher, restore_in_app
+
+    swapped, told = restore_in_app.swap_before_open(ws)
+    if swapped and told is not None:
+        launcher.note(f"restore: {told.state}" + (f" ({told.reason})" if told.reason else ""))
+
+
 def start(
     root: Path,
     shell: Any,
@@ -117,12 +127,23 @@ def start(
         if not _first_workspace(root, shell):
             return
     ws = resolve(root)
+    _swap_staged(ws)
     env = dict(environ) if environ is not None else None
     cfg = ws.config(env=env)
     if cfg.server.mode == "hosted":
         raise WorkspaceError("The installed app runs on this computer only; set server.mode to local.")
     if problem := local_address_problem(cfg.server):
         raise WorkspaceError(problem)
+    # The port the app serves on: the configured one, or the next free one when another program holds it. Everything
+    # that reads the settings later (links, the host check, sign-in) sees the port chosen.
+    port = launcher.choose_port(cfg.server.port, cfg.server.port_tries)
+    if port != cfg.server.port:
+        launcher.note(word(cfg, "desktop.port_moved").format(taken=cfg.server.port, port=port))
+        if env is None:
+            os.environ["THIMBLEBY__SERVER__PORT"] = str(port)
+        else:
+            env["THIMBLEBY__SERVER__PORT"] = str(port)
+        cfg = ws.config(env=env)
     cli.remember_workspace(ws.root)
     shell.words = {**shell.words, **{k: word(cfg, k) for k in shell.words if k.startswith("desktop.")}}
     # What the last update left: a failed one shows its screen (and puts the copy of the work back when it was needed);
@@ -151,7 +172,7 @@ def start(
                 if update_flow.install(ws, ws.config(env=env), shell, version, environ=env):
                     shell.quit()
                 elif not shell.quit_event.is_set():
-                    shell.show_app(f"http://127.0.0.1:{cfg.server.port}{prefix}/?token={ws.install_token()}")
+                    shell.show_app(f"http://127.0.0.1:{port}{prefix}/?token={ws.install_token()}")
             finally:
                 updating_now.release()
 
@@ -175,6 +196,8 @@ def start(
 
     def build() -> Any:
         """A new app on the workspace, each time the server starts, with a new sign-in token for it."""
+        # A restore the person staged goes in before the workspace is opened, at each start and restart.
+        _swap_staged(ws)
         fresh = ws.config(env=env)
         opened = open_or_hold(ws, fresh)
         token = ws.new_install_token()
@@ -195,7 +218,7 @@ def start(
     shell.step(1)
     (launch or launcher.launch)(
         build,
-        cfg.server.port,
+        port,
         ws.private_dir,
         shell=shell,
         open_path=lambda: f"{prefix}/?token={ws.install_token()}",
@@ -230,6 +253,11 @@ def run(
             if isinstance(err, SystemExit | KeyboardInterrupt):
                 raise
             note_failure(logs)
+            from engine.launcher import PortsTaken
+
+            if isinstance(err, PortsTaken):
+                text = shell.words.get("desktop.problem.ports.text", "")
+                shell.words = {**shell.words, "desktop.problem.ports.text": text.format(first=err.first, last=err.last)}
             if not shell.problem(classify(err), traceback.format_exc()):
                 return 1
 

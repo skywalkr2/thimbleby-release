@@ -310,7 +310,7 @@ test("work with no AI account is a line that starts with the step that fixes it"
   const user = userEvent.setup();
   const { onAddAccount } = show([line("no_account", { key: "no_account", group: "setup", count: 2, tier: "routine", names: ["routine", "deep"] })]);
   const row = await screen.findByRole("region", { name: "Not set up" });
-  expect(row).toHaveTextContent("Helper has no AI account");
+  expect(row).toHaveTextContent("Add an AI account so Helper can work");
   expect(row).toHaveTextContent("Its work waits until one is added.");
   expect(within(row).getAllByRole("button")).toHaveLength(1);
   await user.click(within(row).getByRole("button", { name: "Add one" }));

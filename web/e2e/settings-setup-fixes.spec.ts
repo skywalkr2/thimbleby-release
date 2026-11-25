@@ -85,7 +85,12 @@ test.describe.serial("setup and settings fixes", () => {
 
     // The time zone is a list to pick from: it opens with no box to type in (journeys-rough, U4 1).
     await expect(main.getByRole("heading", { level: 2, name: "You" })).toBeVisible(LOADED);
-    await main.getByLabel("Your full name").fill(info.people[0]);
+    // U-28: the name is typed key by key with no pause, as fast as the browser sends it, while the one-word hint comes and
+    // goes: every keystroke stays in the box.
+    const name = main.getByLabel("Your full name");
+    await name.click();
+    await name.pressSequentially(info.people[0], { delay: 0 });
+    await expect(name).toHaveValue(info.people[0]);
     await main.getByRole("button", { name: "Continue" }).click();
     await expect(main.getByRole("heading", { level: 2, name: "What it's for" })).toBeVisible(LOADED);
     await main.getByRole("button", { name: "Continue" }).click();

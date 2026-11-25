@@ -474,7 +474,7 @@ export function Schedule() {
             ) : view === "month" ? (
               <>
                 <ScheduleSides sides={keySides} />
-                <MonthGrid days={days} today={data.today} month={date} limit={data.month_entries} calendars={calendars} selected={picked} onOpen={open} onOpenDay={openDay} listBelow={phone} />
+                <MonthGrid days={days} today={data.today} month={date} limit={data.month_entries} calendars={calendars} selected={picked} onOpen={open} onOpenDay={openDay} listBelow={phone} off={off} />
               </>
             ) : asList ? (
               <>

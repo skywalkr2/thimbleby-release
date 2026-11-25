@@ -550,6 +550,14 @@ def _older_item(before: Any, item: Any) -> bool:
     return made is not None and kept is not None and made < kept
 
 
+def _newer_item(before: Any, item: Any) -> bool:
+    """Whether a source lists an item with a time later than the one its saved copy has: it was saved again since, so
+    content seen before is a change made now (a revert), not an old copy put back. Items that carry no time are never
+    newer."""
+    made, kept = _moment(item.changed_at), _moment(before.data.get("changed_at"))
+    return made is not None and kept is not None and made > kept
+
+
 def refusal(err: ConnectorError) -> dict[str, Any]:
     """What a refusing answer is kept as: its status code and its reason, the error's kind and the add-on's short
     reason code if it gave one, never the service's own words."""
@@ -944,9 +952,15 @@ def _compare(
         old = _read_text(ws, before.data["content_hash"]) if before is not None else None
         facts = _change(cfg, source, item, change, old)
         closed, kept, personal = classify_placed(store, cfg, facts)
-        if closed is None and before is not None and _seen_before(store, before, digest):
-            # Its content is a version of this same item already seen (a restored or re-synced older copy): not news,
-            # so nothing is read again, and What changed says it came back.
+        if (
+            closed is None
+            and before is not None
+            and not _newer_item(before, item)
+            and _seen_before(store, before, digest)
+        ):
+            # Its content is a version of this same item already seen, with no newer time of its own (a restored or
+            # re-synced older copy): not news, so nothing is read again, and What changed says it came back. Content
+            # seen before but saved now (a meeting moved back, a figure put back) is a real change and is handed in.
             closed = {"rule": CAME_BACK_RULE, "reason": word(cfg, "read.version_came_back")}
         older_item = before is not None and _older_item(before, item)
         older = families.older_than_current(item.key, item.changed_at) if families else None

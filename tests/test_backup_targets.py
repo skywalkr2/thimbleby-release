@@ -45,10 +45,11 @@ def test_a_place_failing_for_36_hours_is_shown_while_the_other_is_fine(env):
     for hours in (12, 24, 36):
         run_backup(ws, cfg, NOW + timedelta(hours=hours))
     kept = state(ws, cfg, NOW + timedelta(hours=36))
-    assert kept.needs_attention and kept.place == "the drive" and kept.problem == "failed"
-    assert kept.last_error and "the drive" in kept.message
+    # The folder isn't there at all: one state for it everywhere, not "failed" (a copy kept here is still fine).
+    assert kept.needs_attention and kept.place == "the drive" and kept.problem == "folder_missing"
+    assert kept.last_error and "Backup folder missing: 'the drive' not found" in kept.message
     lines = [x for x in queue(ws, store, cfg, NOW + timedelta(hours=36)) if x.kind == "backup"]
-    assert len(lines) == 1 and lines[0].state == "failed" and lines[0].subject == "the drive"
+    assert len(lines) == 1 and lines[0].state == "folder_missing" and lines[0].subject == "the drive"
 
 
 def test_both_places_working_is_no_line(env):

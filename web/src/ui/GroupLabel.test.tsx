@@ -40,3 +40,10 @@ test("the label is 11px uppercase with letter spacing and a count pill, from the
   expect(count).toContain("border-radius: var(--radius-full)");
   expect(count).toContain("text-transform: none");
 });
+
+test("a label written as a sentence is not drawn in capitals, and the rule for it is in the one stylesheet that allows uppercase", () => {
+  render(<GroupLabel sentence>Finish setting up</GroupLabel>);
+  expect(screen.getByRole("heading", { name: "Finish setting up" })).toHaveAttribute("data-case", "sentence");
+  const css = readFileSync(join(__dirname, "GroupLabel.module.css"), "utf8");
+  expect(css).toMatch(/\[data-case="sentence"\][^}]*text-transform: none/);
+});

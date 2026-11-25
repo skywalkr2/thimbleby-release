@@ -56,7 +56,7 @@ test.describe.serial("review R2: setup and Settings", () => {
     // One line, not one for the account and another for the first start; it says why, in words, and its one button adds the account.
     const line = page.locator('[data-queue-line="no_account"]');
     await expect(line).toHaveCount(1, LOADED);
-    await expect(line).toContainText("has no AI account");
+    await expect(line).toContainText("Add an AI account so");
     await expect(line).toContainText("Its work waits until one is added.");
     await expect(line.getByRole("button")).toHaveCount(1);
     await expect(line.getByRole("button", { name: "Add one" })).toBeVisible();

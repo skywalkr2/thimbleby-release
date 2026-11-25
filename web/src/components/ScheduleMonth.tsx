@@ -7,7 +7,7 @@ import { Icon } from "../ui/Icon";
 import { clashesOf, foldIdentical } from "../lib/calendar";
 import { entryFoldKey } from "../lib/entry-fold";
 import { useWords } from "../lib/wording";
-import type { DayEntries } from "./ScheduleGrid";
+import { offWords, type DayEntries } from "./ScheduleGrid";
 import { EntryButton, entryKey, type Calendars, type Entry } from "./ScheduleEntry";
 import styles from "./Schedule.module.css";
 
@@ -29,6 +29,8 @@ export function MonthGrid(props: {
   onOpenDay: (date: string) => void;
   /** On a phone a day's button chooses it and its entries are listed under the month, instead of opening Day view. */
   listBelow?: boolean;
+  /** The days nobody works, each with its reason (empty when none is given): hatched, and named in words, so it is never colour alone. */
+  off?: ReadonlyMap<string, string>;
 }) {
   const { t, tn } = useWords();
   const [chosen, setChosen] = useState<string | null>(null);
@@ -57,9 +59,11 @@ export function MonthGrid(props: {
           const all = [...strip.map((f) => f.item), ...d.timed];
           const listed = all.slice(0, props.limit);
           const more = all.length - listed.length;
+          const offReason = props.off?.get(d.date);
+          const isOff = offReason !== undefined;
           const label = d.date === props.today ? t("schedule.day_today", { date: day(d.date) }) : day(d.date);
           return (
-            <section key={d.date} className={styles.cell} aria-label={label} data-day={d.date} data-today={d.date === props.today ? "" : undefined} data-outside={inMonth(d.date) ? undefined : ""}>
+            <section key={d.date} className={styles.cell} aria-label={label} data-day={d.date} data-today={d.date === props.today ? "" : undefined} data-outside={inMonth(d.date) ? undefined : ""} data-off={isOff ? "" : undefined}>
               <button type="button" className={styles.dayButton} onClick={() => (props.listBelow ? setChosen(d.date) : props.onOpenDay(d.date))} aria-pressed={props.listBelow ? chosenDay?.date === d.date : undefined}>
                 <span className={styles.dayNumber} aria-hidden="true">
                   {dayOfMonth(d.date)}
@@ -77,7 +81,10 @@ export function MonthGrid(props: {
                     {all.length}
                   </span>
                 )}
-                <span className="sr">{tn("schedule.month.day", all.length, { date: label })}</span>
+                <span className="sr">
+                  {tn("schedule.month.day", all.length, { date: label })}
+                  {isOff ? `. ${offWords(offReason, t)}` : ""}
+                </span>
                 {all.length > 0 && (
                   <span className={styles.dots} aria-hidden="true">
                     {all.slice(0, DOTS).map((e, i) => (
@@ -86,10 +93,16 @@ export function MonthGrid(props: {
                   </span>
                 )}
               </button>
+              {isOff && (
+                <p className={styles.offLabel} data-day-off="" title={offWords(offReason, t)}>
+                  {t("schedule.day_off_plain")}
+                  {offReason && <span className={styles.offReason}> · {offReason}</span>}
+                </p>
+              )}
               <ul className={styles.titles}>
                 {listed.map((e, i) => (
                   <li key={`${entryKey(e, d.date)}:${i}`}>
-                    <EntryButton entry={e} date={d.date} calendars={props.calendars} time count={counted.get(e)} join={joins(e, at)} selected={props.selected === entryKey(e, d.date)} onOpen={props.onOpen} t={t} />
+                    <EntryButton entry={e} date={d.date} calendars={props.calendars} time bare count={counted.get(e)} join={joins(e, at)} selected={props.selected === entryKey(e, d.date)} onOpen={props.onOpen} t={t} />
                   </li>
                 ))}
                 {more > 0 && (
@@ -114,7 +127,7 @@ export function MonthGrid(props: {
           <ul className={styles.waitList}>
             {[...chosenDay.all_day, ...chosenDay.timed].map((e, i) => (
               <li key={`${entryKey(e, chosenDay.date)}:${i}`}>
-                <EntryButton entry={e} date={chosenDay.date} calendars={props.calendars} time selected={props.selected === entryKey(e, chosenDay.date)} onOpen={props.onOpen} t={t} />
+                <EntryButton entry={e} date={chosenDay.date} calendars={props.calendars} time bare selected={props.selected === entryKey(e, chosenDay.date)} onOpen={props.onOpen} t={t} />
               </li>
             ))}
           </ul>

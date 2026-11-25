@@ -6892,7 +6892,7 @@
           },
           "folder": {
             "default": "",
-            "description": "The folder off this computer the copies go to (its label, else its path); empty while the only copies are kept on this computer. `configured` is true exactly when this is set.",
+            "description": "The folder off this computer the copies go to (its label, else its own name, never the whole path); empty while the only copies are kept on this computer. `configured` is true exactly when this is set.",
             "title": "Folder",
             "type": "string"
           },
@@ -6922,6 +6922,18 @@
             "title": "Needs Attention",
             "type": "boolean"
           },
+          "newest_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the newest copy of either kind was made, an ISO time; null when none yet.",
+            "title": "Newest At"
+          },
           "newest_hours": {
             "anyOf": [
               {
@@ -6933,6 +6945,18 @@
             ],
             "description": "How old the newest copy is, of either kind (kept here or in the folder); null when none yet.",
             "title": "Newest Hours"
+          },
+          "problem": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What is wrong with the backup, one state for every screen: failed, overdue, never, smaller or folder_missing (the folder off this computer isn't there); null when all is well.",
+            "title": "Problem"
           }
         },
         "required": [
@@ -7026,6 +7050,12 @@
             ],
             "description": "When the last copy kept on this computer was made.",
             "title": "Local Last Success"
+          },
+          "local_path": {
+            "default": "",
+            "description": "Where the copies kept on this computer are, in full, for the page's Details only.",
+            "title": "Local Path",
+            "type": "string"
           },
           "message": {
             "title": "Message",
@@ -9205,6 +9235,12 @@
       "CloudFolderChoice": {
         "additionalProperties": false,
         "properties": {
+          "account": {
+            "default": "",
+            "description": "The folder's account, as GET /api/setup/backup-folders gives it.",
+            "title": "Account",
+            "type": "string"
+          },
           "fingerprint": {
             "title": "Fingerprint",
             "type": "string"
@@ -9224,14 +9260,26 @@
       },
       "CloudFolderView": {
         "properties": {
+          "account": {
+            "default": "",
+            "description": "The account the folder is named after, when its name has one (empty for a plain folder).",
+            "title": "Account",
+            "type": "string"
+          },
           "name": {
             "description": "The cloud drive's name, as the person knows it.",
             "title": "Name",
             "type": "string"
           },
           "recommended": {
-            "description": "The first one found, which the guide recommends.",
+            "description": "The first one found that is not a work account's, which the guide recommends; none when every drive found is a work account's.",
             "title": "Recommended",
+            "type": "boolean"
+          },
+          "work": {
+            "default": false,
+            "description": "The folder belongs to an account that is not one of the drive's personal ones.",
+            "title": "Work",
             "type": "boolean"
           }
         },
@@ -18714,6 +18762,18 @@
           "signal": {
             "title": "Signal",
             "type": "string"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the line comes back on Today by itself, an ISO time, for a line that comes back after a number of days (the backup folder nudge); null for one that waits for something to change.",
+            "title": "Until"
           }
         },
         "required": [
@@ -28341,6 +28401,7 @@
                   "changed",
                   "level",
                   "unset",
+                  "folder_missing",
                   "never",
                   "smaller",
                   "failed",

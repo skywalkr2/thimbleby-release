@@ -4,7 +4,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { api, type S } from "../lib/api";
-import { recordView, viewHref } from "../lib/views";
+import { recordView, toHash, viewHref } from "../lib/views";
 import { useWords } from "../lib/wording";
 import { Actions } from "../ui/Actions";
 import { ButtonLink } from "../ui/Button";
@@ -12,6 +12,8 @@ import { DefinitionList, Definition } from "../ui/DefinitionList";
 import { ListDetail } from "../ui/ListDetail";
 import { ListState } from "../ui/ListState";
 import { RecordsTable, type TableColumn } from "../ui/RecordsTable";
+import { InRowActions } from "../ui/rowContext";
+import { RowMenu, type MenuAction } from "./RowMenu";
 
 /** The width the priority columns (name and people) need beside the pane. */
 const TEAMS_FIT = 360;
@@ -25,7 +27,13 @@ export function Teams() {
   const rows = [...(teams.data ?? [])].sort((a, b) => a.name.localeCompare(b.name));
   const selected = rows.find((x) => x.id === chosen) ?? null;
   const names = new Map((people.data ?? []).map((p) => [p.id, p.name]));
-  const columns: TableColumn<S["TeamView"]>[] = [{ id: "people", header: t("team.members"), rank: 1, core: true, numeric: true, cell: (x) => (x.people.length > 0 ? x.people.length : "") }];
+  // The same row menu and column choice as Organizations, from the shared table: the team's page is where it is renamed and its people are
+  // put on it and taken off, so that is the menu's one entry.
+  const menu = (x: S["TeamView"]): MenuAction[] => [{ id: "open", label: t("records.open_page", { name: x.name }), run: () => void (window.location.hash = toHash(recordView("team", x.id))) }];
+  const columns: TableColumn<S["TeamView"]>[] = [
+    { id: "people", header: t("team.members"), rank: 1, core: true, numeric: true, cell: (x) => (x.people.length > 0 ? x.people.length : "") },
+    { id: "names", header: t("teams.col.names"), rank: 2, weight: 2, cell: (x) => x.people.map((id) => names.get(id) ?? id).join(", ") },
+  ];
   return (
     <section className="panel-section" aria-labelledby="teams-title">
       <div className="heading">
@@ -71,6 +79,12 @@ export function Teams() {
               rowKey={(x) => x.id}
               selected={chosen}
               onSelect={(x) => setChosen(x.id)}
+              actionsHeader={t("people.col.actions")}
+              actions={(x) => (
+                <InRowActions.Provider value={true}>
+                  <RowMenu label={x.name} actions={menu(x)} />
+                </InRowActions.Provider>
+              )}
             />
           )}
         </ListState>

@@ -2,6 +2,7 @@
 // say what it is, when it is and where it comes from. The calendar an entry comes from is always a word (in the button's
 // name for a screen reader), with the calendar's color as a small mark beside it when one is set (with several sides, the side's color
 // on the entry's edge instead, and its name in the button's name), so nothing is told apart by color alone; the app's own entries have a dashed edge as well as their words.
+import { plainTitle } from "../lib/title-dates";
 import { useAct } from "../lib/act";
 import { api, type S } from "../lib/api";
 import { day, wallTime } from "../lib/dates";
@@ -134,6 +135,9 @@ export function EntryButton(props: {
   tag?: boolean;
   /** How many identical entries this one stands for, when more than one. */
   count?: number;
+  /** A to-do's due date is written with its title alone (the to-do's own mark says what it is), where a day's width is short: the whole
+   * title, "Due:" included, shows on hover and focus. */
+  bare?: boolean;
   /** An all-day entry that goes on over several days is one bar: it joins the day before and the day after when they hold it. */
   join?: { from?: boolean; to?: boolean };
   selected: boolean;
@@ -188,7 +192,7 @@ export function EntryButton(props: {
       )}
       {color && (!props.block || props.clash) && <span className={styles.mark} data-color={color} aria-hidden="true" />}
       {when && <span className={styles.when}>{when}</span>}
-      <span className={entry.cancelled ? `${styles.name} ${styles.struck}` : styles.name}>{entryTitle(entry, t)}</span>
+      <span className={entry.cancelled ? `${styles.name} ${styles.struck}` : styles.name}>{props.bare && entry.kind === "due" ? plainTitle(entry.title, props.date) : entryTitle(entry, t)}</span>
       {props.count && props.count > 1 && (
         <>
           <span className={styles.times} aria-hidden="true">

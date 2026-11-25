@@ -657,10 +657,6 @@ export function Settings(props: {
       : undefined;
 
   // Backing up on its own needs a place to put the copies: with none chosen the switch shows off and says why, whatever the file holds.
-  const noBackupFolder = (() => {
-    const targets = everything.find((i) => i.key === "storage.backups.targets")?.value;
-    return Array.isArray(targets) && targets.length === 0;
-  })();
   const writeAmount = useWriteAmount();
   // Ask-before above the most one run may cost is never asked: those runs don't start. Said beside the amount, nothing refused.
   const sortingCost = useSortingCostWords(everything.some((i) => i.key === "watch.sorting"));
@@ -678,7 +674,6 @@ export function Settings(props: {
       <SettingRow
         key={item.key}
         item={item}
-        reason={item.key === "storage.backups.automatic" && noBackupFolder ? t("settings.backups.automatic_needs_folder") : undefined}
         label={sideLabel(item)}
         draft={draftOf(item)}
         onChange={(draft) => edit(item.key, draft)}

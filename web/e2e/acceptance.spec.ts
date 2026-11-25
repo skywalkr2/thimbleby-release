@@ -1000,7 +1000,7 @@ test.describe.serial("acceptance scenario", () => {
     await expect(none).toContainText("Backup: this computer only");
     await page.keyboard.press("Escape");
     const line = page.getByRole("group", { name: "Pick a backup folder", exact: true });
-    await expect(line).toContainText("Backups: local only. Pick a folder to protect against losing this computer");
+    await expect(line).toContainText("Keep a copy off this computer");
     await expect(line.getByRole("button", { name: "Pick a folder" })).toBeVisible();
     await checkAccessibility(page);
 

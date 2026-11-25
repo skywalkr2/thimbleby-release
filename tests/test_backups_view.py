@@ -8,13 +8,13 @@ from tests.test_first_backup import _choose, _watching, make
 from tests.test_setup import client
 
 
-def test_with_no_folder_backups_are_not_made_on_their_own_and_the_page_says_so(tmp_path):
+def test_with_no_folder_the_local_copy_still_runs_on_its_own_and_the_page_says_so(tmp_path):
     ws, cfg, store = make(tmp_path)
     c, api = client(ws, cfg, store)
     body = c.get(f"{api}/backups").json()
     assert body["targets"] == [] and body["copies"] == []
-    # The setting is still on, so choosing a folder turns backups on at once; until then nothing runs on its own.
-    assert body["switch"] is True and body["schedule"] is False
+    # The switch covers the copy kept on this computer, so it runs on its own with no folder chosen (S-0794).
+    assert body["switch"] is True and body["schedule"] is True
     # No folder off the computer and no copy yet is no warning: the header warns only for a failed or old copy (S-0788),
     # and Today's nudge says no folder is chosen.
     assert body["state"]["configured"] is False and body["state"]["needs_attention"] is False

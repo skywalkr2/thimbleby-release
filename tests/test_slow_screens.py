@@ -72,7 +72,7 @@ def test_a_route_that_is_not_a_main_screen_is_logged_and_never_a_line(env, caplo
 def test_a_real_slow_request_is_timed_with_its_route_and_counts_toward_its_screen(env, monkeypatch):
     client, ws, *_ = env
     clock = iter(x * 1.0 for x in range(10_000))  # every reading is a second later: each request "takes" seconds
-    monkeypatch.setattr("api.app.time", SimpleNamespace(perf_counter=lambda: next(clock)))
+    monkeypatch.setattr("api.app.time", SimpleNamespace(perf_counter=lambda: next(clock), process_time=lambda: 0.0))
     for _ in range(3):
         assert client.get("/api/people").status_code == 200
     assert "people" in slow_screens.for_workspace(ws.root).slow()

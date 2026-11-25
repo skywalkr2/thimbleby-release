@@ -161,18 +161,44 @@ def test_item_15_credit_run_out_with_no_reset_time_is_one_line_for_the_account_w
 
 
 def test_item_15_items_with_no_account_to_run_on_are_one_line_naming_no_internal_word(env):
+    from engine.today_queue import queue
     from tests.test_silent_stops import NOTE, Scripted, data, hand, set_responder, worker_of
 
-    _ws, cfg, _store, _clock = env
+    ws, cfg, store, clock = env
     set_responder(Scripted("{}"))
     cfg.ai.tiers["routine"].use = ""
     cfg.ai.tiers["routine"].fallback = []
     requests = [hand(env, NOTE + f" Variant {n} with other words.") for n in range(3)]
     worker_of(env).run_pending()
-    assert {data(env, r)["state"] for r in requests} <= {"needs_you", "queued"}
-    lines = _today_lines(env)
-    assert len(lines) == 1, f"{len(lines)} lines for one cause: {[line.waiting for line in lines]}"
+    assert {data(env, r)["state"] for r in requests} == {"queued"}
+    assert _today_lines(env) == [], "waiting for an account is no stop"
+    lines = [line for line in queue(ws, store, cfg, clock()) if line.kind == "no_account"]
+    assert len(lines) == 1, f"{len(lines)} lines for one cause"
     assert not any(word in (lines[0].waiting or "").lower() for word in INTERNAL), lines[0].waiting
+
+
+def test_a_hand_in_with_no_account_waits_with_no_stop_and_runs_when_an_account_is_added(env):
+    """The person's path: no account, hand in a note. It waits (no Stopped line, nothing to try again, no try counted);
+    Today's one line asks for an account; adding one lets the work run."""
+    from engine.worker import release_paused
+    from tests.test_silent_stops import ANSWER, NOTE, Scripted, data, hand, set_responder, worker_of
+
+    _ws, cfg, store, _clock = env
+    set_responder(Scripted(ANSWER))
+    given = cfg.ai.tiers["routine"].model_copy()
+    cfg.ai.tiers["routine"].use = ""
+    cfg.ai.tiers["routine"].fallback = []
+    request = hand(env, NOTE)
+    worker_of(env).run_pending()
+    waiting = data(env, request)
+    assert waiting["state"] == "queued" and waiting["cause"]["kind"] == "no_account"
+    assert waiting["attempts"] == 0 and "account" in waiting["waiting"].lower()
+    lines = _today_lines(env)
+    assert not any(line.kind in ("stopped", "failed") for line in lines)
+    cfg.ai.tiers["routine"].use, cfg.ai.tiers["routine"].fallback = given.use, given.fallback
+    assert release_paused(store) == 1
+    worker_of(env).run_pending()
+    assert data(env, request)["state"] in ("review", "done")
 
 
 # ---- item 16, second half: who added a calendar entry ----------

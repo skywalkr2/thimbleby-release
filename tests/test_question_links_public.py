@@ -72,6 +72,14 @@ def refused(env, url=PUBLIC, text="Which date works?"):
         "http" + "://localhost.localdomain/",
         "http" + "://[::ffff:127.0.0.1]/",
         "http" + "://[fd00::5]:8080/x",
+        "http" + "://1.2.3.4.5/",
+        "http" + "://10.0.0.0.1/",
+        "http" + "://a.b.c.0x10/",
+        "http" + "://localhost6.localdomain6/",
+        "http" + "://localhost4/",
+        "http" + "://nas.localdomain/",
+        "http" + "://printer.office.localdomain:631/",
+        "http" + "://box.localhost6/",
     ],
 )
 def test_a_local_or_private_address_is_not_a_link_the_recipient_can_open(url):
@@ -86,6 +94,9 @@ def test_a_local_or_private_address_is_not_a_link_the_recipient_can_open(url):
         "HTTPS" + "://example.com",
         "http" + "://8.8.8.8/x",
         "https" + "://a.b.example.org:8443/p?q=1",
+        "https" + "://v2.example.com/",
+        "https" + "://localhostess.example.com/",
+        "https" + "://10x.example.io/",
     ],
 )
 def test_a_public_address_is_openable(url):

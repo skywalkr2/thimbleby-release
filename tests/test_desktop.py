@@ -8,6 +8,9 @@ from starlette.testclient import TestClient
 
 from engine import desktop
 from engine.workspace import resolve
+from tests.test_restore_in_app import (
+    made as backed_up,  # noqa: F401  (a workspace with one backup copy and later changes)
+)
 
 
 class Shell:
@@ -445,3 +448,138 @@ def test_the_saved_keys_are_inside_the_app_data_folder_on_each_system(system):
     keys = private_dir(root) / "keys"
     assert str(keys).startswith(str(data))
     assert "Roaming" not in str(keys)
+
+
+# ---- a restore the person staged, from the installed app's own start (S-0791) ----------------------------------------
+
+
+def test_the_installed_apps_start_and_each_restart_swap_a_staged_restore_in_before_opening_the_workspace(
+    backed_up,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+):
+    from engine import restore_in_app
+    from tests.test_restore_in_app import add_person, counts
+
+    ws, _, copy, at_copy = backed_up
+    assert counts(ws.db_path) != at_copy
+    restore_in_app.stage(ws, copy)
+    seen = {}
+
+    def launch(factory, port, folder, **options):
+        # Quit and open: the first start builds the app on the copy's data.
+        with TestClient(factory()):
+            seen["first"] = counts(ws.db_path)[0]["person"]
+        assert not (ws.private_dir / restore_in_app.PENDING).exists()
+        # The person chooses Restart now after staging another restore: the same build function swaps it in.
+        add_person(ws, "Added Again")
+        restore_in_app.stage(ws, copy)
+        with TestClient(factory()):
+            seen["restart"] = counts(ws.db_path)[0]["person"]
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    desktop.start(ws.root, Shell(), launch=launch, environ=env_for(tmp_path))
+    people = at_copy[0]["person"]  # what was added after the copy is gone, both times
+    assert seen == {"first": people, "restart": people}
+    assert restore_in_app.note(ws).state == restore_in_app.RESTORED
+
+
+def test_the_launchers_restart_builds_the_app_again_so_restart_now_reaches_the_swap(tmp_path, monkeypatch):
+    import threading
+
+    from engine import launcher
+
+    builds = []
+
+    class Window:
+        quit_event = threading.Event()
+        restart_enabled = None
+
+        def __getattr__(self, name):
+            return lambda *a, **k: None
+
+        def on(self, key, action):
+            if key == "restart":
+                self.restart = action
+
+        def show_app(self, url):
+            # The window is up: the person chose Restart now, then quit.
+            self.restart()
+            self.quit_event.set()
+
+    class Quiet:
+        def __init__(self, app):
+            pass
+
+    monkeypatch.setattr(launcher, "wait_ready", lambda *a, **k: True)
+    monkeypatch.setattr(launcher.LocalServer, "start", lambda self: setattr(self, "thread", None))
+    monkeypatch.setattr(launcher.LocalServer, "stop", lambda self: None)
+    monkeypatch.setattr(launcher.LocalServer, "alive", lambda self: True)
+    swapped = []
+    monkeypatch.setattr(launcher.LocalServer, "swap", lambda self, timeout=60: swapped.append(self.app_factory()))
+    waiting = threading.Event()
+    waiting.set()
+    launcher.launch(
+        lambda: builds.append("build") or "app",
+        0 + 51234,
+        tmp_path,
+        shell=Window(),
+        open_path="/",
+        restart_waiting=waiting.is_set,
+    )
+    assert builds == ["build"] and swapped == ["app"]  # the restart builds the app again, which is where the swap is
+
+
+# ---- the port (S-0792) ---------------------------------------------------------------------------------
+
+
+def test_a_taken_port_moves_the_app_to_the_next_free_one_and_every_setting_follows_it(tmp_path, monkeypatch):
+    import socket
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    root = tmp_path / "share" / "thimbleby" / desktop.WORKSPACE_FOLDER
+    holder = socket.socket()
+    holder.bind(("127.0.0.1", 0))
+    holder.listen(1)
+    taken = holder.getsockname()[1]
+    env = env_for(tmp_path, THIMBLEBY__SERVER__PORT=str(taken), THIMBLEBY__SERVER__BASE_PATH="/thimble")
+    given = {}
+
+    def launch(factory, port, folder, **options):
+        given["port"] = port
+        given["path"] = options["open_path"]()
+        with TestClient(factory(), base_url=f"http://127.0.0.1:{port}") as client:
+            given["health"] = client.get(options["readiness_path"]).status_code
+
+    try:
+        desktop.start(root, Shell(), launch=launch, environ=env)
+    finally:
+        holder.close()
+    assert given["port"] != taken and taken < given["port"] <= taken + 20
+    assert given["health"] == 200 and given["path"].startswith("/thimble/?token=")
+
+
+def test_with_no_port_free_the_window_names_the_range_and_stays_until_the_person_chooses(tmp_path, monkeypatch):
+    from engine import launcher
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    root = tmp_path / "share" / "thimbleby" / desktop.WORKSPACE_FOLDER
+    monkeypatch.setattr(launcher, "port_is_free", lambda port: False)
+    monkeypatch.setattr(launcher.choose_port, "__defaults__", (lambda port: False,))
+    shell = Shell()
+    env = env_for(tmp_path, THIMBLEBY__SERVER__PORT="9000", THIMBLEBY__SERVER__PORT_TRIES="3")
+    assert desktop.run(root, tmp_path / "logs", shell, environ=env, launch=lambda *a, **k: None) == 1
+    ((kind, _),) = shell.problems
+    text = shell.words["desktop.problem.ports.text"]
+    assert kind == "ports" and "9000 to 9003" in text
+    assert "computer usually fixes" not in text and "Restarting the computer" not in text
+
+
+def test_choosing_a_port_skips_held_ones_and_stops_at_the_limit():
+    from engine import launcher
+
+    assert launcher.choose_port(100, 5, free=lambda p: p >= 102) == 102
+    with pytest.raises(launcher.PortsTaken) as err:
+        launcher.choose_port(100, 2, free=lambda p: False)
+    assert (err.value.first, err.value.last) == (100, 102)
+    assert launcher.choose_port(65535, 10, free=lambda p: True) == 65535

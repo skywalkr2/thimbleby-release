@@ -27,8 +27,10 @@ const state = (over: Partial<S["BackupStatus"]> = {}): S["BackupStatus"] => ({
   needs_attention: false,
   last_error: null,
   encrypted: false,
-  folder: "/mnt/drive",
+  folder: "Drive",
   newest_hours: 1,
+  newest_at: "2026-10-28T09:00:00+00:00",
+  problem: null,
   ...over,
 });
 
@@ -39,6 +41,7 @@ const view = (over: Partial<S["BackupsView"]> = {}): S["BackupsView"] => ({
   copies: [{ target: "Drive", path: "/mnt/drive/ws-20261028-090000", name: "ws-20261028-090000", made_at: "2026-10-28T09:00:00+00:00", encrypted: false, local: false }],
   schedule: true,
   switch: true,
+  local_path: "/home/person/ws-backups",
   pending: null,
   restore_blocked: null,
   ...over,
@@ -60,10 +63,15 @@ test("it shows where backups go, the last backup and the copies, each with Resto
   api(() => view());
   open();
   const where = await screen.findByRole("region", { name: "Where backups go" });
-  // A folder is shown by its name, with the whole path on hover.
+  // A folder is shown by its name; the whole path is only behind Details (S-0796).
   const place = await within(where).findByText("Drive");
-  expect(place).toHaveAttribute("title", "/mnt/drive");
+  expect(place).not.toHaveAttribute("title");
+  const details = where.querySelector("details[data-backup-details]") as HTMLElement;
+  expect(details).toHaveTextContent("/mnt/drive");
+  expect(details).toHaveTextContent("/home/person/ws-backups");
+  details.remove();
   expect(where).not.toHaveTextContent("/mnt/drive");
+  expect(where).not.toHaveTextContent("/home/person");
   expect(await within(where).findByText(/Backed up/)).toBeInTheDocument();
   expect(within(where).getByRole("button", { name: "Back up now" })).toBeEnabled();
   const copies = within(where).getByRole("list", { name: "Copies you can restore from" });
@@ -161,13 +169,22 @@ test("a copy can't be restored while something stops it, and the page says why",
   expect(await screen.findByText(/kept in a synced folder/)).toBeInTheDocument();
 });
 
-test("with no folder it says automatic backups are off and Back up now waits for one", async () => {
-  api(() => view({ state: state({ configured: false, last_success: null, age_hours: null, needs_attention: true }), targets: [], copies: [], schedule: false }), []);
+test("with no folder Back up now still works (it makes the copy kept here), and nothing is disabled or red before a choice", async () => {
+  const user = userEvent.setup();
+  const calls = api(() => view({ state: state({ configured: false, last_success: null, age_hours: null, needs_attention: false, folder: "" }), targets: [], copies: [], local_last_success: "2026-10-28T09:00:00+00:00" }), [], {
+    "POST backup": () => statusFixture(),
+  });
   open();
   const where = await screen.findByRole("region", { name: "Where backups go" });
-  expect(within(where).getByText("Choose where backups go first.")).toBeInTheDocument();
-  expect(within(where).getByRole("button", { name: "Back up now" })).toBeDisabled();
-  expect(within(where).getByText("No copy has been made yet.")).toBeInTheDocument();
+  const now = within(where).getByRole("button", { name: "Back up now" });
+  expect(now).toBeEnabled();
+  expect(where).not.toHaveTextContent("Choose where backups go first");
+  // No "Use this folder" button before a folder is chosen, and no red error.
+  expect(within(where).queryByRole("button", { name: "Use this folder for backups" })).toBeNull();
+  expect(where.querySelector(".problem-note")).toBeNull();
+  await user.click(now);
+  expect(await screen.findByText("Backed up on this computer.")).toBeInTheDocument();
+  expect(calls.some((c) => c.route === "POST backup")).toBe(true);
 });
 
 test("Back up now says what it did on the page: the places it reached, or why it didn't", async () => {
@@ -199,7 +216,7 @@ test("with no folder chosen it says backups are local only, lists the copy kept 
   );
   open();
   const where = await screen.findByRole("region", { name: "Where backups go" });
-  expect(await within(where).findByText(/Backups: local only\. Pick a folder to protect against losing this computer/)).toBeInTheDocument();
+  expect(await within(where).findByText(/Pick a folder off this computer to keep your work if it is lost or breaks/)).toBeInTheDocument();
   expect(where).toHaveTextContent(/Copy kept on this computer/);
   const copies = within(where).getByRole("list", { name: "Copies you can restore from" });
   expect(copies).toHaveTextContent("This computer");

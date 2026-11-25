@@ -7,6 +7,7 @@ stale line acts at once with Undo and records its own signal."""
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -68,7 +69,8 @@ def build_day_router(ws: Workspace, cfg: Config, store: Store, events: Events, w
             raise HTTPException(status_code=404, detail="That suggestion isn't on Today now.")
         made = suggestions.put_off(store, cfg, line, now)
         events.changed()
-        return NotNowDone(signal=made)
+        back = now + timedelta(days=cfg.storage.backups.nudge_again_days) if nudge else None
+        return NotNowDone(signal=made, until=back.isoformat() if back else None)
 
     @r.post("/suggestions/not-now/{signal_id}/undo")
     def not_now_undo(signal_id: str) -> Ok:

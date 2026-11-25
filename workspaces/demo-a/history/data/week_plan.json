@@ -1,0 +1,14 @@
+[
+  {
+    "_version": 1,
+    "confirmed_at": "2026-11-02T16:30:00Z",
+    "goals": [
+      "Publish the cut-over runbook",
+      "Share the reconciliation test results",
+      "Book the room for the go/no-go meeting"
+    ],
+    "id": "WEEK-1",
+    "person": "PER-1",
+    "week": "2026-11-02"
+  }
+]

@@ -404,6 +404,14 @@ class ServerFile(FileModel):
     )
     host: str = Field("127.0.0.1", description="Address to listen on.", json_schema_extra={"internal": True})
     port: int = Field(8765, ge=1, le=65535, description="Port to listen on.", json_schema_extra={"internal": True})
+    port_tries: int = Field(
+        20,
+        ge=0,
+        le=1000,
+        description="How many ports after the one above the installed app tries when another program holds it. 0 uses "
+        "only the one above. Takes a restart.",
+        json_schema_extra={"internal": True},
+    )
     base_path: str = Field(
         "/",
         description="Path the app is served under, e.g. /admin. Every route and link uses it.",
@@ -488,6 +496,12 @@ class CloudFolder(ConfigModel):
     )
     linux: list[str] = Field(
         default_factory=list, description="Where its folder is on Linux, in the same form as for a Mac."
+    )
+    personal: list[str] = Field(
+        default_factory=list,
+        description="Accounts that are personal, not an employer's: a folder named after an account (matched by `*` in "
+        "a place above) is a work account unless the account's name ends with one of these. A work account is listed "
+        "with its account's name and is never the recommended one.",
     )
 
 

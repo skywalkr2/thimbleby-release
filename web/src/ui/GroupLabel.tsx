@@ -13,14 +13,16 @@ export interface GroupLabelProps extends HTMLAttributes<HTMLElement> {
   tone?: "plain" | "danger";
   /** Words after the label that are not part of its name, written as they are (not in capitals): "2 of 6 done". */
   meta?: ReactNode;
+  /** Written as a sentence, not in capitals: for a heading that stands over a card of its own with a button beside it. */
+  sentence?: boolean;
   /** The element drawn: a heading by default. */
   as?: ElementType;
 }
 
 export function GroupLabel(props: GroupLabelProps) {
-  const { children, count, meta, tone = "plain", as: Tag = "h3", className, ...rest } = props;
+  const { children, count, meta, tone = "plain", sentence, as: Tag = "h3", className, ...rest } = props;
   return (
-    <Tag {...rest} data-group-label="" data-tone={tone} className={[styles.label, className ?? ""].filter(Boolean).join(" ")}>
+    <Tag {...rest} data-group-label="" data-tone={tone} data-case={sentence ? "sentence" : undefined} className={[styles.label, className ?? ""].filter(Boolean).join(" ")}>
       <span className={styles.words}>{children}</span>
       {count ? (
         <span className={styles.count} aria-hidden="true" data-group-count="">

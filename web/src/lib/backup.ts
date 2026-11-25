@@ -13,7 +13,7 @@ export function backupAge(b: { age_hours: number | null }, t: T): string | null 
 
 /** The age of the newest copy the status speaks of: the folder's own while one is chosen, else the newest kept on this computer. */
 function copyAge(b: S["BackupStatus"]): number | null {
-  return b.configured ? b.age_hours : (b.newest_hours ?? null);
+  return b.configured && b.problem !== "folder_missing" ? b.age_hours : (b.newest_hours ?? null);
 }
 
 /** The backup in one phrase: what it protects (this computer only, or the folder's name), then how it stands; a failed or old
@@ -22,21 +22,26 @@ export function backupText(b: S["BackupStatus"], t: T): string {
   const age = backupAge({ age_hours: copyAge(b) }, t);
   const where = b.configured ? t("backup.folder", { folder: folderName(b.folder) }) : t("backup.local_only");
   let text: string;
-  if (b.configured) {
+  if (b.problem === "folder_missing") {
+    // One state with one set of words: the copy kept here is named, the folder is named by its label, never its path.
+    const folder = folderName(b.folder);
+    text = age === null ? t("backup.folder_missing.none", { folder }) : t("backup.folder_missing", { folder });
+  } else if (b.configured) {
     text = age === null ? (b.last_error ? t("backup.failed") : t("backup.never")) : b.needs_attention ? t("backup.overdue", { age }) : `${where} · ${t("backup.ok", { age })}`;
   } else if (b.needs_attention) {
-    text = b.last_error || age === null ? t("backup.failed") : t("backup.overdue", { age });
+    text = b.problem === "never" && age === null ? t("backup.local_never") : b.last_error || age === null ? t("backup.failed") : t("backup.overdue", { age });
   } else {
     text = age === null ? where : `${where} · ${t("backup.ok", { age })}`;
   }
   return b.encrypted ? `${text} · ${t("backup.encrypted")}` : text;
 }
 
-export type BackupState = "unset" | "never" | "failed" | "overdue" | "smaller" | "ok";
+export type BackupState = "unset" | "never" | "failed" | "overdue" | "smaller" | "folder_missing" | "ok";
 
 /** The backup's one state ("unset" is the quiet one: copies kept on this computer only), named the same in the header chip, Today's line and the popover. */
 export function backupState(b: S["BackupStatus"]): BackupState {
-  if (!b.configured) return b.needs_attention ? (b.last_error ? "failed" : "overdue") : "unset";
+  if (b.problem === "folder_missing") return "folder_missing";
+  if (!b.configured) return b.needs_attention ? (b.problem === "never" ? "never" : b.last_error ? "failed" : "overdue") : "unset";
   if (b.age_hours === null) return b.last_error ? "failed" : "never";
   if (b.last_error && b.needs_attention) return "failed";
   return b.needs_attention ? "overdue" : "ok";
@@ -51,6 +56,7 @@ export function backupWord(state: BackupState | string, t: T): string {
  * recent, and quiet when none is set up. */
 export function backupTone(b: S["BackupStatus"]): "ok" | "warn" | "danger" | "neutral" {
   if (!b.configured && !b.needs_attention) return "neutral";
+  if (b.problem === "folder_missing") return "warn";
   if (b.last_error) return "danger";
   return b.needs_attention ? "warn" : "ok";
 }

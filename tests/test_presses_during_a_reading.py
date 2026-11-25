@@ -1,7 +1,9 @@
 """Every press that starts or approves work answers at once while a long reading of a source is under way (S-0677):
 nothing waits on the reading's lock, and nothing runs the reading's own work inside the request. "At once" is proven by
-order, not by the clock: each press answers while the reading still holds its lock, which a press that waited behind it
-never could, and a press still waiting after a few seconds is reported as waiting."""
+order: each press answers while the reading still holds its lock, which a press that waited behind it never could, and
+a press still waiting after a few seconds is reported as waiting. The handler's own time, measured inside the request
+(its Server-Timing: the processor time spent while it ran), stays under a second, so no press does the reading's work
+itself; a busy machine's other programs don't count."""
 
 from __future__ import annotations
 
@@ -60,9 +62,18 @@ def reading(app):  # noqa: F811
     worker._jobs = None
 
 
+def handler_seconds(response, metric: str = "cpu") -> float:
+    """The work the server did on the request, from its Server-Timing header: the processor time its process spent
+    while the request ran (`cpu`), which other programs on a busy computer don't lengthen, or the time it took
+    (`app`)."""
+    timing = dict(part.strip().split(";dur=") for part in response.headers["server-timing"].split(","))
+    return float(timing[metric]) / 1000
+
+
 def answered(out):
     assert "seconds" in out, "the press was still waiting behind the reading"
     assert out["during_reading"], "the press answered only once the reading had ended"
+    assert handler_seconds(out["response"]) < ANSWER_WITHIN, "the press did slow work inside the request"
     return out["response"]
 
 
@@ -132,15 +143,26 @@ def test_a_go_on_a_held_request_answers_within_a_second_during_a_reading(reading
     assert answered(press(client, f"{base}/requests/{made.id}/retry")).status_code in (200, 409)
 
 
-def test_the_recent_past_is_handed_in_once_the_reading_ends(reading):
+def test_the_recent_past_is_handed_in_once_the_reading_ends(reading, monkeypatch):
     """The press only recorded the word: the worker's thread waited for the reading and then did the hand-in."""
     ws, cfg, store, client, base = reading
     worker = client.app.state.worker
+    handed: list[bool] = []
+    real = watch.hand_in_recent
+
+    def hand_in(*args, **kwargs):
+        result = real(*args, **kwargs)
+        handed.append(client.release_reading.is_set())  # when the hand-in finished: after the reading, or during it
+        return result
+
+    monkeypatch.setattr(watch, "hand_in_recent", hand_in)
     answered(press(client, f"{base}/watch/m/recent"))
     (asked,) = [t for t in worker._asks_apart if t.is_alive()]
+    assert handed == [], "nothing was handed in while the reading held the source"
     client.release_reading.set()
     asked.join(10)
     assert not asked.is_alive()
+    assert handed == [True], "the recent past was handed in once, after the reading ended"
 
 
 def test_check_the_synced_folder_now_answers_at_once_while_a_write_of_it_runs(reading, tmp_path):

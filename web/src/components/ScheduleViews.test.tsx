@@ -107,6 +107,40 @@ describe("the views", () => {
     expect(checked()).toBe("Day");
   });
 
+  test("Month writes a to-do's due date as its title alone, the whole title with Due on hover, and marks days off in words", async () => {
+    const user = userEvent.setup();
+    await open(WEEK, { off_days: [{ day: TODAY, kind: "holiday", reason: "Thanksgiving" }, { day: addDays(TODAY, 1), kind: "weekend", reason: "" }] });
+    await user.click(radio("Month"));
+    await waitFor(() => expect(cells()).toHaveLength(42));
+    const today = document.querySelector(`section[data-day="${TODAY}"]`) as HTMLElement;
+    const names = Array.from(today.querySelectorAll("[data-kind=due] [class*=name], [data-kind=due]")).map((el) => el.textContent ?? "");
+    expect(names.some((n) => n.includes("Send the figures"))).toBe(true);
+    expect(names.every((n) => !n.includes("Due:"))).toBe(true);
+    // A day off says so in words (never colour alone), with its reason when it has one; the hatch is the stylesheet's.
+    expect(today.querySelector("[data-day-off]")).toHaveTextContent("Day off · Thanksgiving");
+    expect(today).toHaveAttribute("data-off");
+    const next = document.querySelector(`section[data-day="${addDays(TODAY, 1)}"]`) as HTMLElement;
+    expect(next.querySelector("[data-day-off]")).toHaveTextContent(/^Day off$/);
+    expect(next.querySelector("[data-day-off]")).toHaveAttribute("title", "Day off");
+    expect(within(today).getByRole("button", { name: /^Open .*Day off · Thanksgiving/ })).toBeInTheDocument();
+    // The whole title, "Due:" included, is on hover and focus.
+    await user.hover(today.querySelector("[data-kind=due]") as HTMLElement);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Due: Send the figures");
+  });
+
+  test("Month never shows a date written in a to-do's own words as year-month-day", async () => {
+    const user = userEvent.setup();
+    const later = addDays(TODAY, 3);
+    const written = (date: string) =>
+      date === TODAY ? { all_day: [entry({ title: `Send the headcount by ${TODAY}.`, kind: "due", action: "ACT-1", slot: "all_day", all_day: true, source: "", snapshot: "ACT-1" }), entry({ title: `Lend us the trailer on ${later}`, kind: "due", action: "ACT-2", slot: "all_day", all_day: true, source: "", snapshot: "ACT-2" })] } : {};
+    await open(written);
+    await user.click(radio("Month"));
+    await waitFor(() => expect(cells()).toHaveLength(42));
+    const today = document.querySelector(`section[data-day="${TODAY}"]`) as HTMLElement;
+    await waitFor(() => expect(today).toHaveTextContent("Send the headcount"));
+    expect(today.textContent ?? "").not.toMatch(/\b\d{4}-\d{2}-\d{2}\b/);
+  });
+
   test("a day with nothing on it is the ordinary empty grid, with no notice over it (S-0525)", async () => {
     const user = userEvent.setup();
     await open(() => ({}));

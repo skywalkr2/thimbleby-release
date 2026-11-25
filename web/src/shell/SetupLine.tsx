@@ -55,6 +55,7 @@ export function SetupGroup(props: { workspace: string; onOpenGuide: (step: strin
     <QueueGroup
       id="queue-group-setup"
       title={t("queue.group.setup")}
+      sentence
       meta={shown ? t("setup_line.count", { done: finished, total }) : undefined}
       actions={
         shown && next ? (

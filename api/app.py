@@ -379,15 +379,22 @@ def create_app(
 
     slow = slow_screens.for_workspace(ws.root, cfg.server.slow_screen_ms)
 
-    # Times every request (design 6.13): logged with its route, and a main screen's load counts toward its Today line.
+    # Times every request (design 6.13): logged with its route, sent back as Server-Timing, and a main screen's load
+    # counts toward its Today line.
     @inner.middleware("http")
     async def time_requests(request: Request, call_next: Any) -> Any:
-        started = time.perf_counter()
+        started, worked = time.perf_counter(), time.process_time()
         response = await call_next(request)
+        ms = (time.perf_counter() - started) * 1000
+        # The handler's own time, measured inside the request, in the standard header a browser's tools show: how long
+        # it took, and the processor time this process spent meanwhile (the work done, which a busy computer's other
+        # programs don't lengthen).
+        cpu = (time.process_time() - worked) * 1000
+        response.headers["Server-Timing"] = f"app;dur={ms:.1f}, cpu;dur={cpu:.1f}"
         route = request.scope.get("route")
         path = getattr(route, "path", None)
         if path and request.method == "GET" and response.status_code == 200:
-            slow.note(path, (time.perf_counter() - started) * 1000)
+            slow.note(path, ms)
         return response
 
     # Every write says what it changed (S-0424): the record kinds the ledger gained while the request ran go back in a

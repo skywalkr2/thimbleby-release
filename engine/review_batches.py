@@ -72,6 +72,17 @@ def review_of(changeset: dict[str, Any]) -> str | None:
     return "filed" if any(o.get("status") == "applied" for o in ops) else None
 
 
+def waits_for_looks_good(request: dict[str, Any], changeset: dict[str, Any]) -> bool:
+    """Whether a finished change waits for the person's Looks good: a request the assistant finished and handed to
+    review (whatever its ops are, so a change that only filed quietly still shows the button), or a done one whose ops
+    still need a look. The count in What changed and the menu badge both use this, so they match the rows that carry
+    the button."""
+    if changeset.get("status") not in ("applied", "held", "partly_undone"):
+        return False
+    state = request.get("state")
+    return state == "review" or (state == "done" and review_of(changeset) == "unchecked")
+
+
 @dataclass
 class Confirmed:
     """What confirming a batch did, for Undo: the changesets marked reviewed and the signals recorded."""

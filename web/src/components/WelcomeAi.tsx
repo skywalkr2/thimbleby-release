@@ -137,6 +137,8 @@ export function WelcomeAi(props: {
   const found = useQuery({ queryKey: ["ai-local"], queryFn: api.aiLocal });
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const accounts = useQuery({ queryKey: ["ai-accounts"], queryFn: api.aiAccounts });
+  // This tab lost its sign-in: nothing here can load or be saved, so the hint says that and not "something above".
+  const signedOut = [settings, accounts, endpoints].some((q) => q.error instanceof ApiError && q.error.status === 401);
   const checkSize = useQuery({ queryKey: ["ai-check-size"], queryFn: api.aiCheckSize, enabled: !!drawer });
   // What is typed in the guide stays as a draft in this tab until the account is added, so a reload brings it back. A pasted
   // key is never kept; the drawer in Settings keeps nothing.
@@ -201,12 +203,11 @@ export function WelcomeAi(props: {
   const builtin = !!kind && isBuiltin(kind);
   const generic = agent && !builtin;
   const examples = builtin ? examplesOf(kind) : [];
-  // Each example is named by what it is for; two with the same purpose are told apart by a number, never by the program's own name.
-  const roleLabel = (model: string, at: number) => {
+  // Each example is named by what it is for with its own name beside it, as the catalog lists it ("Stronger: <name>"); one the
+  // catalog gives no role is shown by its name alone. Nothing is numbered.
+  const roleLabel = (model: string) => {
     const role = kind?.model_roles?.[model];
-    if (!role) return t("welcome.ai.model_choice_n", { n: at + 1 });
-    const same = examples.filter((m) => kind?.model_roles?.[m] === role);
-    return same.length > 1 ? t("welcome.ai.role_numbered", { role: t(`welcome.ai.role.${role}`), n: same.indexOf(model) + 1 }) : t(`welcome.ai.role.${role}`);
+    return role ? t("welcome.ai.model_named", { role: t(`welcome.ai.role.${role}`), model }) : model;
   };
   const optional = builtin && !!kind.model_optional;
   // The program picks its own model when none is named and the person has not typed one.
@@ -570,6 +571,7 @@ export function WelcomeAi(props: {
     if (noMatch) return t("welcome.ai.model_none");
     if (levels.length === 0) return t("ai_add.why.levels");
     if (!pricesGiven) return t("welcome.ai.why.price");
+    if (signedOut) return t("error.signed_out");
     if (!settings.data) return t("ai_add.why.loading");
     return t("ai_add.why.other");
   })();
@@ -771,7 +773,7 @@ export function WelcomeAi(props: {
     if (verdict.state === "idle" && (manualModel || (!builtin && list.length === 0 && asked)) && everyday.trim() === "") return t("welcome.ai.why.model");
     if (verdict.state === "idle") return t("welcome.ai.why.not_checked");
     if (workData === null) return t("welcome.ai.why.allow");
-    if (!ready) return t("welcome.ai.why.not_ready");
+    if (!ready) return t(signedOut ? "error.signed_out" : "welcome.ai.why.not_ready");
     return "";
   })();
   // A step that is done already has its account: choosing another service to add one more never takes Continue away. Going on
@@ -1022,6 +1024,11 @@ export function WelcomeAi(props: {
           )}
         </p>
       )}
+      {kind && !kind.local && (verdict.state === "works" || verdict.state === "failed") && (
+        <p className="hint" data-check-cost="">
+          {t("welcome.ai.check_cost")}
+        </p>
+      )}
     </div>
   );
 
@@ -1267,7 +1274,7 @@ export function WelcomeAi(props: {
                 <div className="check-row">
                   <p className="hint" id="ai-app-status" role="status">
                     <Icon name={kind.installed ? "check" : "close"} size={14} />{" "}
-                    {endpoints.isFetching ? t("welcome.ai.app_checking") : t(kind.installed ? "welcome.ai.app_installed" : "welcome.ai.app_missing")}
+                    {endpoints.isFetching ? t("welcome.ai.app_checking") : t(kind.installed ? "welcome.ai.app_installed" : "welcome.ai.app_missing", { app: kind.name })}
                   </p>
                   <Button
                     disabled={endpoints.isFetching}
@@ -1483,9 +1490,9 @@ export function WelcomeAi(props: {
                           }}
                         >
                           {optional && <option value="">{t("welcome.ai.model_program_picks")}</option>}
-                          {examples.map((m, i) => (
+                          {examples.map((m) => (
                             <option key={m} value={m}>
-                              {roleLabel(m, i)}
+                              {roleLabel(m)}
                             </option>
                           ))}
                           <option value={OTHER_MODEL}>{t("welcome.ai.model_other")}</option>

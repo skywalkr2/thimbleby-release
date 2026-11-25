@@ -105,7 +105,7 @@ def _unchecked(view: Any, cfg: Any) -> list[Thing]:
         if catch_up.waits_on_go(d) or source_intake.waits_on_go(d):
             continue
         cs = view.get("changeset", d["changeset"])
-        if cs is None or review_batches.review_of(cs.data) != "unchecked":
+        if cs is None or not review_batches.waits_for_looks_good(d, cs.data):
             continue
         if (
             change_rows.own_job(d)

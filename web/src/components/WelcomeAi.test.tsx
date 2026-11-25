@@ -201,6 +201,15 @@ async function ready(user: User, answer: "Yes" | "No" = "Yes", service = "Servic
   await user.click(screen.getByRole("radio", { name: new RegExp(`^${answer}`) }));
 }
 
+test("when this tab is signed out the hint says so, never that something above needs filling in", async () => {
+  const user = userEvent.setup();
+  api({ "GET settings": () => new Refuse(401, "Not signed in") });
+  open();
+  await ready(user);
+  await waitFor(() => expect(screen.getByText(/You're signed out/)).toBeInTheDocument());
+  expect(screen.queryByText("Something above still needs filling in.")).toBeNull();
+});
+
 // ---- the choice: one recommended service, one alternative, something else ---------------------------------------------
 
 test("an assistant with no name of its own is called your assistant in the heading, never Assistant", async () => {
@@ -1006,6 +1015,29 @@ test("a reload keeps the service, its address and the key's reference, says so, 
   expect(JSON.stringify(window.sessionStorage)).not.toContain("secret-value");
 });
 
+test("a check says it costs a little even when it fails", async () => {
+  const user = userEvent.setup();
+  api({ "POST ai/account-check": () => ({ ok: false, reason: "refused", message: "The service refused the key.", identity: null, identity_unknown: null }) });
+  open();
+  await pick(user, "Service A");
+  await user.click(screen.getByLabelText("Access key"));
+  await user.paste("secret-value");
+  expect(await screen.findByText(/Each check uses a little of the service, even when it fails/)).toBeInTheDocument();
+  expect(screen.getByText(/counts in today's AI spending/)).toBeInTheDocument();
+});
+
+test("a restored draft of an app names the app that was picked, beside Check, without opening any list", async () => {
+  const user = userEvent.setup();
+  api();
+  const first = open();
+  await pickElse(user, "App A");
+  first.unmount();
+  api();
+  open();
+  expect(await screen.findByText("App A: installed on this computer")).toBeInTheDocument();
+  expect(document.querySelector("[data-draft-restored]")).toHaveTextContent("Picked up where you left off");
+});
+
 test("a kind chosen under Something else stays chosen, and Something else with it: they are separate choices", async () => {
   const user = userEvent.setup();
   api();
@@ -1086,7 +1118,7 @@ test("an installed app asks for no key and no command, is checked at once, and s
   await pickElse(user, "App A");
   expect(screen.queryByLabelText("Access key")).toBeNull();
   expect(screen.queryByLabelText("How to start the AI app")).toBeNull();
-  expect(screen.getByText("Installed on this computer")).toBeInTheDocument();
+  expect(screen.getByText("App A: installed on this computer")).toBeInTheDocument();
   expect(await screen.findByText("Works. Ready to use.")).toBeInTheDocument();
   // An app left to choose its own model is checked on its own first one.
   expect(checks(calls)[0].body).toEqual({ endpoint: "app-a", models: { default: "default" }, use: {} });
@@ -1098,7 +1130,7 @@ test("an app left to choose its own model is added with no models and works thro
   open();
   await pickElse(user, "App A");
   const model = screen.getByLabelText("AI model");
-  expect(within(await snapshotOf(model)).getAllByRole("option").map((o) => o.textContent)).toEqual(["Let the app choose", "Recommended", "Stronger", "Another AI model"]);
+  expect(within(await snapshotOf(model)).getAllByRole("option").map((o) => o.textContent)).toEqual(["Let the app choose", "Recommended: alpha", "Stronger: beta", "Another AI model"]);
   expect(model).toHaveValue("");
   await screen.findByText("Works. Ready to use.");
   await user.click(screen.getByRole("radio", { name: /^No\b/ }));
@@ -1127,33 +1159,34 @@ test("an app that picks its own model and names no examples asks for no model", 
   expect(screen.getByText("Change the model in that app's settings.")).toBeInTheDocument();
 });
 
-test("an app's example models are offered as Recommended, Stronger and Faster, and the program's own name for one is never shown", async () => {
+/** The page's text with the model list taken out: the one place a model's own name is shown. */
+const textOutsideTheModelList = () => {
+  const copy = document.body.cloneNode(true) as HTMLElement;
+  copy.querySelector("#ai-model")?.remove();
+  return copy.textContent ?? "";
+};
+
+test("an app's example models are offered as Recommended, Stronger and Faster, each with its own name, and the name shows nowhere else", async () => {
   const user = userEvent.setup();
   api();
   open();
   await pickElse(user, "App A");
   const model = screen.getByLabelText("AI model");
+  expect(within(await snapshotOf(model)).getAllByRole("option").map((o) => o.textContent)).toEqual([
+    "Let the app choose",
+    "Recommended: alpha",
+    "Stronger: beta",
+    "Another AI model",
+  ]);
   await user.selectOptions(model, "beta");
   expect(screen.queryByText(/The app calls this one/)).toBeNull();
   expect(model).not.toHaveAccessibleDescription(/beta/);
-  expect(document.body.textContent).not.toMatch(/alpha|beta/);
+  expect(textOutsideTheModelList()).not.toMatch(/alpha|beta/);
   await user.selectOptions(model, "alpha");
-  expect(document.body.textContent).not.toMatch(/alpha|beta/);
+  expect(textOutsideTheModelList()).not.toMatch(/alpha|beta/);
 });
 
-test("two examples with the same purpose are told apart by a number, not by the program's name for them", async () => {
-  const user = userEvent.setup();
-  api({
-    "GET ai/endpoints": () =>
-      KINDS.map((k) => (k.id === "app-a" ? { ...k, model_examples: ["alpha", "beta", "gamma"], model_roles: { alpha: "recommended", beta: "stronger", gamma: "stronger" } } : k)),
-  });
-  open();
-  await pickElse(user, "App A");
-  const options = within(await snapshotOf(screen.getByLabelText("AI model"))).getAllByRole("option").map((o) => o.textContent);
-  expect(options).toEqual(["Let the app choose", "Recommended", "Stronger 1", "Stronger 2", "Another AI model"]);
-});
-
-test("examples sharing a role show the word with a number, a lone one shows the word alone, and none shows the program's own name", async () => {
+test("two examples with the same purpose are told apart by their names, never numbered", async () => {
   const user = userEvent.setup();
   api({
     "GET ai/endpoints": () =>
@@ -1166,17 +1199,17 @@ test("examples sharing a role show the word with a number, a lone one shows the 
   open();
   await pickElse(user, "App A");
   const labels = within(await snapshotOf(screen.getByLabelText("AI model"))).getAllByRole("option").map((o) => o.textContent ?? "");
-  expect(labels).toEqual(["Let the app choose", "Recommended", "Stronger 1", "Stronger 2", "Faster", "Another AI model"]);
-  for (const label of labels) expect(label).not.toMatch(/alpha|beta|gamma|delta/);
+  expect(labels).toEqual(["Let the app choose", "Recommended: alpha", "Stronger: beta", "Stronger: gamma", "Faster: delta", "Another AI model"]);
+  for (const label of labels) expect(label).not.toMatch(/\d/);
 });
 
-test("an example the catalog gives no role is offered by number, never by its name", async () => {
+test("an example the catalog gives no role is offered by its name, never by a number", async () => {
   const user = userEvent.setup();
   api({ "GET ai/endpoints": () => KINDS.map((k) => (k.id === "app-b" ? { ...k, model_examples: ["delta", "gamma", "omega"] } : k)) });
   open();
   await pickElse(user, "App B");
   const model = screen.getByLabelText("AI model");
-  expect(within(await snapshotOf(model)).getAllByRole("option").map((o) => o.textContent)).toEqual(["Recommended", "Faster", "Choice 3", "Another AI model"]);
+  expect(within(await snapshotOf(model)).getAllByRole("option").map((o) => o.textContent)).toEqual(["Recommended: gamma", "Faster: delta", "omega", "Another AI model"]);
   expect(model).toHaveValue("gamma");
 });
 
@@ -1216,7 +1249,7 @@ test("an app whose model must be named starts on its recommended example, whatev
   open();
   await pickElse(user, "App B");
   const model = screen.getByLabelText("AI model");
-  expect(within(await snapshotOf(model)).getAllByRole("option").map((o) => o.textContent)).toEqual(["Recommended", "Faster", "Another AI model"]);
+  expect(within(await snapshotOf(model)).getAllByRole("option").map((o) => o.textContent)).toEqual(["Recommended: gamma", "Faster: delta", "Another AI model"]);
   expect(model).toHaveValue("gamma");
   expect(checks(calls)).toHaveLength(0); // not installed yet: nothing to check
 });
@@ -1227,11 +1260,11 @@ test("an app that is not found says what to do, and Check looks again and then c
   const calls = api({ "GET ai/endpoints": () => KINDS.map((k) => (k.id === "app-b" ? { ...k, installed } : k)) });
   open();
   await pickElse(user, "App B");
-  expect(screen.getByText("This app isn't on this computer yet. Install it and sign in to it, then choose Check.")).toBeInTheDocument();
+  expect(screen.getByText("App B isn't on this computer yet. Install it and sign in to it, then choose Check.")).toBeInTheDocument();
   expect(save()).toBeDisabled();
   installed = true;
   await user.click(screen.getByRole("button", { name: "Check" }));
-  expect(await screen.findByText("Installed on this computer")).toBeInTheDocument();
+  expect(await screen.findByText("App B: installed on this computer")).toBeInTheDocument();
   expect(await screen.findByText("Works. Ready to use.")).toBeInTheDocument();
   // Check asks for the look to be made again; the first read used the look made when the app started.
   expect(calls.filter((c) => c.route === "GET ai/endpoints")).toHaveLength(1);
@@ -1311,6 +1344,8 @@ function visibleText(root: HTMLElement): string {
       return;
     }
     if (!(node instanceof HTMLElement)) return;
+    // An app's model list is the one place setup names its models ("Stronger: <name>"); nowhere else does a model show.
+    if (node.id === "ai-model") return;
     if (node instanceof HTMLDetailsElement && !node.open) {
       for (const child of Array.from(node.children)) if (child.tagName === "SUMMARY") walk(child);
       return;

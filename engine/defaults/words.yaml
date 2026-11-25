@@ -125,7 +125,10 @@ desktop.problem.elsewhere.text: Your workspace is in a synced folder, and the co
 desktop.problem.older_running.title: An older Thimbleby is still open
 desktop.problem.older_running.text: A newer Thimbleby was opened, and the older one did not close when asked. Choose Quit on the older one's icon (in the menu bar on a Mac, in the tray by the clock on Windows), then choose Try again. Restarting the computer also closes it.
 desktop.problem.held.title: Thimbleby couldn't start
-desktop.problem.held.text: Something else on this computer stops Thimbleby from starting. Restarting the computer usually fixes it.
+desktop.problem.held.text: This computer wouldn't let Thimbleby use the address it needs. Close other programs that might hold it, then try again.
+desktop.problem.ports.title: Thimbleby couldn't start
+desktop.problem.ports.text: Other programs on this computer are using ports {first} to {last}, which Thimbleby needs one of. Close one of them, then try again.
+desktop.port_moved: Port {taken} was in use, so Thimbleby is using port {port}.
 desktop.problem.other.title: Thimbleby couldn't start
 desktop.problem.other.text: Try again. If it keeps happening, copy the details and send them to the people who look after Thimbleby.
 desktop.try_again: Try again

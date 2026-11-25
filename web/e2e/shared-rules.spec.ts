@@ -110,7 +110,9 @@ const rowEdges = (page: Page) =>
     return { slots: slots.slice(0, 5), ragged: ragged.slice(0, 5), rows: Array.from(columns.values()).reduce((n, c) => n + c.length, 0) };
   });
 
-/** The group labels drawn, and the ones that are not uppercase, 11px and spaced, or whose count is not a pill. */
+/** The group labels drawn, and the ones that are not uppercase, 11px and spaced, or whose count is not a pill. A label the
+ * shared component draws as a sentence (`data-case="sentence"`, a heading over a card of its own: the #65 re-check's U-36) is
+ * held to the sentence rule instead: never in capitals. */
 const groupLabels = (page: Page) =>
   page.evaluate(() => {
     const bad: string[] = [];
@@ -118,6 +120,10 @@ const groupLabels = (page: Page) =>
     for (const el of labels) {
       const style = getComputedStyle(el);
       const name = (el.textContent ?? "").trim().slice(0, 20);
+      if (el.getAttribute("data-case") === "sentence") {
+        if (style.textTransform === "uppercase") bad.push(`"${name}" is a sentence but drawn in capitals`);
+        continue;
+      }
       if (style.textTransform !== "uppercase") bad.push(`"${name}" is not uppercase (${style.textTransform})`);
       if (style.fontSize !== "11px") bad.push(`"${name}" is ${style.fontSize}, not 11px`);
       if (style.letterSpacing === "normal" || parseFloat(style.letterSpacing) <= 0) bad.push(`"${name}" has no letter spacing`);

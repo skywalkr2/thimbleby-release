@@ -6,9 +6,9 @@ import { GroupLabel } from "../ui/GroupLabel";
 import styles from "./Today.module.css";
 
 /** One group of the queue: its label (the shared group label, with how many lines it holds in a pill) and its lines. The count is drawn for the eye; the list itself tells a screen reader how many there are. */
-export function QueueGroup(props: { id: string; title: string; count?: number; meta?: ReactNode; actions?: ReactNode; note?: ReactNode; tone?: "plain" | "danger"; children?: ReactNode }) {
+export function QueueGroup(props: { id: string; title: string; count?: number; meta?: ReactNode; actions?: ReactNode; note?: ReactNode; tone?: "plain" | "danger"; sentence?: boolean; children?: ReactNode }) {
   const label = (
-    <GroupLabel id={props.id} count={props.count} meta={props.meta} tone={props.tone} className={styles.groupHead}>
+    <GroupLabel id={props.id} count={props.count} meta={props.meta} tone={props.tone} sentence={props.sentence} className={styles.groupHead}>
       {props.title}
     </GroupLabel>
   );

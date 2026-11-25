@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
 import yaml
 
 from engine.config import load_config
@@ -95,8 +96,10 @@ def test_an_item_with_an_earlier_time_than_its_saved_copy_is_filed_with_a_hint_t
         holder["store"].close()
 
 
-def test_content_matching_a_version_seen_before_is_not_filed_and_what_changed_says_it_came_back(tmp_path):
-    """S-0774: a restored or re-synced older copy isn't news; it is shown, closed by a rule, never read again."""
+@pytest.mark.parametrize("returned_at", [0, None], ids=["its-old-time", "no-time"])
+def test_content_matching_a_version_seen_before_is_not_filed_and_what_changed_says_it_came_back(tmp_path, returned_at):
+    """S-0774: a restored or re-synced older copy, with its old time or none, isn't news; it is shown, closed by a rule,
+    never read again."""
     ws, cfg, store = make(tmp_path, [])
     read, holder = _reader(ws, store)
     try:
@@ -105,12 +108,33 @@ def test_content_matching_a_version_seen_before_is_not_filed_and_what_changed_sa
         read([{**plan, "text": "Version two", "changed_at": t(0)}], NOW)
         changed = read([{**plan, "text": "Version three", "changed_at": t(1)}], NOW + timedelta(hours=1))
         assert len(changed.changed) == 1
-        back = read([{**plan, "text": "Version two", "changed_at": t(2)}], NOW + timedelta(hours=2))
+        when = {} if returned_at is None else {"changed_at": t(returned_at)}
+        back = read([{**plan, "text": "Version two", **when}], NOW + timedelta(hours=2))
         (request,) = [holder["store"].read().get("request", r).data for r in back.changed]
         assert request["auto_closed"]["rule"] == "Older version came back"
         assert request["auto_closed"]["reason"].startswith("An older version came back")
         again = read([{**plan, "text": "Version four", "changed_at": t(3)}], NOW + timedelta(hours=3))
         assert len(again.changed) == 1  # genuinely new content is filed
+    finally:
+        holder["store"].close()
+
+
+@pytest.mark.parametrize(
+    "first, second", [("Budget: 100", "Budget: 250"), ("Review on Tuesday at 10", "Review on Thursday at 2")]
+)
+def test_a_real_revert_saved_now_reaches_the_assistant(tmp_path, first, second):
+    """S-0774, from the #65 re-check: a figure put back or a meeting moved back, saved now, carries a newer time than
+    the saved copy, so it is a change the person hears about, never "an older version came back"."""
+    ws, cfg, store = make(tmp_path, [])
+    read, holder = _reader(ws, store)
+    try:
+        plan = {"key": "a", "title": "Plan"}
+        t = lambda h: (NOW + timedelta(hours=h)).isoformat()  # noqa: E731
+        read([{**plan, "text": first, "changed_at": t(0)}], NOW)
+        assert len(read([{**plan, "text": second, "changed_at": t(1)}], NOW + timedelta(hours=1)).changed) == 1
+        back = read([{**plan, "text": first, "changed_at": t(2)}], NOW + timedelta(hours=2))
+        (request,) = [holder["store"].read().get("request", r).data for r in back.changed]
+        assert not request.get("auto_closed"), request.get("auto_closed")
     finally:
         holder["store"].close()
 

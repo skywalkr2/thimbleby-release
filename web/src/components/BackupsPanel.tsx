@@ -78,10 +78,15 @@ export function BackupsPanel(props: { local: boolean }) {
       void client.invalidateQueries({ queryKey: ["status"] });
       const bad = fresh.targets.filter((x) => x.last_error);
       const good = fresh.targets.filter((x) => !x.last_error);
+      // With no folder chosen, Back up now makes the copy kept on this computer, and says so.
       setResult(
-        good.length > 0 && bad.length === 0
-          ? { ok: true, text: t("backups.now.done", { places: good.map((x) => x.label || folderName(x.path)).join(", ") }) }
-          : { ok: false, text: t("backups.now.failed", { problem: bad[0]?.last_error ?? "" }) },
+        fresh.targets.length === 0
+          ? fresh.local_last_error
+            ? { ok: false, text: t("backups.now.failed", { problem: fresh.local_last_error }) }
+            : { ok: true, text: t("backups.now.done_local") }
+          : good.length > 0 && bad.length === 0
+            ? { ok: true, text: t("backups.now.done", { places: good.map((x) => x.label || folderName(x.path)).join(", ") }) }
+            : { ok: false, text: t("backups.now.failed", { problem: bad[0]?.last_error ?? "" }) },
       );
     } catch (err) {
       setResult({ ok: false, text: t("backups.now.failed", { problem: problemText(err, t) }) });
@@ -92,7 +97,6 @@ export function BackupsPanel(props: { local: boolean }) {
 
   if (!found.data) return failure.failed ? <LoadFailed message={t("settings.failed")} onRetry={() => void found.refetch()} /> : <Skeleton shape="form" rows={2} />;
   const view: S["BackupsView"] = found.data;
-  const there = view.targets.length > 0;
   return (
     <section className="panel-section backups-panel backups-block" aria-labelledby="backups-where-title" data-backups="">
       <div className="heading">
@@ -134,13 +138,25 @@ export function BackupsPanel(props: { local: boolean }) {
         )
       )}
       <Actions align="start">
-        <Button loading={busy} disabled={!there} reason={t("backups.now.needs_folder")} onClick={() => void backUp()}>
+        <Button loading={busy} onClick={() => void backUp()}>
           {t("backups.now")}
         </Button>
       </Actions>
       <div role="status">
         {result && <p className={result.ok ? "hint" : "problem-note"}>{result.text}</p>}
       </div>
+      {/* The folders are shown by their names above; where they are, in full, is here. */}
+      <details className="more-options" data-backup-details="">
+        <summary>{t("backups.details")}</summary>
+        <ul className="plain-list">
+          {view.local_path && <li className="hint">{t("backups.details.local", { path: view.local_path })}</li>}
+          {view.targets.map((x) => (
+            <li key={x.path} className="hint">
+              {t("backups.details.folder", { label: x.label || folderName(x.path), path: x.path })}
+            </li>
+          ))}
+        </ul>
+      </details>
       </div>
 
       <div className="backups-block">

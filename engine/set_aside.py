@@ -9,6 +9,7 @@ again. Nothing here changes the mailbox itself.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 from functools import cache
 from pathlib import Path
@@ -50,10 +51,30 @@ def _normal_domain(domain: str) -> str:
 
 
 @cache
+def _shipped() -> dict[str, Any]:
+    return load_yaml(PUBLIC_DOMAINS_FILE.read_text(encoding="utf-8")) or {}
+
+
+@cache
 def shipped_public_domains() -> frozenset[str]:
     """The public mail domains the core ships, lower case."""
-    data = load_yaml(PUBLIC_DOMAINS_FILE.read_text(encoding="utf-8")) or {}
-    return frozenset(_normal_domain(d) for d in data.get("domains") or [])
+    return frozenset(_normal_domain(d) for d in _shipped().get("domains") or [])
+
+
+@cache
+def shipped_public_families() -> frozenset[str]:
+    """The names of free mail services the core ships that run under many country endings, lower case."""
+    return frozenset(_normal_domain(d) for d in _shipped().get("families") or [])
+
+
+#: A country or generic ending: one or two short parts (`de`, `ca`, `co.uk`, `com.br`).
+_ENDING = re.compile(r"[a-z]{2,3}(?:\.[a-z]{2,3})?")
+
+
+def _in_family(domain: str) -> bool:
+    """Whether the domain is a listed service's name followed only by a country or generic ending."""
+    name, _, ending = domain.partition(".")
+    return name in shipped_public_families() and bool(_ENDING.fullmatch(ending))
 
 
 def public_domains(cfg: Any) -> frozenset[str]:
@@ -64,9 +85,11 @@ def public_domains(cfg: Any) -> frozenset[str]:
 
 def is_public_domain(domain: str, cfg: Any) -> bool:
     """Whether this is a public mail domain, where anyone may have an address. It must be listed exactly, in any case:
-    a subdomain of a listed domain is not public, because a company can run its own mail on one. No sorting rule is
+    a subdomain of a listed domain is not public, because a company can run its own mail on one. A listed service's name
+    with a country or generic ending is public too (`<name>.ca`, `<name>.com.br`). No sorting rule is
     ever offered or saved for a whole public domain, only for a sender."""
-    return _normal_domain(domain) in public_domains(cfg)
+    found = _normal_domain(domain)
+    return found in public_domains(cfg) or _in_family(found)
 
 
 def offerable_link(link: Any) -> str | None:

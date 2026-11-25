@@ -127,6 +127,21 @@ export function Walkthrough(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
 
+  // Setup finished in another tab or window on this workspace (the server says so; the app hears every change): this window
+  // leaves the walkthrough too, with no reload. Only a finish that came after this window saw it open counts.
+  const sawOpen = useRef(false);
+  const leaving = useRef(false);
+  const ended = !!data?.walkthrough.finished;
+  useEffect(() => {
+    if (!data) return;
+    if (!ended) sawOpen.current = true;
+    else if (sawOpen.current && !leaving.current) {
+      leaving.current = true;
+      props.onDone();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, ended]);
+
   // A later request to open at a screen (the setup line, a status line) moves to it.
   useEffect(() => {
     if (!props.at || props.at.n === requested.current) return;
@@ -250,6 +265,7 @@ export function Walkthrough(
   };
 
   const finish = async () => {
+    leaving.current = true;
     await keep({ finished: true });
     props.onDone();
   };

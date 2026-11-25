@@ -11,6 +11,8 @@ const status = (age_hours: number | null): S["BackupStatus"] => ({
   encrypted: false,
   folder: "/mnt/drive/Backups",
   newest_hours: age_hours,
+  newest_at: null,
+  problem: null,
 });
 
 test("a backup's age is said in whole hours, singular for one, and in days from two days", () => {
@@ -51,4 +53,19 @@ test("a failed or three-day-old copy is a warning whether or not a folder is cho
   expect(backupText(old, t)).toContain("backup.overdue");
   const folderOld = { ...status(72), needs_attention: true };
   expect([backupState(folderOld), backupTone(folderOld)]).toEqual(["overdue", "warn"]);
+});
+
+test("only the folder missing is one state with one set of words: the folder by its name, a warning, never Backup failed", () => {
+  const b = { ...status(null), needs_attention: true, last_error: "'Drive' isn't there", problem: "folder_missing", folder: "Drive", newest_hours: 3 };
+  expect(backupState(b)).toBe("folder_missing");
+  expect(backupTone(b)).toBe("warn");
+  expect(backupWord(backupState(b), (k) => k)).toBe("backup.word.folder_missing");
+  expect(backupText(b, t)).toBe('backup.folder_missing{"folder":"Drive"}');
+  expect(backupText({ ...b, newest_hours: null }, t)).toBe('backup.folder_missing.none{"folder":"Drive"}');
+});
+
+test("a copy never made on this computer is its own warning, not a copy that doesn't exist described as fine", () => {
+  const b = local({ needs_attention: true, problem: "never", newest_hours: null });
+  expect(backupState(b)).toBe("never");
+  expect(backupText(b, t)).toBe("backup.local_never{}");
 });

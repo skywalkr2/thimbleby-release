@@ -330,6 +330,27 @@ test("handing in while work is held for a restart says it waits for the restart,
   expect(screen.getByRole("button", { name: "Go to Today" })).toBeInTheDocument();
 });
 
+test("handing in with no AI account for everyday work says it waits for an account, never that the assistant is on it", async () => {
+  const user = userEvent.setup();
+  const noAccount = { key: "no_account", group: "setup", kind: "no_account", count: 2, names: ["routine", "deep"], untrusted: false, unpriced: 0, actions: [], questions: [], outcome: {} };
+  fakeApi({ "POST handin": handed, "GET projects": () => PROJECTS, "GET today/queue": () => [noAccount] });
+  renderApp(<HandIn onClose={vi.fn()} />);
+  await user.type(screen.getByLabelText("Paste or type it here"), "Subject: dates");
+  await user.click(screen.getByRole("button", { name: "Hand in" }));
+  expect(await screen.findByText(/waits until you add an AI account/)).toBeInTheDocument();
+  expect(screen.queryByText(/is on it/)).toBeNull();
+});
+
+test("handing in with only the harder work lacking an account still says the assistant is on it", async () => {
+  const user = userEvent.setup();
+  const noAccount = { key: "no_account", group: "setup", kind: "no_account", count: 1, names: ["deep"], untrusted: false, unpriced: 0, actions: [], questions: [], outcome: {} };
+  fakeApi({ "POST handin": handed, "GET projects": () => PROJECTS, "GET today/queue": () => [noAccount] });
+  renderApp(<HandIn onClose={vi.fn()} />);
+  await user.type(screen.getByLabelText("Paste or type it here"), "Subject: dates");
+  await user.click(screen.getByRole("button", { name: "Hand in" }));
+  expect(await screen.findByText(/is on it/)).toBeInTheDocument();
+});
+
 test("handing in when nothing waits for Start still says the assistant is on it", async () => {
   const user = userEvent.setup();
   fakeApi({ "POST handin": handed, "GET projects": () => PROJECTS, "GET today/queue": () => [] });

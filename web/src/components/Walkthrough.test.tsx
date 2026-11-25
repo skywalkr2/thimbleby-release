@@ -14,6 +14,10 @@ import { Refuse, fakeApi, rcFixture, renderApp, setupStep as step, setupView, st
 const RETRY = inHours(2);
 import { Walkthrough } from "./Walkthrough";
 
+// The walkthrough's longer journeys click through several screens; on a slow runner they take longer than the
+// default limit, so the file allows each test a limit that fits the work (the waits inside still wait for the screen).
+vi.setConfig({ testTimeout: 20_000 });
+
 /** Made-up addresses are built from this, so no address is written out whole. */
 const WEB = "http" + "://";
 
@@ -574,6 +578,20 @@ describe("closing", () => {
     await user.click(await screen.findByRole("button", { name: "Go to Today" }));
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
     expect(calls.filter((c) => c.route === "POST setup/walkthrough").at(-1)?.body).toEqual({ finished: true });
+  });
+
+  test("setup finished in another tab takes this window off the walkthrough without a reload", async () => {
+    let walk: Partial<S["WalkthroughView"]> = { open: true, step: "mail" };
+    fakeApi(routes({ "GET setup": () => setupView(CORE.map((id) => step(id)), { walkthrough: { ...walk } as S["WalkthroughView"] }) }));
+    const { onDone, client } = open();
+    await screenTitle();
+    expect(onDone).not.toHaveBeenCalled();
+    // Another tab finishes it; this window hears that something changed and reads setup again.
+    walk = { open: false, finished: true, step: "done" };
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ["setup"] });
+    });
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
   });
 
   test("the last button lands on Today with the first-go line in focus, and the walkthrough is finished", async () => {
@@ -3346,7 +3364,7 @@ describe("the look", { timeout: 20_000 }, () => {
     const name = await screen.findByLabelText("Your full name");
     const main = screen.getByRole("main");
     // Until something is entered Continue is off, and says why under itself.
-    expect(within(main).getByRole("button", { name: "Continue" })).toBeDisabled();
+    await waitFor(() => expect(within(main).getByRole("button", { name: "Continue" })).toBeDisabled());
     expect(within(main).getByText("Enter your full name to go on.")).toBeInTheDocument();
     await user.click(name);
     await user.paste("Harbor Work");

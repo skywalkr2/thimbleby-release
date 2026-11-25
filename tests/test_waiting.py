@@ -184,3 +184,32 @@ def test_every_count_matches_the_rows_it_labels(env):
         found = record_page.page(store, "project", p.id, pm=cfg.workspace.user.person, today=today, cfg=cfg)
         assert len(found["open_actions"]) == row.get("open_actions", 0), p.id
         assert len(found["open_questions"]) == row.get("open_questions", 0), p.id
+
+
+def test_the_count_and_the_badge_match_the_rows_that_carry_looks_good(tmp_path):
+    """A change handed to review shows Looks good whatever it holds, so a call-off the assistant made (filed quietly)
+    counts with the others: the header count, the badge and the rows agree."""
+    from fastapi.testclient import TestClient
+
+    from api.app import create_app
+
+    ws, cfg, store = make(tmp_path, [mail("new", 2), mail("mid", 3), mail("old", 4), item("page")])
+    try:
+        first, second, third, *rest = batch((ws, cfg, store))
+        with_changeset(store, first.id, [("action.add", "applied")])
+        with_changeset(store, second.id, [("event.cancel", "applied")])
+        with_changeset(store, third.id, [("note", "applied")])
+        for r in (first, second, third):
+            with store.transaction() as tx:
+                cur = tx.get("request", r.id)
+                tx.update("request", r.id, {"state": "review"}, review_batches._PM, read_version=cur.version)
+        finish(store, rest)
+        token = "waiting-token"
+        app = create_app(ws, cfg, token, ui_dist=tmp_path / "no-ui", start_worker=False)
+        with TestClient(app, headers={"Authorization": f"Bearer {token}"}) as client:
+            rows = [c for c in client.get("/api/changes").json() if c["state"] == "review" and c["changeset"]]
+            badge = client.get("/api/waiting").json()["changed"]["total"]
+        assert len(rows) == 3
+        assert badge == len(rows)
+    finally:
+        store.close()

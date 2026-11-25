@@ -309,6 +309,22 @@ log = logging.getLogger(__name__)
 _PM = WriteContext(actor="pm", trust="trusted", op="ui")
 
 
+def backup_status(b: Any) -> BackupStatus:
+    """The backup's one state, as every screen gets it (the folder by its name, never its full path)."""
+    return BackupStatus(
+        configured=b.configured,
+        last_success=b.last_success,
+        age_hours=b.age_hours,
+        needs_attention=b.needs_attention,
+        last_error=b.last_error,
+        encrypted=b.encrypted,
+        folder=b.folder or "",
+        newest_hours=b.newest_hours,
+        newest_at=b.newest_at,
+        problem=b.problem,
+    )
+
+
 def content_disposition(kind: str, name: str) -> str:
     """A Content-Disposition value: an ASCII-only fallback name plus the full name in UTF-8 (RFC 6266)."""
     ascii_name = "".join(c for c in name if c.isascii() and (c.isalnum() or c in " ._-")).strip() or "file"
@@ -1639,16 +1655,7 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
                 maybe_today_usd=round(spent.maybe_today_usd, 4),
                 maybe_month_usd=round(spent.maybe_month_usd, 4),
             ),
-            backup=BackupStatus(
-                configured=b.configured,
-                last_success=b.last_success,
-                age_hours=b.age_hours,
-                needs_attention=b.needs_attention,
-                last_error=b.last_error,
-                encrypted=b.encrypted,
-                folder=b.folder or "",
-                newest_hours=b.newest_hours,
-            ),
+            backup=backup_status(b),
             requests=RequestCounts(**counts),
             network_wait=NetworkWait(count=len(waiting), since=min(waiting)) if waiting else None,
             version=events.version,
@@ -3107,7 +3114,8 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
         view = store.read()
         seen = counts(view, zone_of(cfg))["projects"]
         done = cfg.workspace.project.completed_status.strip().casefold()
-        meant = {p.id: describe(view, "project-status", p.data.get("status")) for p in view.list("project")}
+        listed = view.list("project")  # once: a project added while this runs must not be in one list and not another
+        meant = {p.id: describe(view, "project-status", p.data.get("status")) for p in listed}
         groups = set(sides.side_ids(view, cfg))
         from engine import project_health
         from engine.open_items import open_actions as _open_actions
@@ -3126,7 +3134,7 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
                 today=today,
                 quiet_after_weeks=cfg.workspace.project.quiet_weeks,
             )
-            for p in view.list("project")
+            for p in listed
         }
         return [
             ProjectView(
@@ -3163,7 +3171,7 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
                 status_disagrees=health[p.id].disagrees,
                 **seen.get(p.id, {}),
             )
-            for p in view.list("project")
+            for p in listed
         ]
 
     def _project_fields(changes: dict, prj: str | None = None) -> None:
@@ -3269,21 +3277,13 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
         found = backup_module.overview(ws, cfg)
         b = found.state
         return BackupsView(
-            state=BackupStatus(
-                configured=b.configured,
-                last_success=b.last_success,
-                age_hours=b.age_hours,
-                needs_attention=b.needs_attention,
-                last_error=b.last_error,
-                encrypted=b.encrypted,
-                folder=b.folder or "",
-                newest_hours=b.newest_hours,
-            ),
+            state=backup_status(b),
             message=b.message,
             targets=[BackupTargetView(**vars(t)) for t in found.targets],
             copies=[BackupCopyView(**vars(c)) for c in found.copies],
             schedule=found.schedule,
             switch=found.switch,
+            local_path=found.local_path,
             local_last_success=found.local_last_success,
             local_last_error=found.local_last_error,
             pending=pending_restore(),

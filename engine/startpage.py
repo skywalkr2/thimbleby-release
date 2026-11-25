@@ -28,11 +28,14 @@ _HELD = {errno.EADDRINUSE, errno.EACCES, 10048, 10013}
 
 
 def classify(error: BaseException) -> str:
-    """Which message a failure to start gets: disk_full, elsewhere, held or other."""
+    """Which message a failure to start gets: disk_full, elsewhere, ports, held or other."""
     from engine.handover import Refused
+    from engine.launcher import PortsTaken
 
     if isinstance(error, Refused):
         return "elsewhere"
+    if isinstance(error, PortsTaken):
+        return "ports"
     chain: list[BaseException] = []
     current: BaseException | None = error
     while current is not None and current not in chain:

@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 ADDRESS = "127.0.0.1"
-DAYS = 2
+DAYS = 365
 
 
 @dataclass(frozen=True)
@@ -36,8 +36,10 @@ def make(folder: Path) -> Certificates:
     strict verifier (the standard library's default) expects of each."""
     folder.mkdir(parents=True, exist_ok=True)
     found = Certificates(folder / "authority.pem", folder / "server.pem", folder / "server.key")
-    now = datetime.now(UTC) - timedelta(minutes=5)
-    until = now + timedelta(days=DAYS)
+    # Wide either side of today: a test may move its own clock days ahead while the server and its clients run on the
+    # real one, and each must find the certificates valid.
+    now = datetime.now(UTC) - timedelta(days=DAYS)
+    until = datetime.now(UTC) + timedelta(days=DAYS)
     authority_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     authority_id = x509.SubjectKeyIdentifier.from_public_key(authority_key.public_key())
     authority = (

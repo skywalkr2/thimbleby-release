@@ -514,3 +514,25 @@ def test_the_words_that_ask_for_a_message_come_from_the_language_settings(env):
     assert _asks_for_a_message(cfg, "Send the proofs to the printer") is None
     cfg.language.message_request_nouns = ["memo"]
     assert _asks_for_a_message(cfg, REVIEWERS_NOTE) is None
+
+
+@pytest.mark.parametrize(
+    "note, asks",
+    [
+        ("Draft for me a really short and friendly message to the printer", True),
+        ("Write two emails to the venue about the date", True),
+        ("Compose a very brief, warm reply to the editor", True),
+        ("Prepare a letter for the landlord", True),
+        ("Write a note to remember the printer call", False),
+        ("Write down the printer's new number", False),
+        ("Draft the second chapter's outline by Friday", False),
+        ("Send the proofs to the printer", False),
+    ],
+)
+def test_the_ways_a_note_asks_for_a_message_and_the_ways_it_does_not(env, note, asks):
+    """A note asks for a message with the asking word up to eight words before the message's word, and in the plural
+    too; a note to remember something is no message."""
+    from engine.applier import _asks_for_a_message
+
+    ws, cfg, store = env
+    assert (_asks_for_a_message(cfg, note) is not None) is asks, note

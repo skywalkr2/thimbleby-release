@@ -216,9 +216,10 @@ class Line:
     its day when it has one and `waiting_days` the days with no news).
     pack_tier (a tier an add-on declared for its own work, `tier` its id and `subject` its label, that the person hasn't
     mapped to an account: its work runs on the core tier named in `text` until they do, `count` kinds of work),
-    backup (no backup that works: `state` is unset for none set up, never for none yet, failed for a try that failed and
-    none before it, overdue for a last one older than `storage.backups.every_hours` twice over, whose age in hours is
-    `age_hours`).
+    backup (no backup that works: `state` is unset for none set up,
+    folder_missing for a folder that isn't there (`subject` its name, `since` when the copy kept on this computer was
+    made), never for none yet, failed for a try that failed and none before it, overdue for a last one older than
+    `storage.backups.every_hours` twice over, whose age in hours is `age_hours`).
     `count` is how many things the line covers; `text` the decision, question or held item in one line; `subject` the
     one thing's own words when a review or overdue line covers exactly one (the screen titles it by them) and `did` what
     that one thing was, as the op's name and the item's own words (the screen says it in the past tense); `deciding`
@@ -1401,6 +1402,7 @@ def _everything(
             again = timedelta(days=cfg.storage.backups.nudge_again_days)
             put_off = since is not None and now - since < again
         if not put_off:
+            gone = kept.problem == "folder_missing"
             lines.append(
                 Line(
                     key="backup",
@@ -1410,6 +1412,10 @@ def _everything(
                     kind="backup",
                     state="unset"
                     if nudge
+                    else "folder_missing"
+                    if gone
+                    else "never"
+                    if kept.problem == "never" and not kept.configured
                     else kept.problem
                     if kept.problem in ("failed", "smaller") and (kept.last_success or not kept.configured)
                     else "overdue"
@@ -1417,8 +1423,8 @@ def _everything(
                     else "failed"
                     if kept.last_error
                     else "never",
-                    age_hours=kept.age_hours if kept.configured else kept.newest_hours,
-                    since=kept.last_success or "",
+                    age_hours=kept.newest_hours if gone or not kept.configured else kept.age_hours,
+                    since=(kept.newest_at or "") if gone else (kept.last_success or ""),
                     subject=kept.place,
                 )
             )

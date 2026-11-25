@@ -807,8 +807,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
     # A restore the person staged is swapped in before anything reads or opens the workspace.
     from engine import restore_in_app
 
-    swapped = restore_in_app.swap_pending(ws.root)
-    if told := restore_in_app.note(ws) if swapped else None:
+    swapped, told = restore_in_app.swap_before_open(ws)
+    if told:
         if swapped == restore_in_app.RESTORED:
             print(f"Restored the workspace from the copy you chose. What was there before is kept in {told.kept}.")
         else:

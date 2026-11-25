@@ -683,11 +683,7 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
                 refuse(i, "targets", f"there is no project {project}")
         if isinstance(op, EventAddOp) and op.start is not None and (why := entry_problem(op.start, op.end)) is not None:
             refuse(i, "targets", f"calendar entry {op.title!r}: {why}")
-        if (
-            isinstance(op, (EventAddOp, EventSetOp, EventCancelOp, EventGuestsOp, SeriesAddOp))
-            and ctx.actor != "pm"
-            and _request_data(ctx).get("source_invitation")
-        ):
+        if isinstance(op, SCHEDULE_OPS) and ctx.actor != "pm" and _request_data(ctx).get("source_invitation"):
             refuse(
                 i,
                 "from-deleted-mail",
@@ -1717,6 +1713,10 @@ def _single_out(i: int, texts: Any, group: list[str], ctx: Context, lint: Any) -
         )
 
 
+#: Every op that puts an entry on the schedule or changes one: none may come from a deleted invitation.
+SCHEDULE_OPS = (EventAddOp, EventSetOp, EventCancelOp, EventGuestsOp, SeriesAddOp, SeriesLinkOp)
+
+
 def _openable(url: str) -> bool:
     """Whether a link is one another person could open: a public web address, not this computer or a private network."""
     import ipaddress
@@ -1733,9 +1733,13 @@ def _openable(url: str) -> bool:
         pass
     else:
         return address.is_global
-    if "." not in host or host == "localhost" or host.startswith("localhost."):
+    labels = host.split(".")
+    if len(labels) < 2 or re.fullmatch(r"localhost\d*", labels[0]):
         return False
-    return host.rsplit(".", 1)[-1] not in _NOT_PUBLIC_ENDINGS and not host.endswith(".localhost")
+    # No public name ends in a number: a browser reads such a host as an address, and `1.2.3.4.5` is none it can reach.
+    if re.fullmatch(r"\d+|0x[0-9a-f]*", labels[-1]):
+        return False
+    return labels[-1] not in _NOT_PUBLIC_ENDINGS and not re.fullmatch(r"localhost\d*", labels[-1])
 
 
 def _browser_address(host: str) -> str | None:
@@ -1766,7 +1770,20 @@ def _browser_address(host: str) -> str | None:
 
 
 _NOT_PUBLIC_ENDINGS = frozenset(
-    {"localhost", "test", "invalid", "local", "internal", "lan", "home", "corp", "intranet", "arpa"}
+    {
+        "localhost",
+        "test",
+        "invalid",
+        "local",
+        "localdomain",
+        "localdomain6",
+        "internal",
+        "lan",
+        "home",
+        "corp",
+        "intranet",
+        "arpa",
+    }
 )
 _LINK_IN_TEXT = re.compile(r"https?://(?:\[[^\]\s<>\"']+\]|[^\s<>\"'()\[\]])[^\s<>\"'()\[\]]*", re.IGNORECASE)
 
@@ -3934,8 +3951,9 @@ def _undated_todo(cs: ChangesetIn, ctx: Context) -> list[Problem]:
 
 
 def _asks_for_a_message(cfg: Any, text: str) -> str | None:
-    """The words of a note that ask for a message ("Draft a short message to the editor"): an asking word and, at most
-    three words later, a word that names a message, from the language settings. None when it asks for none."""
+    """The words of a note that ask for a message ("Draft a short message to the editor", "Draft for me a really short
+    and friendly message"): an asking word and, at most eight words later, a word that names a message (or several),
+    from the language settings. None when it asks for none."""
     verbs = [w.casefold() for w in language_words(cfg.language, "message_request_verbs") or []]
     nouns = [w.casefold() for w in language_words(cfg.language, "message_request_nouns") or []]
     if not verbs or not nouns:
@@ -3943,9 +3961,9 @@ def _asks_for_a_message(cfg: Any, text: str) -> str | None:
     pattern = (
         r"\b(?:"
         + "|".join(map(re.escape, verbs))
-        + r")\b(?:\s+\S+){0,3}?\s+(?:"
+        + r")\b(?:\s+\S+){0,8}?\s+(?:"
         + "|".join(map(re.escape, nouns))
-        + r")\b"
+        + r")s?\b"
     )
     found = re.search(pattern, text, flags=re.IGNORECASE)
     return found.group(0) if found else None

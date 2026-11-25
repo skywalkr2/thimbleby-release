@@ -69,9 +69,16 @@ def read_both(ws, cfg, store):
 
 
 def test_references_are_codes_not_dates_or_words():
-    assert references_in("Booking HS48213 on 2026-11-19, order 48213977, tel 555-1212.") == {"HS48213", "48213977"}
+    assert references_in("Booking HS48213 on 2026-11-19, order 48213977, tel 555-1212.") == {"HS48213"}
     assert references_in("Friday, October 16 at 3:00 PM") == set()
-    assert references_in("your booking hs48213 and order 48213977") == {"HS48213", "48213977"}
+    assert references_in("your booking hs48213 and order AB4821") == {"HS48213", "AB4821"}
+
+
+def test_phone_numbers_dates_quarters_and_words_with_a_number_are_never_codes():
+    """S-0798, the reviewer's list: a code needs letters and digits, and these are not codes."""
+    assert references_in("Call 5551234567 or (555) 123-4567 by 20261119; COVID19 rules; plans for 2026-Q4.") == set()
+    assert references_in("Q4-2026 and FY2026 budgets") == set()
+    assert references_in("Your booking ZZ12345 is canceled. Questions? 5551234567.") == {"ZZ12345"}
 
 
 @pytest.mark.parametrize("sender_differs", [False, True])

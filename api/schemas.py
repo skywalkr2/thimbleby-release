@@ -650,11 +650,20 @@ class BackupStatus(BaseModel):
     encrypted: bool = Field(False, description="Whether every backup copy is encrypted (a key is set for it).")
     folder: str = Field(
         "",
-        description="The folder off this computer the copies go to (its label, else its path); empty while the only "
-        "copies are kept on this computer. `configured` is true exactly when this is set.",
+        description="The folder off this computer the copies go to (its label, else its own name, never the whole "
+        "path); empty "
+        "while the only copies are kept on this computer. `configured` is true exactly when this is set.",
     )
     newest_hours: float | None = Field(
         None, description="How old the newest copy is, of either kind (kept here or in the folder); null when none yet."
+    )
+    newest_at: str | None = Field(
+        None, description="When the newest copy of either kind was made, an ISO time; null when none yet."
+    )
+    problem: str | None = Field(
+        None,
+        description="What is wrong with the backup, one state for every screen: failed, overdue, never, smaller or "
+        "folder_missing (the folder off this computer isn't there); null when all is well.",
     )
 
 
@@ -715,6 +724,9 @@ class BackupsView(BaseModel):
         description="Backups are made on their own now: the setting is on and there is a place to put them."
     )
     switch: bool = Field(description="The setting itself, which stays on while there is no folder.")
+    local_path: str = Field(
+        "", description="Where the copies kept on this computer are, in full, for the page's Details only."
+    )
     local_last_success: str | None = Field(None, description="When the last copy kept on this computer was made.")
     local_last_error: ScreenText | None = Field(None, description="Why the last try at that copy didn't work.")
     pending: PendingRestoreView | None = Field(
@@ -4345,6 +4357,7 @@ class QueueLineView(BaseModel):
             "changed",
             "level",
             "unset",
+            "folder_missing",
             "never",
             "smaller",
             "failed",
@@ -5589,7 +5602,16 @@ class FolderListView(BaseModel):
 
 class CloudFolderView(BaseModel):
     name: str = Field(description="The cloud drive's name, as the person knows it.")
-    recommended: bool = Field(description="The first one found, which the guide recommends.")
+    recommended: bool = Field(
+        description="The first one found that is not a work account's, which the guide recommends; none when every "
+        "drive found is a work account's."
+    )
+    account: str = Field(
+        "", description="The account the folder is named after, when its name has one (empty for a plain folder)."
+    )
+    work: bool = Field(
+        False, description="The folder belongs to an account that is not one of the drive's personal ones."
+    )
 
 
 class CloudFoldersView(BaseModel):
@@ -5610,6 +5632,7 @@ class CloudFolderChoice(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(description="A drive from GET /api/setup/backup-folders.")
+    account: str = Field("", description="The folder's account, as GET /api/setup/backup-folders gives it.")
     fingerprint: str
 
 
@@ -10161,6 +10184,11 @@ class NotNowDone(BaseModel):
     """A suggestion put off until something about it changes. `signal` is what Undo takes back."""
 
     signal: str
+    until: str | None = Field(
+        None,
+        description="When the line comes back on Today by itself, an ISO time, for a line that comes back after a "
+        "number of days (the backup folder nudge); null for one that waits for something to change.",
+    )
 
 
 class SearchHit(BaseModel):

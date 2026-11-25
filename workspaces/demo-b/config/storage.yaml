@@ -12,6 +12,7 @@ backups:
       macos: ["ExampleDrive"]
       windows: ["ExampleDrive"]
       linux: ["ExampleDrive"]
+      personal: ["Personal"]   # an account named like this is the person's own; any other account in a folder name is a work one
   cloud_path: [Backups, Thimbleby]
   former_cloud_path: [Backups, PM Cockpit]
   every_hours: 12

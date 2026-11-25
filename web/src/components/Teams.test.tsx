@@ -1,5 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { fakeApi, renderApp } from "../test-utils";
 import { Teams } from "./Teams";
 
@@ -24,4 +25,23 @@ test("with no team on file the section is left out", async () => {
   renderApp(<Teams />);
   await vi.waitFor(() => expect(calls.some((c) => c.route === "GET teams")).toBe(true));
   expect(screen.queryByRole("heading", { name: "Teams" })).toBeNull();
+});
+
+// U-35: the same row menu and column choice as Organizations, from the shared table, not a copy.
+test("a team's row has a menu that opens its page, and the columns can be chosen, adding who is on the team", async () => {
+  const user = userEvent.setup();
+  fakeApi({
+    "GET teams": () => [{ id: "TEAM-1", name: "Kitchen", people: ["PER-1", "PER-2"] }],
+    "GET people": () => [
+      { id: "PER-1", name: "Member One" },
+      { id: "PER-2", name: "Member Two" },
+    ],
+  });
+  renderApp(<Teams />);
+  const table = await screen.findByRole("table", { name: "Teams" });
+  await user.click(within(table).getByRole("button", { name: /Kitchen/ }));
+  expect(await screen.findByRole("menuitem", { name: "Open Kitchen's page" })).toBeInTheDocument();
+  await user.keyboard("{Escape}");
+  await user.click(within(table).getByRole("button", { name: "Choose columns" }));
+  expect(await screen.findByRole("menuitemcheckbox", { name: "Who is on it" })).toBeInTheDocument();
 });

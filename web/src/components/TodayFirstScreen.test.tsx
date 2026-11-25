@@ -94,7 +94,8 @@ test("with no folder chosen the line's button opens the setup step", async () =>
   const user = userEvent.setup();
   const { onOpenGuide } = show([line("backup", { key: "backup", state: "unset" })]);
   const found = await screen.findByRole("group", { name: "Pick a backup folder" });
-  expect(found).toHaveTextContent("Backups: local only. Pick a folder to protect against losing this computer");
+  // The line starts with a verb (S-0801), and Not now says when it comes back.
+  expect(found).toHaveTextContent("Keep a copy off this computer");
   await user.click(within(found).getByRole("button", { name: "Pick a folder" }));
   expect(onOpenGuide).toHaveBeenCalledWith("backup");
 });
@@ -267,4 +268,24 @@ test("a queue line made from outside content carries no Outside tag and no 'not 
   });
   expect(within(found).queryByText("Outside")).toBeNull();
   expect(found.textContent).not.toMatch(/from outside|not instructions/i);
+});
+
+test("a backup folder that isn't there is one line that starts with the verb, and says the copy kept here is safe", async () => {
+  const user = userEvent.setup();
+  const { onOpenGuide } = show([line("backup", { key: "backup", state: "folder_missing", subject: "cloud folder", since: "2026-10-19T17:08:00", age_hours: 2 })]);
+  const found = await screen.findByRole("group", { name: "Reconnect the backup folder" });
+  expect(found).toHaveTextContent("Backup folder missing · a copy from 5:08 PM is on this computer");
+  expect(found).not.toHaveTextContent("Backup failed");
+  await user.click(within(found).getByRole("button", { name: /More|menu/i }));
+  await user.click(await screen.findByRole("menuitem", { name: "Pick a folder" }));
+  expect(onOpenGuide).toHaveBeenCalledWith("backup");
+});
+
+test("Not now on the folder nudge says the day it comes back", async () => {
+  const user = userEvent.setup();
+  show([line("backup", { key: "backup", state: "unset" })], { "POST suggestions/not-now": () => ({ signal: "SIG-3", until: "2026-11-07T12:00:00+00:00" }) });
+  const found = await screen.findByRole("group", { name: "Pick a backup folder" });
+  await user.click(within(found).getByRole("button", { name: /More|menu/i }));
+  await user.click(await screen.findByRole("menuitem", { name: "Not now" }));
+  expect(await screen.findByText(/^Back on Today on /)).toBeInTheDocument();
 });

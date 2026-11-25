@@ -55,6 +55,39 @@ test.describe("counts, project status and state words", () => {
     await expect(mark.locator("[data-icon]")).toHaveCount(1);
   });
 
+  // U-23: the Status column holds the status and its reasons whole and "Last updated" is not cut.
+  test("Projects at 1024, 1280 and 1440 px: a warning row stays a few lines tall, the status keeps its room and Last updated shows whole", async ({ page }) => {
+    const weeksAgo = new Date(Date.now() - 43 * 86_400_000).toISOString();
+    await page.route("**/api/projects", async (route) => {
+      const found = await (await route.fetch().catch(() => null))?.json();
+      if (!found) return;
+      const rows = (found as Array<Record<string, unknown>>).map((p, i) =>
+        i === 0 && !p.side ? { ...p, status: p.status ?? "On track", status_meaning: "open", status_tone: "ok", completed: false, status_disagrees: true, overdue_actions: 6, quiet_weeks: 6, last_change: weeksAgo } : p,
+      );
+      await route.fulfill({ json: rows });
+    });
+    for (const width of [1024, 1280, 1440]) {
+      await page.setViewportSize({ width, height: 768 });
+      await open(page, "records/projects");
+      const mark = page.locator("[data-status-disagrees]").first();
+      await expect(mark).toBeVisible(LOADED);
+      const row = page.locator("tr", { has: mark }).first();
+      const cells = await row.locator("td").evaluateAll((tds) =>
+        tds.map((td) => {
+          const box = td.querySelector<HTMLElement>("div,span") ?? (td as HTMLElement);
+          return { w: Math.round(td.getBoundingClientRect().width), text: (td.textContent ?? "").trim().slice(0, 30), cut: box.scrollWidth > box.clientWidth };
+        }),
+      );
+      const height = (await row.boundingBox())!.height;
+      // The status keeps room for its reasons, so the row is a few lines and not a tall sliver; a shown "Last updated" is whole.
+      expect(height, `row height at ${width}`).toBeLessThan(100);
+      expect(cells[1].w, `Status width at ${width}`).toBeGreaterThanOrEqual(150);
+      expect(cells[1].cut, `Status cut at ${width}`).toBe(false);
+      if (cells[3].w > 0) expect(cells[3].cut, `Last updated cut at ${width}`).toBe(false);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), `sideways scroll at ${width}`).toBe(false);
+    }
+  });
+
   test("the chip and Today's line say a backup state in the same word", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await open(page, "today");
@@ -64,7 +97,7 @@ test.describe("counts, project status and state words", () => {
     if ((await line.count()) === 0) return;
     const said = await line.first().textContent();
     // The plain nudge to pick a folder is not a warning: the chip stays quiet and carries no backup word.
-    if (said?.includes("Pick a folder") || said?.includes("Backups: local only")) {
+    if (said?.includes("Pick a folder") || said?.includes("Keep a copy off this computer")) {
       await expect(chip).not.toContainText(/backup/i);
       return;
     }

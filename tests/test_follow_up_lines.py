@@ -51,7 +51,8 @@ def test_with_a_folder_and_no_backup_yet_it_says_never_and_a_failed_try_says_fai
     (line,) = backing_up(env, target=True)
     assert (line.state, line.group) == ("never", "setup")  # set up, not run yet: still a gap in setup
     (line,) = backing_up(env, target=True, last_error="the folder is not there", last_attempt=NOW.isoformat())
-    assert (line.state, line.group) == ("failed", "risk")  # it was set up and it stopped working
+    # The folder isn't there at all: its own state, a warning that is not "failed" (S-0795).
+    assert (line.state, line.group) == ("folder_missing", "risk")
 
 
 def test_an_overdue_backup_says_how_many_hours_ago_the_last_one_was(env):

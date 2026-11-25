@@ -2,6 +2,7 @@ version: 1
 mode: local
 host: 127.0.0.1
 port: 8766
+port_tries: 20   # how many ports after it the installed app tries when another program holds it
 base_path: /   # the address it is served at; set a path such as /admin to serve it under one
 open_browser: false   # open the app in this computer's browser when it starts
 addons_dir: null   # where add-ons installed from the Add-ons screen are kept (null: the app's data place)

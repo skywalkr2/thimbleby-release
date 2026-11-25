@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import hmac
 import json
 import os
@@ -354,6 +355,39 @@ class SwappableApp:
         await self._start()
         self.swaps += 1
         self._serving.set()
+
+
+class PortsTaken(OSError):
+    """Every port in the range tried is held by another program."""
+
+    def __init__(self, first: int, last: int):
+        super().__init__(errno.EADDRINUSE, f"ports {first} to {last} are all in use")
+        self.first, self.last = first, last
+
+
+def port_is_free(port: int) -> bool:
+    """Whether a listener could bind this loopback port now (the same options the server binds with)."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if sys.platform == "win32" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        elif sys.platform != "win32":
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        probe.bind(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
+def choose_port(port: int, tries: int, free: Callable[[int], bool] = port_is_free) -> int:
+    """The first free port from `port` up, looking at `tries` ports after it; PortsTaken when none is free."""
+    last = min(port + max(tries, 0), 65535)
+    for candidate in range(port, last + 1):
+        if free(candidate):
+            return candidate
+    raise PortsTaken(port, last)
 
 
 class LocalServer:

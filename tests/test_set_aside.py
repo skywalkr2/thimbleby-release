@@ -685,6 +685,39 @@ def test_a_public_mail_domain_is_the_shipped_list_plus_the_persons_own_and_match
     assert offerable_domain(f"a@{LISTS}", cfg) == LISTS and offerable_domain("no-address", cfg) is None
 
 
+@pytest.mark.parametrize(
+    "ending", ["ca", "de", "fr", "it", "es", "nl", "jp", "com", "net", "co.uk", "com.br", "com.au", "co.za", "com.mx"]
+)
+def test_every_listed_service_is_public_under_every_country_ending_and_nothing_else_is(tmp_path, ending):
+    """The regional names of the services that run the same free mail under many countries are public as a family; a
+    company's own domain that only starts with such a name, or a subdomain, is not."""
+    from engine.set_aside import is_public_domain, shipped_public_families
+
+    ws, cfg, store = make(tmp_path, [])
+    store.close()
+    families = sorted(shipped_public_families())
+    assert len(families) >= 5
+    for name in families:
+        assert is_public_domain(f"{name}.{ending}", cfg), f"{name}.{ending}"
+        assert is_public_domain(f"{name.upper()}.{ending}", cfg)
+        assert not is_public_domain(f"team.{name}.{ending}", cfg), "a subdomain is not the service"
+        assert not is_public_domain(f"{name}corp.{ending}", cfg), "a name that only starts with the service's"
+        assert not is_public_domain(f"{name}.{LISTS}", cfg), "a company's domain under the name"
+        assert not is_public_domain(f"{name}.{ending}.{ending}.{ending}", cfg), "more than two parts after the name"
+
+
+def test_the_private_relay_services_are_public_domains(tmp_path):
+    """An address at a relay forwards to someone's own mailbox, so anyone may have one there."""
+    from engine.set_aside import _shipped, is_public_domain
+
+    ws, cfg, store = make(tmp_path, [])
+    store.close()
+    shipped = _shipped()["domains"]
+    relays = shipped[shipped.index(next(d for d in shipped if d.startswith("duck"))) :]
+    assert len(relays) >= 10
+    assert all(is_public_domain(d, cfg) for d in relays)
+
+
 def test_a_set_aside_row_and_this_is_work_offer_no_domain_for_a_public_domain(app):
     ws, cfg, store, client, base = app
     add_items(ws, [mail("personal", f"friend@{public_domain()}", bulk=True)])

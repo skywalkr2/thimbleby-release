@@ -737,8 +737,12 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
 
         backups = current().storage.backups
         drives = cloud_folders.found(backups.cloud_folders, Path.home()) if local else []
+        best = cloud_folders.recommended(drives)
         return CloudFoldersView(
-            folders=[CloudFolderView(name=d.name, recommended=n == 0) for n, d in enumerate(drives)],
+            folders=[
+                CloudFolderView(name=d.name, recommended=n == best, account=d.account, work=d.work)
+                for n, d in enumerate(drives)
+            ],
             names=[d.name for d in backups.cloud_folders],
             shown=cloud_folders.shown(backups.cloud_path),
         )
@@ -750,7 +754,14 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
         from engine import cloud_folders
 
         backups = current().storage.backups
-        drive = next((d for d in cloud_folders.found(backups.cloud_folders, Path.home()) if d.name == body.name), None)
+        drive = next(
+            (
+                d
+                for d in cloud_folders.found(backups.cloud_folders, Path.home())
+                if (d.name, d.account) == (body.name, body.account)
+            ),
+            None,
+        )
         if not local or drive is None:
             raise HTTPException(status_code=400, detail="That drive isn't on this computer. Choose another folder.")
         try:
@@ -763,7 +774,7 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
         if not check.ok:
             raise HTTPException(status_code=400, detail=check.problem)
         # Choosing where backups go replaces where they went: one place, never two by accident.
-        targets = [{"path": check.path, "label": drive.name}]
+        targets = [{"path": check.path, "label": f"{drive.name} ({drive.account})" if drive.account else drive.name}]
         result = saved(save({"storage.backups.targets": targets}, [], body.fingerprint, allow=("storage.backups.",)))
         thread = worker.first_backup_soon()
         if thread is not None:

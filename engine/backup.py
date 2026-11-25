@@ -60,6 +60,8 @@ class BackupState:
     folder: str | None = None
     #: The age in hours of the newest copy of either kind (kept here or in a folder); None when there is none yet.
     newest_hours: float | None = None
+    #: When the newest copy of either kind was made, an ISO time; None when there is none yet.
+    newest_at: str | None = None
 
 
 def run_backup(
@@ -136,6 +138,39 @@ def due(ws: Workspace, cfg: Config, now: datetime | None = None) -> bool:
     return False
 
 
+#: The key of the day the app first looked after this workspace's backups, so a copy never made can be noticed.
+SINCE_KEY = "\0since"
+
+
+def note_started(ws: Workspace, now: datetime | None = None) -> None:
+    """Remember the first day backups were looked after here, once. A copy that has never been made is counted overdue
+    from that day."""
+    status = _load(ws)
+    if status.get(SINCE_KEY) is None:
+        status[SINCE_KEY] = (now or datetime.now(UTC)).isoformat()
+        _save(ws, status)
+
+
+def folder_label(path: str, label: str = "") -> str:
+    """How a folder is named on screen: what the person called it, else its own name (the last part of its path); never
+    the whole path, which has the account's name in it."""
+    if label.strip():
+        return label.strip()
+    parts = [p for p in re.split(r"[\\/]+", path.strip()) if p]
+    return parts[-1] if parts else path
+
+
+def _plain(text: str | None, places: list[tuple[str, str]]) -> str | None:
+    """`text` with each folder's full path replaced by its name in quotes. `places` pairs a path with its name."""
+    if not text:
+        return text
+    for path, name in sorted(places, key=lambda x: -len(x[0])):
+        for spelling in {path, str(Path(path).expanduser())}:
+            if spelling:
+                text = text.replace(spelling, f"'{name}'")
+    return text
+
+
 # ---- the copy kept on this computer ----------------------------------------------------------------------------------
 
 #: The key of the local copy's result in the status file; a folder path never takes this form.
@@ -189,6 +224,7 @@ def _make_local(ws: Workspace, settings: BackupSettings, now: datetime) -> dict[
             "size_bytes": prev.get("size_bytes"),
         }
     status[LOCAL_KEY] = entry
+    status.setdefault(SINCE_KEY, now.isoformat())
     _save(ws, status)
     return entry
 
@@ -303,7 +339,9 @@ def _run(ws: Workspace, cfg: Config, now: datetime) -> dict[str, Any]:
                 raise ValueError("the backup folder is inside the workspace, so it isn't a copy somewhere else")
             if not base.is_dir():
                 # Never create it: a drive that isn't connected would otherwise get a folder on this computer's disk.
-                raise ValueError(f"{base} isn't there; connect the drive or check the folder")
+                raise ValueError(
+                    f"'{folder_label(target.path, target.label)}' isn't there; connect the drive or check the folder"
+                )
             size = _write_copy(ws, base, stamp, secret, cfg.storage.backups.keep)
             before = status.get(key, {}).get("size_bytes")
             status[key] = {
@@ -453,20 +491,30 @@ def _copy_encrypted(ws: Workspace, dest: Path, secret: str) -> None:
 
 
 def _local_state(ws: Workspace, cfg: Config, now: datetime, encrypted: bool) -> BackupState:
-    """The state while only the copy kept on this computer exists: quiet, unless the last try failed or the newest copy
-    is older than `warn_after_hours`. Not being off the computer yet is the setup line's to say, not a warning."""
-    entry = _load(ws).get(LOCAL_KEY, {})
-    success, error = entry.get("last_success"), entry.get("last_error")
+    """The state while only the copy kept on this computer exists: quiet, unless the last try failed, the newest copy
+    is older than `warn_after_hours`, or no copy has been made `warn_after_hours` after backups were first looked
+    after. Not being off the computer yet is the setup line's to say, not a warning."""
+    status = _load(ws)
+    entry = status.get(LOCAL_KEY, {})
+    success = entry.get("last_success")
+    own = [(str(local_folder(ws, cfg.storage.backups)), folder_label(str(local_folder(ws, cfg.storage.backups))))]
+    error = _plain(entry.get("last_error"), own)
     age = _hours(now, success) if success else None
     newest = round(age, 2) if age is not None else None
+    since = status.get(SINCE_KEY)
+    warn_after = cfg.storage.backups.warn_after_hours
     if error:
         message, problem = f"The last copy kept on this computer failed: {error}", "failed"
-    elif age is not None and age > cfg.storage.backups.warn_after_hours:
+    elif age is not None and age > warn_after:
         message, problem = f"The newest copy kept on this computer is {_ago(age)}. That's overdue.", "overdue"
+    elif age is None and since and _hours(now, since) > warn_after:
+        message, problem = "No copy has been kept on this computer yet. That's overdue.", "never"
     else:
         message = "Backups: this computer only." + (f" The newest copy is {_ago(age)}." if age is not None else "")
-        return BackupState(False, None, None, False, message, None, encrypted, newest_hours=newest)
-    return BackupState(False, None, None, True, message, error, encrypted, problem=problem, newest_hours=newest)
+        return BackupState(False, None, None, False, message, None, encrypted, newest_hours=newest, newest_at=success)
+    return BackupState(
+        False, None, None, True, message, error, encrypted, problem=problem, newest_hours=newest, newest_at=success
+    )
 
 
 def state(ws: Workspace, cfg: Config, now: datetime | None = None) -> BackupState:
@@ -476,23 +524,38 @@ def state(ws: Workspace, cfg: Config, now: datetime | None = None) -> BackupStat
     if not targets:
         return _local_state(ws, cfg, now, encrypted)
     status = _load(ws)
-    folder = targets[0].label or targets[0].path
+    folder = folder_label(targets[0].path, targets[0].label)
+    mine = str(local_folder(ws, cfg.storage.backups))
+    places = [(t.path, folder_label(t.path, t.label)) for t in targets] + [(mine, folder_label(mine))]
     local_success = status.get(LOCAL_KEY, {}).get("last_success")
-    errors = [s["last_error"] for t in targets if (s := status.get(t.path)) and s.get("last_error")]
+    here = f" A copy made {_ago(_hours(now, local_success))} is on this computer." if local_success else ""
+    errors = [_plain(s["last_error"], places) for t in targets if (s := status.get(t.path)) and s.get("last_error")]
     successes = [s["last_success"] for t in targets if (s := status.get(t.path)) and s.get("last_success")]
     if not successes:
-        why = f" The last try failed: {errors[0]}" if errors else ""
+        missing = next((t for t in targets if not Path(t.path).expanduser().is_dir()), None)
+        if missing is not None and errors:
+            problem = "folder_missing"
+            message = f"Backup folder missing: '{folder_label(missing.path, missing.label)}' not found." + here
+        else:
+            problem = None
+            why = f" The last try failed: {errors[0]}" if errors else ""
+            lead = f"The backup to '{folder}' hasn't worked yet." if local_success else "No successful backup yet."
+            message = lead + why + here
         return BackupState(
             True,
             None,
             None,
             True,
-            "No successful backup yet." + why,
+            message,
             errors[0] if errors else None,
             encrypted,
+            place=folder_label(missing.path, missing.label) if problem == "folder_missing" else None,
+            problem=problem,
             folder=folder,
             newest_hours=round(_hours(now, local_success), 2) if local_success else None,
+            newest_at=local_success,
         )
+    newest_at = max([*successes, *([local_success] if local_success else [])])
     newest = round(min(_hours(now, x) for x in [*successes, *([local_success] if local_success else [])]), 2)
     every = cfg.storage.backups.every_hours
     warn_after = cfg.storage.backups.warn_after_hours
@@ -500,26 +563,37 @@ def state(ws: Workspace, cfg: Config, now: datetime | None = None) -> BackupStat
     worst: tuple[tuple[float, float], BackupState] | None = None
     for target in targets:
         entry = status.get(target.path, {})
-        success, error, warning = entry.get("last_success"), entry.get("last_error"), entry.get("last_warning")
+        success, warning = entry.get("last_success"), entry.get("last_warning")
+        error = _plain(entry.get("last_error"), places)
         age = (now - datetime.fromisoformat(success)).total_seconds() / 3600 if success else None
-        place = (target.label or target.path) if named else None
+        name = folder_label(target.path, target.label)
+        place = name if named else None
+        gone = bool(error) and not Path(target.path).expanduser().is_dir()
         if age is None:
             if not error:
                 continue  # a place added just now, not tried yet: the schedule tries it, and it isn't a failure
-            problem, rank = "never", 4.0
-            message = f"{place}: no successful backup yet. The last try failed: {error}"
+            if gone:
+                problem, rank = "folder_missing", 4.0
+                message = f"Backup folder missing: '{name}' not found.{here}"
+            else:
+                problem, rank = "never", 4.0
+                message = f"{place}: no successful backup yet. The last try failed: {error}"
         elif age > warn_after:
             problem, rank = "overdue", 3.0
             message = f"Backed up {_ago(age)}. That's overdue."
         elif error and age > every:
-            problem, rank = "failed", 2.0
-            message = f"The last backup failed ({error}); the one before it was {_ago(age)}."
+            if gone:
+                problem, rank = "folder_missing", 2.0
+                message = f"Backup folder missing: '{name}' not found.{here}"
+            else:
+                problem, rank = "failed", 2.0
+                message = f"The last backup failed ({error}); the one before it was {_ago(age)}."
         elif warning:
             problem, rank = "smaller", 1.0
             message = warning + "."
         else:
             continue
-        if place and not message.startswith(place):
+        if place and not message.startswith(place) and problem != "folder_missing":
             message = f"{place}: {message}"
         found = BackupState(
             True,
@@ -529,10 +603,11 @@ def state(ws: Workspace, cfg: Config, now: datetime | None = None) -> BackupStat
             message + (" Encrypted." if encrypted else ""),
             error,
             encrypted,
-            place if named else None,
+            place if named or problem == "folder_missing" else None,
             problem,
             folder,
             newest,
+            newest_at,
         )
         # The place that has gone longest without a copy is the one the person is told about.
         weight = (rank, age or 0.0)
@@ -553,6 +628,7 @@ def state(ws: Workspace, cfg: Config, now: datetime | None = None) -> BackupStat
         encrypted,
         folder=folder,
         newest_hours=newest,
+        newest_at=newest_at,
     )
 
 
@@ -613,12 +689,22 @@ def overview(ws: Workspace, cfg: Config, now: datetime | None = None, limit: int
     them (at most `limit`), and whether backups run on their own."""
     settings = cfg.storage.backups
     status = _load(ws)
+    mine = local_folder(ws, settings)
+    places = [(t.path, folder_label(t.path, t.label)) for t in settings.targets] + [
+        (str(mine), folder_label(str(mine)))
+    ]
     targets, copies, seen = [], [], set()
     for target in settings.targets:
         base = Path(target.path).expanduser()
         entry = status.get(target.path, {})
         targets.append(
-            TargetState(target.path, target.label, base.is_dir(), entry.get("last_success"), entry.get("last_error"))
+            TargetState(
+                target.path,
+                target.label,
+                base.is_dir(),
+                entry.get("last_success"),
+                _plain(entry.get("last_error"), places),
+            )
         )
         if not base.is_dir():
             continue
@@ -637,7 +723,6 @@ def overview(ws: Workspace, cfg: Config, now: datetime | None = None, limit: int
                     backup_crypto.encrypted(folder),
                 )
             )
-    mine = local_folder(ws, settings)
     if mine.is_dir():
         for folder in _finished_copies(mine, ws.root.name):
             if folder.resolve() not in seen:
@@ -657,11 +742,11 @@ def overview(ws: Workspace, cfg: Config, now: datetime | None = None, limit: int
         state(ws, cfg, now),
         targets,
         copies[: max(0, limit)],
-        settings.automatic and bool(settings.targets),
+        settings.automatic,
         settings.automatic,
         str(mine),
         own.get("last_success"),
-        own.get("last_error"),
+        _plain(own.get("last_error"), places),
     )
 
 

@@ -35,3 +35,12 @@ test("a long title takes the room it is given and the rest is a second line, nev
   const { placed } = packLane([one(long, "2026-11-03")], "2026-11-02", 28, 40, (i) => i.title, 240);
   expect(placed[0].w).toBe(TOUCH + LABEL_PAD + 240);
 });
+
+test("past items, all held at one place, stack by the date they were due, earliest on top, whatever their words' widths", () => {
+  const titles = ["A rather long title for the middle one", "Short", "A title of middling length", "Tiny"];
+  const dues = ["2026-10-21", "2026-10-14", "2026-10-19", "2026-10-16"];
+  // Each is held at today (the stack), and says its own day in `detail`.
+  const items = titles.map((title, n) => ({ ...one(title, "2026-11-02"), detail: dues[n] }));
+  const { placed } = packLane(items, "2026-11-02", 14, 40, (i) => i.title, undefined, (i) => i.detail);
+  expect([...placed].sort((a, b) => a.row - b.row).map((p) => p.item.detail)).toEqual([...dues].sort());
+});

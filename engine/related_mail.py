@@ -18,14 +18,20 @@ from engine.triage import sender_address
 from engine.untrusted import outside_block, quoted_attribute
 from engine.workspace import Workspace
 
-#: A code a booking or an order carries: letters and digits together, or a long number, six or more long. It is
-#: matched on the text in upper case, so a code written in lower case is the same code.
-_REFERENCE = re.compile(r"\b(?=[A-Z0-9-]{6,}\b)(?:(?=[A-Z-]*\d)(?=[0-9-]*[A-Z])[A-Z0-9-]+|\d{7,})\b")
+#: A code a booking or an order carries: letters and digits together, six or more long. It is matched on the text in
+#: upper case, so a code written in lower case is the same code. A number alone (a phone number, a date, an amount) is
+#: never one.
+_REFERENCE = re.compile(r"\b(?=[A-Z0-9-]{6,}\b)(?=[A-Z-]*\d)(?=[0-9-]*[A-Z])[A-Z0-9-]+\b")
+#: Letters and digits that aren't a code: a word with a small number after it ("COVID19"), a year's quarter or fiscal
+#: year ("2026-Q4", "Q4-2026", "FY2026").
+_NOT_A_CODE = re.compile(r"[A-Z]{4,}\d{1,2}|(?:19|20)\d\d-?Q[1-4]|Q[1-4]-?(?:19|20)\d\d|FY(?:19|20)?\d\d")
 
 
 def references_in(text: str) -> set[str]:
-    """The booking or order codes in the text (a date such as 2026-11-19 is not one)."""
-    return {code.strip("-") for code in _REFERENCE.findall((text or "").upper()) if len(code.strip("-")) >= 6}
+    """The booking or order codes in the text: letters and digits together, never a phone number, a date, a year's
+    quarter or a word with a number after it."""
+    found = (code.strip("-") for code in _REFERENCE.findall((text or "").upper()))
+    return {code for code in found if len(code) >= 6 and not _NOT_A_CODE.fullmatch(code)}
 
 
 def _moment(value: Any) -> datetime | None:

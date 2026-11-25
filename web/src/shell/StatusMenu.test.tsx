@@ -520,3 +520,14 @@ test("a failed copy on this computer says Backup failed on the chip", async () =
   show(statusFixture({}, { backup: { configured: false, folder: "", age_hours: null, newest_hours: 5, needs_attention: true, last_error: "No space left" } }));
   await chipText("Backup failed");
 });
+
+test("a folder that isn't there says so in the chip and the popover, by its name, with the copy kept on this computer", async () => {
+  const user = userEvent.setup();
+  show(statusFixture({}, { backup: { configured: true, age_hours: null, needs_attention: true, last_error: "'Drive' isn't there", problem: "folder_missing", folder: "Drive", newest_hours: 3 } }));
+  await chipText("Backup folder missing");
+  const dialog = await open(user);
+  const backup = dialog.querySelector("[data-state='backup']") as HTMLElement;
+  expect(within(backup).getByText("Backup folder missing")).toBeInTheDocument();
+  expect(backup).toHaveTextContent("Backup: this computer only · folder 'Drive' not found");
+  expect(dialog).not.toHaveTextContent("Backup failed");
+});

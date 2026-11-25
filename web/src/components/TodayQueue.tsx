@@ -1060,7 +1060,7 @@ export function useLineTitle(): (line: QueueLine) => string {
       case "nudge":
         return t("queue.nudge", { name });
       case "backup":
-        return t(line.state === "unset" ? "queue.backup.title.unset" : "queue.backup.title");
+        return t(line.state === "unset" ? "queue.backup.title.unset" : line.state === "folder_missing" ? "queue.backup.title.missing" : "queue.backup.title");
       case "escalate":
         return t("queue.escalate", { text: shortTitle(line.text ?? "").replace(/[?.!\s]+$/, "") });
       case "answer":
@@ -1544,7 +1544,7 @@ function QueueRow(props: {
         const at = (key: string, values: Record<string, string> = {}) => t(place ? `${key}_at` : key, { place, ...values });
         const age = backupAge({ age_hours: line.age_hours ?? null }, t) ?? "";
         const words =
-          state === "unset" ? t("queue.backup.unset") : state === "failed" ? at("queue.backup.failed") : state === "overdue" ? at("queue.backup.overdue", { age }) : state === "smaller" ? at("queue.backup.smaller") : at("queue.backup.never");
+          state === "unset" ? t("queue.backup.unset") : state === "folder_missing" ? (line.since ? t("queue.backup.missing", { time: clockTime(line.since) }) : t("queue.backup.never")) : state === "failed" ? at("queue.backup.failed") : state === "overdue" ? at("queue.backup.overdue", { age }) : state === "smaller" ? at("queue.backup.smaller") : at("queue.backup.never");
         const run = () => void act(() => api.backup(), () => ({ message: t("toast.backup_ran") }), undefined, { key: line.key, touches: ["today", "status", "backups", "setup", "sync"] });
         return {
           // Never set up or never run is a gap in setup; once it ran and stopped, or fails, it is a risk.
@@ -1553,7 +1553,8 @@ function QueueRow(props: {
           // The title is what the person does; the state keeps its one word, then what happened.
           meta: state === "unset" ? words : `${backupWord(state ?? "failed", t)} · ${words}`,
           primary: state === "unset" ? { label: t("queue.backup.pick"), run: () => props.handlers.onOpenGuide?.("backup") } : { label: t("backup.now"), run },
-          menu: [],
+          // A folder that isn't there can be reconnected (then Back up now) or replaced by another.
+          menu: state === "folder_missing" ? [{ id: "pick", label: t("queue.backup.pick"), run: () => props.handlers.onOpenGuide?.("backup") }] : [],
         };
       }
       case "escalate": {
@@ -1886,7 +1887,9 @@ function QueueRow(props: {
   // A suggestion can be put off until something about it changes; what is due cannot.
   // The backup line is put off only as the nudge to pick a folder; a failed or old copy stays until it is mended.
   const offerable = SUGGESTION_KINDS.has(line.kind) || (line.kind === "backup" && line.state === "unset");
-  const menu: MenuAction[] = offerable ? [...d.menu, { id: "not-now", label: t("queue.notnow"), run: () => notNow(line.key) }] : d.menu;
+  // Not now on the backup nudge says the day it comes back (the line's `until`).
+  const notNowMessage = line.kind === "backup" ? (put: { until?: string | null }) => (put.until ? t("queue.backup.not_now_back", { day: day(put.until) }) : t("queue.notnow.done")) : undefined;
+  const menu: MenuAction[] = offerable ? [...d.menu, { id: "not-now", label: t("queue.notnow"), run: () => notNow(line.key, notNowMessage) }] : d.menu;
   useRowKeys(ref, { toggle: props.beside ? choose : opens ? () => (props.paned && !open ? choose() : select(!open)) : undefined });
   // Under one side's filter, a line that is on no side (the app's own, or about all of them) says so, so it is never read as that side's.
   const everySide = props.everySideTag && sideFilter.choice !== "all" && line.side == null && !(line.sides ?? []).length ? <span className={styles.tag} data-every-side="">{t("queue.every_side")}</span> : null;

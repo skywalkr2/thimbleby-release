@@ -255,3 +255,30 @@ def test_renaming_onto_a_name_already_offered_is_refused_in_the_menus_own_words(
             [{"op": "list.rename", "list": "project-status", "value": "Paused", "to": "On track"}],
             "Renamed",
         )
+
+
+def test_a_project_added_while_the_projects_list_is_read_never_breaks_it(api, monkeypatch):
+    """A project created while the Projects list is being put together (another tab, the assistant) was in one of its
+    lists and not another, and the screen got a server error: the projects are listed once."""
+    client, base, store, cfg = api
+    real_read = store.read
+
+    class Growing:
+        """A view whose project list gains one between its first and later calls, as a write in between would."""
+
+        def __init__(self, view):
+            self.view, self.calls = view, 0
+
+        def __getattr__(self, name):
+            return getattr(self.view, name)
+
+        def list(self, kind, *args, **kwargs):
+            found = self.view.list(kind, *args, **kwargs)
+            if kind == "project":
+                self.calls += 1
+                return found[:-1] if self.calls == 1 else found
+            return found
+
+    monkeypatch.setattr(store, "read", lambda *a, **k: Growing(real_read(*a, **k)))
+    response = client.get(f"{base}/projects")
+    assert response.status_code == 200, response.text

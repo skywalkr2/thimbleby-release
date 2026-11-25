@@ -51,3 +51,34 @@ domains:
   - qq.com
   - 163.com
   - naver.com
+  # Private-relay services: each address there forwards to someone's own mailbox, so anyone may have one.
+  - duck.com
+  - mailbox.org
+  - posteo.de
+  - privaterelay.appleid.com
+  - simplelogin.com
+  - simplelogin.co
+  - slmail.me
+  - aleeas.com
+  - anonaddy.me
+  - anonaddy.com
+  - addy.io
+  - mozmail.com
+  - passmail.net
+  - passinbox.com
+  - 33mail.com
+# Services that run the same free mail under many country names: a domain is public when it is one of these names followed by
+# a country or generic ending of one or two short parts (hotmail.ca, outlook.de, yahoo.com.br, live.co.za, outlook.jp).
+families:
+  - hotmail
+  - outlook
+  - live
+  - windowslive
+  - msn
+  - yahoo
+  - ymail
+  - aol
+  - gmx
+  - yandex
+  - zoho
+

@@ -315,6 +315,15 @@ def test_a_domain_the_person_added_as_public_also_needs_the_very_address(cal):
     assert outcome["status"] == "held" and not after["cancelled"]
 
 
+def test_a_different_bookings_cancellation_sharing_only_the_venues_phone_number_changes_nothing(cal):
+    """S-0798, the reviewer's probe: both mails carry the venue's phone number, which is no booking code."""
+    ws, cfg, store, put = cal
+    entry = make_entry(store, title="Hotel reservation HS48213 (front desk 5551234567)")
+    said = "Your booking ZZ12345 is canceled. Questions? Call 5551234567."
+    _, outcome, after = run(store, cfg, entry.id, sender="frontdesk@hotel.example.com", quote=said)
+    assert outcome["status"] != "applied" and not after["cancelled"]
+
+
 def test_a_different_domain_for_the_same_date_leaves_the_entry_and_asks(cal):
     ws, cfg, store, put = cal
     entry = make_entry(store)

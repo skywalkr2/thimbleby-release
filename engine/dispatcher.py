@@ -535,6 +535,18 @@ def process(
         # the person answers; Keep, a check that finds the sign-in back, or a change of the settings lets it go.
         _set(store, request_id, state="queued", waiting=outcome.stop, cause=outcome.cause)
         return None
+    if outcome.cause and outcome.cause.get("kind") == "no_account":
+        # No AI account serves this kind of work yet: the request waits in line, untouched and with no try counted, and
+        # goes when an account is added (Today's line says to add one). It is no failure, so there is nothing to retry.
+        _set(
+            store,
+            request_id,
+            state="queued",
+            waiting=outcome.stop or NO_ACCOUNT_WAITING,  # it names the kind of work that has no account
+            cause=outcome.cause,
+            attempts=attempts_before,
+        )
+        return None
     if outcome.cause and outcome.cause.get("kind") == "paused":
         # Every account that could take it is waiting for a limit to reset: it stays in line and runs by itself then.
         _set(store, request_id, state="queued", waiting=outcome.stop, cause=outcome.cause)
@@ -1310,6 +1322,7 @@ UNREADABLE_WHY = "The assistant's answer wasn't in the form this work needs"
 UNREADABLE = "The assistant's answer wasn't in the form this work needs, even when asked again."
 #: What a request waits on while no AI account can be reached for want of a network connection.
 OFFLINE_WAITING = "Waiting for an internet connection"
+NO_ACCOUNT_WAITING = "Waiting for an AI account"
 #: What a request waits on after a run that did no work, and what it says when run after run did none.
 NO_WORK = "The AI program started but did no work"
 NO_WORK_STOPPED = (
@@ -1440,14 +1453,16 @@ def _unreadable_feedback(text: str, err: Any) -> str:
     problem."""
     told = f"Your previous answer couldn't be read: {err}."
     try:
-        shown = json.loads(text)
-    except (TypeError, ValueError):
-        shown = None
-    if not isinstance(shown, dict) or len(text) > UNREADABLE_SHOWN:
+        # Read as the answer itself was: inside a code fence or after a line of prose counts too.
+        found = _json_object(text) if isinstance(text, str) else None
+    except Unreadable:
+        found = None
+    shown = json.dumps(found, ensure_ascii=False) if isinstance(found, dict) else ""
+    if not shown or len(shown) > UNREADABLE_SHOWN:
         return told + " Answer with only the JSON object."
     return (
         "Your previous answer (its ops are numbered from 0):\n"
-        + text.strip()
+        + shown
         + "\n\n"
         + told
         + " Correct only what the problem names, keep every other op exactly as it was, and answer with only the "

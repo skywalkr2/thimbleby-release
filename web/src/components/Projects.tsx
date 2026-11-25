@@ -147,7 +147,7 @@ export function Projects() {
     },
     { id: "stage", header: t("projects.col.stage"), rank: 1, cell: (p) => p.phase ?? "" },
     { id: "target", header: t("projects.col.target"), rank: 1, core: true, cell: (p) => (p.target ? day(p.target) : "") },
-    { id: "updated", header: t("projects.col.updated"), rank: 2, cell: (p) => <Ago iso={p.last_change} /> },
+    { id: "updated", header: t("projects.col.updated"), rank: 2, weight: 1.5, cell: (p) => <Ago iso={p.last_change} /> },
     { id: "group", header: t("projects.col.group"), rank: 2, cell: (p) => p.group ?? "" },
     { id: "owner", header: t("setup.owner"), rank: 2, core: true, cell: (p) => p.owner_name ?? "" },
     { id: "actions", header: t("projects.col.actions"), rank: 1, core: true, numeric: true, cell: (p) => (p.open_actions > 0 ? p.open_actions : "") },

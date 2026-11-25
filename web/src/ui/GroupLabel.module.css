@@ -6,6 +6,7 @@
   font-family: var(--font-ui); font-size: var(--text-label); line-height: var(--lh-label); font-weight: var(--weight-semibold);
   letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--text-muted);
 }
+.label[data-case="sentence"] { text-transform: none; letter-spacing: 0; font-size: var(--text-sm); line-height: var(--lh-sm); }
 .label[data-tone="danger"] { color: var(--danger); }
 .words { min-width: 0; overflow-wrap: anywhere; }
 .count {

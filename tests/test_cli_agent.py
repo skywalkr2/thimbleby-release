@@ -74,6 +74,16 @@ elif mode == "pwd":
 elif mode == "pwd-labelled":
     open(paths[0], "w").write("ok")
     print("Working in: " + os.getcwd() + ".")
+elif mode == "step-arrow":
+    open(paths[0], "w").write("ok")
+    print("Step 4: ran pwd -> " + os.getcwd())
+elif mode == "typed-tool-call":
+    # a cheap model types out the call it would make, naming the folder it worked out from the outbox path; nothing runs
+    open(paths[0], "w").write("ok")
+    print('<parameter name="command">ls -laR ' + os.getcwd() + " && cat notes.txt</parameter>")
+elif mode == "typed-json-command":
+    open(paths[0], "w").write("ok")
+    print(json.dumps({"command": "echo 'ok' > " + paths[0] + " && pwd && ls -la " + os.getcwd()}))
 elif mode == "lists-home":
     open(paths[0], "w").write("ok")
     print(" ".join(sorted(os.listdir(os.environ["HOME"]))))
@@ -492,11 +502,20 @@ def test_an_expired_sign_in_is_read_as_a_sign_in_problem_by_the_preset_that_prin
             assert err.kind == "auth" and err.hint == agent["sign_in_hint"], (preset["id"], said)
 
 
-@pytest.mark.parametrize("mode", ["pwd", "pwd-labelled", "lists-home"])
+@pytest.mark.parametrize("mode", ["pwd", "pwd-labelled", "step-arrow", "lists-home"])
 def test_a_program_that_only_prints_its_folder_or_lists_its_home_fails_the_probe(agent_script, mode):
     """S-0721: a command that ran and wrote nothing is still a command that ran."""
     checks = CliAgentAdapter(settings(agent_script, mode, output_via="outbox")).lockdown_test("m")
     assert {c.name: c.ok for c in checks}["shell"] is False
+
+
+@pytest.mark.parametrize("mode", ["typed-tool-call", "typed-json-command"])
+def test_a_command_the_model_only_typed_out_is_no_proof_that_one_ran(agent_script, mode):
+    """S-0793: a folder path the model can work out from the outbox path, written as a command's argument in a call it
+    only typed out, is not what printing the working folder gives: the check passes a clean account (the reviewer's two
+    answers from Haiku)."""
+    checks = CliAgentAdapter(settings(agent_script, mode, output_via="outbox")).lockdown_test("m")
+    assert {c.name: c.ok for c in checks}["shell"] is True
 
 
 def test_a_limit_notice_inside_long_json_is_the_limit_and_a_long_real_answer_is_not(agent_script):
@@ -566,6 +585,43 @@ def test_a_json_sign_in_file_open_elsewhere_keeps_its_own_keys_and_is_untouched_
     after = json.loads((real / name).read_text(encoding="utf-8"))
     assert after[keys[0]] == "refreshed" and after["theirs"] == "kept"
     assert stat.S_IMODE((real / name).stat().st_mode) == 0o600
+
+
+def test_a_sign_in_file_the_persons_own_session_refreshed_during_the_run_is_never_overwritten(
+    agent_script, tmp_path, monkeypatch
+):
+    """The #65 re-check (S-0721 F0-1): the person's own session of the program refreshed its token while a run went on;
+    the run's copy, changed too, is older, and writing it back would sign the person out. Both kinds of copy read the
+    real file again first: a whole file is left as the person's session wrote it, and a key it changed keeps its
+    value."""
+    real = tmp_path / "real-home"
+    real.mkdir()
+    (real / ".signin.json").write_text("token-1", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(real))
+    adapter = CliAgentAdapter(settings(agent_script, "home", home="fresh", home_files=[".signin.json"]))
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    home = adapter._fresh_home(scratch)
+    copied = adapter._copied_in(home)
+    (real / ".signin.json").write_text("token-2 from the person's own session", encoding="utf-8")
+    (home / ".signin.json").write_text("token-1 refreshed by the run", encoding="utf-8")
+    adapter._copy_back(copied)
+    assert (real / ".signin.json").read_text(encoding="utf-8") == "token-2 from the person's own session"
+
+    preset = next(e for e in _presets() if e["settings"]["agent"].get("home_keys"))
+    name, keys = next(iter(preset["settings"]["agent"]["home_keys"].items()))
+    (real / name).write_text(json.dumps({key: "before" for key in keys}), encoding="utf-8")
+    adapter = CliAgentAdapter(_preset_account(agent_script, "tree", preset["id"]))
+    scratch = tmp_path / "scratch-2"
+    scratch.mkdir()
+    home = adapter._fresh_home(scratch)
+    copied = adapter._copied_in(home)
+    (real / name).write_text(json.dumps({key: "before" for key in keys} | {keys[0]: "theirs, newer"}), encoding="utf-8")
+    (home / name).write_text(json.dumps({key: "run's" for key in keys}), encoding="utf-8")
+    adapter._copy_back(copied)
+    after = json.loads((real / name).read_text(encoding="utf-8"))
+    assert after[keys[0]] == "theirs, newer", "a key the person's session changed keeps their value"
+    assert all(after[key] == "run's" for key in keys[1:]), "keys only the run changed still come back"
 
 
 def test_a_long_limit_notice_and_any_answer_flagged_as_an_error_are_errors_not_answers(agent_script):

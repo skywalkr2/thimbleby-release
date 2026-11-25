@@ -1731,8 +1731,9 @@ class StopCause(BaseModel):
         "reached for want of a network connection; the request stays queued since `since` and is looked at again "
         "at `until`, and no try is counted. identity: a command-line agent's sign-in changed (`why` changed) or "
         "isn't set for the material's level (`why` level); the request stays queued, untouched, until the person "
-        "answers for `account`. no_account: the kind of work has no AI account to run on, so every request stopped "
-        "for it is one line that asks for an account. no_fit: accounts exist and none can take this work (each is "
+        "answers for `account`. no_account: the kind of work has no AI account to run on; the request stays queued, "
+        "untouched and with no try counted, until an account is added, and Today's one line asks for an account. "
+        "no_fit: accounts exist and none can take this work (each is "
         "refused for a reason named in the request's wait); requests refused for the same reasons are one line."
     )
     level: Literal["open", "internal", "restricted"] | None = Field(

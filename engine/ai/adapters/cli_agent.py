@@ -100,6 +100,27 @@ def plain(text: str) -> str:
     return _ANSI.sub("", text or "")
 
 
+#: What a command line or a typed-out tool call has before an argument, and a printed answer never has.
+_COMMAND_LINE = re.compile(r"""<parameter|"command"\s*:|&&|\|\||[|;`$]|(?<![-=])>""")
+#: A label a printed answer gives a path: "cwd:", "Working in:", "ran pwd ->", "folder =".
+_LABEL_END = (":", "->", "=>", "=")
+
+
+def _printed_as_output(said: str, folders: set[str]) -> bool:
+    """Whether the working folder's own path stands where printing it puts it: alone on its line, or after a label
+    ("cwd: ...", "Step 4: ran pwd -> ..."), with nothing of a file after it. Never as an argument in a command line or a
+    typed-out tool call ("ls -laR <folder>", `"command": "... <folder>"`)."""
+    for folder in folders:
+        for found in re.finditer(re.escape(folder) + r"(?![/\\\w-])", said):
+            line = said[: found.start()].rpartition("\n")[2]
+            if _COMMAND_LINE.search(line):
+                continue
+            before = line.rstrip(" \t\"'(")
+            if not before or before.endswith(_LABEL_END):
+                return True
+    return False
+
+
 class CliAgentAdapter:
     name = "cli-agent"
     #: The program adds its own instructions to every request, so the account check measures that fixed overhead.
@@ -252,7 +273,9 @@ class CliAgentAdapter:
 
     @staticmethod
     def _copy_back(copied: list[tuple[Path, Path, bytes, list[str] | None]]) -> None:
-        """A sign-in file the run changed (a refreshed token) is put back where the program keeps it. A JSON file copied
+        """A sign-in file the run changed (a refreshed token) is put back where the program keeps it, unless the real
+        file changed too while the run went on (the person's own session of the program refreshed it): it is read again
+        right before the write, and a newer real file is never overwritten with the run's older copy. A JSON file copied
         in part gives back only its keys, written into the real file over the same keys; the rest of the real file stays
         as it was, so a part never replaces the whole."""
         for inside, source, before, keys in copied:
@@ -261,6 +284,8 @@ class CliAgentAdapter:
                 if now == before or not _is_text(now):  # a sign-in kept as text; a binary one is left as it was
                     continue
                 if keys is None:
+                    if source.read_bytes() != before:
+                        continue  # the person's own session wrote it during the run: theirs is the newer sign-in
                     # A sign-in file keeps the permissions it had: written back wider, a token would be readable by
                     # anyone on the computer.
                     write_whole(source, now.decode("utf-8"), mode=stat.S_IMODE(source.stat().st_mode))
@@ -269,9 +294,16 @@ class CliAgentAdapter:
                 # read again right before the write, only keys whose value differs are put in, the file is replaced in
                 # one step with the permissions it had, and an unchanged file is left alone.
                 changed, whole = json.loads(now), json.loads(source.read_text(encoding="utf-8"))
-                if not isinstance(changed, dict) or not isinstance(whole, dict):
+                given = json.loads(before)
+                if not isinstance(changed, dict) or not isinstance(whole, dict) or not isinstance(given, dict):
                     continue
-                differs = {k: changed[k] for k in keys if k in changed and whole.get(k) != changed[k]}
+                # A key the person's own session changed during the run (the real value no longer what was copied in)
+                # keeps the real value.
+                differs = {
+                    k: changed[k]
+                    for k in keys
+                    if k in changed and whole.get(k) != changed[k] and whole.get(k) == given.get(k)
+                }
                 if differs:
                     whole.update(differs)
                     write_whole(source, json.dumps(whole, indent=2), mode=stat.S_IMODE(source.stat().st_mode))
@@ -535,11 +567,11 @@ class CliAgentAdapter:
                     inside.read_text(encoding="utf-8", errors="replace") if inside.is_file() else "",
                 ]
             )
-            # Only a command gives these: a listing that names a hidden file, or the working folder's own path with
-            # nothing of a file after it, alone or after a label ("cwd: ..."), which is what printing the working
-            # directory gives; the prompt only ever names files inside the folder.
+            # Only a command gives these: a listing that names a hidden file, or the working folder's own path where a
+            # command's output stands (`_printed_as_output`). The prompt names files inside the folder, so the model can
+            # work the folder out and write it into a call it only types out; that is no proof anything ran.
             folders = {str(scratch), str(scratch.resolve())}
-            printed_folder = any(re.search(re.escape(f) + r"(?![/\\\w-])", said) for f in folders)
+            printed_folder = _printed_as_output(said, folders)
             ran = shell.exists() or marker in said or home_marker in said or printed_folder
             checks.append(
                 LockdownCheck(

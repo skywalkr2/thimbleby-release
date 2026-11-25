@@ -149,8 +149,8 @@ def waits_for_its_time(request: dict[str, Any], now: datetime) -> bool:
     """Whether a queued request is waiting for a time to come (an account's limit to reset, the next automatic try or
     the next look for the network) and that time is still ahead, or for the person's answer about an agent's sign-in."""
     cause = request.get("cause") or {}
-    if cause.get("kind") == "identity":
-        return True  # it waits for the person's answer about an agent's sign-in, not for a time
+    if cause.get("kind") in ("identity", "no_account"):
+        return True  # it waits for the person's answer about an agent's sign-in, or for an account, not for a time
     if cause.get("kind") not in ("paused", "retry", "offline") or not cause.get("until"):
         return False
     until = datetime.fromisoformat(str(cause["until"]))
@@ -172,7 +172,11 @@ def release_paused(store: Store) -> int:
     released = 0
     with store.transaction() as tx:
         for r in tx.requests_unfinished():
-            if r.data["state"] == "queued" and (r.data.get("cause") or {}).get("kind") in ("paused", "identity"):
+            if r.data["state"] == "queued" and (r.data.get("cause") or {}).get("kind") in (
+                "paused",
+                "identity",
+                "no_account",
+            ):
                 tx.update(
                     "request",
                     r.id,
@@ -1099,8 +1103,9 @@ class Worker:
     def backup_if_due(self) -> bool:
         """Make the scheduled backups that are due: the copy kept on this computer, and the ones off it. On its own
         thread, so a large copy never holds up other work. Returns whether a backup off this computer was made."""
-        from engine.backup import due, local_due, run_backup, run_local
+        from engine.backup import due, local_due, note_started, run_backup, run_local
 
+        note_started(self.ws)
         # The copy this computer keeps for itself, from the first day, whether or not a folder off it is chosen.
         mine = self.cfg.storage.backups
         made = False

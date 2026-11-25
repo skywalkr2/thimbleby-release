@@ -219,6 +219,9 @@
 .cell { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; min-height: 6.5rem; padding: var(--space-1); border-left: 1px solid var(--border); border-top: 1px solid var(--border); }
 .cell:nth-child(7n + 1) { border-left: 0; }
 .cell[data-outside] { color: var(--text-muted); }
+/* A day nobody works: the same hatch as the week's days off, and its words ("Day off") under the number. */
+.cell[data-off] { background-image: repeating-linear-gradient(135deg, transparent 0 4px, color-mix(in srgb, var(--border-strong) 40%, transparent) 4px 5px); }
+.cell > .offLabel { margin: 0; padding: 0 var(--space-1); }
 .cell[data-outside] .dayNumber { font-weight: var(--weight-regular); }
 .dayButton { display: flex; align-items: center; justify-content: space-between; gap: var(--space-1); width: 100%; min-height: 2rem; padding: var(--space-1); font: inherit; font-size: var(--text-sm); color: inherit; background: transparent; border: 0; border-radius: var(--radius-sm); cursor: pointer; text-align: left; }
 .dayButton:hover { background: var(--surface-hover); }
@@ -262,6 +265,7 @@
   .weekdays > span { padding-inline: var(--space-1); }
   .dayButton { min-height: 2.75rem; }
   .titles { display: none; }
+  .offReason { display: none; }
   .clashMarkText { display: none; }
   .clashMarkNum { display: inline; }
   .count, .dots { display: flex; }

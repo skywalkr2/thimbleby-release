@@ -4,14 +4,13 @@ export:
   every_minutes: 60
   commit: true
 backups:
-  targets:
-    - path: /Volumes/Backup/cockpit
-      label: external drive
+  targets: []   # none chosen here, so the copy stays on this computer only and Today offers to pick a folder
   cloud_folders:    # the cloud drives the setup guide offers, found by where each keeps its folder
     - name: Example Drive
       macos: ["ExampleDrive"]
       windows: ["ExampleDrive"]
       linux: ["ExampleDrive"]
+      personal: ["Personal"]   # an account named like this is the person's own; any other account in a folder name is a work one
   cloud_path: [Backups, Thimbleby]
   former_cloud_path: [Backups, PM Cockpit]
   every_hours: 24

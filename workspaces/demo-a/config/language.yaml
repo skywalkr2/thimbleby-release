@@ -88,7 +88,7 @@ due_before_words: [before]
 # The words before a span that says how far ahead a day is ("in 2 days"), and the words of an answer that put a question off to a later day ("let's follow up on this in 2 days").
 due_span_words: [in]
 message_request_verbs: [draft, write, compose, prepare, send]
-message_request_nouns: [message, email, e-mail, note, reply, mail, text]
+message_request_nouns: [message, email, e-mail, reply, mail, text, letter]
 answer_later_words: [follow up, follow-up, followup, revisit, circle back, come back to this, come back to it, check back, ask me again, remind me, pick this up, look at this again, look at it again, talk about this again]
 # The words of the day-and-time phrases ("day after tomorrow", "first thing Monday", "within 48 hours"), by what they mean; the number words read in "within two days"; the time zone abbreviations ("5pm ET") and the zone each names; and the list of named days ("by Thanksgiving") the reader uses (empty: the one for the language).
 due_phrase_words:

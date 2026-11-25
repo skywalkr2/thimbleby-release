@@ -198,3 +198,64 @@ def test_checking_a_backup_folder_never_depends_on_one_shared_file_name(tmp_path
     (folder / ".thimbleby-write-test").mkdir()  # a fixed name would be taken here
     assert check_backup_folder(ws, str(folder)).ok
     assert [p.name for p in folder.iterdir()] == [".thimbleby-write-test"]
+
+
+# ---- which account (S-0801) ---------------------------------------------------------------------------------------
+
+
+def test_a_folder_named_after_an_account_says_which_and_a_work_one_is_not_a_personal_one(tmp_path):
+    (tmp_path / "Sync - Acme").mkdir()
+    (tmp_path / "Sync - Personal").mkdir()
+    (tmp_path / "Plain").mkdir()
+    pattern = CloudFolder(name="Test drive", linux=["Sync - A*"], personal=["Personal"])
+    assert [(f.account, f.work) for f in cloud_folders.found([pattern], tmp_path, "linux")] == [("cme", True)]
+    mine = CloudFolder(name="Test drive", linux=["Sync - *Personal"], personal=["Personal"])
+    assert [(f.account, f.work) for f in cloud_folders.found([mine], tmp_path, "linux")] == [("", False)]
+    star = CloudFolder(name="Test drive", linux=["Sync - *"], personal=["Personal"])
+    # The first match in name order is the account's; a name ending in a personal word is a personal one.
+    assert [(f.account, f.work) for f in cloud_folders.found([star], tmp_path, "linux")] == [("Acme", True)]
+    plain = CloudFolder(name="Test drive", linux=["Plain"])
+    assert [(f.account, f.work) for f in cloud_folders.found([plain], tmp_path, "linux")] == [("", False)]
+
+
+def test_the_recommended_drive_skips_a_work_account_and_is_none_when_only_work_is_found(tmp_path):
+    work = CloudFolder(name="Work drive", linux=["Corp - *"], personal=["Personal"])
+    own = CloudFolder(name="Own drive", linux=["Own"], personal=["Personal"])
+    (tmp_path / "Corp - Acme").mkdir()
+    only_work = cloud_folders.found([work, own], tmp_path, "linux")
+    assert [(f.name, f.account, f.work) for f in only_work] == [("Work drive", "Acme", True)]
+    assert cloud_folders.recommended(only_work) is None
+    (tmp_path / "Own").mkdir()
+    both = cloud_folders.found([work, own], tmp_path, "linux")
+    assert [f.name for f in both] == ["Work drive", "Own drive"] and cloud_folders.recommended(both) == 1
+
+
+def test_the_route_names_the_account_recommends_none_on_a_work_drive_and_saves_by_name_and_account(
+    tmp_path, monkeypatch
+):
+    ws, cfg, store = make(tmp_path)
+    home = tmp_path / "home"
+    (home / "Corp - Acme").mkdir(parents=True)
+    with_home(monkeypatch, home)
+    # The route reads the settings from the files, so the one work drive is written there.
+    from engine.config.yaml_edit import set_key
+
+    path = ws.config_dir / "storage.yaml"
+    drives = [
+        {
+            "name": "Work drive",
+            "linux": ["Corp - *"],
+            "windows": ["Corp - *"],
+            "macos": ["Corp - *"],
+            "personal": ["Personal"],
+        }
+    ]
+    path.write_text(set_key(path.read_text(encoding="utf-8"), ["backups", "cloud_folders"], drives), encoding="utf-8")
+    c, base = client(ws, cfg, store)
+    listed = c.get(f"{base}/setup/backup-folders").json()["folders"]
+    assert listed == [{"name": "Work drive", "recommended": False, "account": "Acme", "work": True}]
+    fingerprint = c.get(f"{base}/settings").json()["fingerprint"]
+    wrong = c.post(
+        f"{base}/setup/backup-folder/cloud", json={"name": "Work drive", "account": "", "fingerprint": fingerprint}
+    )
+    assert wrong.status_code == 400

@@ -213,7 +213,7 @@ def test_a_folder_off_the_computer_is_named_and_a_fresh_copy_there_is_quiet(tmp_
     cfg.storage.backups.targets = [BackupTarget(path=str(drive))]
     backup.run_backup(ws, cfg, NOW)
     kept = backup.state(ws, cfg, NOW + timedelta(hours=2))
-    assert (kept.configured, kept.needs_attention, kept.folder, kept.newest_hours) == (True, False, str(drive), 2.0)
+    assert (kept.configured, kept.needs_attention, kept.folder, kept.newest_hours) == (True, False, "drive", 2.0)
 
 
 def test_the_status_route_sends_the_folder_and_the_age_of_the_newest_copy(tmp_path):
@@ -223,3 +223,115 @@ def test_the_status_route_sends_the_folder_and_the_age_of_the_newest_copy(tmp_pa
     sent = c.get(f"{base}/status").json()["backup"]
     assert sent["configured"] is False and sent["folder"] == "" and sent["needs_attention"] is False
     assert 0 <= sent["newest_hours"] < 1
+
+
+def test_with_no_folder_the_local_copy_is_due_again_the_next_day_and_back_up_now_makes_it(tmp_path):
+    """S-0794: the automatic switch covers the local copy, so day two makes one with no folder; Back up now too."""
+    ws, cfg, store = make(tmp_path)
+    settings = cfg.storage.backups
+    assert settings.automatic and settings.targets == []
+    run_local(ws, settings, NOW)
+    assert not backup.local_due(ws, settings, NOW + timedelta(hours=3))
+    assert backup.local_due(ws, settings, NOW + timedelta(hours=25))
+    c, base = client(ws, cfg, store)
+    assert c.post(f"{base}/backup").status_code == 200
+    assert len(copies(ws)) == 2
+    assert c.get(f"{base}/backups").json()["schedule"] is True
+
+
+def test_a_copy_never_made_warns_after_warn_after_hours_counted_from_the_first_day(tmp_path):
+    """S-0794: with the daily job never run, the header doesn't promise a copy that doesn't exist."""
+    ws, cfg, _ = make(tmp_path)
+    assert backup.state(ws, cfg, NOW).needs_attention is False  # nothing noted yet: quiet, as before
+    backup.note_started(ws, NOW)
+    backup.note_started(ws, NOW + timedelta(days=9))  # only the first day counts
+    assert backup.state(ws, cfg, NOW + timedelta(hours=47)).needs_attention is False
+    late = backup.state(ws, cfg, NOW + timedelta(hours=49))
+    assert (late.needs_attention, late.problem) == (True, "never")
+    run_local(ws, cfg.storage.backups, NOW + timedelta(hours=50))
+    assert backup.state(ws, cfg, NOW + timedelta(hours=51)).needs_attention is False
+
+
+def _missing_folder(tmp_path):
+    ws, cfg, store = make(tmp_path)
+    run_local(ws, cfg.storage.backups, NOW)
+    cfg.storage.backups.targets = [BackupTarget(path=str(tmp_path / "Account" / "cloud"), label="cloud folder")]
+    backup.run_backup(ws, cfg, NOW + timedelta(hours=1))  # the folder isn't there: refused, never created
+    return ws, cfg, store
+
+
+def test_only_the_folder_missing_is_one_state_with_one_set_of_words_and_no_full_path(tmp_path):
+    """S-0795, S-0796: the header, the popover, Today and /api/backups say "Backup folder missing"; the copy kept on
+    this computer is named; the full path (it holds the account's name) is nowhere in them."""
+    ws, cfg, store = _missing_folder(tmp_path)
+    at = NOW + timedelta(hours=2)
+    kept = backup.state(ws, cfg, at)
+    assert (kept.configured, kept.needs_attention, kept.problem) == (True, True, "folder_missing")
+    assert kept.message.startswith("Backup folder missing: 'cloud folder' not found.")
+    assert "on this computer" in kept.message and "No successful backup" not in kept.message
+    assert kept.folder == "cloud folder" and kept.newest_at is not None
+    assert "Account" not in (kept.last_error or "") and "Account" not in kept.message
+    from engine.today_queue import queue
+
+    (line,) = [x for x in queue(ws, store, cfg, at) if x.kind == "backup"]
+    assert (line.state, line.subject, line.group) == ("folder_missing", "cloud folder", "risk")
+    assert line.since == kept.newest_at and line.age_hours == 2.0
+
+
+def test_the_routes_never_send_the_full_path_and_the_path_is_behind_details(tmp_path):
+    ws, cfg, store = _missing_folder(tmp_path)
+    c, base = client(ws, cfg, store)
+    sent = c.get(f"{base}/status").json()["backup"]
+    assert sent["folder"] == "cloud folder" and sent["problem"] == "folder_missing"
+    assert "Account" not in str(sent) and str(tmp_path) not in str(sent)
+    body = c.get(f"{base}/backups").json()
+    assert "No successful backup yet" not in body["message"] and body["state"]["problem"] == "folder_missing"
+    assert "Account" not in body["message"] and str(tmp_path) not in str(body["state"])
+    assert str(tmp_path) not in str([t["last_error"] for t in body["targets"]])
+    assert body["local_path"] and body["targets"][0]["path"].endswith("cloud")  # for the page's Details only
+
+
+def test_a_folder_with_no_label_is_named_by_its_own_name_not_its_path(tmp_path):
+    ws, cfg, _ = make(tmp_path)
+    run_local(ws, cfg.storage.backups, NOW)
+    cfg.storage.backups.targets = [BackupTarget(path=str(tmp_path / "Account" / "lantern-backups"))]
+    backup.run_backup(ws, cfg, NOW + timedelta(hours=1))
+    kept = backup.state(ws, cfg, NOW + timedelta(hours=2))
+    assert kept.folder == "lantern-backups" and "Account" not in kept.message
+
+
+def test_not_now_on_the_folder_nudge_answers_with_the_day_it_comes_back(tmp_path):
+    """S-0801: Not now's toast says "Back on Today on <day>", so the answer gives that day (`nudge_again_days` on)."""
+    ws, cfg, store = make(tmp_path)
+    run_local(ws, cfg.storage.backups, datetime.now(UTC))
+    c, base = client(ws, cfg, store)
+    put = c.post(f"{base}/suggestions/not-now", json={"key": "backup"})
+    assert put.status_code == 200, put.text
+    again = datetime.fromisoformat(put.json()["until"])
+    days = (again - datetime.now(UTC)).total_seconds() / 86400
+    assert abs(days - cfg.storage.backups.nudge_again_days) < 0.1
+
+
+def test_one_demo_has_the_weeks_goals_and_no_backup_folder_so_all_good_and_the_nudge_show(tmp_path):
+    """S-0801: one demo is seeded with the week's goals and an unset backup."""
+    from engine.shipped import demo
+
+    ws = init_workspace(tmp_path / "demo", template=demo("demo-a"), history=True)
+    cfg = ws.config()
+    assert cfg.storage.backups.targets == []
+    store = Store(ws.db_path, cfg=cfg)
+    plans = store.read().list("week_plan")
+    assert len(plans) == 1 and len(plans[0].data["goals"]) >= 2 and plans[0].data["confirmed_at"]
+
+
+def test_a_failed_try_into_a_folder_that_is_there_is_still_failed_not_missing(tmp_path):
+    ws, cfg, _ = make(tmp_path)
+    drive = tmp_path / "drive"
+    drive.mkdir()
+    cfg.storage.backups.targets = [BackupTarget(path=str(drive), label="drive")]
+    backup.run_backup(ws, cfg, NOW)
+    status = backup._load(ws)
+    status[str(drive)]["last_error"] = "no space left on the disk"
+    backup._save(ws, status)
+    kept = backup.state(ws, cfg, NOW + timedelta(hours=30))
+    assert (kept.problem, kept.needs_attention) == ("failed", True)

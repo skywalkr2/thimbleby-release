@@ -121,7 +121,7 @@ test("Save sends the path and the fingerprint, and says where backups will go", 
     label: "",
     fingerprint: "fp-1",
   });
-  expect(await screen.findByText("Backups will go to /mnt/new.")).toBeInTheDocument();
+  expect(await screen.findByText("Backups will go to new.")).toBeInTheDocument();
   // The folder is saved and the raw box goes away again.
   await waitFor(() => expect(screen.queryByLabelText("Folder")).toBeNull());
 });
@@ -284,7 +284,29 @@ describe("the first backup", () => {
 describe("the cloud drives found on this computer", () => {
   const NONE = { "GET settings": () => ({ fingerprint: "fp-1", items: [] }) };
   const drives = (...names: string[]) => ({
-    "GET setup/backup-folders": () => ({ folders: names.map((name, n) => ({ name, recommended: n === 0 })), shown: "Backups › Example App" }),
+    "GET setup/backup-folders": () => ({ folders: names.map((name, n) => ({ name, recommended: n === 0, account: "", work: false })), shown: "Backups › Example App" }),
+  });
+
+  test("a work account's drive names its account, is never recommended or chosen for the person, and has no button until picked", async () => {
+    const user = userEvent.setup();
+    const calls = api({
+      ...NONE,
+      "GET setup/backup-folders": () => ({
+        folders: [{ name: "Drive One", recommended: false, account: "Acme", work: true }],
+        shown: "Backups › Example App",
+      }),
+      "POST setup/backup-folder/cloud": () => ({ changes: [], fingerprint: "fp-2", needs_restart: false }),
+    });
+    renderApp(<WelcomeBackup local settings saveLabel="Use this folder for backups" />);
+    const work = await screen.findByRole("radio", { name: /Drive One · work \(Acme\)/ });
+    expect(work).not.toBeChecked();
+    expect(work.closest("label")).not.toHaveTextContent("Recommended");
+    expect(screen.getByText(/A work account's drive isn't chosen for you/)).toBeInTheDocument();
+    // In Settings there is no disabled save button before a choice; choosing the drive brings it.
+    expect(screen.queryByRole("button", { name: "Use this folder for backups" })).toBeNull();
+    await user.click(work);
+    await user.click(await screen.findByRole("button", { name: "Use this folder for backups" }));
+    await waitFor(() => expect(calls.find((c) => c.route === "POST setup/backup-folder/cloud")?.body).toEqual({ name: "Drive One", account: "Acme", fingerprint: "fp-1" }));
   });
 
   test("they are offered by name with the path as plain names, the first recommended, and nothing raw", async () => {
@@ -314,9 +336,9 @@ describe("the cloud drives found on this computer", () => {
     await user.click(await screen.findByRole("radio", { name: /Drive Two/ }));
     await user.click(screen.getByRole("button", { name: "Back up now" }));
     await waitFor(() => expect(calls.some((c) => c.route === "POST setup/backup-folder/cloud")).toBe(true));
-    expect(calls.find((c) => c.route === "POST setup/backup-folder/cloud")!.body).toEqual({ name: "Drive Two", fingerprint: "fp-1" });
+    expect(calls.find((c) => c.route === "POST setup/backup-folder/cloud")!.body).toEqual({ name: "Drive Two", account: "", fingerprint: "fp-1" });
     expect(calls.some((c) => c.route === "POST setup/backup-folder")).toBe(false);
-    expect(await screen.findByText("Backups will go to Drive Two.")).toBeInTheDocument();
+    expect(await screen.findByText("Backups will go to Drive Two · personal.")).toBeInTheDocument();
   });
 
   test("another folder shows the box and sends the path, never the drive route", async () => {

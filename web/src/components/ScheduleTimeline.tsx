@@ -78,6 +78,9 @@ function laneTitle(lane: Lane, other: string, t: T): string {
   return lane.parent_name ? `${name}, ${t("schedule.timeline.under", { parent: lane.parent_name })}` : name;
 }
 
+/** The day an item is on the list: what is past due is held at today as one stack, so it is told apart by the day it was due. */
+const dueDay = (item: Item): string => (item.state === "overdue" && item.detail ? item.detail : item.start);
+
 function Details(props: { active: { item: Item; lane: Lane } | null; off: TimelineData["off_days"]; other: string; owners: (item: Item) => string }) {
   const { t } = useWords();
   const { active } = props;
@@ -200,7 +203,7 @@ export function Timeline(props: {
   const busy = props.lanes.filter((l) => l.items.length > 0);
   const pitch = width === null ? PITCH_MIN * 2 : Math.max(PITCH_MIN, (width - LABEL_W) / data.days);
   // A lane that would need many rows is its items by week, apart from the dated axis: its weeks are not placed on it.
-  const packedOf = (lane: Lane) => packLane(lane.items, data.first, data.days, pitch, (i) => `${shownDay(i, t)} ${i.title}`, labelMaxFor(width));
+  const packedOf = (lane: Lane) => packLane(lane.items, data.first, data.days, pitch, (i) => `${shownDay(i, t)} ${i.title}`, labelMaxFor(width), dueDay);
   const weekLanes = busy.filter((l) => packedOf(l).rows > GROUP_ROWS);
   const axisLanes = busy.filter((l) => !weekLanes.includes(l));
   const groups = groupsOf(axisLanes);
@@ -331,7 +334,7 @@ function WeekList(props: { data: TimelineData; lanes: Lane[]; other: string; sel
   const { t } = useWords();
   const { data } = props;
   const all = props.lanes.flatMap((lane) => lane.items.map((item) => ({ item, lane })));
-  all.sort((a, b) => a.item.start.localeCompare(b.item.start) || a.item.title.localeCompare(b.item.title));
+  all.sort((a, b) => dueDay(a.item).localeCompare(dueDay(b.item)) || a.item.title.localeCompare(b.item.title));
   const weeks = weekStarts(data.first, data.days)
     .map((first) => ({ first, rows: all.filter((r) => r.item.start >= first && r.item.start < addDays(first, 7)) }))
     .filter((w) => w.rows.length > 0);

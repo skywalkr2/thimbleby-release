@@ -222,6 +222,14 @@ def swap_pending(root: Path, now: datetime | None = None, move: Move = _move) ->
     return RESTORED
 
 
+def swap_before_open(ws: Workspace) -> tuple[str | None, Note | None]:
+    """The one call every start makes before it opens the workspace (the command line's `serve`, the installed app's
+    start, and each restart of the installed app): swap in a staged restore. Returns what `swap_pending` returned and,
+    when a swap was tried, the note saying how it went."""
+    swapped = swap_pending(ws.root)
+    return swapped, (note(ws) if swapped else None)
+
+
 def _keep_this_computers(root: Path, kept: Path) -> None:
     """The settings that belong to this computer (where its backups go, how it serves) stay as they were: the restored
     copy's own are replaced by the ones set aside, as the synced folder's handover keeps them (`handover.PER_COMPUTER`).
@@ -370,5 +378,6 @@ __all__ = [
     "note",
     "dismiss",
     "swap_pending",
+    "swap_before_open",
     "kept_folders",
 ]

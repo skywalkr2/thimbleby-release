@@ -856,7 +856,7 @@ test("Backups and sync holds the synced folder and the scheduled work, so neithe
   expect(jobs).toHaveTextContent("Refresh feeds");
 });
 
-test("Backups shows the automatic switch off, and why, while no backup folder is chosen, and on once one is", async () => {
+test("Backups shows the automatic switch on and usable with no folder chosen (it covers the copy kept on this computer), and with one", async () => {
   const automatic = item("storage.backups.automatic", { group: "storage.backups", type: "yes_no", value: true, default: true, description: "Make backups on schedule." });
   const targets = (value: unknown[]) => item("storage.backups.targets", { group: "storage.backups", type: "other", value, default: [], editable: false, basic: false, description: "Where backups go." });
   const quiet = { "GET sync": () => ({ folder: "", problem: null, stopped: false, changed_outside: [], removed_outside: [], rebuilt: [], outside_edits: [], conflict_copies: [], shared: false, handover: null }), "GET jobs": () => [] };
@@ -864,9 +864,9 @@ test("Backups shows the automatic switch off, and why, while no backup folder is
   const first = open("backups");
   const row = await screen.findByText("Back up automatically");
   const box = row.closest(".setting")!.querySelector("input[type=checkbox]") as HTMLInputElement;
-  expect(box).not.toBeChecked();
-  expect(box).toBeDisabled();
-  expect(within(row.closest(".setting") as HTMLElement).getByText("Automatic backups are off until you choose where they go.")).toBeInTheDocument();
+  expect(box).toBeChecked();
+  expect(box).toBeEnabled();
+  expect(within(row.closest(".setting") as HTMLElement).queryByText(/off until you choose/)).toBeNull();
   first.unmount();
   api([automatic, targets([{ path: "/mnt/drive", label: "Drive" }])], quiet);
   open("backups");

@@ -696,6 +696,26 @@ def test_an_unreadable_answer_goes_back_with_itself_and_keeps_the_ops_that_were_
     assert "keep every other op exactly as it was" in again
 
 
+@pytest.mark.parametrize(
+    "wrap",
+    [
+        lambda body: "```json\n" + body + "\n```",
+        lambda body: "```\n" + body + "\n```",
+        lambda body: "Here is the changeset:\n" + body,
+        lambda body: "Here is the changeset:\n```json\n" + body + "\n```\nLet me know if anything is off.",
+    ],
+)
+def test_an_unreadable_answer_in_a_fence_or_after_prose_goes_back_with_itself_too(wrap):
+    """The answer is read as it was given: inside a code fence or after a line of prose, the object still goes back with
+    its problem, so the ops that were right are kept."""
+    from engine.dispatcher import _unreadable_feedback
+
+    body = json.dumps({"summary": "s", "ops": [{"op": "glossary.add", "term": "Clinic"}]})
+    again = _unreadable_feedback(wrap(body), "op 0 has no definition")
+    assert "Your previous answer" in again and '"glossary.add"' in again and "```" not in again
+    assert "keep every other op exactly as it was" in again
+
+
 def test_an_answer_that_is_not_json_goes_back_with_only_its_problem(env):
     _, cfg, store = env
     cfg.dispatch.retries = 0

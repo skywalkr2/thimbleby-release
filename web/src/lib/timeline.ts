@@ -85,7 +85,7 @@ export function labelMaxFor(width: number | null): number {
 /** Puts the items of one lane on rows. A thing on one day is a button centred on its day; one over several days is a bar from
  * its first day's start to its last day's end. An item takes the first row where nothing is within its reach, so nothing
  * overlaps and a lane grows by rows only as busy as it is. */
-export function packLane<T extends { start: string; end: string }>(items: readonly T[], first: string, days: number, pitch: number, titleOf?: (item: T) => string, labelMax: number = LABEL_MAX): { placed: Placed<T>[]; rows: number } {
+export function packLane<T extends { start: string; end: string }>(items: readonly T[], first: string, days: number, pitch: number, titleOf?: (item: T) => string, labelMax: number = LABEL_MAX, dateOf: (item: T) => string = (item) => item.start): { placed: Placed<T>[]; rows: number } {
   const total = days * pitch;
   const wanted = items.map((item) => {
     const from = Math.min(days - 1, Math.max(0, daysBetween(first, item.start)));
@@ -101,7 +101,8 @@ export function packLane<T extends { start: string; end: string }>(items: readon
     const left = flip ? Math.max(0, dot + TOUCH - occupied) : dot;
     return { item, x: left, w: flip ? dot + TOUCH - left : occupied, point: true, flip };
   });
-  wanted.sort((a, b) => a.x - b.x || b.w - a.w);
+  // Items that begin on the same place (past ones are all held at the left edge) stack by their own date, which `dateOf` names, earliest on top, then the wider first.
+  wanted.sort((a, b) => a.x - b.x || dateOf(a.item).localeCompare(dateOf(b.item)) || b.w - a.w);
   const ends: number[] = [];
   const placed = wanted.map((p) => {
     let row = ends.findIndex((end) => end <= p.x);
