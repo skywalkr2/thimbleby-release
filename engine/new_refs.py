@@ -52,9 +52,12 @@ def replaced(value: Any, change: Any) -> Any:
     return value
 
 
-def created_in(pending: list[tuple]) -> tuple[str, str] | None:
-    """The (kind, id) of the first record a step created, from the ledger rows it wrote (kind, id, version, ...)."""
-    return next(((row[0], row[1]) for row in pending if row[2] == 1), None)
+def created_in(pending: list[tuple], op_name: str | None = None) -> tuple[str, str] | None:
+    """The (kind, id) of the record a step created, from the ledger rows it wrote (kind, id, version, ...): the one of
+    the step's own kind (a project for `project.add`, though it made its organization first), else the first."""
+    made = [(row[0], row[1]) for row in pending if row[2] == 1]
+    own = (op_name or "").rsplit("/", 1)[-1].split(".", 1)[0]
+    return next((m for m in made if m[0] == own), made[0] if made else None)
 
 
 class WithMade:

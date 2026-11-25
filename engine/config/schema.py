@@ -408,8 +408,8 @@ class ServerFile(FileModel):
         20,
         ge=0,
         le=1000,
-        description="How many ports after the one above the installed app tries when another program holds it. 0 uses "
-        "only the one above. Takes a restart.",
+        description="How many ports after the one above the app tries when another program holds it, from the "
+        "installed app or the command line. 0 uses only the one above. Takes a restart.",
         json_schema_extra={"internal": True},
     )
     base_path: str = Field(
@@ -1910,6 +1910,13 @@ class DispatchFile(FileModel):
         description="How many times a run that gave no usable answer, or failed, is tried again by itself before it "
         "goes to you with why.",
     )
+    keep_stopped_answer_chars: int = Field(
+        20000,
+        ge=0,
+        le=200000,
+        description="How many characters of the assistant's last answer are kept on a request that stops for you, "
+        "with each round's reasons, so you can see what went wrong. Kept on this computer only; 0 keeps no answer.",
+    )
     retry_wait_seconds: int = Field(
         30,
         ge=1,
@@ -2011,6 +2018,7 @@ def _default_lints() -> dict[str, Severity]:
         "due-reading-differs": "return",
         "undated-todo": "return",
         "message-as-todo": "return",
+        "hold-as-note": "return",
         "due-on-day-off": "return",
         "owed-to-missing": "return",
         "project-start-as-fact": "return",
@@ -2691,6 +2699,32 @@ class LanguageFile(FileModel):
     message_request_nouns: list[str] | None = word_list(
         'The words that name a message in a note of yours ("message", "email"), read with the asking words a few '
         "words before them. Case is ignored."
+    )
+    code_label_words: list[str] | None = word_list(
+        'The words that, run together with a number, name a place or an amount, never a booking code: "ROOM101", '
+        '"SUITE204", "USD1500". Case is ignored.'
+    )
+    code_lead_words: list[str] | None = word_list(
+        "The words that lead a booking or order code, so a number of six or more digits right after one is a code "
+        '("confirmation 48213977", "Order #: 48213977"); digits with no such word before them (a phone number, a date) '
+        "are never one. Case is ignored."
+    )
+    message_request_alone: list[str] | None = word_list(
+        'The words that ask for a message on their own when a sentence of yours starts with them ("Email the printer", '
+        '"Text Sam", "Reply to the editor"). Case is ignored.'
+    )
+    message_request_not: list[str] | None = word_list(
+        'The phrases that never ask for a message, though they hold an asking word and a message word ("write down", '
+        '"mail merge", "note to remember"). Case is ignored.'
+    )
+    hold_request_words: list[str] | None = word_list(
+        'The words a note of yours uses to hold something until a condition is met ("hold", "park"), read with a '
+        'condition word after them ("Hold the venue deposit until the board signs off"). An answer to such a note '
+        "of notes and facts alone goes back once (the lint `hold-as-note`). Case is ignored."
+    )
+    hold_condition_words: list[str] | None = word_list(
+        'The words that lead the condition of a hold, at most eight words after the holding word ("until", "till"). '
+        "Case is ignored."
     )
     answer_later_words: list[str] | None = word_list(
         'The words of an answer that put a question off to a later day ("let\'s follow up on this in 2 days"). '

@@ -786,6 +786,61 @@ test("Save adds the account with the model chosen, tests it, and lists one plain
   expect(document.body.textContent ?? "").not.toMatch(/temperature|max output|stub|routine|deep|restart/i);
 });
 
+test("a key account starts the harder work (learning, the checks) on the stronger model the app suggests, and the same model for everything stays a choice", async () => {
+  const user = userEvent.setup();
+  const calls = api({ "POST ai/models": () => ({ models: MODELS, suggested: "model-a", suggested_harder: "model-b" }) });
+  open();
+  await ready(user);
+  expect(checks(calls)[0].body).toMatchObject({ models: { everyday: "model-a", harder: "model-b" }, use: { routine: "everyday", deep: "harder" } });
+  await user.click(save());
+  await waitFor(() => expect(body(calls)).toBeDefined());
+  expect(body(calls).models).toEqual({ everyday: "model-a", harder: "model-b" });
+  expect(body(calls).use).toEqual({ routine: "everyday", deep: "harder" });
+});
+
+test("a key account whose app suggests one model for both starts with the same model for everything", async () => {
+  const user = userEvent.setup();
+  const calls = api({ "POST ai/models": () => ({ models: MODELS, suggested: "model-a", suggested_harder: "model-a" }) });
+  open();
+  await ready(user);
+  await user.click(save());
+  await waitFor(() => expect(body(calls)).toBeDefined());
+  expect(body(calls).models).toEqual({ everyday: "model-a" });
+  expect(body(calls).use).toEqual({ routine: "everyday", deep: "everyday" });
+});
+
+const STRONGER_APP = (k: S["EndpointView"]) =>
+  k.id === "app-b" ? { ...k, installed: true, model_examples: ["gamma", "omega"], model_roles: { gamma: "recommended", omega: "stronger" }, model_deep: "omega" } : k;
+
+test("an app account sends both models and puts harder work on the stronger one by default", async () => {
+  const user = userEvent.setup();
+  const calls = api({ "GET ai/endpoints": () => KINDS.map(STRONGER_APP) });
+  open();
+  await pickElse(user, "App B");
+  await screen.findByText("Works. Ready to use.");
+  expect(screen.getByLabelText("AI model for harder work (optional)")).toHaveValue("omega");
+  expect(checks(calls)[0].body).toMatchObject({ models: { everyday: "gamma", harder: "omega" }, use: { routine: "everyday", deep: "harder" } });
+  await user.click(screen.getByRole("radio", { name: /^No\b/ }));
+  await user.click(save());
+  await waitFor(() => expect(body(calls)).toBeDefined());
+  expect(body(calls).models).toEqual({ everyday: "gamma", harder: "omega" });
+  expect(body(calls).use).toEqual({ routine: "everyday", deep: "harder" });
+});
+
+test("an app account can still use the same model for everything", async () => {
+  const user = userEvent.setup();
+  const calls = api({ "GET ai/endpoints": () => KINDS.map(STRONGER_APP) });
+  open();
+  await pickElse(user, "App B");
+  await screen.findByText("Works. Ready to use.");
+  await user.selectOptions(screen.getByLabelText("AI model for harder work (optional)"), "Same as the everyday model");
+  await user.click(screen.getByRole("radio", { name: /^No\b/ }));
+  await user.click(save());
+  await waitFor(() => expect(body(calls)).toBeDefined());
+  expect(body(calls).models).toEqual({ everyday: "gamma" });
+  expect(body(calls).use).toEqual({ routine: "everyday", deep: "everyday" });
+});
+
 test("a test that fails after saving shows its reason with a word and a cross, and saving again tests again without adding twice", async () => {
   const user = userEvent.setup();
   let first = true;
@@ -1192,14 +1247,16 @@ test("two examples with the same purpose are told apart by their names, never nu
     "GET ai/endpoints": () =>
       KINDS.map((k) =>
         k.id === "app-a"
-          ? { ...k, model_examples: ["alpha", "beta", "gamma", "delta"], model_roles: { alpha: "recommended", beta: "stronger", gamma: "stronger", delta: "faster" } }
+          ? { ...k, model_examples: ["alpha", "beta", "gamma", "delta"], model_roles: { alpha: "recommended", beta: "stronger", gamma: "stronger", delta: "faster" }, model_labels: { alpha: "Alpha", beta: "Beta", gamma: "Gamma", delta: "Delta" } }
           : k,
       ),
   });
   open();
   await pickElse(user, "App A");
   const labels = within(await snapshotOf(screen.getByLabelText("AI model"))).getAllByRole("option").map((o) => o.textContent ?? "");
-  expect(labels).toEqual(["Let the app choose", "Recommended: alpha", "Stronger: beta", "Stronger: gamma", "Faster: delta", "Another AI model"]);
+  // The choices read as the models' own display names, and none reads the same as another.
+  expect(labels).toEqual(["Let the app choose", "Recommended: Alpha", "Stronger: Beta", "Stronger: Gamma", "Faster: Delta", "Another AI model"]);
+  expect(new Set(labels).size).toBe(labels.length);
   for (const label of labels) expect(label).not.toMatch(/\d/);
 });
 

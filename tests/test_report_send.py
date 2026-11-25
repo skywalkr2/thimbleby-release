@@ -14,6 +14,7 @@ from api.app import create_app
 from engine import report_send
 from engine.legacy_names import private_dir
 from engine.reminder_content import own_address
+from engine.storage import WriteContext
 from engine.workspace import init_workspace
 from tests.conftest import DEMO_B
 
@@ -250,3 +251,83 @@ def test_a_send_with_no_facts_call_still_carries_the_version_and_system(tmp_path
     assert done["ok"] is True
     body = seen[0][1]
     assert body["version"] and body["system"] == report_send.system_text()
+
+
+ANSWER = "The assistant's own words, with the person's material: ask Pat about the Henderson order."
+
+
+def stop_a_request(app, cfg, *, answer: str | None = ANSWER, state: str = "needs_you", days_ago: int = 0) -> str:
+    """A request that stopped for the person, with the answer it kept; made `days_ago` days before the store's clock."""
+    from datetime import datetime, timedelta
+
+    store = app.state.store
+    made = datetime.fromisoformat(store.clock()) - timedelta(days=days_ago)
+    task = next(iter(cfg.ai.tasks))
+    data = {"task": task, "origin": "pm", "state": state, "created_at": made.isoformat(), "stopped_answer": answer}
+    with store.transaction() as tx:
+        created = tx.create("request", data, WriteContext(actor="engine", trust="trusted", op="test"))
+    return created.id if hasattr(created, "id") else str(created)
+
+
+def test_the_answer_is_offered_only_with_a_kept_answer_within_the_window(tmp_path):
+    client, app, cfg = make_client(tmp_path, LOCAL_FORM)
+    with client:
+        assert client.get("/api/report/facts").json()["answer"] == ""
+        stop_a_request(app, cfg, answer=None)
+        stop_a_request(app, cfg, state="done")
+        stop_a_request(app, cfg, days_ago=cfg.ui.feedback_problem_days + 5)
+        assert client.get("/api/report/facts").json()["answer"] == ""
+        stop_a_request(app, cfg, answer="An older answer.", days_ago=1)
+        stop_a_request(app, cfg)
+        facts = client.get("/api/report/facts").json()
+    assert facts["answer"].endswith("\n" + ANSWER) and "An older answer." not in facts["answer"]
+    assert facts["answer"].startswith("The assistant's last answer, from the request made 20")
+
+
+def test_off_nothing_of_the_answer_is_sent_and_on_exactly_the_previewed_text_is(tmp_path, monkeypatch):
+    seen: list = []
+    monkeypatch.setattr(engine.net, "TRANSPORT", serve(200, seen))
+    client, app, cfg = make_client(tmp_path, LOCAL_FORM)
+    log = private_dir(tmp_path / "ws") / "logs" / "thimbleby.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("2026-01-01 WARNING engine.x: slow\n", encoding="utf-8")
+    stop_a_request(app, cfg)
+    with client:
+        facts = client.get("/api/report/facts").json()
+        shown, details = facts["answer"], facts["details"]
+        assert ANSWER in shown and ANSWER not in details
+        base = {"words": WORDS, "details": details, "answer_block": shown}
+        client.post("/api/report/send", json=base)  # the choice defaults to off
+        client.post("/api/report/send", json={**base, "include_answer": False})
+        client.post("/api/report/send", json={**base, "include_answer": True})
+        client.post("/api/report/send", json={**base, "include_answer": True, "include_details": False})
+        client.post("/api/report/send", json={**base, "include_answer": True, "answer_block": ""})
+    off_default, off, on, on_alone, on_empty = (body for _url, body in seen)
+    assert ANSWER not in json.dumps([off_default, off])
+    assert off["details"] == details
+    assert on["details"] == f"{details}\n\n{shown}" and ANSWER in on["details"]
+    assert on_alone["details"] == shown
+    assert on_empty["details"] == details
+    assert all(set(body) <= set(report_send.LIMITS) for _url, body in seen)
+
+
+def test_a_long_log_and_the_longest_answer_still_fit_the_form(tmp_path, monkeypatch):
+    seen: list = []
+    monkeypatch.setattr(engine.net, "TRANSPORT", serve(200, seen))
+    client, app, cfg = make_client(tmp_path, LOCAL_FORM)
+    log = private_dir(tmp_path / "ws") / "logs" / "thimbleby.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(
+        "\n".join(f"2026-01-01 WARNING engine.x: line {n:06d} " + "y" * 90 for n in range(2000)), encoding="utf-8"
+    )
+    stop_a_request(app, cfg, answer="z" * 50000)
+    with client:
+        facts = client.get("/api/report/facts").json()
+        assert report_send.units(facts["answer"]) <= report_send.ANSWER_MAX + report_send.ANSWER_HEADING_ROOM
+        sent = client.post(
+            "/api/report/send",
+            json={"words": WORDS, "details": facts["details"], "answer_block": facts["answer"], "include_answer": True},
+        )
+    assert sent.json() == {"ok": True, "why": None}
+    assert report_send.units(seen[0][1]["details"]) <= report_send.LIMITS["details"]
+    assert seen[0][1]["details"].endswith(facts["answer"])

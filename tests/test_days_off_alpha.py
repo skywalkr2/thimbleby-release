@@ -45,7 +45,15 @@ def test_thanksgiving_weeks_week_ahead_names_both_days_off_and_the_days_left(env
     named = dict(card.days_off)
     assert set(named) == {THANKSGIVING, FRIDAY_AFTER}
     assert "Thanksgiving" in named[THANKSGIVING] and "Thanksgiving" in named[FRIDAY_AFTER]
-    assert card.working_days == 2  # Tuesday and Wednesday are what is left after today
+    assert card.working_days == 3  # Monday (today), Tuesday and Wednesday
+
+
+def test_this_week_counts_today_while_today_is_a_working_day(env):
+    _, cfg, store = env
+    wednesday = THANKSGIVING - timedelta(days=1)
+    ws = env[0]
+    assert week_ahead.card_of(ws, store, cfg, at(wednesday)).working_days == 1
+    assert week_ahead.card_of(ws, store, cfg, at(THANKSGIVING)).working_days == 0
 
 
 def test_a_week_with_only_days_off_still_shows_them(env):

@@ -153,8 +153,11 @@ GOS = [
 
 
 @pytest.mark.parametrize(("path", "body"), GOS)
-def test_each_start_or_go_answers_within_a_second_during_a_reading(reading, path, body):
-    """The answer may be that there is nothing to start; it is never a wait, and never a failure of the server."""
+def test_each_start_or_go_answers_during_a_reading_with_under_a_second_of_its_own_work(reading, path, body):
+    """What it proves: the press answers while the reading still holds its lock (never waiting behind it), and its
+    handler does under a second of processor work on its own thread (never the reading's work). It doesn't prove the
+    answer is fast in time: a press that waited on another lock, or slept, would pass (the #66 re-check, M-13). The
+    answer may be that there is nothing to start; it is never a failure of the server."""
     ws, cfg, store, client, base = reading
     response = answered(press(client, f"{base}{path}", body))
     assert response.status_code < 500, response.text

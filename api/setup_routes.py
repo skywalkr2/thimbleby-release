@@ -236,6 +236,13 @@ def _put(values: dict[str, Any], dotted: str, value: Any) -> None:
     at[last] = value
 
 
+def _splits_work(ai: Any, name: str) -> bool:
+    """Whether the quick and the harder kinds of work both use this account but on different models of it."""
+    routine, deep = (ai.tiers[t].use if t in ai.tiers else None for t in ("routine", "deep"))
+    here = all((use or "").split("/", 1)[0] == name for use in (routine, deep))
+    return bool(routine and deep and routine != deep) and here
+
+
 def _merged(current: Any, suggested: Any) -> Any:
     """A suggested value laid over the current one: a mapping adds the keys it suggests and keeps every key the
     person already has, with their own values, nested mappings included; anything that isn't a mapping is
@@ -1732,6 +1739,7 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
                         for t, tier in ai.tiers.items()
                         if "/" not in t and any(f.split("/", 1)[0] == name for f in tier.fallback)
                     ],
+                    splits_work=_splits_work(ai, name) or None,
                     has_key=bool(p.auth),
                     key_state=state,
                     key_where=where,

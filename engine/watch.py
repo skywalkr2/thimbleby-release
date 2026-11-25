@@ -955,12 +955,15 @@ def _compare(
         if (
             closed is None
             and before is not None
+            and item.event is None
             and not _newer_item(before, item)
             and _seen_before(store, before, digest)
         ):
             # Its content is a version of this same item already seen, with no newer time of its own (a restored or
             # re-synced older copy): not news, so nothing is read again, and What changed says it came back. Content
-            # seen before but saved now (a meeting moved back, a figure put back) is a real change and is handed in.
+            # seen before but saved now (a meeting moved back, a figure put back) is a real change and is handed in, and
+            # so is a calendar entry back as it was: a calendar is the service's own state, never a copy put back, so
+            # its entry carries no time and a meeting moved back is the organizer's change.
             closed = {"rule": CAME_BACK_RULE, "reason": word(cfg, "read.version_came_back")}
         older_item = before is not None and _older_item(before, item)
         older = families.older_than_current(item.key, item.changed_at) if families else None

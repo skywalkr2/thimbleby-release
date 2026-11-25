@@ -35,9 +35,9 @@ OP_KIND = {
 }
 #: The fields each add op gives beyond the fields every entry has.
 OWN_FIELDS = {
-    "lesson": ("guard", "signal"),
+    "lesson": ("guard", "signal", "kind_of_work"),
     "glossary_entry": ("term", "meaning", "confidence", "project", "id_patterns", "routine"),
-    "routing_entry": ("topic", "person", "team", "negative", "look_up"),
+    "routing_entry": ("topic", "person", "team", "negative", "look_up", "kind_of_work"),
     "style_note": ("audience", "observation"),
 }
 #: The states an entry can still be changed in.

@@ -104,6 +104,14 @@ test("with no backup account at all, the summary says none is set and that work 
   expect(summary).not.toHaveTextContent("stands in");
 });
 
+test("an account whose harder work is on a stronger model says so in its summary, without naming either model", async () => {
+  api({ "GET ai/accounts": () => [account("main", { label: "Main account", used_for: ["routine", "deep"], splits_work: true, models: { everyday: "model-a", harder: "model-b" } })] });
+  open();
+  const main = await row("Main account");
+  expect(main).toHaveTextContent("Does all of your assistant's work: the quick jobs on a lighter model, the harder jobs and learning from your corrections on a stronger one");
+  expect(main).not.toHaveTextContent("model-b");
+});
+
 test("every row says its role in words, its own name, what it covers, its state in words, and shows no id", async () => {
   api();
   open();

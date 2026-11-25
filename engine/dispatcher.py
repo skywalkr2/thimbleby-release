@@ -124,12 +124,13 @@ def parse(text: str, op_models: dict | None = None) -> ChangesetIn:
         # never as an answer that holds nothing.
         data = {"ops": [data]}
     if isinstance(data, dict):
-        # Only the summary, the topic, the ops, the ask flag and the lists of what it applied, what it lacked and what
-        # it left out on purpose mean anything at the top; a model's extra remarks are left out.
+        # Only the summary, the topic, the ops, the ask flag and the lists of what it applied (and where only by a
+        # kind of work), what it lacked and what it left out on purpose mean anything at the top; a model's extra
+        # remarks are left out.
         data = {
             key: value
             for key, value in data.items()
-            if key in ("summary", "topic", "ops", "ask", "applied", "missing", "omitted")
+            if key in ("summary", "topic", "ops", "ask", "applied", "by_kind", "missing", "omitted")
         }
     _drop_unused_evidence(data, models)
     _drop_unreadable_would_change(data)
@@ -457,6 +458,7 @@ def process(
         spend_limit = min(spend_limit, budgets.confirm_above_usd)
     budget = _Budget(request_id, spend_limit, cap, granted)
     unpriced_ok = granted and estimate is None  # the go was for a run with no price
+    trail = _Trail(cfg.dispatch.keep_stopped_answer_chars)
     first = _rounds(
         store,
         cfg,
@@ -475,6 +477,7 @@ def process(
         ws=ws,
         budget=budget,
         unpriced_ok=unpriced_ok,
+        trail=trail,
     )
     if first.abandoned:
         return None
@@ -513,6 +516,7 @@ def process(
             ws=ws,
             budget=budget,
             unpriced_ok=unpriced_ok,
+            trail=trail,
         )
         if second.abandoned:
             return None
@@ -554,8 +558,10 @@ def process(
     if outcome.changeset is None or (outcome.stop is not None and outcome.retry):
         # A later round that ended in a failure another try may clear is a retry too, even though an earlier round's
         # answer exists: nothing that is fixing itself is shown as a stop.
+        _keep_stopped(store, request_id, trail, req.data.get("retries", 0) + 1)
         return stop_or_retry(store, cfg, request_id, outcome, now)
     if outcome.stop is not None:
+        _keep_stopped(store, request_id, trail, req.data.get("retries", 0) + 1)
         return needs_you(store, request_id, outcome.stop, cause=outcome.cause)
     return _apply_outcome(store, cfg, request_id, req, kind, ctx, outcome, now)
 
@@ -602,7 +608,14 @@ def _apply_outcome(
         tx.update(
             "request",
             request_id,
-            {"state": "review", "waiting": None, "changeset": cs_id, "held_answer": None},
+            {
+                "state": "review",
+                "waiting": None,
+                "changeset": cs_id,
+                "held_answer": None,
+                "stopped_answer": None,
+                "stopped_rounds": [],
+            },
             _ENGINE,
             read_version=cur.version,
         )
@@ -870,6 +883,50 @@ class _Outcome:
     fallback: str | None = None  # the account that answered, when it stands in a tier's fallback chain
 
 
+UNREADABLE_CUT = "The answer was cut off at the output limit."
+SAME_ANSWER = "The answer was the same as the one before it."
+
+
+class _Trail:
+    """What a request's rounds turned down and the last answer as given, kept so a request that stops can show why.
+    One trail runs through every tier a dispatch tries, so the rounds are numbered across them."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.rounds: list[dict[str, Any]] = []
+        self.answer: str | None = None
+
+    def keep(self, text: str) -> None:
+        self.answer = text[: self.limit] if text else None
+
+    def turned_down(self, reasons: list[str]) -> None:
+        self.rounds.append({"round": len(self.rounds) + 1, "reasons": [r for r in reasons if r.strip()]})
+
+
+def _reasons(problems: list) -> list[str]:
+    """The reasons an answer was sent back or refused, in plain words: no op numbers, no quoted passages."""
+    return [
+        f"{p.message.strip()} {p.guidance.strip()}".strip() if p.guidance else p.message.strip()
+        for p in problems
+        if p.severity in ("refuse", "return")
+    ]
+
+
+def _keep_stopped(store: Store, request_id: str, trail: _Trail, tries: int) -> None:
+    """Keep on the request the last answer and each round's reasons, for the try that just ended. Earlier tries'
+    rounds stay, labeled by try; nothing here leaves the computer unless the person sends a report."""
+    if not trail.rounds and trail.answer is None:
+        return
+    cur = store.read().get("request", request_id)
+    if cur is None:
+        return
+    kept = [r for r in (cur.data.get("stopped_rounds") or []) if r.get("attempt") != tries]
+    kept += [{"attempt": tries, **r} for r in trail.rounds]
+    _set(store, request_id, stopped_answer=trail.answer, stopped_rounds=kept[-STOPPED_ROUNDS_KEPT:])
+
+
+STOPPED_ROUNDS_KEPT = 30
+
 #: Run errors from no network or a run that did no work: what they cost is not the request's.
 OUTAGE_KINDS = frozenset({"offline", "no_work"})
 
@@ -1004,6 +1061,8 @@ def _call(
             out.stop, out.cause = NO_WORK, {"kind": "no_work"}
         else:
             out.stop = _refused(store, None, err.detail) if err.kind == "refused" else _ai_failure(err)
+            if err.kind == "timeout":
+                out.stop = f"{out.stop.rstrip('.')}. {TIMEOUT_HINT}"
             out.retry = failure_in_words(err) if err.kind in RETRIED else None
     else:
         tier_account = router.cfg.ai.tiers[choice.tier].use if choice.tier in router.cfg.ai.tiers else ""
@@ -1060,11 +1119,13 @@ def _rounds(
     ws: Workspace | None = None,
     budget: _Budget | None = None,
     unpriced_ok: bool = True,
+    trail: _Trail | None = None,
 ) -> _Outcome:
     """Ask on one tier, sending a failing answer back up to `dispatch.fix_rounds` times with what was wrong. A refusal
     stops at once: no fix round, no other account, no escalation. An answer that asks to search the workspace is
     answered with the results and asked again, up to `dispatch.knowledge.search_rounds` times; a search is no failure
     and uses up no fix round, but each call is recorded and counted like any other."""
+    trail = trail if trail is not None else _Trail(cfg.dispatch.keep_stopped_answer_chars)
     task = base
     shown = base.request  # the request as every round of this task starts from it: with the search results so far
     out = _Outcome()
@@ -1166,6 +1227,7 @@ def _rounds(
                 return _Outcome(run_id=out.run_id, abandoned=True)
         out.searched = searches > 0
         ctx.searched = out.searched
+        trail.keep(result.text)
         if result.refused:
             return _Outcome(run_id=out.run_id, stop=_refused(store, out.run_id, result.refusal or ""))
         if draft is not None:
@@ -1210,6 +1272,7 @@ def _rounds(
                     added = len(draft["split"](text)) if text.strip() else 0
                     text, mapping = splice_after(draft["base_text"], draft["units"], part["after"], text, added)
             except AnchorProblem as err:
+                trail.turned_down([f"The draft didn't follow the format asked for: {err}."])
                 if not last:
                     why = f"Your draft doesn't follow the format asked for: {err}. Write it all again."
                     task = replace(task, request=shown + "\n\n" + why)
@@ -1228,6 +1291,7 @@ def _rounds(
                 fallback=out.fallback,
             )
             if needs_another_round(problems, judgment_asked=judgment_asked):
+                trail.turned_down(_reasons(problems))
                 if not last:
                     judgment_asked = judgment_asked or asks_judgment(problems)
                     task = replace(task, request=shown + "\n\n" + _answer_shown(changeset) + feedback(problems))
@@ -1242,6 +1306,7 @@ def _rounds(
             changeset = parse(result.text, store.plugins.ops)
         except Unreadable as err:
             limit = task.max_output
+            trail.turned_down([UNREADABLE_CUT if result.truncated else f"The answer couldn't be read: {err}."])
             if not last:
                 why = (
                     f"Your previous answer was cut off at the output limit ({limit} tokens). Answer more briefly."
@@ -1272,12 +1337,14 @@ def _rounds(
             request = store.read().get("request", request_id)
             changeset = learn.link_signal(changeset, learn.signal_of(request.data) if request is not None else None)
         if previous_ops is not None and _ops_of(changeset) == previous_ops:
+            trail.turned_down([SAME_ANSWER])
             if not last:
                 task = replace(task, request=shown + "\n\n" + REPEATED)
                 continue
             stop = "The assistant gave the same answer again after your note. Look at it with them."
             return _Outcome(run_id=out.run_id, stop=stop)
         if fine and (lost := unexplained_drops(dropped_ops(fine, changeset), changeset)):
+            trail.turned_down([f"{DROPPED_WHY}: {', '.join(lost)}."])
             # A return round that dropped an op which was fine is refused and sent back, never applied.
             if not last:
                 task = replace(
@@ -1297,6 +1364,7 @@ def _rounds(
             changeset=changeset, problems=problems, run_id=out.run_id, searched=searches > 0, fallback=out.fallback
         )
         if needs_another_round(problems, judgment_asked=judgment_asked):
+            trail.turned_down(_reasons(problems))
             if not last:
                 judgment_asked = judgment_asked or asks_judgment(problems)
                 fine, wrong = fine_ops(changeset, problems), feedback(problems)
@@ -1316,6 +1384,8 @@ def _rounds(
 
 #: The failures of a run that are tried again by themselves: no usable answer, or the call itself failed. A limit, a
 #: refused key and a refusal are not: they need the account or the person.
+#: What a stop for a run that ran out of time adds: a long input can go through in parts.
+TIMEOUT_HINT = "Hand it in as two shorter notes and it may go through."
 RETRIED = ("invalid_output", "no_output", "timeout", "provider_down", "other")
 UNREADABLE_WHY = "The assistant's answer wasn't in the form this work needs"
 #: What a request waits on when the assistant's answer wasn't in the form the work needs, even when asked again.

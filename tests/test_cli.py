@@ -421,3 +421,62 @@ def test_open_with_no_workspace_says_so_and_opens_nothing(tmp_path, monkeypatch)
     monkeypatch.setattr("webbrowser.open", opened.append)
     assert main(["open", "-w", str(tmp_path / "nowhere")]) != 0
     assert opened == []
+
+
+def _listener(host: str):
+    import socket
+
+    held = socket.socket()
+    held.bind((host, 0))
+    held.listen(1)
+    return held, held.getsockname()[1]
+
+
+def test_open_prints_the_port_the_running_app_published_never_the_stored_one(tmp_path, capsys, monkeypatch):
+    from engine import launcher
+    from engine.workspace import Workspace
+
+    target = tmp_path / "ws"
+    assert main(["init", str(target), "--no-git"]) == 0
+    (target / "config" / "server.yaml").write_text("version: 1\nport: 8123\n", encoding="utf-8")
+    monkeypatch.setattr("webbrowser.open", lambda url: None)
+    owner = launcher.InstanceLock(Workspace(target).private_dir)
+    assert owner.acquire()
+    try:
+        owner.publish(8199, "/api/health")
+        assert main(["open", "-w", str(target), "--print-only"]) == 0
+        out = capsys.readouterr().out
+        assert "http://127.0.0.1:8199/" in out and "8123" not in out
+    finally:
+        owner.release()
+    assert main(["open", "-w", str(target), "--print-only"]) == 0
+    assert "http://127.0.0.1:8123/" in capsys.readouterr().out  # nothing running: the stored port
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "0.0.0.0"])  # noqa: S104
+def test_a_program_listening_on_loopback_or_on_all_interfaces_holds_the_port(host):
+    from engine import launcher
+
+    held, port = _listener(host)
+    try:
+        assert not launcher.port_is_free(port)
+    finally:
+        held.close()
+    assert launcher.port_is_free(port)
+
+
+def test_serve_moves_off_a_taken_port_and_prints_the_link_for_the_port_it_uses(tmp_path, capsys, monkeypatch):
+    import uvicorn
+
+    target = tmp_path / "ws"
+    assert main(["init", str(target), "--no-git"]) == 0
+    held, taken = _listener("0.0.0.0")  # noqa: S104
+    seen = {}
+    monkeypatch.setattr(uvicorn.Server, "run", lambda self, *a, **k: seen.update(port=self.config.port))
+    try:
+        assert main(["serve", "-w", str(target), "--port", str(taken), "--no-open"]) == 0
+    finally:
+        held.close()
+    out = capsys.readouterr().out
+    assert seen["port"] != taken and f"http://127.0.0.1:{seen['port']}/" in out
+    assert f"Port {taken} was in use" in out and f":{taken}/" not in out

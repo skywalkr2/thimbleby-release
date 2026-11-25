@@ -69,7 +69,8 @@ def read_both(ws, cfg, store):
 
 
 def test_references_are_codes_not_dates_or_words():
-    assert references_in("Booking HS48213 on 2026-11-19, order 48213977, tel 555-1212.") == {"HS48213"}
+    # An order number led by its word is a code too (the #66 re-check); a date and a phone number never are.
+    assert references_in("Booking HS48213 on 2026-11-19, order 48213977, tel 555-1212.") == {"HS48213", "48213977"}
     assert references_in("Friday, October 16 at 3:00 PM") == set()
     assert references_in("your booking hs48213 and order AB4821") == {"HS48213", "AB4821"}
 
@@ -79,6 +80,28 @@ def test_phone_numbers_dates_quarters_and_words_with_a_number_are_never_codes():
     assert references_in("Call 5551234567 or (555) 123-4567 by 20261119; COVID19 rules; plans for 2026-Q4.") == set()
     assert references_in("Q4-2026 and FY2026 budgets") == set()
     assert references_in("Your booking ZZ12345 is canceled. Questions? 5551234567.") == {"ZZ12345"}
+
+
+@pytest.mark.parametrize(
+    "text, codes",
+    [
+        ("Wear masks per COVID-19 rules", set()),
+        ("Targets for H1-2026 and 2026-H2", set()),
+        ("Your room is ROOM101 on the first floor", set()),
+        ("Upgrade to SUITE204 for the night", set()),
+        ("A deposit of USD1500 is due", set()),
+        ("Call (555) 123-4567 or 5551234567 by 20261119", set()),
+        ("Your confirmation number is 48213977.", {"48213977"}),
+        ("Order #: 48213977 has shipped", {"48213977"}),
+        ("Booking ref 123456, see you Friday", {"123456"}),
+        ("Reservation HS48213 for Friday", {"HS48213"}),
+        ("Flight BA1234 leaves at noon", {"BA1234"}),
+    ],
+)
+def test_booking_codes_across_their_family(text, codes):
+    """The #66 re-check (M-8): words, places and amounts with a number are no codes, and an all-digit confirmation
+    number is one when a word that names a code leads it."""
+    assert references_in(text) == codes, text
 
 
 @pytest.mark.parametrize("sender_differs", [False, True])

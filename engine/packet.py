@@ -22,7 +22,7 @@ from engine.cleaning import Cleaned, clean
 from engine.config import Config
 from engine.id_words import ID
 from engine.intake import MISSED_KIND, source_text
-from engine.knowledge_section import per_input_section, stable_section, with_ancestors
+from engine.knowledge_section import per_input_section, projects_named_in, stable_section, with_ancestors
 from engine.learn import is_learning
 from engine.learning import offered_ops, request_learns
 from engine.local_day import zone_of
@@ -389,6 +389,9 @@ def _learned(
     settings = budgets or cfg.dispatch.knowledge
     view = store.read()
     named = [*projects, *(source.data.get("projects", []) if source is not None else [])]
+    if learns:
+        # A project the input names in its words brings what was learned for it, as the people it names do.
+        named += projects_named_in(view, text)
     in_input = [p for p in dict.fromkeys(named) if view.get("project", p) is not None]
     # What a draft about an area draws on stops at that area (design 6.32): a sibling area's facts are left out.
     hide = areas.either(hide, areas.outside(areas.reach(view, in_input)))

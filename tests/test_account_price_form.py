@@ -120,3 +120,15 @@ def test_the_person_can_say_the_account_is_flat_and_it_is_kept_with_the_account(
     cfg = load_config(ws.config_dir, env={})
     assert cfg.ai.providers["unsaid"].flat_rate is None and not pricing.is_flat(cfg, "unsaid")
     assert pricing.is_flat(cfg, "flat")
+
+
+def test_a_programs_example_models_have_display_names_and_no_two_share_a_role_or_a_label():
+    """Setup's model list reads each choice as its role and the model's display name, so no two choices read alike."""
+    for kind in known_endpoints():
+        if not kind["model_examples"]:
+            continue
+        roles = [kind["model_roles"].get(m) for m in kind["model_examples"] if kind["model_roles"].get(m)]
+        assert len(roles) == len(set(roles)), kind["id"]
+        labels = [kind["model_labels"].get(m, m) for m in kind["model_examples"]]
+        assert len(labels) == len(set(labels)), kind["id"]
+        assert all(kind["model_labels"].get(m) not in (None, m) for m in kind["model_roles"]), kind["id"]

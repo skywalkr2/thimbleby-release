@@ -213,7 +213,7 @@ export const allProjects = [
       ...(s.base === "/" ? [{ name: `${s.name}-tables`, testMatch: /tables\.spec\.ts/, use, dependencies: [s.name] }] : []),
     ];
   }),
-  { name: "layout", testMatch: /(layout|sh1-shell|handled|guards|internals|changed-rows|changed-widths|today-work|shared-rules|today-todos-46|counts-status|qf1-forms-and-todos|hand-over-one-door|states-phone|w1-today-lines|learned-review|learned-on-its-own|read-back|u5-changed|u6-[a-z]+)\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${layout.port}/` } },
+  { name: "layout", testMatch: /(layout|sh1-shell|handled|guards|internals|changed-rows|changed-widths|today-work|shared-rules|today-todos-46|counts-status|qf1-forms-and-todos|guess-and-ai-defaults|hand-over-one-door|states-phone|w1-today-lines|learned-review|learned-on-its-own|read-back|u5-changed|u6-[a-z]+)\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${layout.port}/` } },
   { name: "access", testMatch: /(work-access|ai-costs)\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${access.port}/` } },
   { name: "one-click", testMatch: /today-one-click\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${oneClick.port}/` } },
   { name: "schedule-review", testMatch: /schedule-review\.spec\.ts/, use: { baseURL: `http://127.0.0.1:${scheduleReview.port}/` } },

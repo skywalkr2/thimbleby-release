@@ -43,7 +43,8 @@ export function ReginaldOn(props: { hideWhenOn?: boolean } = {}) {
         </p>
       ) : (
         <>
-          <p>{t("reginald_on.what")}</p>
+          {/* It reads mail and calendar only once one is connected; before that it says what happens when one is. */}
+          <p>{t(setup.data.steps.some((s) => s.id === "mail" && s.done) ? "reginald_on.what" : "reginald_on.what_later")}</p>
           {cost && (
             <p className="hint" data-sorting-cost="">
               {cost}

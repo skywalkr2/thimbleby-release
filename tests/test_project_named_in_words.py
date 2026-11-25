@@ -1,0 +1,50 @@
+"""A note brings what was learned for the projects its words name, by full name or by a short form (the first-week
+journey, row 11): people say a project by a short form far more often than by its full name.
+Names are made up."""
+
+from __future__ import annotations
+
+import pytest
+
+from engine.knowledge_section import projects_named_in
+from engine.storage import Store, WriteContext
+from engine.workspace import init_workspace
+from tests.conftest import DEMO_B
+
+_TEST = WriteContext("pm", "trusted", "test")
+GALA, EXHIBIT = "Volunteer " + "Gala", "Spring " + "Exhibit"
+
+
+@pytest.fixture
+def view(tmp_path):
+    ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
+    store = Store(ws.db_path, cfg=ws.config(env={}))
+    with store.transaction() as tx:
+        ids = {
+            "gala": tx.create("project", {"name": GALA}, _TEST).id,
+            "exhibit": tx.create("project", {"name": EXHIBIT}, _TEST).id,
+            "spring_fair": tx.create("project", {"name": "Spring Fair"}, _TEST).id,
+        }
+    yield store.read(), ids
+    store.close()
+
+
+@pytest.mark.parametrize(
+    "text, named",
+    [
+        ("We also need to send the gala sponsor thank-you letters.", {"gala"}),
+        ("The Volunteer Gala needs a caterer.", {"gala"}),
+        ("Book the hall for the exhibit.", {"exhibit"}),
+        ("Two exhibits open in March.", {"exhibit"}),
+        # A word two projects' names share names neither; the word that only one holds names it.
+        ("Plans for spring are late.", set()),
+        ("The spring fair stalls are booked.", {"spring_fair"}),
+        ("Buy milk on the way home.", set()),
+    ],
+)
+def test_a_project_is_named_by_its_full_name_or_a_short_form(view, text, named):
+    reader, ids = view
+    found = set(projects_named_in(reader, text))
+    mine = {ids[k] for k in named}
+    assert mine <= found, (text, found)
+    assert not (found & set(ids.values())) - mine, (text, found)

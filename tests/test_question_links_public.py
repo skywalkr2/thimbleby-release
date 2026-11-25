@@ -96,6 +96,7 @@ def test_a_local_or_private_address_is_not_a_link_the_recipient_can_open(url):
         "https" + "://a.b.example.org:8443/p?q=1",
         "https" + "://v2.example.com/",
         "https" + "://localhostess.example.com/",
+        "https" + "://localhost.example.com/",
         "https" + "://10x.example.io/",
     ],
 )

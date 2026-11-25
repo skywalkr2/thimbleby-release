@@ -1,0 +1,41 @@
+{
+  "summary": "Held the server room review until after Thanksgiving as you asked, added it as an action on hold, recorded that the vendor is away until the first week of December, and closed both questions about the review's timing.",
+  "topic": "server room review hold",
+  "ops": [
+    {
+      "op": "action.add",
+      "text": "Review the server room with the vendor",
+      "owners": [
+        "Rafael Quist"
+      ],
+      "due_words": "after Thanksgiving",
+      "waiting_for": "until after Thanksgiving; the vendor is away until the first week of December",
+      "evidence": {
+        "quote": "Hold the server room review until after Thanksgiving."
+      }
+    },
+    {
+      "op": "fact",
+      "text": "The vendor for the server room review is away until the first week of December.",
+      "evidence": {
+        "quote": "The vendor is away until the first week of December."
+      }
+    },
+    {
+      "op": "question.done",
+      "id": "Q-90",
+      "answer": "Hold the server room review until after Thanksgiving; the vendor is away until the first week of December.",
+      "evidence": {
+        "quote": "Hold the server room review until after Thanksgiving."
+      }
+    },
+    {
+      "op": "question.done",
+      "id": "Q-91",
+      "answer": "Hold the server room review until after Thanksgiving; the vendor is away until the first week of December.",
+      "evidence": {
+        "quote": "Hold the server room review until after Thanksgiving."
+      }
+    }
+  ]
+}

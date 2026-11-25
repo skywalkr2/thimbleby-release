@@ -366,19 +366,31 @@ class PortsTaken(OSError):
 
 
 def port_is_free(port: int) -> bool:
-    """Whether a listener could bind this loopback port now (the same options the server binds with)."""
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        if sys.platform == "win32" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-        elif sys.platform != "win32":
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        probe.bind(("127.0.0.1", port))
-        return True
-    except OSError:
-        return False
-    finally:
-        probe.close()
+    """Whether nothing listens on this port: not on loopback and not on all interfaces (a program on all interfaces
+    holds the loopback port too, though a loopback bind may still succeed beside it on some systems)."""
+    for host in ("127.0.0.1", "0.0.0.0"):  # noqa: S104 - a probe that is bound and closed, never served on
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            if sys.platform == "win32" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            elif sys.platform != "win32":
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind((host, port))
+        except OSError:
+            return False
+        finally:
+            probe.close()
+    return True
+
+
+def serving_port(data_folder: str | Path, configured: int) -> int:
+    """The port the workspace's running app serves on: the one it published when it started (it may have moved off the
+    configured one), else the configured port."""
+    if is_running(data_folder):
+        found = InstanceLock(data_folder).connection()
+        if found is not None:
+            return found[0]
+    return configured
 
 
 def choose_port(port: int, tries: int, free: Callable[[int], bool] = port_is_free) -> int:

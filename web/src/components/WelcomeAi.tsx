@@ -66,7 +66,7 @@ const isBuiltin = (kind: Kind) => (kind.program ?? "") !== "" && !takesAddress(k
 
 /** The three words a program's example models are offered by, in the order they are listed; the catalog says which example
  * is which, and the program's own name for one is only ever a hint. */
-const MODEL_ROLE_ORDER = ["recommended", "stronger", "faster"] as const;
+const MODEL_ROLE_ORDER = ["recommended", "stronger", "strongest", "faster"] as const;
 
 /** A program's example models in the order they are offered: by role, then as the catalog lists the others. */
 function examplesOf(kind: Kind): string[] {
@@ -80,6 +80,13 @@ function examplesOf(kind: Kind): string[] {
 
 /** The model a program starts with: its recommended example, else the first one it lists. */
 const firstExample = (kind: Kind): string => examplesOf(kind)[0] ?? "";
+
+/** The harder model a program starts with: the example its preset names for harder work (where learning from corrections
+ * and the checks go), when it is another than the everyday one; otherwise the same model does everything. */
+const startHarder = (kind: Kind): string => {
+  const deep = kind.model_deep ?? "";
+  return !kind.model_optional && deep !== "" && deep !== firstExample(kind) && (kind.model_examples ?? []).includes(deep) ? deep : HARDER_SAME;
+};
 
 /** An id for the settings from the name the person gave: lowercase letters, digits and dashes, free among the accounts. */
 function idFrom(label: string, fallback: string, taken: Set<string>): string {
@@ -207,7 +214,8 @@ export function WelcomeAi(props: {
   // catalog gives no role is shown by its name alone. Nothing is numbered.
   const roleLabel = (model: string) => {
     const role = kind?.model_roles?.[model];
-    return role ? t("welcome.ai.model_named", { role: t(`welcome.ai.role.${role}`), model }) : model;
+    const name = kind?.model_labels?.[model] ?? model;
+    return role ? t("welcome.ai.model_named", { role: t(`welcome.ai.role.${role}`), model: name }) : name;
   };
   const optional = builtin && !!kind.model_optional;
   // The program picks its own model when none is named and the person has not typed one.
@@ -318,7 +326,7 @@ export function WelcomeAi(props: {
   };
 
   /** Ask the service for its models. A newer question, or a different choice, makes an older answer irrelevant (null). */
-  const check = async (picked: Kind, over?: { key?: string; address?: string }): Promise<{ models: ModelInfo[]; problem: string; suggested?: string } | null> => {
+  const check = async (picked: Kind, over?: { key?: string; address?: string }): Promise<{ models: ModelInfo[]; problem: string; suggested?: string; suggestedHarder?: string } | null> => {
     const mine = ++lookup.current;
     setListing(true);
     setListProblem("");
@@ -332,14 +340,17 @@ export function WelcomeAi(props: {
       // Only the app's suggestion is chosen for the person, never the list's first model: a service lists its newest
       // and dearest first.
       const suggested = got.some((m) => m.id === answer.suggested) ? (answer.suggested as string) : "";
+      // The harder work (learning from corrections, the checks) starts on the stronger model the app suggests, when it is
+      // another than the everyday one; the person can still choose the same model for everything.
+      const suggestedHarder = got.some((m) => m.id === answer.suggested_harder) && answer.suggested_harder !== suggested ? (answer.suggested_harder as string) : HARDER_SAME;
       setModels(got);
       setListProblem(answer.problem ?? "");
       setFilter("");
       if (got.length) {
         setEveryday((cur) => (got.some((m) => m.id === cur) ? cur : suggested));
-        setHarder((cur) => (got.some((m) => m.id === cur) ? cur : HARDER_SAME));
+        setHarder((cur) => (got.some((m) => m.id === cur) ? cur : suggestedHarder));
       }
-      return { models: got, problem: answer.problem ?? "", suggested };
+      return { models: got, problem: answer.problem ?? "", suggested, suggestedHarder };
     } catch (err) {
       if (mine !== lookup.current) return null;
       const problem = err instanceof ApiError && err.detail ? err.detail : problemText(err, t);
@@ -400,7 +411,7 @@ export function WelcomeAi(props: {
       }
       if (got.models.length) {
         first = got.models.some((m) => m.id === first) ? first : (got.suggested ?? "");
-        second = got.models.some((m) => m.id === second) ? second : HARDER_SAME;
+        second = got.models.some((m) => m.id === second) ? second : (got.suggestedHarder ?? HARDER_SAME);
       }
     }
     // A program that picks its own model is checked on the account's own first one.
@@ -452,7 +463,7 @@ export function WelcomeAi(props: {
     setFilter("");
     setEveryday(isBuiltin(picked) && !picked.model_optional ? firstExample(picked) : "");
     setCustomModel(false);
-    setHarder(HARDER_SAME);
+    setHarder(startHarder(picked));
     // A new account reads open material only until the person says more (the question on the step, or a tick in the form).
     setLevels(["open"]);
     setWorkData(null);
@@ -494,7 +505,7 @@ export function WelcomeAi(props: {
     if (!drawer) {
       // The check runs by itself as soon as the kind has all it needs from the person: nothing, for a server or a program.
       if (!picked.needs_key && !picked.local && (picked.base_url !== "" || isBuiltin(picked))) {
-        void verify(picked, { model: isBuiltin(picked) && !picked.model_optional ? firstExample(picked) : "" });
+        void verify(picked, { model: isBuiltin(picked) && !picked.model_optional ? firstExample(picked) : "", harder: startHarder(picked) });
       }
       return;
     }
@@ -599,7 +610,7 @@ export function WelcomeAi(props: {
   /** Saves the account. In the guide it then tests it and says whether the work is ready (true), so Continue can go on. */
   const add = async (): Promise<boolean> => {
     if (!kind || !settings.data) return false;
-    const second = !agent && harder !== HARDER_SAME && harder !== everyday ? harder : "";
+    const second = harder !== HARDER_SAME && harder !== everyday ? harder : "";
     const body: S["AiAccountAdd"] = {
       name: accountId,
       label: shownLabel.trim(),
@@ -1285,7 +1296,7 @@ export function WelcomeAi(props: {
                         return endpoints.refetch();
                       })().then((again) => {
                         const now = again.data?.find((e) => e.id === kind.id);
-                        if (guide && now?.installed) void verify(now, { model: !now.model_optional ? firstExample(now) : "" });
+                        if (guide && now?.installed) void verify(now, { model: !now.model_optional ? firstExample(now) : "", harder: startHarder(now) });
                       })
                     }
                   >
@@ -1498,6 +1509,19 @@ export function WelcomeAi(props: {
                           <option value={OTHER_MODEL}>{t("welcome.ai.model_other")}</option>
                         </Select>
                       </FormField>
+                      {examples.length > 1 && (
+                        <FormField id="ai-model-harder" label={t("welcome.ai.model_harder")}>
+                          <Select id="ai-model-harder" value={harder} onChange={(e) => setHarder(e.target.value)}>
+                            <option value={HARDER_SAME}>{t("welcome.ai.model_same")}</option>
+                            {examples.map((m) => (
+                              <option key={m} value={m}>
+                                {roleLabel(m)}
+                              </option>
+                            ))}
+                          </Select>
+                          <p className="hint">{t("welcome.ai.model_harder_hint")}</p>
+                        </FormField>
+                      )}
                       {customModel && (
                         <FormField id="ai-model-custom" label={t("welcome.ai.model")}>
                           <input

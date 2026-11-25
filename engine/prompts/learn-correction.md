@@ -47,6 +47,13 @@ What to propose:
   unless they name our work", not "drop the question about the cover files".
 - State it about what was corrected. If an action's owner was changed, the lesson says who does that kind of work
   ("venue work goes to <person>"), not where questions go. If the lesson reaches further, say both.
+- Keep the item and its kind apart. The topic names the item in the words the corrected work used for it ("the gala
+  invitations", "the venue contract"), never only by its project and never by the kind; the kind goes only in
+  "kind_of_work". When the correction says who owes, sends,
+  owns or answers something, always give "kind_of_work" too: the kind of work the item stands for, by what is done
+  ("what goes out for the gala", "the venue's paperwork"). A later run applies the entry to its own item as it stands,
+  and to an item only of that kind as a guess the user sees marked and takes back in one click, so a kind that is too
+  wide costs one click. For any other correction, leave "kind_of_work" out unless the user's words name the kind.
 - Use "lesson.add" for something that went wrong and the check that stops it. Give "guard": the check or behavior, in
   plain words. Use "routing.add" when the correction shows who answers or owns a kind of question or work, with the
   person's id from the people list. Use "glossary.add" for a term or acronym the correction explains. Use "style.add"

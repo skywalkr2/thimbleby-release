@@ -432,6 +432,7 @@ def recent(
     version = program_version or default_program_version(cfg)
     since = now - timedelta(days=cfg.ui.feedback_problem_days)
     found = [*_failed_runs(store, cfg, since, hide, version), *_failed_reads(store, cfg, since, hide)]
+    found += _stopped_requests(store, since, hide)
     found += _failed_checks(ws, cfg, since, hide, version)
     found += _app_problems(ws, since, hide)
     found.sort(key=lambda p: p.at, reverse=True)
@@ -470,6 +471,44 @@ def _failed_runs(
             )
         )
     return out
+
+
+def _stopped_requests(store: Any, since: datetime, hide: Masker) -> list[Problem]:
+    """Requests stopped for the person after their return rounds: one line each with the reasons of every round that
+    was sent back or refused, masked. The assistant's answer itself stays on the request and is never in the problem
+    lines."""
+    out = []
+    for stored in store.read().since("request", "created_at", since.date().isoformat()):
+        req = stored.data
+        rounds = req.get("stopped_rounds") or []
+        when = _at(req.get("created_at"))
+        if req.get("state") not in ("needs_you", "failed") or not rounds or when is None:
+            continue
+        text = "; ".join(
+            f"try {r['attempt']}, round {r['round']}: {' '.join(r['reasons']) or 'no reason given'}" for r in rounds
+        )
+        out.append(
+            Problem(at=when, doing="task", what=req.get("task"), error_kind="stopped", text=_cut(hide(text), 2000))
+        )
+    return out
+
+
+def last_stopped_answer(store: Any, cfg: Any, now: datetime) -> tuple[datetime, str] | None:
+    """The assistant's kept last answer of the newest request that stopped for the person, made within the report's
+    window (`ui.feedback_problem_days`), with when that request was made; none when no stopped request holds one.
+    The text is as kept: it is the person's own material, so it is never part of the problem lines and is offered
+    only as a choice the person makes."""
+    since = now - timedelta(days=cfg.ui.feedback_problem_days)
+    newest: tuple[datetime, str, str] | None = None
+    for stored in store.read().since("request", "created_at", since.date().isoformat()):
+        req = stored.data
+        when = _at(req.get("created_at"))
+        answer = req.get("stopped_answer")
+        if req.get("state") not in ("needs_you", "failed") or not answer or when is None or when < since:
+            continue
+        if newest is None or (when, stored.id) >= (newest[0], newest[1]):
+            newest = (when, stored.id, answer)
+    return None if newest is None else (newest[0], newest[2])
 
 
 def _failed_reads(store: Any, cfg: Any, since: datetime, hide: Masker) -> list[Problem]:

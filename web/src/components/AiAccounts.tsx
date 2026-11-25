@@ -650,7 +650,7 @@ function AccountRow(props: {
 
   const kindWords = !kind ? "" : kind.local ? t("ai_accounts.kind.local") : kind.needs_key ? t("ai_accounts.kind.paid") : kind.program ? t("ai_accounts.kind.app") : "";
   // What it does for the assistant, in a sentence: from its role and the kinds of work it takes.
-  const covers = role === "work" ? t(`ai_accounts.does.${workShape(account.used_for)}`) : role === "backup" ? t(`ai_accounts.backs.${workShape(backupFor)}`) : t("ai_accounts.does.none");
+  const covers = role === "work" ? t(`ai_accounts.does.${workShape(account.used_for) === "both" && account.splits_work ? "both_split" : workShape(account.used_for)}`) : role === "backup" ? t(`ai_accounts.backs.${workShape(backupFor)}`) : t("ai_accounts.does.none");
   const keyEnds = account.credential_expires && !account.key_ending ? t("ai_accounts.key_ends_quiet", { date: monthDay(account.credential_expires) }) : "";
   const metaLine = [covers, isOwnService(kind) ? "" : kind?.name, kindWords, keyEnds].filter(Boolean).join(" · ");
   const pillTone: PillTone = role === "work" ? "need" : "neutral";

@@ -14,6 +14,7 @@ then, and only for a run that failed, that output is read as its error report.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import secrets
@@ -121,6 +122,43 @@ def _printed_as_output(said: str, folders: set[str]) -> bool:
     return False
 
 
+log = logging.getLogger(__name__)
+
+
+def _text(value: Any) -> str:
+    """A program's output as text, whether it came as text, bytes or nothing."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value or ""
+
+
+def _decoded(output: str) -> str:
+    """A program's output as text a person would read: JSON output (one document, or one per line) gives its strings
+    with their line breaks restored, each on a line of its own; any other line is kept as it is. A check that reads
+    lines then sees a path printed alone on its line in JSON output as it sees it in plain output."""
+
+    def strings(value: Any) -> list[str]:
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, dict):
+            return [s for v in value.values() for s in strings(v)]
+        if isinstance(value, list):
+            return [s for v in value for s in strings(v)]
+        return []
+
+    try:
+        return "\n".join(strings(json.loads(output)))
+    except ValueError:
+        pass
+    lines = []
+    for line in output.splitlines():
+        try:
+            lines += strings(json.loads(line)) if line.strip().startswith(("{", "[")) else [line]
+        except ValueError:
+            lines.append(line)
+    return "\n".join(lines)
+
+
 class CliAgentAdapter:
     name = "cli-agent"
     #: The program adds its own instructions to every request, so the account check measures that fixed overhead.
@@ -195,8 +233,14 @@ class CliAgentAdapter:
                 errors="replace",
                 timeout=self.settings.timeout_seconds,
             )
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as late:
             self._copy_back(copied)
+            # What the program had printed when it was stopped goes to the log, so a run that keeps timing out shows
+            # where it was; it never reaches the screen, which says only that it didn't finish.
+            printed = [_text(late.stdout)[-2000:], _text(late.stderr)[-2000:]]
+            log.warning(
+                "the agent was stopped after %s seconds; it had printed: %r", self.settings.timeout_seconds, printed
+            )
             raise AiError("timeout", f"the agent didn't finish in {self.settings.timeout_seconds} seconds") from None
         except OSError as err:
             raise AiError("provider_down", f"the agent program couldn't start: {err}", sent=False) from None
@@ -560,9 +604,9 @@ class CliAgentAdapter:
                     else "It was stopped from changing files outside its own folder",
                 )
             )
-            said = " ".join(
+            said = "\n".join(
                 [
-                    done.stdout or "",
+                    _decoded(done.stdout or ""),
                     done.stderr or "",
                     inside.read_text(encoding="utf-8", errors="replace") if inside.is_file() else "",
                 ]

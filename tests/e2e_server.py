@@ -161,6 +161,23 @@ def seed_failed_read(store, cfg) -> str:
     return text
 
 
+def seed_stopped_answer(store, cfg) -> str:
+    """One request that stopped for the person an hour before the server's clock, with the answer it kept, so a problem
+    report offers the choice to include it. Returns the answer, so the browser test reads it from here."""
+    answer = "The stand-in assistant's last answer, which holds the person's own material."
+    at = datetime.fromisoformat(store.clock()) - timedelta(hours=1)
+    data = {
+        "task": next(iter(cfg.ai.tasks)),
+        "origin": "pm",
+        "state": "needs_you",
+        "created_at": at.isoformat(),
+        "stopped_answer": answer,
+    }
+    with store.transaction() as tx:
+        tx.create("request", data, WriteContext(actor="engine", trust="trusted", op="e2e-seed"))
+    return answer
+
+
 def seed_outgoing(store, cfg):
     """The core's stand-in channel, registered, and one message drafted to a known person who has an address, waiting
     for the person's yes. Returns the channel and what the browser test reads from the fixture."""
@@ -662,6 +679,7 @@ def main() -> None:
     fake_channel = seed_outgoing(store, cfg) if args.fake_channel else None
     failed_read = seed_failed_read(store, cfg) if form is not None else None
     log_line = seed_log_line(ws) if form is not None else None
+    stopped_answer = seed_stopped_answer(store, cfg) if form is not None else None
     acts = seed_acts(ws, store, cfg) if args.acts else None
     meetings = seed_meetings(store, cfg) if args.meetings else None
     just_me = seed_just_me(store, cfg) if args.just_me else None
@@ -794,6 +812,7 @@ def main() -> None:
                 "status": form.status,
                 "failed_read": failed_read,
                 "log_line": log_line,
+                "stopped_answer": stopped_answer,
             }
         )
 

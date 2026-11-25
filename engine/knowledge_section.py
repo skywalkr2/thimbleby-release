@@ -90,6 +90,30 @@ def _in_scope_of_projects(scope: Scope, projects: set[str], also: str | None = N
     return not (set(scope.except_) & projects)
 
 
+def projects_named_in(view: Any, text: str) -> list[str]:
+    """The projects an input names in its own words: by name or alias as a whole phrase, or by a short form, a word of
+    four letters or more that only this project's name holds ("the gala" for "Volunteer Gala", "the exhibit" for
+    "Spring Exhibit"), plurals folded, case ignored. It leans toward naming: a project named by mistake sends a few
+    lines of what was learned for it, and one missed makes the person repeat a correction."""
+    said = " ".join((text or "").casefold().split())
+    if not said:
+        return []
+    projects = list(view.list("project"))
+    words = {
+        p.id: _overlap_words(" ".join([p.data.get("name") or "", *(p.data.get("aliases") or [])])) for p in projects
+    }
+    shared = {w for p in projects for w in words[p.id] if sum(w in words[q.id] for q in projects) > 1}
+    in_text = _overlap_words(said)
+    found = []
+    for project in projects:
+        names = [project.data.get("name") or "", *(project.data.get("aliases") or [])]
+        forms = [" ".join(n.casefold().split()) for n in names if n.strip()]
+        whole = any(re.search(rf"(?<!\w){re.escape(form)}(?!\w)", said) for form in forms)
+        if whole or (words[project.id] - shared) & in_text:
+            found.append(project.id)
+    return found
+
+
 def with_ancestors(view: Any, projects: Iterable[str]) -> list[str]:
     """The projects and then every project above them (`Project.parent`, any depth), each once. A scope that names a
     project covers the projects below it, so scopes are matched against this list."""
@@ -153,7 +177,14 @@ def _rule_line(rule: Any, *, one_line: bool = False) -> str:
 
 
 def _entry_line(stored: Any) -> str:
-    return f"- {stored.id}: {stored.data['text']}{_origin_note(stored.data)}"
+    line = f"- {stored.id}: {stored.data['text']}{_origin_note(stored.data)}"
+    if kind := " ".join(str(stored.data.get("kind_of_work") or "").split()):
+        # The item is the entry's own; an item only of its kind gets it as a guess the person sees marked.
+        line += (
+            f" Also for {kind}: apply it to such an item too, as a guess, and name that step in"
+            f' "by_kind" ({{"op": <its index>, "entry": "{stored.id}"}}).'
+        )
+    return line
 
 
 def _term_line(stored: Any) -> str:

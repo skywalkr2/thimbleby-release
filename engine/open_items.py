@@ -91,6 +91,21 @@ class OpenAction:
     needs_date: bool = False
     #: The latest day a follow-up to its owners was recorded (a nudge is never completion: the to-do stays open).
     followed_up: str | None = None
+    #: Set when what was learned decided its owners only because it is of the same kind of work as an item the person
+    #: corrected (a guess): the kind of work, the day it was learned and whether the owners it would have had are known.
+    guess: dict[str, Any] | None = None
+
+
+def _guess_of(d: dict[str, Any]) -> dict[str, Any] | None:
+    """The mark of a guess from what was learned, as the row shows it; None for an action that has none."""
+    mark = d.get("by_kind")
+    if not mark:
+        return None
+    return {
+        "kind_of_work": mark["kind_of_work"],
+        "learned_on": mark["learned_on"],
+        "can_take_back": bool(mark.get("owners_before")),
+    }
 
 
 @dataclass
@@ -249,6 +264,7 @@ def open_actions(
                 effort_minutes=d.get("effort_minutes"),
                 remind_at=datetime.fromisoformat(str(d["remind_at"])).astimezone(here) if d.get("remind_at") else None,
                 followed_up=_last_chase(d),
+                guess=_guess_of(d),
                 needs_date=due is None
                 and state in ("open", "stale")
                 and not d.get("reply_owed")

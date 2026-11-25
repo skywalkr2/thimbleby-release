@@ -562,6 +562,46 @@ test("Edit changes the owner from a list, with Undo, and keeps the team the owne
   await waitFor(() => expect(calls.some((c) => c.route === "POST changesets/CS-1/undo")).toBe(true));
 });
 
+test("a to-do whose owner was a guess from what was learned says who and from which correction, and one click takes it back with Undo", async () => {
+  const user = userEvent.setup();
+  const guessed = action("A-7", "Send the sponsor letters", {
+    owners: [{ person: "P-2", name: "Robin Sample" }],
+    guess: { kind_of_work: "what goes out for the fair", learned_on: "2026-11-25", can_take_back: true },
+  });
+  const calls = api({ "POST actions/A-7/take-back-guess": () => ({ changeset: "CS-1" }) }, { actions: [guessed, actions[2]] });
+  renderApp(<OpenItems />);
+  const [row, other] = await rows();
+  expect(row).toHaveTextContent("Robin Sample, from your correction on Nov 25");
+  expect(other).not.toHaveTextContent("from your correction");
+  await user.click(within(row).getByRole("button", { name: "Take back who it goes to: Send the sponsor letters" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST actions/A-7/take-back-guess")).toBe(true));
+  expect(await screen.findByText(/Taken back\./)).toBeInTheDocument();
+  await user.click(await screen.findByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST changesets/CS-1/undo")).toBe(true));
+});
+
+test("a guess whose earlier owners are not known says where it came from and offers no take-back", async () => {
+  const guessed = action("A-7", "Send the sponsor letters", { guess: { kind_of_work: "what goes out for the fair", learned_on: "2026-11-25", can_take_back: false } });
+  api({}, { actions: [guessed] });
+  renderApp(<OpenItems />);
+  const [row] = await rows();
+  expect(row).toHaveTextContent("from your correction on Nov 25");
+  expect(within(row).queryByRole("button", { name: /Take back/ })).toBeNull();
+});
+
+test("a to-do the assistant could learn nothing from says so on its row", async () => {
+  api(
+    {
+      "GET knowledge/learned": () => ({ lines: [{ signal: "SIG-1", kind: "change_requested", changeset: null, refs: ["A-3"], state: "nothing" }] }),
+    },
+    { actions: [actions[2], actions[1]] },
+  );
+  renderApp(<OpenItems />);
+  const [row, other] = await rows();
+  await waitFor(() => expect(row).toHaveTextContent("Couldn't learn from this; it applies to this to-do only."));
+  expect(other).not.toHaveTextContent("Couldn't learn");
+});
+
 test("a to-do that nearly repeats another offers Merge with it, at once and with one Undo; one that doesn't offers nothing", async () => {
   const user = userEvent.setup();
   const twin = action("A-8", "Order the sample copies today", {

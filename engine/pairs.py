@@ -23,12 +23,14 @@ A pair is a file in a workspace's `pairs/` folder. It runs in a fresh copy of th
       then: [{received, <input keys>, answer: {...}, label}]    # more inputs after it, with fixed answers
       correction:             # what the person does, through the same code the screens use
         kind: sent_back | undone | declined | answered | moved | dropped | picked_owner | not_a_project | part_of |
-              new_person | set_aside | brought_in | asked | changed | sent_version | change_requested
+              new_person | set_aside | brought_in | asked | changed | sent_version | change_requested | handed_in
         note: ...             # the person's words; of: <label> (default: the first input's change)
         # moved/picked_owner/answered/dropped/asked/changed name a record: id or @action, @question, @event, @fact,
         # @held_question (the first one the input's change made); person / into / form / as the kind needs;
         # changed also gives `fields`, the person's own new values for it (a calendar entry's day, an action's due)
         # brought_in is marking the input's message as work after all, for the project named by `side` (optional)
+        # handed_in is a note the person hands in that corrects what the assistant did ("Correction: the invitations
+        # are <name>'s to send"), read with the fixed answer `answer`; what the applier records from it is the signal
         # change_requested is "Change this" on a question or to-do (`id`) with the person's words (`note`); the
         # assistant's fixed answer to it is `answer`, and it may change the other open items the rule covers
         # sent_version names a reply owed (`id`) whose draft the person copied; `note` is the message they actually
@@ -46,7 +48,8 @@ A pair is a file in a workspace's `pairs/` folder. It runs in a fresh copy of th
       expect_learning: false  # no learning request may be queued
     later:                    # (b) a later, similar input, scored exactly like a golden case
       received, <input keys>, expect, forbid, allow, exact, hostile, injected
-      packet_has / packet_lacks: [words]   # words the packet the account reads holds, or must not hold
+      packet_has / packet_lacks: [words]   # words the packet the account reads holds (any one of the alternatives
+                                           # split at `|`), or must not hold
       expect_proposal: none | [...]        # what the later input itself may propose
       then: [{received, <input keys>}]     # more inputs of the same batch; every op counts together
     ideal:                    # the stand-in answers that make the stub run pass: no cost, and the plumbing is checked
@@ -146,6 +149,7 @@ CORRECTIONS = (
     "changed",
     "sent_version",
     "change_requested",
+    "handed_in",
 )
 #: The corrections that act on an earlier change, so they need one to exist.
 CHANGE_CORRECTIONS = frozenset(
@@ -235,8 +239,15 @@ def _check_correction(where: str, spec: Any) -> None:
         raise ValueError(f"{where}: a correction is one of {', '.join(CORRECTIONS)}")
     if spec["kind"] == "change_requested" and not (spec.get("id") and spec.get("note") and spec.get("answer")):
         raise ValueError(f"{where}: a change request names the item (id), the person's words (note) and the answer")
+    if spec["kind"] == "handed_in" and not (spec.get("note") and spec.get("answer")):
+        raise ValueError(f"{where}: a correcting note gives the person's words (note) and the answer")
     if spec["kind"] == "changed" and not (spec.get("id") and isinstance(spec.get("fields"), dict) and spec["fields"]):
         raise ValueError(f"{where}: an edit names the record (id) and the new values (fields)")
+
+
+def _holds(text: str, words: str) -> bool:
+    """Whether a packet holds a `packet_has` entry: any one of its alternatives split at `|`, exactly as written."""
+    return any(part in text for part in words.split("|") if part)
 
 
 def _fixed_answer(first: Mapping[str, Any]) -> Any:
@@ -563,6 +574,10 @@ class _Play:
                 asked, _ = request_change(self.ws, self.store, cfg, record_kind, record_id, note)
                 if self.process(asked, spec["answer"], live=False) is None:
                     raise _Stop(f"the change asked for didn't finish: {self.waiting_reason(asked)}")
+            elif kind == "handed_in":
+                request = self.hand_in({"received": when, "note": note}, cs)
+                if self.process(request, spec["answer"], live=False) is None:
+                    raise _Stop(f"the correcting note didn't finish: {self.waiting_reason(request)}")
             elif kind == "sent_version":
                 self._sent_version(ref("id"), note, when)
             elif kind == "set_aside":
@@ -740,7 +755,8 @@ class _Play:
                 continue
             data = found.data
             text = data.get("text") or " ".join(str(data.get(k, "")) for k in ("term", "meaning")).strip()
-            lines.append(f"{entry_id}: {text} (reach: {_reach(data.get('applies_to'))})".strip())
+            also = f"; kind of work: {data['kind_of_work']}" if data.get("kind_of_work") else ""
+            lines.append(f"{entry_id}: {text} (reach: {_reach(data.get('applies_to'))}{also})".strip())
         return lines
 
     def given(self, request: str) -> list[str]:
@@ -1017,7 +1033,7 @@ def _play_pair(
                 request = handed
                 text = play.packet_text(handed)
                 problems += [
-                    f"later: the packet doesn't hold {w!r}" for w in later.get("packet_has", []) if w not in text
+                    f"later: the packet doesn't hold {w!r}" for w in later.get("packet_has", []) if not _holds(text, w)
                 ]
                 problems += [f"later: the packet holds {w!r}" for w in later.get("packet_lacks", []) if w in text]
             done = play.process(handed, answer, live=True)
@@ -1103,7 +1119,9 @@ def _run_scenario(
                     request = handed
                     text = play.packet_text(handed)
                     problems += [
-                        f"day 30: the packet doesn't hold {w!r}" for w in spec.get("packet_has", []) if w not in text
+                        f"day 30: the packet doesn't hold {w!r}"
+                        for w in spec.get("packet_has", [])
+                        if not _holds(text, w)
                     ]
                     problems += [f"day 30: the packet holds {w!r}" for w in spec.get("packet_lacks", []) if w in text]
                 people_before = len(play.store.read().list("person"))

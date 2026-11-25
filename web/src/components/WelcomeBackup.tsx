@@ -243,7 +243,7 @@ export function WelcomeBackup(props: {
                 )}
               </div>
               <p className="hint" id="backup-path-hint">
-                {!props.local
+                {!props.local || found.length === 0
                   ? t("welcome.backup.path_hint")
                   : (drives.data?.names ?? []).length > 0
                     ? t("welcome.backup.path_pick", { drives: (drives.data?.names ?? []).join(", ") })

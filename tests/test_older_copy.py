@@ -160,3 +160,22 @@ def test_data_older_than_the_sources_refresh_is_never_filed_as_news_and_the_fres
         assert len(first.new) == 1
     finally:
         store.close()
+
+
+def test_a_calendar_meeting_moved_back_with_no_time_of_its_own_reaches_the_assistant(tmp_path):
+    """The #66 re-check (M-11): calendar items carry no time, and no time had come to count as came back, so a meeting
+    moved back was closed as "an older version came back". A calendar is never a copy put back."""
+    ws, cfg, store = make(tmp_path, [])
+    read, holder = _reader(ws, store)
+    try:
+        tuesday = {"start": "2026-10-20T10:00:00+00:00", "end": "2026-10-20T11:00:00+00:00"}
+        thursday = {"start": "2026-10-22T14:00:00+00:00", "end": "2026-10-22T15:00:00+00:00"}
+        entry = {"key": "e1", "title": "Review"}
+        read([{**entry, "text": "Review on Tuesday at 10", "event": tuesday}], NOW)
+        moved = read([{**entry, "text": "Review on Thursday at 2", "event": thursday}], NOW + timedelta(hours=1))
+        assert len(moved.changed) == 1
+        back = read([{**entry, "text": "Review on Tuesday at 10", "event": tuesday}], NOW + timedelta(hours=2))
+        (request,) = [holder["store"].read().get("request", r).data for r in back.changed]
+        assert not request.get("auto_closed"), request.get("auto_closed")
+    finally:
+        holder["store"].close()

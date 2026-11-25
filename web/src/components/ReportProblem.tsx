@@ -35,6 +35,8 @@ export function ReportProblem(props: { onClose: () => void; /** Words to start t
   const [replyTouched, setReplyTouched] = useState(false);
   const [withProblems, setWithProblems] = useState(true);
   const [withDetails, setWithDetails] = useState(true);
+  // Off every time the screen opens: nothing remembers it.
+  const [withAnswer, setWithAnswer] = useState(false);
   const [sending, setSending] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const [blocked, setBlocked] = useState(false);
@@ -51,6 +53,8 @@ export function ReportProblem(props: { onClose: () => void; /** Words to start t
 
   const addProblems = withProblems && found.length > 0;
   const details = withDetails ? (facts.data?.details ?? "") : "";
+  const offeredAnswer = facts.data?.answer ?? "";
+  const answer = withAnswer ? offeredAnswer : "";
   const problems = addProblems ? fit(problemLines(found, t).join("\n")) : "";
   const replyTrimmed = reply.trim();
   const replyBad = replyTrimmed !== "" && !ADDRESS.test(replyTrimmed);
@@ -70,7 +74,7 @@ export function ReportProblem(props: { onClose: () => void; /** Words to start t
   const text = lines.join("\n").replace(/^\n+/, "");
 
   const copy = async () => {
-    if ((await copyMessage(`${subject}\n\n${text}${details ? `\n\n${t("report.details_title")}\n${details}` : ""}`)) === "blocked") {
+    if ((await copyMessage(`${subject}\n\n${text}${details ? `\n\n${t("report.details_title")}\n${details}` : ""}${answer ? `\n\n${t("report.answer_title")}\n${answer}` : ""}`)) === "blocked") {
       setBlocked(true);
       return;
     }
@@ -83,7 +87,7 @@ export function ReportProblem(props: { onClose: () => void; /** Words to start t
     setSending(true);
     setFailed(null);
     try {
-      const done = await api.sendReport({ words: words.trim(), reply_to: replyTrimmed, problems, details, include_details: withDetails });
+      const done = await api.sendReport({ words: words.trim(), reply_to: replyTrimmed, problems, details, include_details: withDetails, answer_block: answer, include_answer: answer !== "" });
       if (done.ok) {
         push({ message: t("report.sent") });
         props.onClose();
@@ -117,6 +121,7 @@ export function ReportProblem(props: { onClose: () => void; /** Words to start t
   const replyNoteId = `${base}-reply-note`;
   const problemsId = `${base}-problems`;
   const detailsId = `${base}-details`;
+  const answerId = `${base}-answer`;
   const hasDetails = (facts.data?.details ?? "") !== "";
   return (
     <ModalPanel titleId={titleId} onClose={props.onClose}>
@@ -182,6 +187,17 @@ export function ReportProblem(props: { onClose: () => void; /** Words to start t
             </span>
           </>
         )}
+        {offeredAnswer !== "" && (
+          <>
+            <label className="check-line">
+              <input type="checkbox" checked={withAnswer} aria-describedby={`${answerId}-hint`} onChange={(e) => setWithAnswer(e.target.checked)} />
+              <span>{t("report.answer_include")}</span>
+            </label>
+            <span id={`${answerId}-hint`} className="hint">
+              {t("report.answer_hint")}
+            </span>
+          </>
+        )}
         <CheckboxGroup legend={t("report.preview")} legendHidden>
           <FormField id={`${base}-body`} label={t("report.preview")}>
             <textarea id={`${base}-body`} className="short" readOnly rows={Math.min(14, text.split("\n").length + 1)} value={text} />
@@ -189,6 +205,11 @@ export function ReportProblem(props: { onClose: () => void; /** Words to start t
           {details && (
             <FormField id={detailsId} label={t("report.details_title")}>
               <textarea id={detailsId} className="short" readOnly rows={8} value={details} />
+            </FormField>
+          )}
+          {answer && (
+            <FormField id={answerId} label={t("report.answer_title")}>
+              <textarea id={answerId} className="short" readOnly rows={8} value={answer} />
             </FormField>
           )}
         </CheckboxGroup>

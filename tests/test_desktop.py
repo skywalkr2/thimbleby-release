@@ -79,7 +79,12 @@ def test_the_first_start_makes_the_workspace_with_no_template_and_runs_the_windo
     root = tmp_path / "share" / "thimbleby" / desktop.WORKSPACE_FOLDER
     given = {}
     shell = Shell()
-    env = env_for(tmp_path, THIMBLEBY__SERVER__BASE_PATH="/thimble")
+    import socket
+
+    with socket.socket() as pick:  # a free port the test chose, never an assumed one
+        pick.bind(("127.0.0.1", 0))
+        free = pick.getsockname()[1]
+    env = env_for(tmp_path, THIMBLEBY__SERVER__BASE_PATH="/thimble", THIMBLEBY__SERVER__PORT=str(free))
 
     def launch(factory, port, folder, **options):
         given.update(options, port=port, folder=folder)
@@ -94,7 +99,7 @@ def test_the_first_start_makes_the_workspace_with_no_template_and_runs_the_windo
     # The installed app bundles no add-on: its first workspace starts with none on.
     assert ws.config().workspace.plugins.enabled == []
     assert not (root / "data" / "plugins").exists() and "demo" not in {p.name for p in root.iterdir()}
-    assert given["port"] == ws.config().server.port and given["folder"] == ws.private_dir
+    assert given["port"] == free and given["folder"] == ws.private_dir
     assert given["readiness_path"] == "/thimble/api/health" and given["health"] == 200
     assert given["path"] == f"/thimble/?token={ws.install_token()}"
     assert given["shell"] is shell and given["token"]() == ws.install_token()

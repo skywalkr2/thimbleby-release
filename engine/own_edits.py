@@ -24,6 +24,7 @@ EDIT_OPS = frozenset(
         "action.move",
         "action.hold",
         "action.unhold",
+        "action.owners",
         "action.part",
         "action.repeat",
         "question.update",

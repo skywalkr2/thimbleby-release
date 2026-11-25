@@ -135,12 +135,12 @@ export function MissedOne(props: { onClose: () => void }) {
 }
 
 /** The button that opens the form, for an empty state or a menu. */
-export function MissedOneButton(props: { size?: "md" | "sm" }) {
+export function MissedOneButton(props: { size?: "md" | "sm"; /** The button's words when a question beside it already says what it is for. */ label?: string }) {
   const { t } = useWords();
   const open = useMissedOne();
   return (
     <Button size={props.size} {...{ [MISSED_BUTTON]: "" }} onClick={open}>
-      {t("missed.open")}
+      {props.label ?? t("missed.open")}
     </Button>
   );
 }
@@ -150,7 +150,7 @@ export function MissedOneLine(props: { className?: string }) {
   const { t } = useWords();
   return (
     <p className={props.className} data-missed-line="">
-      {t("missed.prompt")} <MissedOneButton size="sm" />
+      {t("missed.prompt")} <MissedOneButton size="sm" label={t("missed.say")} />
     </p>
   );
 }

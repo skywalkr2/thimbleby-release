@@ -92,3 +92,38 @@ def test_the_demo_reads_a_hand_in_and_answers_a_question_with_no_account(app):
     worker.run_pending()
     found = next(a for a in c.get(f"{api}/asks").json() if a["id"] == asked)
     assert found["answer"] and found["answer"]["cites"]
+
+
+def test_on_the_demo_an_answer_to_a_question_closes_it_and_never_bounces_back(app):
+    """The #66 re-check (M-12, U-31): the stand-in never closed a question, so every answer on a demo came back to
+    Today as a loose note and testers would think answering is broken. Now the answer closes the question in the
+    person's own words."""
+    from engine.answer_state import answer_states
+    from engine.storage import Store, WriteContext
+
+    c, api, worker, ws = app
+    store = Store(ws.db_path)
+    try:
+        me = load_config(ws.config_dir, env={}).workspace.user.person
+        with store.transaction() as tx:
+            qid = tx.create(
+                "question", {"to": me, "title": "Matte or gloss for the cover?"}, WriteContext("pm", "trusted", "test")
+            ).id
+    finally:
+        store.close()
+    assert c.post(f"{api}/questions/{qid}/answer", json={"text": "Matte, please"}).status_code == 200
+    worker.run_pending()
+    store = Store(ws.db_path)
+    try:
+        view = store.read()
+        assert qid not in answer_states(view), "the answer was judged"
+        done = [o for cs in view.list("changeset") for o in cs.data["ops"] if o["op"]["op"] == "question.done"]
+        assert done and done[-1]["status"] == "applied" and done[-1]["op"]["answer"] == "Matte, please"
+        assert not [
+            o
+            for cs in view.list("changeset")
+            for o in cs.data["ops"]
+            if o["op"]["op"] == "note" and "Matte" in o["op"].get("text", "")
+        ]
+    finally:
+        store.close()

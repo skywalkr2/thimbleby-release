@@ -4006,6 +4006,18 @@
             "title": "Spent Today Usd",
             "type": "number"
           },
+          "splits_work": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its quick, everyday jobs and its harder jobs (learning from corrections, the checks) are on different models of this account, so its summary says the harder ones have a stronger model.",
+            "title": "Splits Work"
+          },
           "used_for": {
             "description": "The tiers whose main account it is.",
             "items": {
@@ -8834,6 +8846,26 @@
             "title": "State",
             "type": "string"
           },
+          "stopped_answer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For a stopped request: the assistant's last answer as it gave it, shown as plain text.",
+            "title": "Stopped Answer"
+          },
+          "stopped_rounds": {
+            "description": "For a stopped request: each round that was sent back or refused, with its reasons.",
+            "items": {
+              "$ref": "#/components/schemas/StoppedRoundView"
+            },
+            "title": "Stopped Rounds",
+            "type": "array"
+          },
           "title": {
             "anyOf": [
               {
@@ -10927,6 +10959,18 @@
             "title": "Local",
             "type": "boolean"
           },
+          "model_deep": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The example model the kind's preset names for harder work (learning, checks), so setup starts the harder model there; none when the kind has no such preset.",
+            "title": "Model Deep"
+          },
           "model_examples": {
             "description": "Model names the program accepts.",
             "items": {
@@ -10934,6 +10978,14 @@
             },
             "title": "Model Examples",
             "type": "array"
+          },
+          "model_labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The display name of each example model, by name, for the screen to show beside what it is for.",
+            "title": "Model Labels",
+            "type": "object"
           },
           "model_optional": {
             "default": false,
@@ -10946,11 +10998,12 @@
               "enum": [
                 "recommended",
                 "stronger",
+                "strongest",
                 "faster"
               ],
               "type": "string"
             },
-            "description": "What each example model is for, by name: the one chosen first, a stronger one or a faster one.",
+            "description": "What each example model is for, by name: the one chosen first, a stronger one, the strongest or a faster one.",
             "title": "Model Roles",
             "type": "object"
           },
@@ -13961,6 +14014,34 @@
           "long_text"
         ],
         "title": "GenericRecordView",
+        "type": "object"
+      },
+      "GuessView": {
+        "description": "A guess from what was learned on a to-do's row: its owners were decided only because it is of the same kind of\nwork as an item the person corrected. The row says who and the day of that correction, with one click to take it\nback (POST /api/actions/{id}/take-back-guess).",
+        "properties": {
+          "can_take_back": {
+            "description": "The owners it would have had are known, so the guess can be taken back in one click.",
+            "title": "Can Take Back",
+            "type": "boolean"
+          },
+          "kind_of_work": {
+            "description": "The kind of work the lesson stands for, as it says it.",
+            "title": "Kind Of Work",
+            "type": "string"
+          },
+          "learned_on": {
+            "description": "The day of the person's correction.",
+            "format": "date",
+            "title": "Learned On",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind_of_work",
+          "learned_on",
+          "can_take_back"
+        ],
+        "title": "GuessView",
         "type": "object"
       },
       "GuestsDone": {
@@ -16985,7 +17066,7 @@
         "type": "object"
       },
       "LearnedLine": {
-        "description": "What the assistant learned from one correction, for the line under that correction's card (design 7.18).\n`learning`: the assistant is still working on it (`waiting` says why and until when). `proposed`: there is a\n`proposal` to keep. `kept`: the person's own words were kept at once; `undo` is the change that makes Undo.",
+        "description": "What the assistant learned from one correction, for the line under that correction's card (design 7.18).\n`learning`: the assistant is still working on it (`waiting` says why and until when). `proposed`: there is a\n`proposal` to keep. `kept`: the person's own words were kept at once; `undo` is the change that makes Undo.\n`nothing`: the run ended with nothing to propose for a to-do, so its row says the correction applies\nto that to-do only.",
         "properties": {
           "changeset": {
             "anyOf": [
@@ -17032,7 +17113,8 @@
             "enum": [
               "learning",
               "proposed",
-              "kept"
+              "kept",
+              "nothing"
             ],
             "title": "State",
             "type": "string"
@@ -20226,6 +20308,17 @@
             ],
             "description": "The latest day a follow-up to its owners was recorded; the to-do stays open (a nudge is never completion).",
             "title": "Followed Up"
+          },
+          "guess": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GuessView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when what was learned decided its owners only because it is of the same kind of work as an item the person corrected: the row says so, with the day, and offers to take it back."
           },
           "id": {
             "title": "Id",
@@ -30220,6 +30313,12 @@
       "ReportFacts": {
         "description": "GET /api/report/facts: what a problem report carries besides the person's words and the problem lines.",
         "properties": {
+          "answer": {
+            "default": "",
+            "description": "The assistant's last answer of the newest request that stopped for the person within the report's window, as a report would carry it if the person chooses to include it (a heading line, then the answer as kept); empty when no stopped request holds one, in which case the choice is not offered. It holds the person's own material and is never sent unless the person turns the choice on.",
+            "title": "Answer",
+            "type": "string"
+          },
           "details": {
             "default": "",
             "description": "The technical details exactly as a report would carry them: the app's recent log lines, scrubbed and trimmed to the form's limit; empty when there are none.",
@@ -30259,12 +30358,25 @@
       "ReportSend": {
         "description": "POST /api/report/send: the report exactly as the person was shown it.",
         "properties": {
+          "answer_block": {
+            "default": "",
+            "description": "The answer block as previewed (`ReportFacts.answer`); sent exactly as given, and only when `include_answer` is true.",
+            "maxLength": 20000,
+            "title": "Answer Block",
+            "type": "string"
+          },
           "details": {
             "default": "",
             "description": "The technical details as shown, or empty.",
             "maxLength": 40000,
             "title": "Details",
             "type": "string"
+          },
+          "include_answer": {
+            "default": false,
+            "description": "Whether the person turned on including the assistant's last answer; off unless they did, and when false none of it is sent.",
+            "title": "Include Answer",
+            "type": "boolean"
           },
           "include_details": {
             "default": true,
@@ -35694,6 +35806,36 @@
         "title": "StopCauseView",
         "type": "object"
       },
+      "StoppedRoundView": {
+        "description": "One round of a stopped request that was sent back or refused, and why, in plain words.",
+        "properties": {
+          "attempt": {
+            "description": "Which try of the request the round belongs to, from 1.",
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "reasons": {
+            "description": "Why the round's answer was sent back or refused.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "round": {
+            "description": "The round's number within its try, from 1.",
+            "title": "Round",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attempt",
+          "round",
+          "reasons"
+        ],
+        "title": "StoppedRoundView",
+        "type": "object"
+      },
       "SyncView": {
         "description": "The synced folder's state.",
         "properties": {
@@ -39404,7 +39546,7 @@
             "title": "Waiting"
           },
           "working_days": {
-            "description": "The working days left in the days the week ahead covers.",
+            "description": "The working days left in the week, today included while today is a working day.",
             "title": "Working Days",
             "type": "integer"
           }
@@ -40333,6 +40475,46 @@
           }
         },
         "summary": "Action Status"
+      }
+    },
+    "/api/actions/{action_id}/take-back-guess": {
+      "post": {
+        "description": "Take back a guess from what was learned: the to-do gets the owners it would have had, the mark goes, and the\nassistant learns that the kind of work was too wide for this item. The person's own change, with Undo.",
+        "operationId": "take_back_guess_api_actions__action_id__take_back_guess_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "action_id",
+            "required": true,
+            "schema": {
+              "title": "Action Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Applied"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Take Back Guess"
       }
     },
     "/api/actions/{action_id}/tie": {

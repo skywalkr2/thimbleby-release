@@ -447,7 +447,23 @@ def finish(store: Any, request_id: str, changeset_id: str) -> None:
         current = tx.get("request", request_id)
         if found is None or current is None or any(o["status"] == "held" for o in found.data["ops"]):
             return
+        if not any(o["status"] == "applied" for o in found.data["ops"]):
+            _note_nothing_learned(tx, current.data)
         tx.update("request", request_id, {"state": "done", "waiting": None}, _DONE, read_version=current.version)
+
+
+def _note_nothing_learned(tx: Any, request_data: Mapping[str, Any]) -> None:
+    """A learning run ended with nothing proposed: the correction keeps the version of the record it was about, so
+    that record's row says nothing could be learned from it, until the record changes again."""
+    signal_id = signal_of(request_data)
+    signal = tx.get("signal", signal_id) if signal_id else None
+    if signal is None or not signal.data.get("refs"):
+        return
+    ref = signal.data["refs"][0]
+    kind = kind_of_id(REGISTRY, ref)
+    about = tx.get(kind, ref) if kind else None
+    if about is not None:
+        tx.update("signal", signal.id, {"nothing_learned_at": about.version}, _DONE, read_version=signal.version)
 
 
 def rule_in_report(cfg: Any, title: str, text: str) -> str | None:

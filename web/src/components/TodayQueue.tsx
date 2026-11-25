@@ -1544,7 +1544,7 @@ function QueueRow(props: {
         const at = (key: string, values: Record<string, string> = {}) => t(place ? `${key}_at` : key, { place, ...values });
         const age = backupAge({ age_hours: line.age_hours ?? null }, t) ?? "";
         const words =
-          state === "unset" ? t("queue.backup.unset") : state === "folder_missing" ? (line.since ? t("queue.backup.missing", { time: clockTime(line.since) }) : t("queue.backup.never")) : state === "failed" ? at("queue.backup.failed") : state === "overdue" ? at("queue.backup.overdue", { age }) : state === "smaller" ? at("queue.backup.smaller") : at("queue.backup.never");
+          state === "unset" ? t("queue.backup.unset") : state === "folder_missing" ? (line.since ? t("queue.backup.missing", { time: clockTime(line.since) }) : t("queue.backup.missing_unknown")) : state === "failed" ? at("queue.backup.failed") : state === "overdue" ? at("queue.backup.overdue", { age }) : state === "smaller" ? at("queue.backup.smaller") : at("queue.backup.never");
         const run = () => void act(() => api.backup(), () => ({ message: t("toast.backup_ran") }), undefined, { key: line.key, touches: ["today", "status", "backups", "setup", "sync"] });
         return {
           // Never set up or never run is a gap in setup; once it ran and stopped, or fails, it is a risk.
@@ -1552,9 +1552,10 @@ function QueueRow(props: {
           tone: state === "failed" || state === "overdue" ? "danger" : "warn",
           // The title is what the person does; the state keeps its one word, then what happened.
           meta: state === "unset" ? words : `${backupWord(state ?? "failed", t)} · ${words}`,
-          primary: state === "unset" ? { label: t("queue.backup.pick"), run: () => props.handlers.onOpenGuide?.("backup") } : { label: t("backup.now"), run },
-          // A folder that isn't there can be reconnected (then Back up now) or replaced by another.
-          menu: state === "folder_missing" ? [{ id: "pick", label: t("queue.backup.pick"), run: () => props.handlers.onOpenGuide?.("backup") }] : [],
+          // No folder, or a folder that isn't there: the one action mends the folder (reconnect or pick another); Back up now,
+          // which only keeps a copy on this computer meanwhile, is in the menu.
+          primary: state === "unset" || state === "folder_missing" ? { label: t("queue.backup.pick"), run: () => props.handlers.onOpenGuide?.("backup") } : { label: t("backup.now"), run },
+          menu: state === "folder_missing" ? [{ id: "now", label: t("backup.now"), run }] : [],
         };
       }
       case "escalate": {
@@ -1969,6 +1970,8 @@ function QueueRow(props: {
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setCursor(false);
       }}
       className={line.kind === "clash" ? styles.plain : undefined}
+      // The backup line sits in Finish setting up, whose rows have no menu; its Not now (and Back up now) must stay reachable.
+      keepActions={line.kind === "backup" && (line.state === "unset" || line.state === "folder_missing")}
       lead={lead}
       data-state={state}
       data-queue-line={line.kind}

@@ -1,0 +1,18 @@
+{
+  "summary": "Put the cover files on hold until Theo approves the final spine width, as you asked.",
+  "topic": "Cover files held for spine width",
+  "ops": [
+    {
+      "op": "action.add",
+      "text": "Send the cover files",
+      "owners": [
+        "Avery Lane"
+      ],
+      "waiting_for": "Theo Brandt approves the final spine width",
+      "project": "PRJ-1",
+      "evidence": {
+        "quote": "Hold the cover files until Theo approves the final spine width."
+      }
+    }
+  ]
+}

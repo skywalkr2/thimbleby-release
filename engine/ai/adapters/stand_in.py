@@ -10,7 +10,8 @@ Reading an input, each line is looked at on its own:
   is what the document lists, so the fact says that ("The notes list that …") and names no one as having chosen.
 Every one cites its line word for word. Whatever else the input says is kept as one note.
 
-Answering a question, it quotes the first passage of the user guide chosen for the question.
+Answering a question, it quotes the first passage of the user guide chosen for the question. The person's answer to one
+of the questions in the lists, typed on the question, closes it with their words as the answer.
 
 Learning from a correction, it generalizes nothing, except for the account check's fixed correction, which gets the one
 lesson the check expects.
@@ -24,7 +25,7 @@ from typing import Any
 
 from engine.ai import learning_check
 
-_INPUT = re.compile(r"<untrusted[^>]*>\s*(.+?)\s*</untrusted>|<note>\s*(.+?)\s*</note>", re.S)
+_INPUT = re.compile(r"<untrusted[^>]*>\s*(.+?)\s*</untrusted>|<note[^>]*>\s*(.+?)\s*</note>", re.S)
 _BULLET = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
 _NAME = r"[A-Z][\w'’-]+(?: [A-Z][\w'’-]+)?"
 _WILL = re.compile(rf"^(?P<who>I|{_NAME}) (?:will|is going to|needs to|should) (?P<what>.+?)[.!]?$")
@@ -59,8 +60,37 @@ def _sentence(text: str) -> str:
     return text[:1].upper() + text[1:] + ("" if text.endswith((".", "!", "?")) else ".")
 
 
+_RECORD = re.compile(r'<untrusted source="record">\s*(.+?)\s*</untrusted>', re.S)
+_OWN_NOTE = re.compile(r"<note[^>]*>\s*(.+?)\s*</note>", re.S)
+
+
+def _answer_to(request: str) -> dict[str, Any] | None:
+    """The person's answer to a question, typed on the question: it closes the question with their words as the
+    answer. None for any other input."""
+    from engine.intake import NOTE_ROUTES
+
+    note = _OWN_NOTE.search(request)
+    for found in _RECORD.finditer(request):
+        try:
+            said = json.loads(found.group(1))
+        except ValueError:
+            continue
+        record = said.get("record") if isinstance(said, dict) else None
+        if not isinstance(record, dict) or said.get("the person") != NOTE_ROUTES["answered"] or note is None:
+            continue
+        if record.get("kind") == "question" and record.get("id"):
+            words = " ".join(note.group(1).split())
+            return {
+                "summary": "The stand-in recorded your answer to the question.",
+                "ops": [{"op": "question.done", "id": record["id"], "answer": words, "evidence": {"quote": words}}],
+            }
+    return None
+
+
 def read(request: str) -> dict[str, Any]:
     """A changeset for one input, by the rules above."""
+    if (answered := _answer_to(request)) is not None:
+        return answered
     ops: list[dict[str, Any]] = []
     rest: list[str] = []
     for line, own in _lines(request):

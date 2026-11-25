@@ -259,7 +259,7 @@ test("with a service connected and nothing worked on yet, an empty Today says wh
 test("Missed one appears only once the assistant has worked on something", async () => {
   show([]);
   expect(await screen.findByText("Nothing needs you right now.")).toBeInTheDocument();
-  expect(screen.getAllByRole("button", { name: "Missed something?" }).length).toBeGreaterThan(0);
+  expect(screen.getAllByRole("button", { name: "Tell it what" }).length).toBeGreaterThan(0);
 });
 
 const watched = (id: string, over: Partial<S["WatchSourceView"]> = {}): S["WatchSourceView"] => ({

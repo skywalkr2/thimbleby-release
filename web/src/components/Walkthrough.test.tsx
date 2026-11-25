@@ -3614,7 +3614,9 @@ describe("Reginald is turned on in the AI step, the first reading is waited for,
     });
     open();
     expect(await screen.findByRole("heading", { level: 3, name: "Turn Helper on" })).toBeInTheDocument();
-    expect(screen.getByText(/First it will read your mail and calendar, sort what it finds and see who you write to/)).toBeInTheDocument();
+    // No mail or calendar is connected yet, so it doesn't say it will read them now.
+    expect(screen.queryByText(/First it will read your mail and calendar/)).toBeNull();
+    expect(screen.getByText(/Once your mail and calendar are connected, it will read them first/)).toBeInTheDocument();
     expect(await screen.findByText(/30 messages/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
     expect(screen.getByText("Turn Helper on to go on.")).toBeInTheDocument();

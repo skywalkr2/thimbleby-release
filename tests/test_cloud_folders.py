@@ -212,8 +212,11 @@ def test_a_folder_named_after_an_account_says_which_and_a_work_one_is_not_a_pers
     mine = CloudFolder(name="Test drive", linux=["Sync - *Personal"], personal=["Personal"])
     assert [(f.account, f.work) for f in cloud_folders.found([mine], tmp_path, "linux")] == [("", False)]
     star = CloudFolder(name="Test drive", linux=["Sync - *"], personal=["Personal"])
-    # The first match in name order is the account's; a name ending in a personal word is a personal one.
-    assert [(f.account, f.work) for f in cloud_folders.found([star], tmp_path, "linux")] == [("Acme", True)]
+    # Every match is found, in name order: a name ending in a personal word is a personal one.
+    assert [(f.account, f.work) for f in cloud_folders.found([star], tmp_path, "linux")] == [
+        ("Acme", True),
+        ("Personal", False),
+    ]
     plain = CloudFolder(name="Test drive", linux=["Plain"])
     assert [(f.account, f.work) for f in cloud_folders.found([plain], tmp_path, "linux")] == [("", False)]
 
@@ -259,3 +262,12 @@ def test_the_route_names_the_account_recommends_none_on_a_work_drive_and_saves_b
         f"{base}/setup/backup-folder/cloud", json={"name": "Work drive", "account": "", "fingerprint": fingerprint}
     )
     assert wrong.status_code == 400
+
+
+def test_every_folder_of_a_drive_is_found_so_a_personal_account_is_listed_beside_a_work_one(tmp_path):
+    for name in ("OneDrive-Acme", "OneDrive-Personal"):
+        (tmp_path / name).mkdir()
+    drive = CloudFolder(name="Test drive", linux=["OneDrive*"], personal=["Personal"])
+    both = cloud_folders.found([drive], tmp_path, "linux")
+    assert [(f.account, f.work) for f in both] == [("Acme", True), ("Personal", False)]
+    assert cloud_folders.recommended(both) == 1

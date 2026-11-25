@@ -151,3 +151,30 @@ def test_changing_an_answer_nobody_has_read_takes_the_earlier_one_back(env):
         assert answer_states(fresh.read())[qid].request == second
     finally:
         fresh.close()
+
+
+def test_a_hold_on_a_question_stands_until_its_answer_is_judged(env):
+    """The #66 re-check (M-11, U-31): an unjudged "Yes please" lifted the hold on a to-do waiting on that question, so
+    it showed overdue. The hold stands while the answer is being read, and lifts once the run has judged it."""
+    from engine.blocked import standing_hold
+
+    _, cfg, store, _ = env
+    qid = ask(store, cfg)
+    with store.transaction() as tx:
+        held = tx.create(
+            "action",
+            {
+                "text": "Order the jacket proofs",
+                "owners": [{"person": cfg.workspace.user.person}],
+                "status": "open",
+                "on_hold": {"waiting_for": "the finish is chosen", "on": qid, "since": "2026-11-01"},
+            },
+            _PERSON,
+        ).id
+    hold = lambda: standing_hold(store.read(), store.read().get("action", held).data)  # noqa: E731
+    assert hold() is not None
+    answer(env, qid, "Yes please")
+    assert hold() is not None, "an answer still being read doesn't lift the hold"
+    set_responder(Scripted(settle(qid)))
+    worker_of(env).run_pending()
+    assert hold() is None, "the judged answer lifts it"

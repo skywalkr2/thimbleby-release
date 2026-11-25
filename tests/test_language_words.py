@@ -35,6 +35,12 @@ ADDED = {
     "answer_later_words",
     "message_request_verbs",
     "message_request_nouns",
+    "message_request_alone",
+    "message_request_not",
+    "code_label_words",
+    "code_lead_words",
+    "hold_request_words",
+    "hold_condition_words",
     "first_person_words",
 }
 

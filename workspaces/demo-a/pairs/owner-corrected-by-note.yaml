@@ -1,0 +1,71 @@
+id: owner-corrected-by-note
+title: A note that says someone else owes a to-do changes its owner, and the next to-do like it goes to them
+skills: [use-lesson, owners]
+# The first-week journey's rows 10 and 11: the correction is the person's own note, not a button on the to-do, and the
+# notes name the project only as "the gala".
+first:
+  received: '2026-10-09'
+  given:
+  - kind: project
+    id: PRJ-90
+    fields:
+      name: Volunteer Gala
+  note: Hold the gala invitations until Odile approves the guest list.
+  fixed:
+    summary: The gala invitations wait for Odile's approval of the guest list.
+    ops:
+    - op: action.add
+      text: Send the gala invitations
+      project: PRJ-90
+      waiting_for: Odile approves the guest list
+      evidence:
+        quote: Hold the gala invitations until Odile approves the guest list
+  correction:
+    kind: handed_in
+    note: 'Correction: the gala invitations are Ines''s to send.'
+    answer:
+      summary: The gala invitations are Ines's to send.
+      ops:
+      - op: action.owners
+        id: ACT-7
+        owners: [Ines Albescu]
+        evidence:
+          quote: the gala invitations are Ines's to send
+  keep: true
+later:
+  received: '2026-10-12'
+  note: We also need to send the gala sponsor thank-you letters.
+  expect:
+  - op: action.add
+    text_has: [sponsor]
+    owners: [PER-4]
+  forbid:
+  - op: act.draft
+  - op: action.add
+    text_has: [sponsor]
+    owners: [PER-1]
+  # The note names the project only by a short form ("the gala"); what was learned for it reaches the run all the same.
+  packet_has: ['# Lessons for this input|# Who answers what']
+ideal:
+  learn:
+    summary: Ines sends what goes out for the Volunteer Gala.
+    topic: who sends the Volunteer Gala mail
+    ops:
+    - op: lesson.add
+      text: The gala invitations are Ines's to send, not the user's.
+      guard: A to-do to send the gala invitations names Ines as its owner.
+      kind_of_work: what goes out for the gala
+      # Scoped to the project, as a real model scopes it: the later note names the project only in its words.
+      applies_to: {scope: projects, projects: [PRJ-90], task_kinds: [notes]}
+      evidence:
+        quote: the gala invitations are Ines's to send
+  later:
+    summary: The sponsor thank-you letters for the Volunteer Gala are Ines's to send.
+    by_kind: [{op: 0, entry: LES-1}]
+    ops:
+    - op: action.add
+      text: Send the Volunteer Gala sponsor thank-you letters
+      owners: [Ines Albescu]
+      project: PRJ-90
+      evidence:
+        quote: We also need to send the gala sponsor thank-you letters

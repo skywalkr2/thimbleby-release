@@ -418,7 +418,9 @@ def test_an_answer_refers_to_a_record_made_earlier_in_it_and_one_undo_takes_all_
         assert not ws.view().list("rv/book") and not ws.view().list("rv/chapter") and not ws.view().list("rv/note")
 
 
-def test_an_op_naming_one_that_was_refused_waits_or_does_not_come_before_is_refused_saying_which(tmp_path):
+def test_an_op_naming_a_waiting_one_waits_with_it_and_one_naming_a_refused_or_later_op_is_refused_saying_why(
+    tmp_path,
+):
     with opened(tmp_path) as ws:
         held = ws.ask(
             "rv/sort",
@@ -431,8 +433,9 @@ def test_an_op_naming_one_that_was_refused_waits_or_does_not_come_before_is_refu
             },
         ).outcome
         assert held is not None
-        assert held.ops[0]["status"] == "held" and held.ops[1]["status"] == "refused"
-        assert "change 0" in held.ops[1]["reason"] and "waiting for you" in held.ops[1]["reason"]
+        # A step that names one waiting for the person waits with it and comes in on the person's yes.
+        assert held.ops[0]["status"] == "held" and held.ops[1]["status"] == "held"
+        assert held.ops[1]["reason"].startswith("Comes in with") and held.ops[1].get("waits_for") == 0
         refused = ws.ask(
             "rv/sort",
             answer={

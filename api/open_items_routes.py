@@ -19,11 +19,13 @@ from api.schemas import (
     BlockerView,
     DoneActionView,
     DoneItemsView,
+    GuessView,
     OpenActionView,
     OpenItemsView,
     OpenQuestionView,
     OwnerNameView,
 )
+from engine.applier import apply_as_person
 from engine.config import Config
 from engine.open_items import (
     DoneAction,
@@ -71,6 +73,7 @@ def _action(r: OpenAction, me: str | None = None) -> OpenActionView:
         effort_minutes=r.effort_minutes,
         remind_at=r.remind_at,
         followed_up=r.followed_up,
+        guess=GuessView(**r.guess) if r.guess is not None else None,
         # What waits on the person, as the side menu counts it: theirs (or with no owner yet) and not on hold.
         needs_you=waits_on_person(r, me),
     )
@@ -116,6 +119,21 @@ def build_open_items_router(ws: Workspace, cfg: Config, store: Store, events: Ev
             return DoneItemsView(
                 actions=[_done(a) for a in done_actions(store, cfg, worker.now())], days=cfg.ui.done_days
             )
+
+    @r.post("/actions/{action_id}/take-back-guess")
+    def take_back_guess(action_id: str) -> Applied:
+        """Take back a guess from what was learned: the to-do gets the owners it would have had, the mark goes, and the
+        assistant learns that the kind of work was too wide for this item. The person's own change, with Undo."""
+        found = store.read().get("action", action_id)
+        if found is None:
+            raise HTTPException(status_code=404, detail=f"action {action_id} doesn't exist")
+        mark = found.data.get("by_kind")
+        if not mark or not mark.get("owners_before"):
+            raise HTTPException(status_code=409, detail="there is no guess on this to-do to take back")
+        op = {"op": "action.owners", "id": action_id, "owners": mark["owners_before"]}
+        done = guard(lambda: apply_as_person(store, cfg, [op], "Took back a guess"))
+        events.changed()
+        return Applied(changeset=done)
 
     @r.post("/actions/{action_id}/merge")
     def merge(action_id: str, body: ActionMergeIn) -> Applied:

@@ -112,7 +112,8 @@ def test_a_copy_much_smaller_than_the_last_is_flagged(env):
     run_backup(ws, cfg, NOW)
     files = ws.root / "files"
     files.mkdir(exist_ok=True)
-    (files / "big.bin").write_bytes(b"x" * 400_000)
+    # Large beside the workspace itself, so the drop crosses the line whatever the demo data weighs.
+    (files / "big.bin").write_bytes(b"x" * 4_000_000)
     run_backup(ws, cfg, NOW + timedelta(hours=1))
     (files / "big.bin").unlink()
     run_backup(ws, cfg, NOW + timedelta(hours=2))

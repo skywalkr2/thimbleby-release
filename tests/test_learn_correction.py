@@ -339,6 +339,34 @@ def test_nothing_to_generalize_makes_no_knowledge(env):
     assert ops_of(store, queued.id) == [] and store.read().get("request", queued.id).data["state"] == "done"
 
 
+def test_a_run_with_nothing_to_propose_marks_the_corrected_to_do_until_it_changes_and_one_with_a_lesson_does_not(env):
+    from engine import learned
+
+    ws, cfg, store = env
+    cs_id, action, _ = interior(env)
+    signal(store, "change_requested", [action], note="Typo in the title.", changeset=cs_id, now=NOW)
+    (queued,) = learning(store)
+    scripted(NOTHING)
+    run_learning(env, queued.id)
+    (made,) = store.read().list("signal")
+    assert action in made.data["refs"] and made.data["nothing_learned_at"] is not None
+    (line,) = [x for x in learned.lines(store.read()) if x.signal == made.id]
+    assert line.state == learned.NOTHING
+    with store.transaction() as tx:  # the to-do changes again: the line goes
+        current = tx.get("action", action)
+        tx.update("action", action, {"notes": "Changed."}, _TEST, read_version=current.version)
+    assert not [x for x in learned.lines(store.read()) if x.signal == made.id]
+
+    cs_id, action, _ = interior(env)
+    signal(store, "change_requested", [action], note="Interior files go to the editor first.", changeset=cs_id, now=NOW)
+    queued = learning(store)[-1]
+    scripted(lesson_answer("go to the editor first"))
+    run_learning(env, queued.id)
+    latest = store.read().list("signal")[-1]
+    assert latest.data.get("nothing_learned_at") is None
+    assert [x.state for x in learned.lines(store.read()) if x.signal == latest.id] == [learned.PROPOSED]
+
+
 def test_more_than_one_proposal_refuses_the_whole_answer_and_asks_for_one(env):
     ws, cfg, store = env
     cs_id, _, _ = interior(env)

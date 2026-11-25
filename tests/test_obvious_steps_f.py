@@ -109,7 +109,8 @@ def test_action_unhold_is_refused_for_an_action_not_on_hold_or_not_open_or_missi
     for op, why in (
         (unhold_op(free), "isn't on hold"),
         (unhold_op(DONE["id"]), "already done"),
-        (unhold_op(HELD["id"]), "waiting for an owner"),
+        # Waiting for an owner is no hold: lifting a hold is refused only because there is none.
+        (unhold_op(HELD["id"]), "isn't on hold"),
         (unhold_op("ACT-999"), "no action ACT-999"),
     ):
         found = [p for p in problems(env, op, QUOTE, actor="pm") if p.severity == "refuse"]

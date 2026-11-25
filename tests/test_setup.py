@@ -916,7 +916,7 @@ def test_a_program_names_what_each_example_model_is_for_so_the_screen_never_show
     for kind in with_examples:
         roles = kind["model_roles"]
         assert sorted(roles) == sorted(kind["model_examples"]), kind["id"]
-        assert set(roles.values()) <= {"recommended", "stronger", "faster"}
+        assert set(roles.values()) <= {"recommended", "stronger", "strongest", "faster"}
         assert list(roles.values()).count("recommended") == 1
         assert roles[kind["model_examples"][0]] == "recommended"
     assert all(k["model_roles"] == {} for k in c.get(f"{api}/ai/endpoints").json() if not k["model_examples"])

@@ -225,6 +225,7 @@ def test_every_op_that_touches_the_schedule_is_refused_from_a_deleted_invitation
         and issubclass(model, ops.OpModel)
         and "op" in model.model_fields
         and str(model.model_fields["op"].annotation).split("[", 1)[-1].strip("'\"]").startswith(("event.", "series."))
+        or model in (ops.AgendaAddOp, ops.PersonAwayOp)
     }
     assert scheduled and scheduled <= set(applier.SCHEDULE_OPS), scheduled - set(applier.SCHEDULE_OPS)
 

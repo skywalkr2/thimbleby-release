@@ -754,7 +754,7 @@ Something to look at on the review (an image the plugin rendered, or plain text)
 
 Previews may be: `image/gif`, `image/jpeg`, `image/png`, `image/webp`, `text/plain`.
 
-Core ops an action may propose: `act.draft`, `action.close`, `action.drop`, `action.hold`, `action.move`, `action.part`, `action.repeat`, `action.reply`, `action.unhold`, `agenda.add`, `answer`, `list.add`, `list.merge`, `list.rename`, `list.retire`, `mail.restore`, `note`, `person.add`, `project.add`, `question.add`, `question.ask_again`, `question.drop`, `question.mark_sent`, `question.move`, `question.update`, `record.delete`, `record.edit`, `record.log`, `record.set`, `report.draft`, `rule.add`, `rule.retire`, `setting.propose`, `source.widen`, `stage.move`, `text.edit`, `text.propose`, `view.add`, `view.remove`, `view.set`, `work.draft`.
+Core ops an action may propose: `act.draft`, `action.close`, `action.drop`, `action.hold`, `action.move`, `action.owners`, `action.part`, `action.repeat`, `action.reply`, `action.unhold`, `agenda.add`, `answer`, `list.add`, `list.merge`, `list.rename`, `list.retire`, `mail.restore`, `note`, `person.add`, `project.add`, `question.add`, `question.ask_again`, `question.drop`, `question.mark_sent`, `question.move`, `question.update`, `record.delete`, `record.edit`, `record.log`, `record.set`, `report.draft`, `rule.add`, `rule.retire`, `setting.propose`, `source.widen`, `stage.move`, `text.edit`, `text.propose`, `view.add`, `view.remove`, `view.set`, `work.draft`.
 
 ## AI task kinds
 
@@ -1607,6 +1607,11 @@ Something a person will do. Added by `action.add`, closed by `action.close`, dro
 | `replies_to` | str \| None | `None` | For a reply owed: the id of the source (the message) that asked, whose date orders the line. |
 | `asker` | str \| None | `None` | For a reply owed: the id of the person the reply is to, when the message's sender is known. |
 | `remind_at` | AwareDatetime \| None | `None` | When to remind the person of it, as a moment with its time zone. The person sets it, and moves it when they snooze; the assistant may propose one for a to-do whose day an input labels, which waits for the person's yes. The reminder is a line on Today while the action is open and not on hold, and it is never a correction of the assistant's work. |
+| `by_kind` | ByKind \| None | see below | Set when what was learned decided part of this action only because it is of the same kind of work as the item the person corrected (a guess): the row says so, with the day of that correction, and one click takes the guess back. |
+| `by_kind.entry` | str | required | The id of the lesson or routing entry applied. |
+| `by_kind.kind_of_work` | str | required | The kind of work the entry stands for, as it says it. |
+| `by_kind.learned_on` | date | required | The day the entry was learned: the day of the person's correction. |
+| `by_kind.owners_before` | list[str] | `[]` | The owners the action would have had without the guess, by person id. |
 | `on_hold` | OnHold \| None | see below | Set while the action waits for something outside the person's control; the person sets and clears it. An action on hold is never counted as due, overdue or in need of a follow-up, and keeps its due date for when it comes off hold. |
 | `on_hold.waiting_for` | str | required | What it waits for, in plain words. |
 | `on_hold.since` | date | required | The day it was put on hold. |
@@ -1775,6 +1780,11 @@ A unit of work for the assistant. The engine creates it when something is handed
 | `mail_kind` | str \| None | `None` | For a watched mail message the assistant's sorting answered for: the kind it gave (bill, order, delivery or none). Empty when no sorting ran for it. A kind is tracked, never set aside, and files the mail under the Personal project; none means the sorting looked and found no kind, so the word lists don't stand in. |
 | `folded_into` | str \| None | `None` | The newer request this one's change was folded into, so they are read in order, once. |
 | `held_answer` | dict[str, Any] \| None | `None` | The assistant's answer as it came back, kept from the moment it is accepted until its change is applied and the request marked done in one step: {changeset, problems, run, searched, fallback}. A stop in between applies this answer on the next start instead of running the request again. |
+| `stopped_answer` | str \| None | `None` | For a request that stopped after its return rounds: the assistant's last answer as it gave it, cut at `dispatch.keep_stopped_answer_chars`. Kept on this computer only; cleared when the request finishes. |
+| `stopped_rounds` | list[StoppedRound] | `[]` | For a request that stopped or is being tried again: one entry per round that was sent back or refused, with the try, the round's number and the reasons in plain words. |
+| `stopped_rounds[].attempt` | int | `1` | Which try of the request this round belongs to, from 1. |
+| `stopped_rounds[].round` | int | required | The round's number within its try, from 1. |
+| `stopped_rounds[].reasons` | list[str] | `[]` | Why the round's answer was sent back or refused. |
 | `may_answer` | list[str] | `[]` | For a message the person sent: the open replies owed (action ids) it may answer, found by the rules from its conversation and recipient. The assistant reads it with them and decides whether it answers each one; the rules close nothing. |
 | `intake` | str \| None | `None` | The id of the watched source this request was taken in from when the source was newly added (or looked at further back): its results are gathered into one line on Today and one list, not one line each. |
 | `intake_older` | bool | `False` | For a request taken in from a new source: it came from the read of older mail (the full read the person chose), not from the source's first window. The first reading does not wait for these. |
@@ -2002,6 +2012,7 @@ What went wrong, why, and the guard that prevents a repeat. Added by `lesson.add
 | Field | Type | Default | What it is |
 |---|---|---|---|
 | `text` | str | required | The entry in plain words: what is kept, and what is shown. |
+| `kind_of_work` | str \| None | `None` | The kind of work the entry's item stands for, in a few words, when a later item of that kind may be meant too ("what goes out for the gala" for "the gala invitations"). The entry applies to its own item as it stands; to an item only of this kind it applies as a guess, marked for the person with one click to undo. |
 | `evidence` | KnowledgeEvidence \| None | see below | What it was learned from: the exact words and the records they came from. |
 | `evidence.quote` | str \| None | `None` | The exact words in the source that the entry rests on, as they appear there. |
 | `evidence.source` | str \| None | `None` | The input the words come from, when it was saved as one. |
@@ -2041,6 +2052,7 @@ A term or acronym and what it means here. Added by `glossary.add`, changed by `g
 | Field | Type | Default | What it is |
 |---|---|---|---|
 | `text` | str | required | The entry in plain words: what is kept, and what is shown. |
+| `kind_of_work` | str \| None | `None` | The kind of work the entry's item stands for, in a few words, when a later item of that kind may be meant too ("what goes out for the gala" for "the gala invitations"). The entry applies to its own item as it stands; to an item only of this kind it applies as a guess, marked for the person with one click to undo. |
 | `evidence` | KnowledgeEvidence \| None | see below | What it was learned from: the exact words and the records they came from. |
 | `evidence.quote` | str \| None | `None` | The exact words in the source that the entry rests on, as they appear there. |
 | `evidence.source` | str \| None | `None` | The input the words come from, when it was saved as one. |
@@ -2087,6 +2099,7 @@ Who answers a kind of question, or who doesn't. Added by `routing.add`.
 | Field | Type | Default | What it is |
 |---|---|---|---|
 | `text` | str | required | The entry in plain words: what is kept, and what is shown. |
+| `kind_of_work` | str \| None | `None` | The kind of work the entry's item stands for, in a few words, when a later item of that kind may be meant too ("what goes out for the gala" for "the gala invitations"). The entry applies to its own item as it stands; to an item only of this kind it applies as a guess, marked for the person with one click to undo. |
 | `evidence` | KnowledgeEvidence \| None | see below | What it was learned from: the exact words and the records they came from. |
 | `evidence.quote` | str \| None | `None` | The exact words in the source that the entry rests on, as they appear there. |
 | `evidence.source` | str \| None | `None` | The input the words come from, when it was saved as one. |
@@ -2129,6 +2142,7 @@ What a recipient or audience wants or avoids in what is written for them. Added 
 | Field | Type | Default | What it is |
 |---|---|---|---|
 | `text` | str | required | The entry in plain words: what is kept, and what is shown. |
+| `kind_of_work` | str \| None | `None` | The kind of work the entry's item stands for, in a few words, when a later item of that kind may be meant too ("what goes out for the gala" for "the gala invitations"). The entry applies to its own item as it stands; to an item only of this kind it applies as a guess, marked for the person with one click to undo. |
 | `evidence` | KnowledgeEvidence \| None | see below | What it was learned from: the exact words and the records they came from. |
 | `evidence.quote` | str \| None | `None` | The exact words in the source that the entry rests on, as they appear there. |
 | `evidence.source` | str \| None | `None` | The input the words come from, when it was saved as one. |
@@ -2221,6 +2235,7 @@ A correction by the person, the measure of how well the assistant does. The engi
 | `note` | str \| None | `None` | What the person said or changed, if anything. |
 | `person` | str \| None | `None` | The person who made the correction, when it is counted for them (a missed one). |
 | `learned` | list[str] | `[]` | The knowledge entries the person's own answer made (a glossary entry from "Not a project", for example): what this correction teaches is already recorded, so no learning run is queued for it. |
+| `nothing_learned_at` | int \| None | `None` | Set when the learning run for this correction ended with nothing proposed: the version the corrected record was at then, so its row says nothing could be learned until the record changes again. |
 | `at` | datetime | required | When the correction was made. |
 
 ### `file` (FILE-n)
@@ -3070,6 +3085,18 @@ News about an open action that doesn't end it or change its date, such as a repl
 | `evidence.quote` | str | required | The exact words from the input that justify this op. |
 | `reply` | bool | `False` | True only when this is a reply from the person the to-do waits on that doesn't answer it: an acknowledgement, thanks, a deferral or a change of subject. A notice, a status change or an update from anyone else is news with this false. |
 
+### `action.owners`
+
+Change who owes an open action, when the input says so ("the invitations are Dana's to send, not mine", "Marco will take the crates instead"): the owners given replace the ones it has. An action still waiting for an owner gets them and opens, and its "Pick an owner" question is answered. Evidence is required (the input's words, or the person's note).
+
+| Field | Type | Default | What it is |
+|---|---|---|---|
+| `group` | str \| None | `None` | Ops that must be undone together share a group name. |
+| `id` | str | required | The id of the open action, or of one waiting for an owner. |
+| `owners` | list[str] | required | Who owes it now, by name or id (the user's id for I and me). |
+| `evidence` | EvidenceIn \| None | see below | The exact words from the input that say who owes it; required unless the person makes it. |
+| `evidence.quote` | str | required | The exact words from the input that justify this op. |
+
 ### `action.part`
 
 The input says part of an open action was delivered: say what was delivered and what is left. What was delivered is credited in its news; the action's text becomes what is left, which stays open. Refused if the action doesn't exist or isn't open; evidence is required (the input's words, or the person's note).
@@ -3380,6 +3407,7 @@ Keep a lesson: what went wrong, why, and the guard that stops it happening again
 | `text` | str | required | The lesson in plain words, as the general case. |
 | `guard` | str \| None | `None` | The check or behavior that prevents a repeat, in plain words. |
 | `signal` | str \| None | `None` | The id of the correction it came from, if there is one. |
+| `kind_of_work` | str \| None | `None` | The kind of work the corrected item stands for, in a few words, when a later item of that kind may be meant too; leave it out when only the item itself is meant. |
 | `applies_to` | Scope | see below | What it applies to. |
 | `applies_to.task_kinds` | list[str] | `[]` | Task kinds it applies to; empty means all. |
 | `applies_to.records` | list[str] | `[]` | Record types or type.field targets it applies to; empty means all. |
@@ -3580,8 +3608,12 @@ Start a new project, optionally inside another (a book in its series). A system 
 | `area` | bool | `False` | True for an area of life that never finishes (health, home, money) and so has no end day; left false for a project with a goal and an end. |
 | `status` | str \| None | `None` | Where the project stands, only when the input states it, with those words as evidence. A status nobody stated is left out and stays unknown: never write "not started" or a guess. |
 | `link` | str \| None | `None` | The page the project was added from, when the input gave one. It is kept as a link on the project; the project's details are filled from it only when something set up can read it. |
-| `organization` | str \| None | `None` | The name or id of the organization the project is the work of (a business or job the person works for): one with that name is linked, else it is made. Only the person's own change sets it; the assistant leaves it out. |
-| `evidence` | EvidenceIn \| None | see below | The exact words from the input that name the project, when an input is where it came from; required when a status is given, and then the words that state the status. |
+| `organization` | str \| None | `None` | The name or id of the organization the project is the work of (a business or job the person works for): one with that name is linked, else it is made. Set it only when the user's own note names it ("my manager at <employer>... I'm running two projects"); from other content it waits for the user. |
+| `target` | date \| None | `None` | The day the project is meant to be finished or opens, only when the input states it (the words are in the evidence). A project proposed in this answer has no id yet, so its day is given here, never in a separate op. |
+| `roles` | list[ProjectRoleIn] | `[]` | Who runs, designs or only watches the project, as the input says it (the user's id for I and me). Given here for a project proposed in this answer, never in a separate project.role. |
+| `roles[].person` | str | required | The person, by name or id. |
+| `roles[].role` | Literal['run', 'design', 'watch'] | required | run, design or watch, as for project.role. |
+| `evidence` | EvidenceIn \| None | see below | The exact words from the input that name the project, when an input is where it came from; required when a status, a target day or a role is given, and then the words that name the project and state those. |
 | `evidence.quote` | str | required | The exact words from the input that justify this op. |
 
 ### `project.role`
@@ -3780,6 +3812,7 @@ Keep a routing entry: who answers a kind of question, or who doesn't (`negative`
 | `team` | str \| None | `None` | The team's id, instead of a person. |
 | `negative` | bool | `False` | True when they don't answer this. |
 | `look_up` | str \| None | `None` | Where to look it up instead, in plain words. |
+| `kind_of_work` | str \| None | `None` | The kind of work the corrected item stands for, in a few words, when a later item of that kind may be meant too; leave it out when only the item itself is meant. |
 | `applies_to` | Scope | see below | What it applies to. |
 | `applies_to.task_kinds` | list[str] | `[]` | Task kinds it applies to; empty means all. |
 | `applies_to.records` | list[str] | `[]` | Record types or type.field targets it applies to; empty means all. |

@@ -512,6 +512,13 @@ class ReportFacts(BaseModel):
         description="The technical details exactly as a report would carry them: the app's recent log lines, scrubbed "
         "and trimmed to the form's limit; empty when there are none.",
     )
+    answer: str = Field(
+        "",
+        description="The assistant's last answer of the newest request that stopped for the person within the report's "
+        "window, as a report would carry it if the person chooses to include it (a heading line, then the answer as "
+        "kept); empty when no stopped request holds one, in which case the choice is not offered. It holds the "
+        "person's own material and is never sent unless the person turns the choice on.",
+    )
 
 
 class AlphaNumbers(BaseModel):
@@ -541,6 +548,17 @@ class ReportSend(BaseModel):
     details: str = Field("", max_length=40000, description="The technical details as shown, or empty.")
     include_details: bool = Field(
         True, description="Whether the person left the technical details in; when false none are sent."
+    )
+    include_answer: bool = Field(
+        False,
+        description="Whether the person turned on including the assistant's last answer; off unless they did, and "
+        "when false none of it is sent.",
+    )
+    answer_block: str = Field(
+        "",
+        max_length=20000,
+        description="The answer block as previewed (`ReportFacts.answer`); sent exactly as given, and only when "
+        "`include_answer` is true.",
     )
 
 
@@ -1189,6 +1207,14 @@ class StopCauseView(BaseModel):
     )
 
 
+class StoppedRoundView(BaseModel):
+    """One round of a stopped request that was sent back or refused, and why, in plain words."""
+
+    attempt: int = Field(description="Which try of the request the round belongs to, from 1.")
+    round: int = Field(description="The round's number within its try, from 1.")
+    reasons: list[str] = Field(description="Why the round's answer was sent back or refused.")
+
+
 class ChangeItem(BaseModel):
     id: str
     version: int
@@ -1229,6 +1255,13 @@ class ChangeItem(BaseModel):
         False, description="The account declined it under its own policy; it can be sent to another account."
     )
     cause: StopCauseView | None = Field(None, description="For a stopped request: the cause an action can clear.")
+    stopped_rounds: list[StoppedRoundView] = Field(
+        default_factory=list,
+        description="For a stopped request: each round that was sent back or refused, with its reasons.",
+    )
+    stopped_answer: str | None = Field(
+        None, description="For a stopped request: the assistant's last answer as it gave it, shown as plain text."
+    )
     follows: str | None = Field(None, description="The change (changeset id) this work followed from, if any.")
     follows_summary: str | None = Field(None, description="That change's one-line summary, for the row.")
     redoes: str | None = Field(
@@ -5681,9 +5714,19 @@ class EndpointView(BaseModel):
         None, description="Whether that program is on this computer (None when it can't be told: a hosted app)."
     )
     model_examples: list[str] = Field(default_factory=list, description="Model names the program accepts.")
-    model_roles: dict[str, Literal["recommended", "stronger", "faster"]] = Field(
+    model_roles: dict[str, Literal["recommended", "stronger", "strongest", "faster"]] = Field(
         default_factory=dict,
-        description="What each example model is for, by name: the one chosen first, a stronger one or a faster one.",
+        description="What each example model is for, by name: the one chosen first, a stronger one, the strongest or a "
+        "faster one.",
+    )
+    model_labels: dict[str, str] = Field(
+        default_factory=dict,
+        description="The display name of each example model, by name, for the screen to show beside what it is for.",
+    )
+    model_deep: str | None = Field(
+        None,
+        description="The example model the kind's preset names for harder work (learning, checks), so setup starts "
+        "the harder model there; none when the kind has no such preset.",
     )
     model_optional: bool = Field(False, description="The program picks its own model when none is named.")
     note: str = Field("", description="What the service or program is, in a line or more; shown once it is chosen.")
@@ -5705,6 +5748,11 @@ class AiAccountView(BaseModel):
     models: dict[str, str]
     used_for: list[str] = Field(description="The tiers whose main account it is.")
     backup_for: list[str] = Field(default_factory=list, description="The tiers it stands in for as a backup.")
+    splits_work: bool | None = Field(
+        None,
+        description="Its quick, everyday jobs and its harder jobs (learning from corrections, the checks) are on "
+        "different models of this account, so its summary says the harder ones have a stronger model.",
+    )
     has_key: bool = Field(description="A key or a reference to one is set.")
     key_state: Literal["saved", "missing", "none"] = Field(
         "none",
@@ -8248,13 +8296,15 @@ class ProposalView(KnowledgeView):
 class LearnedLine(BaseModel):
     """What the assistant learned from one correction, for the line under that correction's card (design 7.18).
     `learning`: the assistant is still working on it (`waiting` says why and until when). `proposed`: there is a
-    `proposal` to keep. `kept`: the person's own words were kept at once; `undo` is the change that makes Undo."""
+    `proposal` to keep. `kept`: the person's own words were kept at once; `undo` is the change that makes Undo.
+    `nothing`: the run ended with nothing to propose for a to-do, so its row says the correction applies
+    to that to-do only."""
 
     signal: str = Field(description="The id of the correction.")
     kind: str = Field(description="What the person did (sent_back, answered_assistant, change_requested and so on).")
     changeset: str | None = Field(None, description="The change the correction was about, when it was about one.")
     refs: list[str] = Field(default_factory=list, description="The records the correction was about.")
-    state: Literal["learning", "proposed", "kept"]
+    state: Literal["learning", "proposed", "kept", "nothing"]
     waiting: ScreenText | None = Field(None, description="While learning: why it waits, in plain words.")
     proposal: ProposalView | None = Field(None, description="The entry, for a proposal or one kept at once.")
     undo: str | None = Field(None, description="For one kept at once: the change to undo.")
@@ -8706,6 +8756,18 @@ class AlikeView(BaseModel):
     version: int = Field(description="Its version as read; sent back with the merge.")
 
 
+class GuessView(BaseModel):
+    """A guess from what was learned on a to-do's row: its owners were decided only because it is of the same kind of
+    work as an item the person corrected. The row says who and the day of that correction, with one click to take it
+    back (POST /api/actions/{id}/take-back-guess)."""
+
+    kind_of_work: str = Field(description="The kind of work the lesson stands for, as it says it.")
+    learned_on: date = Field(description="The day of the person's correction.")
+    can_take_back: bool = Field(
+        description="The owners it would have had are known, so the guess can be taken back in one click."
+    )
+
+
 class OpenActionView(BaseModel):
     """One open action for the screen that lists them all (GET /api/open-items). `state` is exactly one of: no_owner
     (waiting for an owner), on_hold, overdue, stale (the person's own to-do with no date that nothing has changed for
@@ -8780,6 +8842,11 @@ class OpenActionView(BaseModel):
     effort_minutes: int | None = Field(None, description="About how long it takes, in minutes, when it says.")
     remind_at: datetime | None = Field(
         None, description="When the person asked to be reminded of it, on their own clock (their time zone)."
+    )
+    guess: GuessView | None = Field(
+        None,
+        description="Set when what was learned decided its owners only because it is of the same kind of work as an "
+        "item the person corrected: the row says so, with the day, and offers to take it back.",
     )
 
 
@@ -9829,7 +9896,9 @@ class WeekAheadView(BaseModel):
         description="The holidays and closures on the working week in the days the week ahead covers, each with its "
         "reason; empty when there are none.",
     )
-    working_days: int = Field(description="The working days left in the days the week ahead covers.")
+    working_days: int = Field(
+        description="The working days left in the week, today included while today is a working day."
+    )
 
 
 class WeekAheadSetAside(BaseModel):

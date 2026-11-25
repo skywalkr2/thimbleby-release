@@ -13,6 +13,7 @@ interface Reports {
   status: number;
   failed_read: string;
   log_line: string;
+  stopped_answer: string;
 }
 
 const reports = async (page: Page): Promise<Reports> => (await page.request.get("/__e2e/reports")).json();
@@ -82,6 +83,42 @@ test.describe("Report a problem", () => {
     const got = (await reports(page)).received[before];
     expect(got.words).toBe("Mail stopped arriving");
     expect(got).not.toHaveProperty("details");
+  });
+
+  test("the assistant's last answer is offered off, previewed as the exact text, and reaches the form only when turned on", async ({ page }) => {
+    const problems: string[] = [];
+    collectProblems(page, problems);
+    const seeded = await reports(page);
+    const choice = "Include the assistant's last answer: it contains your material";
+
+    // Off by default: no preview of it, and a send carries none of it.
+    let before = seeded.received.length;
+    let dialog = await openReport(page);
+    await dialog.getByLabel("What happened?").fill("The request stopped");
+    await expect(dialog.getByRole("checkbox", { name: choice })).not.toBeChecked();
+    await expect(dialog.getByLabel("The assistant's last answer", { exact: true })).toHaveCount(0);
+    await dialog.getByRole("button", { name: "Send" }).click();
+    await expect(page.getByText("Sent. Thank you: the makers have your report.")).toBeVisible();
+    let got = (await reports(page)).received[before];
+    expect(JSON.stringify(got)).not.toContain(seeded.stopped_answer);
+
+    // On: the exact text is shown, and the same text is sent.
+    before = (await reports(page)).received.length;
+    dialog = await openReport(page);
+    await dialog.getByLabel("What happened?").fill("The request stopped again");
+    await expect(dialog.getByRole("checkbox", { name: choice })).not.toBeChecked(); // off again each time it opens
+    await dialog.getByRole("checkbox", { name: choice }).check();
+    const shown = dialog.getByLabel("The assistant's last answer", { exact: true });
+    await expect(shown).toHaveValue(new RegExp(seeded.stopped_answer));
+    await checkAccessibility(page);
+    expect((await reports(page)).received).toHaveLength(before);
+    const text = await shown.inputValue();
+    await dialog.getByRole("button", { name: "Send" }).click();
+    await expect(page.getByText("Sent. Thank you: the makers have your report.")).toBeVisible();
+    got = (await reports(page)).received[before];
+    expect(got.details).toContain(text);
+    expect(Object.keys(got).sort()).toEqual(["details", "problems", "reply_to", "system", "version", "words"]);
+    expect(problems).toEqual([]);
   });
 
   test("a form that is down is told in words, nothing is lost, and Try again sends once it answers", async ({ page }) => {

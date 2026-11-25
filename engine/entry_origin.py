@@ -129,7 +129,7 @@ def cancel_match(view: Any, ctx: Any, entry: Any, quote: str, day: Any) -> tuple
             source_text(ws, store, made.id) if made else "",
         ]
     )
-    wanted, shown = references_in(booking_text), references_in(cancel_text)
+    wanted, shown = references_in(booking_text, ctx.cfg.language), references_in(cancel_text, ctx.cfg.language)
     if wanted and shown and not (wanted & shown):
         return "refuse", OTHER_REFERENCE
     mine_address = _mail_sender(store, view, ws, made.id if made else None, "").strip().lower()

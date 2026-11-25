@@ -77,6 +77,10 @@ elif mode == "pwd-labelled":
 elif mode == "step-arrow":
     open(paths[0], "w").write("ok")
     print("Step 4: ran pwd -> " + os.getcwd())
+elif mode == "json-step-newline":
+    # the program's JSON output: the answer's text, with the real folder alone on its own line after other text
+    open(paths[0], "w").write("ok")
+    print(json.dumps({"type": "result", "result": "Step 4:\n" + os.getcwd()}))
 elif mode == "typed-tool-call":
     # a cheap model types out the call it would make, naming the folder it worked out from the outbox path; nothing runs
     open(paths[0], "w").write("ok")
@@ -502,7 +506,7 @@ def test_an_expired_sign_in_is_read_as_a_sign_in_problem_by_the_preset_that_prin
             assert err.kind == "auth" and err.hint == agent["sign_in_hint"], (preset["id"], said)
 
 
-@pytest.mark.parametrize("mode", ["pwd", "pwd-labelled", "step-arrow", "lists-home"])
+@pytest.mark.parametrize("mode", ["pwd", "pwd-labelled", "step-arrow", "lists-home", "json-step-newline"])
 def test_a_program_that_only_prints_its_folder_or_lists_its_home_fails_the_probe(agent_script, mode):
     """S-0721: a command that ran and wrote nothing is still a command that ran."""
     checks = CliAgentAdapter(settings(agent_script, mode, output_via="outbox")).lockdown_test("m")
@@ -622,6 +626,20 @@ def test_a_sign_in_file_the_persons_own_session_refreshed_during_the_run_is_neve
     after = json.loads((real / name).read_text(encoding="utf-8"))
     assert after[keys[0]] == "theirs, newer", "a key the person's session changed keeps their value"
     assert all(after[key] == "run's" for key in keys[1:]), "keys only the run changed still come back"
+
+
+def test_a_run_that_runs_out_of_time_says_so_logs_what_it_printed_and_suggests_two_shorter_notes(agent_script, caplog):
+    """The #66 re-check (M-1): a meeting note timed out 6 of 6 on an agent. Measured on the cheapest model, the agent's
+    fixed overhead is a few seconds and that note about five, so the limit stays; what the program printed when it was
+    stopped is logged to show where it was, and the stopped line says a long note may go through as two."""
+    from engine.dispatcher import TIMEOUT_HINT
+
+    slow = settings(agent_script, "sleep").model_copy(update={"timeout_seconds": 1})
+    with caplog.at_level("WARNING"), pytest.raises(AiError) as late:
+        CliAgentAdapter(slow).run(task(), "m")
+    assert late.value.kind == "timeout" and "1 seconds" in str(late.value)
+    assert any("stopped after 1 seconds" in r.getMessage() for r in caplog.records)
+    assert "two shorter" in TIMEOUT_HINT
 
 
 def test_a_long_limit_notice_and_any_answer_flagged_as_an_error_are_errors_not_answers(agent_script):

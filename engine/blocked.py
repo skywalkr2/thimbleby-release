@@ -58,6 +58,17 @@ def answered_on(view: Any, question_id: str, here: ZoneInfo | None = None) -> da
     return _day(found, here)
 
 
+def _unjudged(view: Any, question_id: str) -> bool:
+    """Whether a question's answer is still waiting to be judged (being read, or waiting to be read): until then a hold
+    on the question still stands, so an unclear answer never lets the work it holds go."""
+    from engine.answer_state import answer_states
+
+    try:
+        return question_id in answer_states(view)
+    except AttributeError:  # a view that can't list the unfinished requests holds no answer being read
+        return False
+
+
 def blocker_of(view: Any, hold: dict[str, Any] | None, people: People, here: ZoneInfo | None = None) -> Blocker | None:
     """The blocker a hold names, or None for no hold, a hold with only words, or a blocker that no longer exists."""
     target = (hold or {}).get("on")
@@ -75,7 +86,7 @@ def blocker_of(view: Any, hold: dict[str, Any] | None, people: People, here: Zon
         return Blocker("action", target, data["text"], state)
     asked = data.get("to")
     sent = _day(data.get("sent_at"), here)
-    if data["status"] == "answered":
+    if data["status"] == "answered" and not _unjudged(view, target):
         return Blocker(
             "question",
             target,

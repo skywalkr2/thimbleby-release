@@ -97,7 +97,9 @@ test("an empty Today offers it beside what was read", async () => {
   );
   const line = document.querySelector<HTMLElement>("[data-missed-line]")!;
   expect(line).toHaveTextContent("Did Helper miss something?");
-  await user.click(within(line).getByRole("button", { name: "Missed something?" }));
+  // The question is said once: the button beside it doesn't ask it again.
+  expect((line.textContent ?? "").match(/\?/g)).toHaveLength(1);
+  await user.click(within(line).getByRole("button", { name: "Tell it what" }));
   expect(await screen.findByRole("dialog", { name: "Report something missed" })).toBeInTheDocument();
 });
 
@@ -112,7 +114,7 @@ test("the empty list of what changed offers it too", async () => {
     </MissedOneProvider>,
   );
   expect(await screen.findByText("Nothing new since yesterday, or since you last looked.")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Missed something?" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Tell it what" })).toBeInTheDocument();
 });
 
 test("on a phone it is in the More sheet", async () => {

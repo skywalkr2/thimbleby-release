@@ -203,7 +203,13 @@ due_before_words: [before]
 due_span_words: [in]
 # The words a note of the person's uses to ask for a message, and the words that name one ("Draft a short message to the editor").
 message_request_verbs: [draft, write, compose, prepare, send]
-message_request_nouns: [message, email, e-mail, reply, mail, text, letter]
+message_request_nouns: [message, email, e-mail, reply, mail, text, letter, note, reminder]
+code_label_words: [room, suite, floor, level, gate, seat, row, table, page, unit, apt, ste, terminal, platform, usd, eur, gbp, cad, aud, nzd, jpy, chf, cny, inr, mxn, brl]
+code_lead_words: [confirmation, booking, reservation, order, reference, ref, conf, ticket, itinerary, invoice]
+message_request_alone: [email, e-mail, text, reply to, message, write]
+message_request_not: [write down, note down, jot down, mail merge, text for, text of, note to remember, note to self, note for myself, a note of]
+hold_request_words: [hold, park]
+hold_condition_words: [until, till]
 # The words of an answer that put a question off to a later day ("let's follow up on this in 2 days").
 answer_later_words: [follow up, follow-up, followup, revisit, circle back, come back to this, come back to it, check back,
   ask me again, remind me, pick this up, look at this again, look at it again, talk about this again]

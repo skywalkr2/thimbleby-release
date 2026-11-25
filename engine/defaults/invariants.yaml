@@ -125,6 +125,7 @@ invariants:
       - action.close
       - action.hold
       - action.unhold
+      - action.owners
       - action.drop
       - action.move
       - action.tie
@@ -202,6 +203,7 @@ invariants:
       - action.close
       - action.hold
       - action.unhold
+      - action.owners
       - action.drop
       - action.move
       - action.tie

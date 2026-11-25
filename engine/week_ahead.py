@@ -711,7 +711,8 @@ def card_of(ws: Any, store: Any, cfg: Any, now: datetime) -> Card:
     mine = {i.id: i for i in items(store, cfg, now, start, last)}
     aside = set(plan.data.get("set_aside") or []) if plan is not None else set()
     shown = [i for i in mine.values() if i.id not in held and i.id not in aside]
-    off, working = days_off_of(store, cfg, start, last)
+    off, _ = days_off_of(store, cfg, start, last)
+    _, working = days_off_of(store, cfg, today, last)
     request = None
     if plan is not None:
         for r in sorted(_requests(view, plan.id), key=lambda r: (str(r.data["created_at"]), r.id), reverse=True):

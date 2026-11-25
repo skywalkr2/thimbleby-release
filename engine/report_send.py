@@ -137,8 +137,32 @@ def details_text(
     return fit("\n".join(part for part in (head, fit(tail, room) if tail else "") if part), limit)
 
 
-def details_for(ws: Any, store: Any, cfg: Any, *, error: BaseException | None = None) -> str:
-    """The details for this workspace: the end of its own log file, scrubbed with the workspace's own names."""
+#: The most characters of a stopped request's last answer a report may carry, and the room its heading takes; the
+#: answer travels in the details part, so the log lines are trimmed by this much when an answer is offered.
+ANSWER_MAX = 19000
+ANSWER_HEADING_ROOM = 1000
+
+
+def answer_block(answer: str, made: str) -> str:
+    """The assistant's last answer as a report carries it: a heading line saying which request, then the answer as
+    kept, cut at `ANSWER_MAX`. Not masked: the person sees exactly this text before choosing to send it."""
+    cut = answer
+    while units(cut) > ANSWER_MAX:
+        cut = cut[: ANSWER_MAX - (units(cut) - ANSWER_MAX)]
+    return f"The assistant's last answer, from the request made {made}:\n{cut}"
+
+
+def with_answer(details: str, answer: str) -> str:
+    """The details part as sent when the person included the answer: the details (when any), a blank line, then the
+    answer block exactly as previewed."""
+    return "\n\n".join(part for part in (details, answer) if part)
+
+
+def details_for(
+    ws: Any, store: Any, cfg: Any, *, error: BaseException | None = None, answer_offered: bool = False
+) -> str:
+    """The details for this workspace: the end of its own log file, scrubbed with the workspace's own names. When an
+    answer is offered with the report, the log lines leave room for it."""
     from engine.app_log import log_path
 
     path = log_path(ws)
@@ -159,7 +183,8 @@ def details_for(ws: Any, store: Any, cfg: Any, *, error: BaseException | None = 
     except Exception:  # the shape-based masking still applies
         hide = problems_mod.Masker()
     folders = {str(Path.home()): "~", str(ws.root): "<workspace>"}
-    return details_text("\n".join(lines), error=error, masker=hide, folders=folders)
+    room = ANSWER_MAX + ANSWER_HEADING_ROOM if answer_offered else 0
+    return details_text("\n".join(lines), error=error, masker=hide, folders=folders, limit=LIMITS["details"] - room)
 
 
 def send(

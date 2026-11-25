@@ -8,7 +8,7 @@ from pathlib import Path
 import yaml
 
 CATALOG = yaml.safe_load((Path(__file__).parent.parent / "catalog" / "ai-endpoints.yaml").read_text("utf-8"))
-ROLE_WORDS = {"recommended", "stronger", "faster"}
+ROLE_WORDS = {"recommended", "stronger", "strongest", "faster"}
 
 
 def _entries() -> list[dict]:

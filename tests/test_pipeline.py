@@ -662,6 +662,29 @@ def test_unreadable_answers_go_back_then_need_the_pm(env):
     assert req.data["state"] == "needs_you" and req.data["waiting"].startswith(UNREADABLE)
 
 
+def test_a_stopped_request_keeps_its_last_answer_and_why_each_round_was_turned_down(env):
+    """The person's path: the assistant answers badly every round; the request needs the person and still holds the
+    last answer as given and one entry per round with its reasons, and the answer is cut at the setting."""
+    _, cfg, store = env
+    cfg.dispatch.retries = 0
+    cfg.dispatch.keep_stopped_answer_chars = 12
+    replies: list[str] = []
+
+    def reply(task):
+        replies.append(f"Not an answer, number {len(replies)}.")
+        return replies[-1]
+
+    set_responder(reply)
+    handed, cs_id = run(env, "Anything.")
+    data = store.read().get("request", handed.request).data
+    assert cs_id is None and data["state"] == "needs_you"
+    rounds = data["stopped_rounds"]
+    assert len(rounds) == len(replies) >= 2  # one entry per answer turned down, across the tiers tried
+    assert [r["round"] for r in rounds] == list(range(1, len(rounds) + 1))
+    assert all(r["reasons"] and r["attempt"] == 1 for r in rounds)
+    assert data["stopped_answer"] == replies[-1][:12]
+
+
 def test_an_answer_that_fails_twice_says_so_in_plain_words_and_tells_the_assistant_what_was_wrong(env):
     """The person's path: an op without its name, twice. The second round is told which op lacks it; the person sees
     no internal words."""
@@ -942,3 +965,20 @@ def test_a_runs_record_keeps_its_packet_size_by_part_adding_up_to_the_packet(env
     assert set(parts) == set(PACKET_PARTS)
     assert all(isinstance(n, int) and n >= 0 for n in parts.values())
     assert sum(parts.values()) == estimate_tokens(record.data["input_chars"])
+
+
+def test_a_run_that_keeps_running_out_of_time_stops_saying_two_shorter_notes_may_go_through(env):
+    """The #66 re-check (M-1): the stopped line for a note that timed out every try says what the person can do."""
+    from engine.ai.task import AiError
+    from engine.dispatcher import TIMEOUT_HINT
+
+    _, cfg, store = env
+    cfg.dispatch.retries = 0
+
+    def responder(task):
+        raise AiError("timeout", "the agent didn't finish in 90 seconds")
+
+    set_responder(responder)
+    handed, _ = run(env, "A long meeting note.")
+    waiting = store.read().get("request", handed.request).data["waiting"]
+    assert TIMEOUT_HINT in waiting, waiting

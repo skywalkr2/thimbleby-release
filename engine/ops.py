@@ -602,6 +602,23 @@ class ActionUnholdOp(OpModel):
         return f"Resume {named(view, 'action', self.id)}"
 
 
+class ActionOwnersOp(OpModel):
+    """Change who owes an open action, when the input says so ("the invitations are Dana's to send, not mine", "Marco
+    will take the crates instead"): the owners given replace the ones it has. An action still waiting for an owner gets
+    them and opens, and its "Pick an owner" question is answered. Evidence is required (the input's words, or the
+    person's note)."""
+
+    op: Literal["action.owners"] = "action.owners"
+    id: str = Field(description="The id of the open action, or of one waiting for an owner.")
+    owners: list[str] = Field(min_length=1, description="Who owes it now, by name or id (the user's id for I and me).")
+    evidence: EvidenceIn | None = Field(
+        None, description="The exact words from the input that say who owes it; required unless the person makes it."
+    )
+
+    def describe(self, view: Any = None) -> str | None:
+        return f"Change who owes {named(view, 'action', self.id)}"
+
+
 class ActionDropOp(OpModel):
     """Drop an action that is no longer needed, with the reason. It stays on record as dropped: never done, never
     credited to its owners, never chased, and gone from to-do lists. Refused if the action doesn't exist or is already
@@ -1340,6 +1357,15 @@ class FileAddOp(OpModel):
         return f"Add the file {self.name}"
 
 
+class ProjectRoleIn(BaseModel):
+    """A person's part in a project being added: they run it, design for it, or only watch it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    person: str = Field(description="The person, by name or id.")
+    role: Literal["run", "design", "watch"] = Field(description="run, design or watch, as for project.role.")
+
+
 class ProjectAddOp(OpModel):
     """Start a new project, optionally inside another (a book in its series). A system op: from the assistant it waits
     for the person. The name must not be another live project's."""
@@ -1373,13 +1399,25 @@ class ProjectAddOp(OpModel):
     organization: str | None = Field(
         None,
         description="The name or id of the organization the project is the work of (a business or job the person "
-        "works for): one with that name is linked, else it is made. Only the person's own change sets it; the "
-        "assistant leaves it out.",
+        "works for): one with that name is linked, else it is made. Set it only when the user's own note names it "
+        '("my manager at <employer>... I\'m running two projects"); from other content it waits for the user.',
+    )
+    target: date | None = Field(
+        None,
+        description="The day the project is meant to be finished or opens, only when the input states it (the words "
+        "are in the evidence). A project proposed in this answer has no id yet, so its day is given here, never in a "
+        "separate op.",
+    )
+    roles: list[ProjectRoleIn] = Field(
+        default_factory=list,
+        description="Who runs, designs or only watches the project, as the input says it (the user's id for I and "
+        "me). Given here for a project proposed in this answer, never in a separate project.role.",
     )
     evidence: EvidenceIn | None = Field(
         None,
         description="The exact words from the input that name the project, when an input is where it came from; "
-        "required when a status is given, and then the words that state the status.",
+        "required when a status, a target day or a role is given, and then the words that name the project and state "
+        "those.",
     )
 
     def describe(self) -> str | None:
@@ -1800,6 +1838,11 @@ class LessonAddOp(OpModel):
     text: str = Field(min_length=1, description="The lesson in plain words, as the general case.")
     guard: str | None = Field(None, description="The check or behavior that prevents a repeat, in plain words.")
     signal: str | None = Field(None, description="The id of the correction it came from, if there is one.")
+    kind_of_work: str | None = Field(
+        None,
+        description="The kind of work the corrected item stands for, in a few words, when a later item of that kind "
+        "may be meant too; leave it out when only the item itself is meant.",
+    )
     applies_to: Scope = Field(default_factory=Scope, description="What it applies to.")
     evidence: EvidenceIn | None = Field(None, description="The exact words from the input it rests on, if any.")
 
@@ -1898,6 +1941,11 @@ class RoutingAddOp(OpModel):
     team: str | None = Field(None, description="The team's id, instead of a person.")
     negative: bool = Field(False, description="True when they don't answer this.")
     look_up: str | None = Field(None, description="Where to look it up instead, in plain words.")
+    kind_of_work: str | None = Field(
+        None,
+        description="The kind of work the corrected item stands for, in a few words, when a later item of that kind "
+        "may be meant too; leave it out when only the item itself is meant.",
+    )
     applies_to: Scope = Field(default_factory=Scope, description="What it applies to.")
     evidence: EvidenceIn | None = Field(None, description="The exact words from the input it rests on, if any.")
 
@@ -2396,6 +2444,7 @@ Op = Annotated[
     | ActionCloseOp
     | ActionHoldOp
     | ActionUnholdOp
+    | ActionOwnersOp
     | ActionDropOp
     | ActionMoveOp
     | ActionTieOp
@@ -2494,6 +2543,7 @@ OP_MODELS: dict[str, type[OpModel]] = {
     "action.close": ActionCloseOp,
     "action.hold": ActionHoldOp,
     "action.unhold": ActionUnholdOp,
+    "action.owners": ActionOwnersOp,
     "action.drop": ActionDropOp,
     "action.move": ActionMoveOp,
     "action.tie": ActionTieOp,
@@ -2587,6 +2637,7 @@ OVERWRITING_OPS: frozenset[str] = frozenset(
         "action.move",
         "action.hold",
         "action.unhold",
+        "action.owners",
         "action.part",
         "action.tie",
         "action.repeat",
@@ -2792,6 +2843,7 @@ NEEDS_EVIDENCE = {
     "action.close",
     "action.hold",
     "action.unhold",
+    "action.owners",
     "action.drop",
     "action.move",
     "action.tie",
@@ -2813,6 +2865,7 @@ EVIDENCE_UNLESS_PERSON = {
     "action.close",
     "action.hold",
     "action.unhold",
+    "action.owners",
     "action.drop",
     "action.move",
     "action.repeat",
@@ -2848,6 +2901,15 @@ CLAIM_MAX = 200
 CLAIMS_MAX = 20
 
 
+class ByKindStep(BaseModel):
+    """A step decided by what was learned only because its item is of the entry's kind of work."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    op: int = Field(ge=0)
+    entry: str = Field(min_length=1)
+
+
 class OmittedOp(BaseModel):
     """An op a correcting answer left out on purpose: its name as `dropped_ops` reports it, and why."""
 
@@ -2867,10 +2929,26 @@ class ChangesetIn(BaseModel):
     ask: bool = False
     #: The ids of the knowledge entries the run says it applied. The dispatcher keeps only those the run was given.
     applied: list[str] = Field(default_factory=list)
+    #: Steps where the run applied a lesson or routing entry only because the item is of the entry's kind of work,
+    #: not the entry's own item: {"op": <the step's index>, "entry": <the entry's id>}. Such a step is marked for the
+    #: person.
+    by_kind: list[ByKindStep] = Field(default_factory=list)
     #: What the run needed and no op could do, each in a few words, instead of improvising with another op.
     missing: list[str] = Field(default_factory=list)
     #: Ops a correcting answer left out that had no problem, each named as `dropped_ops` reports it, with the reason.
     omitted: list[OmittedOp] = Field(default_factory=list)
+
+    @field_validator("by_kind", mode="before")
+    @classmethod
+    def _by_kind(cls, value: Any) -> list[dict[str, Any]]:
+        """Each step a model names with an index and an entry id; anything else it sends is dropped."""
+        found: list[dict[str, Any]] = []
+        for item in value if isinstance(value, list) else []:
+            if isinstance(item, dict) and isinstance(item.get("op"), int) and isinstance(item.get("entry"), str):
+                entry = item["entry"].strip()
+                if item["op"] >= 0 and entry and {"op": item["op"], "entry": entry} not in found:
+                    found.append({"op": item["op"], "entry": entry})
+        return found[:CLAIMS_MAX]
 
     @field_validator("omitted", mode="before")
     @classmethod
@@ -2942,6 +3020,14 @@ def schema_for(op_names: list[str], registry: dict | None = None) -> dict[str, A
             "topic": {"type": "string"},
             "ops": {"type": "array", "items": {"anyOf": [m.model_json_schema() for m in models]}},
             "applied": {"type": "array", "items": {"type": "string"}},
+            "by_kind": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["op", "entry"],
+                    "properties": {"op": {"type": "integer"}, "entry": {"type": "string"}},
+                },
+            },
             "missing": {"type": "array", "items": {"type": "string"}},
             "omitted": {
                 "type": "array",

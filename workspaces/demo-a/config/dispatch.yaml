@@ -3,6 +3,7 @@ max_input_chars: 60000
 fix_rounds: 1
 retries: 2
 retry_wait_seconds: 30
+keep_stopped_answer_chars: 20000
 offline_check_seconds: 60
 offline_line_after_minutes: 60
 no_work_tries: 5

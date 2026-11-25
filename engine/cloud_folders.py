@@ -60,19 +60,26 @@ def _account(place: str, root: Path, home: Path) -> str:
 
 
 def found(drives: Iterable[CloudFolder], home: Path, system: str | None = None) -> list[Found]:
-    """The drives whose folder exists on this computer, in the order of the list, each with the first of its places that
-    is a folder. A place may use `*` to match any characters in a name. A folder named after an account says
-    which; it is `work` unless the account is one the drive lists as personal (a match at the end of its name)."""
+    """The drives whose folder exists on this computer, in the order of the list: every folder a drive's places match
+    (a person may sign in to a work account and a personal one), each account once. A place may use `*` to match any
+    characters in a name. A folder named after an account says which; it is `work` unless the account is one the drive
+    lists as personal (a match at the end of its name)."""
     here = system or system_name()
     out: list[Found] = []
     for drive in drives:
+        seen_roots: set[Path] = set()
+        seen_accounts: set[str] = set()
         for place in getattr(drive, here, []):
-            root = next((p for p in sorted(home.glob(place)) if p.is_dir()), None)
-            if root is not None:
+            for root in sorted(home.glob(place)):
+                if not root.is_dir() or root.resolve() in seen_roots:
+                    continue
                 account = _account(place, root, home)
+                if account.lower() in seen_accounts:
+                    continue
+                seen_roots.add(root.resolve())
+                seen_accounts.add(account.lower())
                 personal = any(account.lower().endswith(x.lower()) for x in drive.personal if x.strip())
                 out.append(Found(drive.name, root, account, bool(account) and not personal))
-                break
     return out
 
 

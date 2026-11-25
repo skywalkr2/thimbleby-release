@@ -294,3 +294,29 @@ def test_hiding_many_names_does_not_cost_a_pass_per_name():
     done = problems.mask(text, names=names)
     assert time.perf_counter() - started < 2.0  # one name at a time took about 7 seconds here
     assert "person00001" not in done and done.count(problems.NAME) == 250
+
+
+def test_a_stopped_request_shows_its_rounds_reasons_and_the_report_holds_them_but_never_the_answer(api):
+    """The person's path: a request stopped after its return rounds. What changed lists each round's reasons and the
+    last answer; the problem lines a report carries name the reasons, with a name masked, and not the answer."""
+    client, store, worker, ws, cfg, account = api
+    who = person()
+    assert client.post("/api/handin", json={"note": PACKET_TEXT, "pasted": ""}).status_code == 200
+    [item] = [{"id": r.id} for r in store.read().find("request", {})]
+    reason = f"The quote isn't in the input; ask {who['full_name']} again."
+    answer = "The answer exactly as the assistant gave it."
+    rounds = [
+        {"attempt": 1, "round": 1, "reasons": [reason]},
+        {"attempt": 1, "round": 2, "reasons": ["Nothing cut off."]},
+    ]
+    with store.transaction() as tx:
+        cur = tx.get("request", item["id"])
+        changes = {"state": "needs_you", "waiting": "Stopped.", "stopped_rounds": rounds, "stopped_answer": answer}
+        tx.update("request", item["id"], changes, WRITE, read_version=cur.version)
+    [shown] = [c for c in client.get("/api/changes").json() if c["id"] == item["id"]]
+    assert [(r["round"], r["reasons"]) for r in shown["stopped_rounds"]] == [(1, [reason]), (2, ["Nothing cut off."])]
+    assert shown["stopped_answer"] == answer
+    lines = client.get("/api/feedback/problems").json()["problems"]
+    [line] = [p for p in lines if p["error_kind"] == "stopped"]
+    assert "round 1" in line["text"] and "round 2: Nothing cut off." in line["text"]
+    assert who["full_name"] not in line["text"] and answer not in json.dumps(lines)

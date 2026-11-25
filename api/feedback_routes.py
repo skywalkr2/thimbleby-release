@@ -27,11 +27,13 @@ from engine.workspace import Workspace
 def build_feedback_router(ws: Workspace, cfg: Config, store: Store, worker: Worker) -> APIRouter:
     r = APIRouter(prefix="/api")
 
-    def _scrubbed_details(shown: str) -> str:
+    def _scrubbed_details(shown: str, room: int = 0) -> str:
         """The details the person was shown, passed through the same scrub and limit again before they leave."""
         with store.read_scope():
             hide = problems.masker_for(ws, store, cfg)
-        return report_send.details_text(shown, masker=hide, folders={str(ws.root): "<workspace>"})
+        return report_send.details_text(
+            shown, masker=hide, folders={str(ws.root): "<workspace>"}, limit=report_send.LIMITS["details"] - room
+        )
 
     def current() -> Config:
         """The settings as the files hold them now, so a change to how far back or how many applies at once."""
@@ -97,13 +99,16 @@ def build_feedback_router(ws: Workspace, cfg: Config, store: Store, worker: Work
         Whether a report address is set says whether Report a problem is offered. Nothing is sent."""
         with store.read_scope():
             mine = own_address(store.read(), cfg.workspace.user.person)
-            details = report_send.details_for(ws, store, cfg)
+            kept = problems.last_stopped_answer(store, current(), worker.now())
+            details = report_send.details_for(ws, store, cfg, answer_offered=kept is not None)
+        answer = report_send.answer_block(kept[1], kept[0].date().isoformat()) if kept is not None else ""
         return ReportFacts(
             enabled=report_send.address(cfg.ui.report_to) is not None,
             version=__version__,
             system=report_send.system_text(),
             reply_to=mine,
             details=details,
+            answer=answer,
         )
 
     @r.post("/report/send")
@@ -114,13 +119,17 @@ def build_feedback_router(ws: Workspace, cfg: Config, store: Store, worker: Work
         to = report_send.address(cfg.ui.report_to)
         if to is None:
             raise HTTPException(status_code=404, detail="Report a problem isn't set up here.")
+        answer = body.answer_block if body.include_answer else ""
+        room = report_send.ANSWER_MAX + report_send.ANSWER_HEADING_ROOM if body.answer_block else 0
         done = report_send.send(
             to,
             words=body.words.strip(),
             reply_to=body.reply_to.strip(),
             version=__version__,
             problems=body.problems,
-            details=_scrubbed_details(body.details) if body.include_details else "",
+            details=report_send.with_answer(
+                _scrubbed_details(body.details, room=room) if body.include_details else "", answer
+            ),
         )
         return ReportSent(ok=done.ok, why=done.why)
 

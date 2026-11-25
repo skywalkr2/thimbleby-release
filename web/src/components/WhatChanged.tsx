@@ -67,6 +67,12 @@ const CHANGES_FIT = 480;
 type Filter = "done" | "all";
 const ATTENTION = new Set(["queued", "running", "review", "needs_you"]);
 
+/** A finished change that carries Looks good: handed to review, or done with something in it still needing a look. The menu
+ * badge counts exactly these rows (the engine's `waits_for_looks_good`). */
+function waitsForLook(item: S["ChangeItem"]): boolean {
+  return item.state === "review" || (item.state === "done" && item.review === "unchecked");
+}
+
 /** Still in progress, waiting for review, or holding something until the PM answers. */
 export function needsAttention(c: S["ChangeItem"]): boolean {
   return ATTENTION.has(c.state) || !!c.changeset?.ops.some((o) => o.ask?.status === "open");
@@ -505,7 +511,7 @@ function useChangeActions(item: S["ChangeItem"], hooks: { onOpenGuide?: (step: s
     );
 
   let primary: { label: string; run: () => void } | null = null;
-  if (item.state === "review" && cs) primary = { label: t("changes.looks_good"), run: () => void looksGood() };
+  if (waitsForLook(item) && cs) primary = { label: t("changes.looks_good"), run: () => void looksGood() };
   if (gated)
     primary = {
       label: t("changes.go"),
@@ -585,7 +591,7 @@ function stateWord(item: S["ChangeItem"], gated: boolean): string {
   // the person's Looks good is not yet checked, whatever it holds, so "Filed" always means no Looks good and the other way round.
   if (item.review === "filed" && item.state !== "review") return "changes.history.filed";
   if (item.review === "checked") return "changes.history.checked";
-  return item.state === "review" ? "changes.history.review" : `changes.state.${item.state}`;
+  return waitsForLook(item) ? "changes.history.review" : `changes.state.${item.state}`;
 }
 
 /** One change as a line of the list (design 7.13): its state, its title, what was done in one line, its one primary and the
@@ -694,7 +700,7 @@ function SingleChangeListRow(props: ChangeListRowProps) {
     if (props.reveal) showRow(ref.current);
   }, [props.reveal]);
   // A change not yet checked has its likeliest next step on the row; a filed one has none (its other choices are in the menu).
-  const next = item.state === "review" && !gated && cs ? primary : null;
+  const next = waitsForLook(item) && !gated && cs ? primary : null;
   useRowKeys(ref, {
     toggle: () => choice.enter(item.id),
     primary: next?.run,
@@ -881,6 +887,7 @@ export function ChangeRow(props: {
           {(item.state === "review" || item.state === "done") && spentLine(item.spent_usd, item.range_usd, item.maybe_charged_usd) && (
             <p className="hint">{spentLine(item.spent_usd, item.range_usd, item.maybe_charged_usd)}</p>
           )}
+          <StoppedRounds item={item} />
           {cs && <Because cs={cs} />}
           {cs && cs.ops.length === 0 && <p className="hint">{t("changes.nothing_done")}</p>}
           {cs && !history && cs.ops.filter((o) => o.status === "held").length > 1 && <ReleaseAll cs={cs} />}
@@ -953,6 +960,38 @@ function AssistantAccount(props: { summary: string; untrusted: boolean }) {
 }
 
 /** What follows the first line of a text, or nothing when it is one line. */
+/** Behind Details on a stopped line: why each round was sent back or refused, in plain words, and the assistant's last answer,
+ * both as plain text (never as markup). */
+function StoppedRounds(props: { item: S["ChangeItem"] }) {
+  const { t } = useWords();
+  const { item } = props;
+  const rounds = item.stopped_rounds ?? [];
+  if (!rounds.length && !item.stopped_answer) return null;
+  const tries = new Set(rounds.map((r) => r.attempt)).size;
+  return (
+    <div data-stopped-rounds="">
+      {rounds.length > 0 && (
+        <>
+          <p className="hint">{t("changes.stopped.rounds")}</p>
+          <ul>
+            {rounds.map((r) => (
+              <li key={`${r.attempt}-${r.round}`}>
+                <strong>{tries > 1 ? t("changes.stopped.try_round", { attempt: r.attempt, round: r.round }) : t("changes.stopped.round", { round: r.round })}</strong>{" "}
+                {r.reasons.join(" ")}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {item.stopped_answer && (
+        <Fold label={t("changes.stopped.answer")}>
+          <pre data-stopped-answer="" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{item.stopped_answer}</pre>
+        </Fold>
+      )}
+    </div>
+  );
+}
+
 function restOf(text: string | null): string {
   return (text ?? "").split("\n").filter((l) => l.trim()).slice(1).join("\n");
 }

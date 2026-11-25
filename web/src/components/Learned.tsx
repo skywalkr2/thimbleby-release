@@ -283,6 +283,16 @@ function KeptLine(props: { line: S["LearnedLine"] }) {
   );
 }
 
+/** A correction the assistant could learn nothing from: said on the row, so the person knows to expect the same mistake. */
+function NothingLine() {
+  const { t } = useWords();
+  return (
+    <p className="hint" data-learned-nothing="">
+      {t("learned.nothing")}
+    </p>
+  );
+}
+
 function LearningLine(props: { line: S["LearnedLine"] }) {
   const { t } = useWords();
   return (
@@ -310,6 +320,8 @@ export function LearnedLines(props: { changesets?: Array<string | null | undefin
         <li key={line.signal}>
           {line.state === "learning" ? (
             <LearningLine line={line} />
+          ) : line.state === "nothing" ? (
+            <NothingLine />
           ) : line.state === "kept" ? (
             <KeptLine line={line} />
           ) : line.proposal ? (

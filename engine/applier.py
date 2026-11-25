@@ -64,7 +64,7 @@ from engine.language_words import language_words
 from engine.learning import request_learns
 from engine.local_day import day_of, day_text, zone_of
 from engine.names import People
-from engine.new_refs import NewRefs, WithMade, created_in
+from engine.new_refs import NewRefs, WithMade, created_in, referenced, replaced
 from engine.note_titles import note_text
 from engine.ops import (
     ACT_OPS,
@@ -85,6 +85,7 @@ from engine.ops import (
     ActionHoldOp,
     ActionMoveOp,
     ActionNewsOp,
+    ActionOwnersOp,
     ActionPartOp,
     ActionRepeatOp,
     ActionReplyOp,
@@ -355,6 +356,7 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
     problems += _due_reading_differs(cs, ctx)
     problems += _undated_todo(cs, ctx)
     problems += _message_as_todo(cs, ctx)
+    problems += _hold_as_note(cs, ctx)
     problems += _due_on_day_off(cs, ctx)
     problems += _project_start_as_fact(cs, ctx)
     problems += _project_unfiled(cs, ctx)
@@ -680,7 +682,15 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
         # targets
         for project in _projects_of(op):
             if view.get("project", project) is None:
-                refuse(i, "targets", f"there is no project {project}")
+                made_here = any(isinstance(o, ProjectAddOp) for o in cs.ops)
+                refuse(
+                    i,
+                    "targets",
+                    f"there is no project {project}: a project proposed in this answer has no id yet, so give its "
+                    'target day and who runs it on the "project.add" itself, and file the rest with no project'
+                    if made_here
+                    else f"there is no project {project}",
+                )
         if isinstance(op, EventAddOp) and op.start is not None and (why := entry_problem(op.start, op.end)) is not None:
             refuse(i, "targets", f"calendar entry {op.title!r}: {why}")
         if isinstance(op, SCHEDULE_OPS) and ctx.actor != "pm" and _request_data(ctx).get("source_invitation"):
@@ -820,8 +830,27 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
                 held = view.get("action", op.id).data
                 if not _shares_words(evidence.quote, f"{held['text']} {held['on_hold']['waiting_for']}"):
                     lint(i, "evidence-fit", f"the quote doesn't seem to be about action {op.id}")
+        if isinstance(op, ActionOwnersOp):
+            found = view.get("action", op.id)
+            if found is None:
+                refuse(i, "targets", f"there is no action {op.id}")
+            elif found.data["status"] not in ("open", "held"):
+                refuse(i, "targets", f"action {op.id} is already {found.data['status']}")
         if isinstance(op, QuestionDoneOp):
             target = view.get("question", op.id)
+            asks_owner = target is not None and (target.data.get("resolves") or {}).get("kind") == "owner"
+            if asks_owner and not any(
+                isinstance(o, ActionOwnersOp) and o.id == (target.data.get("resolves") or {}).get("action")
+                for o in cs.ops
+            ):
+                # Closing a question that asks for an owner leaves the to-do with nobody: it closes only when the same
+                # change gives the to-do its owners.
+                refuse(
+                    i,
+                    "targets",
+                    f"question {op.id} asks who owes a to-do: give it its owners with "
+                    '"action.owners", which answers it',
+                )
             if target is None:
                 refuse(i, "targets", f"there is no question {op.id}")
             elif target.data["status"] == "dropped" or (
@@ -997,6 +1026,10 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
                     refuse(i, "targets", f"{child} can't go inside a project that is inside it")
             if len(set(op.children)) != len(op.children):
                 refuse(i, "targets", "a project is named twice in children")
+        if isinstance(op, ProjectAddOp):
+            for r in op.roles:
+                if ctx.people.resolve(r.person).status != "ok":
+                    refuse(i, "targets", f"{r.person} isn't one known person, so a role can't be set for them")
         if isinstance(op, ProjectRoleOp):
             who = ctx.people.resolve(op.person)
             if sides.is_side(view, ctx.cfg, op.project):
@@ -1713,8 +1746,18 @@ def _single_out(i: int, texts: Any, group: list[str], ctx: Context, lint: Any) -
         )
 
 
-#: Every op that puts an entry on the schedule or changes one: none may come from a deleted invitation.
-SCHEDULE_OPS = (EventAddOp, EventSetOp, EventCancelOp, EventGuestsOp, SeriesAddOp, SeriesLinkOp)
+#: Every op that puts an entry on the schedule or changes one, an agenda item or a time away among them: none may come
+#: from a deleted invitation.
+SCHEDULE_OPS = (
+    EventAddOp,
+    EventSetOp,
+    EventCancelOp,
+    EventGuestsOp,
+    SeriesAddOp,
+    SeriesLinkOp,
+    AgendaAddOp,
+    PersonAwayOp,
+)
 
 
 def _openable(url: str) -> bool:
@@ -1734,8 +1777,8 @@ def _openable(url: str) -> bool:
     else:
         return address.is_global
     labels = host.split(".")
-    if len(labels) < 2 or re.fullmatch(r"localhost\d*", labels[0]):
-        return False
+    if len(labels) < 2:
+        return False  # a bare name (`localhost`, `localhost6`, `nas`) is this computer or the local network
     # No public name ends in a number: a browser reads such a host as an address, and `1.2.3.4.5` is none it can reach.
     if re.fullmatch(r"\d+|0x[0-9a-f]*", labels[-1]):
         return False
@@ -2276,14 +2319,13 @@ def event_cancel_problem(view: Any, ctx: Context, op: EventCancelOp) -> str | No
 
 
 def action_unhold_problem(view: Any, op: ActionUnholdOp) -> str | None:
-    """Why an action can't be taken off hold, or None. It must exist, be open and be on hold."""
+    """Why an action can't be taken off hold, or None. It must exist, be open or still waiting for an owner (a separate
+    state: the hold lifts and it keeps waiting for one), and be on hold."""
     found = view.get("action", op.id)
     if found is None:
         return f"there is no action {op.id}"
     status = found.data["status"]
-    if status == "held":
-        return f"action {op.id} is waiting for an owner, not on hold"
-    if status != "open":
+    if status not in ("open", "held"):
         return f"action {op.id} is already {status}"
     if not found.data.get("on_hold"):
         return f"action {op.id} isn't on hold"
@@ -2501,6 +2543,10 @@ class OpOutcome:
     reporter: str | None = None  # for a held ending: who the input says reported it, credited when it is kept
     answer_group: str | None = None  # the label its task kind gave it, so the review shows the answer by group
     read_back: dict[str, Any] | None = None  # for a rule: what it applies to, leaves alone, overlaps and would change
+    waits_for: int | None = (
+        None  # the earlier step whose record this one names ($new:<n>) and that waits for the person
+    )
+    by_kind: dict[str, Any] | None = None  # what was learned, applied here only because the item is of its kind
 
 
 def _read_back(op: OpModel, view: Any, ctx: Context) -> dict[str, Any] | None:
@@ -2783,12 +2829,26 @@ def apply_changeset(
             removed: set[tuple[str, str]] = set()  # what earlier steps of this change already removed
             seen = dict(ctx.reads)  # the version of each record the run read, as this change's own steps leave it
             news = NewRefs()  # the records earlier steps made, for the `$new:<n>` values of the steps after them
+            guesses = {g.op: g.entry for g in cs.by_kind}  # steps decided by what was learned for a kind of work
             for i, op in enumerate(cs.ops):
                 mine = list(by_op.get(i, [])) + [replace(p, op=i) for p in whole]
+                waits_for = None
                 try:
                     op = news.resolve(op, i, ctx.store)
                 except StoreError as err:
-                    if not any(p.check == "new-reference" for p in mine):
+                    # A step that names what an earlier step makes, when that step waits for the person, waits with it
+                    # and comes in when the person says yes to it (`_release_waiting_on`); anything else is refused.
+                    held_before = [
+                        n
+                        for n, dropped in referenced(op.model_dump(mode="json", exclude_none=True))
+                        if not dropped and n < i and outcomes[n].status == "held"
+                    ]
+                    if held_before:
+                        waits_for = held_before[0]
+                        # What the checks found only because the reference isn't filled in yet goes; the step is
+                        # checked in full when it comes in.
+                        mine = [p for p in mine if p.check != "new-reference" and "$new:" not in p.message]
+                    elif not any(p.check == "new-reference" for p in mine):
                         mine.append(Problem("new-reference", "refuse", i, str(err)))
                 known = {p.message for p in mine if p.check == "plugin-validator"}
                 mine += [
@@ -2818,6 +2878,12 @@ def apply_changeset(
                     if hold is not None:
                         outcome.status = "held"
                         outcome.reason = hold
+                    elif waits_for is not None:
+                        # Nothing of its own to ask: it comes in when the step it names does.
+                        outcome.status, outcome.waits_for = "held", waits_for
+                        outcome.reason = f"Comes in with: {outcomes[waits_for].label or outcomes[waits_for].op['op']}"
+                if waits_for is not None and outcome.status == "applied":
+                    outcome.status = "held"  # never applied with an unfilled reference
                 gone = _removal_key(op)
                 if outcome.status == "applied" and gone is not None and gone in removed:
                     # Removing again what an earlier step of this change removed changes nothing: it is skipped.
@@ -2835,7 +2901,7 @@ def apply_changeset(
                         )
                         outcome.records, question = _apply_op(tx, ready, ctx, wctx, today)
                         outcome.question = question
-                        made = created_in(tx.pending[pending:])
+                        made = created_in(tx.pending[pending:], op.op)
                         stopped = _rule_problems(tx, ctx, i, op, outcome.records)
                         if stopped:
                             # What the op wrote breaks a rule the earlier check didn't see: none of it is kept.
@@ -2880,6 +2946,8 @@ def apply_changeset(
                     )
                 elif i not in news.names:
                     news.made(i, op.op, None)
+                if outcome.status == "applied" and (entry := guesses.get(i)) is not None:
+                    outcome.by_kind = _mark_by_kind(tx, ctx, cs_id, i, op, outcome.records, entry)
                 if outcome.status == "applied":
                     proposed = _proposed_reminder(tx, op, outcome.records, ctx, now)
                     if proposed is not None:
@@ -3004,6 +3072,7 @@ JUDGMENT_LINTS = frozenset(
         "due-reading-differs",
         "undated-todo",
         "message-as-todo",
+        "hold-as-note",
         "due-on-day-off",
         "ending-reading",
         "reply-not-needed",
@@ -3165,6 +3234,8 @@ def _needs_person_choice(op: OpModel, ctx: Context) -> str | None:
     names: list[str] = []
     if isinstance(op, ActionAddOp):
         names = [*op.owners, *op.promised_to]
+    elif isinstance(op, ActionOwnersOp):
+        names = list(op.owners)
     elif isinstance(op, QuestionAddOp):
         names = [op.to]
     for name in names:
@@ -3176,6 +3247,10 @@ def _needs_person_choice(op: OpModel, ctx: Context) -> str | None:
             return f"who-is:{form}:{','.join(candidates)}"
     if isinstance(op, PersonAddOp) and ctx.inputs.trust == "untrusted" and not ctx.confirmed_by_pm:
         return "A new person named only in outside content: add them?"
+    outside = ctx.actor != "pm" and ctx.inputs.trust != "trusted" and not ctx.confirmed_by_pm
+    if isinstance(op, ActionOwnersOp) and outside:
+        # Who owes a to-do changes on the person's own word; outside content only suggests it.
+        return "Outside content says someone else owes this now: change who owes it?"
     return None
 
 
@@ -3833,6 +3908,15 @@ def _due_differs(tx: Tx, ctx: Context, op: Any) -> str | None:
     if reading.day is not None:
         if op.due is not None and reading.day == op.due:
             return None
+        if (
+            op.due is not None
+            and not re.search(r"\b\d{4}\b", words)
+            and (op.due.month, op.due.day) == (reading.day.month, reading.day.day)
+            and abs(op.due.year - reading.day.year) == 1
+        ):
+            # Words with no year ("was due on October 5") fit the nearest such day either side of when they were
+            # received; which one they mean is the assistant's call, not a different reading.
+            return None
         return (
             f"The words {words!r} read as {reading.day.isoformat()} received {reading.received.isoformat()}; {given}."
         )
@@ -3950,23 +4034,104 @@ def _undated_todo(cs: ChangesetIn, ctx: Context) -> list[Problem]:
     ]
 
 
-def _asks_for_a_message(cfg: Any, text: str) -> str | None:
-    """The words of a note that ask for a message ("Draft a short message to the editor", "Draft for me a really short
-    and friendly message"): an asking word and, at most eight words later, a word that names a message (or several),
-    from the language settings. None when it asks for none."""
+def message_recipients(people: Any) -> list[str]:
+    """The words that name someone a message could go to: each person on file other than the user, by full name, alias
+    and first name, and by their role, whole and by its first and last word ("Printer account contact": "printer")."""
+    forms: set[str] = set()
+    for pid, data in people.records.items():
+        if pid == people.pm:
+            continue
+        name = " ".join(str(data.get("full_name") or "").split())
+        role = " ".join(str(data.get("role") or "").replace(",", " ").split())
+        forms |= {name, *name.split()[:1], *(data.get("aliases") or []), role, *role.split()[:1], *role.split()[-1:]}
+    return sorted((f.casefold() for f in forms if len(f.strip()) > 2), key=len, reverse=True)
+
+
+_ADDRESS = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+
+
+def _asks_for_a_message(cfg: Any, text: str, recipients: Iterable[str] = ()) -> str | None:
+    """The words of a note that ask for a message to someone ("Draft a short message to <name>", "Email the printer
+    re the proofs", "Send <name> a reminder", "Write <name> about the date"): an asking word and, at most eight words
+    later, a word that names a message (or several), or a word that asks for one on its own at the start of a sentence,
+    from the language settings, with someone to write to in those words or the six after them: a person or role on file
+    (`recipients`, from `message_recipients`) or an address. Never inside a phrase the settings say asks for none
+    ("write down", "mail merge"). None when it asks for none, or names nobody to write to ("send the sponsor
+    letters")."""
     verbs = [w.casefold() for w in language_words(cfg.language, "message_request_verbs") or []]
     nouns = [w.casefold() for w in language_words(cfg.language, "message_request_nouns") or []]
-    if not verbs or not nouns:
+    alone = [w.casefold() for w in language_words(cfg.language, "message_request_alone") or []]
+    never = [w.casefold() for w in language_words(cfg.language, "message_request_not") or []]
+    known = [r for r in recipients if r.strip()]
+    if never:
+        text = re.sub("|".join(rf"\b{re.escape(w)}\b" for w in never), " · ", text, flags=re.IGNORECASE)
+    spans: list[re.Match[str]] = []
+    if verbs and nouns:
+        pattern = (
+            r"\b(?:"
+            + "|".join(map(re.escape, verbs))
+            + r")\b(?:\s+(?!·)\S+){0,8}?\s+(?:"
+            + "|".join(map(re.escape, nouns))
+            + r")s?\b"
+        )
+        spans += re.finditer(pattern, text, flags=re.IGNORECASE)
+    if alone:
+        start = r"(?:^|[.!?;:\n]\s*|\b(?:please|and|then|also)\s+)"
+        spans += re.finditer(start + r"(" + "|".join(map(re.escape, alone)) + r")\b", text, flags=re.IGNORECASE)
+    for span in spans:
+        words = span.group(span.lastindex or 0)
+        after = re.match(r"(?:\s+(?!·)\S+){0,6}", text[span.end() :])
+        near = f"{span.group(0)}{after.group(0) if after else ''}"
+        if _ADDRESS.search(near) or any(re.search(rf"(?<!\w){re.escape(r)}(?!\w)", near, re.IGNORECASE) for r in known):
+            return words.strip()
+    return None
+
+
+def _asks_to_hold(cfg: Any, text: str) -> str | None:
+    """The words of a note that hold something until a condition ("Hold the gala invitations until the guest list is
+    approved"): a holding word and, at most eight words later, a word that leads the condition, from the language
+    settings. None when it holds nothing."""
+    verbs = [w.casefold() for w in language_words(cfg.language, "hold_request_words") or []]
+    until = [w.casefold() for w in language_words(cfg.language, "hold_condition_words") or []]
+    if not verbs or not until:
         return None
     pattern = (
         r"\b(?:"
         + "|".join(map(re.escape, verbs))
-        + r")\b(?:\s+\S+){0,8}?\s+(?:"
-        + "|".join(map(re.escape, nouns))
-        + r")s?\b"
+        + r")\b(?:\s+\S+){1,8}?\s+(?:"
+        + "|".join(map(re.escape, until))
+        + r")\b"
     )
     found = re.search(pattern, text, flags=re.IGNORECASE)
     return found.group(0) if found else None
+
+
+def _hold_as_note(cs: ChangesetIn, ctx: Context) -> list[Problem]:
+    """The person's own note that holds something until a condition, answered only with notes or facts, goes back
+    once: the thing held is usually work to do once the condition is met, added with its condition as `waiting_for`.
+    A rule on the note's words that only points; the assistant's answer to it stands (`JUDGMENT_LINTS`)."""
+    name = "hold-as-note"
+    level = ctx.cfg.checks.lints.get(name, "off")
+    if level == "off" or ctx.actor == "pm" or ctx.confirmed_by_pm:
+        return []
+    if any(not isinstance(op, (NoteOp, FactOp)) for op in cs.ops):
+        return []  # it did something with the held thing (a to-do, a hold, a question closed): its own judgment
+    if not _from_pm(ctx.store.read(), ctx):
+        return []
+    words = _asks_to_hold(ctx.cfg, f"{ctx.inputs.note or ''}\n{ctx.inputs.raw_input or ''}")
+    if words is None:
+        return []
+    return [
+        Problem(
+            name,
+            level,
+            0 if cs.ops else None,
+            f"The person's own note holds something until a condition ({words!r}). If what is held is work to do once "
+            'it is met, add it with "action.add" and the condition as its "waiting_for" (it starts on hold), or put an '
+            'open action on hold with "action.hold". If it isn\'t, answer again with what you had: your answer stands '
+            "either way.",
+        )
+    ]
 
 
 def _message_as_todo(cs: ChangesetIn, ctx: Context) -> list[Problem]:
@@ -3986,7 +4151,8 @@ def _message_as_todo(cs: ChangesetIn, ctx: Context) -> list[Problem]:
     view = ctx.store.read()
     if not _from_pm(view, ctx):
         return []
-    words = _asks_for_a_message(ctx.cfg, f"{ctx.inputs.note or ''}\n{ctx.inputs.raw_input or ''}")
+    note = f"{ctx.inputs.note or ''}\n{ctx.inputs.raw_input or ''}"
+    words = _asks_for_a_message(ctx.cfg, note, message_recipients(ctx.people))
     if words is None:
         return []
     return [
@@ -3994,9 +4160,9 @@ def _message_as_todo(cs: ChangesetIn, ctx: Context) -> list[Problem]:
             name,
             level,
             i,
-            f"The person's own note asks for a message ({words!r}). Draft it for them to approve with act.draft (the "
-            "copy channel when no mail channel is offered) instead of a to-do to write it; keep a to-do only if the "
-            "note also asks for one.",
+            f"Is the person's own note asking for a message to someone ({words!r})? If it is, draft it for them to "
+            "approve with act.draft (the copy channel when no mail channel is offered) in place of a to-do to write "
+            "it. If it isn't, answer again with what you had: your answer stands either way.",
             op.evidence.quote,
         )
         for i, op in todos
@@ -4064,9 +4230,9 @@ _FILING_REASONS = {
 def _project_unfiled(cs: ChangesetIn, ctx: Context) -> list[Problem]:
     """An action, question, fact or note the assistant gave no project, which the rules' signals would file anyway
     (`sides.file_by_people`, which has already stamped its guess as unsure), goes back once with that guess as a
-    hint: the assistant files its own items. Its second answer stands; if it still gives no project the guess is
-    applied and stays marked unsure, for the person's review. The person's own settled project is not a guess and
-    never comes here."""
+    hint: the assistant files its own items. A guess from where the input arrived alone goes back to no one. Its
+    second answer stands; if it still gives no project the guess is applied and stays marked unsure, for the person's
+    review. The person's own settled project is not a guess and never comes here."""
     name = "project-unfiled"
     level = ctx.cfg.checks.lints.get(name, "off")
     if level == "off" or ctx.actor == "pm" or ctx.confirmed_by_pm:
@@ -4076,6 +4242,10 @@ def _project_unfiled(cs: ChangesetIn, ctx: Context) -> list[Problem]:
     for i, op in enumerate(cs.ops):
         found = getattr(op, "filed_by", None)
         if found is None or not found.unsure or not op.project:
+            continue
+        if found.by == "source":
+            # Where the input arrived (a folder) says nothing of what an item is about: the guess is applied, marked
+            # unsure for the person's review, without a model call to confirm an empty project that may be right.
             continue
         project = view.get("project", found.project)
         reason = _FILING_REASONS[found.by].format(word=found.word or "")
@@ -4551,7 +4721,7 @@ def _validate_in_order(cs: ChangesetIn, ctx: Context) -> tuple[list[Problem], Ch
                             continue
                     written, _ = _apply_op(tx, op, ctx, _wctx(ctx, "dry-run", i, op), datetime.now(UTC).date())
                     found += _rule_problems(tx, ctx, i, op, written)
-                    news.made(i, op.op, created_in(tx.pending[start:]), tx)
+                    news.made(i, op.op, created_in(tx.pending[start:], op.op), tx)
                 except NeedsPerson:  # held for the person by the real apply
                     tx.sql("ROLLBACK TO dry_op")
                     written = []
@@ -4619,7 +4789,7 @@ def refusals(cs: ChangesetIn, ctx: Context) -> dict[int, str]:
                         _wctx(ctx, "dry-run", i, op),
                         today,
                     )
-                    news.made(i, op.op, created_in(tx.pending[start:]))
+                    news.made(i, op.op, created_in(tx.pending[start:], op.op))
                 except NeedsPerson:
                     tx.sql("ROLLBACK TO trial_op")
                     news.failed(i, op.op, "is waiting for you")
@@ -4793,10 +4963,16 @@ def _apply_op(
         }
         if op.status is not None:
             data["status"] = op.status
+        if op.target is not None:
+            data["target"] = op.target.isoformat()
+        if op.roles:
+            # Who runs, designs or watches it, as the same answer said, set with the project (it has no id before).
+            data["roles"] = [{"person": ctx.people.resolve(r.person).person, "role": r.role} for r in op.roles]
         if op.organization:
             from engine.organizations import resolve
 
-            if w.actor != "pm":
+            if w.actor != "pm" and not _from_pm(tx, ctx):
+                # The person's own note naming their employer says it; outside content only suggests it.
                 raise NeedsPerson("only you can say which organization a project is the work of")
             from engine.organizations import adopt_name
 
@@ -5043,8 +5219,13 @@ def _apply_op(
         made("project", op.project)
     elif isinstance(op, ActionAddOp):
         owners = [{"person": ctx.people.resolve(n).person} for n in op.owners]
-        if not owners and ctx.people.pm and _on_personal(tx, ctx.cfg, op.project):
-            owners = [{"person": ctx.people.pm}]  # on Personal an action that names nobody is the person's own
+        if (
+            not owners
+            and ctx.people.pm
+            and (_on_personal(tx, ctx.cfg, op.project) or ctx.actor == "pm" or _from_pm(tx, ctx))
+        ):
+            # On Personal, or in the person's own note, an action that names nobody is the person's own.
+            owners = [{"person": ctx.people.pm}]
         ev = {"source": w.evidence["source"] or source or "note", "quote": op.evidence.quote}
         named = bool((op.waiting_for or "").strip()) or op.due_at_event
         due, check = _due(tx, ctx, source, op.due_words, op.due, settled=named)
@@ -5130,6 +5311,23 @@ def _apply_op(
             changes |= {"due_event": None, "due_by_person": due is not None and _persons_own(tx, ctx)}
         tx.update("action", op.id, changes, w, read_version=cur.version)
         made("action", op.id)
+    elif isinstance(op, ActionOwnersOp):
+        cur = tx.get("action", op.id)
+        owners = [{"person": ctx.people.resolve(n).person} for n in op.owners]
+        _record_owner_correction(tx, ctx, cur, owners, op)
+        changes: dict[str, Any] = {"owners": owners}
+        if cur.data.get("by_kind"):
+            changes["by_kind"] = None  # owners given now are no longer a guess from what was learned
+        if cur.data["status"] == "held":
+            changes["status"] = "open"  # it waited for an owner: now it has one
+        tx.update("action", op.id, changes, w, read_version=cur.version)
+        made("action", op.id)
+        for q in tx.find("question", {"status": "open"}):
+            resolves = q.data.get("resolves") or {}
+            if resolves.get("kind") == "owner" and resolves.get("action") == op.id:
+                answer = ", ".join(o["person"] for o in owners)
+                tx.update("question", q.id, {"status": "answered", "answer": answer}, w, read_version=q.version)
+                made("question", q.id)
     elif isinstance(op, ActionDropOp):
         cur = tx.get("action", op.id)
         reason = " ".join(op.reason.split())
@@ -5628,6 +5826,79 @@ def _record_dropped(tx: Tx, ctx: Context, kind: str, record_id: str, reason: str
     )
 
 
+def _mark_by_kind(
+    tx: Tx, ctx: Context, cs_id: str, index: int, op: OpModel, records: list[dict[str, Any]], entry_id: str
+) -> dict[str, Any] | None:
+    """A step the run says it decided with what was learned only because its item is of the entry's kind of work: the
+    guess is kept on the step and on the to-do it made, with the day the entry was learned, so the row says where it
+    came from and one click takes it back. An entry that isn't an active lesson or routing entry with a kind of work
+    marks nothing."""
+    kind = learn.kind_of_id(REGISTRY, entry_id)
+    found = tx.get(kind, entry_id) if kind in ("lesson", "routing_entry") else None
+    if found is None or found.data.get("status") != "active" or not found.data.get("kind_of_work"):
+        return None
+    learned = found.data.get("learned_at")
+    when = datetime.fromisoformat(str(learned)).date() if learned else None
+    mark = {"entry": entry_id, "kind_of_work": " ".join(str(found.data["kind_of_work"]).split())}
+    if when is not None:
+        mark["learned_on"] = when.isoformat()
+    if isinstance(op, ActionAddOp) and when is not None:
+        # Without the guess the to-do is the user's own when their note says nothing of an owner, as it would be.
+        before = [ctx.people.pm] if (ctx.actor == "pm" or _from_pm(tx, ctx)) and ctx.people.pm else []
+        for ref in records:
+            if ref.get("kind") == "action":
+                current = tx.get("action", ref["id"])
+                tx.update(
+                    "action",
+                    ref["id"],
+                    {"by_kind": {**mark, "owners_before": before}},
+                    _wctx(ctx, cs_id, index, op),
+                    read_version=current.version,
+                )
+    return mark
+
+
+def _record_owner_correction(tx: Tx, ctx: Context, cur: Any, owners: list[dict[str, Any]], op: Any) -> None:
+    """The person's own word that someone else owes a to-do the assistant made corrects the owners it gave: a
+    `change_requested` signal with their words, naming the to-do and the change and run that made it, so what they
+    taught reaches the next to-do like it. A note typed on the to-do's own row records its signal already, and a to-do
+    the person made, or one that had no owner yet, corrects nothing."""
+    before = sorted(o["person"] for o in cur.data.get("owners") or [])
+    if not ctx.corrections or not before or before == sorted(o["person"] for o in owners):
+        return
+    if not (ctx.actor == "pm" or _from_pm(tx, ctx)):
+        return
+    request = tx.get("request", ctx.inputs.request) if ctx.inputs.request else None
+    source = _source_data(tx, request) if request is not None else None
+    if (source or {}).get("kind") == "note:change_requested":
+        return
+    first = next(iter(tx.ledger(kind="action", record_id=cur.id)), None)
+    if first is None or first["actor"] != "assistant":
+        return
+    changeset, run = _made_by(tx, "action", cur.id)
+    words = getattr(getattr(op, "evidence", None), "quote", None) or ctx.inputs.note or ""
+    if (guess := cur.data.get("by_kind")) and not getattr(op, "evidence", None):
+        # Taking back a guess teaches that the entry's kind of work was too wide for this item.
+        words = (
+            f"Not this one: {guess['entry']} was applied to {cur.data['text']!r} only because it is "
+            f"{guess['kind_of_work']}, and it doesn't fit."
+        )
+    learn.record(
+        tx,
+        ctx.cfg,
+        {
+            "kind": "change_requested",
+            "refs": [cur.id],
+            "changeset": changeset,
+            "run": run,
+            "note": " ".join(words.split()),
+            "at": ctx.store.clock(),
+        },
+        WriteContext(actor="pm", trust="trusted", op="change_requested"),
+        ctx.store.clock(),
+    )
+
+
 def _typed_note_evidence(ctx: Context, op: Any) -> bool:
     """Whether what an op quotes is in the note the person typed and nowhere in the outside content beside it."""
     quote = getattr(getattr(op, "evidence", None), "quote", None)
@@ -5790,6 +6061,45 @@ def release(
         _release_one(store, cfg, changeset_id, other, person=person, now=now, ws=ws)
     if person is not None and name is not None:
         _release_same_name_elsewhere(store, cfg, changeset_id, person, name, now=now, ws=ws)
+    _release_waiting_on(store, cfg, changeset_id, index, now=now, ws=ws)
+
+
+def _release_waiting_on(
+    store: Store, cfg: Config, changeset_id: str, index: int, *, now: datetime, ws: Workspace | None
+) -> None:
+    """The person said yes to step `index`: the steps of the same answer that name what it made come in with it (the
+    ones whose `$new:<n>` waited on it), and, for a new person, the steps waiting for the person to say who that name
+    is. One that still can't come in (it waits on something else too) stays waiting."""
+    cs = store.read().get("changeset", changeset_id)
+    if cs is None or cs.data["ops"][index]["status"] != "applied":
+        return
+    outcomes = cs.data["ops"]
+    added = outcomes[index]
+    person = next((r["id"] for r in added.get("records") or [] if r.get("kind") == "person"), None)
+    names = (
+        [added["op"].get("full_name"), *(added["op"].get("aliases") or [])]
+        if added["op"].get("op") == "person.add"
+        else []
+    )
+    for other in outcomes:
+        if other["status"] != "held" or other["index"] == index:
+            continue
+        try:
+            if other.get("waits_for") == index:
+                _release_one(store, cfg, changeset_id, other["index"], person=None, now=now, ws=ws)
+            elif (
+                person
+                and other.get("question")
+                and any(_same_name(_question_name(store, other["question"]), n) for n in names if n)
+            ):
+                name = _question_name(store, other["question"])
+                routed = {"question": other["question"], "person": person, "name": name}
+                _release_one(store, cfg, changeset_id, other["index"], person=person, now=now, ws=ws, routed=routed)
+            else:
+                continue
+        except StoreError:
+            continue
+        _release_waiting_on(store, cfg, changeset_id, other["index"], now=now, ws=ws)
 
 
 def _release_same_name_elsewhere(
@@ -5840,6 +6150,20 @@ def _release_one(
     outcome = outcomes[index]
     if outcome["status"] != "held":
         raise StoreError("that item isn't waiting for you")
+    if referenced(outcome["op"]):
+        # What it names from earlier steps ($new:<n>) is filled in from the records those steps made once applied.
+        made: dict[int, str] = {}
+        for n, _ in referenced(outcome["op"]):
+            earlier = outcomes[n] if 0 <= n < len(outcomes) else None
+            records = (earlier or {}).get("records") or [] if earlier and earlier["status"] == "applied" else []
+            if not records:
+                said = (earlier or {}).get("label") or "an earlier step"
+                raise StoreError(f"it comes in with {said}, which isn't in yet")
+            # The record of the step's own kind (a project for project.add, though its organization came first).
+            own = str(earlier["op"].get("op", "")).rsplit("/", 1)[-1].split(".", 1)[0]
+            made[n] = next((r["id"] for r in records if r.get("kind") == own), records[0]["id"])
+        outcome["op"] = replaced(outcome["op"], lambda n, dropped: made[n])
+        outcome.pop("waits_for", None)
     from engine.ops import CHANGESET
 
     try:
@@ -5967,6 +6291,13 @@ def decline_held_many(store: Store, changeset_id: str, indices: list[int], *, no
     for index in chosen:
         if not 0 <= index < len(outcomes) or outcomes[index]["status"] != "held":
             raise StoreError("that item isn't waiting for you")
+    # A step that would have come in with one kept as it was goes with it (it names what that step would have made).
+    for index in chosen:
+        chosen += [
+            o["index"]
+            for o in outcomes
+            if o.get("waits_for") == index and o["status"] == "held" and o["index"] not in chosen
+        ]
     declined = []
     for index in chosen:
         outcome = outcomes[index]
@@ -6585,8 +6916,11 @@ def apply_for_reminders(store: Store, cfg: Config, op: dict[str, Any], summary: 
 
 # ---- the first-week lints: quotes, names, links, version numbers, summaries, things made --------------------------
 
-#: Ops that make a draft, a write-up or a file the person can open. A plugin's own op may make one too.
-MAKING_OPS = frozenset({"text.draft", "text.propose", "text.edit", "file.add", "report.draft"})
+#: The ops that make something the person can open: a draft of text, a message to send, a write-up or a file. A
+#: plugin's own op may make one too.
+MAKING_OPS = frozenset(
+    {"text.draft", "text.propose", "text.edit", "file.add", "report.draft", "act.draft", "action.reply"}
+)
 #: The kinds of record whose text and links count as ones the workspace holds.
 LINK_KINDS = ("project", "source", "question", "fact", "note", "action", "event", "organization")
 

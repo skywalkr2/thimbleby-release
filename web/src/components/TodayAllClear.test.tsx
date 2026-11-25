@@ -53,7 +53,7 @@ test("the coverage stays as a quiet line under the card, with Missed something?"
   open(0);
   expect(await screen.findByText(`Checked 2 connections, last at ${time(LATEST)}`)).toBeInTheDocument();
   expect(document.querySelector("[data-queue-empty] [data-coverage-line]")).not.toBeNull();
-  expect(screen.getByRole("button", { name: "Missed something?" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Tell it what" })).toBeInTheDocument();
 });
 
 test("the handled button shows only when something was handled today, and opens Handled for you", async () => {

@@ -313,6 +313,27 @@ test("a stopped hand-in has Try again first in its menu, with Choose another acc
   );
 });
 
+test("a stopped hand-in shows why each round was turned down and its last answer as plain text, behind its details", async () => {
+  const user = userEvent.setup();
+  fakeApi({
+    "GET changes": () => [
+      stopped({
+        stopped_rounds: [
+          { attempt: 1, round: 1, reasons: ["The quote isn't in the input."] },
+          { attempt: 1, round: 2, reasons: ["The answer was the same as the one before it."] },
+        ],
+        stopped_answer: "<b>not a tag</b> {the answer}",
+      }),
+    ],
+  });
+  renderApp(<WhatChanged />);
+  expect(await screen.findByText("Why each round was turned down")).toBeInTheDocument();
+  expect(screen.getByText(/The quote isn't in the input\./)).toBeInTheDocument();
+  expect(screen.getByText("Round 2")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "The last answer it gave" }));
+  expect(screen.getByText("<b>not a tag</b> {the answer}")).toBeInTheDocument(); // text, never markup
+});
+
 test("a review row has no Dismiss, a dismissed hand-in is labeled in the list, and Done leaves out what still waits", async () => {
   const user = userEvent.setup();
   fakeApi({
@@ -664,6 +685,24 @@ test("on a phone there is no review mode: What changed is the history, and the r
 
 describe("the history: rows are past tense, only a change not yet checked has a button (Looks good), and the rest keep their choices in the menu", () => {
   const done = (id: string, extra: Partial<S["ChangeItem"]> = {}) => change(id, { state: "done", source_title: `Email ${id}`, ...extra });
+
+  test("a done change with something still needing a look carries Looks good like the badge counts it, a filed one does not", async () => {
+    fakeApi({
+      "GET changes": () => [
+        done("REQ-7", { review: "unchecked" }),
+        done("REQ-8", { review: "filed" }),
+        done("REQ-9", { review: "checked" }),
+      ],
+      "GET stages/requests": () => [],
+      "GET stages/records": () => [],
+    });
+    renderApp(<WhatChanged onOpenGuide={() => undefined} />);
+    await userEvent.setup().click(await screen.findByRole("button", { name: "All" }));
+    await screen.findByRole("listitem", { name: "Email REQ-8" });
+    const checks = screen.getAllByRole("button", { name: "Looks good" });
+    expect(checks).toHaveLength(1);
+    expect(checks[0].closest("[data-choice]")?.getAttribute("data-choice")).toBe("REQ-7");
+  });
 
   test("no row of the list and no detail beside it has a button for the work but Looks good on a change not yet checked, whatever state the change is in", async () => {
     fakeApi({

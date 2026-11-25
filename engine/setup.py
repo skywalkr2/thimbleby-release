@@ -28,7 +28,7 @@ from typing import Any
 import yaml
 
 from engine import folder_rules
-from engine.ai.presets import clean_presets
+from engine.ai.presets import clean_presets, match_family
 from engine.ai.task import UNSUPPORTED_ADVICE, UNSUPPORTED_PLAIN
 from engine.connectors import CORE, declared_reads, reads
 from engine.legacy_names import private_dir
@@ -747,16 +747,18 @@ def make_folder(inside: str, name: str) -> Path:
 # ---- AI accounts -----------------------------------------------------------------------------------------------------
 
 
-#: What an example model can be for, in the catalog's `model_roles`: the one chosen first, a stronger one, a faster one.
-MODEL_ROLES = ("recommended", "stronger", "faster")
+#: What an example model can be for, in the catalog's `model_roles`: the one chosen first, a stronger one, the
+#: strongest, a faster one.
+MODEL_ROLES = ("recommended", "stronger", "strongest", "faster")
 
 
 def known_endpoints() -> list[dict[str, Any]]:
     """The kinds of AI account the Add account screen offers, from the product's catalog: id, name, adapter,
     base_url, key_url, signup_url, credit_url, install_url, needs_key, local, recommended, alternative, allowed_data,
-    settings (a new account's starting provider settings), model_examples with model_roles (what each is for, only for
-    an example the entry lists), tier_presets (the model family and effort each tier
-    takes, by tier name), a note and an optional one-line summary for its card.
+    settings (a new account's starting provider settings), model_examples with model_roles (what each is for) and
+    model_labels (its display name; only for an example the entry lists), model_deep (the example its preset
+    names for harder work), tier_presets (the model family and
+    effort each tier takes, by tier name), a note and an optional one-line summary for its card.
     Entries missing an id, a name or an adapter are left out. At most one entry is the recommended one and at most one
     the alternative: the first marked, so the guide never offers two."""
     data = _catalog()
@@ -777,6 +779,9 @@ def known_endpoints() -> list[dict[str, Any]]:
             marked[flag] = marked[flag] or taken
         levels = [str(x) for x in e.get("allowed_data") or ["open"] if str(x) in ("open", "internal", "restricted")]
         examples = [str(m) for m in e.get("model_examples") or []]
+        presets = clean_presets(e.get("tier_presets"))
+        # The example the entry's preset names for harder work, so a new account starts its learning on it.
+        deep = match_family(presets["deep"]["family"], examples) if "deep" in presets and examples else None
         found.append(
             {
                 "id": str(e["id"]),
@@ -800,8 +805,16 @@ def known_endpoints() -> list[dict[str, Any]]:
                     for name, role in (e.get("model_roles") if isinstance(e.get("model_roles"), dict) else {}).items()
                     if str(name) in examples and str(role) in MODEL_ROLES
                 },
+                "model_labels": {
+                    str(name): str(label).strip()
+                    for name, label in (
+                        e.get("model_labels") if isinstance(e.get("model_labels"), dict) else {}
+                    ).items()
+                    if str(name) in examples and str(label).strip()
+                },
                 "model_optional": bool(e.get("model_optional", False)),
-                "tier_presets": clean_presets(e.get("tier_presets")),
+                "tier_presets": presets,
+                "model_deep": deep,
                 "note": str(e.get("note") or ""),
                 "summary": str(e.get("summary") or ""),
             }

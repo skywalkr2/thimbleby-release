@@ -1,7 +1,8 @@
 """What the assistant learned from one correction, as the correction's own card shows it (design 7.18).
 
 Plain functions over a read of the records, with no AI. A correction's card shows one line: the learning is still
-being worked on, there is a proposal to keep, or the person's own words were kept at once and can be undone. The
+being worked on, there is a proposal to keep, the person's own words were kept at once and can be undone, or the run
+found nothing to propose for a to-do. The
 signal links a correction to the changeset it corrects and to the entry learned from it; this module follows those
 links, so the screens never have to.
 """
@@ -20,7 +21,7 @@ PENDING_STATES = ("queued", "running", "needs_you")
 #: The kinds of record an entry the assistant said it applied can be.
 APPLIED_KINDS: tuple[str, ...] = (*knowledge.KINDS, "rule", "fact")
 
-LEARNING, PROPOSED, KEPT = "learning", "proposed", "kept"
+LEARNING, PROPOSED, KEPT, NOTHING = "learning", "proposed", "kept", "nothing"
 
 
 def signal_of_entry(stored: Any) -> str | None:
@@ -92,7 +93,21 @@ def lines(view: Any, *, hidden: Collection[str] = ()) -> list[Line]:
     for signal_id, request in _pending(view).items():
         if signal_id not in out and view.get("signal", signal_id) is not None:
             out[signal_id] = Line(signal_id, LEARNING, waiting=request.data.get("waiting"))
+    for signal in view.list("signal"):
+        if signal.id not in out and _taught_nothing(view, signal.data):
+            out[signal.id] = Line(signal.id, NOTHING)
     return sorted(out.values(), key=lambda line: _number(line.signal))
+
+
+def _taught_nothing(view: Any, signal: dict[str, Any]) -> bool:
+    """Whether the learning run for a correction of a to-do ended with nothing proposed and the to-do has not changed
+    since: its row says nothing could be learned from it."""
+    at = signal.get("nothing_learned_at")
+    refs = signal.get("refs") or []
+    if at is None or not refs or learn.kind_of_id(REGISTRY, refs[0]) != "action":
+        return False
+    about = view.get("action", refs[0])
+    return about is not None and about.version == at
 
 
 def _number(record_id: str) -> int:

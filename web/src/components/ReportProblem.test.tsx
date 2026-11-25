@@ -19,7 +19,8 @@ const PROBLEM: Problem = {
   text: "couldn't read <path>",
 };
 const DETAILS = "2026-01-01 08:00:00 ERROR engine.example: the source did not answer";
-const FACTS = { enabled: true, version: "9.8.7", system: "Example OS 1", reply_to: "own@example.com", details: DETAILS };
+const ANSWER = "The assistant's last answer, from the request made 2026-10-21:\nIt holds the person's <b>own</b> material.";
+const FACTS = { enabled: true, version: "9.8.7", system: "Example OS 1", reply_to: "own@example.com", details: DETAILS, answer: "" };
 
 function open(over: { send?: () => unknown; problems?: Problem[]; facts?: Partial<typeof FACTS> } = {}) {
   const calls = fakeApi({
@@ -201,4 +202,39 @@ test("the preview has one visible heading", async () => {
   open();
   const shown = screen.getAllByText("What will be sent").filter((el) => !el.classList.contains("sr"));
   expect(shown).toHaveLength(1);
+});
+
+const answerBox = () => screen.queryByLabelText("The assistant's last answer", { selector: "textarea" }) as HTMLTextAreaElement | null;
+const answerChoice = () => screen.queryByRole("checkbox", { name: "Include the assistant's last answer: it contains your material" });
+
+test("with no kept answer the choice is not offered", async () => {
+  open();
+  await screen.findByRole("checkbox", { name: "Include technical details" });
+  expect(answerChoice()).toBeNull();
+  expect(answerBox()).toBeNull();
+});
+
+test("a kept answer is offered off: nothing of it is shown or sent until it is turned on, then exactly the shown text is sent as plain text", async () => {
+  const { calls, user } = open({ facts: { answer: ANSWER } });
+  const choice = await screen.findByRole("checkbox", { name: "Include the assistant's last answer: it contains your material" });
+  expect(choice).not.toBeChecked();
+  expect(answerBox()).toBeNull();
+  await user.type(words(), "It stopped");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(sends(calls)).toHaveLength(1));
+  expect(sends(calls)[0].body).toMatchObject({ include_answer: false, answer_block: "" });
+  expect(JSON.stringify(sends(calls)[0].body)).not.toContain("material");
+});
+
+test("turned on, the answer is previewed as plain text and the same text is sent", async () => {
+  const { calls, user } = open({ facts: { answer: ANSWER } });
+  await user.click(await screen.findByRole("checkbox", { name: "Include the assistant's last answer: it contains your material" }));
+  expect(answerBox()).not.toBeNull();
+  expect(answerBox()!.value).toBe(ANSWER);
+  expect(answerBox()).toHaveAttribute("readonly");
+  expect(document.querySelector("b")).toBeNull(); // never rendered as markup
+  await user.type(words(), "It stopped");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(sends(calls)).toHaveLength(1));
+  expect(sends(calls)[0].body).toMatchObject({ include_answer: true, answer_block: ANSWER });
 });

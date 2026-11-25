@@ -640,6 +640,19 @@ class Repeat(BaseModel):
     start: date = Field(description="The day of the first occurrence; the rule's counting starts from it.")
 
 
+class ByKind(BaseModel):
+    """A guess from what was learned: the entry applied to an item only because it is of the entry's kind of work."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    entry: str = Field(description="The id of the lesson or routing entry applied.")
+    kind_of_work: str = Field(description="The kind of work the entry stands for, as it says it.")
+    learned_on: date = Field(description="The day the entry was learned: the day of the person's correction.")
+    owners_before: list[str] = Field(
+        default_factory=list, description="The owners the action would have had without the guess, by person id."
+    )
+
+
 class Action(Record):
     """Something a person will do. Added by `action.add`, closed by `action.close`, dropped by `action.drop`;
     `action.reply` approves or replaces its drafted reply (only the person does), `record.set` changes text, due, notes
@@ -715,6 +728,12 @@ class Action(Record):
         "when they snooze; the assistant may propose one for a to-do whose day an input labels, which waits for the "
         "person's yes. The reminder is a line on Today while the action is open and not on hold, and it is never a "
         "correction of the assistant's work.",
+    )
+    by_kind: ByKind | None = Field(
+        None,
+        description="Set when what was learned decided part of this action only because it is of the same kind of "
+        "work as the item the person corrected (a guess): the row says so, with the day of that correction, and one "
+        "click takes the guess back.",
     )
     on_hold: OnHold | None = Field(
         None,
@@ -1718,6 +1737,15 @@ class About(BaseModel):
     id: str = Field(description="The record's id.")
 
 
+class StoppedRound(BaseModel):
+    """One round of a request's work that was sent back or refused, and why."""
+
+    model_config = ConfigDict(extra="forbid")
+    attempt: int = Field(1, description="Which try of the request this round belongs to, from 1.")
+    round: int = Field(description="The round's number within its try, from 1.")
+    reasons: list[str] = Field(default_factory=list, description="Why the round's answer was sent back or refused.")
+
+
 class StopCause(BaseModel):
     """Why a request stopped, in a form the screen can act on."""
 
@@ -1884,6 +1912,16 @@ class Request(Record):
         description="The assistant's answer as it came back, kept from the moment it is accepted until its change is "
         "applied and the request marked done in one step: {changeset, problems, run, searched, fallback}. A stop "
         "in between applies this answer on the next start instead of running the request again.",
+    )
+    stopped_answer: str | None = Field(
+        None,
+        description="For a request that stopped after its return rounds: the assistant's last answer as it gave it, "
+        "cut at `dispatch.keep_stopped_answer_chars`. Kept on this computer only; cleared when the request finishes.",
+    )
+    stopped_rounds: list[StoppedRound] = Field(
+        default_factory=list,
+        description="For a request that stopped or is being tried again: one entry per round that was sent back or "
+        "refused, with the try, the round's number and the reasons in plain words.",
     )
     may_answer: list[str] = Field(
         default_factory=list,
@@ -2604,6 +2642,12 @@ class KnowledgeRecord(Record):
     fixed_fields: ClassVar[tuple[str, ...]] = ("origin", "pack", "trust", "learned_at", "evidence", "more_evidence")
 
     text: str = Field(min_length=1, description="The entry in plain words: what is kept, and what is shown.")
+    kind_of_work: str | None = Field(
+        None,
+        description="The kind of work the entry's item stands for, in a few words, when a later item of that kind may "
+        'be meant too ("what goes out for the gala" for "the gala invitations"). The entry applies to its own item as '
+        "it stands; to an item only of this kind it applies as a guess, marked for the person with one click to undo.",
+    )
     evidence: KnowledgeEvidence | None = Field(
         None, description="What it was learned from: the exact words and the records they came from."
     )
@@ -2944,6 +2988,11 @@ class Signal(Record):
         default_factory=list,
         description='The knowledge entries the person\'s own answer made (a glossary entry from "Not a project", for '
         "example): what this correction teaches is already recorded, so no learning run is queued for it.",
+    )
+    nothing_learned_at: int | None = Field(
+        None,
+        description="Set when the learning run for this correction ended with nothing proposed: the version the "
+        "corrected record was at then, so its row says nothing could be learned until the record changes again.",
     )
     at: datetime = Field(description="When the correction was made.")
 

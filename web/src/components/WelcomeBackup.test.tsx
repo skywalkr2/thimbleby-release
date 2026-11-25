@@ -102,7 +102,7 @@ test("the folders backups already go to are listed", async () => {
 
 test("the folder step has no name field, and its hint names the cloud drives from the app's own list", async () => {
   const user = userEvent.setup();
-  api({ "GET setup/backup-folders": () => ({ folders: [], names: ["Drive A", "Drive B"], shown: "Backups" }) });
+  api({ "GET setup/backup-folders": () => ({ folders: [{ name: "Drive A", recommended: true, account: "", work: false }], names: ["Drive A", "Drive B"], shown: "Backups" }) });
   open();
   await folderBox(user);
   expect(screen.queryByLabelText(/Name for this folder/)).toBeNull();
@@ -359,6 +359,8 @@ describe("the cloud drives found on this computer", () => {
     open();
     expect(await screen.findByText(/No cloud drive folder was found on this computer/)).toBeInTheDocument();
     expect(screen.getByLabelText("Folder")).toBeInTheDocument();
+    // It never says none was found and then tells the person to pick a folder in their cloud drive.
+    expect(screen.queryByText(/Pick a folder in your cloud drive/)).toBeNull();
   });
 
   test("a refused drive shows the server's words", async () => {

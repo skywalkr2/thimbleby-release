@@ -276,14 +276,24 @@ test("a backup folder that isn't there is one line that starts with the verb, an
   const found = await screen.findByRole("group", { name: "Reconnect the backup folder" });
   expect(found).toHaveTextContent("Backup folder missing · a copy from 5:08 PM is on this computer");
   expect(found).not.toHaveTextContent("Backup failed");
-  await user.click(within(found).getByRole("button", { name: /More|menu/i }));
-  await user.click(await screen.findByRole("menuitem", { name: "Pick a folder" }));
+  // The one action mends the folder; Back up now (a copy kept here meanwhile) is not under "Reconnect the backup folder"'s button.
+  expect(within(found).queryByRole("button", { name: "Back up now" })).toBeNull();
+  await user.click(within(found).getByRole("button", { name: "Pick a folder" }));
   expect(onOpenGuide).toHaveBeenCalledWith("backup");
+  await user.click(within(found).getByRole("button", { name: /More|menu/i }));
+  expect(await screen.findByRole("menuitem", { name: "Back up now" })).toBeInTheDocument();
 });
 
-test("Not now on the folder nudge says the day it comes back", async () => {
+test("a backup folder that isn't there with no copy time known never says no backup has worked", async () => {
+  show([line("backup", { key: "backup", state: "folder_missing", subject: "cloud folder" })]);
+  const found = await screen.findByRole("group", { name: "Reconnect the backup folder" });
+  expect(found).toHaveTextContent("Backup folder missing · the folder isn't there, so copies stay on this computer for now");
+  expect(found).not.toHaveTextContent("No backup has worked yet");
+});
+
+test("Not now on the folder nudge says the day it comes back, also inside Finish setting up", async () => {
   const user = userEvent.setup();
-  show([line("backup", { key: "backup", state: "unset" })], { "POST suggestions/not-now": () => ({ signal: "SIG-3", until: "2026-11-07T12:00:00+00:00" }) });
+  show([line("backup", { key: "backup", group: "setup", state: "unset" })], { "POST suggestions/not-now": () => ({ signal: "SIG-3", until: "2026-11-07T12:00:00+00:00" }) });
   const found = await screen.findByRole("group", { name: "Pick a backup folder" });
   await user.click(within(found).getByRole("button", { name: /More|menu/i }));
   await user.click(await screen.findByRole("menuitem", { name: "Not now" }));

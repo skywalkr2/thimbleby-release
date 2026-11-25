@@ -737,7 +737,10 @@ def cmd_open(args: argparse.Namespace) -> int:
     ws = resolve(args.workspace)
     cfg = ws.config()
     prefix = "" if cfg.server.base_path == "/" else cfg.server.base_path
-    url = f"{local_origin(cfg.server.host, cfg.server.port)}{prefix}/?token={ws.install_token()}"
+    from engine import launcher
+
+    port = launcher.serving_port(ws.private_dir, cfg.server.port)
+    url = f"{local_origin(cfg.server.host, port)}{prefix}/?token={ws.install_token()}"
     print(f"Open {url}")
     if not args.print_only:
         webbrowser.open(url)
@@ -832,6 +835,21 @@ def cmd_serve(args: argparse.Namespace) -> int:
     if problem := local_address_problem(cfg.server):
         print(f"thimbleby: {problem}", file=sys.stderr)
         return 1
+    from engine import launcher
+
+    try:
+        port = launcher.choose_port(cfg.server.port, cfg.server.port_tries)
+    except launcher.PortsTaken as err:
+        print(
+            f"thimbleby: ports {err.first} to {err.last} are all in use. Stop the program using one, or choose "
+            "another with --port.",
+            file=sys.stderr,
+        )
+        return 1
+    if port != cfg.server.port:
+        print(f"Port {cfg.server.port} was in use, so Thimbleby is using port {port}.")
+        flags["server.port"] = port
+        cfg = ws.config(flags=flags)
     from engine.handover import Refused, open_or_hold
 
     try:

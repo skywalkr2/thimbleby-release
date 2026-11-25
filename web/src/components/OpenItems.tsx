@@ -616,8 +616,44 @@ function ActionRowBody(props: ActionRowProps) {
       {hold.form}
       {drop.form}
       {hand.line}
+      <GuessLine action={a} />
       <LearnedLines records={[a.id]} />
     </Row>
+  );
+}
+
+/** A to-do whose owners were decided by what was learned for its kind of work, not for this item: who, and the day of the
+ * correction it came from, with one click to take the guess back (the usual undo toast; nothing to confirm). */
+function GuessLine(props: { action: OpenAction }) {
+  const { t } = useWords();
+  const act = useAct();
+  const a = props.action;
+  const guess = a.guess;
+  if (!guess) return null;
+  const who = a.owners.map((o) => o.name).join(", ");
+  return (
+    <p className="hint" data-guess="">
+      {t("open.guess", { who, date: monthDay(guess.learned_on) })}
+      {guess.can_take_back && (
+        <>
+          {" "}
+          <Button
+            size="sm"
+            variant="quiet"
+            data-guess-take-back=""
+            aria-label={t("open.guess.take_back_named", { text: plainTitle(a.text) })}
+            onClick={() =>
+              void act(
+                () => api.takeBackGuess(a.id),
+                (done) => ({ message: t("toast.guess_taken_back"), undo: () => api.undo(done.changeset) }),
+              )
+            }
+          >
+            {t("open.guess.take_back")}
+          </Button>
+        </>
+      )}
+    </p>
   );
 }
 

@@ -22,16 +22,42 @@ from engine.workspace import Workspace
 #: upper case, so a code written in lower case is the same code. A number alone (a phone number, a date, an amount) is
 #: never one.
 _REFERENCE = re.compile(r"\b(?=[A-Z0-9-]{6,}\b)(?=[A-Z-]*\d)(?=[0-9-]*[A-Z])[A-Z0-9-]+\b")
-#: Letters and digits that aren't a code: a word with a small number after it ("COVID19"), a year's quarter or fiscal
-#: year ("2026-Q4", "Q4-2026", "FY2026").
-_NOT_A_CODE = re.compile(r"[A-Z]{4,}\d{1,2}|(?:19|20)\d\d-?Q[1-4]|Q[1-4]-?(?:19|20)\d\d|FY(?:19|20)?\d\d")
+#: Letters and digits that aren't a code: a word with a small number after it ("COVID19", "COVID-19"), a year's quarter
+#: or half, or a fiscal year ("2026-Q4", "Q4-2026", "H1-2026", "FY2026").
+_NOT_A_CODE = re.compile(r"[A-Z]{4,}-?\d{1,2}|(?:19|20)\d\d-?[QH][1-4]|[QH][1-4]-?(?:19|20)\d\d|FY-?(?:19|20)?\d\d")
 
 
-def references_in(text: str) -> set[str]:
-    """The booking or order codes in the text: letters and digits together, never a phone number, a date, a year's
-    quarter or a word with a number after it."""
-    found = (code.strip("-") for code in _REFERENCE.findall((text or "").upper()))
-    return {code for code in found if len(code) >= 6 and not _NOT_A_CODE.fullmatch(code)}
+def references_in(text: str, language: Any = None) -> set[str]:
+    """The booking or order codes in the text: letters and digits together, or digits alone right after a word that
+    names a code ("confirmation 48213977", "Order #: 48213977"). Never a phone number or a date, a year's quarter or
+    half, a word with a number after it, or a label or an amount with its number ("ROOM101", "USD1500": the language
+    settings' `code_label_words`). `language` is the language settings; the shipped lists when none is given."""
+    from engine.language_words import language_words, shipped
+
+    def words(name: str) -> list[str]:
+        found = language_words(language, name) if language is not None else shipped(name)
+        return [str(w).upper() for w in found or []]
+
+    labels = words("code_label_words")
+    upper = (text or "").upper()
+    found = {code.strip("-") for code in _REFERENCE.findall(upper)}
+    codes = {
+        code
+        for code in found
+        if len(code) >= 6
+        and not _NOT_A_CODE.fullmatch(code)
+        and not any(re.fullmatch(re.escape(label) + r"-?\d{1,6}", code) for label in labels)
+    }
+    leads = words("code_lead_words")
+    if leads:
+        lead = "|".join(re.escape(w) for w in sorted(leads, key=len, reverse=True))
+        codes |= set(
+            re.findall(
+                rf"\b(?:{lead})\b(?:[^0-9A-Z\n]{{0,4}}(?:NUMBER|NO\.?|CODE|ID|IS)\b){{0,2}}[^0-9A-Z\n]{{0,4}}(\d{{6,}})\b",
+                upper,
+            )
+        )
+    return codes
 
 
 def _moment(value: Any) -> datetime | None:
@@ -56,7 +82,7 @@ def related(ws: Workspace, store: Store, cfg: Config, saved: Stored | None) -> l
     )
     text = source_text(ws, store, saved.id)
     sender = address_of(this, ws) if this is not None else sender_address({"now": text[:1000]})
-    codes = references_in(f"{this.data.get('title') if this is not None else ''}\n{text}")
+    codes = references_in(f"{this.data.get('title') if this is not None else ''}\n{text}", cfg.language)
     own = ((this.data.get("message") or {}).get("received")) if this is not None else None
     since = _moment(own or saved.data.get("received_at"))
     found: list[tuple[datetime, Stored, str]] = []
@@ -76,7 +102,9 @@ def related(ws: Workspace, store: Store, cfg: Config, saved: Stored | None) -> l
         if not body_text:
             continue
         same_sender = bool(sender) and address_of(snap, ws) == sender
-        shared = bool(codes) and bool(codes & references_in(f"{snap.data.get('title') or ''}\n{body_text}"))
+        shared = bool(codes) and bool(
+            codes & references_in(f"{snap.data.get('title') or ''}\n{body_text}", cfg.language)
+        )
         if same_sender or shared:
             found.append((when or datetime.min.replace(tzinfo=UTC), snap, body_text))
     found.sort(key=lambda row: row[0], reverse=True)

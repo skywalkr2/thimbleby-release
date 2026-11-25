@@ -491,9 +491,31 @@ def test_a_note_asking_for_a_message_answered_with_a_todo_goes_back_once(env):
     ws, cfg, store = env
     asked = _returned_twice(env, REVIEWERS_NOTE, _write_it_todo(cfg), _write_it_todo(cfg))
     assert len(asked) == 2
-    assert "asks for a message" in asked[1].request and "act.draft" in asked[1].request
-    # The assistant's second answer stands: the rule only points.
+    # It asks, and leaves the call to the assistant.
+    assert "Is the person's own note asking for a message to someone" in asked[1].request
+    assert "act.draft" in asked[1].request and "your answer stands either way" in asked[1].request
+    # The assistant's second answer stands: the rule only points; nothing is drafted on the list alone.
+    assert store.read().list("act") == []
     assert any("acknowledgments" in a.data["text"] for a in store.read().list("action"))
+
+
+def test_a_note_the_word_lists_miss_answered_with_a_draft_goes_through_with_no_return(env):
+    """A miss on the word lists never stops the model from drafting. The golden case's real
+    draft, for a note that asks for the same message in words no list holds."""
+    from pathlib import Path
+
+    from engine.applier import _asks_for_a_message
+
+    ws, cfg, store = env
+    answers = Path(__file__).resolve().parent.parent / "workspaces" / "demo-b" / "evals" / "real-answers"
+    drafted = json.loads((answers / "own-note-asking-for-the-acknowledgments-names-is-a-draft.json").read_text())
+    who = store.read().get("person", drafted["ops"][0]["target"]["recipients"][0]["person"]).data["full_name"]
+    note = f"Let {who} know we need the last two acknowledgments names by Friday, so the interior can go to the printer"
+    assert _asks_for_a_message(cfg, note, _recipients(store, cfg)) is None
+    asked = _returned_twice(env, note, drafted, drafted)
+    assert len(asked) == 1, "a good draft is not sent back"
+    held = [o for c in store.read().list("changeset") for o in c.data["ops"] if o["op"]["op"] == "act.draft"]
+    assert [o["status"] for o in held] == ["held"]  # it waits for the person's yes, as anything to send does
 
 
 def test_a_note_that_asks_for_no_message_is_not_sent_back(env):
@@ -505,34 +527,69 @@ def test_a_note_that_asks_for_no_message_is_not_sent_back(env):
     assert len(asked) == 1
 
 
+def _recipients(store, cfg) -> list[str]:
+    from engine.applier import message_recipients
+    from engine.names import People
+
+    return message_recipients(People(store, cfg))
+
+
 def test_the_words_that_ask_for_a_message_come_from_the_language_settings(env):
     from engine.applier import _asks_for_a_message
 
     ws, cfg, store = env
-    assert _asks_for_a_message(cfg, REVIEWERS_NOTE) == "Draft a short message"
-    assert _asks_for_a_message(cfg, "Write an email to the printer") == "Write an email"
-    assert _asks_for_a_message(cfg, "Send the proofs to the printer") is None
+    known = _recipients(store, cfg)
+    assert _asks_for_a_message(cfg, REVIEWERS_NOTE, known) == "Draft a short message"
+    assert _asks_for_a_message(cfg, "Write an email to the printer", known) == "Write an email"
+    assert _asks_for_a_message(cfg, "Send the proofs to the printer", known) is None
     cfg.language.message_request_nouns = ["memo"]
-    assert _asks_for_a_message(cfg, REVIEWERS_NOTE) is None
+    assert _asks_for_a_message(cfg, REVIEWERS_NOTE, known) is None
 
 
 @pytest.mark.parametrize(
     "note, asks",
     [
         ("Draft for me a really short and friendly message to the printer", True),
-        ("Write two emails to the venue about the date", True),
+        ("Write two emails to {designer} about the date", True),
         ("Compose a very brief, warm reply to the editor", True),
-        ("Prepare a letter for the landlord", True),
+        ("Prepare a letter for the typesetter", True),
         ("Write a note to remember the printer call", False),
         ("Write down the printer's new number", False),
         ("Draft the second chapter's outline by Friday", False),
         ("Send the proofs to the printer", False),
+        ("Please send a quick note to the printer about the delay", True),
+        ("Email the printer that the proofs are late", True),
+        ("Text Sam that we're running late", True),
+        ("Reply to the editor about the cover", True),
+        ("Write down the reply the editor gave", False),
+        ("Draft the text for the back cover", False),
+        ("Prepare the mail merge list", False),
+        # The first-week journey (J-10): only someone on file, by name or role, or an address, near the message
+        # words makes a message to draft; a message to nobody on file is work to do, never nudged toward a draft.
+        ("Write {editor} about the cover", True),
+        ("Write {editor} about the budget", True),
+        ("Write down the reply", False),
+        ("Write the exhibit label text", False),
+        ("Email {designer} re the proofs", True),
+        ("Send {designer} a reminder about the proofs", True),
+        ("Write to orders@example.com about the date", True),
+        ("We also need to send the gala sponsor thank-you letters", False),
+        ("Send the sponsors thank-you letters", False),
+        ("Send thank-you letters to the sponsors", False),
+        ("Email the venue about the date", False),
     ],
 )
 def test_the_ways_a_note_asks_for_a_message_and_the_ways_it_does_not(env, note, asks):
     """A note asks for a message with the asking word up to eight words before the message's word, and in the plural
-    too; a note to remember something is no message."""
+    too, to someone on file or an address near those words; a note to remember something is no message."""
     from engine.applier import _asks_for_a_message
 
     ws, cfg, store = env
-    assert (_asks_for_a_message(cfg, note) is not None) is asks, note
+    # First names come from the fixture people, by their role.
+    first = {
+        p.data["role"]: (p.data.get("aliases") or [p.data["full_name"].split()[0]])[0]
+        for p in store.read().list("person")
+        if p.data.get("role")
+    }
+    note = note.format(editor=first["Editor"], designer=first["Cover designer"])
+    assert (_asks_for_a_message(cfg, note, _recipients(store, cfg)) is not None) is asks, note

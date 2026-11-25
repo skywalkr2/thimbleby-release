@@ -51,6 +51,41 @@ domains:
   - qq.com
   - 163.com
   - naver.com
+  # National and regional free mail services.
+  - protonmail.ch
+  - proton.ch
+  - t-online.de
+  - freenet.de
+  - orange.fr
+  - free.fr
+  - laposte.net
+  - sfr.fr
+  - wanadoo.fr
+  - libero.it
+  - virgilio.it
+  - tiscali.it
+  - seznam.cz
+  - wp.pl
+  - o2.pl
+  - interia.pl
+  - onet.pl
+  - rambler.ru
+  - bk.ru
+  - list.ru
+  - inbox.ru
+  - ukr.net
+  - rediffmail.com
+  - sina.com
+  - 126.com
+  - yeah.net
+  - daum.net
+  - hanmail.net
+  - bigpond.com
+  - btinternet.com
+  - virginmedia.com
+  - uol.com.br
+  - bol.com.br
+  - terra.com.br
   # Private-relay services: each address there forwards to someone's own mailbox, so anyone may have one.
   - duck.com
   - mailbox.org
