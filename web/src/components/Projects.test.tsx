@@ -65,7 +65,7 @@ test("projects are a table: the name is a link to its page, the counts are numbe
   expect(within(tr).getByText("3")).toBeInTheDocument();
   // Zero is never shown as a number.
   expect(within(tr).queryByText("0")).toBeNull();
-  expect(screen.getByRole("columnheader", { name: "Open to-dos" })).toBeInTheDocument();
+  expect(screen.getByRole("columnheader", { name: "To-dos" })).toBeInTheDocument();
 });
 
 test("a project's status is colored by its status list's tone, and the words stay", async () => {

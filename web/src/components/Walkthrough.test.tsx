@@ -18,6 +18,18 @@ import { Walkthrough } from "./Walkthrough";
 // default limit, so the file allows each test a limit that fits the work (the waits inside still wait for the screen).
 vi.setConfig({ testTimeout: 20_000 });
 
+/** The time zone the computer running the app reports: these tests describe a computer on UTC (the zone their workspace
+ * holds), whatever the zone of the machine running them; a test of another computer sets its own. */
+const realResolvedOptions = Intl.DateTimeFormat.prototype.resolvedOptions;
+function computerZone(zone: string) {
+  const real = realResolvedOptions;
+  vi.spyOn(Intl.DateTimeFormat.prototype, "resolvedOptions").mockImplementation(function (this: Intl.DateTimeFormat) {
+    return { ...real.call(this), timeZone: zone };
+  });
+}
+beforeEach(() => computerZone("UTC"));
+afterEach(() => vi.restoreAllMocks());
+
 /** Made-up addresses are built from this, so no address is written out whole. */
 const WEB = "http" + "://";
 
@@ -3373,6 +3385,24 @@ describe("the look", { timeout: 20_000 }, () => {
     await user.click(within(main).getByRole("button", { name: "Continue" }));
     expect(await screen.findByRole("heading", { level: 2, name: "What it's for" }, { timeout: 5000 })).toBeInTheDocument();
     expect(calls.find((c) => c.route === "POST me")!.body).toEqual({ full_name: "Harbor Work", workspace_name: "Harbor's" });
+  });
+
+  test("You: on a computer in another time zone, Continue still waits for a name, then saves the name and the zone", async () => {
+    computerZone("America/New_York");
+    const user = userEvent.setup();
+    const calls = fakeApi(routes({ "POST me": () => ({ person: "PER-1", full_name: "Harbor Work" }), "POST settings": () => ({ changes: [], fingerprint: "fp-2", needs_restart: false }) }));
+    open();
+    const name = await screen.findByLabelText("Your full name");
+    const main = screen.getByRole("main");
+    // The zone offered from this computer is no name: Continue is off until one is entered.
+    await waitFor(() => expect(within(main).getByRole("button", { name: "Continue" })).toBeDisabled());
+    expect(within(main).getByText("Enter your full name to go on.")).toBeInTheDocument();
+    await user.click(name);
+    await user.paste("Harbor Work");
+    await waitFor(() => expect(within(main).getByRole("button", { name: "Continue" })).toBeEnabled(), { timeout: 5000 });
+    await user.click(within(main).getByRole("button", { name: "Continue" }));
+    expect(await screen.findByRole("heading", { level: 2, name: "What it's for" }, { timeout: 5000 })).toBeInTheDocument();
+    expect(calls.find((c) => c.route === "POST settings")!.body).toMatchObject({ changes: { "workspace.user.timezone": "America/New_York" } });
   });
 
   test("a screen that was already done also saves with Continue, and moves on", async () => {

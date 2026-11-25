@@ -1,4 +1,5 @@
 import "@testing-library/jest-dom/vitest";
+import { setClockZone } from "../lib/dates";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
@@ -6,6 +7,7 @@ import type { Act } from "../lib/acts";
 import { actFixture, actsAnswer, recipient } from "../lib/acts-fixtures";
 import { besidePane, fakeApi, renderApp, type Routes } from "../test-utils";
 import { FollowUps } from "./FollowUps";
+
 
 // What each kind of act says it does (design 6.12, 7.4): the list line and the detail in words for a reply, a change to the
 // mail, an answer to an invitation and an event, with each saved message listed and counted; why Copy carries an act; the undo
@@ -52,6 +54,9 @@ describe("the list line says what the act does", () => {
 });
 
 describe("the detail", () => {
+  // The times these tests expect are written on a UTC clock, whatever the zone of the computer running them.
+  beforeEach(() => setClockZone("UTC"));
+  afterEach(() => setClockZone(null));
   test("a mailbox act lists each message with its sender, subject and date, and counts them", async () => {
     show([mailbox("move", 3, { folder: "Projects" })]);
     const pane = await screen.findByRole("complementary", { name: "Move 3 messages to Projects" });

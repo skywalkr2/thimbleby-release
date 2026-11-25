@@ -245,8 +245,10 @@ test("the time zone is picked from a list when the setting offers one", async ()
 
 test("the workspace step shows the server's words when a value is refused, and keeps what was typed", async () => {
   const user = userEvent.setup();
-  api([step("workspace")], { "POST settings": () => new Refuse(400, "That time zone isn't one we know.") });
+  api([step("workspace")], { "POST settings": () => new Refuse(400, "That time zone isn't one we know."), "POST me": () => ({ person: "PER-1", full_name: "Sam Tester" }) });
   open();
+  // A name first: with none, Save waits for one whatever else changed.
+  await user.type(await screen.findByLabelText("Your full name"), "Sam Tester");
   const zone = await screen.findByLabelText("Your time zone");
   await user.clear(zone);
   await user.type(zone, "Nowhere");

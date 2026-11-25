@@ -1,4 +1,5 @@
 import "@testing-library/jest-dom/vitest";
+import { setClockZone } from "../lib/dates";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
@@ -9,6 +10,7 @@ import { isoInput } from "./EventActs";
 import { FollowUps } from "./FollowUps";
 import { NewEvent } from "./NewEvent";
 import { RecordPage } from "./RecordPage";
+
 
 // Creating, moving and cancelling events on a connected calendar (design 6.12, S1b-2): a new event is put on a calendar account
 // that can add events, and an event of the person's own can be moved or cancelled. Each drafts an act that opens in Waiting to go
@@ -205,6 +207,9 @@ describe("a new event", () => {
 });
 
 describe("in Waiting to go out", () => {
+  // The times these tests expect are written on a UTC clock, whatever the zone of the computer running them.
+  beforeEach(() => setClockZone("UTC"));
+  afterEach(() => setClockZone(null));
   const show = (act: S["ActView"]) => {
     window.matchMedia = (() => ({ matches: true, addEventListener: () => undefined, removeEventListener: () => undefined })) as unknown as typeof window.matchMedia;
     fakeApi({ "GET acts": () => ({ acts: [act] }), "GET followups": () => [] });

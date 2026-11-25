@@ -3,6 +3,7 @@ import { screen, within } from "@testing-library/react";
 import { useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "../test-utils";
+import { onTestFinished } from "vitest";
 import { setClockZone } from "../lib/dates";
 import { ActivityList } from "./ActivityList";
 import { AskAboutThis } from "./AskAboutThis";
@@ -37,6 +38,9 @@ const at = (day: string, time = "09:00") => `${day}T${time}:00Z`;
 
 test("an activity list groups its entries by day, shows the latest five, and asks for the rest", async () => {
   const user = userEvent.setup();
+  // The times below are on a UTC clock, whatever the zone of the computer running the test.
+  setClockZone("UTC");
+  onTestFinished(() => setClockZone(null));
   const entries = [
     { key: "1", at: at("2026-10-12", "13:22"), body: "Emailed you" },
     { key: "2", at: at("2026-10-12", "13:23"), body: "Added a to-do" },

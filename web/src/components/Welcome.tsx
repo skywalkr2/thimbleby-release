@@ -432,7 +432,9 @@ function WorkspaceForm(props: { onContinue?: () => void; done?: boolean; setting
   };
 
   // Inside the walkthrough the screen's one Continue saves this form (when it has something to save) and moves on.
-  const missing = !props.done && (empty || !pending) ? t(empty ? "welcome.workspace.why_blank" : "welcome.workspace.why") : "";
+  // No name is always missing, whatever else there is to save (a time zone offered from this computer is no name).
+  const noName = !fullName.trim();
+  const missing = !props.done && (empty || noName || !pending) ? t(empty ? "welcome.workspace.why_blank" : "welcome.workspace.why") : "";
   useContinue(hasSlot ? { run: async () => (pending ? save() : true), disabled: !!missing, why: missing } : null);
 
   const zoneId = "workspace-workspace-user-timezone";
@@ -501,7 +503,7 @@ function WorkspaceForm(props: { onContinue?: () => void; done?: boolean; setting
       )}
       {!hasSlot && (
         <Actions align="end">
-          <Button type="submit" variant={props.done ? "secondary" : "primary"} disabled={busy || empty || !pending}>
+          <Button type="submit" variant={props.done ? "secondary" : "primary"} disabled={busy || empty || noName || !pending}>
             {t(props.onContinue && !props.done ? "welcome.workspace.save_continue" : "welcome.workspace.save")}
           </Button>
         </Actions>

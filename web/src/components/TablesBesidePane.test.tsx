@@ -105,12 +105,12 @@ test("beside the pane only the priority columns stay, and the column picker brin
   renderApp(<Projects />);
   const tr = await rowOf("Harbor");
   // Closed: every column.
-  expect(headers()).toEqual(expect.arrayContaining(["Stage", "Last updated", "Group", "Open questions"]));
+  expect(headers()).toEqual(expect.arrayContaining(["Stage", "Last updated", "Group", "Questions"]));
   await user.click(within(tr).getByText("Ana Person"));
   const pane = await screen.findByRole("complementary", { name: "Harbor" });
   expect(pane).toBeInTheDocument();
   expect(document.querySelector("[data-split]")).toHaveAttribute("data-pane", "beside");
-  expect(headers().filter(Boolean)).toEqual(["Project", "Status", "Target", "Owner", "Open to-dos", "Options"]);
+  expect(headers().filter(Boolean)).toEqual(["Project", "Status", "Target", "Owner", "To-dos", "Options"]);
   // The picker lists the others, checked or not, and choosing one shows it.
   await user.click(screen.getByRole("button", { name: "Choose columns" }));
   const stage = await screen.findByRole("menuitemcheckbox", { name: "Stage" });
