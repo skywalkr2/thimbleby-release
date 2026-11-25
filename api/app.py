@@ -383,14 +383,11 @@ def create_app(
     # counts toward its Today line.
     @inner.middleware("http")
     async def time_requests(request: Request, call_next: Any) -> Any:
-        started, worked = time.perf_counter(), time.process_time()
+        started = time.perf_counter()
         response = await call_next(request)
         ms = (time.perf_counter() - started) * 1000
-        # The handler's own time, measured inside the request, in the standard header a browser's tools show: how long
-        # it took, and the processor time this process spent meanwhile (the work done, which a busy computer's other
-        # programs don't lengthen).
-        cpu = (time.process_time() - worked) * 1000
-        response.headers["Server-Timing"] = f"app;dur={ms:.1f}, cpu;dur={cpu:.1f}"
+        # The handler's own time, measured inside the request, in the standard header a browser's tools show.
+        response.headers["Server-Timing"] = f"app;dur={ms:.1f}"
         route = request.scope.get("route")
         path = getattr(route, "path", None)
         if path and request.method == "GET" and response.status_code == 200:

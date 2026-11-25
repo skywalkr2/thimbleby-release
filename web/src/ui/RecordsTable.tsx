@@ -107,7 +107,7 @@ export function RecordsTable<T>(props: {
           <tr>
             <th scope="col">{props.name.header}</th>
             {visible.map((c) => (
-              <th key={c.id} scope="col" className={[rank(c), c.numeric ? styles.numHead : ""].filter(Boolean).join(" ")}>
+              <th key={c.id} scope="col" className={rank(c)}>
                 {c.header}
               </th>
             ))}

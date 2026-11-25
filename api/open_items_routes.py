@@ -103,7 +103,7 @@ def build_open_items_router(ws: Workspace, cfg: Config, store: Store, events: Ev
         with store.read_scope():
             return OpenItemsView(
                 actions=[_action(a, cfg.workspace.user.person) for a in open_actions(store, cfg, today, now=now)],
-                questions=[_question(q) for q in open_questions(store, cfg, today)],
+                questions=[_question(q) for q in open_questions(store, cfg, today, now)],
                 stale_days=cfg.ui.today.stale_after_days,
                 rows_shown=cfg.ui.open_rows_shown,
             )

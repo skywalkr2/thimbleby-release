@@ -1,9 +1,9 @@
 """Every press that starts or approves work answers at once while a long reading of a source is under way (S-0677):
 nothing waits on the reading's lock, and nothing runs the reading's own work inside the request. "At once" is proven by
 order: each press answers while the reading still holds its lock, which a press that waited behind it never could, and
-a press still waiting after a few seconds is reported as waiting. The handler's own time, measured inside the request
-(its Server-Timing: the processor time spent while it ran), stays under a second, so no press does the reading's work
-itself; a busy machine's other programs don't count."""
+a press still waiting after a few seconds is reported as waiting. The work each handler does on its own thread, measured
+inside the request as that thread's processor time, stays under a second, so no press does the reading's work itself;
+neither a busy machine's other programs nor the work a press hands to the worker count."""
 
 from __future__ import annotations
 
@@ -62,18 +62,56 @@ def reading(app):  # noqa: F811
     worker._jobs = None
 
 
-def handler_seconds(response, metric: str = "cpu") -> float:
-    """The work the server did on the request, from its Server-Timing header: the processor time its process spent
-    while the request ran (`cpu`), which other programs on a busy computer don't lengthen, or the time it took
-    (`app`)."""
-    timing = dict(part.strip().split(";dur=") for part in response.headers["server-timing"].split(","))
-    return float(timing[metric]) / 1000
+#: The processor time each handler's own thread spent on its request, newest last (see `handler_work`).
+WORK: list[float] = []
+
+
+@pytest.fixture(autouse=True)
+def handler_work(monkeypatch):
+    """Time the work each route's handler does on its own thread: the processor time of the thread that runs it, which
+    neither other programs on a busy computer nor the work the press hands to the worker's own threads lengthen. A
+    garbage collection that happens to run in that thread is left out: in a test process that has run thousands of tests
+    it sweeps everything they left, which is not the handler's work."""
+    import gc
+
+    import fastapi.routing
+
+    real = fastapi.routing.run_in_threadpool
+    swept = threading.local()
+
+    def sweep(phase: str, info: dict) -> None:
+        if phase == "start":
+            swept.began = time.thread_time()
+        elif getattr(swept, "began", None) is not None:
+            swept.total = getattr(swept, "total", 0.0) + time.thread_time() - swept.began
+            swept.began = None
+
+    def timed(fn, /, *args, **kwargs):
+        swept.total = 0.0
+        began = time.thread_time()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            WORK.append(time.thread_time() - began - swept.total)
+
+    async def run(fn, /, *args, **kwargs):
+        return await real(timed, fn, *args, **kwargs)
+
+    WORK.clear()
+    monkeypatch.setattr(fastapi.routing, "run_in_threadpool", run)
+    gc.callbacks.append(sweep)
+    yield
+    gc.callbacks.remove(sweep)
 
 
 def answered(out):
     assert "seconds" in out, "the press was still waiting behind the reading"
     assert out["during_reading"], "the press answered only once the reading had ended"
-    assert handler_seconds(out["response"]) < ANSWER_WITHIN, "the press did slow work inside the request"
+    assert out["response"].headers.get("server-timing", "").startswith("app;dur="), "the handler's time is sent back"
+    assert WORK and max(WORK) < ANSWER_WITHIN, (
+        f"the press did slow work inside the request ({max(WORK, default=0):.2f}s)"
+    )
+    WORK.clear()
     return out["response"]
 
 

@@ -673,9 +673,20 @@ function QuestionRow(props: { question: OpenQuestion; inlineOrigin: boolean }) {
   const menu = useQuestionMenu(q, { canMarkSent: q.state === "not_sent", onClosed: focus });
   const change = useChangeThis({ kind: q.kind === "decision" ? "decision" : "question", id: q.id }, focus);
   const notMine = useNotMineToTrack({ kind: "question", id: q.id }, q.origin);
+  // An answer not judged yet: the question stays here, being read, or waiting to be read with its reason. Only a waiting
+  // answer can be changed, in place.
+  const unjudged = q.state === "reading" || q.state === "answer_waiting";
+  const act = useAct();
+  const noted = useNoted();
+  const [changing, setChanging] = useState(false);
+  const [again, setAgain] = useState("");
   // The step itself is elsewhere: a question to the person is answered on Today, and the reply and the message are in
   // Follow-ups. The row takes the person to it.
   const open = () => {
+    if (unjudged) {
+      if (q.state === "answer_waiting") setChanging(true);
+      return;
+    }
     if (q.state === "yours") {
       openOnToday(q.id);
       return;
@@ -683,9 +694,20 @@ function QuestionRow(props: { question: OpenQuestion; inlineOrigin: boolean }) {
     if (!revealOrKeep("person", q.to)) window.location.hash = toHash("work/followups");
   };
   useRowKeys(ref, { primary: open });
-  const label = { yours: "followups.answer_on_today", waiting: "followups.record_reply", not_sent: "open.q.to_send", later: "open.q.to_send" }[q.state];
+  const label = {
+    yours: "followups.answer_on_today",
+    reading: "open.q.change_answer",
+    answer_waiting: "open.q.change_answer",
+    waiting: "followups.record_reply",
+    not_sent: "open.q.to_send",
+    later: "open.q.to_send",
+  }[q.state];
   const who =
-    q.state === "yours"
+    q.state === "reading"
+      ? t("open.q.reading")
+      : q.state === "answer_waiting"
+        ? (q.answer_why ?? t("open.q.answer_waiting"))
+        : q.state === "yours"
       ? t("open.q.on_you")
       : q.state === "waiting"
         ? t("open.q.waiting_on", { name: q.to_name })
@@ -704,7 +726,7 @@ function QuestionRow(props: { question: OpenQuestion; inlineOrigin: boolean }) {
   return (
     <Row
       ref={ref}
-      pill={q.state === "waiting" || q.state === "yours" ? undefined : <Pill tone="neutral">{t(`open.qstate.${q.state}`)}</Pill>}
+      pill={q.state === "waiting" || q.state === "yours" ? undefined : <Pill tone={unjudged ? "need" : "neutral"}>{t(`open.qstate.${q.state}`)}</Pill>}
       title={q.title}
       meta={
         <>
@@ -713,14 +735,41 @@ function QuestionRow(props: { question: OpenQuestion; inlineOrigin: boolean }) {
         </>
       }
       primary={
-        <Button variant="primary" data-key="primary" onClick={open}>
-          {t(label)}
-        </Button>
+        q.state === "reading" ? undefined : (
+          <Button variant="primary" data-key="primary" onClick={open}>
+            {t(label)}
+          </Button>
+        )
       }
-      menu={<RowMenu label={q.title} actions={[...menu.entries, change.entry, ...notMine.entries]} />}
+      menu={unjudged ? undefined : <RowMenu label={q.title} actions={[...menu.entries, change.entry, ...notMine.entries]} />}
     >
       {menu.form}
       {change.form}
+      {changing && q.state === "answer_waiting" && (
+        <form
+          className="answer-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void act(
+              () => api.answer(q.id, { text: again }),
+              (done) => ({ message: noted(t("toast.answered"), done.request) }),
+            );
+            setChanging(false);
+            setAgain("");
+          }}
+        >
+          <label className="hint" htmlFor={`again-${q.id}`}>
+            {t("followups.answer_label")}
+          </label>
+          <textarea id={`again-${q.id}`} className="short" autoFocus value={again} onChange={(e) => setAgain(e.target.value)} />
+          <Button variant="primary" type="submit" disabled={!again.trim()}>
+            {t("followups.answer")}
+          </Button>
+          <Button type="button" onClick={() => setChanging(false)}>
+            {t("open.q.keep_answer")}
+          </Button>
+        </form>
+      )}
     </Row>
   );
 }

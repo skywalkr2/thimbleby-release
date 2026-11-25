@@ -20691,8 +20691,20 @@
         "type": "object"
       },
       "OpenQuestionView": {
-        "description": "One open question for the same screen. `state` is exactly one of: yours (waiting for the person), waiting (sent,\nno answer yet), not_sent, or later (held for a meeting or a day, `held_until`).",
+        "description": "One open question for the same screen. `state` is exactly one of: yours (waiting for the person), waiting (sent,\nno answer yet), not_sent, later (held for a meeting or a day, `held_until`), reading (the person answered and the\nrun on the answer hasn't judged it), or answer_waiting (that run can't go, `answer_why` says why).",
         "properties": {
+          "answer_why": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For answer_waiting: why the run on the answer can't go, and until when where it is known.",
+            "title": "Answer Why"
+          },
           "chases": {
             "default": 0,
             "description": "How many follow-ups it has had.",
@@ -20781,6 +20793,8 @@
           "state": {
             "enum": [
               "yours",
+              "reading",
+              "answer_waiting",
               "waiting",
               "not_sent",
               "later"

@@ -8862,14 +8862,18 @@ class HandedActionView(BaseModel):
 
 class OpenQuestionView(BaseModel):
     """One open question for the same screen. `state` is exactly one of: yours (waiting for the person), waiting (sent,
-    no answer yet), not_sent, or later (held for a meeting or a day, `held_until`)."""
+    no answer yet), not_sent, later (held for a meeting or a day, `held_until`), reading (the person answered and the
+    run on the answer hasn't judged it), or answer_waiting (that run can't go, `answer_why` says why)."""
 
     id: str
     version: int
     title: str
     text: str
     kind: Literal["question", "decision", "action-notice", "routing", "impact"]
-    state: Literal["yours", "waiting", "not_sent", "later"]
+    state: Literal["yours", "reading", "answer_waiting", "waiting", "not_sent", "later"]
+    answer_why: str | None = Field(
+        None, description="For answer_waiting: why the run on the answer can't go, and until when where it is known."
+    )
     to: str = Field(description="The person it waits on, as an id.")
     to_name: str
     project_name: str = ""

@@ -290,6 +290,22 @@ test("a question the person put off to a later day says so and when it comes bac
   expect(row).not.toHaveTextContent("To ask");
 });
 
+test("an answer not judged yet keeps its question in the list, being read has no action and waiting says why and can be changed (S-0813)", async () => {
+  const user = userEvent.setup();
+  const reading = question("Q-6", "Matte or soft-touch?", { state: "reading", to: "P-1", to_name: "Quinn Sample", yours: true, waiting_days: null });
+  const stuck = question("Q-7", "Which proof day?", { state: "answer_waiting", to: "P-1", to_name: "Quinn Sample", yours: true, waiting_days: null, answer_why: "Waiting for an AI account to run on" });
+  api({}, { questions: [reading, stuck] });
+  renderApp(<OpenItems />);
+  await user.click(await screen.findByRole("button", { name: /Questions/ }));
+  const [first, second] = within(await screen.findByRole("list", { name: "Open questions" })).getAllByRole("listitem");
+  expect(first).toHaveTextContent("Reading your answer");
+  expect(within(first).queryByRole("button")).toBeNull();
+  expect(second).toHaveTextContent("Your answer is waiting to be read");
+  expect(second).toHaveTextContent("Waiting for an AI account to run on");
+  await user.click(within(second).getByRole("button", { name: "Change your answer" }));
+  expect(within(second).getByRole("textbox")).toHaveFocus();
+});
+
 test("a question waiting on you says Answer on Today, and takes you there; it has no answer form on this screen", async () => {
   const user = userEvent.setup();
   api();

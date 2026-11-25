@@ -13,6 +13,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 from engine import endings, patterns, repeats, sides
+from engine.answer_state import answer_states
 from engine.applier import _similar, apply_as_person
 from engine.blocked import Blocker, blocker_of, overdue_day, own_wait
 from engine.followups import ROUTING, actions_to_send, held_until_day
@@ -27,7 +28,7 @@ from engine.views import views_of_item
 #: An action's state, in the order a row takes the first that applies.
 ACTION_STATES = ("no_owner", "on_hold", "overdue", "stale", "open")
 #: A question's state.
-QUESTION_STATES = ("yours", "waiting", "not_sent", "later")
+QUESTION_STATES = ("yours", "reading", "answer_waiting", "waiting", "not_sent", "later")
 
 
 @dataclass(frozen=True)
@@ -117,6 +118,8 @@ class OpenQuestion:
     side: str | None = None
     #: The views of the projects it names, which only change what a screen shows (design 6.32).
     views: list[str] = field(default_factory=list)
+    #: For an answered question whose answer is not judged yet: why the run can't go, in its own words.
+    answer_why: str | None = None
 
 
 def waits_on_person(action: OpenAction, me: str | None) -> bool:
@@ -460,7 +463,7 @@ def stale_actions(store: Any, cfg: Any, now: datetime) -> list[OpenAction]:
     return sorted(found, key=lambda r: (-(r.untouched_days or 0), r.id))
 
 
-def open_questions(store: Any, cfg: Any, today: date) -> list[OpenQuestion]:
+def open_questions(store: Any, cfg: Any, today: date, now: datetime | None = None) -> list[OpenQuestion]:
     """Every question still waiting: those to the person first, then what was sent (longest wait first), then what is
     not sent yet, then what is held for later. A question asked only to place a name or pick an owner is answered where
     that waits, so it isn't here."""
@@ -470,15 +473,21 @@ def open_questions(store: Any, cfg: Any, today: date) -> list[OpenQuestion]:
     projects = sides.project_names(view, cfg)
     created = view.creators("question")
     rows: list[OpenQuestion] = []
+    unjudged = answer_states(view, now)
     for q in view.list("question"):
         d = q.data
-        if d["status"] not in ("open", "sent") or (d.get("resolves") or {}).get("kind") in ROUTING:
+        reading = unjudged.get(q.id)
+        if (d["status"] not in ("open", "sent") and reading is None) or (d.get("resolves") or {}).get(
+            "kind"
+        ) in ROUTING:
             continue
         sent = _day(d.get("sent_at"), here) if d.get("sent_at") else None
         chased = sorted(date.fromisoformat(str(c)) for c in d.get("followed_up") or [])
         last_word = chased[-1] if chased else sent
         held_until, _name = held_until_day(view, d.get("held_for"), today, here)
-        if d["status"] == "sent":
+        if reading is not None:
+            state = "reading" if reading.state == "reading" else "answer_waiting"
+        elif d["status"] == "sent":
             state = "waiting"
         elif held_until is not None and held_until > today:
             state = "later"
@@ -510,6 +519,7 @@ def open_questions(store: Any, cfg: Any, today: date) -> list[OpenQuestion]:
                 chases=len(chased),
                 held_until=held_until.isoformat() if state == "later" and held_until else None,
                 yours=d["to"] == people.pm,
+                answer_why=reading.why if reading is not None else None,
             )
         )
     found = origins(view, "question", [r.id for r in rows])

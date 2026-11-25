@@ -40,8 +40,6 @@
 .acts button, .acts a { white-space: nowrap; }
 .actsInner { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); }
 .num { font-variant-numeric: tabular-nums; }
-/* A count column's head may wrap at its spaces ("Open to-dos" over two lines), so the columns that hold words keep their room. */
-.table thead th.numHead { white-space: normal; }
 
 @media (max-width: 1279px) { .rank2 { display: none; } }
 @media (max-width: 1023px) { .rank3 { display: none; } }

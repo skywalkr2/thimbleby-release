@@ -237,6 +237,7 @@ from engine import (
 )
 from engine import backup as backup_module
 from engine.ai.smoke import ai_state
+from engine.answer_state import answer_states
 from engine.applier import move_stage, pick_owner, release
 from engine.assistant_status import assistant_state
 from engine.backup import run_backup, state
@@ -2340,6 +2341,23 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
             def do() -> None:
                 with store.transaction() as tx:
                     cur = _existing(tx, "question", qid)
+                    # Changing an answer nobody has read yet takes the earlier one back, so one answer is read.
+                    older = answer_states(tx).get(qid) if cur.data["status"] == "answered" else None
+                    if older is not None:
+                        before = _existing(tx, "request", older.request)
+                        if before.data["state"] != "running":
+                            tx.update(
+                                "request",
+                                before.id,
+                                {
+                                    "state": "done",
+                                    "dismissed": True,
+                                    "dismissed_from": before.data["state"],
+                                    "waiting": None,
+                                },
+                                _PM,
+                                read_version=before.version,
+                            )
                     tx.update(
                         "question", qid, {"status": "answered", "answer": body.text}, _PM, read_version=cur.version
                     )
