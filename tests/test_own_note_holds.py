@@ -738,3 +738,71 @@ def test_an_answer_to_the_persons_own_note_that_keeps_nothing_goes_back_and_the_
         assert len(_hold_answers(env, note, mine, mine)) == 1
     finally:
         set_responder(None)
+
+
+@pytest.mark.parametrize("shape", ["marked-but-mine", "unmarked-and-mine-by-name"])
+def test_an_answer_that_names_the_waiting_guess_but_keeps_the_to_do_the_users_still_goes_back(env, shape):
+    """The #72 re-check (N-1): the net fired in one run of three. Naming the entry in "by_kind" while the to-do stayed
+    the user's counted as applying it, so the net let it pass and the to-do was even marked as the guess while still
+    the user's. Only the entry's person owning the to-do applies it; a mark on a to-do they don't own is not kept."""
+    from engine.ai.adapters.stub import set_responder
+
+    ws, cfg, store = env
+    project = next(p for p in store.read().list("project"))
+    entry, other = _waiting_routing(store, cfg, project.data["name"])
+    me = People(store, cfg).pm
+    note = f"We also need to send the {project.data['name']} sponsor letters."
+    add = {"op": "action.add", "text": f"Send the {project.data['name']} sponsor letters", "evidence": {"quote": note}}
+    if shape == "marked-but-mine":
+        answer = {"summary": "Added the letters.", "ops": [add], "by_kind": [{"op": 0, "entry": entry}]}
+    else:
+        name = store.read().get("person", me).data["full_name"]
+        answer = {"summary": "Added the letters.", "ops": [{**add, "owners": [name]}]}
+    try:
+        asked = _hold_answers(env, note, answer, answer)
+        assert len(asked) == 4 and _then_stronger(env) and entry in asked[1].request
+        letters = [a for a in store.read().list("action") if "sponsor letters" in a.data["text"]]
+        assert letters and all(not (a.data.get("by_kind") or {}).get("entry") for a in letters)
+    finally:
+        set_responder(None)
+
+
+def test_a_promise_in_the_persons_own_note_left_out_of_an_otherwise_good_answer_goes_back_then_to_the_stronger_model(
+    env,
+):
+    """The #72 re-check (N-2): the meeting note's answer kept the person's two to-dos and nothing of "She'll confirm
+    the quote next week", and the nets passed it: the promise net reads facts and the empty-answer net needs nothing
+    kept. A sentence where someone else promises something, which no op quotes and no op names them in, sends the
+    answer back once and then once to the stronger model; an answer that keeps it, or a note where only the user
+    promises, doesn't."""
+    from engine.ai.adapters.stub import set_responder
+
+    ws, cfg, store = env
+    me = People(store, cfg).pm
+    other = next(p for p in store.read().list("person") if p.id != me and p.data.get("full_name"))
+    first = other.data["full_name"]  # in full: a first name two people share names nobody
+    budget, promise = "I need to send her the draft budget by Friday.", "She'll confirm the printer's quote next week."
+    note = f"Met with {first} this morning. {budget} {promise}"
+    mine = {"op": "action.add", "text": "Send the draft budget", "owners": [me], "evidence": {"quote": budget}}
+    dropped = {"summary": "Added the budget to-do.", "ops": [mine]}
+    kept = {
+        "summary": "Added both.",
+        "ops": [
+            mine,
+            {
+                "op": "action.add",
+                "text": "Confirm the printer's quote",
+                "owners": [other.id],
+                "evidence": {"quote": promise},
+            },
+        ],
+    }
+    try:
+        asked = _hold_answers(env, note, dropped, dropped)
+        assert len(asked) == 4 and _then_stronger(env) and "nothing in this answer keeps" in asked[1].request
+        assert len(_hold_answers(env, note, kept, kept)) == 1
+        mine_only = f"Met with {first} this morning. I'll send the draft budget by Friday."
+        own = {"summary": "Added it.", "ops": [{**mine, "evidence": {"quote": "I'll send the draft budget by Friday"}}]}
+        assert all("nothing in this answer keeps" not in t.request for t in _hold_answers(env, mine_only, own, own))
+    finally:
+        set_responder(None)

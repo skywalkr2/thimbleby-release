@@ -27,6 +27,16 @@ async function noteCount(page: Page, text: string) {
   return notes.filter((note) => note.text === text).length;
 }
 
+interface ChangeLine {
+  state: string;
+  title: { topic: string | null } | null;
+}
+
+async function runAnswered(page: Page, text: string) {
+  const changes = (await (await page.request.get("api/changes")).json()) as ChangeLine[];
+  return changes.some((change) => (change.title?.topic ?? "") === text && (change.state === "review" || change.state === "done"));
+}
+
 async function readCapture(page: Page, label: string) {
   const sourceMenu = page.getByRole("button", { name: `More actions for ${label}` });
   await sourceMenu.click();
@@ -76,6 +86,8 @@ test("a capture folder files notes once and offers Undo", async ({ page }, testI
   await openView(page, "Notes");
   await expect(page.getByRole("link", { name: first, exact: true })).toBeVisible();
 
+  // What changed reads the changes once when it opens; filing the note can come before its run's change, so the run is waited for.
+  await expect.poll(() => runAnswered(page, first), { timeout: 30_000 }).toBe(true);
   await openView(page, "What changed");
   const change = page.getByRole("complementary", { name: `Your note · ${first}` });
   await expect(change).toBeVisible();

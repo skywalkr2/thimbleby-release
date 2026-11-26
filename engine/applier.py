@@ -481,6 +481,7 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
     problems += _owner_asked_after_given(cs, ctx, made, given)
     problems += _guess_not_applied(given, ctx)
     problems += _own_note_kept_nothing(given, ctx)
+    problems += _promise_left_out(given, ctx)
     problems += leap
     problems += _due_on_day_off(cs, ctx)
     problems += _project_start_as_fact(cs, ctx)
@@ -2633,7 +2634,9 @@ def asks_judgment(problems: list[Problem]) -> bool:
 
 #: The judgment lints that guard what the person's own note asked for (a hold, a choice left open): still failing after
 #: their return round, the answer goes once to the stronger model, whose answer then stands.
-ESCALATING_NETS = frozenset({"hold-as-note", "undecided-as-note", "guess-not-applied", "own-note-kept-nothing"})
+ESCALATING_NETS = frozenset(
+    {"hold-as-note", "undecided-as-note", "guess-not-applied", "own-note-kept-nothing", "promise-left-out"}
+)
 
 
 def still_netted(problems: list[Problem]) -> bool:
@@ -3232,6 +3235,7 @@ JUDGMENT_LINTS = frozenset(
         "owner-asked-after-given",
         "guess-not-applied",
         "own-note-kept-nothing",
+        "promise-left-out",
         "due-on-day-off",
         "ending-reading",
         "reply-not-needed",
@@ -4003,6 +4007,57 @@ def _after_first_person(before: str, ctx: Context) -> bool:
     return bool(words) and words[-1].casefold() in mine
 
 
+def _promise_left_out(cs: ChangesetIn, ctx: Context) -> list[Problem]:
+    """A sentence of the person's own note where someone else promises something ("She'll confirm the quote next
+    week") that the answer leaves out entirely, neither quoting it nor naming that person in any op, goes back once:
+    the rest of the answer may be right and the promise still lost. A rule that only narrows what it points at, by the
+    language's promise words and the promiser the words name; whether and how to keep it stays the assistant's
+    (`JUDGMENT_LINTS`, an escalating net)."""
+    name = "promise-left-out"
+    level = ctx.cfg.checks.lints.get(name, "off")
+    if level == "off" or ctx.actor == "pm" or ctx.confirmed_by_pm or not cs.ops:
+        return []
+    note = own_note_text(ctx.store.read(), ctx)
+    if not note:
+        return []
+    words = [w.strip() for w in language_words(ctx.cfg.language, "promise_words") if w.strip()]
+    if not words:
+        return []
+    pattern = "|".join(re.escape(w) if w[0] in "'\u2019" else rf"(?<!\w){re.escape(w)}" for w in words)
+    pm = ctx.people.pm
+    quoted = [normalize(e.quote) for op in cs.ops if (e := _evidence(op)) is not None and e.quote]
+    named: set[str] = set()
+    for op in cs.ops:
+        for names in ("owners", "promised_to"):
+            named |= {ctx.people.resolve(str(o)).person for o in getattr(op, names, None) or []} - {None}
+        for one in ("person", "to"):
+            if isinstance(value := getattr(op, one, None), str):
+                named |= {ctx.people.resolve(value).person} - {None}
+    problems = []
+    for sentence in (s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", note)):
+        found = re.search(rf"(?:{pattern})(?!\w)", sentence, re.IGNORECASE)
+        if not sentence or found is None or _after_first_person(sentence[: found.start()], ctx):
+            continue
+        who = _promiser(sentence[: found.start()], cs, ctx) or _promiser_by_pronoun(sentence, found.start(), cs, ctx)
+        if who is None or who == pm or who in named:
+            continue
+        plain = normalize(sentence)
+        if any(q and (q in plain or plain in q) for q in quoted):
+            continue
+        shown = _shown_name(ctx, who) if who in ctx.people.records else who
+        problems.append(
+            Problem(
+                name,
+                level,
+                None,
+                f"The person's own note says {sentence!r}, and nothing in this answer keeps {shown}'s part. Keep it (a "
+                "to-do they owe, with its day, or what fits better), or answer again as you did: your answer stands "
+                "either way.",
+            )
+        )
+    return problems
+
+
 def _promise_as_fact(cs: ChangesetIn, ctx: Context) -> list[Problem]:
     """A fact whose evidence is someone named promising to do something by a date ("Kit will send the plan by the
     20th") is sent back once to be recorded as that person's action: a promise with a date is a to-do to follow up,
@@ -4530,14 +4585,14 @@ def _guess_not_applied(cs: ChangesetIn, ctx: Context) -> list[Problem]:
         return []
     said = f"{ctx.inputs.note or ''}\n{ctx.inputs.raw_input or ''}"
     named = ctx.people.mentioned_in(said) - {pm}
-    marked = {g.op for g in cs.by_kind}
     problems = []
     for i, op in enumerate(cs.ops):
-        if not isinstance(op, ActionAddOp) or i in marked or named:
+        if not isinstance(op, ActionAddOp) or named:
             continue
         owners = {ctx.people.resolve(o).person for o in op.owners} - {None}
         if owners - {pm}:
             continue  # it went to someone: the assistant chose
+        # Naming the entry in "by_kind" while the to-do stays the user's applies nothing: the net still points at it.
         about = set(projects_named_in(view, f"{op.text}\n{said}", ctx.cfg)) | ({op.project} if op.project else set())
         for entry in entries:
             kind = " ".join(str(entry.data["kind_of_work"]).split())
@@ -6277,6 +6332,11 @@ def _mark_by_kind(
     mark = {"entry": entry_id, "kind_of_work": " ".join(str(named).split())[:120]}
     if when is not None:
         mark["learned_on"] = when.isoformat()
+    guessed = found.data.get("person")
+    if guessed and isinstance(op, ActionAddOp):
+        made = [tx.get("action", r["id"]) for r in records if r.get("kind") == "action"]
+        if not any(guessed in {o.get("person") for o in (m.data.get("owners") or [])} for m in made if m is not None):
+            return None  # named in "by_kind" but given to someone else: nothing of the entry was applied, so no mark
     if isinstance(op, ActionAddOp) and when is not None:
         # Without the guess the to-do is the user's own when their note says nothing of an owner, as it would be.
         before = [ctx.people.pm] if (ctx.actor == "pm" or _from_pm(tx, ctx)) and ctx.people.pm else []
