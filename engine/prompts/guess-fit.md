@@ -16,7 +16,8 @@ How to decide, for each pair:
 - If it is that kind of work: one "action.owners" op with "id" the to-do's id and "owners" the person the entry names
   (by the id given), and "evidence" whose "quote" is words copied exactly from the entry's own words in the request. Then
   name the step in "by_kind": {"op": <the step's index in "ops", counting from 0>, "entry": "<the entry's id>"}.
-- If it is clearly another kind of work: no op for it. The to-do stays the user's.
+- If it is clearly another kind of work, or the user's own words when it came in say they will do it themselves: no op for
+  it. The to-do stays the user's.
 
 What you may do, and nothing else:
 - "action.owners" for a to-do listed in a pair, to the person that pair's entry names. Never to anyone else, never for

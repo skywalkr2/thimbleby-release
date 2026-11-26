@@ -424,3 +424,30 @@ def test_the_check_refuses_a_hand_over_to_anyone_else_or_of_another_to_do_or_nam
     assert _refusals(env, queued.id, hand(elsewhere, who))
     assert _refusals(env, queued.id, hand(action, who, by_kind=[{"op": 0, "entry": other_entry}]))
     assert _refusals(env, queued.id, {"ops": [{"op": "note", "text": "hello"}]})
+
+
+def test_a_to_do_the_person_took_themselves_in_their_own_note_is_never_offered_to_a_guess(env, caplog):
+    """The #75 plan's review (2): "I'll send the gala sponsor thank-you letters myself." must stay the person's. The
+    check reads the stored to-do, so it also reads the person's own words it came from: a sentence where they promise
+    it themselves takes the to-do out of the check, and the log says so by ids only. The same to-do said with "We need
+    to" is still checked, and the packet carries the person's sentence for the model to read."""
+    import logging
+
+    from engine.packet import build as build_packet
+
+    ws, cfg, store = env
+    project = _project(store)
+    waiting_entry(store, cfg, project)
+    me = People(store, cfg).pm
+    mine = f"I'll send the {project.data['name']} sponsor letters myself."
+    with caplog.at_level(logging.WARNING, logger="engine.guess_fit"):
+        cs_id = note_run(env, add_letters(project, [me], mine), mine)
+    action = made_action(store, cs_id)
+    assert owners_of(store, action) == [me] and guess_fits(store) == []
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("guess fit:")]
+    assert lines == [f"guess fit: {action} taken by the person in their own note"]
+    ours = letters_note(project)
+    note_run(env, add_letters(project, [me], ours), ours)
+    (queued,) = guess_fits(store)
+    packet = build_packet(ws, store, cfg, queued.id, NOW.date())
+    assert f"Your own words when this to-do came in: {ours}" in packet.task.request

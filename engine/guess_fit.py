@@ -15,6 +15,7 @@ One hop: what a guess-fit run changes never starts another. Nothing here calls A
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Mapping
 from datetime import date
 from typing import Any
@@ -115,6 +116,44 @@ def pairs_for(view: Any, cfg: Any, action_ids: list[str]) -> tuple[list[dict[str
     return pairs, unmatched
 
 
+def said_of(note: str, action: Any) -> str:
+    """The sentence of the person's own note a to-do came from: the one holding its evidence quote, else the one sharing
+    most of its words (at least half), else none."""
+    from engine.cleaning import normalize
+
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", note or "") if s.strip()]
+    quote = normalize(((action.data.get("evidence") or {}).get("quote")) or "")
+    for sentence in sentences:
+        plain = normalize(sentence)
+        if quote and (quote in plain or plain in quote):
+            return sentence
+    words = {w for w in re.findall(r"\w+", action.data.get("text", "").casefold()) if len(w) > 3}
+    best, share = "", 0.0
+    for sentence in sentences:
+        found = len(words & set(re.findall(r"\w+", sentence.casefold()))) / len(words) if words else 0.0
+        if found > share:
+            best, share = sentence, found
+    return best if share >= 0.5 else ""
+
+
+def taken_by_person(note: str, action: Any, cfg: Any) -> bool:
+    """Whether the person's own note took the to-do themselves ("I'll send them myself"): the sentence it came from
+    holds one of the language's own-promise words. A rule on the person's own words: such a to-do is never offered to a
+    guess."""
+    from engine.language_words import language_words
+
+    sentence = said_of(note, action).replace("\u2019", "'").casefold()
+    mine = [w.replace("\u2019", "'").casefold() for w in language_words(cfg.language, "own_promise_words") if w.strip()]
+    return bool(sentence) and any(re.search(rf"(?<![\w']){re.escape(w)}(?![\w'])", sentence) for w in mine)
+
+
+def _own_note(request: Any) -> str:
+    """The person's own words a request carries: their typed note, never outside text."""
+    if request is None or request.data.get("origin") != "pm":
+        return ""
+    return str(request.data.get("note") or "")
+
+
 def queue(tx: Any, cfg: Any, now: str) -> str | None:
     """Queue the request for the to-dos this transaction gave the person, inside it: one request however many. Nothing
     is queued when checking is off, when the change is not an assistant's, when it is a guess-fit run's own (one hop),
@@ -136,6 +175,12 @@ def queue(tx: Any, cfg: Any, now: str) -> str | None:
     if not made:
         return None
     pairs, unmatched = pairs_for(tx, cfg, made)
+    note = _own_note(request)
+    if note:
+        taken = {p["action"] for p in pairs if taken_by_person(note, tx.get("action", p["action"]), cfg)}
+        for action_id in sorted(taken):
+            log.warning("guess fit: %s taken by the person in their own note", action_id)
+        pairs = [p for p in pairs if p["action"] not in taken]
     if not cfg.dispatch.knowledge.apply_guesses:
         if pairs or unmatched:
             log.warning(
@@ -321,6 +366,8 @@ def build(ws: Any, store: Any, cfg: Any, req: Any, kind: Any, today: date) -> An
     people = PacketPeople(store, cfg)
     plain = _people_of(view, cfg)
     pm = cfg.workspace.user.person
+    followed = view.get("changeset", req.data["follows"]) if req.data.get("follows") else None
+    note = _own_note(view.get("request", followed.data["request"]) if followed is not None else None)
     blocks = []
     projects: list[str] = []
     words = []
@@ -340,6 +387,7 @@ def build(ws: Any, store: Any, cfg: Any, req: Any, kind: Any, today: date) -> An
             f'<untrusted source="records">\n{neutralize(action.data["text"])}\n</untrusted>\n'
             f"Taught, {entry.id}: the kind of work is {kind_of_work}. Whose work it is: {who}.\n"
             f"Your own words when you taught it: {taught}"
+            + (f"\nYour own words when this to-do came in: {said}" if (said := said_of(note, action)) else "")
         )
     learned = _learned(
         store,
