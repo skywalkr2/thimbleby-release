@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+import time_machine
 from fastapi.testclient import TestClient
 
 from api.app import create_app
@@ -35,6 +36,11 @@ def working(store, cfg, moment):
     team's): no chase falls due while its person is off."""
     back = days_off.back_on(store.read(), cfg, editor_id(), moment.date())
     return moment if back is None else moment + timedelta(days=(back - moment.date()).days)
+
+
+#: A working day in the demo's calendar: on a day off (a weekend, a holiday such as Thanksgiving) the app offers no
+#: nudge, and the API tests ran red on one.
+WORKING_DAY = datetime(2026, 11, 18, 15, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -148,6 +154,7 @@ def test_a_question_dropped_or_sent_in_another_message_is_not_listed(env):
     assert section(store, cfg, NOW).nudge.left_out == []
 
 
+@time_machine.travel(WORKING_DAY, tick=True)
 def test_the_api_carries_what_was_left_out(tmp_path):
     ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
     cfg = ws.config(env={}, flags={"server.base_path": "/", "storage.backups.automatic": False})

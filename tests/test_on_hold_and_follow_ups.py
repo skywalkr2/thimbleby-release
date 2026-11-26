@@ -20,7 +20,7 @@ from engine.followups import (
     take_off_hold,
 )
 from engine.storage import Store, WriteContext
-from engine.today import todo
+from engine.today import local_day, todo, zone
 from engine.today_queue import queue
 from engine.workspace import init_workspace
 from tests.conftest import DEMO_B
@@ -240,19 +240,28 @@ def test_an_action_on_hold_is_never_overdue_on_the_to_do_list_or_in_todays_queue
 # ---- Today and Follow-ups agree --------------------------------------------------------------------------------------
 
 
+#: A working day in the demo's calendar: on a day off (a weekend, a holiday such as Thanksgiving) no chase is due, and
+#: the test ran red in the early hours of one.
+WORKING_DAY = datetime(2026, 11, 18, 15, tzinfo=UTC)
+
+
 @pytest.fixture
 def api(tmp_path):
-    ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
-    cfg = ws.config(env={}, flags={"server.base_path": "/", "storage.backups.automatic": False})
-    app = create_app(ws, cfg, TOKEN, ui_dist=tmp_path / "no-ui")
-    with TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"}) as client:
-        yield client, "/api", app.state.store, cfg
+    import time_machine
+
+    with time_machine.travel(WORKING_DAY, tick=True):
+        ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
+        cfg = ws.config(env={}, flags={"server.base_path": "/", "storage.backups.automatic": False})
+        app = create_app(ws, cfg, TOKEN, ui_dist=tmp_path / "no-ui")
+        with TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"}) as client:
+            yield client, "/api", app.state.store, cfg
 
 
 def test_today_and_the_follow_ups_view_agree_on_what_is_due_a_follow_up_and_on_hold_leaves_both(api):
     client, base, store, cfg = api
     rule = cfg.ui.followups
-    today = datetime.now(UTC).date()
+    # The day the app counts in: the workspace's own, which in a zone behind UTC late in the day is not UTC's.
+    today = local_day(datetime.now(UTC), zone(cfg))
     pm = cfg.workspace.user.person
     candidates = [
         a

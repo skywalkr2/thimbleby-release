@@ -8,6 +8,7 @@ when it was first asked. A second nudge is shorter. Names and thresholds come fr
 from datetime import UTC, datetime, timedelta
 
 import pytest
+import time_machine
 
 from engine import days_off
 from engine.followups import FollowUpError, mark_followed_up, mark_sent, sections, unmark_followed_up
@@ -18,6 +19,11 @@ from tests.conftest import DEMO_B, fixture_records
 
 NOW = datetime(2026, 10, 9, 14, 0, tzinfo=UTC)
 _WRITE = WriteContext(actor="pm", trust="trusted", op="test")
+
+
+#: A working day in the demo's calendar: on a day off (a weekend, a holiday such as Thanksgiving) the app offers no
+#: nudge, and the API tests ran red on one.
+WORKING_DAY = datetime(2026, 11, 18, 15, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -189,6 +195,7 @@ def test_the_nudge_words_are_settings(env):
     assert "Any word is fine." in section(store, cfg, NOW).nudge.text
 
 
+@time_machine.travel(WORKING_DAY, tick=True)
 def test_the_api_offers_the_nudge_records_it_and_takes_it_back(tmp_path):
     from fastapi.testclient import TestClient
 
