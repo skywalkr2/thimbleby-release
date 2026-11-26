@@ -301,6 +301,40 @@ def _leap_day_without_year(cs: ChangesetIn, ctx: Context) -> list[Problem]:
     return problems
 
 
+#: How many days a span of days away given with no year may run into the next year before it is asked about.
+AWAY_SPAN_ACROSS_YEAR_DAYS = 62
+
+
+def _away_span_too_long(cs: ChangesetIn, ctx: Context) -> list[Problem]:
+    """Days away given with no year whose last day comes before the first in the year ("Dec 20 to Dec 5") read as
+    running into the next year; past `AWAY_SPAN_ACROSS_YEAR_DAYS` that is almost always a slip, so the answer goes back
+    once to give the years or the days meant. "Dec 20 to Jan 5" crosses the year and is left alone."""
+    name = "away-span-long"
+    level = ctx.cfg.checks.lints.get(name, "off")
+    if level == "off":
+        return []
+    problems = []
+    for i, op in enumerate(cs.ops):
+        if not (isinstance(op, PersonAwayOp) and isinstance(op.start, MonthDay) and isinstance(op.end, MonthDay)):
+            continue
+        if (op.end.month, op.end.day) >= (op.start.month, op.start.day):
+            continue
+        first = date(2001, op.start.month, min(op.start.day, 28 if op.start.month == 2 else op.start.day))
+        last = date(2002, op.end.month, min(op.end.day, 28 if op.end.month == 2 else op.end.day))
+        days = (last - first).days + 1
+        if days > AWAY_SPAN_ACROSS_YEAR_DAYS:
+            problems.append(
+                Problem(
+                    name,
+                    level,
+                    i,
+                    f"op {i} gives days away from {op.start} to {op.end} with no year: that runs {days} days, into the "
+                    "next year. Give the years if that is meant, or the days the input means.",
+                )
+            )
+    return problems
+
+
 #: The fields `record.set` may give a day with no year (`--MM-DD`), which the applier gives its year.
 YEARLESS_FIELDS = frozenset({"due", "target"})
 
@@ -310,7 +344,9 @@ def with_years(cs: ChangesetIn, ctx: Context, now: datetime | None = None) -> Ch
     next such day on or after the day the input came, or the latest on or before it when the op says the input reports
     it as already happened (`past`). A range's end is the first such day on or after its start. It covers `event.add`
     and `event.set` (start, end), `action.add`, `action.move` and `action.unhold` (due), `fact` (on), `project.add`
-    (target), `person.away` (start, end, as a range) and `record.set` on a day field (`YEARLESS_FIELDS`). The same
+    (target), `person.away` (start, end, as a range), `fact` (as_of, looking back), `action.repeat` (start) and
+    `record.set` on a day field (`YEARLESS_FIELDS`) or `remind_at` (at 09:00 in the person's zone when no time is
+    given). The same
     changeset always gives the same result, so a check and the apply that follows see the same ops, and the record and
     the ledger always hold full dates."""
     view = ctx.store.read()
@@ -333,9 +369,15 @@ def with_years(cs: ChangesetIn, ctx: Context, now: datetime | None = None) -> Ch
         elif isinstance(op, (ActionAddOp, ActionMoveOp, ActionUnholdOp)) and isinstance(op.due, MonthDay):
             received = received or _received_day(ctx, view, now)
             ops[i] = op.model_copy(update={"due": with_year(op.due, received, past=op.past)})
-        elif isinstance(op, FactOp) and isinstance(op.on, MonthDay):
+        elif isinstance(op, FactOp) and (isinstance(op.on, MonthDay) or isinstance(op.as_of, MonthDay)):
             received = received or _received_day(ctx, view, now)
-            ops[i] = op.model_copy(update={"on": with_year(op.on, received, past=op.past)})
+            # "As of" looks back: the latest such day on or before the input.
+            ops[i] = op.model_copy(
+                update={
+                    "on": with_year(op.on, received, past=op.past) if isinstance(op.on, MonthDay) else op.on,
+                    "as_of": with_year(op.as_of, received, past=True) if isinstance(op.as_of, MonthDay) else op.as_of,
+                }
+            )
         elif isinstance(op, PersonAwayOp) and (isinstance(op.start, MonthDay) or isinstance(op.end, MonthDay)):
             # Days away are a range, like a calendar entry's: its end is the first such day on or after its start.
             received = received or _received_day(ctx, view, now)
@@ -353,6 +395,23 @@ def with_years(cs: ChangesetIn, ctx: Context, now: datetime | None = None) -> Ch
         ):
             received = received or _received_day(ctx, view, now)
             ops[i] = op.model_copy(update={"value": with_year(parse_month_day(op.value), received).isoformat()})
+        elif (
+            isinstance(op, RecordSetOp)
+            and op.field == "remind_at"
+            and isinstance(op.value, str)
+            and is_month_day_maybe_timed(op.value)
+        ):
+            # A reminder with no year is the next such day, at its time in the person's own zone when none is given.
+            received = received or _received_day(ctx, view, now)
+            day, _ = resolve_range(op.value, None, received)
+            when = datetime.fromisoformat(day) if "T" in day else datetime.fromisoformat(f"{day}T09:00")
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=zone(ctx.cfg))
+            ops[i] = op.model_copy(update={"value": when.isoformat()})
+        elif isinstance(op, ActionRepeatOp) and isinstance(op.start, MonthDay):
+            received = received or _received_day(ctx, view, now)
+            ops[i] = op.model_copy(update={"start": with_year(op.start, received)})
+
         elif isinstance(op, ProjectAddOp) and isinstance(op.target, MonthDay):
             # The day a project opens or is due to finish is ahead of the note that names it.
             received = received or _received_day(ctx, view, now)
@@ -396,7 +455,7 @@ def restatements(cs: ChangesetIn, ctx: Context) -> ChangesetIn:
 
 
 def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
-    leap = _leap_day_without_year(cs, ctx)
+    leap = _leap_day_without_year(cs, ctx) + _away_span_too_long(cs, ctx)
     cs = endings.wind_down(restatements(with_years(cs, ctx), ctx), ctx)
     given = cs
     problems, cs, made = _validate_in_order(cs, ctx)
@@ -421,6 +480,7 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
     problems += _undecided_as_note(cs, ctx)
     problems += _owner_asked_after_given(cs, ctx, made, given)
     problems += _guess_not_applied(given, ctx)
+    problems += _own_note_kept_nothing(given, ctx)
     problems += leap
     problems += _due_on_day_off(cs, ctx)
     problems += _project_start_as_fact(cs, ctx)
@@ -2573,7 +2633,7 @@ def asks_judgment(problems: list[Problem]) -> bool:
 
 #: The judgment lints that guard what the person's own note asked for (a hold, a choice left open): still failing after
 #: their return round, the answer goes once to the stronger model, whose answer then stands.
-ESCALATING_NETS = frozenset({"hold-as-note", "undecided-as-note", "guess-not-applied"})
+ESCALATING_NETS = frozenset({"hold-as-note", "undecided-as-note", "guess-not-applied", "own-note-kept-nothing"})
 
 
 def still_netted(problems: list[Problem]) -> bool:
@@ -3171,6 +3231,7 @@ JUDGMENT_LINTS = frozenset(
         "undecided-as-note",
         "owner-asked-after-given",
         "guess-not-applied",
+        "own-note-kept-nothing",
         "due-on-day-off",
         "ending-reading",
         "reply-not-needed",
@@ -4409,6 +4470,37 @@ def _owner_asked_after_given(
                 )
             )
     return problems
+
+
+def own_note_text(view: Any, ctx: Context) -> str:
+    """The words of the person's own free-standing note this run answers, for the notes task; empty for anything else,
+    a note typed on an item's own button (`about`) among them, which has handling of its own."""
+    request = view.get("request", ctx.inputs.request) if ctx.inputs.request else None
+    if request is None or request.data.get("task") != "notes" or request.data.get("about") or not _from_pm(view, ctx):
+        return ""
+    return (ctx.inputs.note or ctx.inputs.raw_input or "").strip()
+
+
+def _own_note_kept_nothing(cs: ChangesetIn, ctx: Context) -> list[Problem]:
+    """An answer to the person's own note that records nothing goes back once: what the note asks may fit no op, but
+    it is still something the person wants kept, at least as a to-do of theirs. A judgment lint that escalates; if the
+    answer still keeps nothing, the note itself is kept (`dispatcher`)."""
+    name = "own-note-kept-nothing"
+    level = ctx.cfg.checks.lints.get(name, "off")
+    if level == "off" or ctx.actor == "pm" or ctx.confirmed_by_pm or cs.ops:
+        return []
+    if not own_note_text(ctx.store.read(), ctx):
+        return []
+    return [
+        Problem(
+            name,
+            level,
+            None,
+            "The person's own note asks for something and this answer records nothing. Keep it: as a to-do of the "
+            "person's (action.add, owned by them) if nothing else fits, or as whatever op does fit. If the note is "
+            "already on file in full, answer again as you did: your answer stands either way.",
+        )
+    ]
 
 
 def _guess_not_applied(cs: ChangesetIn, ctx: Context) -> list[Problem]:

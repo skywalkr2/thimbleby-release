@@ -114,9 +114,10 @@ class FactOp(OpModel):
     filed_by: FiledByField = None
     evidence: EvidenceIn = Field(description="The exact words from the input that justify this op.")
     key: bool = Field(False, description="True only for a fact that matters most to the project; it is shown first.")
-    as_of: date | None = Field(
+    as_of: DayOrMonthDay | None = Field(
         None,
-        description="The day the fact was true as of, written YYYY-MM-DD, when the input or the person's note names "
+        description="The day the fact was true as of, written YYYY-MM-DD (or --MM-DD with no year: the latest such day "
+        "on or before the input), when the input or the person's note names "
         "one (a note often reports something said earlier); left out, it is the day the input was received or the "
         "note was typed.",
     )
@@ -721,7 +722,9 @@ class ActionRepeatOp(OpModel):
     phrase: str | None = Field(
         None, min_length=1, max_length=120, description="The words the repeat was read from, as written."
     )
-    start: date | None = Field(None, description="The day of the first occurrence; a rule needs one.")
+    start: DayOrMonthDay | None = Field(
+        None, description="The day of the first occurrence, YYYY-MM-DD or --MM-DD with no year; a rule needs one."
+    )
     words: str | None = Field(
         None,
         min_length=1,

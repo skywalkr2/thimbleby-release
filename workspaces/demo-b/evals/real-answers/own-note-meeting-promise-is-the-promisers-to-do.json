@@ -1,0 +1,33 @@
+{
+  "summary": "Added today's printer sync to your calendar, and Ines Duarte's promise to confirm the retailer order quantities by Tuesday, due 1 December.",
+  "topic": "Printer sync and retailer order quantities",
+  "ops": [
+    {
+      "op": "event.add",
+      "title": "Printer sync",
+      "start": "2026-11-25",
+      "project": "PRJ-1",
+      "evidence": {
+        "quote": "Printer sync today"
+      }
+    },
+    {
+      "op": "action.add",
+      "text": "Confirm the retailer order quantities for The Salt Orchard",
+      "owners": [
+        "PER-5"
+      ],
+      "due": "2026-12-01",
+      "due_words": "by Tuesday",
+      "promised_to": [
+        "PER-1"
+      ],
+      "basis": "said",
+      "said_by": "Ines Duarte",
+      "project": "PRJ-1",
+      "evidence": {
+        "quote": "Ines will confirm the retailer order quantities by Tuesday"
+      }
+    }
+  ]
+}

@@ -148,7 +148,11 @@ class _Names:
 EARLIER_CONTENT = (
     re.compile(r"(the agent was stopped after \d+ seconds); it had printed: .*"),
     re.compile(r"(The assistant's answer couldn't be read after a second try): .*"),
+    # A refused change's reason, which quotes the records it names; today's builds write only the fixed words below.
+    re.compile(r"(Request [A-Z]+-\d+): (?!the change couldn't be kept$).*"),
 )
+#: How a log entry's first line starts; a line that doesn't is the rest of the entry before it.
+_ENTRY_START = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}")
 #: What stands in for the words taken out.
 TAKEN_OUT = " (what it said was taken out of this log)"
 
@@ -163,14 +167,24 @@ def clean_earlier_lines(ws: Any) -> int:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        lines = text.split("\n")
-        for n, line in enumerate(lines):
+        lines: list[str] = []
+        cutting = False  # the entry being read had its words taken out: its further lines go too
+        for line in text.split("\n"):
+            if not _ENTRY_START.match(line):
+                if cutting:
+                    changed += 1
+                    continue
+                lines.append(line)
+                continue
+            cutting = False
             for pattern in EARLIER_CONTENT:
                 found = pattern.search(line)
                 if found is not None:
-                    lines[n] = line[: found.start()] + found.group(1) + TAKEN_OUT
+                    line = line[: found.start()] + found.group(1) + TAKEN_OUT
                     changed += 1
+                    cutting = True
                     break
+            lines.append(line)
         if "\n".join(lines) != text:
             with contextlib.suppress(OSError):
                 write_whole(path, "\n".join(lines), mode=0o600)

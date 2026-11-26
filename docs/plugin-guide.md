@@ -3125,7 +3125,7 @@ Set how an open action repeats, or stop it repeating. There are three shapes. To
 | `id` | str | required | The id of the open action, or "@<n>" for the action made by op n of this answer. |
 | `rule` | str \| None | `None` | The repeat rule (an iCalendar RRULE value) the phrase reads as; left out to stop repeating. |
 | `phrase` | str \| None | `None` | The words the repeat was read from, as written. |
-| `start` | date \| None | `None` | The day of the first occurrence; a rule needs one. |
+| `start` | DayOrMonthDay \| None | `None` | The day of the first occurrence, YYYY-MM-DD or --MM-DD with no year; a rule needs one. |
 | `words` | str \| None | `None` | The input's exact words that say how often it repeats ("every Friday"), copied from the input with no other words; give these instead of a rule, a phrase and a start. |
 | `evidence` | EvidenceIn \| None | see below | The exact words from the input that justify this op; required unless the person makes it. |
 | `evidence.quote` | str | required | The exact words from the input that justify this op. |
@@ -3303,7 +3303,7 @@ Record something the input states as true. Creates a fact record; evidence is re
 | `evidence` | EvidenceIn | required | The exact words from the input that justify this op. |
 | `evidence.quote` | str | required | The exact words from the input that justify this op. |
 | `key` | bool | `False` | True only for a fact that matters most to the project; it is shown first. |
-| `as_of` | date \| None | `None` | The day the fact was true as of, written YYYY-MM-DD, when the input or the person's note names one (a note often reports something said earlier); left out, it is the day the input was received or the note was typed. |
+| `as_of` | DayOrMonthDay \| None | `None` | The day the fact was true as of, written YYYY-MM-DD (or --MM-DD with no year: the latest such day on or before the input), when the input or the person's note names one (a note often reports something said earlier); left out, it is the day the input was received or the note was typed. |
 | `supersedes` | str \| None | `None` | The id of an existing fact this one replaces (the same thing, newer). The older fact stays on record. |
 | `basis` | Literal['inferred', 'said'] \| None | `None` | Who the fact rests on, when it isn't what the input's origin says (leave it out then: the person's own note is the person's word, and content from outside is said by its sender). inferred: the input doesn't say this outright; you worked it out from the words you quote. said: someone else said it, named in said_by. |
 | `said_by` | str \| None | `None` | With basis said: who said it, by name or id, when the input names someone. |

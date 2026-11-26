@@ -170,3 +170,26 @@ def test_an_upgraded_log_loses_the_agent_output_earlier_builds_wrote_and_keeps_t
         earlier[0] in now and "the agent was stopped after 90 seconds (what it said was taken out of this log)" in now
     )
     assert "couldn't be read after a second try (what it said was taken out of this log)" in now
+
+
+def test_an_earlier_refused_change_and_the_further_lines_of_its_entry_leave_the_log_and_todays_lines_stay(api):  # noqa: F811
+    """The #71 re-check (N-2): an earlier build's line for a refused change quoted the records it named, and the second
+    line of an entry written over two lines went out too, since the cleanup read line by line. A matched entry loses
+    its words and its further lines; a line today's build writes, and another entry's traceback, stay."""
+    client, store, worker, ws, cfg, name = api
+    path = app_log.log_path(ws)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    earlier = [
+        "2026-11-24 10:00:00 WARNING engine.dispatcher: Request REQ-7: calendar entry 'Private viewing for the donors'",
+        "isn't one the person runs; the donation is 40,000",
+        "2026-11-24 10:01:00 WARNING engine.dispatcher: Request REQ-8: the change couldn't be kept",
+        "2026-11-24 10:02:00 ERROR engine.x: unexpected",
+        '  File "engine/x.py", line 3, in run',
+    ]
+    path.write_text("\n".join(earlier), encoding="utf-8")
+    handler = app_log.install(ws, cfg, store)
+    app_log.remove(handler)
+    now = path.read_text(encoding="utf-8")
+    assert "Private viewing" not in now and "40,000" not in now
+    assert "Request REQ-7 (what it said was taken out of this log)" in now
+    assert earlier[2] in now and earlier[3] in now and earlier[4] in now

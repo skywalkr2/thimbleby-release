@@ -1,0 +1,32 @@
+id: own-note-to-do-given-to-me-asks-no-who
+title: A to-do that is plainly the person's own is made theirs and no question asks who should do it
+skills: [owners]
+received: '2026-11-25'
+# The #68 re-check, row 2: the stronger model made the to-do the person's and then asked who should send it, a question
+# whose answer would change the owner it had just given. The check `owner-asked-after-given` sends such an answer back
+# once; a to-do with the person as owner and no such question is a good answer and is never sent back
+# (tests/test_golden_no_false_returns.py). The kept real answer is Haiku's (Claude Code 2.1.326, this case's exact packet):
+# the to-do owned by the person with no question. Five of five runs were right: Haiku did not make the slip here, so the
+# case holds the stronger model's slip (and the net) against a prompt change that would bring it to the cheaper one.
+note: I need to send Theo the revised cover brief by Monday.
+summary_voice: true
+expect:
+- op: action.add
+  owners: [PER-1]
+  text_has: [cover brief]
+forbid:
+- op: question.add
+  would_change: owner
+  attempted: true
+allow:
+- note
+stub_answer:
+  summary: Added your to-do to send Theo Brandt the revised cover brief by Monday.
+  ops:
+  - op: action.add
+    text: Send Theo Brandt the revised cover brief
+    owners: [Avery Lane]
+    due_words: by Monday
+    project: PRJ-1
+    evidence:
+      quote: I need to send Theo the revised cover brief by Monday.

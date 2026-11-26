@@ -46,7 +46,8 @@ name `meaning_has` and `routine` (its weekdays and times), and a forbidden one m
 `person.offer` may name `people` (how many it offered), `addresses` (each offered, case aside) and `why` (true: each
 offer gives a reason); a forbidden one may name an `address` it must not offer (with `attempted: true` it counts when
 the checks refused it). A forbidden `record.set`
-may name the `field` it sets (with `attempted: true` it counts when it only waits for the person's yes). A case may
+may name the `field` it sets (with `attempted: true` it counts when it only waits for the person's yes), and a forbidden
+`question.add` may name what its answer would change (`would_change: owner`). A case may
 name the `project` its input is about (as the person does when handing it in), or give `watched` (title, change, author,
 by_us, by_you, credited_to, and `sent_to_a_list`, a mail item the service marks as sent to a list) to be received as
 the item a watched source found. A case may expect a held op (`held:
@@ -1229,6 +1230,8 @@ def _forbidden(f: dict[str, Any], outcomes: list[dict[str, Any]], store: Store, 
         if "term" in f and _squeezed(o["op"].get("term")) != _squeezed(f["term"]):
             continue
         if "field" in f and o["op"].get("field") != f["field"]:
+            continue
+        if "would_change" in f and (o["op"].get("would_change") or {}).get("what") != f["would_change"]:
             continue
         if "text_has" in f:
             text = json.dumps(o["op"])

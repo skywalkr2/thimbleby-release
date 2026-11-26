@@ -662,3 +662,79 @@ def test_a_to_do_of_a_waiting_guess_kind_given_to_the_user_goes_back_once_then_t
         assert all("not yet kept, says" not in task.request for task in got)
     finally:
         set_responder(None)
+
+
+def test_a_year_less_reminder_repeat_start_and_as_of_day_are_read_and_a_backwards_span_away_goes_back(env):
+    """The #71 re-check (N-3): `remind_at` written --12-20T09:00, an `action.repeat` start or a fact's `as_of`
+    written --MM-DD made the whole answer unreadable, and days away "Dec 20 to Dec 5" became a year-long span with no
+    question."""
+    from datetime import date, datetime
+
+    from engine.applier import Context, Inputs, apply_as_person, check
+    from engine.ops import CHANGESET
+
+    ws, cfg, store = env
+    received = date.fromisoformat(store.clock()[:10])
+    me = People(store, cfg).pm
+    from engine.storage import WriteContext
+
+    with store.transaction() as tx:
+        action = tx.create(
+            "action",
+            {"text": "Water the plants", "owners": [{"person": me}], "status": "open"},
+            WriteContext("pm", "trusted", "test"),
+        )
+    remind = {"op": "record.set", "kind": "action", "id": action.id, "field": "remind_at", "value": "--12-20T09:00"}
+    apply_as_person(store, cfg, [remind], "Remind me Dec 20")
+    when = datetime.fromisoformat(store.read().get("action", action.id).data["remind_at"])
+    assert (when.month, when.day, when.hour) == (12, 20, 9) and when.tzinfo is not None and when.date() >= received
+
+    repeat = {"op": "action.repeat", "id": action.id, "rule": "FREQ=WEEKLY", "phrase": "every week", "start": "--12-01"}
+    apply_as_person(store, cfg, [repeat], "Repeat it")
+    start = date.fromisoformat(store.read().get("action", action.id).data["repeat"]["start"])
+    assert (start.month, start.day) == (12, 1) and start >= received
+
+    note = "As of Nov 3 the hall holds 120."
+    fact = {"op": "fact", "text": "The hall holds 120", "as_of": "--11-03", "evidence": {"quote": note}}
+    cs, done = apply(
+        store, cfg, [fact], origin="pm", trust="trusted", source_id=source(store, trust="trusted"), raw=note
+    )
+    assert done == ["applied"]
+    kept = store.read().get("changeset", cs).data["ops"][0]["op"]
+    as_of = date.fromisoformat(kept["as_of"])
+    assert (as_of.month, as_of.day) == (11, 3) and as_of <= received
+
+    def spans(start: str, end: str) -> list:
+        quote = "I'm away for a while."
+        away = {"op": "person.away", "person": me, "start": start, "end": end, "evidence": {"quote": quote}}
+        cs = CHANGESET.validate_python({"ops": [away]}, context={"op_models": store.plugins.ops})
+        ctx = Context(
+            store, cfg, People(store, cfg), tuple(store.plugins.ops), Inputs("REQ-1", "SRC-1", quote, "", "trusted")
+        )
+        return [p for p in check(cs, ctx) if p.check == "away-span-long"]
+
+    assert spans("--12-20", "--12-05") and not spans("--12-20", "--01-05") and not spans("--06-01", "--07-15")
+
+
+def test_an_answer_to_the_persons_own_note_that_keeps_nothing_goes_back_and_the_note_is_never_dropped(env):
+    """The #71 re-check (N-1): "Book the photographer for the gala." came back as "no operation here can book a
+    photographer, so nothing was recorded". An answer to the person's own note that keeps nothing goes back once, then
+    once to the stronger model; if it still keeps nothing, the note itself is kept."""
+    from engine.ai.adapters.stub import set_responder
+
+    ws, cfg, store = env
+    project = next(p for p in store.read().list("project"))
+    note = f"Book the photographer for {project.data['name']}."
+    empty = {"summary": "No operation here can book a photographer, so nothing was recorded.", "ops": []}
+    mine = {
+        "summary": "Added the to-do.",
+        "ops": [{"op": "action.add", "text": "Book the photographer", "evidence": {"quote": note.rstrip(".")}}],
+    }
+    try:
+        before = len(store.read().list("note"))
+        asked = _hold_answers(env, note, empty, empty)
+        assert len(asked) == 4 and _then_stronger(env) and "records nothing" in asked[1].request
+        assert [n.data["text"] for n in store.read().list("note")][before:] == [note]
+        assert len(_hold_answers(env, note, mine, mine)) == 1
+    finally:
+        set_responder(None)

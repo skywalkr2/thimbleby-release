@@ -59,6 +59,7 @@ from engine.applier import (
     feedback,
     needs_another_round,
     needs_escalation,
+    own_note_text,
     still_netted,
     undo,
 )
@@ -611,6 +612,12 @@ def _apply_outcome(
     if kind.name == "notes":
         # A booking the input carries as structured data becomes the app's own calendar entry, by rules.
         changeset = booking_entries.add_to(changeset, cfg, store.read(), ctx.inputs.raw_input)
+        if not changeset.ops and (words := own_note_text(store.read(), ctx)):
+            # The person's own note is never dropped: an answer that still keeps nothing keeps the note itself.
+            kept = CHANGESET.validate_python(
+                {"ops": [{"op": "note", "text": words}]}, context={"op_models": store.plugins.ops}
+            ).ops
+            changeset = changeset.model_copy(update={"ops": kept})
     extra = quality.claims(store, run_id, changeset.applied, changeset.missing, changeset.omitted)
     if outcome.fallback is not None and quality.first_run_on(store, run_id) == outcome.fallback:
         extra["first_on_account"] = outcome.fallback

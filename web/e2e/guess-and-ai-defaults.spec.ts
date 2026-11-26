@@ -39,6 +39,8 @@ test.describe("guess and AI defaults", () => {
     await guess.getByRole("button", { name: /^Take back who it goes to/ }).click();
     await expect.poll(() => taken).toBe(1);
     await expect(page.getByText("Taken back. Noted that it didn't fit.")).toBeVisible();
+    // Taking it back reads what was learned again; that read may still be on its way when the page closes.
+    await page.unrouteAll({ behavior: "ignoreErrors" });
   });
 
   test("an app account's form starts the harder work on the stronger model and keeps the same model for everything as a choice", async ({ page }) => {

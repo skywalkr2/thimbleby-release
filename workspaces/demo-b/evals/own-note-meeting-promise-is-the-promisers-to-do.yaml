@@ -1,0 +1,35 @@
+id: own-note-meeting-promise-is-the-promisers-to-do
+title: A meeting note's "she'll confirm X by Tuesday" is that person's to-do with the due words, not a fact
+skills: [owners, dates]
+received: '2026-11-25'
+# The #68 re-check, row 2: the cheapest model kept "She'll confirm the conservator's quote next week" as a fact, so
+# nothing was there to close when the promise was kept. A promise with a day is work someone owes: the to-do belongs to
+# the person who made it. An answer that keeps it as a fact alone is sent back once by the check `promise-as-fact` for
+# an input's text; a to-do owned by that person is a good answer and is never sent back
+# (tests/test_golden_no_false_returns.py). The kept real answer is Haiku's (Claude Code 2.1.326, this case's exact packet):
+# the action with the owner and the due words. Five of five runs were right. With the note's own "next week" Haiku gave
+# no day in either round (the rules read it as a day, so the check `due-reading-differs` sent it back), so the case names a
+# weekday the model dates on its first answer.
+note: Printer sync today. Ines will confirm the retailer order quantities by Tuesday.
+summary_voice: true
+expect:
+- op: action.add
+  owners: [PER-5]
+  text_has: [order quantities]
+  due_words: by Tuesday
+forbid:
+- op: fact
+  text_has: [order quantities]
+allow:
+- note
+stub_answer:
+  summary: Added Ines Duarte's to-do to confirm the retailer order quantities by Tuesday.
+  ops:
+  - op: action.add
+    text: Confirm the retailer order quantities
+    owners: [Ines Duarte]
+    due: '2026-12-01'
+    due_words: by Tuesday
+    project: PRJ-1
+    evidence:
+      quote: Ines will confirm the retailer order quantities by Tuesday.

@@ -2035,6 +2035,8 @@ def _default_lints() -> dict[str, Severity]:
         "owner-asked-after-given": "return",
         "leap-day-without-year": "return",
         "guess-not-applied": "return",
+        "away-span-long": "return",
+        "own-note-kept-nothing": "return",
         "due-on-day-off": "return",
         "owed-to-missing": "return",
         "project-start-as-fact": "return",

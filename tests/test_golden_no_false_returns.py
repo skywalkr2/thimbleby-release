@@ -84,3 +84,42 @@ def test_a_hold_of_a_meeting_answered_by_doing_something_with_it_is_never_sent_b
     )
 
     case(env)
+
+
+def _run_with(case: str, answer: dict, monkeypatch):
+    monkeypatch.setattr(
+        ev, "set_responder", lambda r: stub.set_responder(None if r is None else lambda task: json.dumps(answer))
+    )
+    return ev.evaluate(DEMO_B, stub=True, runs=1, only=[case])
+
+
+def test_a_promise_kept_only_as_a_fact_fails_its_golden_case(monkeypatch):
+    """The meeting note's promise recorded as a fact alone (the cheap model's slip) is not a pass, so a prompt change
+    that brings it back shows."""
+    case = "own-note-meeting-promise-is-the-promisers-to-do"
+    stub_ops = yaml.safe_load((DEMO_B / "evals" / f"{case}.yaml").read_text(encoding="utf-8"))["stub_answer"]["ops"]
+    quote = stub_ops[0]["evidence"]["quote"]
+    report = _run_with(
+        case,
+        {"summary": "Noted it.", "ops": [{"op": "fact", "text": quote, "evidence": {"quote": quote}}]},
+        monkeypatch,
+    )
+    assert report.results and not report.results[0].passed
+
+
+def test_a_question_on_who_does_a_to_do_the_answer_gave_the_person_fails_its_golden_case(monkeypatch):
+    """The stronger model's slip: the to-do is the person's, and a question asks who should do it."""
+    case = "own-note-to-do-given-to-me-asks-no-who"
+    answer = yaml.safe_load((DEMO_B / "evals" / f"{case}.yaml").read_text(encoding="utf-8"))["stub_answer"]
+    answer["ops"].append(
+        {
+            "op": "question.add",
+            "to": "me",
+            "title": "Who should send the cover brief?",
+            "text": "Who should send it, and by what date?",
+            "project": "PRJ-1",
+            "would_change": {"what": "owner", "record": "$new:0"},
+        }
+    )
+    report = _run_with(case, answer, monkeypatch)
+    assert report.results and not report.results[0].passed
