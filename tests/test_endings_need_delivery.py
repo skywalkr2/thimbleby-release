@@ -229,6 +229,22 @@ def test_a_done_that_would_credit_someone_else_with_no_word_of_delivery_is_flagg
         assert readings_of(store, cfg, close_op(mine["id"], "All good on that one")) == []
 
 
+def test_closing_someones_promise_to_confirm_on_their_confirmation_credits_them_with_no_finding(env):
+    """The #73 re-check (N-1): "Dana confirmed the conservator's quote is approved" closed her promise to confirm it,
+    and the close went back as crediting her with nothing delivered, so the answer fell back to news or a question and
+    the to-do stayed open. A confirmation, a reply or an answer is what such a promise delivers."""
+    _, cfg, store = env
+    other = someone_elses(cfg)
+    owner = People(store, cfg).name(other["owners"][0]["person"])
+    said_words = (
+        f"{owner} confirmed the quote is approved.",
+        f"{owner} replied with the numbers.",
+        f"{owner} answered.",
+    )
+    for said in said_words:
+        assert readings_of(store, cfg, close_op(other["id"], said)) == [], said
+
+
 def test_a_call_off_that_names_a_meeting_says_which_and_how_to_put_it_on_its_agenda(env):
     _, cfg, store = env
     target = someone_elses(cfg)

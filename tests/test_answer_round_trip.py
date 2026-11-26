@@ -70,7 +70,9 @@ def answer(entry: str) -> dict:
                 "to": PM,
                 "title": "When do the fair sponsor letters go out?",
                 "text": "The letters have no day yet.",
-                "asks_about": "date",
+                # Not a date question: one date question for an answer's undated to-dos settles their days, which is
+                # no problem; any other question naming nothing it changes still is.
+                "asks_about": "other",
             },
         ],
         "ask": False,

@@ -283,7 +283,7 @@ task_verbs: [pay, send, call, email, text, book, buy, order, renew, submit, file
 delivery_words: [sent, finished, delivered, it's in, its in, did it, done, completed, handed in, turned in, submitted,
   shipped, attached, uploaded, published, emailed, mailed, posted, paid, booked, signed, returned, taken care of,
   took care of, came through, they did, she did, he did, went out, gone out, is out, handed over, shared, forwarded,
-  got it, received, arrived]
+  got it, received, arrived, confirmed, replied, answered]
 # Words that say it was learned another way, moved to a meeting or no longer matters.
 called_off_words: [moot, covered by, covered in, will cover, we'll cover, we will cover, will be covered,
   no longer needed, no longer need, not needed, isn't needed, no need, don't need, drop it, drop this, call it off,

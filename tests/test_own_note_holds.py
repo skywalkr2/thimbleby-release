@@ -806,3 +806,91 @@ def test_a_promise_in_the_persons_own_note_left_out_of_an_otherwise_good_answer_
         assert all("nothing in this answer keeps" not in t.request for t in _hold_answers(env, mine_only, own, own))
     finally:
         set_responder(None)
+
+
+def test_a_state_after_a_promise_word_or_a_promise_kept_by_who_said_it_is_never_sent_back_as_left_out(env):
+    """The #73 re-check (N-3): `promise-left-out` cost row 2 four calls in two runs, and it fired on "<name> will be
+    out Friday" and "will be at the fair on Saturday". A promise word before be, been, have or had is a state, as the
+    promise-as-fact net reads it, and a promise the answer keeps with its promiser as `said_by` is kept."""
+    from engine.ai.adapters.stub import set_responder
+
+    ws, cfg, store = env
+    me = People(store, cfg).pm
+    other = next(p for p in store.read().list("person") if p.id != me and p.data.get("full_name"))
+    first = other.data["full_name"]
+    budget = "I need to send the draft budget by Friday."
+    mine = {"op": "action.add", "text": "Send the draft budget", "owners": [me], "evidence": {"quote": budget}}
+    answer = {"summary": "Added the budget to-do.", "ops": [mine]}
+    try:
+        for state in (f"{first} will be out Friday.", f"{first} will be at the fair on Saturday."):
+            asked = _hold_answers(env, f"{budget} {state}", answer, answer)
+            assert all("nothing in this answer keeps" not in t.request for t in asked), state
+        promise = f"{first} will confirm the printer's quote next week."
+        said = {
+            "op": "action.add",
+            "text": "Get the printer's quote confirmed",
+            "owners": [me],
+            "said_by": other.id,
+            "evidence": {"quote": "confirm the printer's quote"},
+        }
+        kept = {"summary": "Added both.", "ops": [mine, said]}
+        asked = _hold_answers(env, f"{budget} {promise}", kept, kept)
+        assert all("nothing in this answer keeps" not in t.request for t in asked)
+    finally:
+        set_responder(None)
+
+
+def test_one_date_question_for_the_to_dos_an_answer_adds_with_no_date_is_not_sent_back_as_changing_nothing(env):
+    """The #73 re-check (N-3): row 2's slow runs went back for a question that changes nothing. `undated-todo` asks
+    for one date question for all the to-dos with no date, and that question can name only one of them in
+    `would_change`; it settles their days, so it is not sent back. A question about nothing in the answer still is."""
+    from engine.ai.adapters.stub import set_responder
+
+    ws, cfg, store = env
+    me = People(store, cfg).pm
+    note = "I need to send the crate sizes and book the movers."
+    todos = [
+        {"op": "action.add", "text": text, "owners": [me], "evidence": {"quote": note}}
+        for text in ("Send the crate sizes", "Book the movers")
+    ]
+    ask = {
+        "op": "question.add",
+        "kind": "question",
+        "to": me,
+        "asks_about": "date",
+        "title": "What dates for the crate sizes and the movers?",
+        "text": "Two to-dos from your note have no day yet, the crate sizes and the movers. What day is each due?",
+    }
+    try:
+        asked = _hold_answers(env, note, {"summary": "Added both.", "ops": [*todos, ask]}, {"ops": [*todos, ask]})
+        assert all("names nothing its answer would change" not in t.request for t in asked)
+        dated = [{**t, "due": "2026-12-04"} for t in todos]
+        asked = _hold_answers(env, note, {"summary": "Added both.", "ops": [*dated, ask]}, {"ops": [*dated, ask]})
+        assert any("names nothing its answer would change" in t.request for t in asked)
+    finally:
+        set_responder(None)
+
+
+def test_when_the_guess_net_stands_down_on_a_to_do_given_to_the_user_the_log_says_why_by_ids_only(env, caplog):
+    """The #73 re-check (N-2): run 2's answer gave the gala letters to the user in one call with the lesson given, and
+    nothing in the install showed why the net let it pass. When a guess waits and a to-do goes to the user, the net
+    logs why it stood down, by ids only, so the log a person sends with a report traces it."""
+    import logging
+
+    from engine.ai.adapters.stub import set_responder
+
+    ws, cfg, store = env
+    project = next(p for p in store.read().list("project"))
+    entry, other = _waiting_routing(store, cfg, project.data["name"])
+    me = People(store, cfg).pm
+    full = store.read().get("person", other).data["full_name"]
+    note = f"We also need to send the {project.data['name']} sponsor letters, {full} says."
+    add = {"op": "action.add", "text": "Send the sponsor letters", "owners": [me], "evidence": {"quote": note}}
+    answer = {"summary": "Added the letters.", "ops": [add]}
+    try:
+        with caplog.at_level(logging.WARNING, logger="engine.applier"):
+            _hold_answers(env, note, answer, answer)
+        lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("guess net:")]
+        assert lines and other in lines[0] and "sponsor" not in " ".join(lines)
+    finally:
+        set_responder(None)

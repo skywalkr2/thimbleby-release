@@ -8,6 +8,7 @@ dropped and shown, returned lints hold an op that would reach another person and
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass, field, replace
@@ -302,6 +303,8 @@ def _leap_day_without_year(cs: ChangesetIn, ctx: Context) -> list[Problem]:
 
 
 #: How many days a span of days away given with no year may run into the next year before it is asked about.
+log = logging.getLogger(__name__)
+
 AWAY_SPAN_ACROSS_YEAR_DAYS = 62
 
 
@@ -1229,7 +1232,7 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
                     "its own answer and follow-through",
                 )
             _vague_question(i, op, ctx, lint, _quotes_in(op, ctx))
-            if ctx.actor != "pm" and not op.term and (why := _changes_nothing(op, view)) is not None:
+            if ctx.actor != "pm" and not op.term and (why := _changes_nothing(op, view, cs)) is not None:
                 lint(i, "question-changes-nothing", why)
             if not to_pm and not (op.matters_for or "").strip():
                 lint(
@@ -1771,11 +1774,20 @@ def _item_text(i: int, title: str, ctx: Context, lint: Any, quotes: list[str], *
         )
 
 
-def _changes_nothing(op: QuestionAddOp, view: Any) -> str | None:
+def _changes_nothing(op: QuestionAddOp, view: Any, cs: ChangesetIn | None = None) -> str | None:
     """Why a question is asked with nothing its answer would change (`question-changes-nothing`): it names no field,
     setting or owner, or the record it names isn't there. A question needs a concrete effect; without one, what was
-    learned is a fact or a note. A record made in the same change (an id starting "@") can't be looked up yet."""
+    learned is a fact or a note. A record made in the same change (an id starting "@") can't be looked up yet. One
+    question for the dates of the to-dos the same answer adds with none, as `undated-todo` asks for, settles their
+    days though it can name only one of them."""
     found = op.would_change
+    if (
+        found is None
+        and op.asks_about == "date"
+        and cs is not None
+        and any(isinstance(other, ActionAddOp) and other.due is None for other in cs.ops)
+    ):
+        return None
     if found is None:
         return (
             "the question names nothing its answer would change: say which field of which record, which setting or "
@@ -4024,18 +4036,27 @@ def _promise_left_out(cs: ChangesetIn, ctx: Context) -> list[Problem]:
     if not words:
         return []
     pattern = "|".join(re.escape(w) if w[0] in "'\u2019" else rf"(?<!\w){re.escape(w)}" for w in words)
+    states = {w.strip().lower() for w in language_words(ctx.cfg.language, "promise_state_words") if w.strip()}
     pm = ctx.people.pm
     quoted = [normalize(e.quote) for op in cs.ops if (e := _evidence(op)) is not None and e.quote]
     named: set[str] = set()
     for op in cs.ops:
         for names in ("owners", "promised_to"):
             named |= {ctx.people.resolve(str(o)).person for o in getattr(op, names, None) or []} - {None}
-        for one in ("person", "to"):
+        for one in ("person", "to", "said_by"):
             if isinstance(value := getattr(op, one, None), str):
                 named |= {ctx.people.resolve(value).person} - {None}
     problems = []
     for sentence in (s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", note)):
-        found = re.search(rf"(?:{pattern})(?!\w)", sentence, re.IGNORECASE)
+        # A promise word before a state ("will be out Friday", "has been away") says how someone is, not what they owe.
+        found = next(
+            (
+                m
+                for m in re.finditer(rf"(?:{pattern})(?!\w)", sentence, re.IGNORECASE)
+                if (after := sentence[m.end() :].split()[:1]) == [] or after[0].lower().strip(",.;:") not in states
+            ),
+            None,
+        )
         if not sentence or found is None or _after_first_person(sentence[: found.start()], ctx):
             continue
         who = _promiser(sentence[: found.start()], cs, ctx) or _promiser_by_pronoun(sentence, found.start(), cs, ctx)
@@ -4587,16 +4608,27 @@ def _guess_not_applied(cs: ChangesetIn, ctx: Context) -> list[Problem]:
     named = ctx.people.mentioned_in(said) - {pm}
     problems = []
     for i, op in enumerate(cs.ops):
-        if not isinstance(op, ActionAddOp) or named:
+        if not isinstance(op, ActionAddOp):
             continue
         owners = {ctx.people.resolve(o).person for o in op.owners} - {None}
         if owners - {pm}:
             continue  # it went to someone: the assistant chose
+        if named:
+            # Why the net stood down is logged by ids only, so a slip in an install can be traced from its log.
+            log.warning("guess net: step %s given to the user; the input names %s", i, ", ".join(sorted(named)))
+            continue
         # Naming the entry in "by_kind" while the to-do stays the user's applies nothing: the net still points at it.
         about = set(projects_named_in(view, f"{op.text}\n{said}", ctx.cfg)) | ({op.project} if op.project else set())
         for entry in entries:
             kind = " ".join(str(entry.data["kind_of_work"]).split())
             if not about & set(projects_named_in(view, kind, ctx.cfg)):
+                log.warning(
+                    "guess net: step %s given to the user is about %s; %s is about %s",
+                    i,
+                    ", ".join(sorted(map(str, about))) or "no project",
+                    entry.id,
+                    ", ".join(sorted(projects_named_in(view, kind, ctx.cfg))) or "no project",
+                )
                 continue
             who = _shown_name(ctx, entry.data["person"])
             problems.append(

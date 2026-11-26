@@ -1106,7 +1106,10 @@
   "forwarded",
   "got it",
   "received",
-  "arrived"
+  "arrived",
+  "confirmed",
+  "replied",
+  "answered"
  ],
  "called_off_words": [
   "moot",
