@@ -515,8 +515,8 @@ def last_stopped_answer(store: Any, cfg: Any, now: datetime) -> tuple[datetime, 
 
 def private_material(store: Any, cfg: Any, now: datetime) -> list[str]:
     """What can carry the assistant's or a service's words, from the report's window (`ui.feedback_problem_days`):
-    requests' kept answers and their rounds' reasons, and failed runs' error text. A report part that holds any of it is
-    refused (`report_send.holds_private`); the answer leaves only as its own previewed block."""
+    requests' kept answers and their rounds' reasons, and failed runs' error text. A report line that holds any of it is
+    sent as removed (`report_send.without_private`); the answer leaves only as its own previewed block."""
     since = now - timedelta(days=cfg.ui.feedback_problem_days)
     out: list[str] = []
     for stored in store.read().since("request", "created_at", since.date().isoformat()):

@@ -207,7 +207,7 @@ def test_the_facts_offer_the_persons_own_address_and_a_send_reaches_the_form_onc
         sent = client.post(
             "/api/report/send", json={"words": f"  {WORDS} ", "reply_to": " a@example.com ", "problems": LINES}
         )
-    assert sent.json() == {"ok": True, "why": None}
+    assert sent.json() == {"ok": True, "why": None, "removed_lines": 0}
     ((url, body),) = seen
     assert url == LOCAL_FORM
     assert body == {
@@ -225,7 +225,7 @@ def test_a_refusal_and_empty_words_are_answered_without_sending(tmp_path, monkey
     client, _app, _cfg = make_client(tmp_path, LOCAL_FORM)
     with client:
         down = client.post("/api/report/send", json={"words": WORDS})
-        assert down.json() == {"ok": False, "why": "unavailable"}
+        assert down.json() == {"ok": False, "why": "unavailable", "removed_lines": 0}
         assert client.post("/api/report/send", json={"words": ""}).status_code == 422
     assert len(seen) == 1
 
@@ -335,15 +335,18 @@ def test_a_long_log_and_the_longest_answer_still_fit_the_form(tmp_path, monkeypa
             "/api/report/send",
             json={"words": WORDS, "details": facts["details"], "answer_block": facts["answer"], "include_answer": True},
         )
-    assert sent.json() == {"ok": True, "why": None}
+    assert sent.json() == {"ok": True, "why": None, "removed_lines": 0}
     assert report_send.units(seen[0][1]["details"]) <= report_send.LIMITS["details"]
     assert seen[0][1]["details"].endswith(facts["answer"])
 
 
-def test_the_problems_and_details_never_carry_the_assistants_words_whatever_the_screen_sends(tmp_path, monkeypatch):
-    """The server checks the problem lines and the details against what can hold the assistant's or a service's words
-    (kept answers, round reasons, failed runs' error text, the content log), whatever the screen sent; a part holding
-    any of it is refused and nothing is sent (the #68 re-check, N-2, N-3)."""
+def test_lines_that_may_hold_the_assistants_words_go_as_removed_and_the_rest_of_the_report_is_sent(
+    tmp_path, monkeypatch
+):
+    """The server takes out of the problem lines and the details each line that holds the assistant's or a service's
+    words (kept answers, round reasons, failed runs' error text, the content log), whatever the screen sent, and sends
+    the rest with "[removed: may contain your material]" in its place: a report is never lost (the #68 re-check, N-2,
+    N-3; the owner's answer to it). The preview shows the same removal and counts it."""
     from engine import app_log, content_log
 
     seen: list = []
@@ -352,16 +355,28 @@ def test_the_problems_and_details_never_carry_the_assistants_words_whatever_the_
     reason = "The answer adds the dinner with the board on Thursday evening, which the note never mentions."
     printed = "I'll move the quarterly review to the room on the third floor and tell everyone by lunch."
     stop_a_request(app, cfg, rounds=[{"attempt": 1, "round": 1, "reasons": [reason], "checks": ["evidence"]}])
-    ws_root = tmp_path / "ws"
-    content = private_dir(ws_root) / app_log.FOLDER / app_log.CONTENT_FILE
-    content.parent.mkdir(parents=True, exist_ok=True)
-    content.write_text(f"2026-01-01 WARNING {content_log.NAME}: stopped{content_log.SAID}{printed!r}\n", "utf-8")
+    folder = private_dir(tmp_path / "ws") / app_log.FOLDER
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / app_log.CONTENT_FILE).write_text(
+        f"2026-01-01 WARNING {content_log.NAME}: stopped{content_log.SAID}{printed!r}\n", "utf-8"
+    )
+    (folder / app_log.FILE).write_text(
+        f"2026-01-01 WARNING engine.x: slow\n2026-01-01 WARNING engine.y: {reason}\n", "utf-8"
+    )
+    removed = "[removed: may contain your material]"
     with client:
-        sent = [
-            client.post("/api/report/send", json={"words": WORDS, "problems": f"{LINES}\nSaid: {ANSWER[:60]}"}),
-            client.post("/api/report/send", json={"words": WORDS, "details": f"engine.x: {reason}"}),
-            client.post("/api/report/send", json={"words": WORDS, "details": f"engine.x: {printed[5:70]}"}),
-            client.post("/api/report/send", json={"words": WORDS, "problems": LINES, "details": "engine.x: slow"}),
-        ]
-    assert [r.status_code for r in sent] == [409, 409, 409, 200]
-    assert len(seen) == 1 and seen[0][1]["problems"] == LINES
+        facts = client.get("/api/report/facts").json()
+        assert reason not in facts["details"] and removed in facts["details"] and "engine.x: slow" in facts["details"]
+        assert facts["removed_lines"] == 1
+        sent = client.post(
+            "/api/report/send",
+            json={
+                "words": WORDS,
+                "problems": f"{LINES}\nSaid: {ANSWER[:60]}",
+                "details": f"engine.x: slow\nengine.z: {printed[5:70]}",
+            },
+        )
+    assert sent.status_code == 200 and sent.json()["ok"] is True and sent.json()["removed_lines"] == 2
+    (body,) = [b for _url, b in seen]
+    assert body["problems"] == f"{LINES}\n{removed}"
+    assert "engine.x: slow" in body["details"] and removed in body["details"] and printed[5:70] not in body["details"]

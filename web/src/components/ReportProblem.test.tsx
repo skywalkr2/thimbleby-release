@@ -238,3 +238,24 @@ test("turned on, the answer is previewed as plain text and the same text is sent
   await waitFor(() => expect(sends(calls)).toHaveLength(1));
   expect(sends(calls)[0].body).toMatchObject({ include_answer: true, answer_block: ANSWER });
 });
+
+test("lines that may hold the person's material show as removed with a note, and the report still goes and says what was left out", async () => {
+  const removed = `2026-01-01 08:00:00 WARNING engine.example: slow\n[removed: may contain your material]`;
+  const { calls, user } = open({
+    facts: { details: removed, removed_lines: 1 } as Partial<typeof FACTS>,
+    send: () => ({ ok: true, why: null, removed_lines: 1 }),
+  });
+  await user.type(words(), "It broke");
+  await waitFor(() => expect(detailsBox()?.value).toContain("[removed: may contain your material]"));
+  expect(screen.getByText(/1 line is marked removed: it may contain your material/)).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(sends(calls)).toHaveLength(1));
+  expect(sends(calls)[0].body).toMatchObject({ details: removed });
+  expect(await screen.findByText(/1 line was left out because it may contain your material/)).toBeInTheDocument();
+});
+
+test("with nothing removed there is no note", async () => {
+  open();
+  await waitFor(() => expect(detailsBox()?.value).toBe(DETAILS));
+  expect(screen.queryByText(/marked removed/)).not.toBeInTheDocument();
+});

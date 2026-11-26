@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 
 from fastapi import APIRouter, HTTPException
 
@@ -18,6 +19,7 @@ from api.schemas import (
 from engine import __version__, alpha_measures, app_log, content_log, problems, report_send, slow_screens
 from engine.config import Config, ConfigError, load_config
 from engine.reminder_content import own_address
+from engine.sides import word
 from engine.storage import Store
 from engine.today import zone
 from engine.worker import Worker
@@ -34,6 +36,16 @@ def build_feedback_router(ws: Workspace, cfg: Config, store: Store, worker: Work
         return report_send.details_text(
             shown, masker=hide, folders={str(ws.root): "<workspace>"}, limit=report_send.LIMITS["details"] - room
         )
+
+    def _without_private() -> Callable[[str], tuple[str, int]]:
+        """What takes out of a report part each line that may hold the person's material: kept answers, round
+        reasons, failed runs' error text and the content log, read once for the report."""
+        with store.read_scope():
+            material = problems.private_material(store, current(), worker.now())
+            hide = problems.masker_for(ws, store, cfg)
+        material += content_log.said_in(_content_log_text())
+        removed = word(current(), "report.removed_line")
+        return lambda text: report_send.without_private(text, material, removed, hide)
 
     def _content_log_text() -> str:
         """The private content log's newest file, which can hold the assistant's words; empty when there is none."""
@@ -108,6 +120,7 @@ def build_feedback_router(ws: Workspace, cfg: Config, store: Store, worker: Work
             mine = own_address(store.read(), cfg.workspace.user.person)
             kept = problems.last_stopped_answer(store, current(), worker.now())
             details = report_send.details_for(ws, store, cfg, answer_offered=kept is not None)
+        details, removed_lines = _without_private()(details)
         answer = report_send.answer_block(kept[1], kept[0].date().isoformat()) if kept is not None else ""
         return ReportFacts(
             enabled=report_send.address(cfg.ui.report_to) is not None,
@@ -116,6 +129,7 @@ def build_feedback_router(ws: Workspace, cfg: Config, store: Store, worker: Work
             reply_to=mine,
             details=details,
             answer=answer,
+            removed_lines=removed_lines,
         )
 
     @r.post("/report/send")
@@ -136,30 +150,23 @@ def build_feedback_router(ws: Workspace, cfg: Config, store: Store, worker: Work
                     status_code=409, detail="The answer shown is no longer the one kept. Open the report again."
                 )
             answer = shown
-        # Nothing of the assistant's or a service's words leaves in the problem lines or the details: the server
-        # checks both parts against what it keeps, whatever the screen sent.
-        with store.read_scope():
-            material = problems.private_material(store, current(), worker.now())
-            hide = problems.masker_for(ws, store, cfg)
-        material += content_log.said_in(_content_log_text())
-        parts = [body.problems, body.details if body.include_details else ""]
-        if report_send.holds_private(parts, material, hide):
-            raise HTTPException(
-                status_code=409,
-                detail="The report holds words from the assistant's answer. Open the report again.",
-            )
+        # Nothing of the assistant's or a service's words leaves in the problem lines or the details, whatever the
+        # screen sent: a line that may hold it goes as "removed", and the rest is sent, so a report is never lost.
+        cut = _without_private()
+        problems_out, from_problems = cut(body.problems)
+        details_out, from_details = cut(body.details if body.include_details else "")
         room = report_send.ANSWER_MAX + report_send.ANSWER_HEADING_ROOM if body.answer_block else 0
         done = report_send.send(
             to,
             words=body.words.strip(),
             reply_to=body.reply_to.strip(),
             version=__version__,
-            problems=body.problems,
+            problems=problems_out,
             details=report_send.with_answer(
-                _scrubbed_details(body.details, room=room) if body.include_details else "", answer
+                _scrubbed_details(details_out, room=room) if body.include_details else "", answer
             ),
         )
-        return ReportSent(ok=done.ok, why=done.why)
+        return ReportSent(ok=done.ok, why=done.why, removed_lines=from_problems + from_details)
 
     @r.get("/slow-screens/{screen}/report")
     def slow_screen_report(screen: str) -> SlowScreenReport:

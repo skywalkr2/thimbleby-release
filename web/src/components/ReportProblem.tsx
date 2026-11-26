@@ -27,7 +27,7 @@ function fit(lines: string): string {
 }
 
 export function ReportProblem(props: { onClose: () => void; /** Words to start the report with, which the person may change; they are shown in what will be sent. */ initialWords?: string }) {
-  const { t } = useWords();
+  const { t, tn } = useWords();
   const { push } = useToasts();
   const base = useId();
   const [words, setWords] = useState(props.initialWords ?? "");
@@ -89,7 +89,8 @@ export function ReportProblem(props: { onClose: () => void; /** Words to start t
     try {
       const done = await api.sendReport({ words: words.trim(), reply_to: replyTrimmed, problems, details, include_details: withDetails, answer_block: answer, include_answer: answer !== "" });
       if (done.ok) {
-        push({ message: t("report.sent") });
+        // A line that may hold the person's material went as removed; the rest was sent, and the toast says so.
+        push({ message: done.removed_lines ? tn("report.sent_removed", done.removed_lines) : t("report.sent") });
         props.onClose();
         return;
       }
@@ -206,6 +207,11 @@ export function ReportProblem(props: { onClose: () => void; /** Words to start t
             <FormField id={detailsId} label={t("report.details_title")}>
               <textarea id={detailsId} className="short" readOnly rows={8} value={details} />
             </FormField>
+          )}
+          {details && (facts.data?.removed_lines ?? 0) > 0 && (
+            <p className="hint" data-removed-lines="">
+              {tn("report.removed_note", facts.data?.removed_lines ?? 0)}
+            </p>
           )}
           {answer && (
             <FormField id={answerId} label={t("report.answer_title")}>

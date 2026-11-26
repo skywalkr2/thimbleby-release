@@ -519,6 +519,12 @@ class ReportFacts(BaseModel):
         "kept); empty when no stopped request holds one, in which case the choice is not offered. It holds the "
         "person's own material and is never sent unless the person turns the choice on.",
     )
+    removed_lines: int = Field(
+        0,
+        ge=0,
+        description="How many lines of the details are shown as removed because they may hold the person's material "
+        "(the assistant's or a service's words); they stay on this computer and the rest is sent as shown.",
+    )
 
 
 class AlphaNumbers(BaseModel):
@@ -567,6 +573,12 @@ class ReportSent(BaseModel):
 
     ok: bool
     why: Literal["offline", "busy", "refused", "unavailable"] | None = None
+    removed_lines: int = Field(
+        0,
+        ge=0,
+        description="How many lines of the problem lines and details were left out before sending because they may "
+        "hold the person's material; the rest was sent.",
+    )
 
 
 class SlowScreenReport(BaseModel):

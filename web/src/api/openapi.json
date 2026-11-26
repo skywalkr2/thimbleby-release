@@ -30376,6 +30376,13 @@
             "title": "Enabled",
             "type": "boolean"
           },
+          "removed_lines": {
+            "default": 0,
+            "description": "How many lines of the details are shown as removed because they may hold the person's material (the assistant's or a service's words); they stay on this computer and the rest is sent as shown.",
+            "minimum": 0.0,
+            "title": "Removed Lines",
+            "type": "integer"
+          },
           "reply_to": {
             "default": "",
             "description": "The person's own address when their record holds one, else empty.",
@@ -30464,6 +30471,13 @@
           "ok": {
             "title": "Ok",
             "type": "boolean"
+          },
+          "removed_lines": {
+            "default": 0,
+            "description": "How many lines of the problem lines and details were left out before sending because they may hold the person's material; the rest was sent.",
+            "minimum": 0.0,
+            "title": "Removed Lines",
+            "type": "integer"
           },
           "why": {
             "anyOf": [
