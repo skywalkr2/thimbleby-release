@@ -1066,7 +1066,7 @@
                 "type": "null"
               }
             ],
-            "description": "A known person, by name or id.",
+            "description": "A person, by name or id; someone not on file yet is named here too, and the draft then waits for the user to say who they are.",
             "title": "Person"
           },
           "role": {

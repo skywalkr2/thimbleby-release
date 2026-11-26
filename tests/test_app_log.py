@@ -142,3 +142,31 @@ def test_the_version_is_the_packages_own_and_written_nowhere_by_hand():
 def test_the_runtime_config_reports_that_version(api):  # noqa: F811
     client, *_ = api
     assert client.get("/api/runtime-config").json()["version"] == version("thimbleby")
+
+
+def test_an_upgraded_log_loses_the_agent_output_earlier_builds_wrote_and_keeps_the_rest(api):  # noqa: F811
+    """The #70 re-check (N-5): lines #67 and #68 wrote to the app's log held what a stopped agent printed, and the
+    report's check couldn't catch them, since that output isn't kept anywhere it compares against. They lose their words
+    when the log starts; every other line stays as it was."""
+    client, store, worker, ws, cfg, name = api
+    path = app_log.log_path(ws)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    said = '[\'{"type":"assistant","text":"I added the dinner with the board on Thursday"}\', \'\']'
+    earlier = [
+        "2026-11-24 10:00:00 WARNING engine.x: slow",
+        "2026-11-24 10:01:00 WARNING engine.ai.adapters.cli_agent: the agent was stopped after 90 seconds; "
+        f"it had printed: {said}",
+        "2026-11-24 10:02:00 WARNING engine.dispatcher: The assistant's answer couldn't be read after a second try: "
+        "1 validation error, input_value='the dinner with the board'",
+    ]
+    path.write_text("\n".join(earlier), encoding="utf-8")
+    (path.parent / (app_log.FILE + ".1")).write_text(earlier[1], encoding="utf-8")
+    handler = app_log.install(ws, cfg, store)
+    app_log.remove(handler)
+    now = path.read_text(encoding="utf-8")
+    older = (path.parent / (app_log.FILE + ".1")).read_text(encoding="utf-8")
+    assert "dinner" not in now and "dinner" not in older
+    assert (
+        earlier[0] in now and "the agent was stopped after 90 seconds (what it said was taken out of this log)" in now
+    )
+    assert "couldn't be read after a second try (what it said was taken out of this log)" in now

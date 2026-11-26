@@ -5,7 +5,7 @@ accounts list can show it."""
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -283,10 +283,15 @@ def test_the_route_lists_every_skill_for_every_model_and_says_what_is_unmeasured
     assert "scripted" not in json.dumps(got)
 
 
+def utc_today() -> date:
+    """The day the route counts in (UTC), not the computer's own: in a zone behind UTC late in the day they differ."""
+    return datetime.now(UTC).date()
+
+
 def test_the_route_reports_pass_rate_runs_age_cost_and_the_flags(tmp_path):
     ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
     results = [run("one", True, "stub/scripted", 0.2), run("one", False, "stub/scripted", 0.1)]
-    matrix.record_report(ws, report(results, template="demo-x"), stale_days=60, today=date.today() - timedelta(days=3))
+    matrix.record_report(ws, report(results, template="demo-x"), stale_days=60, today=utc_today() - timedelta(days=3))
     c, api = _client(ws)
     skills = {s["id"]: s for s in c.get(f"{api}/ai/skills").json()["accounts"][0]["models"][0]["skills"]}
     dates = skills["dates"]
@@ -302,7 +307,7 @@ def test_the_route_calls_a_measurement_stale_when_the_cases_changed(tmp_path):
         ws,
         report([run("one", True, "stub/scripted")], case_set={"one": ["dates"]}, template="demo-b"),
         stale_days=60,
-        today=date.today(),
+        today=utc_today(),
     )
     c, api = _client(ws)
     skills = {s["id"]: s for s in c.get(f"{api}/ai/skills").json()["accounts"][0]["models"][0]["skills"]}

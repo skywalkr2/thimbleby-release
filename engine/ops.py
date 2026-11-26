@@ -1053,8 +1053,15 @@ class PersonAwayOp(OpModel):
 
     op: Literal["person.away"] = "person.away"
     person: str = Field(description="The id of the person who is away.")
-    start: date = Field(description="The first day away, YYYY-MM-DD.")
-    end: date | None = Field(None, description="The last day away, YYYY-MM-DD; left out for a single day.")
+    start: DayOrMonthDay = Field(description="The first day away, YYYY-MM-DD, or " + _YEARLESS + ".")
+    end: DayOrMonthDay | None = Field(
+        None, description="The last day away, YYYY-MM-DD or --MM-DD; left out for a single day."
+    )
+    past: bool = Field(
+        False,
+        description="True only when the input says the days already happened, so a day with no year takes the latest "
+        "such day before the input came.",
+    )
     label: str | None = Field(None, max_length=80, description="What it is, in plain words (vacation, leave).")
     evidence: EvidenceIn | None = Field(
         None, description="The exact words from the input that give it; required unless the person makes it."
@@ -1062,7 +1069,8 @@ class PersonAwayOp(OpModel):
 
     @model_validator(mode="after")
     def _in_order(self) -> PersonAwayOp:
-        if self.end is not None and self.end < self.start:
+        # A day with no year is placed by the applier, which checks the order once both have their year.
+        if isinstance(self.start, date) and isinstance(self.end, date) and self.end < self.start:
             raise ValueError("the last day away can't come before the first")
         return self
 
@@ -1988,7 +1996,11 @@ class ActRecipientIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    person: str | None = Field(None, description="A known person, by name or id.")
+    person: str | None = Field(
+        None,
+        description="A person, by name or id; someone not on file yet is named here too, and the draft then waits for "
+        "the user to say who they are.",
+    )
     address: str | None = Field(None, description="An address, for someone who isn't a known person.")
     kind: str | None = Field(
         None, description="Which of the person's ways of reaching them to use (a key of their how_to_reach)."
@@ -1996,6 +2008,17 @@ class ActRecipientIn(BaseModel):
     role: Literal["to", "cc"] = Field("to", description="to: addressed to them; cc: copied to them.")
     called_out: bool = Field(False, description="True to ask the person to look at this recipient before their yes.")
     from_text: bool = Field(False, description="True when the address was taken from text that came from outside.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _plain_shapes(cls, data: Any) -> Any:
+        """A recipient given by "name" or "full_name" names the person."""
+        if isinstance(data, dict) and not data.get("person"):
+            for alias in ("name", "full_name"):
+                if isinstance(data.get(alias), str) and data[alias].strip():
+                    data = {k: v for k, v in data.items() if k not in ("name", "full_name")} | {"person": data[alias]}
+                    break
+        return data
 
     @model_validator(mode="after")
     def _names_someone(self) -> ActRecipientIn:

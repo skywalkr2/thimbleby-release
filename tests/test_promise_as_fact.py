@@ -341,3 +341,39 @@ def test_a_promise_already_owed_someone_else_owning_it_or_no_own_promise_words_i
     assert owed_mail(env, op | {"owners": [ME["id"]]}, quote) == []
     plain = "The figures go out toward the end of the month."
     assert owed_mail(env, op | {"evidence": {"quote": plain}}, plain) == []
+
+
+@pytest.mark.parametrize(
+    "quote",
+    [
+        "He said he'd confirm the shop's quote next week.",
+        "{kit}'s going to send the plan by the 30th.",
+        "She promised to confirm the shop's quote next week.",
+        "{kit} promised to draft the pilot plan by the 30th.",
+    ],
+)
+def test_he_said_hed_a_name_going_to_and_a_promise_verb_with_a_date_go_back_as_that_persons_action(env, quote):
+    """The #70 re-check (B-6): "He said he'd …", "<name>'s going to …" and "She promised to …" were kept as facts."""
+    quote = quote.format(kit=first(TEAMMATE))
+    raw = f"Met with {first(TEAMMATE)} this morning. {quote}"
+    (problem,) = found_in(env, [fact(quote)], raw)
+    assert problem.op == 0 and "action.add" in problem.message
+
+
+def test_a_state_after_hed_or_the_users_own_promise_with_a_name_before_it_stays_a_fact(env):
+    kit = first(TEAMMATE)
+    quote = "He said he'd been away until the 20th."
+    assert found_in(env, [fact(quote)], f"Met with {kit} this morning. {quote}") == []
+    own = f"{kit} said I'd send the draft budget by the 30th."
+    assert found_in(env, [fact(own)], own) == []
+
+
+def test_they_will_is_one_persons_promise_only_when_no_company_or_second_person_is_named_before_it(env):
+    kit = first(TEAMMATE)
+    quote = "They will confirm the shop's quote next week."
+    (problem,) = found_in(env, [fact(quote)], f"Met with {kit} this morning. {quote}")
+    assert problem.op == 0
+    company = f"Met with {kit} and a buyer from {NEW['org']} this morning. {quote}"
+    assert found_in(env, [fact(quote)], company) == []
+    two = f"Met with {kit} and {OUTSIDER['full_name']} this morning. {quote}"
+    assert found_in(env, [fact(quote)], two) == []

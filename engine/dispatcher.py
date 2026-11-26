@@ -59,6 +59,7 @@ from engine.applier import (
     feedback,
     needs_another_round,
     needs_escalation,
+    still_netted,
     undo,
 )
 from engine.cleaning import quoted_messages
@@ -1438,6 +1439,10 @@ def _rounds(
                 )
                 continue
             out.escalate = needs_escalation(problems)
+        elif judgment_asked and still_netted(problems):
+            # A net on the person's own note went back once and the answer still misses it: the stronger model is asked
+            # once, and its answer stands.
+            out.escalate = True
         return out
     return out
 

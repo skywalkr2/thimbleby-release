@@ -2805,7 +2805,7 @@ Draft something to go outside the workspace on the person's behalf: a message, a
 | `target.kind` | Literal['message', 'mailbox', 'calendar', 'file'] | required | message, mailbox, calendar or file. |
 | `target.action` | str \| None | `None` | What it does: for a message send, reply, reply_all or forward; for a mailbox archive, move, label or mark_read; for a calendar create, move, cancel or answer; for a file write. Left out, the kind's first. |
 | `target.recipients` | list[ActRecipientIn] | `[]` | Who a message goes to. |
-| `target.recipients[].person` | str \| None | `None` | A known person, by name or id. |
+| `target.recipients[].person` | str \| None | `None` | A person, by name or id; someone not on file yet is named here too, and the draft then waits for the user to say who they are. |
 | `target.recipients[].address` | str \| None | `None` | An address, for someone who isn't a known person. |
 | `target.recipients[].kind` | str \| None | `None` | Which of the person's ways of reaching them to use (a key of their how_to_reach). |
 | `target.recipients[].role` | Literal['to', 'cc'] | `'to'` | to: addressed to them; cc: copied to them. |
@@ -2855,7 +2855,7 @@ The person's change to a draft's content or recipients. It clears their yes: the
 | `read_version` | int | required | The version of the act the person was looking at. |
 | `parts` | dict[str, str] \| None | `None` | The content, replacing the parts now there. |
 | `recipients` | list[ActRecipientIn] \| None | see below | Who it goes to, replacing the list now there. |
-| `recipients[].person` | str \| None | `None` | A known person, by name or id. |
+| `recipients[].person` | str \| None | `None` | A person, by name or id; someone not on file yet is named here too, and the draft then waits for the user to say who they are. |
 | `recipients[].address` | str \| None | `None` | An address, for someone who isn't a known person. |
 | `recipients[].kind` | str \| None | `None` | Which of the person's ways of reaching them to use (a key of their how_to_reach). |
 | `recipients[].role` | Literal['to', 'cc'] | `'to'` | to: addressed to them; cc: copied to them. |
@@ -3533,8 +3533,9 @@ A period a person is away that the input states ("I'm out Nov 20-24", "Sam is on
 |---|---|---|---|
 | `group` | str \| None | `None` | Ops that must be undone together share a group name. |
 | `person` | str | required | The id of the person who is away. |
-| `start` | date | required | The first day away, YYYY-MM-DD. |
-| `end` | date \| None | `None` | The last day away, YYYY-MM-DD; left out for a single day. |
+| `start` | DayOrMonthDay | required | The first day away, YYYY-MM-DD, or --MM-DD when the input gives the month and day with no year (the app works out the year; never guess it). |
+| `end` | DayOrMonthDay \| None | `None` | The last day away, YYYY-MM-DD or --MM-DD; left out for a single day. |
+| `past` | bool | `False` | True only when the input says the days already happened, so a day with no year takes the latest such day before the input came. |
 | `label` | str \| None | `None` | What it is, in plain words (vacation, leave). |
 | `evidence` | EvidenceIn \| None | see below | The exact words from the input that give it; required unless the person makes it. |
 | `evidence.quote` | str | required | The exact words from the input that justify this op. |

@@ -2713,7 +2713,7 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
     @r.post("/ai/accounts")
     def ai_account_add(body: AiAccountAdd) -> AiAccountAdded:
         from engine.ai.adapters import ADAPTERS
-        from engine.ai.presets import TierPlan, plan_tiers
+        from engine.ai.presets import TierPlan, escalations_for, plan_tiers
         from engine.secrets import SecretError, resolve_secret
 
         if body.adapter not in ADAPTERS or body.adapter == "stub":
@@ -2810,6 +2810,7 @@ def build_setup_router(ws: Workspace, cfg: Config, store: Store, events: Events,
             key = f"ai.tiers.{tier_name}.use"
             if key not in changes:
                 changes[key] = f"{body.name}/{first}"
+        changes.update(escalations_for(changes, now.tiers))
         try:
             result = save(changes, [], body.fingerprint, allow=("ai.providers.", "ai.tiers.", "ai.prices."))
         except HTTPException:

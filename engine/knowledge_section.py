@@ -28,7 +28,8 @@ HEADINGS = {
     "glossary": "# Glossary",
     "input_rules": "# Standing rules for this input",
     "input_lessons": "# Lessons for this input",
-    "guesses": "# Learned from the user's corrections, not yet kept",
+    "guesses": "# Learned from the user's corrections, not yet kept\n"
+    "Apply these as guesses unless the input names someone else for the work.",
     "routing": "# Who answers what",
     "style": "# How to write for them",
     "input_glossary": "# Terms this input uses",
@@ -102,14 +103,20 @@ def _head_words(name: str) -> set[str]:
     return found
 
 
-def _said_as_names(text: str, leads: set[str], not_objects: set[str]) -> list[tuple[set[str], set[str]]]:
+def _said_as_names(
+    text: str, leads: set[str], not_objects: set[str], ordinary: set[str] | None = None
+) -> list[tuple[set[str], set[str], set[str]]]:
     """Each place in a text where a word reads as someone's name for a thing, as its words (plurals folded) and the
     lower-case words of the capitalized words right beside it: a word right after a leading word ("the gala", "our
     exhibit"), a word written with a capital in the middle of a sentence, an id with a digit, or a word that starts a
     sentence when the next word doesn't start an object ("Exhibit planning is late" but not "Move the meeting"). An
-    ordinary word on its own ("office chairs") is not one."""
+    ordinary word on its own ("office chairs") is not one. Each place also carries the one word that must follow it
+    for it to count: a sentence's first word that is also an ordinary verb or adjective (`ordinary`: "Move fast on
+    the hiring", "Fair enough") counts only when the word after it is one the project's name holds; empty when
+    nothing is required."""
     tokens = list(_WORD.finditer(text))
-    found: list[tuple[set[str], set[str]]] = []
+    found: list[tuple[set[str], set[str], set[str]]] = []
+    ordinary = ordinary or set()
 
     def starts(i: int) -> bool:
         before = text[: tokens[i].start()].rstrip()
@@ -132,7 +139,10 @@ def _said_as_names(text: str, leads: set[str], not_objects: set[str]) -> list[tu
                     beside.add(tokens[i - 1].group(0).lower())
                 if i + 1 < len(tokens) and tokens[i + 1].group(0)[0].isupper() and not starts(i + 1):
                     beside.add(after)
-            found.append((_overlap_words(word) | ({word.lower()} if any(c.isdigit() for c in word) else set()), beside))
+            need = {_stem(after)} | {after} if sentence_start and word.lower() in ordinary else set()
+            found.append(
+                (_overlap_words(word) | ({word.lower()} if any(c.isdigit() for c in word) else set()), beside, need)
+            )
     return found
 
 
@@ -159,14 +169,22 @@ def projects_named_in(view: Any, text: str, cfg: Any = None) -> list[str]:
     def wording(key: str) -> set[str]:
         return {w.casefold() for w in (language_words(cfg.language, key) if cfg is not None else shipped(key)) or []}
 
-    places = _said_as_names(text or "", wording("project_name_leads"), wording("short_form_object_leads"))
+    places = _said_as_names(
+        text or "",
+        wording("project_name_leads"),
+        wording("short_form_object_leads"),
+        wording("ordinary_sentence_start_words"),
+    )
     found = []
     for project in projects:
         forms = [" ".join(n.casefold().split()) for n in names_of(project) if n.strip()]
         whole = any(re.search(rf"(?<!\w){re.escape(form)}(?!\w)", said) for form in forms)
         mine = {w for w in heads[project.id] if not any(w in all_words[q.id] for q in projects if q.id != project.id)}
         own_words = {t.lower() for n in names_of(project) for t in _WORD.findall(n)}
-        if whole or any(words & mine and not (beside - own_words) for words, beside in places):
+        if whole or any(
+            words & mine and not (beside - own_words) and (not need or need & own_words)
+            for words, beside, need in places
+        ):
             found.append(project.id)
     return found
 
@@ -244,14 +262,24 @@ def _entry_line(stored: Any) -> str:
     return line
 
 
-def _guess_line(stored: Any) -> str:
-    """A learned entry not yet kept: its words, and that whatever it decides is only a guess the run names."""
+def _guess_line(stored: Any, view: Any = None) -> str:
+    """A learned entry not yet kept, led by what it decides: for an entry that names a person and a kind of work, that
+    such work is theirs ("what goes out for the gala is <name>'s work"), so the cheapest model reads it for the next
+    item of that kind and not only for the one it was learned on; then the person's own words, and that whatever it
+    decides is only a guess the run names."""
     kind = " ".join(str(stored.data.get("kind_of_work") or "").split())
+    who = stored.data.get("person")
+    found = view.get("person", who) if view is not None and who else None
+    name = (found.data.get("full_name") or "").strip() if found is not None else ""
+    mark = f'name each step it decides in "by_kind" ({{"op": <its index>, "entry": "{stored.id}"}})'
+    if kind and name:
+        return (
+            f"- {stored.id}: {kind[0].upper() + kind[1:]} is {name}'s work. Not yet kept: give each to-do of that kind "
+            f"to {name} ({who}) as a guess unless the input names someone else, and {mark}. Learned from: "
+            f"{stored.data['text']}"
+        )
     reach = f" (and for {kind})" if kind else ""
-    return (
-        f"- {stored.id}: {stored.data['text']}{reach}. Not yet kept: apply it only as a guess, and name each step it "
-        f'decides in "by_kind" ({{"op": <its index>, "entry": "{stored.id}"}}).'
-    )
+    return f"- {stored.id}: {stored.data['text']}{reach}. Not yet kept: apply it only as a guess, and {mark}."
 
 
 def _term_line(stored: Any) -> str:
@@ -422,6 +450,19 @@ def per_input_section(
             sections.append(rendered)
             ids.extend(stored.id for stored, _ in lines)
 
+    # What the person's corrections taught that waits for their Keep comes first, so the cheapest model sees it before
+    # anything else it might weigh: given as a guess, every step it decides marked.
+    guesses = []
+    for kind in ("lesson", "routing_entry"):
+        for entry in sorted(view.list(kind), key=_key):
+            data = entry.data
+            if data.get("status") != "proposed" or not data.get("guess_until_kept"):
+                continue
+            scope = _scope(entry)
+            if passes(entry, scope) and (_whole_workspace(scope) or bool(set(scope.projects) & scoped) or people_set):
+                guesses.append((entry, _guess_line(entry, view)))
+    add(HEADINGS["guesses"], guesses)
+
     rules = []
     for rule in _active(view, "rule"):
         scope = _scope(rule)
@@ -457,18 +498,6 @@ def per_input_section(
         if about_input:
             routing.append((entry, _entry_line(entry)))
     add(HEADINGS["routing"], routing)
-
-    # What the person's corrections taught that waits for their Keep: given as a guess, every step it decides marked.
-    guesses = []
-    for kind in ("lesson", "routing_entry"):
-        for entry in sorted(view.list(kind), key=_key):
-            data = entry.data
-            if data.get("status") != "proposed" or not data.get("guess_until_kept"):
-                continue
-            scope = _scope(entry)
-            if passes(entry, scope) and (_whole_workspace(scope) or bool(set(scope.projects) & scoped) or people_set):
-                guesses.append((entry, _guess_line(entry)))
-    add(HEADINGS["guesses"], guesses)
 
     # Style notes for the people this input names, and those for a kind of audience in words (design 6.22).
     style = []

@@ -599,3 +599,35 @@ def test_the_ways_a_note_asks_for_a_message_and_the_ways_it_does_not(env, note, 
     }
     note = note.format(editor=first["Editor"], designer=first["Cover designer"], editor_role="editor")
     assert (_asks_for_a_message(cfg, note, _recipients(store, cfg)) is not None) is asks, note
+
+
+@pytest.mark.parametrize("shape", ["person", "name"])
+def test_a_draft_to_someone_not_on_file_waits_with_who_is_this_and_is_never_refused(env, shape):
+    """The #70 re-check (N-1): the person not yet on file was held in an earlier note, so the draft to them had no
+    recipient the checks took and six answers were refused. A draft that names someone not on file comes in held with
+    the question who they are, as a to-do does; once answered, it comes in with that person."""
+    from engine.applier import release
+
+    ws, cfg, store = env
+    newcomer = "Quentin Halloway"
+    note = f"Draft a note to {newcomer} with the crate dimensions."
+    draft = {
+        "op": "act.draft",
+        "channel": "copy",
+        "target": {"kind": "message", "action": "send", "recipients": [{shape: newcomer}]},
+        "parts": {"subject": "Crate dimensions", "body": "The crate is 40 by 30 by 20 inches."},
+    }
+    answer = {"summary": "Drafted the note.", "ops": [draft]}
+    asked = _returned_twice(env, note, answer, answer)
+    assert len(asked) == 1  # nothing sent back
+    (cs,) = [c for c in store.read().list("changeset") if c.data["ops"][0]["op"]["op"] == "act.draft"]
+    held = cs.data["ops"][0]
+    assert held["status"] == "held" and held.get("question")
+    question = store.read().get("question", held["question"])
+    assert newcomer.split()[0] in f"{question.data.get('title') or ''} {question.data.get('text') or ''}"
+    someone = next(p.id for p in store.read().list("person") if p.id != cfg.workspace.user.person)
+    release(store, cfg, cs.id, 0, person=someone, now=NOW, ws=ws)
+    done = store.read().get("changeset", cs.id).data["ops"][0]
+    assert done["status"] == "applied"
+    (act,) = [store.read().get("act", r["id"]) for r in done["records"] if r["kind"] == "act"]
+    assert [r["person"] for r in act.data["target"]["recipients"]] == [someone]

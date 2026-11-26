@@ -2033,6 +2033,8 @@ def _default_lints() -> dict[str, Severity]:
         "hold-as-note": "return",
         "undecided-as-note": "return",
         "owner-asked-after-given": "return",
+        "leap-day-without-year": "return",
+        "guess-not-applied": "return",
         "due-on-day-off": "return",
         "owed-to-missing": "return",
         "project-start-as-fact": "return",
@@ -2585,7 +2587,8 @@ class LanguageFile(FileModel):
         "whole words, ignoring case."
     )
     promise_words: list[str] | None = word_list(
-        'Words that make a sentence someone\'s promise to do something ("Kit will send it by Friday"). '
+        'Words that make a sentence someone\'s promise to do something ("Kit will send it by Friday", "Kit\'s going to '
+        'send it", "She promised to send it"). '
         "Such words after a name and before a date, recorded as a fact rather than as that person's action, are sent "
         "back once. Matched as whole words, ignoring case."
     )
@@ -2749,10 +2752,21 @@ class LanguageFile(FileModel):
         'The words that stand for one person before a promise ("she", "he", "they"): "She\'ll confirm the quote next '
         'week" is the promise of the one person the input names before it. Case is ignored.'
     )
+    promise_plural_pronouns: list[str] | None = word_list(
+        'The words in `promise_pronouns` that can also stand for a group or a company ("they"). Before a promise, one '
+        "of them stands for the one person the input names only when the input names no company or other name before "
+        'it ("Marco is at Acme. They will confirm by Friday" is left for the assistant to read). Case is ignored.'
+    )
     short_form_object_leads: list[str] | None = word_list(
         "The words that, right after a word at the start of a sentence, show that word is a verb with an object and "
         'not a project\'s short form ("Move it to Friday" is not about "Office Move", "Gala tickets sold out" is about '
         '"Volunteer Gala"). The words of `project_name_leads` count too. Case is ignored.'
+    )
+    ordinary_sentence_start_words: list[str] | None = word_list(
+        'The words that are ordinary verbs or adjectives as well as the last word of a project\'s name ("Move" of '
+        '"Office Move", "Report" of "Annual Report"). At a sentence\'s start such a word names the project only when '
+        'the word after it is one the project\'s name holds ("Move fast on the hiring" and "Report cards come out '
+        'Monday" name none). Case is ignored.'
     )
     undecided_words: list[str] | None = word_list(
         'The phrases of a note of yours that say a choice is still open ("I haven\'t decided", "we still have to '
@@ -2766,8 +2780,8 @@ class LanguageFile(FileModel):
         '"the contact form"). Case is ignored.'
     )
     hold_condition_words: list[str] | None = word_list(
-        'The words that lead the condition of a hold, at most eight words after the holding word ("until", "till"). '
-        "Case is ignored."
+        "The words that lead the condition of a hold, at most eight words after the holding word "
+        '("until", "till", "before"). Case is ignored.'
     )
     answer_later_words: list[str] | None = word_list(
         'The words of an answer that put a question off to a later day ("let\'s follow up on this in 2 days"). '

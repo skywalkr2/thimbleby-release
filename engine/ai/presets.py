@@ -165,3 +165,25 @@ def suggest_models(
     if easy is None and (entry or {}).get("local"):
         easy = ids[0]
     return easy, hard or easy
+
+
+#: The core's tiers from the cheapest to the strongest, the order a failing answer escalates in. A tier an add-on or the
+#: person adds is left out: its place in that order is the person's to say.
+BY_STRENGTH = ("routine", "deep", "hardest")
+
+
+def escalations_for(changes: Mapping[str, Any], tiers: Mapping[str, Any]) -> dict[str, str]:
+    """The escalations a change of tiers makes: each tier it fills escalates to the next tier in order it also fills
+    with another model, when the lower one names none, so a cheaper model's failing answer goes to the stronger one
+    whether the preset or the person picked the models (setup names them). A tier with an escalation keeps it."""
+    order = list(BY_STRENGTH)
+    filled = {name: changes[f"ai.tiers.{name}.use"] for name in order if f"ai.tiers.{name}.use" in changes}
+    found: dict[str, str] = {}
+    for lower, higher in zip(order, order[1:], strict=False):
+        if lower not in filled or higher not in filled or filled[lower] == filled[higher]:
+            continue
+        key = f"ai.tiers.{lower}.escalate_to"
+        named = changes.get(key, getattr(tiers.get(lower), "escalate_to", None))
+        if not named:
+            found[key] = higher
+    return found

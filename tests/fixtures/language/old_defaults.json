@@ -810,11 +810,22 @@
   "will",
   "'ll",
   "\u2019ll",
+  "'d",
+  "\u2019d",
   "is going to",
-  "are going to"
+  "are going to",
+  "'s going to",
+  "\u2019s going to",
+  "promised to",
+  "promises to",
+  "agreed to",
+  "committed to"
  ],
  "promise_state_words": [
-  "be"
+  "be",
+  "been",
+  "have",
+  "had"
  ],
  "team_promise_words": [
   "we'll",

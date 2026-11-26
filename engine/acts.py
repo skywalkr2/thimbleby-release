@@ -639,6 +639,8 @@ def stranger_problem(ctx: Any, op: ActDraftOp) -> str | None:
     for r in op.target.recipients:
         if r.called_out or _recipient_known(ctx, r) or (r.address or "").strip().lower() in in_thread:
             continue
+        if (r.person or "").strip() and not (r.address or "").strip():
+            continue  # a name not on file waits for the user to say who it is (the applier's who-is hold)
         who = (r.person or r.address or "").strip()
         return (
             f"{who} isn't someone the workspace knows or in the message this answers; an address from anywhere else "

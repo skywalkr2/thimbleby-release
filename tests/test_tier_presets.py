@@ -301,6 +301,35 @@ def test_the_recommended_setup_is_written_with_its_effort_and_deep_escalates_to_
     assert tiers["deep"].escalate_to == "hardest" and tiers["routine"].escalate_to == "deep"
 
 
+def test_setup_naming_the_cheaper_and_the_harder_model_makes_the_cheaper_one_escalate(route):
+    """The #70 re-check (N-1): setup names both models itself ("everyday" and "harder"), which skipped the preset plan
+    and every escalation with it, so six refused Haiku answers never reached Sonnet. A tier the account fills escalates
+    to the next one it fills with another model when it names none."""
+    kind = preset_kind()
+    ws, c, api, original = route
+    ai = ws.config_dir / "ai.yaml"
+    data = yaml.safe_load(ai.read_text())
+    for name in data["tiers"]:
+        data["tiers"][name]["escalate_to"] = None
+    ai.write_text(yaml.safe_dump(data))
+    models = short_names(ids_for(kind))
+    cheap, dear = list(models)[:2]
+    done = add(c, api, "picked", kind, models, use={"routine": cheap, "deep": dear})
+    assert done.status_code == 200, done.text
+    tiers = load_config(ws.config_dir, env={}).ai.tiers
+    assert tiers["routine"].escalate_to == "deep" and tiers["deep"].escalate_to is None
+    put_back(ws, original)
+    same = add(c, api, "one-model", kind, models, use={"routine": cheap, "deep": cheap})
+    assert same.status_code == 200, same.text
+    assert load_config(ws.config_dir, env={}).ai.tiers["routine"].escalate_to == original_escalation(original)
+    put_back(ws, original)
+
+
+def original_escalation(original: str) -> object:
+    """What the starting settings gave routine to escalate to, unchanged by an account that fills two tiers alike."""
+    return (yaml.safe_load(original).get("tiers") or {}).get("routine", {}).get("escalate_to")
+
+
 def test_an_unmatched_family_is_named_the_stand_in_is_taken_over_and_the_persons_choice_wins(route):
     kind = preset_kind()
     ws, c, api, original = route

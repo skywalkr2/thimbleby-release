@@ -15,6 +15,7 @@ import contextlib
 import logging
 import logging.handlers
 import os
+import re
 import time
 import traceback
 from collections.abc import Callable
@@ -22,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from engine import content_log, problems
+from engine.state_file import write_whole
 
 FOLDER = "logs"
 FILE = "thimbleby.log"
@@ -141,10 +143,45 @@ class _Names:
         return self.masker(text)
 
 
+#: Lines earlier builds wrote to the app's log that hold what the assistant or an agent said, and the head each keeps:
+#: what follows the head is taken out when the log starts (`clean_earlier_lines`).
+EARLIER_CONTENT = (
+    re.compile(r"(the agent was stopped after \d+ seconds); it had printed: .*"),
+    re.compile(r"(The assistant's answer couldn't be read after a second try): .*"),
+)
+#: What stands in for the words taken out.
+TAKEN_OUT = " (what it said was taken out of this log)"
+
+
+def clean_earlier_lines(ws: Any) -> int:
+    """Take out of the app's log files the words earlier builds wrote there that can hold the assistant's or an
+    agent's output, keeping each line's head, so a report that offers the log's end never carries them. Returns how
+    many lines changed; a file that can't be read or written is left as it is."""
+    changed = 0
+    for path in sorted(log_path(ws).parent.glob(FILE + "*")):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        lines = text.split("\n")
+        for n, line in enumerate(lines):
+            for pattern in EARLIER_CONTENT:
+                found = pattern.search(line)
+                if found is not None:
+                    lines[n] = line[: found.start()] + found.group(1) + TAKEN_OUT
+                    changed += 1
+                    break
+        if "\n".join(lines) != text:
+            with contextlib.suppress(OSError):
+                write_whole(path, "\n".join(lines), mode=0o600)
+    return changed
+
+
 def install(ws: Any, cfg: Any, store: Any, *, max_bytes: int | None = None) -> logging.Handler | None:
     """Start writing the log for this workspace: the handler is on the root logger, at the configured level. Returns it
     (for `remove`), or None when the folder can't be written, which never stops the app."""
     path = log_path(ws)
+    clean_earlier_lines(ws)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         handler = _Private(

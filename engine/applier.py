@@ -57,7 +57,7 @@ from engine.cleaning import normalize
 from engine.config import Config, ConfigError, load_config
 from engine.config.yaml_edit import set_key
 from engine.contacts import reach_lists, with_value
-from engine.dates import MonthDay, is_month_day_maybe_timed, resolve_range, with_year
+from engine.dates import MonthDay, is_month_day, is_month_day_maybe_timed, parse_month_day, resolve_range, with_year
 from engine.entry_origin import cancel_match, not_from_mail_problem
 from engine.intake import is_reported, source_text
 from engine.language_words import language_words
@@ -268,12 +268,49 @@ def _received_day(ctx: Context, view: Any, now: datetime | None) -> date:
     return found if found is not None else local_day(now or datetime.fromisoformat(ctx.store.clock()), here)
 
 
+def _leap_day_without_year(cs: ChangesetIn, ctx: Context) -> list[Problem]:
+    """A 29 February given with no year whose next one is more than a year after the input came goes back once to be
+    given its year: placed silently, it would land years away. A rule on the answer's own days with no AI."""
+    name = "leap-day-without-year"
+    level = ctx.cfg.checks.lints.get(name, "off")
+    if level == "off":
+        return []
+    received: date | None = None
+    problems = []
+    for i, op in enumerate(cs.ops):
+        values = [getattr(op, f, None) for f in type(op).model_fields]
+        leap = any(
+            (isinstance(v, MonthDay) and (v.month, v.day) == (2, 29))
+            or (isinstance(v, str) and v.strip().startswith("--02-29"))
+            for v in values
+        )
+        if not leap:
+            continue
+        received = received or _received_day(ctx, ctx.store.read(), None)
+        nearest = with_year(MonthDay(2, 29), received, past=bool(getattr(op, "past", False)))
+        if abs((nearest - received).days) > 366:
+            problems.append(
+                Problem(
+                    name,
+                    level,
+                    i,
+                    f"op {i} gives 29 February with no year, and the nearest one is {nearest.year}: give the year if "
+                    "the input means that one, or the day it means (28 February or 1 March).",
+                )
+            )
+    return problems
+
+
+#: The fields `record.set` may give a day with no year (`--MM-DD`), which the applier gives its year.
+YEARLESS_FIELDS = frozenset({"due", "target"})
+
+
 def with_years(cs: ChangesetIn, ctx: Context, now: datetime | None = None) -> ChangesetIn:
     """Each date an op gives as a month and day with no year (`--MM-DD`) becomes a full date (`engine/dates.py`): the
     next such day on or after the day the input came, or the latest on or before it when the op says the input reports
     it as already happened (`past`). A range's end is the first such day on or after its start. It covers `event.add`
-    and `event.set` (start, end), `action.add`, `action.move` and `action.unhold` (due), `fact` (on) and `project.add`
-    (target). The same
+    and `event.set` (start, end), `action.add`, `action.move` and `action.unhold` (due), `fact` (on), `project.add`
+    (target), `person.away` (start, end, as a range) and `record.set` on a day field (`YEARLESS_FIELDS`). The same
     changeset always gives the same result, so a check and the apply that follows see the same ops, and the record and
     the ledger always hold full dates."""
     view = ctx.store.read()
@@ -299,6 +336,23 @@ def with_years(cs: ChangesetIn, ctx: Context, now: datetime | None = None) -> Ch
         elif isinstance(op, FactOp) and isinstance(op.on, MonthDay):
             received = received or _received_day(ctx, view, now)
             ops[i] = op.model_copy(update={"on": with_year(op.on, received, past=op.past)})
+        elif isinstance(op, PersonAwayOp) and (isinstance(op.start, MonthDay) or isinstance(op.end, MonthDay)):
+            # Days away are a range, like a calendar entry's: its end is the first such day on or after its start.
+            received = received or _received_day(ctx, view, now)
+            first, last = resolve_range(
+                str(op.start), str(op.end) if op.end is not None else None, received, past=op.past
+            )
+            ops[i] = op.model_copy(
+                update={"start": date.fromisoformat(first), "end": date.fromisoformat(last) if last else None}
+            )
+        elif (
+            isinstance(op, RecordSetOp)
+            and op.field in YEARLESS_FIELDS
+            and isinstance(op.value, str)
+            and is_month_day(op.value)
+        ):
+            received = received or _received_day(ctx, view, now)
+            ops[i] = op.model_copy(update={"value": with_year(parse_month_day(op.value), received).isoformat()})
         elif isinstance(op, ProjectAddOp) and isinstance(op.target, MonthDay):
             # The day a project opens or is due to finish is ahead of the note that names it.
             received = received or _received_day(ctx, view, now)
@@ -342,7 +396,9 @@ def restatements(cs: ChangesetIn, ctx: Context) -> ChangesetIn:
 
 
 def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
+    leap = _leap_day_without_year(cs, ctx)
     cs = endings.wind_down(restatements(with_years(cs, ctx), ctx), ctx)
+    given = cs
     problems, cs, made = _validate_in_order(cs, ctx)
     problems += _required_ops(cs, ctx)
     problems += _too_many_ops(cs, ctx)
@@ -363,7 +419,9 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
     problems += _message_as_todo(cs, ctx)
     problems += _hold_as_note(cs, ctx)
     problems += _undecided_as_note(cs, ctx)
-    problems += _owner_asked_after_given(cs, ctx, made)
+    problems += _owner_asked_after_given(cs, ctx, made, given)
+    problems += _guess_not_applied(given, ctx)
+    problems += leap
     problems += _due_on_day_off(cs, ctx)
     problems += _project_start_as_fact(cs, ctx)
     problems += _project_unfiled(cs, ctx)
@@ -2513,10 +2571,23 @@ def asks_judgment(problems: list[Problem]) -> bool:
     return any(p.severity in ("refuse", "return") and p.check in JUDGMENT_LINTS for p in problems)
 
 
+#: The judgment lints that guard what the person's own note asked for (a hold, a choice left open): still failing after
+#: their return round, the answer goes once to the stronger model, whose answer then stands.
+ESCALATING_NETS = frozenset({"hold-as-note", "undecided-as-note", "guess-not-applied"})
+
+
+def still_netted(problems: list[Problem]) -> bool:
+    """Whether a net on the person's own note (`ESCALATING_NETS`) still finds the answer missing what the note asked."""
+    return any(p.severity in ("refuse", "return") and p.check in ESCALATING_NETS for p in problems)
+
+
 def needs_escalation(problems: list[Problem]) -> bool:
     """Whether problems still left after the last round call for a stronger model: not the ones whose answer stands
-    once the assistant has had its say (`JUDGMENT_LINTS`)."""
-    return any(p.severity in ("refuse", "return") and p.check not in JUDGMENT_LINTS for p in problems)
+    once the assistant has had its say (`JUDGMENT_LINTS`), except the nets on the person's own note
+    (`ESCALATING_NETS`), which go once to the stronger model; its answer stands."""
+    return any(p.severity in ("refuse", "return") and p.check not in JUDGMENT_LINTS for p in problems) or still_netted(
+        problems
+    )
 
 
 def feedback(problems: list[Problem]) -> str:
@@ -2891,6 +2962,10 @@ def apply_changeset(
                 elif any(p.severity == "hold" for p in mine) or _held_after_return(op, mine, ctx):
                     outcome.status = "held"
                     outcome.reason = "; ".join(p.message for p in mine if p.severity in ("hold", "return"))
+                    who = _needs_person_choice(op, ctx) if isinstance(op, ActDraftOp) else None
+                    if who is not None and who.startswith("who-is"):
+                        # Who a draft goes to is asked first; the draft still waits for the yes once it is known.
+                        outcome.reason = who
                 else:
                     hold = _needs_person_choice(op, ctx)
                     if hold is not None:
@@ -3095,6 +3170,7 @@ JUDGMENT_LINTS = frozenset(
         "hold-as-note",
         "undecided-as-note",
         "owner-asked-after-given",
+        "guess-not-applied",
         "due-on-day-off",
         "ending-reading",
         "reply-not-needed",
@@ -3260,6 +3336,9 @@ def _needs_person_choice(op: OpModel, ctx: Context) -> str | None:
         names = list(op.owners)
     elif isinstance(op, QuestionAddOp):
         names = [op.to]
+    elif isinstance(op, ActDraftOp):
+        # A recipient named but not on file waits for the user to say who they are, as a to-do's owner does.
+        names = [r.person for r in op.target.recipients if (r.person or "").strip() and not (r.address or "").strip()]
     for name in names:
         r = ctx.people.resolve(name)
         if r.status != "ok":
@@ -3805,6 +3884,32 @@ def _promiser(before: str, cs: ChangesetIn, ctx: Context) -> str | None:
     return None
 
 
+def _names_other_than_people(before: str, cs: ChangesetIn, ctx: Context) -> bool:
+    """Whether the words hold a capitalized name inside a sentence that is no person on file or proposed in the answer,
+    no day and no word of a project's name: a company or a group the input names."""
+    view = ctx.store.read()
+    proposed = {
+        w.casefold() for op in cs.ops if isinstance(op, PersonAddOp) for w in re.findall(r"\w+", op.full_name or "")
+    }
+    project_words = {
+        w.casefold() for p in view.list("project") for w in re.findall(r"\w+", str(p.data.get("name", "")))
+    }
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", before):
+        for word in (
+            re.findall(r"\b[A-Z][\w&-]+", sentence)[1:]
+            if re.match(r"\s*[A-Z]", sentence)
+            else re.findall(r"\b[A-Z][\w&-]+", sentence)
+        ):
+            bare = word.strip("&-")
+            found = ctx.people.resolve(bare)
+            if (found.status == "ok" and found.person) or bare.casefold() in project_words | proposed:
+                continue
+            if _names_a_date(bare, ctx):
+                continue
+            return True
+    return False
+
+
 def _promiser_by_pronoun(quote: str, at: int, cs: ChangesetIn, ctx: Context) -> str | None:
     """The person a pronoun before a promise word stands for (`language.promise_pronouns`: "She'll confirm the quote"):
     the one person the input names before the quote, other than the user. None when it names nobody or more than one,
@@ -3816,6 +3921,9 @@ def _promiser_by_pronoun(quote: str, at: int, cs: ChangesetIn, ctx: Context) -> 
     text = f"{ctx.inputs.note or ''}\n{ctx.inputs.raw_input or ''}"
     where = text.find(quote)
     before = text[:where] if where >= 0 else ""
+    plural = {w.strip().casefold() for w in language_words(ctx.cfg.language, "promise_plural_pronouns") if w.strip()}
+    if words[-1].casefold() in plural and _names_other_than_people(before, cs, ctx):
+        return None  # "they" may mean a company or a group
     named = {pid for pid in ctx.people.mentioned_in(before) if pid != ctx.people.pm}
     for word in set(re.findall(r"\b[A-Z][\w'-]+", before)):
         found = ctx.people.resolve(word)
@@ -3825,6 +3933,13 @@ def _promiser_by_pronoun(quote: str, at: int, cs: ChangesetIn, ctx: Context) -> 
         if isinstance(op, PersonAddOp) and op.full_name and scope.has_word(before, op.full_name.split()[0]):
             named.add(op.full_name)
     return next(iter(named)) if len(named) == 1 else None
+
+
+def _after_first_person(before: str, ctx: Context) -> bool:
+    """Whether the word right before a promise word is the user's own ("I" in "I'd send it")."""
+    words = re.findall(r"[\w']+", before)
+    mine = {w.casefold() for w in language_words(ctx.cfg.language, "first_person_words") if w.strip()}
+    return bool(words) and words[-1].casefold() in mine
 
 
 def _promise_as_fact(cs: ChangesetIn, ctx: Context) -> list[Problem]:
@@ -3872,6 +3987,8 @@ def _promise_as_fact(cs: ChangesetIn, ctx: Context) -> list[Problem]:
             after = quote[found.end() :].split()
             if after and after[0].lower().strip(",.;:") in {w.lower() for w in state_words}:
                 continue
+            if _after_first_person(quote[: found.start()], ctx):
+                continue  # a promise of the user's own, whoever is named before it
             who = _promiser(quote[: found.start()], cs, ctx) or _promiser_by_pronoun(quote, found.start(), cs, ctx)
             if who is None or who == pm or not _names_a_date(quote[found.end() :], ctx, anywhere=True):
                 continue  # the user's own promise is the own-promise lint's
@@ -4250,11 +4367,16 @@ def _undecided_as_note(cs: ChangesetIn, ctx: Context) -> list[Problem]:
 
 
 def _owner_asked_after_given(
-    cs: ChangesetIn, ctx: Context, made: dict[tuple[str, str], Any] | None = None
+    cs: ChangesetIn,
+    ctx: Context,
+    made: dict[tuple[str, str], Any] | None = None,
+    given: ChangesetIn | None = None,
 ) -> list[Problem]:
     """A question whose answer would change who owns a to-do the same answer makes with its owners already given goes
-    back once: the answer both decided who does it and asked. `made` holds the records the answer's earlier ops made,
-    by kind and id, which a question's `$new:<n>` was resolved to. A rule on the answer's own ops that only points; the
+    back once: the answer both decided who does it and asked. The owners are the ones the answer itself gave: a to-do
+    it left without owners (the applier fills in the person) never makes this fire. `made` holds the records the
+    answer's earlier ops made, by kind and id; `given` is the answer as it was written, before the applier filled in
+    owners. A rule on the answer's own ops that only points; the
     assistant's answer to it stands (`JUDGMENT_LINTS`)."""
     name = "owner-asked-after-given"
     level = ctx.cfg.checks.lints.get(name, "off")
@@ -4266,11 +4388,13 @@ def _owner_asked_after_given(
         if change is None or change.what != "owner" or not change.record:
             continue
         record = change.record.strip()
-        ref = re.fullmatch(r"\$(?:new:)?(\d+)", record)
-        op_made = cs.ops[int(ref.group(1))] if ref and int(ref.group(1)) < len(cs.ops) else None
+        as_given = given or cs
+        written = getattr(as_given.ops[i], "would_change", None) if i < len(as_given.ops) else None
+        ref = re.fullmatch(r"\$(?:new:)?(\d+)", (written.record if written and written.record else record).strip())
+        op_made = as_given.ops[int(ref.group(1))] if ref and int(ref.group(1)) < len(as_given.ops) else None
         owners = list(op_made.owners) if isinstance(op_made, ActionAddOp) else []
-        kept = (made or {}).get(("action", record))
-        if kept is not None:
+        kept = None if isinstance(op_made, ActionAddOp) else (made or {}).get(("action", record))
+        if kept is not None:  # a record the answer did not make here: its owners as they stand
             data = kept.data if hasattr(kept, "data") else kept
             owners = [o.get("person") for o in (data or {}).get("owners") or [] if o.get("person")]
         if owners:
@@ -4284,6 +4408,62 @@ def _owner_asked_after_given(
                     "question out, or ask only what is still open (a date, a detail); your answer stands either way.",
                 )
             )
+    return problems
+
+
+def _guess_not_applied(cs: ChangesetIn, ctx: Context) -> list[Problem]:
+    """A to-do the answer gives the user, about the same project as the kind of work a not-yet-kept entry from the
+    user's correction gives to someone else, goes back once when the input names nobody for it: the entry is a guess the
+    run was given, and the cheapest model often passes it by. Whether the to-do is of that kind stays the assistant's;
+    the rule only narrows which to-dos it points at. `cs` is the answer as written, before owners are filled in."""
+    from engine.knowledge_section import projects_named_in
+
+    name = "guess-not-applied"
+    level = ctx.cfg.checks.lints.get(name, "off")
+    if level == "off" or ctx.actor == "pm" or ctx.confirmed_by_pm:
+        return []
+    view = ctx.store.read()
+    pm = ctx.people.pm
+    entries = [
+        e
+        for kind in ("routing_entry", "lesson")
+        for e in view.list(kind)
+        if e.data.get("status") == "proposed"
+        and e.data.get("guess_until_kept")
+        and e.data.get("kind_of_work")
+        and e.data.get("person")
+        and e.data["person"] != pm
+    ]
+    if not entries:
+        return []
+    said = f"{ctx.inputs.note or ''}\n{ctx.inputs.raw_input or ''}"
+    named = ctx.people.mentioned_in(said) - {pm}
+    marked = {g.op for g in cs.by_kind}
+    problems = []
+    for i, op in enumerate(cs.ops):
+        if not isinstance(op, ActionAddOp) or i in marked or named:
+            continue
+        owners = {ctx.people.resolve(o).person for o in op.owners} - {None}
+        if owners - {pm}:
+            continue  # it went to someone: the assistant chose
+        about = set(projects_named_in(view, f"{op.text}\n{said}", ctx.cfg)) | ({op.project} if op.project else set())
+        for entry in entries:
+            kind = " ".join(str(entry.data["kind_of_work"]).split())
+            if not about & set(projects_named_in(view, kind, ctx.cfg)):
+                continue
+            who = _shown_name(ctx, entry.data["person"])
+            problems.append(
+                Problem(
+                    name,
+                    level,
+                    i,
+                    f"{entry.id}, from the user's correction and not yet kept, says {kind} is {who}'s work, and this "
+                    f"to-do went to the user. If it is that kind of work, give it to {who} as a guess and name it in "
+                    f'"by_kind" ({{"op": {i}, "entry": "{entry.id}"}}); if it isn\'t, answer again as you did. Your '
+                    "answer stands either way.",
+                )
+            )
+            break
     return problems
 
 
@@ -6743,6 +6923,12 @@ def _substitute(op: OpModel, name: str, person: str) -> OpModel:
         return op.model_copy(update={"owners": [person if _same_name(o, name) else o for o in op.owners]})
     if isinstance(op, QuestionAddOp) and _same_name(op.to, name):
         return op.model_copy(update={"to": person})
+    if isinstance(op, ActDraftOp):
+        named = [
+            r.model_copy(update={"person": person}) if r.person and _same_name(r.person, name) else r
+            for r in op.target.recipients
+        ]
+        return op.model_copy(update={"target": op.target.model_copy(update={"recipients": named})})
     return op
 
 

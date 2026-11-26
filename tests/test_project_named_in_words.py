@@ -64,6 +64,12 @@ def view(tmp_path):
         ("Move it to Friday.", set()),
         ("Move the meeting.", set()),
         ("Give the Art Exhibit a miss.", set()),
+        # #70 (B-8): a sentence's first word that is an ordinary verb or adjective names no project by itself.
+        ("Move fast on the hiring.", set()),
+        ("Move everything to Friday.", set()),
+        ("Report back by Friday.", set()),
+        ("Report cards come out Monday.", set()),
+        ("Fair enough, let's do it.", set()),
         # Judged wrong: "report" is the head word of a project's name here, so the lean toward naming keeps it.
         ("Send the report to Dana.", {"report"}),
     ],

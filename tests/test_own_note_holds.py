@@ -190,11 +190,18 @@ def _hold_answers(env, note: str, first: dict, second: dict) -> list:
     return _returned_twice(env, note, first, second)
 
 
+def _then_stronger(env) -> bool:
+    """Whether a net on the person's own note, still missed after its one return round, went once to the stronger
+    model (the #70 re-check: run 3's open choice kept as a fact stood on the cheapest model)."""
+    _, _, store = env
+    return [r.data["tier"] for r in store.read().list("run")][-2:] == ["deep", "deep"]
+
+
 def _note_only(text: str) -> dict:
     return {"summary": "Noted the hold.", "ops": [{"op": "note", "text": text}]}
 
 
-def test_a_hold_in_the_persons_own_note_answered_only_with_a_note_goes_back_once_and_the_second_answer_stands(env):
+def test_a_hold_in_the_persons_own_note_answered_only_with_a_note_goes_back_once_then_to_the_stronger_model(env):
     """The first-week journey (J-8): "Hold the gala invitations until Dana approves the guest list" was answered with a
     note and "nothing to put on hold". It goes back once asking whether the held thing is work to do; the decision
     stays with the model."""
@@ -203,7 +210,7 @@ def test_a_hold_in_the_persons_own_note_answered_only_with_a_note_goes_back_once
     ws, cfg, store = env
     try:
         asked = _hold_answers(env, NOTE, _note_only(NOTE), _note_only(NOTE))
-        assert len(asked) == 2
+        assert len(asked) == 4 and _then_stronger(env)
         assert "holds something until a condition" in asked[1].request and "your answer stands" in asked[1].request
         assert any(n.data["text"] == NOTE for n in store.read().list("note"))
     finally:
@@ -283,7 +290,7 @@ def test_the_other_ways_to_hold_until_a_condition_answered_with_a_note_go_back_o
 
     try:
         asked = _hold_answers(env, note, _note_only(note), _note_only(note))
-        assert len(asked) == 2 and "holds something until a condition" in asked[1].request
+        assert len(asked) == 4 and _then_stronger(env) and "holds something until a condition" in asked[1].request
     finally:
         set_responder(None)
 
@@ -338,7 +345,7 @@ def _decision(text: str) -> dict:
         "Cover finish: tbd.",
     ],
 )
-def test_a_choice_still_open_answered_with_only_a_note_goes_back_once_and_the_second_answer_stands(env, note):
+def test_a_choice_still_open_answered_with_only_a_note_goes_back_once_then_to_the_stronger_model(env, note):
     """The #67 re-check (B-6): "I haven't decided" became a note. It goes back once asking whether it is a decision
     for the person; the decision stays with the model."""
     from engine.ai.adapters.stub import set_responder
@@ -346,7 +353,7 @@ def test_a_choice_still_open_answered_with_only_a_note_goes_back_once_and_the_se
     ws, cfg, store = env
     try:
         asked = _hold_answers(env, note, _note_only(note), _note_only(note))
-        assert len(asked) == 2
+        assert len(asked) == 4 and _then_stronger(env)
         assert "choice is still open" in asked[1].request and "your answer stands either way" in asked[1].request
         assert any(n.data["text"] == note for n in store.read().list("note"))
     finally:
@@ -440,5 +447,218 @@ def test_a_question_asking_who_owns_a_to_do_the_same_answer_gave_an_owner_goes_b
         assert len(asked) == 2 and "already gives to" in asked[1].request and "answer stands" in asked[1].request
         alone = {"summary": "Added the crate to-do.", "ops": [todo]}
         assert len(_hold_answers(env, note, alone, alone)) == 1
+    finally:
+        set_responder(None)
+
+
+def test_a_question_asking_who_owns_a_to_do_the_answer_left_without_an_owner_is_not_sent_back(env):
+    """The #70 re-check (B-7): the applier fills the person in on a to-do the answer gave no owner, and the lint read
+    that filled-in owner as one the answer had given. Only the owners the answer itself gave count."""
+    from engine.ai.adapters.stub import set_responder
+
+    ws, cfg, store = env
+    me = People(store, cfg).pm
+    note = "The shop is waiting on our crate dimensions."
+    todo = {"op": "action.add", "text": "Send the shop the crate dimensions", "evidence": {"quote": note}}
+    asks = {
+        "op": "question.add",
+        "title": "Who sends the shop the crate dimensions?",
+        "text": "Who should send the shop the crate dimensions?",
+        "to": me,
+        "would_change": {"what": "owner", "record": "$new:0"},
+    }
+    both = {"summary": "Added the crate to-do.", "ops": [todo, asks]}
+    try:
+        got = _hold_answers(env, note, both, both)
+        assert len(got) == 1, got[-1].request[-600:]
+    finally:
+        set_responder(None)
+
+
+def test_a_choice_still_open_kept_only_as_a_fact_goes_back_once(env):
+    """The #70 re-check (B-3): "I haven't decided" came back as the fact "no choice has been made", so there was no
+    question to close later. Facts are read like notes."""
+    from engine.ai.adapters.stub import set_responder
+
+    fact = {
+        "summary": "Noted that no caterer is chosen.",
+        "ops": [
+            {
+                "op": "fact",
+                "text": "No choice has been made between matte and soft-touch for the cover.",
+                "evidence": {"quote": "I haven't decided between matte and soft-touch"},
+            }
+        ],
+    }
+    try:
+        asked = _hold_answers(env, UNDECIDED, fact, fact)
+        assert len(asked) == 4 and _then_stronger(env) and "choice is still open" in asked[1].request
+    finally:
+        set_responder(None)
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        "The gala invitations are on ice until Dana approves the guest list.",
+        "Wait for Dana to approve the guest list before the gala invitations go out.",
+    ],
+)
+def test_a_hold_said_as_on_ice_or_wait_for_before_answered_with_a_note_goes_back_once(env, note):
+    """The #70 re-check (B-9): "on ice until" and "wait for … before" hold something like "hold … until" does."""
+    from engine.ai.adapters.stub import set_responder
+
+    try:
+        asked = _hold_answers(env, note, _note_only(note), _note_only(note))
+        assert len(asked) == 4 and _then_stronger(env) and "holds something until a condition" in asked[1].request
+    finally:
+        set_responder(None)
+
+
+@pytest.mark.parametrize(
+    "note",
+    ["I haven't made a decision on the caterer.", "No decision yet on the venue.", "I'm still deciding on the paper."],
+)
+def test_more_ways_of_saying_a_choice_is_open_kept_as_a_note_go_back_once(env, note):
+    from engine.ai.adapters.stub import set_responder
+
+    try:
+        asked = _hold_answers(env, note, _note_only(note), _note_only(note))
+        assert len(asked) == 4 and _then_stronger(env) and "choice is still open" in asked[1].request
+    finally:
+        set_responder(None)
+
+
+def test_a_year_less_day_works_in_record_set_and_in_days_away(env):
+    """The #70 re-check (N-4): the instructions ask for --MM-DD for every day with no year, but `record.set` on a
+    project's target refused --03-14 and `person.away` with --12-20 made the whole answer unreadable. Both take the
+    next such day; days away are a range, so an end in January after a start in December is the next year's."""
+    from datetime import date
+
+    ws, cfg, store = env
+    received = date.fromisoformat(store.clock()[:10])
+    project = next(p for p in store.read().list("project") if p.data.get("status", "active") != "done")
+    note = f"{project.data['name']} now opens March 14."
+    moved = {
+        "op": "record.set",
+        "kind": "project",
+        "id": project.id,
+        "field": "target",
+        "value": "--03-14",
+        "evidence": {"quote": f"{project.data['name']} now opens March 14"},
+    }
+    cs, done = apply(
+        store, cfg, [moved], origin="pm", trust="trusted", source_id=source(store, trust="trusted"), raw=note
+    )
+    assert done == ["applied"]
+    target = date.fromisoformat(store.read().get("project", project.id).data["target"])
+    assert (target.month, target.day) == (3, 14) and received <= target < received.replace(year=received.year + 1)
+
+    me = People(store, cfg).pm
+    away_note = "I'm off Dec 20 to Jan 5."
+    away = {"op": "person.away", "person": me, "start": "--12-20", "end": "--01-05", "evidence": {"quote": away_note}}
+    cs, done = apply(
+        store, cfg, [away], origin="pm", trust="trusted", source_id=source(store, trust="trusted"), raw=away_note
+    )
+    assert done == ["applied"]
+    record = store.read().get("changeset", cs).data["ops"][0]["op"]
+    first, last = date.fromisoformat(record["start"]), date.fromisoformat(record["end"])
+    assert (first.month, first.day, last.month, last.day) == (12, 20, 1, 5) and last.year == first.year + 1
+
+
+def test_a_29_february_with_no_year_far_off_goes_back_for_its_year_and_a_full_date_does_not(env):
+    """The #70 re-check (N-4): --02-29 silently became 2028-02-29, fifteen months out. When the nearest one is more than
+    a year away it goes back once to be given its year."""
+    from datetime import date
+
+    from engine.applier import Context, Inputs, check
+    from engine.ops import CHANGESET
+
+    ws, cfg, store = env
+    note = "The Volunteer Gala is on February 29."
+
+    def found(target: str) -> list:
+        add = {"op": "project.add", "name": "Volunteer Gala", "target": target, "evidence": {"quote": note.rstrip(".")}}
+        cs = CHANGESET.validate_python({"ops": [add]}, context={"op_models": store.plugins.ops})
+        ctx = Context(
+            store, cfg, People(store, cfg), tuple(store.plugins.ops), Inputs("REQ-1", "SRC-1", note, "", "trusted")
+        )
+        return [p for p in check(cs, ctx) if p.check == "leap-day-without-year"]
+
+    received = date_of(store)
+    leap_ahead = next(y for y in range(received.year, received.year + 5) if y % 4 == 0)
+    far = (date(leap_ahead, 2, 29) - received).days > 366
+    assert bool(found("--02-29")) == far
+    assert found(f"{leap_ahead}-02-29") == []
+
+
+def date_of(store):
+    from datetime import date
+
+    return date.fromisoformat(store.clock()[:10])
+
+
+def _waiting_routing(store, cfg, project_name: str) -> tuple[str, str]:
+    """A routing entry the person's correction taught for a project's kind of work, waiting for their Keep."""
+    from engine.storage import WriteContext
+
+    me = People(store, cfg).pm
+    other = next(p.id for p in store.read().list("person") if p.id != me and p.data.get("full_name"))
+    with store.transaction() as tx:
+        entry = tx.create(
+            "routing_entry",
+            {
+                "topic": f"what goes out for {project_name}",
+                "text": f"What goes out for {project_name} is this person's to send.",
+                "person": other,
+                "kind_of_work": f"what goes out for {project_name}",
+                "origin": "assistant",
+                "status": "proposed",
+                "guess_until_kept": True,
+                "learned_at": "2026-11-19T09:00:00+00:00",
+                "applies_to": {},
+            },
+            WriteContext("engine", "trusted", "test"),
+        )
+    return entry.id, other
+
+
+def test_a_to_do_of_a_waiting_guess_kind_given_to_the_user_goes_back_once_then_to_the_stronger_model(env):
+    """The #70 re-check (N-2): the not-yet-kept lesson was used in two runs of three, and row 11 measured ten times on
+    Haiku used it seven times even at the top of the packet. A to-do about the same project as the guess's kind of
+    work, given to the user while the note names nobody, goes back once and then once to the stronger model; whether it
+    is that kind of work stays the assistant's."""
+    from engine.ai.adapters.stub import set_responder
+
+    ws, cfg, store = env
+    project = next(p for p in store.read().list("project"))
+    entry, other = _waiting_routing(store, cfg, project.data["name"])
+    note = f"We also need to send the {project.data['name']} sponsor letters."
+    mine = {
+        "summary": "Added the letters.",
+        "ops": [
+            {
+                "op": "action.add",
+                "text": f"Send the {project.data['name']} sponsor letters",
+                "evidence": {"quote": note},
+            }
+        ],
+    }
+    theirs = {
+        "summary": "Added the letters.",
+        "ops": [{**mine["ops"][0], "owners": [other]}],
+        "by_kind": [{"op": 0, "entry": entry}],
+    }
+    try:
+        asked = _hold_answers(env, note, mine, mine)
+        assert len(asked) == 4 and _then_stronger(env) and entry in asked[1].request
+        assert "answer stands either way" in asked[1].request
+        assert len(_hold_answers(env, note, theirs, theirs)) == 1
+        partner = store.read().get("person", other).data["full_name"]
+        named = f"I'll send the {project.data['name']} sponsor letters myself, with {partner}."
+        own = {"summary": "Added the letters.", "ops": [{**mine["ops"][0], "evidence": {"quote": named}}]}
+        got = _hold_answers(env, named, own, own)
+        # The note names someone: whose work it is was the assistant's call, so this net never points at it.
+        assert all("not yet kept, says" not in task.request for task in got)
     finally:
         set_responder(None)
