@@ -124,6 +124,18 @@ def test_no_date_where_the_rules_read_one_goes_back_once_and_a_second_answer_wit
     assert (made["due"], made["due_check"]) == ("2026-10-25", False)
 
 
+def test_no_date_for_words_that_name_a_span_of_days_is_never_sent_back_and_a_day_inside_it_still_is_checked(env):
+    """The #74 re-check (row 2, 48 s): Haiku left Dana's "next week" undated, which is right, and the reading of the
+    span's last day sent the answer back, then again after the second answer. Words for a span of days name no one day:
+    no date for them is accepted; a single day read differently is still sent back."""
+    for words in ("next week",):
+        seen, outcome, made = applied(env, promise(words))
+        assert outcome["status"] == "applied" and returned(seen) == [], words
+        assert (made["due"], made["due_words"]) == (None, words)
+    seen, _, _ = applied(env, promise("by the 25th"))
+    assert len(returned(seen)) == 1
+
+
 def test_a_condition_with_a_date_goes_back_once_and_the_assistants_choice_then_stands(env):
     seen, _, made = applied(env, promise("once the keys arrive", due="2026-10-20"))
     said = returned(seen)[0]

@@ -320,3 +320,30 @@ def test_discarding_a_not_yet_kept_lesson_offers_its_guesses_and_one_step_takes_
     assert len([x for x in store.read().list("lesson") if x.data.get("status") == "proposed"]) == proposed
     assert client.get(f"/api/knowledge/{entry}/guesses").json()["count"] == 0
     assert client.post(f"/api/knowledge/{entry}/take-back-guesses").status_code == 409
+
+
+def test_a_to_do_handed_over_by_a_kind_of_work_is_marked_with_who_owed_it_and_taking_it_back_restores_them(env):
+    """The #74 re-check (N-2): the app applies a waiting lesson itself by handing an existing to-do over
+    (`action.owners`) with the step named in "by_kind". The to-do is marked as a guess with who owed it before, so one
+    click gives it back."""
+    from engine.applier import apply_as_person
+
+    ws, cfg, store = env
+    entry = learned(store, cfg)
+    me = People(store, cfg).pm
+    pid, name = someone(store, cfg)
+    add = {
+        "op": "action.add",
+        "text": "Send the fair sponsor thank-you letters",
+        "owners": [me],
+        "evidence": {"quote": NOTE},
+    }
+    made = store.read().get("changeset", run(store, cfg, {"ops": [add]})).data["ops"][0]["records"][0]["id"]
+    hand = {"op": "action.owners", "id": made, "owners": [pid], "evidence": {"quote": NOTE}}
+    run(store, cfg, {"ops": [hand], "by_kind": [{"op": 0, "entry": entry}]})
+    action = store.read().get("action", made).data
+    assert [o["person"] for o in action["owners"]] == [pid]
+    assert action["by_kind"]["entry"] == entry and action["by_kind"]["owners_before"] == [me]
+    apply_as_person(store, cfg, [{"op": "action.owners", "id": made, "owners": [me]}], "Took back a guess")
+    back = store.read().get("action", made).data
+    assert [o["person"] for o in back["owners"]] == [me] and back.get("by_kind") is None

@@ -31,6 +31,17 @@ def env(tmp_path):
     store.close()
 
 
+@pytest.fixture
+def net_env(tmp_path):
+    """The same workspace with the `guess-not-applied` net switched back on: it is off by default now that the app
+    applies a waiting lesson itself (engine/guess_fit.py), and a workspace can turn it on again."""
+    ws = init_workspace(tmp_path / "ws", template=DEMO_B, git=False)
+    cfg = ws.config(env={}, flags={"checks.lints.guess-not-applied": "return"})
+    store = Store(ws.db_path, cfg=cfg)
+    yield ws, cfg, store
+    store.close()
+
+
 def made(store, cs_id):
     record = store.read().get("changeset", cs_id).data["ops"][0]["records"][0]
     return store.read().get("action", record["id"]).data
@@ -623,13 +634,14 @@ def _waiting_routing(store, cfg, project_name: str) -> tuple[str, str]:
     return entry.id, other
 
 
-def test_a_to_do_of_a_waiting_guess_kind_given_to_the_user_goes_back_once_then_to_the_stronger_model(env):
+def test_a_to_do_of_a_waiting_guess_kind_given_to_the_user_goes_back_once_then_to_the_stronger_model(net_env):
     """The #70 re-check (N-2): the not-yet-kept lesson was used in two runs of three, and row 11 measured ten times on
     Haiku used it seven times even at the top of the packet. A to-do about the same project as the guess's kind of
     work, given to the user while the note names nobody, goes back once and then once to the stronger model; whether it
     is that kind of work stays the assistant's."""
     from engine.ai.adapters.stub import set_responder
 
+    env = net_env
     ws, cfg, store = env
     project = next(p for p in store.read().list("project"))
     entry, other = _waiting_routing(store, cfg, project.data["name"])
@@ -741,12 +753,13 @@ def test_an_answer_to_the_persons_own_note_that_keeps_nothing_goes_back_and_the_
 
 
 @pytest.mark.parametrize("shape", ["marked-but-mine", "unmarked-and-mine-by-name"])
-def test_an_answer_that_names_the_waiting_guess_but_keeps_the_to_do_the_users_still_goes_back(env, shape):
+def test_an_answer_that_names_the_waiting_guess_but_keeps_the_to_do_the_users_still_goes_back(net_env, shape):
     """The #72 re-check (N-1): the net fired in one run of three. Naming the entry in "by_kind" while the to-do stayed
     the user's counted as applying it, so the net let it pass and the to-do was even marked as the guess while still
     the user's. Only the entry's person owning the to-do applies it; a mark on a to-do they don't own is not kept."""
     from engine.ai.adapters.stub import set_responder
 
+    env = net_env
     ws, cfg, store = env
     project = next(p for p in store.read().list("project"))
     entry, other = _waiting_routing(store, cfg, project.data["name"])
@@ -871,7 +884,7 @@ def test_one_date_question_for_the_to_dos_an_answer_adds_with_no_date_is_not_sen
         set_responder(None)
 
 
-def test_when_the_guess_net_stands_down_on_a_to_do_given_to_the_user_the_log_says_why_by_ids_only(env, caplog):
+def test_when_the_guess_net_stands_down_on_a_to_do_given_to_the_user_the_log_says_why_by_ids_only(net_env, caplog):
     """The #73 re-check (N-2): run 2's answer gave the gala letters to the user in one call with the lesson given, and
     nothing in the install showed why the net let it pass. When a guess waits and a to-do goes to the user, the net
     logs why it stood down, by ids only, so the log a person sends with a report traces it."""
@@ -879,6 +892,7 @@ def test_when_the_guess_net_stands_down_on_a_to_do_given_to_the_user_the_log_say
 
     from engine.ai.adapters.stub import set_responder
 
+    env = net_env
     ws, cfg, store = env
     project = next(p for p in store.read().list("project"))
     entry, other = _waiting_routing(store, cfg, project.data["name"])

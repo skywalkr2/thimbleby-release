@@ -8,7 +8,7 @@ from typing import Any
 from engine.titles import title_for
 
 #: Task kinds of a scheduled job whose result is something the person reads, so it stays a row.
-_RESULT_TASKS = frozenset({"follow-on", "notes"})
+_RESULT_TASKS = frozenset({"follow-on", "guess-fit", "notes"})
 
 
 def in_progress(request: dict[str, Any]) -> bool:

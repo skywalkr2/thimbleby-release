@@ -241,9 +241,10 @@ class Store:
 
                             learn.record_edits(tx, cfg, self.clock())
                         if tx.pending:
-                            from engine import follow_on
+                            from engine import follow_on, guess_fit
 
                             follow_on.queue(tx, cfg, self.clock())
+                            guess_fit.queue(tx, cfg, self.clock())
                 except BaseException:
                     self._conn.execute("ROLLBACK")
                     raise

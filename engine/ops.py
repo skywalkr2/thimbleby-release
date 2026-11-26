@@ -3171,9 +3171,9 @@ def reference_for(
     if any("applies_to" in m.model_fields for m in models):
         values = reach or reach_choices()
         lines.append(
-            "In applies_to, task_kinds name kinds of work, only these: "
+            "In applies_to, task_kinds are only: "
             + ", ".join(values["task_kinds"])
-            + "; records name record types, only these: "
+            + "; records are only: "
             + ", ".join(values["records"])
             + "."
         )

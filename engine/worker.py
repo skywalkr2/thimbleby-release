@@ -91,6 +91,7 @@ LIVE_KEYS = (
     "dispatch.knowledge.learn_every_minutes",
     "dispatch.knowledge.learn_input_chars",
     "dispatch.knowledge.follow_on",
+    "dispatch.knowledge.apply_guesses",
     "dispatch.knowledge.follow_on_max_tied",
     "dispatch.knowledge.follow_on_match",
     "dispatch.knowledge.question_body_chars",

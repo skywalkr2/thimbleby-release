@@ -1737,6 +1737,13 @@ class KnowledgeSettings(ConfigModel):
         "items apply with Undo; anything someone was already sent gets a drafted correction that waits for you. When "
         "this is off, nothing follows a move.",
     )
+    apply_guesses: bool = Field(
+        True,
+        description="Whether a new to-do that lands on you, where something you taught is still waiting for your Keep, "
+        "is checked against it in a small step of its own. If the to-do is the kind of thing you taught about, it goes "
+        "to the person you taught, marked as a guess you can take back in one click. When this is off, only the step "
+        "that made the to-do sees what you taught.",
+    )
     follow_on_max_tied: int = Field(
         20,
         ge=1,
@@ -2034,7 +2041,7 @@ def _default_lints() -> dict[str, Severity]:
         "undecided-as-note": "return",
         "owner-asked-after-given": "return",
         "leap-day-without-year": "return",
-        "guess-not-applied": "return",
+        "guess-not-applied": "off",
         "away-span-long": "return",
         "own-note-kept-nothing": "return",
         "promise-left-out": "return",
