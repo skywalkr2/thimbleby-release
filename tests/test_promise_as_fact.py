@@ -88,6 +88,33 @@ def test_a_state_no_date_nobody_named_or_words_another_op_quotes_are_left_alone(
     assert found(env, [action, fact(quote)]) == []
 
 
+def found_in(env, ops: list[dict], raw: str) -> list:
+    _, cfg, store = env
+    cs = CHANGESET.validate_python({"ops": ops}, context={"op_models": store.plugins.ops})
+    ctx = Context(
+        store, cfg, People(store, cfg), tuple(store.plugins.ops), Inputs("REQ-1", "SRC-1", raw, "", "untrusted")
+    )
+    return [p for p in check(cs, ctx) if p.check == LINT]
+
+
+def test_she_will_with_the_one_person_named_before_it_is_their_promise_and_goes_back(env):
+    """The #68 re-check (N-10): "She'll confirm the conservator's quote next week" was kept as a fact, not Dana's to-do,
+    so nothing was left to close when she did. A contracted "will" and a pronoun for the one person the input names
+    before it count as that person's dated promise."""
+    quote = "She'll confirm the shop's quote next week."
+    raw = f"Met with {first(TEAMMATE)} this morning. I need to send her the draft budget. {quote}"
+    (problem,) = found_in(env, [fact(quote)], raw)
+    assert problem.op == 0 and "action.add" in problem.message
+    # Two people named before it, or nobody: whose promise it is isn't for a rule to say.
+    two = f"Met with {first(TEAMMATE)} and {OUTSIDER['full_name']} this morning. {quote}"
+    assert found_in(env, [fact(quote)], two) == []
+    assert found_in(env, [fact(quote)], f"Met this morning. {quote}") == []
+    assert (
+        found_in(env, [fact("I'll confirm the shop's quote next week.")], "I'll confirm the shop's quote next week.")
+        == []
+    )
+
+
 def test_another_teams_promise_a_watched_project_and_the_persons_own_note_are_left_alone(env):
     assert found(env, [fact(f"{OUTSIDER['full_name']} will send the figures by the 30th.")]) == []
     quote = f"{first(TEAMMATE)} will draft the pilot plan by the 30th."

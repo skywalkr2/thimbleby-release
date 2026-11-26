@@ -7,6 +7,8 @@ import os
 import threading
 import time
 
+import pytest
+
 from engine.storage import WriteContext
 from tests.test_scale_messages import add_messages
 from tests.test_today_query_count import _add_to_dos, _changes_made, counted  # noqa: F401
@@ -104,6 +106,28 @@ def test_the_main_screens_answer_within_the_slow_screen_limit_on_a_workspace_of_
         pstats.Stats(profile).sort_stats("cumulative").print_stats(40)
     slow = {path: round(t, 2) for path in SCREENS if (t := _slowest_of_three(client, path)) > LIMIT_SECONDS}
     assert not slow, f"slower than {LIMIT_SECONDS} s: {slow}"
+
+
+@pytest.mark.skipif(
+    not os.environ.get("THIMBLEBY_WALL_CLOCK"),
+    reason="by the clock only on a quiet machine, run alone with THIMBLEBY_WALL_CLOCK=1",
+)
+def test_the_main_screens_answer_within_the_slow_screen_limit_by_the_clock_on_a_quiet_machine(counted):  # noqa: F811
+    """How long a person waits, store reads, locks and all, which the processor-time guard above leaves out (the #68
+    re-check, N-12). Run alone on a quiet machine: in a parallel run the clock counts other tests' work."""
+    client, _, store, cfg = counted
+    _fill(store, cfg)
+    slow = {}
+    for path in SCREENS:
+        assert client.get(path).status_code == 200
+        waits = []
+        for _ in range(3):
+            began = time.perf_counter()
+            assert client.get(path).status_code == 200
+            waits.append(time.perf_counter() - began)
+        if max(waits) > LIMIT_SECONDS:
+            slow[path] = round(max(waits), 2)
+    assert not slow, f"slower than {LIMIT_SECONDS} s by the clock: {slow}"
 
 
 def test_a_shared_list_is_read_once_in_a_read_scope_and_again_after_a_write(counted):  # noqa: F811

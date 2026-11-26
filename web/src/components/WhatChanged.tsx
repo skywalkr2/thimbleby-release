@@ -960,19 +960,21 @@ function AssistantAccount(props: { summary: string; untrusted: boolean }) {
 }
 
 /** What follows the first line of a text, or nothing when it is one line. */
-/** Behind Details on a stopped line: why each round was sent back or refused, in plain words, and the assistant's last answer,
+/** Behind Details on a request with return rounds (stopped or ended well): why each round was sent back or refused, in plain words, and the assistant's last answer,
  * both as plain text (never as markup). */
 function StoppedRounds(props: { item: S["ChangeItem"] }) {
-  const { t } = useWords();
+  const { t, tn } = useWords();
   const { item } = props;
   const rounds = item.stopped_rounds ?? [];
   if (!rounds.length && !item.stopped_answer) return null;
   const tries = new Set(rounds.map((r) => r.attempt)).size;
+  // A request that ended well says how many rounds it took; a stopped one says why each was turned down.
+  const endedWell = item.state !== "needs_you" && item.state !== "failed";
   return (
     <div data-stopped-rounds="">
       {rounds.length > 0 && (
         <>
-          <p className="hint">{t("changes.stopped.rounds")}</p>
+          <p className="hint">{endedWell ? tn("changes.rounds.count", rounds.length) : t("changes.stopped.rounds")}</p>
           <ul>
             {rounds.map((r) => (
               <li key={`${r.attempt}-${r.round}`}>

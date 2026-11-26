@@ -2032,6 +2032,7 @@ def _default_lints() -> dict[str, Severity]:
         "message-as-todo": "return",
         "hold-as-note": "return",
         "undecided-as-note": "return",
+        "owner-asked-after-given": "return",
         "due-on-day-off": "return",
         "owed-to-missing": "return",
         "project-start-as-fact": "return",
@@ -2739,6 +2740,19 @@ class LanguageFile(FileModel):
         "The words that, right before a word of a project's name, show you mean that project by its short form (\"the "
         'gala" for "Volunteer Gala"). A short form also counts when it is written with a capital in the middle of a '
         "sentence. Case is ignored."
+    )
+    undecided_not_followed_by: list[str] | None = word_list(
+        "The words that, right after one of your open-choice phrases, show no choice is open (\"I haven't decided to "
+        'quit" is not "I haven\'t decided whether to quit"). Case is ignored.'
+    )
+    promise_pronouns: list[str] | None = word_list(
+        'The words that stand for one person before a promise ("she", "he", "they"): "She\'ll confirm the quote next '
+        'week" is the promise of the one person the input names before it. Case is ignored.'
+    )
+    short_form_object_leads: list[str] | None = word_list(
+        "The words that, right after a word at the start of a sentence, show that word is a verb with an object and "
+        'not a project\'s short form ("Move it to Friday" is not about "Office Move", "Gala tickets sold out" is about '
+        '"Volunteer Gala"). The words of `project_name_leads` count too. Case is ignored.'
     )
     undecided_words: list[str] | None = word_list(
         'The phrases of a note of yours that say a choice is still open ("I haven\'t decided", "we still have to '

@@ -334,6 +334,27 @@ test("a stopped hand-in shows why each round was turned down and its last answer
   expect(screen.getByText("<b>not a tag</b> {the answer}")).toBeInTheDocument(); // text, never markup
 });
 
+test("a request that ended well after return rounds says how many rounds it took and why each was turned down, with no answer text", async () => {
+  fakeApi({
+    "GET changes": () => [
+      stopped({
+        state: "done",
+        waiting: null,
+        stopped_rounds: [
+          { attempt: 1, round: 1, reasons: ["The quote isn't in the input."] },
+          { attempt: 1, round: 2, reasons: ["A date was left out."] },
+        ],
+        stopped_answer: null,
+      }),
+    ],
+  });
+  renderApp(<WhatChanged />);
+  expect(await screen.findByText("Sent back 2 times before it was right")).toBeInTheDocument();
+  expect(screen.getByText(/The quote isn't in the input\./)).toBeInTheDocument();
+  expect(screen.getByText(/A date was left out\./)).toBeInTheDocument();
+  expect(screen.queryByText("The last answer it gave")).toBeNull();
+});
+
 test("a review row has no Dismiss, a dismissed hand-in is labeled in the list, and Done leaves out what still waits", async () => {
   const user = userEvent.setup();
   fakeApi({

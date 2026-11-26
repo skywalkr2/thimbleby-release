@@ -15,7 +15,7 @@ from api.schemas import (
     ReportSent,
     SlowScreenReport,
 )
-from engine import __version__, alpha_measures, problems, report_send, slow_screens
+from engine import __version__, alpha_measures, app_log, content_log, problems, report_send, slow_screens
 from engine.config import Config, ConfigError, load_config
 from engine.reminder_content import own_address
 from engine.storage import Store
@@ -34,6 +34,13 @@ def build_feedback_router(ws: Workspace, cfg: Config, store: Store, worker: Work
         return report_send.details_text(
             shown, masker=hide, folders={str(ws.root): "<workspace>"}, limit=report_send.LIMITS["details"] - room
         )
+
+    def _content_log_text() -> str:
+        """The private content log's newest file, which can hold the assistant's words; empty when there is none."""
+        try:
+            return app_log.content_path(ws).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
 
     def current() -> Config:
         """The settings as the files hold them now, so a change to how far back or how many applies at once."""
@@ -129,6 +136,18 @@ def build_feedback_router(ws: Workspace, cfg: Config, store: Store, worker: Work
                     status_code=409, detail="The answer shown is no longer the one kept. Open the report again."
                 )
             answer = shown
+        # Nothing of the assistant's or a service's words leaves in the problem lines or the details: the server
+        # checks both parts against what it keeps, whatever the screen sent.
+        with store.read_scope():
+            material = problems.private_material(store, current(), worker.now())
+            hide = problems.masker_for(ws, store, cfg)
+        material += content_log.said_in(_content_log_text())
+        parts = [body.problems, body.details if body.include_details else ""]
+        if report_send.holds_private(parts, material, hide):
+            raise HTTPException(
+                status_code=409,
+                detail="The report holds words from the assistant's answer. Open the report again.",
+            )
         room = report_send.ANSWER_MAX + report_send.ANSWER_HEADING_ROOM if body.answer_block else 0
         done = report_send.send(
             to,

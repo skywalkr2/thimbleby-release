@@ -2036,9 +2036,7 @@ def build_router(ws: Workspace, cfg: Config, store: Store, events: Events, worke
                     maybe_charged_usd=maybe_charged_on(runs.get(req.id, [])),
                     refused=d["state"] == "needs_you" and _last_refused(req.id),
                     cause=_cause_view(d),
-                    stopped_rounds=[StoppedRoundView(**r) for r in d.get("stopped_rounds") or []]
-                    if d["state"] in ("needs_you", "failed")
-                    else [],
+                    stopped_rounds=[StoppedRoundView(**r) for r in d.get("stopped_rounds") or []],
                     stopped_answer=d.get("stopped_answer") if d["state"] in ("needs_you", "failed") else None,
                     follows=d.get("follows"),
                     follows_summary=_summary_of(d.get("follows")),

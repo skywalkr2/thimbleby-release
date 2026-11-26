@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from engine import content_log
 from engine.ai.adapters import make_adapter
 from engine.ai.adapters.cli_agent import EARLIER_HOME_FILES, CliAgentAdapter
 from engine.ai.task import AiError, AiTask
@@ -761,8 +762,12 @@ def test_a_timed_out_streamed_run_logs_the_last_events_it_streamed(tmp_path, cap
     with caplog.at_level("WARNING"), pytest.raises(AiError) as late:
         make_adapter(CliAgentAdapter.name, stuck, None).run(task(), "agent-model")
     assert late.value.kind == "timeout"
-    logged = " ".join(r.getMessage() for r in caplog.records)
-    assert "step 19" in logged and "step 5" not in logged and "/somewhere" not in logged
+    # What it printed can hold the assistant's answer: it goes to the private content log only, never the app's log,
+    # whose end a report offers to send (the #68 re-check, N-3).
+    kept = " ".join(r.getMessage() for r in caplog.records if r.name == content_log.NAME)
+    shared = " ".join(r.getMessage() for r in caplog.records if r.name != content_log.NAME)
+    assert "step 19" in kept and "step 5" not in kept and "/somewhere" not in kept
+    assert "step 19" not in shared and "stopped after 2 seconds" in shared
     assert "step 19" not in str(late.value)
 
 
@@ -798,9 +803,13 @@ def test_an_account_saved_with_the_presets_earlier_command_streams_and_gets_its_
 
     preset = next(p for p in _presets() if p["settings"]["agent"].get("output_stream"))
     current = preset["settings"]["agent"]
-    old = _with_preset_settings(AgentSettings(command=list(EARLIER_COMMANDS[0])), preset["id"])
-    assert old.command == current["command"] and old.output_stream is True
-    assert old.max_output_env == current["max_output_env"]
+    # Every command the preset ever shipped, the first one from before it turned off the connections' tools too (the
+    # #68 re-check, N-9).
+    assert len(EARLIER_COMMANDS) >= 2
+    for earlier in EARLIER_COMMANDS:
+        old = _with_preset_settings(AgentSettings(command=list(earlier)), preset["id"])
+        assert old.command == current["command"] and old.output_stream is True
+        assert old.max_output_env == current["max_output_env"]
     own = [*EARLIER_COMMANDS[0], "--verbose"]
     kept = _with_preset_settings(AgentSettings(command=own), preset["id"])
     assert kept.command == own and kept.output_stream is False and kept.max_output_env == current["max_output_env"]

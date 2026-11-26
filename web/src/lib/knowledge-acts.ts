@@ -10,9 +10,42 @@ export interface Target {
   version: number;
 }
 
+/** Discarding an entry: it acts at once with Undo, and when the entry still has guesses on open to-dos (counted after the
+ * discard, so one made meanwhile counts), the toast also offers one step that takes them all back, with its own Undo. */
+export function useDiscardAct() {
+  const { tn } = useWords();
+  const act = useAct();
+  return (item: Target, message: string, reason?: string) =>
+    act(
+      async () => {
+        const done = await api.discardKnowledge(item.id, item.version, reason);
+        const guesses = await api.knowledgeGuesses(item.id).then((g) => g.count, () => 0);
+        return { done, guesses };
+      },
+      ({ done, guesses }) => ({
+        message,
+        undo: () => api.undo(done.changeset),
+        action:
+          guesses > 0
+            ? {
+                label: tn("knowledge.take_back_guesses", guesses),
+                run: () =>
+                  act(
+                    () => api.takeBackGuesses(item.id),
+                    (back) => ({ message: tn("toast.guesses_taken_back", guesses), undo: () => api.undo(back.changeset) }),
+                  ),
+              }
+            : undefined,
+      }),
+      undefined,
+      { once: `knowledge:${item.id}` },
+    );
+}
+
 export function useKnowledgeActs() {
   const { t } = useWords();
   const act = useAct();
+  const discard = useDiscardAct();
   const undo = (done: S["Applied"]) => () => api.undo(done.changeset);
   return {
     /** Keep a proposal; `body` carries wording or reach the person changed first. */
@@ -23,13 +56,7 @@ export function useKnowledgeActs() {
         undefined,
         { once: `knowledge:${item.id}` },
       ),
-    discard: (item: Target) =>
-      act(
-        () => api.discardKnowledge(item.id, item.version),
-        (done) => ({ message: t("knowledge.toast.discarded"), undo: undo(done) }),
-        undefined,
-        { once: `knowledge:${item.id}` },
-      ),
+    discard: (item: Target) => discard(item, t("knowledge.toast.discarded")),
     justThisTime: (item: Target) =>
       act(
         () => api.justThisTime(item.id, item.version),

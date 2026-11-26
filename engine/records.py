@@ -1925,8 +1925,8 @@ class Request(Record):
     )
     stopped_rounds: list[StoppedRound] = Field(
         default_factory=list,
-        description="For a request that stopped or is being tried again: one entry per round that was sent back or "
-        "refused, with the try, the round's number and the reasons in plain words.",
+        description="One entry per round that was sent back or refused, with the try, the round's number and the "
+        "reasons in plain words: for a request that stopped, is being tried again, or ended well after return rounds.",
     )
     may_answer: list[str] = Field(
         default_factory=list,

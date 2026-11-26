@@ -1781,7 +1781,7 @@ A unit of work for the assistant. The engine creates it when something is handed
 | `folded_into` | str \| None | `None` | The newer request this one's change was folded into, so they are read in order, once. |
 | `held_answer` | dict[str, Any] \| None | `None` | The assistant's answer as it came back, kept from the moment it is accepted until its change is applied and the request marked done in one step: {changeset, problems, run, searched, fallback}. A stop in between applies this answer on the next start instead of running the request again. |
 | `stopped_answer` | str \| None | `None` | For a request that stopped after its return rounds: the assistant's last answer as it gave it, cut at `dispatch.keep_stopped_answer_chars`. Kept on this computer only; cleared when the request finishes. |
-| `stopped_rounds` | list[StoppedRound] | `[]` | For a request that stopped or is being tried again: one entry per round that was sent back or refused, with the try, the round's number and the reasons in plain words. |
+| `stopped_rounds` | list[StoppedRound] | `[]` | One entry per round that was sent back or refused, with the try, the round's number and the reasons in plain words: for a request that stopped, is being tried again, or ended well after return rounds. |
 | `stopped_rounds[].attempt` | int | `1` | Which try of the request this round belongs to, from 1. |
 | `stopped_rounds[].round` | int | required | The round's number within its try, from 1. |
 | `stopped_rounds[].reasons` | list[str] | `[]` | Why the round's answer was sent back or refused. |
@@ -3614,7 +3614,7 @@ Start a new project, optionally inside another (a book in its series). A system 
 | `status` | str \| None | `None` | Where the project stands, only when the input states it, with those words as evidence. A status nobody stated is left out and stays unknown: never write "not started" or a guess. |
 | `link` | str \| None | `None` | The page the project was added from, when the input gave one. It is kept as a link on the project; the project's details are filled from it only when something set up can read it. |
 | `organization` | str \| None | `None` | The name or id of the organization the project is the work of (a business or job the person works for): one with that name is linked, else it is made. Set it only when the user's own note names it ("my manager at <employer>... I'm running two projects"); from other content it waits for the user. |
-| `target` | date \| None | `None` | The day the project is meant to be finished or opens, only when the input states it (the words are in the evidence). A project proposed in this answer has no id yet, so its day is given here, never in a separate op. |
+| `target` | DayOrMonthDay \| None | `None` | The day the project is meant to be finished or opens, only when the input states it (the words are in the evidence): YYYY-MM-DD, or --MM-DD when the input gives the month and day with no year (the app works out the year; never guess it). A project proposed in this answer has no id yet, so its day is given here, never in a separate op. |
 | `roles` | list[ProjectRoleIn] | `[]` | Who runs, designs or only watches the project, as the input says it (the user's id for I and me). Given here for a project proposed in this answer, never in a separate project.role. |
 | `roles[].person` | str | required | The person, by name or id. |
 | `roles[].role` | Literal['run', 'design', 'watch'] | required | run, design or watch, as for project.role. |

@@ -514,6 +514,10 @@ export const api = {
   keepKnowledge: (entry: string, body: S["KnowledgeKeep"]) => call<S["Applied"]>("POST", `knowledge/${id(entry)}/keep`, body),
   discardKnowledge: (entry: string, readVersion: number, reason?: string) =>
     call<S["Applied"]>("POST", `knowledge/${id(entry)}/discard`, { read_version: readVersion, reason: reason || null }),
+  /** How many open to-dos still carry a guess the entry made. */
+  knowledgeGuesses: (entry: string) => call<S["KnowledgeGuesses"]>("GET", `knowledge/${id(entry)}/guesses`),
+  /** Takes back every guess the entry made, in one change that Undo takes back. */
+  takeBackGuesses: (entry: string) => call<S["Applied"]>("POST", `knowledge/${id(entry)}/take-back-guesses`),
   justThisTime: (entry: string, readVersion: number) =>
     call<S["Applied"]>("POST", `knowledge/${id(entry)}/just-this-time`, { read_version: readVersion }),
   /** A word of the person's own with what it means, kept as an active glossary entry. */

@@ -103,6 +103,33 @@ test("a discard with no reason sends none", async () => {
   await waitFor(() => expect(posted(calls, "POST knowledge/LES-1/discard")).toEqual({ read_version: 3, reason: null }));
 });
 
+test("discarding a lesson that made guesses offers to take them all back in one step, with Undo, and offers nothing when it made none", async () => {
+  const user = userEvent.setup();
+  const calls = show([learnedLine()], {
+    "GET knowledge/LES-1/guesses": () => ({ entry: "LES-1", count: 3 }),
+    "POST knowledge/LES-1/take-back-guesses": () => ({ changeset: "CS-10" }),
+    "POST changesets/CS-10/undo": () => ({ restored: [1], skipped: [] }),
+  });
+  await user.click(await screen.findByRole("button", { name: "Discard" }));
+  const form = (await screen.findByRole("textbox", { name: "What should change? (optional)" })).closest("form")!;
+  await user.click(within(form).getByRole("button", { name: "Discard" }));
+  await user.click(await screen.findByRole("button", { name: "Take back its 3 guesses" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST knowledge/LES-1/take-back-guesses")).toBe(true));
+  expect(await screen.findByText("Took back its 3 guesses. The owners they would have had are back.")).toBeInTheDocument();
+  await user.click(await screen.findByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(calls.some((c) => c.route === "POST changesets/CS-10/undo")).toBe(true));
+});
+
+test("a discard with no guesses to take back offers nothing more", async () => {
+  const user = userEvent.setup();
+  show([learnedLine()], { "GET knowledge/LES-1/guesses": () => ({ entry: "LES-1", count: 0 }) });
+  await user.click(await screen.findByRole("button", { name: "Discard" }));
+  const form = (await screen.findByRole("textbox", { name: "What should change? (optional)" })).closest("form")!;
+  await user.click(within(form).getByRole("button", { name: "Discard" }));
+  expect(await screen.findByText("Discarded.")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Take back its/ })).toBeNull();
+});
+
 test("while the assistant is still learning, the line says so and why it waits", async () => {
   show([learnedLine({ state: "learning", proposal: null, waiting: "Learning from this correction with the next batch, at 3:30 PM." })]);
   expect(await screen.findByRole("status")).toHaveTextContent("Learning from this…");

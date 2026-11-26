@@ -144,16 +144,20 @@ def seed_log_line(ws) -> str:
     return line
 
 
+#: The kind of the seeded failed read, the only thing of it a problem line names.
+FAILED_READ_KIND = "outage"
+
+
 def seed_failed_read(store, cfg) -> str:
     """One failed read of a source an hour before the server's clock, so a problem report has a line to show. Returns
-    the error text it was given, so the browser test reads it from here and does not write it out."""
+    the error text it was given, so the browser test reads it from here and checks it never leaves."""
     text = "the source did not answer in time"
     at = datetime.fromisoformat(store.clock()) - timedelta(hours=1)
     data = {
         "source": cfg.watch.sources[0].id,
         "started_at": at.isoformat(),
         "outcome": "failed",
-        "error_kind": "outage",
+        "error_kind": FAILED_READ_KIND,
         "error": text,
     }
     with store.transaction() as tx:
@@ -811,6 +815,7 @@ def main() -> None:
                 "received": form.received,
                 "status": form.status,
                 "failed_read": failed_read,
+                "failed_read_kind": FAILED_READ_KIND,
                 "log_line": log_line,
                 "stopped_answer": stopped_answer,
             }

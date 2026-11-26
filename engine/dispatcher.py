@@ -19,6 +19,7 @@ from engine import (
     answer_effect,
     area_offers,
     booking_entries,
+    content_log,
     follow_on,
     learn,
     new_terms,
@@ -563,11 +564,21 @@ def process(
     if outcome.stop is not None:
         _keep_stopped(store, request_id, trail, req.data.get("retries", 0) + 1)
         return needs_you(store, request_id, outcome.stop, cause=outcome.cause)
-    return _apply_outcome(store, cfg, request_id, req, kind, ctx, outcome, now)
+    rounds = _rounds_with(req.data.get("stopped_rounds") or [], trail, req.data.get("retries", 0) + 1)
+    return _apply_outcome(store, cfg, request_id, req, kind, ctx, outcome, now, rounds=rounds)
 
 
 def _apply_outcome(
-    store: Store, cfg: Config, request_id: str, req: Any, kind: Any, ctx: Context, outcome: _Outcome, now: datetime
+    store: Store,
+    cfg: Config,
+    request_id: str,
+    req: Any,
+    kind: Any,
+    ctx: Context,
+    outcome: _Outcome,
+    now: datetime,
+    *,
+    rounds: list[dict[str, Any]] | None = None,
 ) -> str | None:
     """Apply an accepted answer and mark its request done in the same transaction. The answer is first kept on the
     request, so a stop between accepting and applying it applies the same answer on the next start (no second run, no
@@ -614,7 +625,8 @@ def _apply_outcome(
                 "changeset": cs_id,
                 "held_answer": None,
                 "stopped_answer": None,
-                "stopped_rounds": [],
+                # The rounds stay, so a request that ended well still says why it took several (behind Details).
+                "stopped_rounds": rounds if rounds is not None else cur.data.get("stopped_rounds") or [],
             },
             _ENGINE,
             read_version=cur.version,
@@ -635,7 +647,8 @@ def _apply_outcome(
         )
     except ChangeFailed as failed:
         # Nothing of the change was kept: the work goes back to the assistant to be done again, as a failed run does.
-        log.warning("Request %s: %s", request_id, failed)
+        log.warning("Request %s: the change couldn't be kept", request_id)
+        content_log.keep(f"Request {request_id}: the change couldn't be kept", str(failed))
         _drop_held_answer(store, request_id)
         return stop_or_retry(store, cfg, request_id, _Outcome(retry=str(failed), stop=str(failed)), now)
     except Exception:
@@ -948,9 +961,15 @@ def _keep_stopped(store: Store, request_id: str, trail: _Trail, tries: int) -> N
     cur = store.read().get("request", request_id)
     if cur is None:
         return
-    kept = [r for r in (cur.data.get("stopped_rounds") or []) if r.get("attempt") != tries]
+    kept = _rounds_with(cur.data.get("stopped_rounds") or [], trail, tries)
+    _set(store, request_id, stopped_answer=trail.answer, stopped_rounds=kept)
+
+
+def _rounds_with(earlier: list[dict[str, Any]], trail: _Trail, tries: int) -> list[dict[str, Any]]:
+    """The request's rounds with the try that just ended in place of any it had for that try, the newest kept."""
+    kept = [r for r in earlier if r.get("attempt") != tries]
     kept += [{"attempt": tries, **r} for r in trail.rounds]
-    _set(store, request_id, stopped_answer=trail.answer, stopped_rounds=kept[-STOPPED_ROUNDS_KEPT:])
+    return kept[-STOPPED_ROUNDS_KEPT:]
 
 
 STOPPED_ROUNDS_KEPT = 30
@@ -1362,7 +1381,8 @@ def _rounds(
                 )
                 log.warning("Output limit reached; it is set at ai.tasks.%s.max_output", task.kind)
                 return _Outcome(run_id=out.run_id, stop=stop)
-            log.warning("The assistant's answer couldn't be read after a second try: %s", err)
+            log.warning("The assistant's answer couldn't be read after a second try (%s)", type(err).__name__)
+            content_log.keep("The assistant's answer couldn't be read after a second try", str(err))
             return _Outcome(run_id=out.run_id, stop=UNREADABLE, escalate=True, retry=UNREADABLE_WHY)
         if (
             task.kind == "notes"

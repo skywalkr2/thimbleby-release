@@ -21,10 +21,14 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from engine import problems
+from engine import content_log, problems
 
 FOLDER = "logs"
 FILE = "thimbleby.log"
+#: The private content log beside it (`engine.content_log`), never part of a report.
+CONTENT_FILE = "content.log"
+#: How many content log files are kept.
+CONTENT_FILES = 2
 #: How long the names the workspace's records give are kept before they are read again, so a log line costs no read.
 NAMES_FOR = 60.0
 #: The most characters one masked line of an error's message keeps.
@@ -41,6 +45,10 @@ def log_path(ws: Any) -> Path:
     return ws.private_dir / FOLDER / FILE
 
 
+def content_path(ws: Any) -> Path:
+    return ws.private_dir / FOLDER / CONTENT_FILE
+
+
 def short_path(path: str) -> str:
     """A code file's place without the folders of this computer: from its package on, else only its name."""
     clean = path.replace("\\", "/")
@@ -54,12 +62,13 @@ def short_path(path: str) -> str:
 class MaskedFormatter(logging.Formatter):
     """A line with its message masked and its traceback shown by place and masked message."""
 
-    def __init__(self, hide: Callable[[str | None], str]) -> None:
+    def __init__(self, hide: Callable[[str | None], str], limit: int = LINE_LIMIT) -> None:
         super().__init__("%(asctime)s %(levelname)s %(name)s: %(message)s")
         self.hide = hide
+        self.limit = limit
 
     def _cut(self, text: str) -> str:
-        return text if len(text) <= LINE_LIMIT else text[: LINE_LIMIT - 1] + "…"
+        return text if len(text) <= self.limit else text[: self.limit - 1] + "…"
 
     def format(self, record: logging.LogRecord) -> str:
         message = self._cut(self.hide(record.getMessage()))
@@ -108,8 +117,10 @@ class _Private(logging.handlers.RotatingFileHandler):
 
 
 class _Drop(logging.Filter):
+    """The app's log keeps neither the silent loggers' lines nor the content log's."""
+
     def filter(self, record: logging.LogRecord) -> bool:
-        return not record.name.startswith(SILENT)
+        return not record.name.startswith((*SILENT, content_log.NAME))
 
 
 class _Names:
@@ -153,6 +164,26 @@ def install(ws: Any, cfg: Any, store: Any, *, max_bytes: int | None = None) -> l
     root.addHandler(handler)
     if root.level == logging.NOTSET or root.level > level:
         root.setLevel(level)
+    handler.content = _content_handler(ws, cfg, store, max_bytes)  # type: ignore[attr-defined]
+    return handler
+
+
+def _content_handler(ws: Any, cfg: Any, store: Any, max_bytes: int | None) -> logging.Handler | None:
+    """The content log's own file: masked like the app's log, on the content logger only."""
+    try:
+        handler = _Private(
+            content_path(ws),
+            maxBytes=max_bytes if max_bytes is not None else cfg.server.log_max_mb * 1024 * 1024,
+            backupCount=CONTENT_FILES - 1,
+            encoding="utf-8",
+            delay=True,
+        )
+    except OSError:
+        return None
+    handler.setFormatter(MaskedFormatter(_Names(ws, store, cfg), limit=content_log.LINE_LIMIT))
+    content_log.log.addHandler(handler)
+    if content_log.log.level == logging.NOTSET or content_log.log.level > logging.WARNING:
+        content_log.log.setLevel(logging.WARNING)
     return handler
 
 
@@ -161,3 +192,7 @@ def remove(handler: logging.Handler | None) -> None:
         return
     logging.getLogger().removeHandler(handler)
     handler.close()
+    content = getattr(handler, "content", None)
+    if content is not None:
+        content_log.log.removeHandler(content)
+        content.close()

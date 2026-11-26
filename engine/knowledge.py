@@ -398,3 +398,15 @@ def is_keep(kind: str, current: dict[str, Any], fields: dict[str, Any]) -> bool:
         and fields.get("discard_reason") is None
         and fields.get("trust", "trusted") == "trusted"
     )
+
+
+def guessed_by(view: Any, entry_id: str) -> list[Any]:
+    """The open to-dos that still carry a guess the entry made (`Action.by_kind`), with the owners they would have had,
+    so taking them back puts those owners back."""
+    return [
+        a
+        for a in view.list("action")
+        if a.data.get("status") in ("open", "held")
+        and (a.data.get("by_kind") or {}).get("entry") == entry_id
+        and (a.data.get("by_kind") or {}).get("owners_before")
+    ]

@@ -78,7 +78,7 @@ def plan_tiers(
     once and only when a family has more than one model. A command-line agent that lists no models is matched against
     the entry's examples. Without presets, the cheapest priced model goes to `routine` and the dearest to `deep` when
     those are on the stand-in; `prices` is only called then. A preset tier that is not in the settings is made when
-    its family matches, and the tier before it escalates to it when that tier was filled here and names none.
+    its family matches, and the tier before it escalates to it when both were filled here and the one before names none.
     """
     plan = TierPlan()
     presets = clean_presets(entry.get("tier_presets"))
@@ -114,7 +114,10 @@ def plan_tiers(
             plan.use[tier] = short
             if preset["effort"]:
                 plan.effort[tier] = preset["effort"]
-            if not exists and previous in tiers and tiers[previous].escalate_to is None:
+            before = tiers.get(previous) if previous else None
+            if previous and (before is None or before.escalate_to is None):
+                # Filled here after the tier before it: a stand-in tier as much as a new one, so a fresh install's
+                # cheaper tier falls through to the stronger one when its checks keep failing.
                 plan.escalate_to[previous] = tier
             previous = tier
         return plan

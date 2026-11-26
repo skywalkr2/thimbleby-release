@@ -12,6 +12,7 @@ interface Reports {
   received: Array<{ words: string; reply_to: string; version: string; system: string; problems: string; details?: string }>;
   status: number;
   failed_read: string;
+  failed_read_kind: string;
   log_line: string;
   stopped_answer: string;
 }
@@ -48,7 +49,9 @@ test.describe("Report a problem", () => {
     await expect(preview).toHaveValue(/App version: (?!added)\S+/);
     await expect(preview).toHaveValue(/System: (?!added)\S+/);
     await expect(preview).toHaveValue(/Recent problems/);
-    await expect(preview).toHaveValue(new RegExp(seeded.failed_read));
+    // The line names the error's kind; the error's own words never leave (the #68 re-check, N-1).
+    await expect(preview).toHaveValue(new RegExp(`: ${seeded.failed_read_kind}`));
+    await expect(preview).not.toHaveValue(new RegExp(seeded.failed_read));
     // The technical details are shown before anything leaves.
     await expect(dialog.getByLabel("Technical details", { exact: true })).toHaveValue(new RegExp(seeded.log_line.slice(-30)));
     await checkAccessibility(page);
@@ -64,7 +67,8 @@ test.describe("Report a problem", () => {
     expect(got.words).toBe("Today stayed empty after I connected my mail");
     expect(got.version).toMatch(/\S/);
     expect(got.system).toMatch(/\S/);
-    expect(got.problems).toContain(seeded.failed_read);
+    expect(got.problems).toContain(`: ${seeded.failed_read_kind}`);
+    expect(got.problems).not.toContain(seeded.failed_read);
     // The technical details reached the form as they were shown.
     expect(got.details).toContain(seeded.log_line);
     expect(Object.keys(got).sort()).toEqual(["details", "problems", "reply_to", "system", "version", "words"]);

@@ -6,6 +6,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useId, useMemo, useState } from "react";
 import { api, type S } from "../lib/api";
+import { useDiscardAct } from "../lib/knowledge-acts";
 import { useAct } from "../lib/act";
 import { reachWords } from "../lib/knowledge";
 import { reachChoices, useReachNames, useReachWords, type ReachChoice } from "../lib/reach";
@@ -38,6 +39,7 @@ export function useProposal(p: Proposal) {
   const wording = useWords();
   const { t } = wording;
   const act = useAct();
+  const discardAct = useDiscardAct();
   const names = useProjectNames();
   const words = useReachWords(names);
   const reach = useReachNames();
@@ -64,11 +66,7 @@ export function useProposal(p: Proposal) {
       () => api.justThisTime(p.id, p.version),
       (done) => ({ message: t("toast.learned_just_this_time"), undo: () => api.undo(done.changeset) }),
     );
-  const discard = (reason: string) =>
-    act(
-      () => api.discardKnowledge(p.id, p.version, reason.trim()),
-      (done) => ({ message: t("toast.learned_discarded"), undo: () => api.undo(done.changeset) }),
-    );
+  const discard = (reason: string) => discardAct(p, t("toast.learned_discarded"), reason.trim());
   return {
     choices,
     chosen,

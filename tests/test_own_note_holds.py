@@ -274,6 +274,7 @@ def test_whether_the_person_runs_a_calendar_entry_comes_from_their_own_note_neve
         "Pause the fair mailing until the board approves the guest list.",
         "Don't send the fair invitations until the board approves the guest list.",
         "Don’t send the fair invitations until the board approves the guest list.",
+        "Wait on the fair invitations until the board approves the guest list.",
     ],
 )
 def test_the_other_ways_to_hold_until_a_condition_answered_with_a_note_go_back_once(env, note):
@@ -327,7 +328,15 @@ def _decision(text: str) -> dict:
 
 
 @pytest.mark.parametrize(
-    "note", [UNDECIDED, "We still have to pick the cover paper, A or B.", "Still undecided on the date."]
+    "note",
+    [
+        UNDECIDED,
+        "We still have to pick the cover paper, A or B.",
+        "Still undecided on the date.",
+        "I'm torn between matte and soft-touch for the cover.",
+        "I'm not sure yet which paper to use for the cover.",
+        "Cover finish: tbd.",
+    ],
 )
 def test_a_choice_still_open_answered_with_only_a_note_goes_back_once_and_the_second_answer_stands(env, note):
     """The #67 re-check (B-6): "I haven't decided" became a note. It goes back once asking whether it is a decision
@@ -352,5 +361,84 @@ def test_a_decision_question_for_an_open_choice_or_a_note_with_no_open_choice_is
         assert len(_hold_answers(env, UNDECIDED, _decision("Matte or soft-touch."), _decision("x"))) == 1
         plain = "The fair needs more volunteers this year."
         assert len(_hold_answers(env, plain, _note_only(plain), _note_only(plain))) == 1
+    finally:
+        set_responder(None)
+
+
+@pytest.mark.parametrize(
+    "note",
+    ["I haven't decided to quit the committee.", "I haven’t decided to move the launch.", "The tbdx list is long."],
+)
+def test_a_decision_already_made_or_a_lookalike_word_is_no_open_choice(env, note):
+    """The #68 re-check (B-14): "haven't decided to quit" names no choice; "TBD" is a whole word only."""
+    from engine.ai.adapters.stub import set_responder
+
+    try:
+        assert len(_hold_answers(env, note, _note_only(note), _note_only(note))) == 1
+    finally:
+        set_responder(None)
+
+
+def test_a_decision_question_for_a_torn_choice_or_a_wait_with_a_to_do_is_not_sent_back(env):
+    from engine.ai.adapters.stub import set_responder
+
+    try:
+        note = "I'm torn between matte and soft-touch for the cover."
+        assert len(_hold_answers(env, note, _decision("Matte or soft-touch."), _decision("x"))) == 1
+    finally:
+        set_responder(None)
+
+
+def test_a_project_whose_day_the_note_gives_with_no_year_comes_in_with_the_next_such_day(env):
+    """The #68 re-check (N-7): the instructions say a day with no year is written "--MM-DD" and the app gives the year,
+    but a project's day took only a full date, so Haiku's right answer was refused as unreadable five times before one
+    left the day out. A project's day takes the next such day on or after the note, like a to-do's."""
+    from datetime import date
+
+    ws, cfg, store = env
+    note = "I'm running the Volunteer Gala on February 6."
+    add = {
+        "op": "project.add",
+        "name": "Volunteer Gala",
+        "target": "--02-06",
+        "evidence": {"quote": "the Volunteer Gala on February 6"},
+    }
+    cs, done = apply(
+        store, cfg, [add], origin="pm", trust="trusted", source_id=source(store, trust="trusted"), raw=note
+    )
+    assert done == ["applied"]
+    record = store.read().get("changeset", cs).data["ops"][0]["records"][0]
+    target = date.fromisoformat(store.read().get("project", record["id"]).data["target"])
+    received = date.fromisoformat(store.clock()[:10])
+    assert (target.month, target.day) == (2, 6) and received <= target < received.replace(year=received.year + 1)
+
+
+def test_a_question_asking_who_owns_a_to_do_the_same_answer_gave_an_owner_goes_back_once(env):
+    """The #68 re-check (N-11): Sonnet made the crate to-do the person's own and asked "Who should send Marco the crate
+    dimensions, and by what date?" in the same answer. It goes back once; the answer stands either way."""
+    from engine.ai.adapters.stub import set_responder
+
+    ws, cfg, store = env
+    me = People(store, cfg).pm
+    note = "The shop is waiting on our crate dimensions."
+    todo = {
+        "op": "action.add",
+        "text": "Send the shop the crate dimensions",
+        "owners": [me],
+        "evidence": {"quote": note},
+    }
+    asks = {
+        "op": "question.add",
+        "title": "Who sends the shop the crate dimensions?",
+        "text": "Who should send the shop the crate dimensions?",
+        "to": me,
+        "would_change": {"what": "owner", "record": "$new:0"},
+    }
+    both = {"summary": "Added the crate to-do.", "ops": [todo, asks]}
+    try:
+        asked = _hold_answers(env, note, both, both)
+        assert len(asked) == 2 and "already gives to" in asked[1].request and "answer stands" in asked[1].request
+        alone = {"summary": "Added the crate to-do.", "ops": [todo]}
+        assert len(_hold_answers(env, note, alone, alone)) == 1
     finally:
         set_responder(None)

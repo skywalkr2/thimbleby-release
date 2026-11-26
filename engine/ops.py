@@ -1402,11 +1402,12 @@ class ProjectAddOp(OpModel):
         "works for): one with that name is linked, else it is made. Set it only when the user's own note names it "
         '("my manager at <employer>... I\'m running two projects"); from other content it waits for the user.',
     )
-    target: date | None = Field(
+    target: DayOrMonthDay | None = Field(
         None,
         description="The day the project is meant to be finished or opens, only when the input states it (the words "
-        "are in the evidence). A project proposed in this answer has no id yet, so its day is given here, never in a "
-        "separate op.",
+        "are in the evidence): YYYY-MM-DD, or "
+        + _YEARLESS
+        + ". A project proposed in this answer has no id yet, so its day is given here, never in a separate op.",
     )
     roles: list[ProjectRoleIn] = Field(
         default_factory=list,

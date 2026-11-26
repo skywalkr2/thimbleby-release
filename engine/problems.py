@@ -6,11 +6,12 @@ last account check); the last is appended here to `problems.jsonl` in the worksp
 (time, where, exception type, masked message, never a traceback), kept to the newest few.
 
 What a report holds is what a maintainer needs: when, what was being done, the account's kind, adapter and program
-version, the request's settings, the status, the error kind and the service's own error text. Never the packet, the
-request, any mail, note or record text, a file's name, or a person's or project's name. Text that came from outside is
-masked before it is kept or shown (`mask`): keys, tokens and passwords become "<secret>", email addresses "<address>",
-paths "<path>", names of the workspace's own people, projects, files and organizations "<name>", and a URL keeps only
-its scheme and host. The app sends nothing: the person reads the lines and sends them, or not.
+version, the request's settings, the status and the error's kind. Never an error's or a service's own text: an agent's
+error can carry the assistant's answer, and a service's can quote the request. Never the packet, the request, any mail,
+note or record text, a file's name, or a person's or project's name. The full error stays in the app's log, masked
+(`mask`): keys, tokens and passwords become "<secret>", email addresses "<address>", paths "<path>", names of the
+workspace's own people, projects, files and organizations "<name>", and a URL keeps only its scheme and host. The app
+sends nothing: the person reads the lines and sends them, or not.
 """
 
 from __future__ import annotations
@@ -50,7 +51,8 @@ Doing = Literal["task", "account_check", "source_read", "app"]
 @dataclass(frozen=True)
 class Problem:
     """One failure as the person will see it, already masked. `what` is the task kind, the part of an account check, the
-    connector of a source or where in the app, by `doing`."""
+    connector of a source or where in the app, by `doing`. `text` holds only words the app writes itself (the checks
+    that sent a stopped request back), never an error's or a service's text."""
 
     at: datetime
     doing: Doing
@@ -427,21 +429,19 @@ def recent(
     env: Mapping[str, str] | None = None,
 ) -> list[Problem]:
     """The failures of the last `ui.feedback_problem_days` days, newest first, at most `ui.feedback_problem_max`, each
-    masked and its error text cut. Empty when there were none."""
+    naming the error's kind and status, never its text. Empty when there were none."""
     hide = masker or masker_for(ws, store, cfg, env)
     version = program_version or default_program_version(cfg)
     since = now - timedelta(days=cfg.ui.feedback_problem_days)
-    found = [*_failed_runs(store, cfg, since, hide, version), *_failed_reads(store, cfg, since, hide)]
+    found = [*_failed_runs(store, cfg, since, version), *_failed_reads(store, cfg, since)]
     found += _stopped_requests(store, since, hide)
-    found += _failed_checks(ws, cfg, since, hide, version)
-    found += _app_problems(ws, since, hide)
+    found += _failed_checks(ws, cfg, since, version)
+    found += _app_problems(ws, since)
     found.sort(key=lambda p: p.at, reverse=True)
     return found[: cfg.ui.feedback_problem_max]
 
 
-def _failed_runs(
-    store: Any, cfg: Any, since: datetime, hide: Masker, version: Callable[[str], str | None]
-) -> list[Problem]:
+def _failed_runs(store: Any, cfg: Any, since: datetime, version: Callable[[str], str | None]) -> list[Problem]:
     out = []
     for stored in store.read().since("run", "started_at", since.date().isoformat()):
         run = stored.data
@@ -458,6 +458,7 @@ def _failed_runs(
             params["effort"] = tier.effort
         params.update(_request_settings(cfg, run["provider"]))
         detail = run.get("error_detail") or ""
+        # The status is read from the error; its words stay on the run, never in the line.
         out.append(
             Problem(
                 at=when,
@@ -466,7 +467,6 @@ def _failed_runs(
                 params=params,
                 status=status_of(detail),
                 error_kind=run.get("error_kind") or run.get("outcome"),
-                text=_cut(hide(detail)),
                 **_account(cfg, run["provider"], version),
             )
         )
@@ -513,7 +513,22 @@ def last_stopped_answer(store: Any, cfg: Any, now: datetime) -> tuple[datetime, 
     return None if newest is None else (newest[0], newest[2])
 
 
-def _failed_reads(store: Any, cfg: Any, since: datetime, hide: Masker) -> list[Problem]:
+def private_material(store: Any, cfg: Any, now: datetime) -> list[str]:
+    """What can carry the assistant's or a service's words, from the report's window (`ui.feedback_problem_days`):
+    requests' kept answers and their rounds' reasons, and failed runs' error text. A report part that holds any of it is
+    refused (`report_send.holds_private`); the answer leaves only as its own previewed block."""
+    since = now - timedelta(days=cfg.ui.feedback_problem_days)
+    out: list[str] = []
+    for stored in store.read().since("request", "created_at", since.date().isoformat()):
+        req = stored.data
+        out += [req.get("stopped_answer") or ""]
+        out += [reason for r in req.get("stopped_rounds") or [] for reason in r.get("reasons") or []]
+    for stored in store.read().since("run", "started_at", since.date().isoformat()):
+        out += [stored.data.get("error_detail") or ""]
+    return [text for text in out if text]
+
+
+def _failed_reads(store: Any, cfg: Any, since: datetime) -> list[Problem]:
     connectors = {s.id: s.connector for s in cfg.watch.sources}
     out = []
     for stored in store.read().since("watch_run", "started_at", since.date().isoformat()):
@@ -529,15 +544,12 @@ def _failed_reads(store: Any, cfg: Any, since: datetime, hide: Masker) -> list[P
                 what=connectors.get(run["source"]),
                 status=status_of(text),
                 error_kind=run.get("error_kind"),
-                text=_cut(hide(text)),
             )
         )
     return out
 
 
-def _failed_checks(
-    ws: Any, cfg: Any, since: datetime, hide: Masker, version: Callable[[str], str | None]
-) -> list[Problem]:
+def _failed_checks(ws: Any, cfg: Any, since: datetime, version: Callable[[str], str | None]) -> list[Problem]:
     from engine.ai.smoke import last_test
 
     test = last_test(ws)
@@ -569,17 +581,16 @@ def _failed_checks(
             params=params,
             status=status_of(raw),
             error_kind=result.get("error_kind") or None,
-            text=_cut(hide(raw)),
             **_account(cfg, name, version),
         )
-        key = (name, problem.what, problem.error_kind, problem.text, tuple(sorted(params.items())))
+        key = (name, problem.what, problem.error_kind, problem.status, tuple(sorted(params.items())))
         if key not in seen:
             seen.add(key)
             out.append(problem)
     return out
 
 
-def _app_problems(ws: Any, since: datetime, hide: Masker) -> list[Problem]:
+def _app_problems(ws: Any, since: datetime) -> list[Problem]:
     out = []
     for row in _app_lines(ws):
         when = _at(row.get("at"))
@@ -591,7 +602,6 @@ def _app_problems(ws: Any, since: datetime, hide: Masker) -> list[Problem]:
                 doing="app",
                 what=str(row.get("where") or "") or None,
                 error_kind=str(row.get("type") or "") or None,
-                text=_cut(hide(str(row.get("message") or ""))),
             )
         )
     return out

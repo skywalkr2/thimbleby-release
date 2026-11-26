@@ -65,6 +65,25 @@ def test_the_log_holds_no_secret_address_name_or_text_the_person_gave(logged):
     assert "<secret>" in text and "<address>" in text and "<name>" in text
 
 
+def test_words_the_assistant_said_go_to_the_content_log_masked_and_never_to_the_app_log(api):  # noqa: F811
+    """The content log keeps what can hold the assistant's words in its own private file, masked like the app's log;
+    the app's log, whose end a report offers to send, never holds it (the #68 re-check, N-3)."""
+    from engine import content_log, report_send
+
+    client, store, worker, ws, cfg, name = api
+    handler = app_log.install(ws, cfg, store)
+    try:
+        content_log.keep("the agent was stopped", f"I'll write to {address()} about the move to the new room")
+        logging.getLogger("engine.test").warning("an ordinary line")
+    finally:
+        app_log.remove(handler)
+    kept = app_log.content_path(ws).read_text(encoding="utf-8")
+    assert "the move to the new room" in kept and address() not in kept and "<address>" in kept
+    assert content_log.said_in(kept) and "the move to the new room" in content_log.said_in(kept)[0]
+    assert "the move to the new room" not in read(ws) and "an ordinary line" in read(ws)
+    assert "the move to the new room" not in report_send.details_for(ws, store, cfg)
+
+
 def test_the_level_is_a_setting_and_a_quieter_one_leaves_out_what_a_louder_one_keeps(api):  # noqa: F811
     client, store, worker, ws, cfg, name = api
     quiet = ws.config(env={}, flags={"server.log_level": "error", "storage.backups.automatic": False})

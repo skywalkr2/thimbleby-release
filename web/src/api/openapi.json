@@ -8883,7 +8883,7 @@
             "title": "Stopped Answer"
           },
           "stopped_rounds": {
-            "description": "For a stopped request: each round that was sent back or refused, with its reasons.",
+            "description": "Each round that was sent back or refused, with its try and reasons: for a stopped request, and for one that ended well after return rounds (shown behind Details).",
             "items": {
               "$ref": "#/components/schemas/StoppedRoundView"
             },
@@ -16349,6 +16349,28 @@
           }
         },
         "title": "KnowledgeEvidence",
+        "type": "object"
+      },
+      "KnowledgeGuesses": {
+        "description": "GET /api/knowledge/{entry_id}/guesses: how many open to-dos still carry a guess the entry made, so discarding it\ncan offer to take them all back at once.",
+        "properties": {
+          "count": {
+            "description": "The open to-dos still marked with its guess.",
+            "minimum": 0.0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "entry": {
+            "description": "The entry's id.",
+            "title": "Entry",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entry",
+          "count"
+        ],
+        "title": "KnowledgeGuesses",
         "type": "object"
       },
       "KnowledgeKeep": {
@@ -48479,6 +48501,46 @@
         "summary": "Discard"
       }
     },
+    "/api/knowledge/{entry_id}/guesses": {
+      "get": {
+        "description": "How many open to-dos still carry a guess this entry made, for \"Take back its guesses\" beside its discard.",
+        "operationId": "guesses_api_knowledge__entry_id__guesses_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entry_id",
+            "required": true,
+            "schema": {
+              "title": "Entry Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeGuesses"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Guesses"
+      }
+    },
     "/api/knowledge/{entry_id}/just-this-time": {
       "post": {
         "description": "Set a proposal aside as right for this case but not a pattern: it is discarded with that as its reason,\na `just_this_time` signal is recorded, and the same correction proposed again is shown with how many times\nthis was said before. Undo puts it back to proposed.",
@@ -48777,6 +48839,46 @@
           }
         },
         "summary": "Reuse"
+      }
+    },
+    "/api/knowledge/{entry_id}/take-back-guesses": {
+      "post": {
+        "description": "Take back every guess the entry made at once: each open to-do it marked gets the owners it would have had\nand loses the mark, as one change with one Undo. It teaches nothing new: discarding the entry already did.",
+        "operationId": "take_back_guesses_api_knowledge__entry_id__take_back_guesses_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entry_id",
+            "required": true,
+            "schema": {
+              "title": "Entry Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Applied"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Take Back Guesses"
       }
     },
     "/api/knowledge/{entry_id}/wrong": {

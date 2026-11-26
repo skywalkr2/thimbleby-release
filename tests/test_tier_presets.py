@@ -162,11 +162,20 @@ def test_a_tier_on_another_real_account_stays_and_does_not_make_its_neighbor_esc
     assert got.use.keys() == {"routine", "hardest"}
 
 
-def test_a_preset_tier_already_in_the_settings_and_on_the_stand_in_is_filled_without_changing_escalation():
+def test_a_preset_tier_already_in_the_settings_and_on_the_stand_in_is_filled_and_escalates_when_it_names_none():
     kind = preset_kind()
     tiers = {"routine": tier("deep"), "deep": tier(), "hardest": tier()}
     got = plan(kind, short_names(ids_for(kind)), tiers, {"routine", "deep", "hardest"})
-    assert got.use.keys() == {"routine", "deep", "hardest"} and got.escalate_to == {}
+    assert got.use.keys() == {"routine", "deep", "hardest"} and got.escalate_to == {"deep": "hardest"}
+
+
+def test_on_a_fresh_install_the_cheaper_tier_falls_through_to_the_stronger_one():
+    """The #68 re-check (N-8): a fresh install's tiers are on the stand-in, so only the new hardest tier got a tier to
+    escalate from, and a note whose retry also looped stopped at "needs you" instead of going to the stronger model."""
+    kind = preset_kind()
+    tiers = {"routine": tier(), "deep": tier()}
+    got = plan(kind, short_names(ids_for(kind)), tiers, {"routine", "deep"})
+    assert got.escalate_to == {"routine": "deep", "deep": "hardest"}
 
 
 def test_a_deep_tier_that_already_escalates_elsewhere_keeps_it():

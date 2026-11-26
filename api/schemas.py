@@ -1257,7 +1257,8 @@ class ChangeItem(BaseModel):
     cause: StopCauseView | None = Field(None, description="For a stopped request: the cause an action can clear.")
     stopped_rounds: list[StoppedRoundView] = Field(
         default_factory=list,
-        description="For a stopped request: each round that was sent back or refused, with its reasons.",
+        description="Each round that was sent back or refused, with its try and reasons: for a stopped request, and "
+        "for one that ended well after return rounds (shown behind Details).",
     )
     stopped_answer: str | None = Field(
         None, description="For a stopped request: the assistant's last answer as it gave it, shown as plain text."
@@ -8252,6 +8253,14 @@ class RuleReviewPutOff(BaseModel):
 
     until: datetime = Field(description="When the review is offered again, if it still has something to show.")
     signal: str = Field(description="The id of what was recorded, which Undo takes back.")
+
+
+class KnowledgeGuesses(BaseModel):
+    """GET /api/knowledge/{entry_id}/guesses: how many open to-dos still carry a guess the entry made, so discarding it
+    can offer to take them all back at once."""
+
+    entry: str = Field(description="The entry's id.")
+    count: int = Field(ge=0, description="The open to-dos still marked with its guess.")
 
 
 class KnowledgeDiscard(BaseModel):

@@ -31,7 +31,7 @@ def env(tmp_path):
     store.close()
 
 
-def run(store, cfg, answer: dict, *, origin="pm", trust="trusted") -> str:
+def run(store, cfg, answer: dict, *, origin="pm", trust="trusted", ai_run: str | None = None, note: str = NOTE) -> str:
     cs = CHANGESET.validate_python(answer, context={"op_models": store.plugins.ops})
     src = source(store, trust=trust)
     ctx = Context(
@@ -39,9 +39,9 @@ def run(store, cfg, answer: dict, *, origin="pm", trust="trusted") -> str:
         cfg,
         People(store, cfg),
         tuple(store.plugins.ops),
-        Inputs(request(store, origin, source=src), src, NOTE, "", trust),
+        Inputs(request(store, origin, source=src), src, note, "", trust),
     )
-    return apply_changeset(cs, [], ctx, run=None)
+    return apply_changeset(cs, [], ctx, run=ai_run)
 
 
 def someone(store, cfg) -> tuple[str, str]:
@@ -235,3 +235,88 @@ def test_a_proposal_that_is_not_from_the_persons_correction_is_never_given_or_ma
     entry = waiting_guess(store, cfg, flagged=False)
     outcome, action = letters(store, cfg, entry)
     assert action.get("by_kind") is None
+
+
+def given_run(store, cfg, entry: str) -> str:
+    """An AI run whose knowledge log lists the entry as given."""
+    from engine.storage import WriteContext
+
+    task = next(iter(cfg.ai.tasks))
+    data = {
+        "task": task,
+        "provider": "stub",
+        "model": "example-small-model",
+        "tier": "routine",
+        "outcome": "ok",
+        "started_at": "2026-10-10T09:00:00+00:00",
+        "knowledge": {"given": [entry]},
+    }
+    with store.transaction() as tx:
+        return tx.create("run", data, WriteContext("engine", "trusted", "test")).id
+
+
+def test_a_to_do_owned_by_whom_a_not_yet_kept_lesson_names_is_marked_even_when_the_run_says_nothing(env):
+    """The #68 re-check (N-4): the mark came only when the model listed the step in "by_kind", so a run that applied
+    the lesson without saying so gave the owner with no mark and no Take it back. A run given the lesson whose to-do
+    goes to someone only the lesson names is marked all the same."""
+    ws, cfg, store = env
+    entry = waiting_guess(store, cfg)
+    pid, name = someone(store, cfg)
+    add = {
+        "op": "action.add",
+        "text": "Send the fair sponsor thank-you letters",
+        "owners": [name],
+        "evidence": {"quote": NOTE},
+    }
+    cs = run(store, cfg, {"ops": [add]}, ai_run=given_run(store, cfg, entry))
+    made = store.read().get("changeset", cs).data["ops"][0]
+    action = store.read().get("action", made["records"][0]["id"]).data
+    assert action["by_kind"]["entry"] == entry and action["by_kind"]["owners_before"] == [People(store, cfg).pm]
+
+
+def test_a_to_do_whose_owner_the_input_names_or_a_run_not_given_the_lesson_is_never_marked(env):
+    ws, cfg, store = env
+    entry = waiting_guess(store, cfg)
+    pid, name = someone(store, cfg)
+    add = {
+        "op": "action.add",
+        "text": "Send the fair sponsor thank-you letters",
+        "owners": [name],
+        "evidence": {"quote": NOTE},
+    }
+    other = waiting_guess(store, cfg, flagged=False)
+    not_given = run(store, cfg, {"ops": [add]}, ai_run=given_run(store, cfg, other))
+    action = store.read().get("action", store.read().get("changeset", not_given).data["ops"][0]["records"][0]["id"])
+    assert action.data.get("by_kind") is None
+    named_note = f"{name} will send the fair sponsor thank-you letters."
+    add_named = {**add, "evidence": {"quote": named_note}}
+    named = run(store, cfg, {"ops": [add_named]}, ai_run=given_run(store, cfg, entry), note=named_note)
+    action = store.read().get("action", store.read().get("changeset", named).data["ops"][0]["records"][0]["id"])
+    assert action.data.get("by_kind") is None
+
+
+def test_discarding_a_not_yet_kept_lesson_offers_its_guesses_and_one_step_takes_them_all_back_teaching_nothing(api):
+    """The #68 re-check (N-5): discarding the lesson left its earlier guesses in place, each needing its own Take it
+    back. Its guesses are counted for the discard, and one step takes them all back as one change with one Undo, with
+    no correction of its own: the discard already taught."""
+    client, cfg, store = api
+    entry = waiting_guess(store, cfg)
+    first, _ = letters(store, cfg, entry)
+    second, _ = letters(store, cfg, entry)
+    marked = [first["records"][0]["id"], second["records"][0]["id"]]
+    lesson = store.read().get("lesson", entry)
+    assert client.post(f"/api/knowledge/{entry}/discard", json={"read_version": lesson.version}).status_code == 200
+    assert client.get(f"/api/knowledge/{entry}/guesses").json() == {"entry": entry, "count": 2}
+    signals = len(store.read().list("signal"))
+    proposed = len([x for x in store.read().list("lesson") if x.data.get("status") == "proposed"])
+    done = client.post(f"/api/knowledge/{entry}/take-back-guesses")
+    assert done.status_code == 200
+    me = People(store, cfg).pm
+    for action_id in marked:
+        after = store.read().get("action", action_id).data
+        assert after.get("by_kind") is None and [o["person"] for o in after["owners"]] == [me]
+    assert store.read().get("changeset", done.json()["changeset"]).data["ops"][1]["status"] == "applied"
+    assert len(store.read().list("signal")) == signals
+    assert len([x for x in store.read().list("lesson") if x.data.get("status") == "proposed"]) == proposed
+    assert client.get(f"/api/knowledge/{entry}/guesses").json()["count"] == 0
+    assert client.post(f"/api/knowledge/{entry}/take-back-guesses").status_code == 409

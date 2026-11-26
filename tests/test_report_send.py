@@ -256,7 +256,9 @@ def test_a_send_with_no_facts_call_still_carries_the_version_and_system(tmp_path
 ANSWER = "The assistant's own words, with the person's material: ask Pat about the Henderson order."
 
 
-def stop_a_request(app, cfg, *, answer: str | None = ANSWER, state: str = "needs_you", days_ago: int = 0) -> str:
+def stop_a_request(
+    app, cfg, *, answer: str | None = ANSWER, state: str = "needs_you", days_ago: int = 0, rounds: list | None = None
+) -> str:
     """A request that stopped for the person, with the answer it kept; made `days_ago` days before the store's clock."""
     from datetime import datetime, timedelta
 
@@ -264,6 +266,8 @@ def stop_a_request(app, cfg, *, answer: str | None = ANSWER, state: str = "needs
     made = datetime.fromisoformat(store.clock()) - timedelta(days=days_ago)
     task = next(iter(cfg.ai.tasks))
     data = {"task": task, "origin": "pm", "state": state, "created_at": made.isoformat(), "stopped_answer": answer}
+    if rounds:
+        data["stopped_rounds"] = rounds
     with store.transaction() as tx:
         created = tx.create("request", data, WriteContext(actor="engine", trust="trusted", op="test"))
     return created.id if hasattr(created, "id") else str(created)
@@ -334,3 +338,30 @@ def test_a_long_log_and_the_longest_answer_still_fit_the_form(tmp_path, monkeypa
     assert sent.json() == {"ok": True, "why": None}
     assert report_send.units(seen[0][1]["details"]) <= report_send.LIMITS["details"]
     assert seen[0][1]["details"].endswith(facts["answer"])
+
+
+def test_the_problems_and_details_never_carry_the_assistants_words_whatever_the_screen_sends(tmp_path, monkeypatch):
+    """The server checks the problem lines and the details against what can hold the assistant's or a service's words
+    (kept answers, round reasons, failed runs' error text, the content log), whatever the screen sent; a part holding
+    any of it is refused and nothing is sent (the #68 re-check, N-2, N-3)."""
+    from engine import app_log, content_log
+
+    seen: list = []
+    monkeypatch.setattr(engine.net, "TRANSPORT", serve(200, seen))
+    client, app, cfg = make_client(tmp_path, LOCAL_FORM)
+    reason = "The answer adds the dinner with the board on Thursday evening, which the note never mentions."
+    printed = "I'll move the quarterly review to the room on the third floor and tell everyone by lunch."
+    stop_a_request(app, cfg, rounds=[{"attempt": 1, "round": 1, "reasons": [reason], "checks": ["evidence"]}])
+    ws_root = tmp_path / "ws"
+    content = private_dir(ws_root) / app_log.FOLDER / app_log.CONTENT_FILE
+    content.parent.mkdir(parents=True, exist_ok=True)
+    content.write_text(f"2026-01-01 WARNING {content_log.NAME}: stopped{content_log.SAID}{printed!r}\n", "utf-8")
+    with client:
+        sent = [
+            client.post("/api/report/send", json={"words": WORDS, "problems": f"{LINES}\nSaid: {ANSWER[:60]}"}),
+            client.post("/api/report/send", json={"words": WORDS, "details": f"engine.x: {reason}"}),
+            client.post("/api/report/send", json={"words": WORDS, "details": f"engine.x: {printed[5:70]}"}),
+            client.post("/api/report/send", json={"words": WORDS, "problems": LINES, "details": "engine.x: slow"}),
+        ]
+    assert [r.status_code for r in sent] == [409, 409, 409, 200]
+    assert len(seen) == 1 and seen[0][1]["problems"] == LINES

@@ -52,6 +52,20 @@ def view(tmp_path):
         ("Plans for spring are late.", set()),
         ("The spring fair stalls are booked.", {"spring_fair"}),
         ("Buy milk on the way home.", set()),
+        # #68 (B-13): a describing word and a brand are not a project; a head word starting a sentence is.
+        ("Clean the office on Friday.", set()),
+        ("Fix the kitchen sink.", set()),
+        ("Read the book on the train.", set()),
+        ("Stop by my office.", set()),
+        ("We bought a Kitchen Aid mixer.", set()),
+        ("Pick up supplies at Office Depot.", set()),
+        ("Exhibit planning is late.", {"exhibit"}),
+        ("Gala tickets sold out.", {"gala"}),
+        ("Move it to Friday.", set()),
+        ("Move the meeting.", set()),
+        ("Give the Art Exhibit a miss.", set()),
+        # Judged wrong: "report" is the head word of a project's name here, so the lean toward naming keeps it.
+        ("Send the report to Dana.", {"report"}),
     ],
 )
 def test_a_project_is_named_by_its_full_name_or_a_short_form(view, text, named):

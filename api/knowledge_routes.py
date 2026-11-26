@@ -14,6 +14,7 @@ from api.schemas import (
     CatchUpStarted,
     CatchUpView,
     KnowledgeDiscard,
+    KnowledgeGuesses,
     KnowledgeKeep,
     KnowledgeNarrow,
     KnowledgeTermAdd,
@@ -284,6 +285,30 @@ def build_knowledge_router(cfg: Config, store: Store, events: Events, worker: Wo
         except StoreError as err:
             raise HTTPException(status_code=409, detail=str(err)) from None
         return act(found, edit(found, fields), "Discarded what was learned", "discarded")
+
+    @r.get("/knowledge/{entry_id}/guesses")
+    def guesses(entry_id: str) -> KnowledgeGuesses:
+        """How many open to-dos still carry a guess this entry made, for "Take back its guesses" beside its discard."""
+        with store.read_scope():
+            return KnowledgeGuesses(entry=entry_id, count=len(knowledge.guessed_by(store.read(), entry_id)))
+
+    @r.post("/knowledge/{entry_id}/take-back-guesses")
+    def take_back_guesses(entry_id: str) -> Applied:
+        """Take back every guess the entry made at once: each open to-do it marked gets the owners it would have had
+        and loses the mark, as one change with one Undo. It teaches nothing new: discarding the entry already did."""
+        with store.read_scope():
+            marked = knowledge.guessed_by(store.read(), entry_id)
+        if not marked:
+            raise HTTPException(status_code=409, detail="there are no guesses of this entry to take back")
+        ops = [{"op": "action.owners", "id": a.id, "owners": a.data["by_kind"]["owners_before"]} for a in marked]
+        try:
+            done = apply_as_person(
+                store, cfg, ops, "Took back what was guessed", all_or_nothing=True, corrections=False
+            )
+        except (StoreError, ValueError) as err:
+            raise HTTPException(status_code=409, detail=str(err)) from None
+        events.changed()
+        return Applied(changeset=done)
 
     @r.post("/knowledge/{entry_id}/reuse")
     def reuse(entry_id: str, body: ReadVersion) -> Applied:

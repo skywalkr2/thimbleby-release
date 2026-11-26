@@ -29,6 +29,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from engine import content_log
 from engine.ai.task import AgentIdentity, AiError, AiResult, AiTask, IdentityUnknown, ModelInfo
 from engine.prompts import render
 from engine.state_file import write_whole
@@ -232,9 +233,9 @@ class CliAgentAdapter:
             if self.agent.output_stream:
                 streamed = "\n".join(line[:400] for line in streamed.splitlines()[-STREAM_LOG_EVENTS:])
             printed = [streamed[-2000:], _text(late.stderr)[-2000:]]
-            log.warning(
-                "the agent was stopped after %s seconds; it had printed: %r", self.settings.timeout_seconds, printed
-            )
+            # What it printed can hold the assistant's answer, so it goes to the private content log, never the app's.
+            log.warning("the agent was stopped after %s seconds", self.settings.timeout_seconds)
+            content_log.keep(f"the agent was stopped after {self.settings.timeout_seconds} seconds", printed)
             raise AiError("timeout", f"the agent didn't finish in {self.settings.timeout_seconds} seconds") from None
         except OSError as err:
             raise AiError("provider_down", f"the agent program couldn't start: {err}", sent=False) from None
@@ -688,6 +689,19 @@ EARLIER_COMMANDS = [
         "",
         "--disallowedTools",
         "mcp__*",
+        "--strict-mcp-config",
+        "--no-session-persistence",
+    ],
+    # The first preset command, before it turned off the program's own connections' tools.
+    [
+        "claude",
+        "-p",
+        "--output-format",
+        "json",
+        "--model",
+        "{model}",
+        "--tools",
+        "",
         "--strict-mcp-config",
         "--no-session-persistence",
     ],

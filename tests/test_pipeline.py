@@ -685,6 +685,21 @@ def test_a_stopped_request_keeps_its_last_answer_and_why_each_round_was_turned_d
     assert data["stopped_answer"] == replies[-1][:12]
 
 
+def test_a_request_that_ends_well_after_a_return_round_keeps_why_and_how_many_rounds_it_took(env):
+    """The #68 re-check (N-6): a note took six calls on a good answer, and a request that ended well kept no record of
+    why. It keeps each round turned down, with its reasons, but never the answer."""
+    _, cfg, store = env
+    cfg.dispatch.retries = 0
+    good = json.dumps({"summary": "Noted.", "ops": [{"op": "note", "text": "The fair is on Saturday."}]})
+    replies = iter(["Not an answer.", good])
+    set_responder(lambda task: next(replies))
+    handed, cs_id = run(env, "The fair is on Saturday.")
+    data = store.read().get("request", handed.request).data
+    assert cs_id is not None and data["state"] != "needs_you"
+    assert [(r["attempt"], r["round"]) for r in data["stopped_rounds"]] == [(1, 1)]
+    assert data["stopped_rounds"][0]["reasons"] and data["stopped_answer"] is None
+
+
 def test_an_answer_that_fails_twice_says_so_in_plain_words_and_tells_the_assistant_what_was_wrong(env):
     """The person's path: an op without its name, twice. The second round is told which op lacks it; the person sees
     no internal words."""

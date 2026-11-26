@@ -92,52 +92,81 @@ def _in_scope_of_projects(scope: Scope, projects: set[str], also: str | None = N
     return not (set(scope.except_) & projects)
 
 
-def _words_said_as_names(text: str, leads: set[str]) -> set[str]:
-    """The words of a text that read as someone's name for a thing: a word right after a leading word ("the gala",
-    "our exhibit"), a word written with a capital in the middle of a sentence, or an id with a digit. An ordinary word
-    at the start of a sentence ("Move the meeting") or on its own ("office chairs") is not one."""
-    found: set[str] = set()
-    for token in _WORD.finditer(text):
+def _head_words(name: str) -> set[str]:
+    """The words of a project name worth matching as its short form: its ids, and the last word of the name (its head:
+    "gala" of "Volunteer Gala"), never a word that only describes it ("office" of "Office Move")."""
+    tokens = _WORD.findall(name)
+    found = {t.lower() for t in tokens if any(c.isdigit() for c in t)}
+    if tokens:
+        found |= {_stem(part) for part in _PART.findall(tokens[-1]) if len(part) >= 4}
+    return found
+
+
+def _said_as_names(text: str, leads: set[str], not_objects: set[str]) -> list[tuple[set[str], set[str]]]:
+    """Each place in a text where a word reads as someone's name for a thing, as its words (plurals folded) and the
+    lower-case words of the capitalized words right beside it: a word right after a leading word ("the gala", "our
+    exhibit"), a word written with a capital in the middle of a sentence, an id with a digit, or a word that starts a
+    sentence when the next word doesn't start an object ("Exhibit planning is late" but not "Move the meeting"). An
+    ordinary word on its own ("office chairs") is not one."""
+    tokens = list(_WORD.finditer(text))
+    found: list[tuple[set[str], set[str]]] = []
+
+    def starts(i: int) -> bool:
+        before = text[: tokens[i].start()].rstrip()
+        return not before or before[-1] in ".!?:;\n\"'(" or text[tokens[i].start() - 1 : tokens[i].start()] == "\n"
+
+    for i, token in enumerate(tokens):
         word = token.group(0)
-        if any(c.isdigit() for c in word):
-            found.add(word.lower())
-            continue
-        before = text[: token.start()].rstrip()
-        previous = _WORD.findall(before[-40:])[-1:] if before and before[-1].isalnum() else []
-        starts_sentence = not before or before[-1] in ".!?:;\n\"'(" or text[token.start() - 1 : token.start()] == "\n"
-        if (previous and previous[0].lower() in leads) or (word[0].isupper() and not starts_sentence):
-            found |= _overlap_words(word)
+        sentence_start = starts(i)
+        after = tokens[i + 1].group(0).lower() if i + 1 < len(tokens) else ""
+        previous = tokens[i - 1].group(0).lower() if i and not sentence_start else ""
+        if (
+            any(c.isdigit() for c in word)
+            or previous in leads
+            or (word[0].isupper() and not sentence_start)
+            or (sentence_start and after not in leads | not_objects)
+        ):
+            beside: set[str] = set()
+            if word[0].isupper():
+                if i and not sentence_start and not starts(i - 1) and tokens[i - 1].group(0)[0].isupper():
+                    beside.add(tokens[i - 1].group(0).lower())
+                if i + 1 < len(tokens) and tokens[i + 1].group(0)[0].isupper() and not starts(i + 1):
+                    beside.add(after)
+            found.append((_overlap_words(word) | ({word.lower()} if any(c.isdigit() for c in word) else set()), beside))
     return found
 
 
 def projects_named_in(view: Any, text: str, cfg: Any = None) -> list[str]:
-    """The projects an input names in its own words: by name or alias as a whole phrase, or by a short form, a word of
-    four letters or more that only this project's name holds, read as a name where it follows a leading word
-    (`language.project_name_leads`: "the gala" for "Volunteer Gala", "the exhibit" for "Spring Exhibit") or is written
-    with a capital in the middle of a sentence, plurals folded, case ignored; never an ordinary word on its own ("Move
-    the meeting" for "Office Move"). It leans toward naming: a project named by mistake sends a few lines of what was
-    learned for it, and one missed makes the person repeat a correction."""
+    """The projects an input names in its own words: by name or alias as a whole phrase, or by a short form, the last
+    word of the name (four letters or more) when no other project's name holds it, read as a name where it follows a
+    leading word (`language.project_name_leads`: "the gala" for "Volunteer Gala"), is written with a capital in the
+    middle of a sentence, or starts a sentence not followed by a word that starts an object (`language.
+    short_form_object_leads`: "Gala tickets sold out"), plurals folded, case ignored. A word that only describes the
+    project ("office" of "Office Move") and a capitalized word beside another capitalized word the name doesn't hold
+    ("Office Depot", "Kitchen Aid") are never it. It leans toward naming: a project named by mistake sends a few lines
+    of what was learned for it, and one missed makes the person repeat a correction."""
     said = " ".join((text or "").casefold().split())
     if not said:
         return []
     projects = list(view.list("project"))
-    words = {
-        p.id: _overlap_words(" ".join([p.data.get("name") or "", *(p.data.get("aliases") or [])])) for p in projects
-    }
-    shared = {w for p in projects for w in words[p.id] if sum(w in words[q.id] for q in projects) > 1}
-    leads = {
-        w.casefold()
-        for w in (
-            language_words(cfg.language, "project_name_leads") if cfg is not None else shipped("project_name_leads")
-        )
-    }
-    in_text = _words_said_as_names(text or "", leads)
+
+    def names_of(p: Any) -> list[str]:
+        return [p.data.get("name") or "", *(p.data.get("aliases") or [])]
+
+    all_words = {p.id: _overlap_words(" ".join(names_of(p))) for p in projects}
+    heads = {p.id: set().union(*(_head_words(n) for n in names_of(p))) for p in projects}
+
+    def wording(key: str) -> set[str]:
+        return {w.casefold() for w in (language_words(cfg.language, key) if cfg is not None else shipped(key)) or []}
+
+    places = _said_as_names(text or "", wording("project_name_leads"), wording("short_form_object_leads"))
     found = []
     for project in projects:
-        names = [project.data.get("name") or "", *(project.data.get("aliases") or [])]
-        forms = [" ".join(n.casefold().split()) for n in names if n.strip()]
+        forms = [" ".join(n.casefold().split()) for n in names_of(project) if n.strip()]
         whole = any(re.search(rf"(?<!\w){re.escape(form)}(?!\w)", said) for form in forms)
-        if whole or (words[project.id] - shared) & in_text:
+        mine = {w for w in heads[project.id] if not any(w in all_words[q.id] for q in projects if q.id != project.id)}
+        own_words = {t.lower() for n in names_of(project) for t in _WORD.findall(n)}
+        if whole or any(words & mine and not (beside - own_words) for words, beside in places):
             found.append(project.id)
     return found
 

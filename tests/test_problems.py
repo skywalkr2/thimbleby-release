@@ -84,7 +84,7 @@ def api(home):
         yield client, app.state.store, app.state.worker, ws, cfg, name
 
 
-def test_a_failed_calls_report_holds_the_parameters_and_the_error_and_no_packet_text_secret_or_address(api):
+def test_a_failed_calls_report_holds_the_parameters_and_the_errors_kind_and_no_packet_text_secret_or_address(api):
     client, store, worker, ws, cfg, account = api
     who, where = person(), project()
     task = next(iter(cfg.ai.tasks))
@@ -135,17 +135,17 @@ def test_a_failed_calls_report_holds_the_parameters_and_the_error_and_no_packet_
     assert call["params"]["max_output"] == str(settings.max_output)
     for setting in ("send_temperature", "json_mode", "max_tokens_param"):
         assert setting in call["params"]
-    assert "<secret>" in call["text"] and "<address>" in call["text"] and "<name>" in call["text"]
-    assert f"{SCHEME}://{HOST}" in call["text"] and f"{HOST}:" not in call["text"]
+    # Only the error's kind and status: an error's own words stay on its run (the #68 re-check, N-1).
+    assert call["text"] == ""
     read = by_doing["source_read"]
-    assert read["what"] == "folder" and read["error_kind"] == "outage" and "<path>" in read["text"]
+    assert read["what"] == "folder" and read["error_kind"] == "outage" and read["text"] == ""
     app_error = by_doing["app"]
     assert app_error["what"] == "GET /api/boom" and app_error["error_kind"] == "RuntimeError"
-    assert "<secret>" in app_error["text"] and "<address>" in app_error["text"]
+    assert app_error["text"] == ""
     assert "Traceback" not in blob
 
 
-def test_a_failed_account_check_is_reported_with_its_parameters_and_the_services_text(home):
+def test_a_failed_account_check_is_reported_with_its_parameters_and_its_kind_never_the_services_text(home):
     ws, cfg, account = home
     store = Store(ws.db_path, cfg=cfg)
     detail = f'HTTP 401: {{"error": {{"message": "incorrect key {KEY}"}}}}'
@@ -171,7 +171,7 @@ def test_a_failed_account_check_is_reported_with_its_parameters_and_the_services
         line.params["temperature"] == "0.2" and line.params["max_output"] == "800" and line.params["effort"] == "high"
     )
     assert line.params["model"] == "example-small-model" and line.params["tier"] == "routine"
-    assert KEY not in line.text and "<secret>" in line.text
+    assert line.text == "" and "incorrect key" not in repr(line)
 
 
 def test_the_days_and_the_most_bound_the_list(home):
@@ -187,10 +187,14 @@ def test_the_days_and_the_most_bound_the_list(home):
         return problems.recent(ws, store, cfg_now, NOW, program_version=lambda _name: None)
 
     everything = seen(**{"ui.feedback_problem_days": 7, "ui.feedback_problem_max": 20})
-    assert [p.text for p in everything] == [f"HTTP 500: down {h}" for h in (1, 2, 3, 30, 80)]  # newest first
-    assert [p.text for p in seen(**{"ui.feedback_problem_days": 2})] == [f"HTTP 500: down {h}" for h in (1, 2, 3, 30)]
+
+    def at(*hours):
+        return [NOW - timedelta(hours=h) for h in hours]
+
+    assert [p.at for p in everything] == at(1, 2, 3, 30, 80)  # newest first
+    assert [p.at for p in seen(**{"ui.feedback_problem_days": 2})] == at(1, 2, 3, 30)
     assert len(seen(**{"ui.feedback_problem_days": 1})) == 3
-    assert [p.text for p in seen(**{"ui.feedback_problem_max": 2})] == ["HTTP 500: down 1", "HTTP 500: down 2"]
+    assert [p.at for p in seen(**{"ui.feedback_problem_max": 2})] == at(1, 2)
     store.close()
 
 
@@ -203,6 +207,19 @@ def test_nothing_is_reported_when_there_were_no_problems(api):
     make_run(store, datetime.now(UTC), provider=account, task=next(iter(cfg.ai.tasks)), detail="", kind="offline")
     make_read(store, datetime.now(UTC), source="inbox", error="", outcome="offline", kind=None)
     assert client.get("/api/feedback/problems").json() == {"problems": []}  # ok, no network and offline are no failure
+
+
+def test_an_agents_error_carrying_the_assistants_answer_leaves_only_its_kind_in_the_report(api):
+    """An agent's error can carry what the model printed: a line names its kind and status, never its words, however
+    they are masked (the #68 re-check, N-1)."""
+    client, store, worker, ws, cfg, account = api
+    task = next(iter(cfg.ai.tasks))
+    said = "Added the dinner with the board to the schedule for Thursday evening at the usual place."
+    make_run(store, datetime.now(UTC), provider=account, task=task, detail=f"exit 1: {said}", kind="other")
+    lines = client.get("/api/feedback/problems").json()["problems"]
+    assert [line["error_kind"] for line in lines] == ["other"]
+    blob = json.dumps(lines)
+    assert "dinner" not in blob and "schedule" not in blob
 
 
 def test_an_error_in_the_worker_is_kept_without_a_traceback_and_the_file_keeps_only_the_newest(api, monkeypatch):

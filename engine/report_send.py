@@ -152,6 +152,31 @@ def answer_block(answer: str, made: str) -> str:
     return f"The assistant's last answer, from the request made {made}:\n{cut}"
 
 
+#: How many characters in a row of the assistant's or a service's words make a part hold them.
+PRIVATE_RUN = 40
+
+
+def _plain(text: str) -> str:
+    return " ".join(text.casefold().split())
+
+
+def holds_private(parts: list[str], material: list[str], masker: Callable[[str | None], str] | None = None) -> bool:
+    """Whether any part holds `PRIVATE_RUN` characters in a row of the material, as kept or as masked (case and spacing
+    ignored). The material is what can carry the assistant's or a service's words: kept answers, round reasons, failed
+    runs' error text and the content log. No AI: the same input gives the same answer."""
+    runs = set()
+    for part in parts:
+        said = _plain(part)
+        runs.update(said[i : i + PRIVATE_RUN] for i in range(len(said) - PRIVATE_RUN + 1))
+    if not runs:
+        return False
+    for text in material:
+        for form in {_plain(text), _plain(masker(text)) if masker is not None else ""}:
+            if any(form[i : i + PRIVATE_RUN] in runs for i in range(len(form) - PRIVATE_RUN + 1)):
+                return True
+    return False
+
+
 def with_answer(details: str, answer: str) -> str:
     """The details part as sent when the person included the answer: the details (when any), a blank line, then the
     answer block exactly as previewed."""
