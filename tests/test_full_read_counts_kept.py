@@ -45,7 +45,7 @@ def test_the_choices_ask_the_service_once_per_reach_within_the_time_and_again_af
         # A read of the source's older mail drops what was kept.
         source_intake.full_read_options(ws, store, cfg, "m", NOW + timedelta(minutes=16))
         before = len(service.counted)
-        source_intake.read_full_now(ws, store, cfg, "m", 30, NOW + timedelta(minutes=16))
+        source_intake.read_full_now(ws, store, cfg, "m", 14, NOW + timedelta(minutes=16))
         # Only this workspace's: the kept counts are shared by the process, and other tests' workspaces have an "m" too.
         assert not [k for k in source_intake._KEPT_COUNTS if k[0] == str(ws.root) and k[1] == "m"]
         assert len(service.counted) > before
@@ -74,7 +74,7 @@ def test_a_source_whose_read_stopped_and_waits_is_not_offered_the_full_read_agai
     try:
         source = cfg.watch.sources[0]
         assert source_intake.full_read_pending(store, cfg, source)
-        source_intake.read_full_now(ws, store, cfg, "m", 30, NOW)
+        source_intake.read_full_now(ws, store, cfg, "m", 14, NOW)
         assert source_intake.older_read_waiting(store.read(), "m") is not None
         assert not source_intake.full_read_pending(store, cfg, source)
         # Even if the answer were lost, a waiting read alone keeps the question closed.

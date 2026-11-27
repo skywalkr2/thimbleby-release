@@ -24,6 +24,7 @@ import { AccountRow } from "../components/AccountRow";
 import { CoverageRows } from "../components/Coverage";
 import { accountStates, accountsNeedingYou } from "../lib/connections";
 import { useCoverage } from "../lib/coverage";
+import { wallWhen } from "../lib/dates";
 import { settingsView, viewHref } from "../lib/views";
 import { afterClose } from "../ui/afterClose";
 import { useAlive } from "./AssistantLine";
@@ -41,8 +42,26 @@ function spendText(sp: S["SpendStatus"], t: T, total: (usd: number) => string): 
   const maybe = (today ? sp.maybe_today_usd : sp.maybe_month_usd) ?? 0;
   const line = maybe > 0 ? t(today ? "spend.with_maybe_today" : "spend.with_maybe_month", { line: counted, maybe: total(maybe) }) : counted;
   if (!sp.warn) return { text: line, near: false };
+  const hit = (state?: string) => state === "reached" || state === "exceeded";
+  if (hit(sp.day_state) || hit(sp.month_state)) {
+    const dayHit = hit(sp.day_state);
+    const state = t(`spend.state_${dayHit ? sp.day_state : sp.month_state}`);
+    const near = t(dayHit ? "spend.reached_day" : "spend.reached_month", {
+      state,
+      used: total(dayHit ? sp.today_usd : sp.month_usd),
+      limit: total(dayHit ? sp.per_day_usd : sp.per_month_usd),
+      time: wallWhen((dayHit ? sp.day_resets_at : sp.month_resets_at) ?? ""),
+    });
+    return { text: t("spend.with_near", { line, near }), near: true };
+  }
   const both = sp.warn_today && sp.warn_month;
-  const near = t(both ? "spend.near_both" : sp.warn_today ? "spend.near_day" : "spend.near_month");
+  const near = t(both ? "spend.near_both" : sp.warn_today ? "spend.near_day" : "spend.near_month", {
+    used: total(sp.today_usd),
+    limit: total(sp.per_day_usd),
+    month_used: total(sp.month_usd),
+    month_limit: total(sp.per_month_usd),
+    ...(sp.warn_today ? {} : { used: total(sp.month_usd), limit: total(sp.per_month_usd) }),
+  });
   return { text: t("spend.with_near", { line, near }), near: true };
 }
 

@@ -1027,8 +1027,11 @@ def test_an_account_says_whether_its_key_is_there_and_can_be_tested_before_it_do
 
 
 @pytest.mark.skipif(os.environ.get("COCKPIT_TEST_CORE_ONLY") == "1", reason="the bundled add-ons are off in this run")
-def test_the_add_ons_step_is_never_done_for_add_ons_nobody_decided_about(tmp_path):
-    from engine import setup
+def test_the_add_ons_step_is_never_done_for_add_ons_nobody_decided_about(tmp_path, monkeypatch):
+    from engine import plugin_manifest, setup
+
+    # Packages other tests put on the path in the same worker must not count as installed here.
+    monkeypatch.setattr(plugin_manifest, "addon_entry_points", lambda *a, **k: [])
 
     ws, cfg, store = make(tmp_path)
     try:

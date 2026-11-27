@@ -18,13 +18,13 @@ TOTAL = 5000
 
 
 class Mailbox:
-    """A mailbox of `TOTAL` messages spread over the year before the first read's window, newest first. A call costs one
+    """A mailbox of `TOTAL` messages spread over the days before the first read's window, newest first. A call costs one
     request for the list and one for each message it returns. `script` names the calls the service answers with a wait:
     ("throttled", seconds) refuses the call, ("partial", seconds) gives half a page and then asks to wait."""
 
     def __init__(self, script: dict[int, tuple[str, int]] | None = None):
         self.script = script or {}
-        self.items = [mail(f"h{i}", 15 + i * 349 / TOTAL) for i in range(TOTAL)]
+        self.items = [mail(f"h{i}", 8 + i * 5.5 / TOTAL) for i in range(TOTAL)]
         self.calls = 0
         self.requests = 0
         self.sizes: list[int] = []
@@ -61,6 +61,7 @@ def signed_in(tmp_path, monkeypatch, script=None):
     monkeypatch.setattr(mail_headers, "asker", lambda store, source: box)
     ws, cfg, store = make_core(tmp_path, [mail(f"m{d}", d) for d in (1, 2, 3)], settings_extra={"capped": False})
     cfg.ai.budgets.first_go = False
+    cfg.watch.first_headers_max_items = TOTAL
     return ws, cfg, store, box
 
 
@@ -143,7 +144,7 @@ def test_the_look_further_back_from_a_menu_returns_at_once_and_the_lane_reads_it
     ws, cfg, store, service = world(tmp_path, monkeypatch, {})
     try:
         before = service.calls
-        queued = source_intake.queue_look_further_back(ws, store, cfg, "m", 30, NOW)
+        queued = source_intake.queue_look_further_back(ws, store, cfg, "m", 14, NOW)
         assert queued.stopped == "queued" and service.calls == before, "nothing is asked of the service in the request"
         assert source_intake.older_read_waiting(store.read(), "m")["kind"] == "queued"
         drain(ws, store, cfg, NOW)

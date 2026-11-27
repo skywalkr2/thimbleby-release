@@ -74,11 +74,6 @@ queues it, with no input handed in; its `stub_answer` holds the `area.offer` op.
 `areas` (how many offers it made), `named` (words one offer's name holds, each entry met by some offer) and `together`
 (records all held by one offer); a forbidden one may name `named` (words an offer's name must not hold) or `row` (a
 record it must not take, with `attempted: true` counted when the checks refused it).
-A case that names `guess_fit: true` starts from the check of the open to-dos the person owns alone against what they
-taught that waits for their Keep (a starting routing entry or lesson with `guess_until_kept`), queued as the store
-queues it, with no input handed in; its `stub_answer` holds the `action.owners` op, if any, and `by_kind`. An expected
-`action.owners` names the to-do's `id` and may name its `owners` (as stored) and `marked` (true: the to-do carries the
-guess mark); a forbidden one may name the `id`.
 A case with `older: true` hands its pasted text in as the read of older mail, so its request carries the older read's
 mark and the packet says the mail is read to learn about the person's life. A case with `deleted: true` hands its
 pasted text in as mail the person deleted, so its request carries the deleted role and the packet says the mail is read
@@ -118,7 +113,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from engine import action_work, area_offers, draft_checks, guess_fit, new_terms, person_look, week_ahead, week_goals
+from engine import action_work, area_offers, draft_checks, new_terms, person_look, week_ahead, week_goals
 from engine.ai import pricing
 from engine.ai.adapters import make_adapter
 from engine.ai.adapters.stub import set_responder
@@ -335,7 +330,7 @@ def _check_case(folder: Path, case: dict[str, Any]) -> None:
         raise ValueError(f"{where}: person_look is a mapping with `tally` (lines) and, if wanted, `series` (lines)")
     if case.get("week_ahead") is not None and case["week_ahead"] is not True:
         raise ValueError(f"{where}: week_ahead is true, to start from the reading of the week")
-    for flag in ("monday_goals", "area_read", "guess_fit", "quiet"):
+    for flag in ("monday_goals", "area_read", "quiet"):
         if case.get(flag) is not None and case[flag] is not True:
             raise ValueError(f"{where}: {flag} is true, or left out")
     if case.get("monday_goals") and case.get("area_read"):
@@ -776,14 +771,6 @@ def _hand_in_case(ws: Workspace, store: Store, cfg: Config, case: dict[str, Any]
         if request is None:
             raise ValueError(f"case {case['id']}: no reading is due (nothing narrowed, or the person is not set)")
         return request
-    if case.get("guess_fit"):
-        # The check of a guess: queued as the store queues it, for the person's open to-dos a waiting entry reaches.
-        request = guess_fit.queue_open(store, cfg, store.clock())
-        if request is None:
-            raise ValueError(
-                f"case {case['id']}: no to-do to check (none the person owns alone that a waiting entry reaches)"
-            )
-        return request
     if case.get("handed_over") is not None:
         # An action handed to the assistant: its request is queued as the button does, for the work to be drafted.
         given = case["handed_over"]
@@ -974,15 +961,6 @@ def _op_matches(e: dict[str, Any], o: dict[str, Any], store: Store) -> bool:
         return "status" not in e or a["status"] == e["status"]
     if op in ("action.close", "action.hold", "action.unhold", "action.drop", "question.drop", "question.done"):
         return o["op"]["id"] == e["id"]
-    if op == "action.owners":
-        # A to-do handed to someone: read from the record, so the owners are as stored and the mark is the guess mark.
-        found = store.read().get("action", o["op"]["id"])
-        return bool(
-            found is not None
-            and ("id" not in e or found.id == e["id"])
-            and ("owners" not in e or sorted(x["person"] for x in found.data["owners"]) == sorted(e["owners"]))
-            and ("marked" not in e or bool(found.data.get("by_kind")) == bool(e["marked"]))
-        )
     if op == "question.update":
         # An answer that settled nothing: the question is reworded and left open. The person reads its title and its
         # text together, so the words may be in either.

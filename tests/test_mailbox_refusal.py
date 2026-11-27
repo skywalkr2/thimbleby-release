@@ -152,3 +152,51 @@ def test_a_long_service_reply_is_kept_whole_for_show_details():
     assert 500 < len(reply) < DETAIL_MAX
     assert ConnectorError("auth", reply).detail == reply
     assert len(ConnectorError("auth", reply * 100).detail) == DETAIL_MAX
+
+
+def test_a_fetch_past_its_time_stops_and_names_the_messages_it_dealt_with(monkeypatch):
+    from engine.connectors import mailbox
+
+    class Server:
+        def uid(self, *args):
+            return "OK", [(b"", b"")]
+
+    clock = iter(range(0, 1000, 10))
+    monkeypatch.setattr(mailbox.time, "monotonic", lambda: next(clock))
+    done: list[int] = []
+    mailbox._fetch(Server(), [1, 2, 3, 4], deadline_seconds=15, done=done)
+    assert done == [1, 2]
+
+
+def test_an_older_read_past_its_time_keeps_the_newest_and_says_it_stopped(monkeypatch):
+    from datetime import date
+
+    from engine.connectors import ConnectorContext, mailbox
+
+    class Server:
+        def uid(self, *args):
+            return "OK", [(b"", b"")]
+
+    clock = iter(range(0, 1000, 10))
+    monkeypatch.setattr(mailbox.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(mailbox, "_open", lambda s: Server())
+    monkeypatch.setattr(mailbox, "_close", lambda s: None)
+    monkeypatch.setattr(mailbox, "_older_uids", lambda *a: [1, 2, 3, 4])
+    seen: list[int] = []
+    real = mailbox._fetch
+
+    def spy(server, uids, max_bytes=None, deadline=None, done=None):
+        out = real(server, uids, max_bytes, deadline, done)
+        seen.extend(done)
+        return out
+
+    monkeypatch.setattr(mailbox, "_fetch", spy)
+    settings = mailbox.MailboxSettings(host="h", user="u", password="p")
+    poll = mailbox.read_older(
+        settings,
+        date(2026, 1, 1),
+        date(2026, 2, 1),
+        10,
+        ConnectorContext(workspace_root=None, fetch_deadline_seconds=15),
+    )
+    assert seen == [4, 3] and poll.stopped is not None

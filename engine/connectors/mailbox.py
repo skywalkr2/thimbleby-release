@@ -17,6 +17,7 @@ import logging
 import re
 import socket
 import ssl
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import date
@@ -303,17 +304,27 @@ def _size(server: imaplib.IMAP4, uid: int) -> int | None:
 
 
 def _fetch(
-    server: imaplib.IMAP4, uids: Sequence[int], max_bytes: int | None = None
+    server: imaplib.IMAP4,
+    uids: Sequence[int],
+    max_bytes: int | None = None,
+    deadline_seconds: float | None = None,
+    done: list[int] | None = None,
 ) -> tuple[list[SourceItem], list[Unreadable]]:
     """The messages with these UIDs as items, fetched without marking them read, and those that couldn't be read, each
     named by its UID with its reason. A message the server says is over `max_bytes` is not fetched; it is set aside as
     too large. One message that can't be read never stops the others. A Message-ID that an
     earlier message of the same read already has gets `#2`, `#3` and so on after it, so a later message is never
-    taken for another one's change."""
+    taken for another one's change. When `deadline_seconds` passes, the rest are left unread (at least one message is
+    always read, so a read always moves); `done` collects the UIDs that were dealt with, so a caller can resume."""
     items: list[SourceItem] = []
     unreadable: list[Unreadable] = []
     used: dict[str, int] = {}
+    began = time.monotonic()
     for uid in uids:
+        if done and deadline_seconds is not None and time.monotonic() - began > deadline_seconds:
+            break
+        if done is not None:
+            done.append(uid)
         key = f"message {uid}"
         size = _size(server, uid) if max_bytes else None
         if size is not None and max_bytes and size > max_bytes:
@@ -361,9 +372,13 @@ def read_mailbox(settings: MailboxSettings, state: dict[str, Any], context: Conn
         if not last:
             uids = uids[-settings.first_read :] if settings.first_read else []
         uids = uids[: settings.max_per_read]
-        items, unreadable = _fetch(server, uids, settings.max_message_mb * 1024 * 1024)
-        # The position moves past a message that couldn't be read, so the same one isn't tried on every pass.
-        newest = max(uids, default=last)
+        done: list[int] = []
+        items, unreadable = _fetch(
+            server, uids, settings.max_message_mb * 1024 * 1024, context.fetch_deadline_seconds, done
+        )
+        # The position moves past a message that couldn't be read, so the same one isn't tried on every pass, and
+        # stops at the last message dealt with when the read ran out of time, so the next pass carries on from there.
+        newest = max(done, default=last)
         # A first read that returned as many messages as it may take stopped at its cap, not at the end of the mail.
         capped = not last and bool(settings.first_read) and len(uids) >= settings.first_read
         return Poll(
@@ -410,9 +425,14 @@ def read_older(settings: MailboxSettings, since: date, before: date, limit: int,
     that couldn't be read (too large, say) set aside and named."""
     server = _open(settings)
     try:
-        uids = _older_uids(server, settings, since, before)[-limit:]
-        items, unreadable = _fetch(server, uids, settings.max_message_mb * 1024 * 1024)
-        return Poll(items, complete=False, unreadable=unreadable)
+        uids = _older_uids(server, settings, since, before)[-limit:][::-1]
+        done: list[int] = []
+        items, unreadable = _fetch(
+            server, uids, settings.max_message_mb * 1024 * 1024, context.fetch_deadline_seconds, done
+        )
+        # Newest first, so a read that ran out of time leaves the oldest unread and the next ask resumes before them.
+        stopped = ConnectorError("outage", "the read ran past its time") if len(done) < len(uids) else None
+        return Poll(items, complete=False, unreadable=unreadable, stopped=stopped)
     except (imaplib.IMAP4.abort, TimeoutError, OSError):
         raise ConnectorError("outage", "the mail server stopped answering") from None
     finally:
@@ -453,8 +473,15 @@ def read_headers(
         uids = _older_uids(server, settings, since, before)[-limit:]
         items: list[SourceItem] = []
         used: dict[str, int] = {}
-        for start in range(0, len(uids), _HEADER_BATCH):
-            batch = uids[start : start + _HEADER_BATCH]
+        began = time.monotonic()
+        deadline = context.fetch_deadline_seconds
+        stopped: ConnectorError | None = None
+        # Newest batch first: a read out of time leaves the oldest unread, and the next ask resumes before them.
+        for end in range(len(uids), 0, -_HEADER_BATCH):
+            if items and deadline is not None and time.monotonic() - began > deadline:
+                stopped = ConnectorError("outage", "the read ran past its time")
+                break
+            batch = uids[max(0, end - _HEADER_BATCH) : end]
             try:
                 status, parts = server.uid(
                     "FETCH", ",".join(str(u) for u in batch), f"(FLAGS BODY.PEEK[HEADER.FIELDS ({_HEADER_FIELDS})])"
@@ -480,7 +507,7 @@ def read_headers(
                 if used[item.key] > 1:
                     item = replace(item, key=f"{item.key}#{used[item.key]}")
                 items.append(item)
-        return items
+        return Poll(items, complete=False, stopped=stopped) if stopped else items
     except (imaplib.IMAP4.abort, TimeoutError, OSError):
         raise ConnectorError("outage", "the mail server stopped answering") from None
     finally:

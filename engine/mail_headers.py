@@ -64,7 +64,11 @@ def _fetch(
     from engine.connectors import ConnectorContext, Poll, skipped_counts
 
     context = ConnectorContext(
-        workspace_root=ws.root, now=now, timezone=cfg.workspace.user.timezone, hosted=cfg.server.mode == "hosted"
+        workspace_root=ws.root,
+        now=now,
+        timezone=cfg.workspace.user.timezone,
+        hosted=cfg.server.mode == "hosted",
+        fetch_deadline_seconds=cfg.steward.fetch_deadline_minutes * 60.0,
     )
     try:
         answer = asking(_settings_of(store, source), since, before, limit, context)

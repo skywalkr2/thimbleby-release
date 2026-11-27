@@ -71,10 +71,10 @@ def header(key: str, sender: str, days: float, *, subject: str, where: str = "de
 def year_of_headers() -> list[dict]:
     """Weekly shipping notices from one sender, always deleted unopened; a colleague's mail kept in the inbox, with
     some archived; and one message that is also in the first read."""
-    found = [header(f"s{i}", who(2), 21 + 7 * i, subject=f"Shipping notice {100 + i}") for i in range(8)]
-    found += [header(f"c{i}", who(3), 40 + 11 * i, subject=f"Plan {i}", where="inbox", unread=False) for i in range(4)]
+    found = [header(f"s{i}", who(2), 8 + i / 2, subject=f"Shipping notice {100 + i}") for i in range(8)]
+    found += [header(f"c{i}", who(3), 9 + i / 2, subject=f"Plan {i}", where="inbox", unread=False) for i in range(4)]
     found += [
-        header(f"k{i}", who(3), 45 + 11 * i, subject=f"Notes {i}", where="archived", unread=False) for i in range(2)
+        header(f"k{i}", who(3), 10 + i / 2, subject=f"Notes {i}", where="archived", unread=False) for i in range(2)
     ]
     found.append(header("m1", who(0), 2, subject="Also in the first read"))
     return found
@@ -226,7 +226,7 @@ def test_the_first_look_packet_gets_counts_from_the_headers_inside_outside_conte
     block = text.split(f'<untrusted source="{person_look.HABITS_BLOCK}">')[1].split("</untrusted>")[0]
     assert "deleted unopened | c2@example.com" in block and "8 of 8 messages" in block
     assert "where they ended up | c3@example.com" in block and "archived 2, inbox 4" in block
-    assert 'recurs | c2@example.com | "Shipping notice 100"' in block and "about every 7 days" in block
+    assert 'recurs | c2@example.com | "Shipping notice 100"' in block and "about every 1 days" in block
     assert "Words about" not in text  # counts and subjects only, never message text
     approve_stage_request(store, request, store.read().get("request", request).version)
     process(ws, store, cfg, Router(cfg, store, env={}), request, now=NOW)

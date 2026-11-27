@@ -102,3 +102,16 @@ def test_the_window_bridge_hands_the_id_to_the_apps_opener_and_says_what_happene
     asked = []
     shell.open_kept = lambda file_id: asked.append(file_id) or kept_files.SHOWN
     assert api.open_file("FILE-1") == "shown" and asked == ["FILE-1"]
+
+
+def test_the_windows_opener_reads_the_workspace_store_not_the_start_up_status(env, monkeypatch):
+    from engine.desktop import kept_opener
+
+    ws, cfg, store = env
+    kept = add_file(store, cfg, PNG, name="cover.png", media_type="image/png", preserve_generic=True)
+    started = []
+    monkeypatch.setattr(kept_files, "start_program", started.append)
+    monkeypatch.setattr(kept_files.open_kept, "__defaults__", (started.append, kept_files.show_in_folder))
+    assert kept_opener(ws, cfg)(kept.id) == kept_files.OPENED
+    assert started and started[0].read_bytes() == PNG
+    assert kept_opener(ws, cfg)("file-missing") is None

@@ -17,6 +17,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from engine.due_phrases import DEFAULT_PHRASE_WORDS
 from engine.secrets import SecretHint
 
+MAIL_IMPORT_MAX_DAYS = 14  # the furthest back any mail import may reach
+
 
 class ConfigModel(BaseModel):
     """Base for config models: unknown keys are errors, so a typo never silently does nothing."""
@@ -1737,13 +1739,6 @@ class KnowledgeSettings(ConfigModel):
         "items apply with Undo; anything someone was already sent gets a drafted correction that waits for you. When "
         "this is off, nothing follows a move.",
     )
-    apply_guesses: bool = Field(
-        True,
-        description="Whether a new to-do that lands on you, where something you taught is still waiting for your Keep, "
-        "is checked against it in a small step of its own. If the to-do is the kind of thing you taught about, it goes "
-        "to the person you taught, marked as a guess you can take back in one click. When this is off, only the step "
-        "that made the to-do sees what you taught.",
-    )
     follow_on_max_tied: int = Field(
         20,
         ge=1,
@@ -2041,7 +2036,7 @@ def _default_lints() -> dict[str, Severity]:
         "undecided-as-note": "return",
         "owner-asked-after-given": "return",
         "leap-day-without-year": "return",
-        "guess-not-applied": "off",
+        "guess-not-applied": "return",
         "away-span-long": "return",
         "own-note-kept-nothing": "return",
         "promise-left-out": "return",
@@ -3952,9 +3947,9 @@ class WatchSource(ConfigModel):
         24, ge=1, le=336, description="With first_run recent: how many hours around the first read count as recent."
     )
     first_run_days: int = Field(
-        14,
+        7,
         ge=1,
-        le=365,
+        le=MAIL_IMPORT_MAX_DAYS,
         description="With first_run intake, for mail: how many days back the first read looks. Older mail isn't "
         "read, and Today says so. Any other kind of source is taken in whole.",
     )
@@ -4359,16 +4354,25 @@ class WatchFile(FileModel):
         "many minutes after now, so no time starts at an odd moment.",
     )
     look_back_choices: list[int] = Field(
-        default_factory=lambda: [30, 90, 365],
+        default_factory=lambda: [7, 14],
         description="How many more days further back than the first read the person can ask a mail source to look, "
         "offered as a list to pick from. Each shows its item count and cost before anything is read.",
     )
     full_read_choices: list[int] = Field(
-        default_factory=lambda: [14, 30, 90],
+        default_factory=lambda: [7, 14],
         description="After a mail account is first signed in, how many days back its mail can be read in full, offered "
         'as a list to pick from with each one\'s item count and cost. None is chosen for the person, and "Not now" '
         "is always one of the choices. Empty: the question is not asked.",
     )
+
+    @field_validator("look_back_choices", "full_read_choices")
+    @classmethod
+    def _reach_within_the_import_limit(cls, v: list[int]) -> list[int]:
+        for days in v:
+            if not 1 <= days <= MAIL_IMPORT_MAX_DAYS:
+                raise ValueError(f"a mail import reaches back at most {MAIL_IMPORT_MAX_DAYS} days, not {days}")
+        return v
+
     look_back_max_items: int = Field(
         100,
         ge=1,
@@ -4377,7 +4381,7 @@ class WatchFile(FileModel):
         "more takes the newest of them and says where the mail it took starts.",
     )
     full_read_max_items: int = Field(
-        5000,
+        500,
         ge=1,
         le=100000,
         description="The most older messages the full read after a first sign-in counts and reads for the reach the "
@@ -4423,15 +4427,15 @@ class WatchFile(FileModel):
         "failed or couldn't be reached, without getting any further. After the last, Today offers to read the rest.",
     )
     first_headers_days: int = Field(
-        365,
+        MAIL_IMPORT_MAX_DAYS,
         ge=0,
-        le=3650,
+        le=MAIL_IMPORT_MAX_DAYS,
         description="After a mail account is first signed in, how many days back its message headers (who wrote to "
         "whom, when and where each message ended up, never its text) are read once as ground for the assistant's "
         "first look at your habits. It costs no assistant work and holds nothing for you to do. 0: not read.",
     )
     first_headers_max_items: int = Field(
-        5000,
+        500,
         ge=1,
         le=50000,
         description="The most message headers that first read asks a mail source for. A year with more takes the "
@@ -5346,6 +5350,27 @@ class StewardFile(FileModel):
         description="A part of the app's background work that has not checked in for this many minutes is shown as "
         "stuck, on the assistant's status and on Today. One AI task can run several minutes, so keep this longer "
         "than the longest you expect. The app never restarts itself; you choose Restart now.",
+    )
+    fetch_deadline_minutes: int = Field(
+        5,
+        ge=1,
+        le=240,
+        description="How long one fetch or import step may run before it is reported as over its time. This is a "
+        "deadline on the work itself; whether a part is stuck is the check-in limit above.",
+    )
+    ai_step_deadline_minutes: int = Field(
+        10,
+        ge=1,
+        le=240,
+        description="How long one AI step may run before it is reported as over its time. A deadline on the work, "
+        "apart from the check-in limit.",
+    )
+    job_deadline_minutes: int = Field(
+        30,
+        ge=1,
+        le=1440,
+        description="How long one whole pass of scheduled work may run before it is reported as over its time. A "
+        "deadline on the work, apart from the check-in limit.",
     )
     restart_wait_seconds: int = Field(
         20,

@@ -4,6 +4,14 @@ import { useEffect, useState } from "react";
 import { openKeptFile } from "./external-links";
 import { authHeaders, sessionReady } from "./session";
 
+/** The text at an app address, fetched with the session. */
+export async function fetchText(path: string): Promise<string> {
+  await sessionReady();
+  const response = await fetch(path, { headers: authHeaders() });
+  if (!response.ok) throw new Error(String(response.status));
+  return response.text();
+}
+
 /** The bytes at an app address (relative, such as `api/files/x/content`), fetched with the session. */
 export async function fetchBlob(path: string): Promise<Blob> {
   await sessionReady();

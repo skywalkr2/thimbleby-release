@@ -4,7 +4,7 @@
 // reachable from the keyboard (also after the toast has gone with a move to another screen), and F6 moves the cursor to the toast, where Escape puts it away. A toast stays until
 // dismissed when its configured time is 0 (a toast with Undo has a time of its own), and waits while the pointer or the cursor is on it. The same message pushed
 // again is one toast with a count.
-import { onFileShown } from "./external-links";
+import { onFileShown, onOpenFailed } from "./external-links";
 import { undoEnded, undoStarted } from "./queue-hold";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Icon } from "../ui/Icon";
@@ -173,6 +173,10 @@ export function ToastProvider(props: { seconds: number; undoSeconds?: number; ch
   // The installed app's window says when a file was only shown in its folder instead of opened (a kind never started).
   useEffect(
     () => onFileShown(() => push({ message: t("files.shown_in_folder"), tone: "warn" })),
+    [push, t],
+  );
+  useEffect(
+    () => onOpenFailed(() => push({ message: t("files.open_failed"), tone: "warn" })),
     [push, t],
   );
 

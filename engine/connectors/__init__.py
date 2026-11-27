@@ -431,6 +431,8 @@ class ConnectorContext:
     timezone: str | None = None
     #: The app is hosted, so a core connector doesn't read files from the computer it runs on.
     hosted: bool = False
+    #: How long a core connector may spend fetching one batch before it stops and leaves the rest for the next read.
+    fetch_deadline_seconds: float | None = None
 
 
 @dataclass(frozen=True)

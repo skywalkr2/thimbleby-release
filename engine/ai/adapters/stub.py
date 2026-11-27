@@ -50,8 +50,6 @@ class StubAdapter:
             body = stand_in.learn(task.request)
         elif task.kind == "follow-on":
             body = stand_in.follow_on()
-        elif task.kind == "guess-fit":
-            body = stand_in.guess_fit()
         elif task.kind == "knowledge-person":
             body = stand_in.knowledge_person(task.request)
         elif task.kind == "week-ahead":

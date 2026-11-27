@@ -99,6 +99,27 @@ def _swap_staged(ws: Any) -> None:
         launcher.note(f"restore: {told.state}" + (f" ({told.reason})" if told.reason else ""))
 
 
+def kept_opener(ws: Any, cfg: Any) -> Callable[[str], str | None]:
+    """The window's way to open a kept file by its id: each call reads the workspace's own store."""
+    from engine import kept_files
+    from engine.storage import Store
+
+    def open_kept(file_id: str) -> str | None:
+        store = Store(ws.db_path, cfg=cfg)
+        try:
+            return kept_files.open_kept(
+                store,
+                ws.private_dir,
+                file_id,
+                extensions=cfg.storage.files.open_extensions,
+                types=cfg.storage.files.open_types,
+            )
+        finally:
+            store.close()
+
+    return open_kept
+
+
 def start(
     root: Path,
     shell: Any,
@@ -201,15 +222,7 @@ def start(
         fresh = ws.config(env=env)
         opened = open_or_hold(ws, fresh)
         token = ws.new_install_token()
-        from engine import kept_files
-
-        shell.open_kept = lambda file_id: kept_files.open_kept(
-            opened,
-            ws.private_dir,
-            file_id,
-            extensions=fresh.storage.files.open_extensions,
-            types=fresh.storage.files.open_types,
-        )
+        shell.open_kept = kept_opener(ws, fresh)
         app, _ = cli.make_app(
             ws, fresh, token, opened, on_restart=ask_restart, on_erased=finished.set, on_update=ask_update
         )

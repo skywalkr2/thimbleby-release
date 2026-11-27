@@ -24,6 +24,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from engine import catch_up, watch
+from engine.config.schema import MAIL_IMPORT_MAX_DAYS
 from engine.connectors import OlderCount
 from engine.local_day import day_of
 from engine.net import AnswerTooLarge
@@ -41,6 +42,7 @@ _ENGINE = WriteContext(actor="engine", trust="trusted", op="intake.take_in")
 _GO = WriteContext(actor="pm", trust="trusted", op="intake.go")
 _SEEN = WriteContext(actor="pm", trust="trusted", op="intake.seen")
 _MOVED = WriteContext(actor="engine", trust="trusted", op="intake.look_back")
+_PAUSED = WriteContext(actor="engine", trust="trusted", op="intake.pause_long_read")
 
 #: The kinds of stop a read of older mail carries on from by itself; any other kind (a sign-in the service withdrew,
 #: access refused, a message too large) is the person's to act on, and the account's own state says so.
@@ -492,7 +494,11 @@ def _older_context(ws: Any, cfg: Any, now: datetime) -> Any:
     from engine.connectors import ConnectorContext
 
     return ConnectorContext(
-        workspace_root=ws.root, now=now, timezone=cfg.workspace.user.timezone, hosted=cfg.server.mode == "hosted"
+        workspace_root=ws.root,
+        now=now,
+        timezone=cfg.workspace.user.timezone,
+        hosted=cfg.server.mode == "hosted",
+        fetch_deadline_seconds=cfg.steward.fetch_deadline_minutes * 60.0,
     )
 
 
@@ -655,7 +661,7 @@ def _plan(store: Any, cfg: Any, source_id: str, days: int, exact: bool = False) 
     old = back_to_of(store.read(), source_id)
     if old is None:
         raise StoreError("this source was not taken in with a look back, so there is nothing further to look at")
-    if days not in cfg.watch.look_back_choices and not (exact and days >= 1):
+    if days not in cfg.watch.look_back_choices and not (exact and 1 <= days <= MAIL_IMPORT_MAX_DAYS):
         raise StoreError(f"{days} days is not one of the choices")
     return _plan_from(store, source_id, old - timedelta(days=days))
 
@@ -1407,6 +1413,27 @@ def _answer_ahead(
     return result
 
 
+def pause_long_reads(store: Any, cfg: Any, now: datetime | None = None) -> list[str]:
+    """Hold, once, every waiting read of older mail whose window is wider than the import maximum. Nothing is dropped:
+    the read keeps its place and its count, and the person carries it on when they choose (`resume_older_read`)."""
+    held = []
+    for source in cfg.watch.sources:
+        waiting_read = older_read_waiting(store.read(), source.id)
+        run = intake_run(store.read(), source.id)
+        if waiting_read is None or run is None or waiting_read.get("paused") or waiting_read.get("resumed"):
+            continue
+        span = (date.fromisoformat(waiting_read["before"]) - date.fromisoformat(waiting_read["since"])).days
+        if span <= MAIL_IMPORT_MAX_DAYS:
+            continue
+        with store.transaction() as tx:
+            current = tx.get("watch_run", run.id)
+            kept = dict(current.data.get("older_read") or {})
+            kept.update(at=None, paused="window")
+            tx.update("watch_run", run.id, {"older_read": kept}, _PAUSED, read_version=current.version)
+        held.append(source.id)
+    return held
+
+
 def resume_older_read(store: Any, source_id: str, now: datetime | None = None) -> bool:
     """The person asked to carry on a read of older mail that gave up: it is due at once with a new round of tries, and
     the worker's lane reads it. Returns whether one was waiting."""
@@ -1418,7 +1445,8 @@ def resume_older_read(store: Any, source_id: str, now: datetime | None = None) -
     with store.transaction() as tx:
         current = tx.get("watch_run", run.id)
         kept = dict(current.data.get("older_read") or {})
-        kept.update(tries=0, gave_up=False, at=now.isoformat())
+        kept.update(tries=0, gave_up=False, at=now.isoformat(), resumed=True)
+        kept.pop("paused", None)
         tx.update("watch_run", run.id, {"older_read": kept}, _MOVED, read_version=current.version)
     return True
 

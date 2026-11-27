@@ -62,6 +62,7 @@ def year(tmp_path, monkeypatch):
     cfg = load_config(ws.config_dir, env={})
     cfg.ai.budgets.first_go = False
     cfg.ai.budgets.confirm_above_usd = 100
+    cfg.watch.first_headers_max_items = 5000
     store = Store(ws.db_path, cfg=cfg)
     yield ws, cfg, store
     set_responder(None)

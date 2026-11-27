@@ -14,7 +14,7 @@ from engine import source_intake
 from engine.config import load_config
 from engine.config.schema import Price
 from engine.names import People
-from engine.storage import Store, WriteContext
+from engine.storage import Store, StoreError, WriteContext
 from engine.today_queue import queue
 from engine.workspace import init_workspace
 from tests.conftest import DEMO_B
@@ -80,7 +80,7 @@ def make(
 
 @pytest.fixture
 def env(tmp_path):
-    ws, cfg, store = make(tmp_path, [mail("new", 2), mail("mid", 10), mail("old", 30), item("page")])
+    ws, cfg, store = make(tmp_path, [mail("new", 2), mail("mid", 5), mail("old", 10), item("page")])
     yield ws, cfg, store
     store.close()
 
@@ -106,12 +106,12 @@ def titles(store, requests):
 # ---- the setting --------------------------------------------------------------------------------------------
 
 
-def test_intake_is_the_default_first_run_and_the_look_back_is_two_weeks():
+def test_intake_is_the_default_first_run_and_the_look_back_is_one_week():
     from engine.config.schema import WatchFile, WatchSource
 
     assert WatchSource.model_fields["first_run"].get_default() == "intake"
-    assert WatchSource.model_fields["first_run_days"].get_default() == 14
-    assert WatchFile().look_back_choices == [30, 90, 365]
+    assert WatchSource.model_fields["first_run_days"].get_default() == 7
+    assert WatchFile().look_back_choices == [7, 14]
     assert WatchSource.model_validate({"id": "x", "connector": "fake"}).first_run == "intake"
 
 
@@ -136,9 +136,9 @@ def test_the_source_notes_the_day_before_which_its_mail_was_not_looked_at(env):
     ws, cfg, store = env
     read(env)
     run = source_intake.intake_run(store.read(), "m")
-    assert run.data["looked_back_to"] == "2026-10-05"
-    assert source_intake.back_to_of(store.read(), "m") == date(2026, 10, 5)
-    assert source_intake.days_taken(store.read(), "m") == 14
+    assert run.data["looked_back_to"] == "2026-10-12"
+    assert source_intake.back_to_of(store.read(), "m") == date(2026, 10, 12)
+    assert source_intake.days_taken(store.read(), "m") == 7
 
 
 def test_another_kind_of_source_is_taken_in_whole_and_has_no_look_back_date(tmp_path):
@@ -153,7 +153,7 @@ def test_another_kind_of_source_is_taken_in_whole_and_has_no_look_back_date(tmp_
 
 
 def test_the_window_follows_first_run_days(tmp_path):
-    ws, cfg, store = make(tmp_path, [mail("new", 2), mail("mid", 10), mail("old", 30)], first_run_days=5)
+    ws, cfg, store = make(tmp_path, [mail("new", 2), mail("mid", 6), mail("old", 10)], first_run_days=5)
     try:
         read((ws, cfg, store))
         assert titles(store, requests_of(store, intake="m")) == ["Subject of new"]
@@ -177,7 +177,7 @@ def test_a_source_already_read_keeps_reading_as_before_and_a_later_item_is_ordin
 def test_the_other_first_runs_are_unchanged(tmp_path):
     from engine.watch import refresh
 
-    items = [mail("new", 2), mail("old", 30)]
+    items = [mail("new", 2), mail("old", 10)]
     ws, cfg, store = make(tmp_path, items, first_run="baseline")
     try:
         result = refresh(ws, store, cfg, "m", NOW)
@@ -201,7 +201,7 @@ def test_below_the_amount_to_confirm_the_intake_starts_by_itself_and_every_reque
 
 
 def test_above_the_amount_to_confirm_the_requests_wait_for_one_go_with_the_total(tmp_path):
-    ws, cfg, store = make(tmp_path, [mail("new", 2), mail("mid", 10), item("page")], confirm=0.0)
+    ws, cfg, store = make(tmp_path, [mail("new", 2), mail("mid", 5), item("page")], confirm=0.0)
     try:
         read((ws, cfg, store))
         held = requests_of(store, intake="m")
@@ -213,7 +213,7 @@ def test_above_the_amount_to_confirm_the_requests_wait_for_one_go_with_the_total
             )
         (line,) = [x for x in queue(ws, store, cfg, NOW) if x.kind == "intake_go"]
         assert (line.group, line.source, line.subject, line.count, line.unpriced) == ("decide", "m", "Inbox", 3, 0)
-        assert line.days == 14
+        assert line.days == 7
         assert line.estimate_usd == pytest.approx(sum(r.data["estimate_usd"] for r in held))
         # No line of their own for each, and nothing has run.
         assert not [x for x in queue(ws, store, cfg, NOW) if x.kind in ("go", "refused", "failed", "first_go")]
@@ -254,7 +254,7 @@ def test_a_source_with_no_mail_says_items_not_days(tmp_path):
 
 
 def test_the_go_starts_every_held_request_of_the_source_once(tmp_path):
-    ws, cfg, store = make(tmp_path, [mail("new", 2), mail("mid", 10), item("page")], confirm=0.0)
+    ws, cfg, store = make(tmp_path, [mail("new", 2), mail("mid", 5), item("page")], confirm=0.0)
     try:
         read((ws, cfg, store))
         assert source_intake.grant_go(ws, store, cfg, "m") == 3
@@ -400,7 +400,7 @@ def stand_in_asks_for_older_mail(monkeypatch):
 
 @pytest.fixture
 def old_mail(tmp_path):
-    items = [mail("new", 2), mail("a", 20), mail("b", 40), mail("c", 100), mail("d", 300), item("page")]
+    items = [mail("new", 2), mail("a", 9), mail("b", 12), mail("c", 18), mail("d", 30), item("page")]
     ws, cfg, store = make(tmp_path, items)
     yield ws, cfg, store
     store.close()
@@ -410,22 +410,20 @@ def test_the_preview_counts_what_a_longer_look_would_take_in_and_prices_it_and_w
     ws, cfg, store = old_mail
     read(old_mail)
     before = len(store.read().list("request"))
-    thirty = source_intake.look_back_preview(ws, store, cfg, "m", 30, NOW)
-    assert (thirty.count, thirty.reaches, thirty.from_date) == (2, True, date(2026, 9, 5))
-    ninety = source_intake.look_back_preview(ws, store, cfg, "m", 90, NOW)
-    assert ninety.count == 3 and ninety.estimate_usd > thirty.estimate_usd > 0
-    year = source_intake.look_back_preview(ws, store, cfg, "m", 365, NOW)
-    assert year.count == 4 and year.unpriced == 0
+    short = source_intake.look_back_preview(ws, store, cfg, "m", 7, NOW)
+    assert (short.count, short.reaches, short.from_date) == (2, True, date(2026, 10, 5))
+    long = source_intake.look_back_preview(ws, store, cfg, "m", 14, NOW)
+    assert long.count == 3 and long.estimate_usd > short.estimate_usd > 0 and long.unpriced == 0
     assert len(store.read().list("request")) == before and source_intake.back_to_of(store.read(), "m") == date(
-        2026, 10, 5
+        2026, 10, 12
     )
 
 
 def test_a_look_back_with_no_price_says_how_many_have_none(tmp_path):
-    ws, cfg, store = make(tmp_path, [mail("new", 2), mail("a", 20)], price=None)
+    ws, cfg, store = make(tmp_path, [mail("new", 2), mail("a", 9)], price=None)
     try:
         read((ws, cfg, store))
-        found = source_intake.look_back_preview(ws, store, cfg, "m", 30, NOW)
+        found = source_intake.look_back_preview(ws, store, cfg, "m", 7, NOW)
         assert (found.count, found.estimate_usd, found.unpriced) == (1, None, 1)
     finally:
         store.close()
@@ -437,29 +435,29 @@ def test_only_the_listed_choices_can_be_asked_for(old_mail):
     ws, cfg, store = old_mail
     read(old_mail)
     with pytest.raises(StoreError):
-        source_intake.look_back_preview(ws, store, cfg, "m", 45, NOW)
+        source_intake.look_back_preview(ws, store, cfg, "m", 10, NOW)
 
 
 def test_looking_further_back_takes_in_the_older_mail_the_same_way_and_moves_the_date(old_mail):
     ws, cfg, store = old_mail
     read(old_mail)
-    done = source_intake.look_further_back(ws, store, cfg, "m", 90, NOW)
+    done = source_intake.look_further_back(ws, store, cfg, "m", 14, NOW)
     assert (done.taken, done.started, done.reaches) == (3, True, True)
-    assert source_intake.back_to_of(store.read(), "m") == date(2026, 7, 7)
+    assert source_intake.back_to_of(store.read(), "m") == date(2026, 9, 28)
     taken = requests_of(store, intake="m")
     assert titles(store, taken) == ["Page page", "Subject of a", "Subject of b", "Subject of c", "Subject of new"]
     assert {r.data["state"] for r in taken} == {"queued"}
     # What was already taken in isn't taken again, and the dates add up: the next look starts from the new date.
-    again = source_intake.look_further_back(ws, store, cfg, "m", 30, NOW)
+    again = source_intake.look_further_back(ws, store, cfg, "m", 7, NOW)
     assert again.taken == 0
-    assert source_intake.back_to_of(store.read(), "m") == date(2026, 6, 7)
+    assert source_intake.back_to_of(store.read(), "m") == date(2026, 9, 21)
 
 
 def test_a_look_back_is_held_for_the_go_by_the_same_rule_and_joins_the_sources_line(tmp_path):
-    ws, cfg, store = make(tmp_path, [mail("new", 2), mail("a", 20)], confirm=0.0)
+    ws, cfg, store = make(tmp_path, [mail("new", 2), mail("a", 9)], confirm=0.0)
     try:
         read((ws, cfg, store))
-        done = source_intake.look_further_back(ws, store, cfg, "m", 30, NOW)
+        done = source_intake.look_further_back(ws, store, cfg, "m", 7, NOW)
         assert (done.taken, done.started) == (1, False)
         (line,) = [x for x in queue(ws, store, cfg, NOW) if x.kind == "intake_go"]
         assert line.count == 2, "one line for the source, with what is already waiting"
@@ -469,14 +467,14 @@ def test_a_look_back_is_held_for_the_go_by_the_same_rule_and_joins_the_sources_l
 
 
 def test_when_the_source_holds_nothing_older_the_answer_says_no_mail_and_the_date_goes_to_the_day_asked(tmp_path):
-    ws, cfg, store = make(tmp_path, [mail("new", 2), mail("a", 20)])
+    ws, cfg, store = make(tmp_path, [mail("new", 2), mail("a", 9)])
     try:
         read((ws, cfg, store))
-        found = source_intake.look_back_preview(ws, store, cfg, "m", 90, NOW)
+        found = source_intake.look_back_preview(ws, store, cfg, "m", 14, NOW)
         assert (found.reaches, found.available_from, found.count) == (True, None, 1)
-        done = source_intake.look_further_back(ws, store, cfg, "m", 90, NOW)
+        done = source_intake.look_further_back(ws, store, cfg, "m", 14, NOW)
         assert (done.taken, done.reaches) == (1, True)
-        assert source_intake.back_to_of(store.read(), "m") == (NOW - timedelta(days=14 + 90)).date()
+        assert source_intake.back_to_of(store.read(), "m") == (NOW - timedelta(days=7 + 14)).date()
     finally:
         store.close()
 
@@ -488,7 +486,7 @@ def test_a_source_without_mail_has_no_look_back(tmp_path):
     try:
         read((ws, cfg, store))
         with pytest.raises(StoreError):
-            source_intake.look_back_preview(ws, store, cfg, "m", 30, NOW)
+            source_intake.look_back_preview(ws, store, cfg, "m", 7, NOW)
     finally:
         store.close()
 
@@ -497,7 +495,7 @@ def test_a_source_without_mail_has_no_look_back(tmp_path):
 
 
 def _capped(tmp_path, held_days=(1, 2, 3, 6), capped=True):
-    """A source whose first read returned only its latest mail (the oldest 6 days back, inside the 14-day window), and
+    """A source whose first read returned only its latest mail (the oldest 6 days back, inside the 7-day window), and
     says whether it stopped at its cap."""
     return make(tmp_path, [mail(f"m{d}", d) for d in held_days], settings_extra={"capped": capped})
 
@@ -509,8 +507,8 @@ def test_the_date_it_was_looked_back_to_is_the_oldest_mail_the_read_returned_and
     try:
         read((ws, cfg, store))
         header = source_intake.back_to_of(store.read(), "m")
-        assert header == (NOW - timedelta(days=6)).date() != (NOW - timedelta(days=14)).date()
-        found = source_intake.look_back_preview(ws, store, cfg, "m", 30, NOW)
+        assert header == (NOW - timedelta(days=6)).date() != (NOW - timedelta(days=7)).date()
+        found = source_intake.look_back_preview(ws, store, cfg, "m", 7, NOW)
         # Nothing held or asked for is older, and the day the answer would name is the header's own day.
         assert found.available_from in (None, header)
     finally:
@@ -525,7 +523,7 @@ def test_a_late_evening_in_a_zone_behind_utc_is_the_same_day_in_the_header_and_t
     try:
         read((ws, cfg, store))
         header = source_intake.back_to_of(store.read(), "m")
-        found = source_intake.look_back_preview(ws, store, cfg, "m", 30, NOW)
+        found = source_intake.look_back_preview(ws, store, cfg, "m", 7, NOW)
         assert header == date(2026, 10, 13) and found.available_from in (None, header)
     finally:
         store.close()
@@ -555,9 +553,9 @@ def test_a_look_back_asks_the_source_for_older_mail_within_the_limit_and_is_held
     try:
         cfg.watch.look_back_max_items = 2
         read((ws, cfg, store))
-        found = source_intake.look_back_preview(ws, store, cfg, "m", 30, NOW)
+        found = source_intake.look_back_preview(ws, store, cfg, "m", 7, NOW)
         assert found.count == 2 and found.estimate_usd > 0 and seen["limit"] == 2
-        done = source_intake.look_further_back(ws, store, cfg, "m", 30, NOW)
+        done = source_intake.look_further_back(ws, store, cfg, "m", 7, NOW)
         assert done.taken == 2 and seen["asked"][0] < seen["asked"][1]
         assert source_intake.can_look_back(cfg.watch.sources[0])
     finally:
@@ -574,19 +572,19 @@ def test_a_source_that_cannot_be_asked_for_older_mail_is_not_offered_a_look_back
         read((ws, cfg, store))
         assert not source_intake.can_look_back(cfg.watch.sources[0])
         with pytest.raises(StoreError):
-            source_intake.look_back_preview(ws, store, cfg, "m", 30, NOW)
+            source_intake.look_back_preview(ws, store, cfg, "m", 7, NOW)
     finally:
         store.close()
 
 
 def test_a_quiet_mailbox_keeps_the_whole_window_and_a_capped_read_uses_its_oldest_mail(tmp_path):
-    window = (NOW - timedelta(days=14)).date()
+    window = (NOW - timedelta(days=7)).date()
     for capped, expected in ((False, window), (True, (NOW - timedelta(days=6)).date())):
         ws, cfg, store = _capped(tmp_path / str(capped), capped=capped)
         try:
             read((ws, cfg, store))
             header = source_intake.back_to_of(store.read(), "m")
-            found = source_intake.look_back_preview(ws, store, cfg, "m", 30, NOW)
+            found = source_intake.look_back_preview(ws, store, cfg, "m", 7, NOW)
             assert header == expected and found.available_from in (None, header)
         finally:
             store.close()
@@ -628,3 +626,12 @@ def test_a_name_to_place_is_one_line_however_many_inputs_ask_it_and_is_not_liste
     assert "held" not in review.outcome, review.outcome
     assert all(row.kind != "held" for row in review.items), "the look-over does not list the question again"
     assert review.outcome == {"actions_added": 2}
+
+
+def test_an_exact_reach_never_goes_past_the_import_maximum(env):
+    from engine.config.schema import MAIL_IMPORT_MAX_DAYS
+
+    ws, cfg, store = env
+    read(env)
+    with pytest.raises(StoreError, match="not one of the choices"):
+        source_intake._plan(store, cfg, "m", MAIL_IMPORT_MAX_DAYS + 1, exact=True)

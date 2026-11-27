@@ -99,7 +99,6 @@ export function itemsOf(entries: S["KnowledgeView"][], rules: S["RuleView"][]): 
 const GROUP_OF_TASK: Record<string, Group> = {
   notes: "filed",
   "follow-on": "filed",
-  "guess-fit": "filed",
   transcribe: "filed",
   reply: "write",
   "monday-message": "write",

@@ -17,6 +17,7 @@ const LOADED = { timeout: 60_000 };
 const JOB = "Example Employer";
 /** How long the service asks to wait before the next page, in seconds: long enough for the person to sign out and in meanwhile. */
 const RETRY_AFTER = 40;
+const BIG_PAGE = 50;
 const problems: string[] = [];
 /** What a real low-cost model answered when given the look's packet for this mailbox (H5-36), kept word for word: the look here is
  * answered with it, never with the stand-in's rule that offers every line with enough messages. It is one op by itself, with no
@@ -142,19 +143,19 @@ test.describe.serial("journey: real-sized mailbox", () => {
     await expect(question.getByRole("radio", { name: "Personal" })).toBeChecked();
     await visit(page);
 
-    // 5. A full read of 1 month, with the service slowing a later page of older mail down. The window the read covers, and what the
+    // 5. A full read of 2 weeks, with the service slowing a later page of older mail down. The window the read covers, and what the
     // service holds in it, are asked before anything is read.
     const inbox = async () => (await watch(page)).find((w) => w.label === "Your inbox")!;
     const first = await inbox();
     expect(first.older_read ?? null).toBeNull();
-    const since = new Date(Date.parse(first.looked_back_to + "T00:00:00Z") - 16 * 86_400_000).toISOString().slice(0, 10);
+    const since = new Date(Date.parse(first.looked_back_to + "T00:00:00Z") - 7 * 86_400_000).toISOString().slice(0, 10);
     const inWindow = ((await (await fetch(`${FAKE}/__e2e/big-mailbox?folder=inbox&since=${since}&before=${first.looked_back_to}`)).json()) as { window: number }).window;
     // More than one page of mail is waiting there, or the rate limit would have nothing to land on.
-    expect(inWindow).toBeGreaterThan(100);
+    expect(inWindow).toBeGreaterThan(BIG_PAGE);
     const fullRead = account.locator("[data-full-read]");
     const pick = fullRead.getByRole("combobox");
     await expect(pick).toBeVisible(LOADED);
-    await choose(pick, "1 month");
+    await choose(pick, "2 weeks");
     // Having the choice open asks the service for each count once per reach and source, however often the window is focused or
     // anything changes (S-0644): focus it a few times, let the screen read again, then count what the service was asked.
     for (let i = 0; i < 3; i++) {
@@ -167,7 +168,7 @@ test.describe.serial("journey: real-sized mailbox", () => {
       await expect(async () => expect((await watch(page)).find((w) => w.id === first.id)?.last).toBeTruthy()).toPass(LOADED);
     }
     await visit(page);
-    const reaches = 3; // watch.full_read_choices of the fresh workspace: 14, 30 and 90 days
+    const reaches = 2; // watch.full_read_choices of the fresh workspace: 7 and 14 days
     const open = (await watch(page)).filter((w) => w.full_read_open).length;
     const counts = (await mailbox()).older_asked.filter((a) => a.purpose === "count").length;
     expect(open).toBeGreaterThan(0);
@@ -230,7 +231,7 @@ test.describe.serial("journey: real-sized mailbox", () => {
       }, { timeout: 240_000, message: "the rest of the full read carries on by itself" })
       .toBe(inWindow);
     expect((await mailbox()).older_asked.filter((a) => a.answer === "slow down")).toHaveLength(1);
-    // The month's answer was the account's, so its sent mail reads a month too, in its own slices after the inbox's: every older read of
+    // The two weeks' answer was the account's, so its sent mail reads two weeks too, in its own slices after the inbox's: every older read of
     // the account is over before the count the reading step shows is compared with the final one.
     await expect
       .poll(async () => (await watch(page)).filter((w) => w.older_read).length, { timeout: 240_000, message: "every older read of the account ends" })

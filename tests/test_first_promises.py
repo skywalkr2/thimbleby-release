@@ -49,7 +49,7 @@ def promise(store, owner: str, text: str, due: str | None = None, **more) -> str
 @pytest.fixture
 def env(tmp_path):
     """A workspace with one source of mail over the amount to confirm, so its intake waits for the go."""
-    ws, cfg, store = make(tmp_path, [mail("a", 2), mail("b", 5), mail("old", 30)], confirm=0.0, price=1000.0)
+    ws, cfg, store = make(tmp_path, [mail("a", 2), mail("b", 5), mail("old", 10)], confirm=0.0, price=1000.0)
     yield ws, cfg, store
     store.close()
 
@@ -58,7 +58,7 @@ def env(tmp_path):
 def api(tmp_path):
     # The routes read the mailbox at the real time, so the mail's dates follow the real clock.
     today = datetime.now(UTC)
-    items = [mail("a", 2, now=today), mail("b", 5, now=today), mail("old", 30, now=today)]
+    items = [mail("a", 2, now=today), mail("b", 5, now=today), mail("old", 10, now=today)]
     ws, cfg, store = make(tmp_path, items, confirm=0.0, price=1000.0)
     store.close()
     application = create_app(ws, cfg, TOKEN, ui_dist=tmp_path / "no-ui", start_worker=False)
@@ -114,7 +114,7 @@ def test_after_the_first_read_the_look_back_is_offered_with_what_it_would_cost_a
     ws, cfg, store = env
     read(env)
     shown = stage(env)
-    assert (shown.stage, shown.days, shown.count, shown.unpriced) == ("offer", 14, 2, 0)
+    assert (shown.stage, shown.days, shown.count, shown.unpriced) == ("offer", 7, 2, 0)
     assert shown.sources == ["Inbox"] and shown.estimate_usd is not None and shown.estimate_usd > 0
     assert shown.promises == [] and shown.follow_up is None
     assert not store.read().list("run") or all(r.data.get("smoke") for r in store.read().list("run"))
@@ -458,10 +458,10 @@ def test_the_route_says_where_it_stands_and_its_go_starts_the_look_back_once(api
     assert client.get("/api/setup/first-promises").json()["stage"] == "reading"
     assert client.post("/api/watch/m/read").status_code == 200
     offer = client.get("/api/setup/first-promises").json()
-    assert (offer["stage"], offer["count"], offer["days"], offer["sources"]) == ("offer", 2, 14, ["Inbox"])
+    assert (offer["stage"], offer["count"], offer["days"], offer["sources"]) == ("offer", 2, 7, ["Inbox"])
     assert offer["estimate_usd"] > 0 and offer["promises"] == [] and offer["follow_up"] is None
     (place,) = offer["coverage"]
-    back = (datetime.now(UTC).date() - timedelta(days=14)).isoformat()
+    back = (datetime.now(UTC).date() - timedelta(days=7)).isoformat()
     assert (place["kind"], place["missing_sent"], offer["complete"]) == ("mail", True, False)
     assert [(f["name"], f["outcome"], f["sent"], f["from_date"]) for f in place["folders"]] == [
         ("Inbox", "read", False, back)

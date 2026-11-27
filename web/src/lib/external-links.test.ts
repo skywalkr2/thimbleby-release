@@ -87,3 +87,17 @@ test("in the Mac window, where the library's functions never appear, the page sp
   expect(posted.map((p) => (p as { funcName: string; params: string[] }).funcName)).toEqual(["page_drawn", "open_external"]);
   expect((posted[1] as { params: string[] }).params).toEqual([OUT]);
 });
+
+describe("a failed open", () => {
+  it("tells the person when the window answers that a kept file did not open", async () => {
+    const { openKeptFile, onOpenFailed } = await import("./external-links");
+    (window as unknown as { pywebview: unknown }).pywebview = { api: { open_file: () => Promise.resolve("") } };
+    let told = 0;
+    const off = onOpenFailed(() => told++);
+    openKeptFile("file-1");
+    await new Promise((r) => setTimeout(r, 0));
+    off();
+    delete (window as unknown as { pywebview?: unknown }).pywebview;
+    expect(told).toBe(1);
+  });
+});

@@ -65,8 +65,6 @@ ASK_OPS = ("answer", "setting.propose", "report.draft", "work.draft", *sorted(DR
 #: whether a moved plan still holds, draft a correction for someone an item already reached, and leave a note. It never
 #: changes an action's day or words.
 FOLLOW_ON_OPS = ("question.add", "note")
-#: What a guess-fit run may do (engine/guess_fit.py): give a to-do the person owns to the person a waiting lesson names.
-GUESS_FIT_OPS = ("action.owners",)
 LEARN_OPS = ("lesson.add", "lesson.update", "glossary.add", "routing.add", "style.add", "rule.add", "person.stance")
 
 
@@ -340,16 +338,6 @@ TASKS: dict[str, TaskKind] = {
         playbook="follow-on",
         label="Checking what is tied to a move",
         defaults={"max_output": 3000, "expected_output": 500},
-    ),
-    # One small run when a to-do lands on the person where something they taught waits for their Keep: it decides, for
-    # each to-do, whether it is that kind of work, and hands it to the person the entry names (engine/guess_fit.py).
-    "guess-fit": TaskKind(
-        name="guess-fit",
-        ops=GUESS_FIT_OPS,
-        prompt="guess-fit",
-        playbook="guess-fit",
-        label="Checking a guess from what you taught",
-        defaults={"max_output": 600, "expected_output": 200},
     ),
 }
 

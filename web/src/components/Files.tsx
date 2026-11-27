@@ -6,7 +6,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api, type S } from "../lib/api";
-import { fetchBlob, openFile } from "../lib/authed-file";
+import { fetchText, openFile } from "../lib/authed-file";
 import { AuthImage } from "../ui/AuthImage";
 import { day } from "../lib/dates";
 import { useSize } from "../lib/files";
@@ -265,7 +265,7 @@ function Preview(props: { file: S["FileView"] }) {
   const text = useQuery({
     queryKey: ["file-text", file.id, file.version],
     queryFn: async () => {
-      return (await fetchBlob(api.fileContent(file.id))).text();
+      return fetchText(api.fileContent(file.id));
     },
     enabled: isText,
     retry: false,

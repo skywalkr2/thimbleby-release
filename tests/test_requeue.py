@@ -157,3 +157,77 @@ def test_reading_sources_now_wakes_the_reads_at_once_instead_of_at_the_next_minu
         worker._stop.set()
         worker._read_now.set()
         thread.join(timeout=5)
+
+
+def test_on_load_stopped_and_waiting_to_retry_requests_try_again_at_once(env):
+    from datetime import timedelta
+
+    from engine.worker import retry_on_load
+
+    _, _, store = env
+    later = (NOW + timedelta(hours=2)).isoformat()
+    failed = make_request(store, state="needs_you", waiting="The assistant couldn't finish this.")
+    waiting = make_request(store, state="queued", waiting="Trying again later", cause={"kind": "retry", "until": later})
+    assert sorted(retry_on_load(store, NOW)) == sorted([failed, waiting])
+    for rid in (failed, waiting):
+        now = get(store, rid)
+        assert now.data["state"] == "queued" and now.data["cause"] is None
+    assert store.read().ledger(kind="request", record_id=failed)[-1]["op"] == "worker.retry_on_load"
+
+
+def test_on_load_never_retries_what_needs_the_person_or_already_had_its_one_try(env):
+    from engine.worker import retry_on_load
+
+    _, _, store = env
+    kept = [
+        make_request(store, state="needs_you", approval="required", waiting="Waiting for your go"),
+        make_request(store, state="needs_you", waiting="Say who", cause={"kind": "no_person"}),
+        make_request(store, state="needs_you", waiting=INTERRUPTED_TWICE),
+        make_request(store, state="needs_you", dismissed=True, waiting="Set aside"),
+    ]
+    again = make_request(store, state="needs_you", waiting="The assistant couldn't finish this.")
+    assert retry_on_load(store, NOW) == [again]
+    with store.transaction() as tx:
+        cur = tx.get("request", again)
+        tx.update("request", again, {"state": "needs_you"}, PM, read_version=cur.version)
+    assert retry_on_load(store, NOW) == []  # one automatic try per request, so a failing one never loops
+    assert all(get(store, rid).data["state"] == "needs_you" for rid in kept)
+
+
+def test_on_load_with_hundreds_of_stopped_requests_keeps_each_ones_authority_and_history(env):
+    from engine.worker import retry_on_load, run_rank
+
+    _, _, store = env
+    plain, kept = [], []
+    for i in range(300):
+        plain.append(
+            make_request(
+                store,
+                state="needs_you",
+                waiting="The assistant couldn't finish this.",
+                attempts=i % 3 + 1,
+                origin="pm" if i % 2 else "input",
+                approval="granted",
+                task="notes",
+            )
+        )
+    for _ in range(150):
+        kept.append(make_request(store, state="needs_you", approval="required", waiting="Waiting for your go"))
+        kept.append(
+            make_request(
+                store,
+                state="needs_you",
+                waiting="Budget",
+                cause={"kind": "budget", "until": "2030-03-05T00:00:00+00:00"},
+            )
+        )
+    before = {rid: get(store, rid).data for rid in plain}
+    assert sorted(retry_on_load(store, NOW)) == sorted(plain)
+    for rid in plain:
+        after = get(store, rid).data
+        assert after["state"] == "queued"
+        for key in ("attempts", "origin", "approval", "input", "task"):
+            assert after.get(key) == before[rid].get(key)
+        assert run_rank(after) == run_rank(before[rid])
+    assert all(get(store, rid).data["state"] == "needs_you" for rid in kept)
+    assert retry_on_load(store, NOW) == [x for x in []]

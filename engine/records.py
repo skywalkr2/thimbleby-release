@@ -1755,7 +1755,9 @@ class StopCause(BaseModel):
     """Why a request stopped, in a form the screen can act on."""
 
     model_config = ConfigDict(extra="forbid")
-    kind: Literal["data_level", "no_person", "paused", "retry", "offline", "identity", "no_account", "no_fit"] = Field(
+    kind: Literal[
+        "data_level", "no_person", "paused", "retry", "offline", "identity", "no_account", "no_fit", "budget"
+    ] = Field(
         description="data_level: no AI account may see the request's material, and `accounts` would take it if "
         "allowed. no_person: the workspace has no person set yet, so the work waits before any AI call. paused: "
         "every account that could take it is waiting for a usage limit to reset (`account`, `until`); the request "
@@ -1766,6 +1768,8 @@ class StopCause(BaseModel):
         "isn't set for the material's level (`why` level); the request stays queued, untouched, until the person "
         "answers for `account`. no_account: the kind of work has no AI account to run on; the request stays queued, "
         "untouched and with no try counted, until an account is added, and Today's one line asks for an account. "
+        "budget: a daily or monthly spending limit refused the run (`period`); the request stays queued with no try "
+        "counted and goes at `until`, when the period rolls over, or when the limits are changed. "
         "no_fit: accounts exist and none can take this work (each is "
         "refused for a reason named in the request's wait); requests refused for the same reasons are one line."
     )
@@ -1784,6 +1788,7 @@ class StopCause(BaseModel):
         None, description="For identity: whether the sign-in changed, or isn't set for the material's level."
     )
     tier: str | None = Field(None, description="For paused: the tier whose work waits.")
+    period: Literal["day", "month"] | None = Field(None, description="For budget: the limit's period.")
     until: datetime | None = Field(
         None, description="For paused, retry and offline: when the request runs again by itself."
     )
@@ -1796,7 +1801,7 @@ class StopCause(BaseModel):
     def _leave_out_unset_times(self, handler: Any) -> dict[str, Any]:
         """The account, the tier and the times are written only for the causes that have them."""
         data = handler(self)
-        for key in ("account", "tier", "until", "since", "idle", "why"):
+        for key in ("account", "tier", "until", "since", "idle", "why", "period"):
             if data.get(key) is None:
                 data.pop(key, None)
         return data
@@ -1869,11 +1874,6 @@ class Request(Record):
         default_factory=list,
         description="For a follow-on run: the later changes to the same records that were folded into it before it "
         "started, oldest first, so one run answers them all; `follows` is the first.",
-    )
-    pairs: list[dict[str, str]] = Field(
-        default_factory=list,
-        description="For a check of a guess from what the person taught: each to-do and the waiting lesson or routing "
-        "entry to check it against, as {action, entry}. `follows` is the change that gave the to-do to the person.",
     )
     sensitivity: Literal["open", "internal", "restricted"] | None = Field(
         None, description="How sensitive the person said what they handed in is; it only ever raises the level."

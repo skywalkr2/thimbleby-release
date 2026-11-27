@@ -493,3 +493,21 @@ def test_when_every_account_in_line_costs_too_much_the_run_stops_at_the_budget(c
     with pytest.raises(BudgetReached):
         router.call(TASK, request_id="REQ-1", spend_limit=0.25)
     assert seen == []
+
+
+def test_a_step_past_its_time_allowance_tries_no_further_account(cfg, store):
+    called = []
+    cfg.steward.ai_step_deadline_minutes = 0
+
+    def slow_rate_limit(r):
+        called.append("main")
+        return httpx.Response(429, text="slow down")
+
+    def backup(r):
+        called.append("backup")
+        return httpx.Response(200, json=ok_body())
+
+    router, _ = router_with(cfg, store, {"main": slow_rate_limit, "backup": backup})
+    with pytest.raises(AiError) as err:
+        router.call(TASK, request_id="REQ-1")
+    assert err.value.kind == "timeout" and called == ["main"]

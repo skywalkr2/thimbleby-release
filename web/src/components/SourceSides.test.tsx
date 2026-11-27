@@ -99,6 +99,8 @@ test("quick ticks, on a server that checks the fingerprint and answers after a w
   const state = serve(undefined, { read: 15, write: 25 });
   const app = show();
   const inbox = await group();
+  // The boxes are disabled until the settings have loaded; a click before then is rightly ignored.
+  await waitFor(() => expect(within(inbox).getByRole("checkbox", { name: "Personal" })).toBeEnabled());
   // The app's live stream asks for everything again whenever the server says something changed, at any moment.
   const stream = setInterval(() => void app.client.invalidateQueries(), 9);
   await user.click(within(inbox).getByRole("checkbox", { name: "Personal" }));

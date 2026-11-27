@@ -32,13 +32,14 @@ def test_read_it_returns_at_once_with_the_choice_recorded_even_when_the_count_is
 
     monkeypatch.setitem(connectors._OLDER, "fake", OlderMail(count, service.read))
     try:
+        cfg.watch.full_read_choices = [7, 10, 14]
         options = source_intake.full_read_options(ws, store, cfg, "m", NOW)
-        assert [o.unknown for o in options if o.days > 14] == [True, True], "no number, and asked once, not per reach"
+        assert [o.unknown for o in options if o.days > 7] == [True, True], "no number, and asked once, not per reach"
         before = service.calls
-        queued = source_intake.answer_full_read(ws, store, cfg, "m", 30, NOW)
+        queued = source_intake.answer_full_read(ws, store, cfg, "m", 14, NOW)
         assert queued.stopped == "queued" and service.calls == before, "nothing was read in the request"
         run = source_intake.intake_run(store.read(), "m")
-        assert run.data["full_read"] == 30 and run.data["older_read"]["kind"] == "queued"
+        assert run.data["full_read"] == 14 and run.data["older_read"]["kind"] == "queued"
         assert older_keys(store) == set()
         drain(ws, store, cfg, NOW)
         assert older_keys(store) == {f"o{d}" for d in DAYS}, "the read went on with no count"
@@ -52,7 +53,7 @@ def test_a_throttled_slice_resumes_at_its_time_with_no_try_counted_and_never_giv
     ws, cfg, store, service = world(tmp_path, monkeypatch, {n: throttled for n in (2, 4, 6, 8, 10, 12, 14, 16)})
     try:
         cfg.watch.older_read_tries = 1
-        source_intake.answer_full_read(ws, store, cfg, "m", 30, NOW)
+        source_intake.answer_full_read(ws, store, cfg, "m", 14, NOW)
         at = NOW
         for _ in range(8):
             drain(ws, store, cfg, at)
@@ -86,7 +87,7 @@ def test_the_background_pass_wakes_when_the_wait_on_an_older_read_runs_out_not_u
     try:
         assert reading_lane.next_wait_in(store.read(), cfg, NOW) is None
         assert wait_at(NOW) == rest  # nothing waits on a service: the plain rest
-        source_intake.answer_full_read(ws, store, cfg, "m", 30, NOW)
+        source_intake.answer_full_read(ws, store, cfg, "m", 14, NOW)
         drain(ws, store, cfg, NOW)
         waiting = source_intake.older_read_waiting(store.read(), "m")
         assert waiting["kind"] == "throttled"
@@ -107,7 +108,7 @@ def test_an_outage_counts_toward_giving_up_but_a_throttle_between_outages_does_n
     ws, cfg, store, _ = world(tmp_path, monkeypatch, {n: outage for n in range(1, 30)})
     try:
         cfg.watch.older_read_tries = 2
-        source_intake.answer_full_read(ws, store, cfg, "m", 30, NOW)
+        source_intake.answer_full_read(ws, store, cfg, "m", 14, NOW)
         at = NOW
         for expected in (1, 2):
             drain(ws, store, cfg, at)
@@ -124,7 +125,7 @@ def test_two_accounts_take_turns_one_slice_each_and_a_wait_holds_only_its_own_ac
 
     ws, cfg, store, service = world(tmp_path, monkeypatch, {})
     try:
-        source_intake.answer_full_read(ws, store, cfg, "m", 30, NOW)
+        source_intake.answer_full_read(ws, store, cfg, "m", 14, NOW)
         # A second source on another account, read in the same lane pass.
         run = source_intake.intake_run(store.read(), "m")
         twin = cfg.watch.sources[0].model_copy(update={"id": "n", "account": "other@example.com"})
@@ -205,11 +206,12 @@ def test_a_full_read_of_a_real_sized_mailbox_under_a_low_limit_completes_unatten
     ws, cfg, store, service = world(tmp_path, monkeypatch, {})
     monkeypatch.setitem(connectors._OLDER, "fake", OlderMail(lambda *a: 0, read))
     try:
-        cfg.watch.full_read_page_items = cfg.watch.look_back_max_items = 50
+        cfg.watch.full_read_page_items = 25
+        cfg.watch.look_back_max_items = 500
         cfg.watch.full_read_max_items = 5000
-        cfg.watch.full_read_choices = [90]
+        cfg.watch.full_read_choices = [14]
         first_look = source_intake.back_to_of(store.read(), "m")
-        source_intake.answer_full_read(ws, store, cfg, "m", 90, NOW)
+        source_intake.answer_full_read(ws, store, cfg, "m", 14, NOW)
         at, throttled = NOW, 0
         for _ in range(200):
             clock["now"] = at.timestamp()
@@ -228,8 +230,14 @@ def test_a_full_read_of_a_real_sized_mailbox_under_a_low_limit_completes_unatten
         reach = {
             s.data["key"] for s in store.read().find("snapshot", {"source": "m"}) if s.data["key"].startswith("big-")
         }
-        held = len([m for m in big_mailbox(NOW)["inbox"] if m["received"][:10] < first_look.isoformat()])
-        assert held > 100 and len(reach) == held, "the whole reach was read, every message once"
+        held = len(
+            [
+                m
+                for m in big_mailbox(NOW)["inbox"]
+                if (NOW - timedelta(days=14)).date().isoformat() <= m["received"][:10] < first_look.isoformat()
+            ]
+        )
+        assert held > 40 and len(reach) == held, "the whole reach was read, every message once"
         log = helpers.get("/__e2e/requests").json()["requests"]
         answers = [r["answer"] for r in log]
         assert answers.count("refused") == throttled, (
@@ -256,11 +264,46 @@ def test_a_count_the_service_gives_is_still_shown_and_kept(tmp_path, monkeypatch
 def test_a_lane_page_never_repeats_more_than_the_oldest_day_of_the_one_before(tmp_path, monkeypatch):
     ws, cfg, store, service = world(tmp_path, monkeypatch, {})
     try:
-        source_intake.answer_full_read(ws, store, cfg, "m", 30, NOW)
+        source_intake.answer_full_read(ws, store, cfg, "m", 14, NOW)
         drain(ws, store, cfg, NOW)
         asked = [(since, before) for since, before, _ in service.asked]
         assert all(isinstance(a, date) for pair in asked for a in pair)
         # Each page starts where the last whole day ended, never at the top of the range again.
         assert len({before for _, before in asked}) == len(asked)
+    finally:
+        store.close()
+
+
+def test_the_import_cap_counts_the_whole_import_across_resumed_slices_not_each_slice(tmp_path, monkeypatch):
+    ws, cfg, store, service = world(tmp_path, monkeypatch, {}, page=2)
+    try:
+        cfg.watch.full_read_max_items = 5
+        cfg.watch.full_read_choices = [14]
+        source_intake.answer_full_read(ws, store, cfg, "m", 14, NOW)
+        slices = 0
+        for _ in range(20):
+            read, more = reading_lane.run_slices(ws, store, cfg, NOW)
+            slices += len(read)
+            if not more:
+                break
+        assert slices >= 2 and len(service.asked) >= 2, "the read went in several slices"
+        assert 0 < len(older_keys(store)) <= 5 < 12, "five messages in all, however many slices it took"
+    finally:
+        store.close()
+
+
+def test_a_stop_ends_the_lane_before_any_slice_and_new_mail_is_read_before_older_mail(tmp_path, monkeypatch):
+    import threading
+
+    ws, cfg, store, service = world(tmp_path, monkeypatch, {}, page=2)
+    try:
+        cfg.watch.full_read_choices = [14]
+        source_intake.answer_full_read(ws, store, cfg, "m", 14, NOW)
+        stop = threading.Event()
+        stop.set()
+        before = service.calls
+        read, _more = reading_lane.run_slices(ws, store, cfg, NOW, None, stop)
+        assert read == [] and service.calls == before, "a stop leaves older mail untouched"
+        assert reading_lane.STAGES.index("poll") < reading_lane.STAGES.index("older"), "new mail comes first"
     finally:
         store.close()

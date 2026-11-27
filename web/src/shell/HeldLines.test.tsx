@@ -1272,8 +1272,8 @@ test("work a spending limit has no room for is a Today line with the limit named
   const until = `${localDate(new Date())}T23:30:00+00:00`;
   const { onOpenAiAccounts } = show([line("limit", { key: "limit:day", text: "day", count: 3, until })]);
   const row = await screen.findByRole("region", { name: "Spending limit reached" });
-  expect(row).toHaveTextContent("Today's AI spending limit is reached. 3 tasks are waiting and carry on");
+  expect(row).toHaveTextContent("3 tasks are waiting for the budget until");
   expect(row).toHaveTextContent("Raise the limit under AI spending in Settings");
-  await userEvent.setup().click(within(row).getByRole("button", { name: "Open AI accounts" }));
+  await userEvent.setup().click(within(row).getByRole("button", { name: "Raise the limit" }));
   expect(onOpenAiAccounts).toHaveBeenCalled();
 });

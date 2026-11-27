@@ -42,6 +42,7 @@ INTERRUPTED_TWICE = "Stopped twice when the app closed during it"
 _REQUEUE_OP = "worker.requeue"
 _INTERRUPTED_OP = "worker.interrupted"
 _RESUME_OP = "worker.resume"
+_LOAD_RETRY_OP = "worker.retry_on_load"
 #: What `Worker.restart_for` names when an add-on that is running was updated from the screen.
 ADD_ONS = "add-ons"
 #: What `Worker.restart_for` names while a restore of a backup copy waits for the restart that swaps it in.
@@ -91,7 +92,6 @@ LIVE_KEYS = (
     "dispatch.knowledge.learn_every_minutes",
     "dispatch.knowledge.learn_input_chars",
     "dispatch.knowledge.follow_on",
-    "dispatch.knowledge.apply_guesses",
     "dispatch.knowledge.follow_on_max_tied",
     "dispatch.knowledge.follow_on_match",
     "dispatch.knowledge.question_body_chars",
@@ -134,7 +134,7 @@ def changes_who_takes_work(key: str) -> bool:
     accounts of a tier, the tier a kind of work uses, the routing rules), so work held for an account's usage limit may
     try again at once. A tier's second try only comes after a first try, so it changes nothing held."""
     return (
-        key.startswith(("ai.providers.", "ai.routing"))
+        key.startswith(("ai.providers.", "ai.routing", "ai.budgets"))
         or (key.startswith("ai.tiers.") and key.endswith((".use", ".fallback")))
         or (key.startswith("ai.tasks.") and key.endswith(".tier"))
     )
@@ -152,7 +152,7 @@ def waits_for_its_time(request: dict[str, Any], now: datetime) -> bool:
     cause = request.get("cause") or {}
     if cause.get("kind") in ("identity", "no_account"):
         return True  # it waits for the person's answer about an agent's sign-in, or for an account, not for a time
-    if cause.get("kind") not in ("paused", "retry", "offline") or not cause.get("until"):
+    if cause.get("kind") not in ("paused", "retry", "offline", "budget") or not cause.get("until"):
         return False
     until = datetime.fromisoformat(str(cause["until"]))
     return (until if until.tzinfo else until.replace(tzinfo=UTC)) > now
@@ -177,6 +177,7 @@ def release_paused(store: Store) -> int:
                 "paused",
                 "identity",
                 "no_account",
+                "budget",
             ):
                 tx.update(
                     "request",
@@ -292,6 +293,40 @@ def requeue_interrupted(store: Store) -> tuple[list[str], list[str]]:
                 tx.update("request", r.id, {"state": "queued", "waiting": INTERRUPTED}, ctx, read_version=r.version)
                 queued.append(r.id)
     return queued, held
+
+
+def retry_on_load(store: Store, now: datetime) -> list[str]:
+    """Each time the app loads, requests marked Try again go again at once: those that stopped for a failure another
+    run may clear, and those waiting for an automatic try or the network's return. A request that needs the person
+    (its go on a cost, who it is about, an interruption twice, one set aside) is left alone, and a stopped request
+    is tried this way once, so one that keeps failing never loops. Returns the ids put back in the queue."""
+    ctx = WriteContext(actor="engine", trust="trusted", op=_LOAD_RETRY_OP)
+    again: list[str] = []
+    with store.transaction() as tx:
+        for r in tx.requests_unfinished():
+            data = r.data
+            cause = data.get("cause") or {}
+            if data["state"] == "queued":
+                if cause.get("kind") not in ("retry", "offline") or not waits_for_its_time(data, now):
+                    continue
+            elif data["state"] == "needs_you":
+                if data.get("dismissed") or data.get("approval") == "required" or cause or data.get("held_answer"):
+                    continue
+                if data.get("waiting") == INTERRUPTED_TWICE:
+                    continue
+                if any(e["op"] == _LOAD_RETRY_OP for e in tx.ledger(kind="request", record_id=r.id)):
+                    continue
+            else:
+                continue
+            tx.update(
+                "request",
+                r.id,
+                {"state": "queued", "waiting": "With the assistant, next in line", "cause": None},
+                ctx,
+                read_version=r.version,
+            )
+            again.append(r.id)
+    return again
 
 
 def run_rank(data: dict[str, Any]) -> int:
@@ -455,6 +490,7 @@ class Worker:
         #: What each loop is doing now, in words, and the loops the log already said are stuck: a stuck report names it.
         self._doing: dict[str, str] = {}
         self._stuck_logged: set[str] = set()
+        self._pass_started: dict[str, float] = {}
         #: The settings keys whose change waits for the restart, and "code" when the program itself changed.
         self.restart_for: list[str] = []
         #: The restart is needed only because a restore is staged (cancelling it lifts the hold).
@@ -586,7 +622,11 @@ class Worker:
     def start(self) -> None:
         self.note_running(force=True)
         self.check_readers()
-        if any(requeue_interrupted(self.store)):
+        if any(requeue_interrupted(self.store)) | bool(retry_on_load(self.store, self.now())):
+            self.events.changed()
+        from engine import source_intake
+
+        if source_intake.pause_long_reads(self.store, self.cfg, self.now()):
             self.events.changed()
         self.settle_acts()
         for name in self._loop_fns:
@@ -615,6 +655,7 @@ class Worker:
         an exit included, is logged and shown as an automation issue, and the loop goes on to its next pass."""
         self._beat_of(name)
         self._doing[name] = where
+        self._pass_started[name] = time.monotonic()
         try:
             self._ensure_watchdog()
         except (Exception, SystemExit):
@@ -626,6 +667,15 @@ class Worker:
         except (Exception, SystemExit):
             log.exception("The background work failed in %s", where)
             self._problem(where)
+        finally:
+            self._pass_started.pop(name, None)
+
+    def passes_over_deadline(self, now_monotonic: float | None = None) -> list[str]:
+        """The loops whose current pass has run longer than the whole-pass deadline. This is the work's own time
+        limit; a loop that keeps checking in between steps is over its deadline without being stuck."""
+        now = time.monotonic() if now_monotonic is None else now_monotonic
+        limit = self.cfg.steward.job_deadline_minutes * 60.0
+        return sorted(n for n, t in list(self._pass_started.items()) if now - t > limit)
 
     def stuck_limit_seconds(self) -> float:
         return self.cfg.steward.background_stuck_after_minutes * 60.0
@@ -667,6 +717,9 @@ class Worker:
             if h == "stuck"
             or (n == "watchdog" and h == "stopped" and now - self._watchdog_beat > self.stuck_limit_seconds())
         ]
+        # A pass past its whole-job deadline is shown the same way, from when it started, even while it keeps checking
+        # in. It is never started again: a second copy would race the first and could repeat its operations.
+        ages += [now - self._pass_started[n] for n in self.passes_over_deadline(now) if n in self._pass_started]
         return self.now() - timedelta(seconds=max(ages)) if ages else None
 
     def stuck_since_text(self) -> str | None:
@@ -703,7 +756,7 @@ class Worker:
                 log.error(
                     "The %s loop has not checked in for %d seconds; it was %s", name, quiet, self._doing.get(name, "?")
                 )
-        if any(h == "stuck" for h in health.values()):
+        if any(h == "stuck" for h in health.values()) or self.passes_over_deadline(now_monotonic):
             self.events.changed()
             # The loop that sends notices may be the one that is stuck, so the watchdog sends this one: the stuck
             # line counts in the notice like any other line of Today's Decide group.
@@ -1641,6 +1694,8 @@ class Worker:
         now = self.now()
         due = self.store.plugins.due_jobs(now)
         for name in due:
+            # A beat per job: one slow job is told apart from a loop that stopped.
+            self._beat_of("jobs")
             self.store.plugins.run_job(name, now)
         if due:
             self.events.changed()
@@ -1733,30 +1788,36 @@ class Worker:
         except (Exception, SystemExit):  # a job's failure is recorded on its run; nothing here may stop the thread
             log.exception("running scheduled jobs failed")
             self._problem("running scheduled jobs failed")
+        self._beat_of("jobs")
         try:
             self.read_accounts_now()
         except (Exception, SystemExit):  # a failed read is recorded on its run; nothing here may stop the thread
             log.exception("reading a signed-in account's sources failed")
             self._problem("reading watched sources failed")
+        self._beat_of("jobs")
         try:
             self.run_due_watches()
         except (Exception, SystemExit):  # a failed read is recorded on its run; nothing here may stop the thread
             log.exception("reading watched sources failed")
             self._problem("reading watched sources failed")
+        self._beat_of("jobs")
         try:
             self.watch_models_if_due()
         except (Exception, SystemExit):  # the look is made again the next time round; nothing here may stop the thread
             log.exception("starting the look at newer models failed")
             self._problem("starting the look at newer models failed")
+        self._beat_of("jobs")
         try:
             self.read_costs_if_due()
         except (Exception, SystemExit):  # asked again the next time round; nothing here may stop the thread
             log.exception("reading what the providers charged failed")
             self._problem("reading what the providers charged failed")
+        self._beat_of("jobs")
         try:
             self.look_for_update_if_due()
         except (Exception, SystemExit):  # the look is made again the next time round; nothing here may stop the thread
             log.exception("starting the look for a newer version failed")
+        self._beat_of("jobs")
         try:
             self.export_if_due()
         except (Exception, SystemExit):  # a failed export is logged by the export; nothing here may stop the thread

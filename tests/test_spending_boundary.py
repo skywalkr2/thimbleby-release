@@ -101,6 +101,34 @@ def test_a_call_whose_estimate_would_pass_the_months_or_its_kinds_limit_is_refus
     assert seen == []
 
 
+def test_a_call_with_no_known_price_starts_only_while_the_limit_has_room(cfg, store):  # noqa: F811
+    budgets = limits(cfg).ai.budgets
+    spend(store, SPENT)
+    hold = spending.admit(store, budgets, "notes", None, NOW)
+    assert hold.usd == 0.0
+    spending.release(hold)
+    spend(store, LIMIT - SPENT)
+    with pytest.raises(BudgetReached, match="used up") as refused:
+        spending.admit(store, budgets, "notes", None, NOW)
+    assert refused.value.period == "day"
+
+
+def test_a_cost_above_its_estimate_is_counted_and_stops_the_next_call(cfg, store):  # noqa: F811
+    def dear(request):
+        body = ok_body()
+        body["usage"] = {"prompt_tokens": 0, "completion_tokens": 2_000_000}
+        return httpx.Response(200, json=body)
+
+    router, seen = router_with(limits(cfg), store, {"main": dear})
+    router.call(task(0.04), request_id="REQ-1")
+    (run,) = runs(store)
+    assert run["cost_usd"] > LIMIT, "the run is recorded at what it cost, not at what was held"
+    assert spending.totals(store, NOW)[0] == pytest.approx(run["cost_usd"])
+    with pytest.raises(BudgetReached, match="used up"):
+        router.call(task(0.01), request_id="REQ-2")
+    assert len(seen) == 1
+
+
 def test_two_callers_at_the_edge_of_the_limit_only_one_is_admitted(cfg, store):  # noqa: F811
     spend(store, SPENT)
     limits(cfg)

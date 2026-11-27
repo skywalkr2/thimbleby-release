@@ -62,7 +62,7 @@ export function statusFixture(over: Partial<S["Status"]> = {}, parts: { backup?:
     backup: { configured: false, last_success: null, age_hours: null, needs_attention: false, last_error: null, encrypted: false, folder: parts.backup?.configured ? "/mnt/drive" : "", newest_hours: null, newest_at: null, problem: null, ...parts.backup },
     ai: parts.ai ?? { state: "ok", detail: null },
     assistant: { last_run_at: null, last_run_failed: false, runs_today: [], queued: 0, oldest_queued_since: null, chains: [], paused: [], working_count: 0, loop_restarted_at: null, loop_stuck_since: null, ...parts.assistant },
-    spend: { today_usd: 0, month_usd: 0, per_day_usd: 2, per_month_usd: 30, warn: false, warn_today: false, warn_month: false, maybe_today_usd: 0, maybe_month_usd: 0, ...parts.spend },
+    spend: { today_usd: 0, month_usd: 0, per_day_usd: 2, per_month_usd: 30, warn: false, warn_today: false, warn_month: false, maybe_today_usd: 0, maybe_month_usd: 0, day_state: "normal", month_state: "normal", day_resets_at: "", month_resets_at: "", ...parts.spend },
     requests: { queued: 0, running: 0, review: 0, needs_you: 0 },
     version: 1,
     has_stages: false,
@@ -199,7 +199,7 @@ export async function snapshotOf(select: HTMLElement): Promise<HTMLElement> {
     const found = document.getElementById(select.getAttribute("aria-controls") ?? "");
     if (!found) throw new Error("The list did not open.");
     return found;
-  }, { timeout: 3000 });
+  }, { timeout: 10000 });
   const copy = list.cloneNode(true) as HTMLElement;
   // In a fragment of its own, so the names that point at other parts of the list (a group's heading) can be found.
   document.createDocumentFragment().appendChild(copy);

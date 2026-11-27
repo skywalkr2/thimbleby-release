@@ -1186,6 +1186,21 @@ def _everything(
         if r.data.get("state") == "queued" and not r.data.get("dismissed") and not r.data.get("cause")
     ]
     limited = measure.held_by_limit(store, cfg, unheld, now)
+    # Work the dispatcher already parked on a refused limit: one line for the longest wait among them.
+    parked = [
+        r
+        for r in requests.values()
+        if r.data.get("state") == "queued"
+        and not r.data.get("dismissed")
+        and (r.data.get("cause") or {}).get("kind") == "budget"
+        and (r.data["cause"].get("until") or "") > now.isoformat()
+    ]
+    if parked:
+        latest = max(parked, key=lambda r: r.data["cause"]["until"]).data["cause"]
+        period = "month" if any(r.data["cause"].get("period") == "month" for r in parked) else "day"
+        if limited is None or limited[0] == period or len(parked) >= len(unheld):
+            limited = (period, datetime.fromisoformat(latest["until"]))
+            unheld = unheld + parked
     if limited is not None:
         lines.append(
             Line(

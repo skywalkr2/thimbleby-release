@@ -33,7 +33,7 @@ def now() -> datetime:
 def api(tmp_path):
     """A workspace with a mail source of new, middle-aged and old mail and a page, over the amount to confirm."""
     at = now()
-    items = [mail("new", 2, now=at), mail("a", 20, now=at), mail("c", 150, now=at), item("page", now=at)]
+    items = [mail("new", 2, now=at), mail("a", 9, now=at), mail("c", 18, now=at), item("page", now=at)]
     ws, cfg, store = make(tmp_path, items, confirm=0.0, price=1000.0)  # a price that rounds to more than nothing
     store.close()
     application = create_app(ws, cfg, TOKEN, ui_dist=tmp_path / "no-ui", start_worker=False)
@@ -55,8 +55,8 @@ def test_the_first_read_shows_the_look_back_date_and_the_choices_on_the_source(a
     assert before["looked_back_to"] is None and before["look_back_choices"] == []
     assert read(client).status_code == 200
     (shown,) = client.get("/api/watch").json()
-    assert shown["looked_back_to"] == (now() - timedelta(days=14)).date().isoformat()
-    assert shown["look_back_choices"] == [30, 90, 365]
+    assert shown["looked_back_to"] == (now() - timedelta(days=7)).date().isoformat()
+    assert shown["look_back_choices"] == [7, 14]
 
 
 def test_the_intake_is_one_line_on_today_and_the_changes_list_has_none_of_the_held_requests(api):
@@ -68,7 +68,7 @@ def test_the_intake_is_one_line_on_today_and_the_changes_list_has_none_of_the_he
         "m",
         "Inbox",
         2,
-        14,
+        7,
     )
     assert line["estimate_usd"] > 0 and line["unpriced"] == 0
     assert not [c for c in client.get("/api/changes").json() if c["state"] == "needs_you"]
@@ -112,17 +112,15 @@ def test_the_preview_counts_and_prices_and_the_look_back_takes_in_the_older_mail
     client, store, ws, cfg = api
     read(client)
     before = len(client.get("/api/changes").json())
-    preview = client.get("/api/watch/m/look-back", params={"days": 30}).json()
+    preview = client.get("/api/watch/m/look-back", params={"days": 7}).json()
     assert (preview["count"], preview["reaches"], preview["available_from"]) == (1, True, None)
     assert preview["estimate_usd"] > 0 and preview["estimate_max_usd"] >= preview["estimate_usd"]
     assert len(client.get("/api/changes").json()) == before, "the preview writes nothing"
-    ninety = client.get("/api/watch/m/look-back", params={"days": 90}).json()
-    assert ninety["count"] == 1
-    year = client.get("/api/watch/m/look-back", params={"days": 365}).json()
-    assert year["count"] == 2 and year["estimate_usd"] > ninety["estimate_usd"]
+    longer = client.get("/api/watch/m/look-back", params={"days": 14}).json()
+    assert longer["count"] == 2 and longer["estimate_usd"] > preview["estimate_usd"]
     # The source holds nothing older than its mail, so the answer doesn't name a later day.
-    assert (year["reaches"], year["available_from"]) == (True, None)
-    asked = client.post("/api/watch/m/look-back", json={"days": 90}).json()
+    assert (longer["reaches"], longer["available_from"]) == (True, None)
+    asked = client.post("/api/watch/m/look-back", json={"days": 14}).json()
     # The answer returns at once with the choice recorded; nothing was read in the request.
     assert (asked["taken"], asked["stopped"]) == (0, "queued")
     assert source_intake.older_read_waiting(store.read(), "m")["kind"] == "queued"
@@ -130,15 +128,15 @@ def test_the_preview_counts_and_prices_and_the_look_back_takes_in_the_older_mail
     reading_lane.run_slices(ws, store, cfg, now() + timedelta(seconds=1))  # the worker's lane reads it
     assert source_intake.older_read_waiting(store.read(), "m") is None
     (line,) = kinds(client, "intake_go")
-    assert line["count"] == 3, "one line for the source, with what was already waiting"
+    assert line["count"] == 4, "one line for the source, with what was already waiting"
     (shown,) = client.get("/api/watch").json()
-    assert shown["looked_back_to"] == (now() - timedelta(days=14 + 90)).date().isoformat()
-    assert client.post("/api/watch/m/intake/go").json() == {"started": 3}
+    assert shown["looked_back_to"] == (now() - timedelta(days=7 + 14)).date().isoformat()
+    assert client.post("/api/watch/m/intake/go").json() == {"started": 4}
 
 
 def test_a_choice_that_is_not_in_the_list_and_a_source_with_no_mail_are_refused(api):
     client, store, ws, cfg = api
     read(client)
-    assert client.get("/api/watch/m/look-back", params={"days": 45}).status_code == 409
-    assert client.post("/api/watch/m/look-back", json={"days": 45}).status_code == 409
-    assert client.get("/api/watch/nobody/look-back", params={"days": 30}).status_code == 404
+    assert client.get("/api/watch/m/look-back", params={"days": 10}).status_code == 409
+    assert client.post("/api/watch/m/look-back", json={"days": 10}).status_code == 409
+    assert client.get("/api/watch/nobody/look-back", params={"days": 7}).status_code == 404

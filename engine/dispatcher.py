@@ -21,7 +21,6 @@ from engine import (
     booking_entries,
     content_log,
     follow_on,
-    guess_fit,
     learn,
     new_terms,
     pack_tiers,
@@ -234,9 +233,6 @@ def process(
     if req.data["task"] == follow_on.TASK and (why := follow_on.skip_reason(store, cfg, req.data)) is not None:
         follow_on.close(store, request_id, why)  # the move is gone or stands no more: no packet, no estimate, no call
         return None
-    if req.data["task"] == guess_fit.TASK and (why := guess_fit.skip_reason(store, cfg, req.data)) is not None:
-        guess_fit.close(store, request_id, why)  # no to-do left to check: no packet, no estimate, no call
-        return None
     if (
         req.data["task"] == person_look.TASK
         and (why := person_look.skip_reason(store, cfg, req.data, request_id)) is not None
@@ -301,8 +297,7 @@ def process(
         )
     # Work the PM didn't start (stage tasks, plugin requests, outside inputs) carries no words from the PM, so nothing
     # in it is trusted.
-    # A guess-fit run reads only the person's own lesson and their to-do, so what it decides is theirs to apply.
-    scheduled = req.data["origin"] != "pm" and req.data["task"] != guess_fit.TASK
+    scheduled = req.data["origin"] != "pm"
     # An input is outside content unless its saved source is marked as the person's own words.
     saved = store.read().get("source", req.data["source"]) if req.data.get("source") else None
     outside = bool(req.data.get("source")) and (saved is None or saved.data["trust"] != "trusted")
@@ -559,6 +554,11 @@ def process(
             attempts=attempts_before,
         )
         return None
+    if outcome.cause and outcome.cause.get("kind") == "budget":
+        # A spending limit holds it: it stays in line with why and until when, and goes when the period rolls over
+        # or the limit is raised.
+        _set(store, request_id, state="queued", waiting=outcome.stop, cause=outcome.cause, attempts=attempts_before)
+        return None
     if outcome.cause and outcome.cause.get("kind") == "paused":
         # Every account that could take it is waiting for a limit to reset: it stays in line and runs by itself then.
         _set(store, request_id, state="queued", waiting=outcome.stop, cause=outcome.cause)
@@ -614,8 +614,6 @@ def _apply_outcome(
     changeset = changeset.model_copy(update={"ops": localize_ops(changeset.ops, cfg)})
     if kind.name == follow_on.TASK:
         changeset, problems = follow_on.without_lone_notes(changeset, problems)
-    if kind.name == guess_fit.TASK:
-        changeset = guess_fit.with_marks(changeset, req.data)  # every hand-over is a marked guess
     if kind.name == "notes":
         # A booking the input carries as structured data becomes the app's own calendar entry, by rules.
         changeset = booking_entries.add_to(changeset, cfg, store.read(), ctx.inputs.raw_input)
@@ -679,8 +677,6 @@ def _apply_outcome(
         learn.finish(store, request_id, cs_id)
     if kind.name == follow_on.TASK:
         follow_on.finish(store, request_id, cs_id)
-    if kind.name == guess_fit.TASK:
-        guess_fit.finish(store, request_id, cs_id)
     if kind.name == person_look.TASK:
         person_look.finish(store, request_id, cs_id)
     if kind.name == week_ahead.TASK:
@@ -1116,6 +1112,11 @@ def _call(
     except (BudgetReached, NoProvider) as err:
         if isinstance(err, BudgetReached) and budget is not None and budget.reached(store):
             out.stop, out.cause = budget.stop(store), {"kind": "spend_cap"}
+        elif isinstance(err, BudgetReached) and err.period:
+            # A daily or monthly limit is a wait for its period to roll over or for the limit to be raised: no
+            # failure and no try is counted.
+            out.stop = str(err)
+            out.cause = {"kind": "budget", "period": err.period, "until": _period_end(err.period).isoformat()}
         else:
             out.stop = str(err)
             out.cause = _identity_cause(err) or _data_level_cause(err) or _no_account_cause(err)
@@ -1914,6 +1915,14 @@ def wait_after_no_work(
         **changes,
     )
     return None
+
+
+def _period_end(period: str) -> datetime:
+    """When the daily or monthly spending period that refused a run ends (UTC)."""
+    now = datetime.now(UTC)
+    if period == "month":
+        return (now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) + timedelta(days=32)).replace(day=1)
+    return now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
 
 
 def stop_or_retry(store: Store, cfg: Config, request_id: str, outcome: _Outcome, now: datetime) -> None:

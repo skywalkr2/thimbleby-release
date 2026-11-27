@@ -1074,3 +1074,82 @@ def test_queued_work_a_spending_limit_has_no_room_for_is_a_today_line_with_when_
     assert datetime.fromisoformat(line.until) == datetime(2026, 10, 14, tzinfo=UTC)
     cfg.ai.budgets.per_day_usd = 5.0  # raised: nothing is held any more
     assert all(x.kind != "limit" for x in queue(ws, store, cfg, clock()))
+
+
+def test_a_daily_limit_holds_work_as_a_wait_not_a_failure_and_raising_it_lets_it_go(env):
+    """A refused day's limit used to end a request as a stopped failure with a try counted; it waits instead, with why
+    and until when, and a change of the limits lets it go at once."""
+    from engine.worker import release_paused
+
+    _, cfg, store, clock = env
+    set_responder(Scripted(AiError("quota", "unused")))
+    request = hand(env)
+    cfg.ai.budgets.per_day_usd = 0.0
+    worker_of(env).run_pending()
+    held = data(env, request)
+    assert held["state"] == "queued" and held.get("retries", 0) == 0
+    assert held["cause"]["kind"] == "budget" and held["cause"]["period"] == "day" and held["cause"]["until"]
+    assert release_paused(store) == 1 and data(env, request)["cause"] is None
+
+
+def test_work_waiting_for_the_budget_is_one_grouped_today_line_with_when_it_goes_on(env):
+    ws, cfg, store, clock = env
+    set_responder(Scripted(AiError("quota", "unused")))
+    first, second = hand(env), hand(env, NOTE + " Also the second.")
+    cfg.ai.budgets.per_day_usd = 0.0
+    worker_of(env).run_pending()
+    assert data(env, first)["cause"]["kind"] == "budget" and data(env, second)["cause"]["kind"] == "budget"
+    lines = [x for x in queue(ws, store, cfg, clock()) if x.kind == "limit"]
+    assert len(lines) == 1 and lines[0].count == 2 and lines[0].text == "day"
+    from datetime import datetime
+
+    assert datetime.fromisoformat(lines[0].until) == datetime.fromisoformat(data(env, first)["cause"]["until"])
+
+
+def test_a_monthly_limit_holds_work_as_a_wait_until_the_month_ends(env):
+    _, cfg, store, clock = env
+    set_responder(Scripted(AiError("quota", "unused")))
+    request = hand(env)
+    cfg.ai.budgets.per_month_usd = 0.0
+    worker_of(env).run_pending()
+    held = data(env, request)
+    assert held["state"] == "queued" and held.get("retries", 0) == 0
+    assert held["cause"]["kind"] == "budget" and held["cause"]["period"] == "month"
+
+
+def test_the_jobs_loop_beats_between_jobs_so_a_long_pass_is_not_taken_for_a_stuck_loop(env):
+    """A pass of many slow jobs beat only at its start, so the watchdog saw a gap as long as the pass."""
+    _, cfg, store, clock = env
+    worker = worker_of(env)
+    beats = []
+    store.plugins.due_jobs = lambda now: ["a", "b", "c"]
+    store.plugins.run_job = lambda name, now: beats.append(worker._beats.get("jobs"))
+    worker._beats["jobs"] = 0.0
+    worker.run_due_jobs()
+    assert beats and all(b and b > 0 for b in beats)
+
+
+def test_a_pass_over_its_deadline_is_reported_apart_from_a_loop_that_is_stuck(env):
+    import time
+
+    _, cfg, store, clock = env
+    worker = worker_of(env)
+    now = time.monotonic()
+    worker._pass_started["jobs"] = now - (cfg.steward.job_deadline_minutes * 60 + 1)
+    worker._beats["jobs"] = now
+    assert worker.passes_over_deadline(now) == ["jobs"]
+    assert worker.stuck_since(now) is not None
+    worker._pass_started["jobs"] = now - 60
+    assert worker.stuck_since(now) is None
+    assert worker.passes_over_deadline(now) == []
+
+
+def test_a_budget_wait_ends_by_itself_when_its_period_rolls_over():
+    from datetime import UTC, datetime, timedelta
+
+    from engine.worker import waits_for_its_time
+
+    now = datetime(2026, 11, 27, 12, 0, tzinfo=UTC)
+    held = {"state": "queued", "cause": {"kind": "budget", "until": (now + timedelta(hours=1)).isoformat()}}
+    assert waits_for_its_time(held, now)
+    assert not waits_for_its_time(held, now + timedelta(hours=2))

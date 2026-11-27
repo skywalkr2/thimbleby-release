@@ -33,7 +33,6 @@ WORK_WORDS = {
     "ask": "answering",
     "learn-correction": "learning",
     "follow-on": "updating",
-    "guess-fit": "updating",
 }
 OTHER_WORK = "working"
 

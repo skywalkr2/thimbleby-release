@@ -228,7 +228,7 @@ function LimitLine(props: { line: Line; onOpenAiAccounts: () => void }) {
       meta={t("queue.limit.sub")}
       primary={
         <Button size="sm" variant="primary" data-key="primary" onClick={props.onOpenAiAccounts}>
-          {t("queue.paused.open")}
+          {t("queue.limit.open")}
         </Button>
       }
     />

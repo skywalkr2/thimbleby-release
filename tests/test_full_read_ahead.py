@@ -149,7 +149,7 @@ def test_a_reach_shows_one_cost_for_the_first_window_and_the_older_mail_together
     refresh(ws, store, cfg, source.id, NOW)
     window = source_intake.waiting_cost(ws, store, cfg, source.id)
     assert window.count and window.likely and window.at_most
-    covered, month, _ = source_intake.full_read_options(ws, store, cfg, source.id, NOW)
+    covered, month = source_intake.full_read_options(ws, store, cfg, source.id, NOW)
     older = source_intake.look_back_preview(
         ws,
         store,
@@ -266,6 +266,14 @@ def test_a_go_that_clashes_with_another_write_is_made_again_and_never_fails(env,
 
 
 def test_the_route_takes_the_go_with_the_choice_and_today_has_no_take_in_line_left(tmp_path):
+    import time_machine
+
+    # The routes read the clock, and the fixture's mail is dated from NOW: a reach only counts what is inside it.
+    with time_machine.travel(NOW, tick=True):
+        _the_route_takes_the_go_with_the_choice(tmp_path)
+
+
+def _the_route_takes_the_go_with_the_choice(tmp_path):
     ws, cfg, store = make(tmp_path)
     store.close()
     from api.app import create_app

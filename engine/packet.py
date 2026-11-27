@@ -152,10 +152,6 @@ def build(ws: Workspace, store: Store, cfg: Config, request_id: str, today: date
         from engine.follow_on import build as follow_on_packet
 
         return follow_on_packet(ws, store, cfg, req, kind, today)
-    if kind.name == "guess-fit":
-        from engine.guess_fit import build as guess_fit_packet
-
-        return guess_fit_packet(ws, store, cfg, req, kind, today)
     raw = source_text(ws, store, req.data.get("source"))
     saved = store.read().get("source", req.data["source"]) if req.data.get("source") else None
     own_words = saved is not None and saved.data["trust"] == "trusted"

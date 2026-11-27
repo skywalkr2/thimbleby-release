@@ -53,7 +53,7 @@ sources:
     enabled: false        # turn on once an app password is set
     every_minutes: 10
     first_run: intake     # the first read takes in the last first_run_days of mail quietly: one list to look over
-    first_run_days: 14    # older mail isn't read; Today says "Not looked at before <date>"
+    first_run_days: 7     # older mail isn't read; Today says "Not looked at before <date>"
     settings:
       host: mail.example.com
       user: pm@example.com
@@ -69,17 +69,17 @@ acting: []   # accounts the assistant may act on after your yes; none until you 
 propose_days: 14   # days ahead to look for a free time when proposing another time for an invitation
 propose_slots: 6   # free times offered at most when proposing another time
 propose_round_minutes: 15   # the first free time offered starts at the next multiple of this many minutes
-look_back_choices: [30, 90, 365]   # days a mail source can be asked to look further back, shown as a list
-full_read_choices: [14, 30, 90]   # days back a first sign-in offers to read mail in full, each with its estimate; none is chosen for the person
+look_back_choices: [7, 14]   # days a mail source can be asked to look further back, shown as a list
+full_read_choices: [7, 14]   # days back a first sign-in offers to read mail in full, each with its estimate; none is chosen for the person
 look_back_max_items: 100   # the most older messages one look further back asks a mail source for
-full_read_max_items: 5000   # the most older messages a first sign-in's full read counts and reads, in pages of full_read_page_items
+full_read_max_items: 500   # the most older messages a first sign-in's full read counts and reads, in pages of full_read_page_items
 full_read_page_items: 500   # how many messages one page of the full read asks for; the read goes a page at a time in the background
 full_read_count_minutes: 15   # how long the full-read choice keeps the counts the mail service gave before asking again
 older_read_throttle_minutes: 15   # a read of older mail the service slowed down carries on after this long when the service gave no time
 older_read_retry_minutes: 10   # a read of older mail that stopped on a failure carries on after this long
 older_read_tries: 3   # carries-on in a row, without getting further, before Today offers to read the rest
-first_headers_days: 365   # days back a mail account's headers are read once at first sign-in, with no assistant work (0: not read)
-first_headers_max_items: 5000   # the most headers that first read asks for
+first_headers_days: 14    # days back a mail account's headers are read once at first sign-in, with no assistant work (0: not read)
+first_headers_max_items: 500   # the most headers that first read asks for
 first_headers_sample_items: 300   # the newest headers read at sign-in; the rest of the days back are read later, in the background
 gate_default_per_second: 2.0   # requests a second to one account's service when its add-on declares no pace
 gate_floor_per_second: 0.1   # the slowest pace an account is held to after the service asked to wait

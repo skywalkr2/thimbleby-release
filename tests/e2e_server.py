@@ -510,6 +510,8 @@ def main() -> None:
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True)
     atexit.register(shutil.rmtree, tmp, ignore_errors=True)
+    # Everything that looks for add-ons, before and after the settings load, looks in this app's own folder.
+    os.environ["THIMBLEBY__SERVER__ADDONS_DIR"] = str(tmp / "addons")
     capture_folder = tmp / "capture" if args.capture else None
     if capture_folder is not None:
         capture_folder.mkdir()

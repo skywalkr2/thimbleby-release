@@ -21,7 +21,14 @@ function channel(): Handler | undefined {
 function ask(name: keyof Bridge, ...args: string[]): boolean {
   const own = bridge()?.[name] as ((...a: string[]) => unknown) | undefined;
   if (own) {
-    void own(...args);
+    if (name === "open_external") {
+      Promise.resolve(own(...args)).then(
+        (result) => {
+          if (result === false) failedListener?.();
+        },
+        () => failedListener?.(),
+      );
+    } else void own(...args);
     return true;
   }
   const mac = channel();
@@ -41,6 +48,15 @@ export function openInBrowser(url: string): boolean {
 }
 
 let shownListener: (() => void) | null = null;
+let failedListener: (() => void) | null = null;
+
+/** Be told when the window could not open a kept file or an outside address. Returns what undoes it. */
+export function onOpenFailed(listener: () => void): () => void {
+  failedListener = listener;
+  return () => {
+    if (failedListener === listener) failedListener = null;
+  };
+}
 
 /** Be told when the window only showed a kept file in its folder instead of opening it. Returns what undoes it. */
 export function onFileShown(listener: () => void): () => void {
@@ -55,9 +71,13 @@ export function onFileShown(listener: () => void): () => void {
 export function openKeptFile(file: string): boolean {
   const own = bridge()?.open_file as ((id: string) => unknown) | undefined;
   if (own) {
-    void Promise.resolve(own(file)).then((result) => {
-      if (result === "shown") shownListener?.();
-    });
+    Promise.resolve(own(file)).then(
+      (result) => {
+        if (result === "shown") shownListener?.();
+        else if (result !== "opened") failedListener?.();
+      },
+      () => failedListener?.(),
+    );
     return true;
   }
   return inAppWindow() && ask("open_file", file);

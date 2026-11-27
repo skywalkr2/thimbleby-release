@@ -3,6 +3,9 @@ second_move_days: 10   # a second move of the same date within this many days sh
 default_stance: alongside   # who a new person is to you until you say otherwise
 tracks: [dates, decisions, design]   # what you track: no question is drafted about anything else
 background_stuck_after_minutes: 10   # background work that has not checked in for this many minutes is shown as stuck
+fetch_deadline_minutes: 5   # one fetch or import step over this many minutes is reported as over its time
+ai_step_deadline_minutes: 10   # one AI step over this many minutes is reported as over its time
+job_deadline_minutes: 30   # one whole pass of scheduled work over this many minutes is reported as over its time
 restart_wait_seconds: 20   # after Restart now, work is given this many seconds to stop, then the app restarts anyway
 pack_call_limit_seconds: 20   # an add-on's handler, validator or Today lines may take this long per call, then count as failed
 reply_thread_days: 10   # same subject and someone in common within this many days is one conversation, for a sent reply to end a reply you owe

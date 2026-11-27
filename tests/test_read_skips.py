@@ -132,18 +132,19 @@ def test_an_answer_over_the_limit_for_a_whole_read_reads_nothing_and_says_so_wit
 # ---- the look further back and the full read -----------------------------------------------------------------------
 
 
-def older_world(tmp_path, big=("o21",), now=NOW):
+def older_world(tmp_path, big=("o10",), now=NOW, days=(9, 10, 11, 60)):
     ws, cfg, store = workspace(tmp_path, SKIPPING)
     store.close()
     (ws.root / "plugins" / "p18" / "plugin.yaml").write_text(yaml.safe_dump(_manifest()))
     first = [mail(f"m{d}", d, now=now) for d in (1, 2, 3)]
-    older = [{**mail(f"o{d}", d, now=now), **({"big": True} if f"o{d}" in big else {})} for d in (20, 21, 22, 60)]
+    older = [{**mail(f"o{d}", d, now=now), **({"big": True} if f"o{d}" in big else {})} for d in days]
     source = {"id": "m", "connector": "p18/inbox", "label": "Inbox", "settings": {"items": first, "older": older}}
     (ws.config_dir / "watch.yaml").write_text(yaml.safe_dump({"version": 1, "sources": [source], "sorting": "rules"}))
     cfg = load_config(ws.config_dir, env={})
     cfg.ai.prices[cfg.ai.tiers["routine"].use] = Price(input_per_million=50.0, output_per_million=50.0)
     cfg.ai.budgets.confirm_above_usd = 0.10
     cfg.ai.budgets.first_go = False
+    cfg.watch.full_read_choices = [7, 14]
     store = Store(ws.db_path, cfg=cfg)
     assert store.plugins.active("p18"), store.plugins.status["p18"].reason
     return ws, cfg, store
@@ -153,13 +154,13 @@ def test_the_full_read_takes_in_what_it_can_when_one_message_is_too_large_and_co
     ws, cfg, store = older_world(tmp_path)
     try:
         refresh(ws, store, cfg, "m", NOW)
-        done = source_intake.read_full_now(ws, store, cfg, "m", 30, NOW)
+        done = source_intake.read_full_now(ws, store, cfg, "m", 14, NOW)
         assert done is not None and done.taken == 2, "the other two older messages were taken in"
         assert done.skipped == {"too_large": 1}
         run = source_intake.intake_run(store.read(), "m")
-        assert run.data["older_skipped"] == {"too_large": 1} and run.data["full_read"] == 30
+        assert run.data["older_skipped"] == {"too_large": 1} and run.data["full_read"] == 14
         kept = {s.data["key"] for s in store.read().find("snapshot", {"source": "m"})}
-        assert "o20" in kept and "o22" in kept and "o21" not in kept
+        assert "o9" in kept and "o11" in kept and "o10" not in kept
         assert len(open_questions(store)) == 1
     finally:
         store.close()
@@ -169,7 +170,7 @@ def test_a_look_that_skipped_nothing_records_nothing_and_says_nothing_about_skip
     ws, cfg, store = older_world(tmp_path, big=())
     try:
         refresh(ws, store, cfg, "m", NOW)
-        done = source_intake.read_full_now(ws, store, cfg, "m", 30, NOW)
+        done = source_intake.read_full_now(ws, store, cfg, "m", 14, NOW)
         assert done.skipped == {} and done.taken == 3
         assert not source_intake.intake_run(store.read(), "m").data.get("older_skipped")
         assert open_questions(store) == []
@@ -178,7 +179,7 @@ def test_a_look_that_skipped_nothing_records_nothing_and_says_nothing_about_skip
 
 
 def test_a_skipped_message_never_makes_a_look_think_it_has_read_everything_there_is(tmp_path, monkeypatch):
-    older = [mail(f"o{d}", d) for d in (20, 22)]
+    older = [mail(f"o{d}", d) for d in (9, 11)]
 
     def read_old(settings, since, before, cap, context):
         items = [
@@ -194,18 +195,18 @@ def test_a_skipped_message_never_makes_a_look_think_it_has_read_everything_there
     try:
         cfg.watch.look_back_max_items = cfg.watch.full_read_page_items = cfg.watch.full_read_max_items = 3
         refresh(ws, store, cfg, "m", NOW)
-        done = source_intake.look_further_back(ws, store, cfg, "m", 16, NOW, exact=True)
+        done = source_intake.look_further_back(ws, store, cfg, "m", 10, NOW, exact=True)
         assert done.skipped == {"too_large": 1} and done.taken == 2
         # Three came (two read, one skipped): the cap was reached, so the look stops where the mail it took does.
         stopped = source_intake.back_to_of(store.read(), "m")
-        assert stopped == (NOW - timedelta(days=22)).date() != (NOW - timedelta(days=30)).date()
+        assert stopped == (NOW - timedelta(days=11)).date() != (NOW - timedelta(days=14)).date()
     finally:
         store.close()
 
 
 def test_the_account_row_says_what_the_latest_read_and_the_first_reads_older_reads_skipped(tmp_path):
     now = datetime.now(UTC)
-    ws, cfg, store = older_world(tmp_path, now=now)
+    ws, cfg, store = older_world(tmp_path, big=("o10",), now=now, days=(9, 10, 11, 60))
     store.close()
     from api.app import create_app
 
@@ -214,7 +215,7 @@ def test_the_account_row_says_what_the_latest_read_and_the_first_reads_older_rea
         live = app.state.store
         refresh(ws, live, cfg, "m", now)
         assert client.get("/api/watch").json()[0]["skipped"] == {}, "nothing skipped: nothing said"
-        answered = client.post("/api/watch/m/full-read", json={"days": 30})
+        answered = client.post("/api/watch/m/full-read", json={"days": 14})
         assert answered.status_code == 200 and answered.json()["stopped"] == "queued"
         from tests.test_reading_lane import drain
 
@@ -226,6 +227,7 @@ def test_the_account_row_says_what_the_latest_read_and_the_first_reads_older_rea
 def test_a_count_that_the_service_refuses_as_too_large_says_so_in_plain_words(tmp_path, monkeypatch):
     ws, cfg, store = make_core(tmp_path, [mail("a", 1), mail("b", 2)], settings_extra={"capped": True})
     try:
+        cfg.watch.look_back_choices = [30, 90, 365]
         refresh(ws, store, cfg, "m", NOW)
 
         def too_big(*args):
@@ -251,7 +253,7 @@ def test_the_year_of_headers_keeps_what_it_can_and_counts_one_too_large_on_the_f
     import tests.test_first_headers as headers_tests
 
     monkeypatch.setattr(headers_tests, "WITH_HEADERS", SKIPPING)
-    found = [header(f"s{i}", who(2), 21 + 7 * i, subject=f"Notice {i}") for i in range(4)]
+    found = [header(f"s{i}", who(2), 8 + 2 * i, subject=f"Notice {i}") for i in range(4)]
     found[1] = {**found[1], "big": True}
     ws, cfg, store, _log = make_headers(tmp_path, headers=found)
     try:
@@ -287,9 +289,9 @@ def test_a_function_may_return_a_list_or_a_poll_and_only_the_items_and_unreadabl
 # ---- S-0631: a capped count reads as at least ----------------------------------------------------------------------
 
 
-def three_months_of_mail(monkeypatch, tmp_path, limit=5, now=NOW):
-    """A mailbox with 3 older messages inside a month and 5 more inside three months, asked with a cap of `limit`."""
-    older = [mail(f"o{d}", d, now=now) for d in (20, 22, 25, 40, 50, 60, 70, 80)]
+def three_months_of_mail(monkeypatch, tmp_path, limit=5, now=NOW, days=(8, 9, 10, 11, 12, 13)):
+    """A mailbox with six older messages inside the fourteen-day reach, asked with a cap of `limit`."""
+    older = [mail(f"o{d}", d, now=now) for d in days]
 
     def of(since, before):
         inside = [m for m in older if since <= datetime.fromisoformat(m["message"]["received"]).date() < before]
@@ -322,17 +324,15 @@ def test_a_full_read_counts_its_whole_reach_past_the_page_size_and_says_at_least
     ws, cfg, store = three_months_of_mail(monkeypatch, tmp_path, limit=2)
     try:
         refresh(ws, store, cfg, "m", NOW)
-        cfg.watch.full_read_choices = [14, 30, 90]
+        cfg.watch.full_read_choices = [7, 14]
         cfg.watch.full_read_max_items = 100
         options = {o.days: o for o in source_intake.full_read_options(ws, store, cfg, "m", NOW)}
-        assert (options[30].count, options[90].count) == (3, 8), "more than one page of mail is counted exactly"
-        assert not options[30].capped and not options[90].capped
-        assert options[90].estimate_usd > options[30].estimate_usd
-        assert options[14].count == 0 and options[14].capped is False
+        assert options[14].count == 6, "more than one page of mail is counted exactly"
+        assert not options[14].capped
+        assert options[7].count == 0 and options[7].capped is False
         cfg.watch.full_read_max_items = 5
         options = {o.days: o for o in source_intake.full_read_options(ws, store, cfg, "m", NOW)}
-        assert (options[30].count, options[30].capped) == (3, False)
-        assert (options[90].count, options[90].capped) == (5, True), "past the ceiling: at least 5"
+        assert (options[14].count, options[14].capped) == (5, True), "past the ceiling: at least 5"
     finally:
         store.close()
 
@@ -342,6 +342,7 @@ def test_a_look_further_back_still_counts_only_one_page_and_says_at_least(tmp_pa
     try:
         refresh(ws, store, cfg, "m", NOW)
         cfg.watch.full_read_max_items = 100
+        cfg.watch.look_back_choices = [30, 90, 365]
         found = source_intake.look_back_preview(ws, store, cfg, "m", 90)
         assert (found.count, found.capped) == (2, True)
     finally:
@@ -352,12 +353,12 @@ def test_the_full_read_takes_in_every_page_of_its_reach_and_stops_at_the_ceiling
     ws, cfg, store = three_months_of_mail(monkeypatch, tmp_path, limit=2)
     try:
         refresh(ws, store, cfg, "m", NOW)
-        cfg.watch.full_read_choices = [14, 30, 90]
+        cfg.watch.full_read_choices = [7, 14]
         cfg.watch.full_read_max_items = 100
         cfg.ai.budgets.confirm_above_usd = 100
-        source_intake.read_full_now(ws, store, cfg, "m", 90, NOW)
+        source_intake.read_full_now(ws, store, cfg, "m", 14, NOW)
         keys = {s.data["key"] for s in store.read().find("snapshot", {"source": "m"})}
-        assert {f"o{d}" for d in (20, 22, 25, 40, 50, 60, 70, 80)} <= keys, "all eight older messages, in pages of two"
+        assert {f"o{d}" for d in (8, 9, 10, 11, 12, 13)} <= keys, "all six older messages, in pages of two"
     finally:
         store.close()
 
@@ -366,20 +367,20 @@ def test_a_full_read_past_the_ceiling_reads_the_newest_of_its_reach(tmp_path, mo
     ws, cfg, store = three_months_of_mail(monkeypatch, tmp_path, limit=2)
     try:
         refresh(ws, store, cfg, "m", NOW)
-        cfg.watch.full_read_choices = [90]
+        cfg.watch.full_read_choices = [14]
         cfg.watch.full_read_max_items = 4
         cfg.ai.budgets.confirm_above_usd = 100
-        source_intake.read_full_now(ws, store, cfg, "m", 90, NOW)
+        source_intake.read_full_now(ws, store, cfg, "m", 14, NOW)
         keys = {s.data["key"] for s in store.read().find("snapshot", {"source": "m"})}
-        assert {"o20", "o22", "o25", "o40"} <= keys and "o80" not in keys
+        assert {"o8", "o9", "o10", "o11"} <= keys and "o13" not in keys
     finally:
         store.close()
 
 
 def test_a_day_with_more_messages_than_a_page_and_older_days_are_all_taken_in(tmp_path, monkeypatch):
     now = NOW
-    day = [mail(f"d{n}", 40 + n / 100, now=now) for n in range(7)]  # seven messages on one day, pages hold two
-    older = day + [mail(f"o{d}", d, now=now) for d in (20, 60, 70)]
+    day = [mail(f"d{n}", 10 + n / 100, now=now) for n in range(7)]  # seven messages on one day, pages hold two
+    older = day + [mail(f"o{d}", d, now=now) for d in (8, 12, 13)]
 
     def of(since, before):
         inside = [m for m in older if since <= datetime.fromisoformat(m["message"]["received"]).date() < before]
@@ -402,11 +403,11 @@ def test_a_day_with_more_messages_than_a_page_and_older_days_are_all_taken_in(tm
     )
     try:
         cfg.watch.look_back_max_items = cfg.watch.full_read_page_items = 2
-        cfg.watch.full_read_choices = [90]
+        cfg.watch.full_read_choices = [14]
         cfg.watch.full_read_max_items = 100
         cfg.ai.budgets.confirm_above_usd = 100
         refresh(ws, store, cfg, "m", NOW)
-        source_intake.read_full_now(ws, store, cfg, "m", 90, NOW)
+        source_intake.read_full_now(ws, store, cfg, "m", 14, NOW)
         keys = {s.data["key"] for s in store.read().find("snapshot", {"source": "m"})}
         assert {m["key"] for m in older} <= keys, "the crowded day and every older day are taken in"
     finally:
@@ -423,7 +424,7 @@ def test_answer_too_large_is_part_of_the_plugin_api_and_is_a_connector_error():
 
 def test_the_routes_carry_whether_a_count_was_capped(tmp_path, monkeypatch):
     now = datetime.now(UTC)
-    ws, cfg, store = three_months_of_mail(monkeypatch, tmp_path, now=now)
+    ws, cfg, store = three_months_of_mail(monkeypatch, tmp_path, now=now, days=(8, 9, 10, 11, 12, 13, 20))
     store.close()
     from api.app import create_app
 
@@ -436,5 +437,5 @@ def test_the_routes_carry_whether_a_count_was_capped(tmp_path, monkeypatch):
     with TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"}) as client:
         refresh(ws, app.state.store, cfg, "m", now)
         shown = client.get("/api/watch/m/full-read").json()
-        assert {o["days"]: o["capped"] for o in shown["options"]} == {14: False, 30: False, 90: True}
-        assert client.get("/api/watch/m/look-back", params={"days": 90}).json()["capped"] is True
+        assert {o["days"]: o["capped"] for o in shown["options"]} == {7: False, 14: True}
+        assert client.get("/api/watch/m/look-back", params={"days": 14}).json()["capped"] is True

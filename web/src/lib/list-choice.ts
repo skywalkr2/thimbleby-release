@@ -101,7 +101,9 @@ export function useListChoice(args: {
     row?.focus({ preventScroll: true });
     // A drawer gives focus back to where it was opened from as it closes; the row has the last word.
     const frame = window.requestAnimationFrame(() => {
-      if (row && document.activeElement !== row) row.focus({ preventScroll: true });
+      // Only when the cursor is not already on a row: a person who has pressed Down since keeps their place.
+      const now = document.activeElement;
+      if (row && now !== row && !(now instanceof HTMLElement && now.hasAttribute("data-row"))) row.focus({ preventScroll: true });
     });
     return () => window.cancelAnimationFrame(frame);
   }, [back]);

@@ -120,7 +120,7 @@ test("a reach whose count stopped at the cap says at least, with its cost, and a
   await user.click(await pickerOf());
   const options = (await screen.findAllByRole("option")).map((o) => o.textContent ?? "");
   expect(options[1]).toMatch(/^1 month: 40 more messages\./);
-  expect(options[2]).toMatch(/^3 months: At least 100 more messages\. At least .*0\.31/);
+  expect(options[2]).toMatch(/^3 months: At least 100 more messages; only the newest are imported, up to your limit\. At least .*0\.31/);
 });
 
 test("after Read it, the result line says what was skipped and nothing about skipping when none was", async () => {

@@ -68,7 +68,11 @@ def run(ws: Any, store: Any, cfg: Any, source: Any, now: datetime) -> CheckResul
     asked = int(cfg.watch.check_reading_headers)
     before = {id(g): g.mark() for g in gates_of(store, source, ws.root)}
     context = ConnectorContext(
-        workspace_root=ws.root, now=now, timezone=cfg.workspace.user.timezone, hosted=cfg.server.mode == "hosted"
+        workspace_root=ws.root,
+        now=now,
+        timezone=cfg.workspace.user.timezone,
+        hosted=cfg.server.mode == "hosted",
+        fetch_deadline_seconds=cfg.steward.fetch_deadline_minutes * 60.0,
     )
     until = now.date() + timedelta(days=1)
     since = until - timedelta(days=max(cfg.watch.first_headers_days, 1))

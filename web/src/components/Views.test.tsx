@@ -228,7 +228,7 @@ test("adding a view takes a name, a tag and the side's projects ticked from a li
   renderApp(<Views />);
   await user.click(await screen.findByRole("button", { name: "Add view" }));
   const dialog = await screen.findByRole("dialog");
-  expect(within(dialog).getByRole("textbox", { name: /Name/ })).toHaveFocus();
+  await waitFor(() => expect(within(dialog).getByRole("textbox", { name: /Name/ })).toHaveFocus());
   // Projects are ticked from the side's list, never typed as ids.
   expect((await within(dialog).findAllByRole("checkbox")).map((c) => c.closest("label")?.textContent)).toEqual(["Shared plan", "Portfolio only", "Left over"]);
   expect(within(dialog).getByRole("button", { name: "Add view" })).toBeDisabled();

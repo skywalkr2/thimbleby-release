@@ -806,6 +806,14 @@ class SpendStatus(BaseModel):
     maybe_month_usd: float = Field(
         0.0, description="Of this month's total, the estimates of calls that got no answer and may have been charged."
     )
+    day_state: Literal["normal", "approaching", "reached", "exceeded"] = Field(
+        "normal", description="Where today's total stands against the daily limit."
+    )
+    month_state: Literal["normal", "approaching", "reached", "exceeded"] = Field(
+        "normal", description="Where this month's total stands against the monthly limit."
+    )
+    day_resets_at: str = Field("", description="When the daily budget starts over (an instant).")
+    month_resets_at: str = Field("", description="When the monthly budget starts over (an instant).")
 
 
 class AssistantAccountRuns(BaseModel):

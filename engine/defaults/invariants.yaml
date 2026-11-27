@@ -380,12 +380,6 @@ invariants:
       or the person when nobody is named, whether the date should change, and ask the person whether the plan still
       holds when more than a dated action was tied to it. For anything that reached someone, draft a short question to
       that person saying what changed, and never edit it behind their back.
-  guess-fit-reach:
-    ops: [action.owners]
-    line: A check of a guess from what the person taught only hands a to-do it was given to the person its lesson names.
-    seed: >-
-      When checking a to-do against what the person taught, change only who owes the to-dos you were given, only to the
-      person the lesson names, and name the lesson in by_kind. Never touch another to-do or another field.
   rule-not-report:
     ops: [report.draft]
     line: A report to the maintainers that is really a standing rule for the assistant is refused; propose it as a rule.

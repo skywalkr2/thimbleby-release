@@ -50,10 +50,10 @@ def make(tmp_path):
     (ws.root / "plugins" / "p18" / "plugin.yaml").write_text(yaml.safe_dump(_manifest()))
     first = [from_person(f"a{i}-{n}", n, 1 + i % 3) for i in range(3) for n in (0, 1)]
     older = [
-        from_person("o20", 0, 20),
-        from_person("o21", 1, 21, where="deleted"),  # deleted by the person, still read
-        from_person("o22", 0, 22, where="archived"),
-        from_person("o60", 1, 60),
+        from_person("o8", 0, 8),
+        from_person("o9", 1, 9, where="deleted"),  # deleted by the person, still read
+        from_person("o10", 0, 10, where="archived"),
+        from_person("o20", 1, 20),  # beyond the furthest reach any import may have
     ]
     second = [from_person(f"b{i}", 5, 1) for i in range(3)]
     sources = [
@@ -128,10 +128,9 @@ def test_the_choice_offers_three_estimates_and_chooses_none(env):
     refresh(ws, store, cfg, "m", NOW)
     assert source_intake.full_read_pending(store, cfg, source)
     options = source_intake.full_read_options(ws, store, cfg, "m", NOW)
-    assert [o.days for o in options] == [14, 30, 90]
-    assert options[0].count == 0 and options[0].estimate_usd is None  # the first read already covers 2 weeks
+    assert [o.days for o in options] == [7, 14]
+    assert options[0].count == 0 and options[0].estimate_usd is None  # the first read already covers the week
     assert options[1].count == 3 and options[1].estimate_usd > 0  # the three older messages, one deleted
-    assert options[2].count == 4 and options[2].estimate_usd > options[1].estimate_usd
     run = source_intake.intake_run(store.read(), "m")
     assert run.data.get("full_read") is None and source_intake.full_read_pending(store, cfg, source)
     held = [r for r in store.read().list("request") if r.data.get("intake") == "m"]
@@ -141,15 +140,15 @@ def test_the_choice_offers_three_estimates_and_chooses_none(env):
 def test_the_chosen_reach_is_read_through_the_look_further_back_deleted_and_archived_mail_included(env):
     ws, cfg, store = env
     refresh(ws, store, cfg, "m", NOW)
-    done = source_intake.read_full_now(ws, store, cfg, "m", 30, NOW)
+    done = source_intake.read_full_now(ws, store, cfg, "m", 14, NOW)
     assert done is not None and done.taken == 3 and not done.started  # held for the go like any AI work
     view = store.read()
     older = [r for r in view.list("request") if r.data.get("intake") == "m" and r.data["state"] == "needs_you"]
     assert all(source_intake.waits_on_go(r.data) for r in older)
     kept = {view.get("source", r.data["source"]).data["title"] for r in older}
-    assert {"Subject of o20", "Subject of o21", "Subject of o22"} <= kept  # the deleted and archived ones among them
-    assert "Subject of o60" not in kept  # beyond the reach
-    assert source_intake.intake_run(view, "m").data["full_read"] == 30
+    assert {"Subject of o8", "Subject of o9", "Subject of o10"} <= kept  # the deleted and archived ones among them
+    assert "Subject of o20" not in kept  # beyond the reach
+    assert source_intake.intake_run(view, "m").data["full_read"] == 14
     assert not source_intake.full_read_pending(store, cfg, cfg.watch.sources[0])
 
 
@@ -161,16 +160,16 @@ def test_not_now_reads_nothing_and_ends_the_question_and_a_reach_not_offered_is_
     assert len(store.read().list("request")) == before
     assert not source_intake.full_read_pending(store, cfg, cfg.watch.sources[0])
     with pytest.raises(StoreError):
-        source_intake.answer_full_read(ws, store, cfg, "m", 45, NOW)
+        source_intake.answer_full_read(ws, store, cfg, "m", 10, NOW)
 
 
 def test_a_reach_the_first_read_already_covers_takes_nothing_more_and_is_answered(env):
     ws, cfg, store = env
     refresh(ws, store, cfg, "m", NOW)
     before = len(store.read().list("request"))
-    assert source_intake.answer_full_read(ws, store, cfg, "m", 14, NOW) is None
+    assert source_intake.answer_full_read(ws, store, cfg, "m", 7, NOW) is None
     assert len(store.read().list("request")) == before
-    assert source_intake.intake_run(store.read(), "m").data["full_read"] == 14
+    assert source_intake.intake_run(store.read(), "m").data["full_read"] == 7
 
 
 def test_the_routes_offer_the_question_after_a_read_and_answer_it(tmp_path):
@@ -184,11 +183,11 @@ def test_the_routes_offer_the_question_after_a_read_and_answer_it(tmp_path):
         # yet, since nothing was asked of the service.
         assert [bool(s["full_read_open"]) for s in client.get("/api/watch").json()] == [True, True]
         ahead = client.get("/api/watch/m/full-read").json()
-        assert [(o["days"], o["count"], o["unknown"]) for o in ahead["options"]] == [(d, 0, True) for d in (14, 30, 90)]
+        assert [(o["days"], o["count"], o["unknown"]) for o in ahead["options"]] == [(d, 0, True) for d in (7, 14)]
         assert client.post("/api/watch/m/read").status_code == 200
         assert [bool(s["full_read_open"]) for s in client.get("/api/watch").json()] == [True, True]
         shown = client.get("/api/watch/m/full-read").json()
-        assert [o["days"] for o in shown["options"]] == [14, 30, 90] and shown["answered"] is None
+        assert [o["days"] for o in shown["options"]] == [7, 14] and shown["answered"] is None
         assert not any(o["unknown"] for o in shown["options"])  # counted once the read has landed
         assert client.post("/api/watch/m/full-read", json={"days": 0}).status_code == 200
         assert client.get("/api/watch/m/full-read").json()["answered"] == 0

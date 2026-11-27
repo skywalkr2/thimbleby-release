@@ -870,7 +870,7 @@ def intake_items(now: datetime, days: int = 14, notice: bool = False) -> dict[st
 #: A real-sized mailbox: the days it spans and how many messages each folder holds (the inbox's are spread evenly), and
 #: how many of the newest a plain listing gives.
 BIG_DAYS = 60
-BIG_INBOX = 7 * BIG_DAYS
+BIG_INBOX = 8 * BIG_DAYS
 BIG_SENT = BIG_DAYS
 BIG_ARCHIVED = 40
 BIG_DELETED = 20

@@ -148,10 +148,17 @@ test("an unconfigured backup opens the setup guide at the backup step", async ()
 
 test("the spend line shows today's and this month's cost, and says which limit it is near", async () => {
   const user = userEvent.setup();
-  show(statusFixture({}, { backup: { configured: true, age_hours: 1 }, spend: { today_usd: 1.7, month_usd: 5, warn: true, warn_today: true } }));
+  show(statusFixture({}, { backup: { configured: true, age_hours: 1 }, spend: { today_usd: 1.7, month_usd: 5, per_day_usd: 2, per_month_usd: 20, warn: true, warn_today: true, day_state: "approaching" } }));
   await chipText("Spending near limit");
   const dialog = await open(user);
-  expect(within(dialog).getByText("AI today $1.70 · this month $5.00 · near today's limit")).toBeInTheDocument();
+  expect(within(dialog).getByText("AI today $1.70 · this month $5.00 · $1.70 of $2.00 used today")).toBeInTheDocument();
+});
+
+test("a reached daily limit says it is reached and when it starts over", async () => {
+  const user = userEvent.setup();
+  show(statusFixture({}, { backup: { configured: true, age_hours: 1 }, spend: { today_usd: 2, month_usd: 5, per_day_usd: 2, per_month_usd: 20, warn: true, warn_today: true, day_state: "reached", day_resets_at: "2026-11-28T00:00:00+00:00" } }));
+  const dialog = await open(user);
+  expect(within(dialog).getByText(/today's limit reached: \$2\.00 of \$2\.00 used; it starts over at/)).toBeInTheDocument();
 });
 
 test("the spend line says how much of a total may have been charged for calls that got no answer", async () => {

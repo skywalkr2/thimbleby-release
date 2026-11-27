@@ -432,7 +432,8 @@ def test_its_own_budget_stops_a_look_once_the_days_amount_is_spent(env):
     request = person_look.queue(store, cfg, NOW)
     process(ws, store, cfg, Router(cfg, store, env={}), request, now=NOW)
     held = store.read().get("request", request).data
-    assert held["state"] == "needs_you" and "budget for this kind of work" in held["waiting"]
+    assert held["state"] == "queued" and held["cause"]["kind"] == "budget"
+    assert "budget for this kind of work" in held["waiting"]
     assert entries(store) == [] and not store.read().has("run")
 
 

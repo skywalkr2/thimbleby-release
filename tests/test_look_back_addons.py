@@ -92,7 +92,7 @@ def make(tmp_path, connector="p18/inbox", account=None, now=NOW):
         "label": "Inbox",
         "settings": {
             "items": [mail(f"m{d}", d, now=now) for d in (1, 2, 3)],
-            "older": [mail(f"o{d}", d, now=now) for d in (20, 21, 22)],
+            "older": [mail(f"o{d}", d, now=now) for d in (8, 9, 10)],
             "log": str(log),
         },
         **({"account": account} if account else {}),
@@ -131,9 +131,9 @@ def test_a_connector_that_does_not_declare_it_is_never_offered_one(tmp_path):
         refresh(ws, store, cfg, "m", NOW)
         assert not source_intake.can_look_back(cfg.watch.sources[0], store)
         with pytest.raises(StoreError):
-            source_intake.look_back_preview(ws, store, cfg, "m", 30, NOW)
+            source_intake.look_back_preview(ws, store, cfg, "m", 7, NOW)
         with pytest.raises(StoreError):
-            source_intake.look_further_back(ws, store, cfg, "m", 30, NOW)
+            source_intake.look_further_back(ws, store, cfg, "m", 7, NOW)
     finally:
         store.close()
 
@@ -143,7 +143,7 @@ def test_the_preview_asks_only_for_a_count_within_the_limit_and_writes_nothing(e
     cfg.watch.look_back_max_items = 2
     refresh(ws, store, cfg, "m", NOW)
     held = len(store.read().list("request"))
-    found = source_intake.look_back_preview(ws, store, cfg, "m", 30, NOW)
+    found = source_intake.look_back_preview(ws, store, cfg, "m", 7, NOW)
     assert found.count == 2 and found.estimate_usd and found.estimate_usd > 0
     assert calls(log) == [["count", 2, None]]
     assert len(store.read().list("request")) == held
@@ -154,7 +154,7 @@ def test_looking_further_back_reads_the_older_items_within_the_limit_and_holds_t
     cfg.watch.look_back_max_items = 2
     refresh(ws, store, cfg, "m", NOW)
     before = source_intake.back_to_of(store.read(), "m")
-    done = source_intake.look_further_back(ws, store, cfg, "m", 30, NOW)
+    done = source_intake.look_further_back(ws, store, cfg, "m", 7, NOW)
     assert done.taken == 2 and not done.started and done.estimate_usd and done.estimate_usd > 0
     assert ["read", 2, None] in calls(log)
     assert source_intake.back_to_of(store.read(), "m") < before
@@ -166,7 +166,7 @@ def test_a_connector_with_no_count_is_read_for_the_estimate(tmp_path):
     ws, cfg, store, log = make(tmp_path, "p18/uncounted")
     try:
         refresh(ws, store, cfg, "m", NOW)
-        found = source_intake.look_back_preview(ws, store, cfg, "m", 30, NOW)
+        found = source_intake.look_back_preview(ws, store, cfg, "m", 7, NOW)
         assert found.count == 3 and calls(log) == [["read", cfg.watch.look_back_max_items, None]]
     finally:
         store.close()
@@ -177,7 +177,7 @@ def test_looking_back_on_a_connector_with_no_count_reads_once_never_twice(tmp_pa
     ws, cfg, store, log = make(tmp_path, "p18/uncounted")
     try:
         refresh(ws, store, cfg, "m", NOW)
-        done = source_intake.look_further_back(ws, store, cfg, "m", 30, NOW)
+        done = source_intake.look_further_back(ws, store, cfg, "m", 7, NOW)
         assert done.taken and not done.short
         assert [c[0] for c in calls(log)] == ["read"]
     finally:
@@ -188,7 +188,7 @@ def test_the_source_is_asked_as_the_account_it_reads_with(tmp_path):
     ws, cfg, store, log = make(tmp_path, account="person@example.com")
     try:
         refresh(ws, store, cfg, "m", NOW)
-        source_intake.look_back_preview(ws, store, cfg, "m", 30, NOW)
+        source_intake.look_back_preview(ws, store, cfg, "m", 7, NOW)
         assert calls(log)[-1][2] == "person@example.com"
     finally:
         store.close()
@@ -200,7 +200,7 @@ def test_a_connector_that_fails_asking_for_older_items_is_contained(tmp_path):
         refresh(ws, store, cfg, "m", NOW)
         cfg.watch.sources[0].settings["older"] = [{"key": "x"}]  # an entry the connector can't read
         # A count that can't be had never fails the choice: the preview says it has no number.
-        assert source_intake.look_back_preview(ws, store, cfg, "m", 30, NOW).unknown is True
+        assert source_intake.look_back_preview(ws, store, cfg, "m", 7, NOW).unknown is True
     finally:
         store.close()
 
@@ -215,6 +215,6 @@ def test_the_source_list_offers_the_choices_only_for_a_source_that_can_be_asked(
     with TestClient(application, headers={"Authorization": "Bearer t"}) as client:
         assert client.get("/api/watch").json()[0]["look_back_choices"] == []
         assert client.post("/api/watch/m/read").status_code == 200
-        assert client.get("/api/watch").json()[0]["look_back_choices"] == [30, 90, 365]
-        preview = client.get("/api/watch/m/look-back", params={"days": 30})
+        assert client.get("/api/watch").json()[0]["look_back_choices"] == [7, 14]
+        preview = client.get("/api/watch/m/look-back", params={"days": 7})
         assert preview.status_code == 200 and preview.json()["count"] == 3

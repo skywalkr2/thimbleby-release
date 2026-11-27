@@ -35207,6 +35207,24 @@
       "SpendStatus": {
         "description": "What the assistant's work has cost today and this month (UTC), against the configured limits.",
         "properties": {
+          "day_resets_at": {
+            "default": "",
+            "description": "When the daily budget starts over (an instant).",
+            "title": "Day Resets At",
+            "type": "string"
+          },
+          "day_state": {
+            "default": "normal",
+            "description": "Where today's total stands against the daily limit.",
+            "enum": [
+              "normal",
+              "approaching",
+              "reached",
+              "exceeded"
+            ],
+            "title": "Day State",
+            "type": "string"
+          },
           "maybe_month_usd": {
             "default": 0.0,
             "description": "Of this month's total, the estimates of calls that got no answer and may have been charged.",
@@ -35218,6 +35236,24 @@
             "description": "Of today's total, the estimates of calls that got no answer and may have been charged; 0 with none.",
             "title": "Maybe Today Usd",
             "type": "number"
+          },
+          "month_resets_at": {
+            "default": "",
+            "description": "When the monthly budget starts over (an instant).",
+            "title": "Month Resets At",
+            "type": "string"
+          },
+          "month_state": {
+            "default": "normal",
+            "description": "Where this month's total stands against the monthly limit.",
+            "enum": [
+              "normal",
+              "approaching",
+              "reached",
+              "exceeded"
+            ],
+            "title": "Month State",
+            "type": "string"
           },
           "month_usd": {
             "title": "Month Usd",

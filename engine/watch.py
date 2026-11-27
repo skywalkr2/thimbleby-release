@@ -685,6 +685,7 @@ def _poll(
         now=now,
         timezone=cfg.workspace.user.timezone,
         hosted=cfg.server.mode == "hosted",
+        fetch_deadline_seconds=cfg.steward.fetch_deadline_minutes * 60.0,
     )
     if "/" not in connector.name:
         return connector.poll(settings, state, context)

@@ -470,7 +470,6 @@ def check(cs: ChangesetIn, ctx: Context) -> list[Problem]:
     problems += _learning_question(cs, ctx)
     problems += _miss_left_unlearned(cs, ctx)
     problems += _follow_on_reach(cs, ctx)
-    problems += _guess_fit_reach(cs, ctx)
     problems += _thread_promise_unanswered(cs, ctx)
     problems += _owner_mail_unanswered(cs, ctx)
     problems += _own_promise_missed(cs, ctx)
@@ -3062,12 +3061,6 @@ def apply_changeset(
                     # Each op in its own savepoint: one that fails is refused alone and leaves nothing behind.
                     tx.sql("SAVEPOINT plugin_op")
                     pending = len(tx.pending)
-                    # Who owed a to-do before a step handed it over, for a guess mark that takes the step back.
-                    owed_before = (
-                        [o["person"] for o in handed.data.get("owners") or [] if o.get("person")]
-                        if isinstance(op, ActionOwnersOp) and (handed := tx.get("action", op.id)) is not None
-                        else []
-                    )
                     try:
                         ready = (
                             _resolved_repeat(tx, op, ctx, [(o.op["op"], o.records) for o in outcomes])
@@ -3124,7 +3117,7 @@ def apply_changeset(
                 if outcome.status == "applied" and (
                     entry := guesses.get(i) or _guess_given(tx, ctx, op, outcome.records)
                 ):
-                    outcome.by_kind = _mark_by_kind(tx, ctx, cs_id, i, op, outcome.records, entry, owed_before)
+                    outcome.by_kind = _mark_by_kind(tx, ctx, cs_id, i, op, outcome.records, entry)
                 if outcome.status == "applied":
                     proposed = _proposed_reminder(tx, op, outcome.records, ctx, now)
                     if proposed is not None:
@@ -3606,33 +3599,6 @@ def _follow_on_reach(cs: ChangesetIn, ctx: Context) -> list[Problem]:
         for i, op in enumerate(cs.ops)
         if (why := follow_on.reach_problem(view, ctx.cfg, request.data, op, ctx.people)) is not None
     ]
-
-
-def _guess_fit_reach(cs: ChangesetIn, ctx: Context) -> list[Problem]:
-    """A guess-fit answer's step that reaches past what it may do is refused, so it gets a fix round: a change to a
-    to-do the request didn't pair, a to-do given to anyone but the person its entry names, a step that is not an owner
-    change, and a `by_kind` that names an entry not paired with that step's to-do."""
-    from engine import guess_fit
-
-    if origin_of(ctx).get("task") != guess_fit.TASK:
-        return []
-    view = ctx.store.read()
-    request = view.get("request", ctx.inputs.request) if ctx.inputs.request else None
-    if request is None:
-        return []
-    problems = []
-    for i, op in enumerate(cs.ops):
-        why = guess_fit.reach_problem(view, request.data, i, op, cs.by_kind)
-        if why is None and getattr(op, "op", None) == "action.owners":
-            why = guess_fit.owners_problem(ctx, request.data, op, cs.by_kind, i)
-        if why is not None:
-            problems.append(Problem("guess-fit-reach", "refuse", i, why))
-    for step in cs.by_kind:
-        if step.op >= len(cs.ops):
-            problems.append(
-                Problem("guess-fit-reach", "refuse", None, f"by_kind names step {step.op}, which isn't one")
-            )
-    return problems
 
 
 #: The fewest words an action's evidence quote must have to count as the promise's words in a reply's history: a
@@ -4238,8 +4204,6 @@ def _due_differs(tx: Tx, ctx: Context, op: Any) -> str | None:
     if getattr(op, "due_at_event", False):
         return None  # the entry's own day is the due
     given = f"you gave {op.due.isoformat()}" if op.due is not None else "you gave no date"
-    if reading.span and op.due is None:
-        return None  # words for a span of days ("next week") name no one day, so leaving the date out is right
     if reading.day is not None:
         if op.due is not None and reading.day == op.due:
             return None
@@ -6116,13 +6080,11 @@ def _next_occurrence(tx: Tx, ctx: Context, ended: Any, w: WriteContext, made: An
 @dataclass(frozen=True)
 class DueReading:
     """What the rules read in an action's due words: the day (None when they read none), whether the day was read with
-    doubt, the day the input was received, and whether the words name a span of days ("next week") rather than one day.
-    Only a reading to compare with the assistant's own, never an answer."""
+    doubt, and the day the input was received. Only a reading to compare with the assistant's own, never an answer."""
 
     day: date | None
     doubtful: bool
     received: date
-    span: bool = False
 
 
 def _read_due(tx: Tx, ctx: Context, source: str | None, words: str | None) -> DueReading | None:
@@ -6159,8 +6121,7 @@ def _read_due(tx: Tx, ctx: Context, source: str | None, words: str | None) -> Du
     )
     # One day read with doubt ("next Friday", a year-less date far ahead) is checked; a range is due at its end.
     doubtful = not found.exact and found.start == found.end
-    span = found.start is not None and found.end is not None and found.start != found.end
-    return DueReading(found.end or found.start, doubtful, received.astimezone(where).date(), span)
+    return DueReading(found.end or found.start, doubtful, received.astimezone(where).date())
 
 
 def _due(
@@ -6384,19 +6345,12 @@ def _record_dropped(tx: Tx, ctx: Context, kind: str, record_id: str, reason: str
 
 
 def _mark_by_kind(
-    tx: Tx,
-    ctx: Context,
-    cs_id: str,
-    index: int,
-    op: OpModel,
-    records: list[dict[str, Any]],
-    entry_id: str,
-    owed_before: list[str] | None = None,
+    tx: Tx, ctx: Context, cs_id: str, index: int, op: OpModel, records: list[dict[str, Any]], entry_id: str
 ) -> dict[str, Any] | None:
     """A step the run says it decided with what was learned only because its item is of the entry's kind of work: the
-    guess is kept on the step and on the to-do it made, or the to-do it handed over (`action.owners`, with who owed it
-    before, `owed_before`), with the day the entry was learned, so the row says where it came from and one click takes
-    it back. An entry that isn't an active lesson or routing entry with a kind of work marks nothing."""
+    guess is kept on the step and on the to-do it made, with the day the entry was learned, so the row says where it
+    came from and one click takes it back. An entry that isn't an active lesson or routing entry with a kind of work
+    marks nothing."""
     kind = learn.kind_of_id(REGISTRY, entry_id)
     found = tx.get(kind, entry_id) if kind in ("lesson", "routing_entry") else None
     if found is None:
@@ -6415,19 +6369,6 @@ def _mark_by_kind(
         made = [tx.get("action", r["id"]) for r in records if r.get("kind") == "action"]
         if not any(guessed in {o.get("person") for o in (m.data.get("owners") or [])} for m in made if m is not None):
             return None  # named in "by_kind" but given to someone else: nothing of the entry was applied, so no mark
-    if isinstance(op, ActionOwnersOp):
-        handed = tx.get("action", op.id)
-        if handed is None or (guessed and guessed not in {o.get("person") for o in handed.data.get("owners") or []}):
-            return None  # handed to someone other than the entry's person: nothing of the entry was applied
-        if when is not None:
-            tx.update(
-                "action",
-                op.id,
-                {"by_kind": {**mark, "owners_before": list(owed_before or [])}},
-                _wctx(ctx, cs_id, index, op),
-                read_version=handed.version,
-            )
-        return mark
     if isinstance(op, ActionAddOp) and when is not None:
         # Without the guess the to-do is the user's own when their note says nothing of an owner, as it would be.
         before = [ctx.people.pm] if (ctx.actor == "pm" or _from_pm(tx, ctx)) and ctx.people.pm else []

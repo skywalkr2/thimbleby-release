@@ -156,3 +156,16 @@ def test_a_server_that_says_the_flags_after_the_header_text_still_tells_what_was
     monkeypatch.setattr(Recorded, "flags_after", True)
     found = read_headers(settings(), date(2029, 1, 1), NOW.date(), 10, ConnectorContext(tmp_path))
     assert [i.message.unread for i in found] == [False, True]
+
+
+def test_a_header_read_past_its_deadline_keeps_the_newest_batch_and_says_it_stopped(monkeypatch, tmp_path):
+    from engine.connectors import Poll
+    from engine.connectors import mailbox as mb
+
+    monkeypatch.setattr(mb, "_HEADER_BATCH", 2)
+    serve(monkeypatch, {u: (raw(u, u), False) for u in range(1, 6)})
+    context = ConnectorContext(tmp_path, fetch_deadline_seconds=-1.0)
+    found = read_headers(settings(), date(2029, 1, 1), NOW.date(), 10, context)
+    assert isinstance(found, Poll) and found.stopped is not None
+    assert [i.key for i in found.items] == [f"<h{n}@mail.example.com>" for n in (4, 5)]
+    assert len([c for c in Recorded.commands if c[0] == "FETCH"]) == 1

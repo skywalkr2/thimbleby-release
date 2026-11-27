@@ -40,7 +40,7 @@ SMALL_MACHINES = [(f"Store {n} Offers", f"offers@store{n}.example.com", 24 + n) 
 def _spread(key: str, sender: str, count: int, now: datetime, *, bulk: bool, to: list[str] | None = None) -> list[dict]:
     found = []
     for i in range(count):
-        days = 4 + (i * 355 / count)  # older than the first read's own few days, spread over the year
+        days = 8 + (i * 5.5 / count)  # older than the first read's own days, spread over the rest of the import window
         received = (now - timedelta(days=days, minutes=7 * i % 600)).isoformat()
         details = {"sender": sender, "received": received, "unread": bulk, "where": "inbox", "bulk": bulk}
         if to is not None:

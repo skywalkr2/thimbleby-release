@@ -56,12 +56,12 @@ def make(tmp_path, now=NOW, **extra):
     (ws.root / "plugins" / "p18" / "plugin.yaml").write_text(yaml.safe_dump(_manifest()))
     first = [from_person(f"a{i}", 0, 1 + i, now=now) for i in range(3)]
     older = [
-        from_person("o20", 0, 20, now=now),
-        from_person("o21", 1, 21, where="deleted", now=now),
-        from_person("o22", 0, 22, where="archived", now=now),
+        from_person("o8", 0, 8, now=now),
+        from_person("o9", 1, 9, where="deleted", now=now),
+        from_person("o10", 0, 10, where="archived", now=now),
     ]
     sent = [from_person(f"s{i}", 2, 1 + i, now=now) for i in range(2)]
-    sent_older = [from_person("so25", 2, 25, now=now), from_person("so26", 2, 26, now=now)]
+    sent_older = [from_person("so8", 2, 8, now=now), from_person("so9", 2, 9, now=now)]
     sources = [
         {
             "id": "m",
@@ -101,7 +101,7 @@ def test_the_full_read_is_offered_and_answered_for_every_mail_source_of_the_acco
         shown = {s["id"]: s for s in client.get("/api/watch").json()}
         assert shown["m"]["full_read_open"] and shown["s"]["full_read_open"], "the sent mail is asked too"
         for source in ("m", "s"):
-            answered = client.post(f"/api/watch/{source}/full-read", json={"days": 30})
+            answered = client.post(f"/api/watch/{source}/full-read", json={"days": 14})
             assert answered.status_code == 200 and answered.json()["stopped"] == "queued"
         from tests.test_reading_lane import drain
 
@@ -125,7 +125,7 @@ def test_a_source_read_for_the_first_time_after_the_answer_takes_the_accounts_an
     with TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"}) as client:
         # The inbox is read and answered before the sent mail has had its first read (H4-06).
         assert client.post("/api/watch/m/read").status_code == 200
-        assert client.post("/api/watch/m/full-read", json={"days": 30}).status_code == 200
+        assert client.post("/api/watch/m/full-read", json={"days": 14}).status_code == 200
         assert client.post("/api/watch/s/read").status_code == 200
         shown = {x["id"]: x for x in client.get("/api/watch").json()}
         assert not shown["s"]["full_read_open"], (
@@ -145,7 +145,7 @@ def test_a_count_the_service_only_estimated_says_so_and_an_exact_one_does_not(tm
             refresh(ws, store, cfg, "m", NOW)
             options = source_intake.full_read_options(ws, store, cfg, "m", NOW)
             assert [o.estimate for o in options if o.count] == [estimate] * len([o for o in options if o.count])
-            assert source_intake.look_back_preview(ws, store, cfg, "m", 20, NOW, exact=True).estimate is estimate
+            assert source_intake.look_back_preview(ws, store, cfg, "m", 7, NOW, exact=True).estimate is estimate
         finally:
             store.close()
 
@@ -159,7 +159,8 @@ def test_an_estimate_reaches_the_screen_through_the_routes(tmp_path):
     with TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"}) as client:
         client.post("/api/watch/m/read")
         shown = client.get("/api/watch/m/full-read").json()
-        assert [o["estimate"] for o in shown["options"] if o["count"]] == [True, True]
+        counted = [o["estimate"] for o in shown["options"] if o["count"]]
+        assert counted and all(counted)
         assert (
             client.get("/api/watch/m/look-back", params={"days": cfg.watch.look_back_choices[0]}).json()["estimate"]
             is True
@@ -171,7 +172,7 @@ def test_a_look_that_takes_in_far_fewer_than_its_count_says_so_and_a_fair_one_do
     ws, cfg, store = make(tmp_path / "few", estimate=True, claimed=201)
     try:
         refresh(ws, store, cfg, "m", NOW)
-        done = source_intake.read_full_now(ws, store, cfg, "m", 30, NOW)
+        done = source_intake.read_full_now(ws, store, cfg, "m", 14, NOW)
         assert (done.short, done.expected, done.expected_estimate, done.gave) == (True, 201, True, 3)
     finally:
         store.close()
@@ -179,7 +180,7 @@ def test_a_look_that_takes_in_far_fewer_than_its_count_says_so_and_a_fair_one_do
     ws, cfg, store = make(tmp_path / "fair")
     try:
         refresh(ws, store, cfg, "m", NOW)
-        done = source_intake.read_full_now(ws, store, cfg, "m", 30, NOW)
+        done = source_intake.read_full_now(ws, store, cfg, "m", 14, NOW)
         assert (done.short, done.expected, done.gave) == (False, 3, 3)
     finally:
         store.close()
@@ -187,7 +188,7 @@ def test_a_look_that_takes_in_far_fewer_than_its_count_says_so_and_a_fair_one_do
     ws, cfg, store = make(tmp_path / "third", claimed=9)
     try:
         refresh(ws, store, cfg, "m", NOW)
-        assert source_intake.read_full_now(ws, store, cfg, "m", 30, NOW).short is False
+        assert source_intake.read_full_now(ws, store, cfg, "m", 14, NOW).short is False
     finally:
         store.close()
 

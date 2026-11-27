@@ -435,7 +435,12 @@ class Router:
         paused: dict[str, datetime] = {}
         offline = 0  # accounts that could not be reached at all
         over: list[Choice] = []  # accounts in line that would cost more than the person allowed
+        step_began = time.monotonic()
+        step_limit = self.cfg.steward.ai_step_deadline_minutes * 60.0
         for position, choice in enumerate(options):
+            if position and time.monotonic() - step_began > step_limit:
+                # The step has used its whole allowance: no further account is tried, and the work waits to retry.
+                raise AiError("timeout", "the AI step went past its time allowance")
             if spend_limit is not None:
                 cost = self._price_of(task, choice)
                 if (

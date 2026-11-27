@@ -52,7 +52,7 @@ def test_an_older_read_that_hands_in_items_and_a_stop_keeps_them_and_carries_on_
     slow = ConnectorError("throttled", "HTTP 429", retry_after=90)
     ws, cfg, store, service = slowed(tmp_path, monkeypatch, {1: (5, slow)})
     try:
-        stopped = source_intake.read_full_now(ws, store, cfg, "m", 30, NOW)
+        stopped = source_intake.read_full_now(ws, store, cfg, "m", 14, NOW)
         assert stopped.stopped == "throttled" and stopped.taken == 5
         assert older_keys(store) == {f"o{d}" for d in DAYS[:5]} and handed_in(store) >= older_keys(store)
         waiting = source_intake.older_read_waiting(store.read(), "m")
@@ -75,7 +75,7 @@ def test_tries_that_take_nothing_new_give_up_after_the_setting(tmp_path, monkeyp
     try:
         cfg.watch.older_read_tries = 3
         at = NOW
-        done = source_intake.read_full_now(ws, store, cfg, "m", 30, at)
+        done = source_intake.read_full_now(ws, store, cfg, "m", 14, at)
         assert done.taken == 3 and not done.gave_up
         rounds = 0
         while not done.gave_up:
@@ -112,7 +112,7 @@ def test_a_slow_down_before_anything_was_read_keeps_the_choice_and_carries_on_wh
     slow = ConnectorError("throttled", "HTTP 429", retry_after=60)
     ws, cfg, store, _ = slowed(tmp_path, monkeypatch, {1: (0, slow)})
     try:
-        done = source_intake.read_full_now(ws, store, cfg, "m", 30, NOW)
+        done = source_intake.read_full_now(ws, store, cfg, "m", 14, NOW)
         assert done is not None and done.stopped == "throttled" and done.taken == 0
         waiting = source_intake.older_read_waiting(store.read(), "m")
         assert waiting is not None and waiting["kind"] == "throttled" and not waiting["gave_up"]
@@ -129,7 +129,7 @@ def test_a_stop_the_person_must_deal_with_before_anything_was_read_is_said_at_on
     ws, cfg, store, _ = slowed(tmp_path, monkeypatch, {1: (0, signed_out)})
     try:
         with pytest.raises(StoreError):
-            source_intake.read_full_now(ws, store, cfg, "m", 30, NOW)
+            source_intake.read_full_now(ws, store, cfg, "m", 14, NOW)
         assert older_keys(store) == set() and not source_intake.older_read_waiting(store.read(), "m")
     finally:
         store.close()
