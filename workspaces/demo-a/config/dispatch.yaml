@@ -38,6 +38,7 @@ knowledge:
   learn_every_minutes: 30
   learn_input_chars: 6000
   follow_on: true
+  apply_guesses: true
   follow_on_max_tied: 20
   correction_reach_items: 20   # the most other open items a correction's request shows after the corrected item
   follow_on_match: 0.67

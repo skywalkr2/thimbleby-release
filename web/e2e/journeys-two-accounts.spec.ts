@@ -1,6 +1,6 @@
 // S-0668: a person's path under a real service's limits. Two accounts of the made-up mail service, each with a real-sized mailbox, the
 // service refusing an account's every request for a few seconds after a refusal (and longer for each request made inside that time),
-// and the person walking setup from its first screen: the first account signed in and a month read in full on it, then, while that read
+// and the person walking setup from its first screen: the first account signed in and two weeks read in full on it, then, while that read
 // is busy and the service has refused it, the second account signed in (H5-34: its "Read in full from" choice is on screen within
 // seconds and its answer, given at once, is applied when its first read lands), then Continue and nothing else. What the person sees is
 // checked (no line said twice on a card or in a message, First reading ends, People offers people, the older read ends by itself), and
@@ -133,7 +133,7 @@ test.describe.serial("journey: two accounts under a rate limit", () => {
     await signIn(0);
     await signedIn(0);
 
-    // 3. A month in full on the first account: the window and what the service holds in it are asked before anything is read.
+    // 3. Two weeks in full on the first account: the window and what the service holds in it are asked before anything is read.
     const first = main.locator(`[data-account-row="${addresses[0]}"]`);
     const of = async (address: string) => (await watch(page)).filter((w) => w.account === address);
     const mine = () => of(addresses[0]);
@@ -150,7 +150,7 @@ test.describe.serial("journey: two accounts under a rate limit", () => {
     const before = await inbox();
     expect(before.older_read ?? null).toBeNull();
     await expect(pick).toBeVisible(LOADED);
-    await choose(pick, "1 month");
+    await choose(pick, "2 weeks");
     await visit(page);
     await first.locator("[data-full-read]").getByRole("button", { name: "Read it" }).click();
     // The account reads its inbox and its sent mail, and every one that was open was answered: what the message and the card say of them is said once.
@@ -160,8 +160,8 @@ test.describe.serial("journey: two accounts under a rate limit", () => {
     expect(message.match(/Reading the older mail in the background\./g) ?? [], `the message says it once: ${message}`).toHaveLength(1);
     const firstLines = await linesOf(first);
     expect(new Set(firstLines).size, `no line twice on the first account's card: ${JSON.stringify(firstLines)}`).toBe(firstLines.length);
-    // The reach of one month: the older read is done when the inbox looks back that far (the first read took the last 14 days).
-    const reach = new Date(Date.parse(before.looked_back_to + "T00:00:00Z") - 16 * 86_400_000).toISOString().slice(0, 10);
+    // The reach of 2 weeks: the older read is done when the inbox looks back that far (the first read took the last 7 days).
+    const reach = new Date(Date.parse(before.looked_back_to + "T00:00:00Z") - 7 * 86_400_000).toISOString().slice(0, 10);
 
     // 3a. The second account, while the first is busy: its older read is under way and the service has refused it, so the first account
     // is reading or waiting out the service's time. The second account's choice is on screen within seconds of its sign-in all the same.
@@ -184,7 +184,7 @@ test.describe.serial("journey: two accounts under a rate limit", () => {
     expect(waited, "seconds from the second account's sign-in to its choice on screen").toBeLessThanOrEqual(5);
     await signedIn(1);
     // An answer given at once is kept, and applied when the account's first read lands: its older mail is read with no further press.
-    await choose(pickSecond, "1 month");
+    await choose(pickSecond, "2 weeks");
     await second.locator("[data-full-read]").getByRole("button", { name: "Read it" }).click();
     await expect(second.locator("[data-full-read]")).toHaveCount(0, LOADED);
     await visit(page);
@@ -256,20 +256,20 @@ test.describe.serial("journey: two accounts under a rate limit", () => {
     expect(offersSeconds, "People shows the assistant's offers within 3 minutes of Continue").toBeLessThanOrEqual(180);
     expect(await offers.innerText()).not.toMatch(INTERNAL);
 
-    // 6. The older read ends by itself, with no click: its line is gone and the inbox looks back as far as the month.
+    // 6. The older read ends by itself, with no click: its line is gone and the inbox looks back as far as the two weeks.
     await expect
       .poll(
         async () => {
           const w = await inbox();
           return !w.older_read && !!w.looked_back_to && w.looked_back_to <= reach;
         },
-        { timeout: 300_000, message: "the older read of the first account ends by itself and reaches the month" },
+        { timeout: 300_000, message: "the older read of the first account ends by itself and reaches the 2 weeks" },
       )
       .toBe(true);
     expect((await inbox()).items).toBeGreaterThan(before.items);
 
     // 6a. One step: each account's reading choice was its only ask (the second account's was given before its first read), so it was
-    // also the go for what the first window held and for what the month brings. Today has no "Take in" line, for either account.
+    // also the go for what the first window held and for what the two weeks bring. Today has no "Take in" line, for either account.
     interface Line {
       kind: string;
       source?: string | null;

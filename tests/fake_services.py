@@ -747,7 +747,7 @@ SENT_TO = {
 MORE_SENT = (
     ("s-2", "Catching up on the schedule", 2, ("taylor",)),
     ("s-3", "Notes from the call", 5, ("taylor", "morgan")),
-    ("s-4", "Quick question about the venue", 7, ("taylor", "jordan")),
+    ("s-4", "Quick question about the venue", 8, ("taylor", "jordan")),
     ("s-5", "Photos from the walk-through", 9, ("morgan",)),
 )
 
@@ -839,7 +839,7 @@ QUIET_EVENTS = ("e-2", "e-3")
 QUIET_SENT = tuple(key for key, *_ in MORE_SENT)
 
 
-def intake_items(now: datetime, days: int = 14, notice: bool = False) -> dict[str, list[str]]:
+def intake_items(now: datetime, days: int = 7, notice: bool = False) -> dict[str, list[str]]:
     """What a quiet first read takes in (a sign-in's sources): the work messages of the last `days` and every event,
     whatever its day; the mail the app sets aside by what the service says about it within those days; and the mail
     older than that, which it only notes. `mail_to_check` and `events_to_check` are the taken-in items that hold

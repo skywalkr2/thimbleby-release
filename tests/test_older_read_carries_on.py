@@ -7,6 +7,7 @@ on. Time is passed in, never waited for. Names and days come from the fixtures; 
 
 from __future__ import annotations
 
+import warnings
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -298,17 +299,19 @@ def test_the_routes_show_where_a_read_stopped_and_the_button_on_today_carries_it
         service.script.clear()
         # The button asks the worker to carry on at once and returns at once.
         calls = service.calls
-        done = client.post("/api/watch/m/older-read/continue")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            done = client.post("/api/watch/m/older-read/continue")
         assert done.status_code == 200 and done.json()["stopped"] == "queued" and service.calls == calls
+        datetime.fromisoformat(done.json()["continues_at"])
+        assert [w for w in caught if "continues_at" in str(w.message)] == []
         for _ in range(10):
             reading_lane.run_slices(ws, live, config, later)
         assert client.get("/api/watch").json()[0]["older_read"] is None
         assert [x for x in client.get("/api/today/queue").json() if x["kind"] == "older_read"] == []
 
 
-def test_a_waiting_read_wider_than_the_import_maximum_is_paused_not_lost_and_the_person_can_carry_it_on(
-    tmp_path, monkeypatch
-):
+def test_an_authorized_read_wider_than_fourteen_days_is_not_paused(tmp_path, monkeypatch):
     from engine.config.schema import MAIL_IMPORT_MAX_DAYS
 
     ws, cfg, store, service = world(tmp_path, monkeypatch, {2: ConnectorError("throttled", "HTTP 429", retry_after=90)})
@@ -318,22 +321,45 @@ def test_a_waiting_read_wider_than_the_import_maximum_is_paused_not_lost_and_the
         with store.transaction() as tx:
             current = tx.get("watch_run", run.id)
             kept = dict(current.data["older_read"])
+            wide = (date.fromisoformat(kept["before"]) - timedelta(days=MAIL_IMPORT_MAX_DAYS + 60)).isoformat()
+            kept["since"] = wide
+            tx.update("watch_run", run.id, {"older_read": kept}, source_intake._MOVED, read_version=current.version)
+        assert source_intake.pause_long_reads(store, cfg, NOW) == []
+        waiting = source_intake.older_read_waiting(store.read(), "m")
+        assert waiting.get("paused") is None and waiting["since"] == wide and not waiting["gave_up"]
+        assert waiting["at"] and source_intake.older_read_due(store.read(), cfg, NOW + timedelta(days=1)) == ["m"]
+    finally:
+        pass
+
+
+def test_an_unfinished_onboarding_import_stays_inside_the_cap_and_keeps_what_it_took(tmp_path, monkeypatch):
+    from engine.config.schema import MAIL_IMPORT_MAX_DAYS, MAIL_IMPORT_MAX_ITEMS
+
+    ws, cfg, store, service = world(tmp_path, monkeypatch, {2: ConnectorError("throttled", "HTTP 429", retry_after=90)})
+    try:
+        source_intake.read_full_now(ws, store, cfg, "m", 14, NOW)
+        run = source_intake.intake_run(store.read(), "m")
+        with store.transaction() as tx:
+            current = tx.get("watch_run", run.id)
+            kept = dict(current.data["older_read"])
+            kept["onboarding"] = True
             kept["since"] = (date.fromisoformat(kept["before"]) - timedelta(days=MAIL_IMPORT_MAX_DAYS + 60)).isoformat()
+            kept["taken"] = 3
+            kept["left"] = 5000
+            kept["paused"] = "window"
+            kept["at"] = None
             tx.update("watch_run", run.id, {"older_read": kept}, source_intake._MOVED, read_version=current.version)
         assert source_intake.pause_long_reads(store, cfg, NOW) == ["m"]
-        paused = source_intake.older_read_waiting(store.read(), "m")
-        assert paused["at"] is None and paused["paused"] == "window" and not paused["gave_up"]
-        assert paused["since"] and paused["left"]
-        assert source_intake.older_read_due(store.read(), cfg, NOW + timedelta(days=1)) == []
-        assert source_intake.pause_long_reads(store, cfg, NOW) == []
-        assert source_intake.resume_older_read(store, "m", NOW)
-        assert source_intake.older_read_due(store.read(), cfg, NOW) == ["m"]
+        waiting = source_intake.older_read_waiting(store.read(), "m")
+        assert waiting.get("paused") is None and waiting["taken"] == 3
+        assert waiting["left"] == MAIL_IMPORT_MAX_ITEMS - 3
+        assert date.fromisoformat(waiting["since"]) == (NOW - timedelta(days=MAIL_IMPORT_MAX_DAYS)).date()
         assert source_intake.pause_long_reads(store, cfg, NOW) == []
     finally:
         pass
 
 
-def test_starting_the_worker_pauses_a_waiting_read_wider_than_the_import_maximum(tmp_path, monkeypatch):
+def test_starting_the_worker_does_not_pause_an_authorized_read_for_its_width(tmp_path, monkeypatch):
     from engine.config.schema import MAIL_IMPORT_MAX_DAYS
     from engine.worker import Events, Worker
 
@@ -343,7 +369,10 @@ def test_starting_the_worker_pauses_a_waiting_read_wider_than_the_import_maximum
     with store.transaction() as tx:
         current = tx.get("watch_run", run.id)
         kept = dict(current.data["older_read"])
-        kept["since"] = (date.fromisoformat(kept["before"]) - timedelta(days=MAIL_IMPORT_MAX_DAYS + 60)).isoformat()
+        wide = (date.fromisoformat(kept["before"]) - timedelta(days=MAIL_IMPORT_MAX_DAYS + 60)).isoformat()
+        kept["since"] = wide
+        kept["paused"] = "window"
+        kept["at"] = None
         tx.update("watch_run", run.id, {"older_read": kept}, source_intake._MOVED, read_version=current.version)
     worker = Worker(ws, store, cfg, Events(), on_restart=lambda: None)
     monkeypatch.setattr(worker, "now", lambda: NOW)
@@ -359,4 +388,6 @@ def test_starting_the_worker_pauses_a_waiting_read_wider_than_the_import_maximum
     ):
         monkeypatch.setattr(worker, name, lambda *a, **k: None)
     worker.start()
-    assert source_intake.older_read_waiting(store.read(), "m")["paused"] == "window"
+    waiting = source_intake.older_read_waiting(store.read(), "m")
+    assert waiting.get("paused") is None and waiting["since"] == wide
+    assert waiting["at"] == NOW.isoformat()

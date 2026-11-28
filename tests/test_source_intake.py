@@ -628,10 +628,65 @@ def test_a_name_to_place_is_one_line_however_many_inputs_ask_it_and_is_not_liste
     assert review.outcome == {"actions_added": 2}
 
 
-def test_an_exact_reach_never_goes_past_the_import_maximum(env):
-    from engine.config.schema import MAIL_IMPORT_MAX_DAYS
+def test_the_onboarding_caps_are_fourteen_days_and_five_hundred_messages():
+    from engine.config.schema import MAIL_IMPORT_MAX_DAYS, MAIL_IMPORT_MAX_ITEMS
+
+    assert MAIL_IMPORT_MAX_DAYS == 14
+    assert MAIL_IMPORT_MAX_ITEMS == 500
+
+
+def test_a_stored_reach_past_fourteen_days_does_not_widen_the_first_import(tmp_path):
+    ws, cfg, store = make(
+        tmp_path, [mail("new", 2), mail("edge", 13), mail("past", 20), item("page")], first_run_days=30
+    )
+    try:
+        cfg.watch.full_read_max_items = 5000
+        read((ws, cfg, store))
+        assert titles(store, requests_of(store, intake="m")) == ["Page page", "Subject of edge", "Subject of new"]
+        assert source_intake.back_to_of(store.read(), "m") == (NOW - timedelta(days=14)).date()
+    finally:
+        store.close()
+
+
+def test_the_first_import_keeps_only_the_newest_messages_under_the_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(source_intake, "MAIL_IMPORT_MAX_ITEMS", 2)
+    older = mail("older", 0, now=NOW - timedelta(hours=2))
+    middle = mail("middle", 0, now=NOW - timedelta(hours=1))
+    newest = mail("newest", 0, now=NOW)
+    ws, cfg, store = make(tmp_path, [older, middle, newest, mail("past", 20)], first_run_days=365)
+    try:
+        read((ws, cfg, store))
+        assert titles(store, requests_of(store, intake="m")) == ["Subject of middle", "Subject of newest"]
+        assert source_intake.back_to_of(store.read(), "m") == date.fromisoformat(middle["message"]["received"][:10])
+    finally:
+        store.close()
+
+
+def test_mail_that_arrives_after_the_first_import_is_ordinary_news_even_when_the_cap_was_full(tmp_path, monkeypatch):
+    from engine.watch import refresh
+
+    monkeypatch.setattr(source_intake, "MAIL_IMPORT_MAX_ITEMS", 1)
+    ws, cfg, store = make(tmp_path, [mail("new", 1), mail("mid", 2)], first_run_days=30)
+    try:
+        read((ws, cfg, store))
+        assert titles(store, requests_of(store, intake="m")) == ["Subject of new"]
+        cfg.watch.sources[0].settings["items"].append(mail("later", 0.1))
+        result = refresh(ws, store, cfg, "m", NOW + timedelta(hours=1))
+        assert len(result.new) == 1 and result.taken_in == []
+        (later,) = [row for row in requests_of(store) if row.id in result.new]
+        assert not later.data.get("intake")
+    finally:
+        store.close()
+
+
+def test_an_exact_authorized_reach_past_fourteen_days_is_planned_and_one_past_ten_years_is_refused(env):
+    from engine.config.schema import MAIL_HISTORY_MAX_DAYS, MAIL_IMPORT_MAX_DAYS
 
     ws, cfg, store = env
     read(env)
+    asked, old, _stop, _available = source_intake._plan(store, cfg, "m", MAIL_IMPORT_MAX_DAYS + 20, exact=True)
+    assert (old - asked).days == MAIL_IMPORT_MAX_DAYS + 20
     with pytest.raises(StoreError, match="not one of the choices"):
-        source_intake._plan(store, cfg, "m", MAIL_IMPORT_MAX_DAYS + 1, exact=True)
+        source_intake._plan(store, cfg, "m", MAIL_HISTORY_MAX_DAYS + 1, exact=True)
+    with pytest.raises(StoreError, match="not one of the choices"):
+        source_intake._plan(store, cfg, "m", MAIL_IMPORT_MAX_DAYS + 20, exact=False)

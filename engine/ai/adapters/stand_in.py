@@ -203,6 +203,12 @@ def follow_on() -> dict[str, Any]:
     return {"summary": "Nothing tied needed a change.", "ops": []}
 
 
+def guess_fit() -> dict[str, Any]:
+    """A guess-fit run's answer: nothing is handed over, because a plain rule can't judge whether a to-do is a kind of
+    work."""
+    return {"summary": "Nothing here is that kind of work.", "ops": [], "by_kind": []}
+
+
 _TALLY_LINE = re.compile(
     r"^(?P<address>\S+@\S+) \| (?P<name>[^|]+) \| (?P<from>\d+) from them, (?P<to>\d+) to them \| [^|]+"
     r"(?: \| sides: [^|]*)?(?: \| hints: (?P<hints>[^|]*))?(?P<on_file> \| on file: \S+)?$"

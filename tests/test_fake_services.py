@@ -145,7 +145,7 @@ def test_a_mailbox_with_a_sent_folder_lists_the_persons_own_message_only_there(s
     assert subjects(folder="inbox") == inbox and not sent_subjects & inbox
     from datetime import UTC, datetime
 
-    taken = fake_services.intake_items(datetime.now(UTC))
+    taken = fake_services.intake_items(datetime.now(UTC), days=30)
     assert set(taken["sent"]) == sent_subjects and not sent_subjects & set(taken["mail"])
 
 

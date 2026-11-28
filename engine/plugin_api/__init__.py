@@ -2344,8 +2344,9 @@ class Registrar:
         text or files it carries are dropped. Like `older`, it may return a `Poll` whose `items` and `unreadable` are
         used; its `stopped` keeps the items it holds. It is optional and additive: a connector without it works
         as before. After a mail source's first read, the core asks for the newest `watch.first_headers_sample_items`
-        (300) headers at once, and the rest of the days back (`watch.first_headers_days`, 365; at most
-        `watch.first_headers_max_items`, 5000) later, in pages, in the account's background lane through its gate,
+        (300) headers at once, and the rest of the days back (`watch.first_headers_days`, 14 on a new install; a
+        stored larger reach is used as written; at most `watch.first_headers_max_items`, 500 on a new install, and a
+        stored larger number is used as written) later, in pages, in the account's background lane through its gate,
         holding nothing and costing no AI work. A stop or a wait during the later pages is a wait, never a try, and
         carries on at its time; it is never recorded as the source's read. Each header is kept as a record of its own
         that the contact tally and the first look at the person's habits read; it never becomes an input, a request

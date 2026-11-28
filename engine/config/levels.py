@@ -70,6 +70,7 @@ ADVANCED: dict[str, str] = {
     "ui.schedule.day_ends": "appearance",
     "dispatch.knowledge.learn": "learns",
     "dispatch.knowledge.follow_on": "learns",
+    "dispatch.knowledge.apply_guesses": "learns",
     "dispatch.knowledge.check_on_switch": "learns",
     "ui.followups.question_after_days": "followups",
     "steward.people.snooze_days": "followups",

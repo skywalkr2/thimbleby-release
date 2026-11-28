@@ -357,7 +357,8 @@ def build_watch_router(ws: Workspace, cfg: Config, store: Store, events: Events,
         events.changed()
         found = LookBackView(days=0, from_date=now.date(), count=0, reaches=True)
         if queued:
-            found.stopped, found.continues_at = "queued", now.isoformat()
+            # `continues_at` is a datetime on the response; a string skips validation and warns on the way out.
+            found.stopped, found.continues_at = "queued", now
             worker.read_sources_now()
         return found
 

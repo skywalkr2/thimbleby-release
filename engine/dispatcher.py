@@ -21,6 +21,7 @@ from engine import (
     booking_entries,
     content_log,
     follow_on,
+    guess_fit,
     learn,
     new_terms,
     pack_tiers,
@@ -233,6 +234,9 @@ def process(
     if req.data["task"] == follow_on.TASK and (why := follow_on.skip_reason(store, cfg, req.data)) is not None:
         follow_on.close(store, request_id, why)  # the move is gone or stands no more: no packet, no estimate, no call
         return None
+    if req.data["task"] == guess_fit.TASK and (why := guess_fit.skip_reason(store, cfg, req.data)) is not None:
+        guess_fit.close(store, request_id, why)  # no to-do left to check: no packet, no estimate, no call
+        return None
     if (
         req.data["task"] == person_look.TASK
         and (why := person_look.skip_reason(store, cfg, req.data, request_id)) is not None
@@ -297,7 +301,8 @@ def process(
         )
     # Work the PM didn't start (stage tasks, plugin requests, outside inputs) carries no words from the PM, so nothing
     # in it is trusted.
-    scheduled = req.data["origin"] != "pm"
+    # A guess-fit run reads only the person's own lesson and their to-do, so what it decides is theirs to apply.
+    scheduled = req.data["origin"] != "pm" and req.data["task"] != guess_fit.TASK
     # An input is outside content unless its saved source is marked as the person's own words.
     saved = store.read().get("source", req.data["source"]) if req.data.get("source") else None
     outside = bool(req.data.get("source")) and (saved is None or saved.data["trust"] != "trusted")
@@ -614,6 +619,8 @@ def _apply_outcome(
     changeset = changeset.model_copy(update={"ops": localize_ops(changeset.ops, cfg)})
     if kind.name == follow_on.TASK:
         changeset, problems = follow_on.without_lone_notes(changeset, problems)
+    if kind.name == guess_fit.TASK:
+        changeset = guess_fit.with_marks(changeset, req.data)  # every hand-over is a marked guess
     if kind.name == "notes":
         # A booking the input carries as structured data becomes the app's own calendar entry, by rules.
         changeset = booking_entries.add_to(changeset, cfg, store.read(), ctx.inputs.raw_input)
@@ -677,6 +684,8 @@ def _apply_outcome(
         learn.finish(store, request_id, cs_id)
     if kind.name == follow_on.TASK:
         follow_on.finish(store, request_id, cs_id)
+    if kind.name == guess_fit.TASK:
+        guess_fit.finish(store, request_id, cs_id)
     if kind.name == person_look.TASK:
         person_look.finish(store, request_id, cs_id)
     if kind.name == week_ahead.TASK:

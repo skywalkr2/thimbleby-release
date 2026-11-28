@@ -140,8 +140,8 @@ test.describe.serial("journey: new start", () => {
     await expect(pick).toContainText("Choose…");
     await expect(fullRead.getByRole("button", { name: "Read it" })).toBeDisabled();
     const labels = (await choicesOf(pick)).map((c) => c.label);
-    expect(labels).toHaveLength(5);
-    for (const reach of ["2 weeks", "1 month", "3 months", "Not now"]) expect(labels.join("|")).toContain(reach);
+    expect(labels).toHaveLength(4);
+    for (const reach of ["1 week", "2 weeks", "Not now"]) expect(labels.join("|")).toContain(reach);
     await choose(pick, "Not now");
     await expect(fullRead.getByRole("button", { name: "Skip for now" })).toBeEnabled();
     await expect(main.getByText(/Restart to finish connecting/)).toHaveCount(0);
@@ -189,7 +189,7 @@ test.describe.serial("journey: new start", () => {
     expect(seen.intake_items.mail).not.toContain(notice.many);
     expect(recentMail.length).toBeGreaterThan(0);
     expect(recentNoted.length).toBeGreaterThan(0);
-    // The look back takes in the last 14 days of work mail and every event, so each is counted once below.
+    // The look back takes in the last 7 days of work mail and every event, so each is counted once below.
     // The sign-in also names the account's sent mail, which is read with the inbox and credited to me, with no folder chosen.
     const { mail, events, noted, sent, sent_to_check: sentToCheck, mail_to_check: mailToCheck, events_to_check: eventsToCheck } = seen.intake_items;
     expect(sent.length).toBeGreaterThan(0);

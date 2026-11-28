@@ -177,8 +177,11 @@ def seed_stopped_answer(store, cfg) -> str:
         "created_at": at.isoformat(),
         "stopped_answer": answer,
     }
+    from engine.worker import _LOAD_RETRY_OP
+
+    # Made as a request the load's one automatic retry already tried, so a start of the server leaves it stopped.
     with store.transaction() as tx:
-        tx.create("request", data, WriteContext(actor="engine", trust="trusted", op="e2e-seed"))
+        tx.create("request", data, WriteContext(actor="engine", trust="trusted", op=_LOAD_RETRY_OP))
     return answer
 
 

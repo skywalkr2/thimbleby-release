@@ -1,7 +1,8 @@
 """A newly added source is taken in quietly (design 6.32).
 
 The first read of a source with `first_run: intake` notes everything it holds, then hands the assistant what is worth
-taking in: the mail of the last `first_run_days`, and every item of any other kind of source. Nothing is reported as new
+taking in: the mail of the last `first_run_days`, never further than the onboarding cap and never more than its message
+cap, and every item of any other kind of source. Nothing is reported as new
 one by one. The requests it makes carry `intake: <source id>`; they are priced together as one total and either start by
 themselves (the total is not above `ai.budgets.confirm_above_usd`, and is known unless unpriced runs need no go) or wait
 for one go, which is one line on Today. Their results are gathered into one line and one list to look over, not a line
@@ -24,7 +25,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from engine import catch_up, watch
-from engine.config.schema import MAIL_IMPORT_MAX_DAYS
+from engine.config.schema import MAIL_HISTORY_MAX_DAYS, MAIL_IMPORT_MAX_DAYS, MAIL_IMPORT_MAX_ITEMS
 from engine.connectors import OlderCount
 from engine.local_day import day_of
 from engine.net import AnswerTooLarge
@@ -42,7 +43,6 @@ _ENGINE = WriteContext(actor="engine", trust="trusted", op="intake.take_in")
 _GO = WriteContext(actor="pm", trust="trusted", op="intake.go")
 _SEEN = WriteContext(actor="pm", trust="trusted", op="intake.seen")
 _MOVED = WriteContext(actor="engine", trust="trusted", op="intake.look_back")
-_PAUSED = WriteContext(actor="engine", trust="trusted", op="intake.pause_long_read")
 
 #: The kinds of stop a read of older mail carries on from by itself; any other kind (a sign-in the service withdrew,
 #: access refused, a message too large) is the person's to act on, and the account's own state says so.
@@ -105,13 +105,31 @@ def messages_looked_at(view: Any, source_id: str, back_to: date | None, now: dat
     )
 
 
+def _onboarding_days(source: Any) -> int:
+    """How many days the first import looks back: the source's own reach, and never further than the onboarding cap."""
+    return min(int(source.first_run_days), MAIL_IMPORT_MAX_DAYS)
+
+
 def looked_back_to(source: Any, items: list[Any], now: datetime, capped: bool = False) -> date | None:
-    """The day before which a source's mail isn't looked at by its first read: `first_run_days` before the read. None
-    for a source that holds no mail (any other kind of source is taken in whole)."""
+    """The day before which a source's mail isn't looked at by its first import. None for a source that holds no mail
+    (any other kind of source is taken in whole). The window is `first_run_days` and never further than the onboarding
+    cap. When more mail than the message cap is inside that window, the day is the oldest of the newest messages the
+    cap keeps, so the date does not claim the whole window. A stored larger reach does not widen this date."""
     mail = [item for item in items if getattr(item, "message", None) is not None]
     if not mail:
         return None
-    window = (now - timedelta(days=source.first_run_days)).date()
+    window = (now - timedelta(days=_onboarding_days(source))).date()
+    in_window: list[tuple[datetime, date]] = []
+    for item in mail:
+        at = _item_when(item)
+        if at is None:
+            continue
+        day = at.astimezone(UTC).date()
+        if day >= window and at <= now + _SKEW:
+            in_window.append((at, day))
+    in_window.sort(key=lambda pair: pair[0], reverse=True)
+    if len(in_window) > MAIL_IMPORT_MAX_ITEMS:
+        return in_window[MAIL_IMPORT_MAX_ITEMS - 1][1]
     # A read that stopped at its cap (the connector says so) looked back only as far as the oldest message it returned,
     # so the date says that day, the same day a look further back starts from. Any other read looked at the window.
     if not capped:
@@ -145,13 +163,59 @@ def _in_window(back_to: date | None, until: date | None, now: datetime) -> Calla
 # ---- taking a source in -------------------------------------------------------------------------------------
 
 
+def _import_mail_keys(store: Any, source: Any, start: date, now: datetime) -> set[str]:
+    """The mail keys the first import may still hand in: the newest inside the window that fit under the message cap.
+    Mail already handed in for this source counts toward the cap, whatever its age."""
+    view = store.read()
+    snaps = [snap.data for snap in view.find("snapshot", {"source": source.id})]
+    mail = {data["key"]: data for data in snaps if data.get("message") and data.get("key")}
+    handed = {
+        (record.data.get("watched") or {}).get("key")
+        for record in view.list("source")
+        if (record.data.get("watched") or {}).get("source") == source.id
+    }
+    handed_mail = sum(1 for key in handed if key in mail)
+    room = max(0, MAIL_IMPORT_MAX_ITEMS - handed_mail)
+    pending: list[tuple[datetime, str]] = []
+    for key, data in mail.items():
+        if key in handed or data.get("gone") or data.get("deleted"):
+            continue
+        at = _when(data)
+        if at is None or at < _start(start) or at > now + _SKEW:
+            continue
+        pending.append((at, key))
+    pending.sort(key=lambda pair: pair[0], reverse=True)
+    return {key for _, key in pending[:room]}
+
+
+def _onboarding_accept(
+    store: Any, source: Any, now: datetime, back_to: date | None
+) -> Callable[[dict[str, Any]], bool]:
+    """What the first import hands in: the onboarding window, and only the newest mail still under the message cap.
+    Anything that is not mail is taken whole. A stored reach does not widen the window."""
+    cap_day = (now - timedelta(days=_onboarding_days(source))).date()
+    start = cap_day if back_to is None else max(back_to, cap_day)
+    allowed = _import_mail_keys(store, source, start, now)
+    window = _in_window(start, None, now)
+
+    def accept(data: dict[str, Any]) -> bool:
+        if not window(data):
+            return False
+        if not data.get("message"):
+            return True
+        return data.get("key") in allowed
+
+    return accept
+
+
 def take_in(
     ws: Any, store: Any, cfg: Any, source: Any, now: datetime, router: Any = None, back_to: date | None = None
 ) -> list[str]:
-    """Take in a source's first read: hand in what the window takes, held for one go, price it as one total, and start
-    it at once when the total is not above the amount to confirm and is known (or unpriced runs need no go). Returns
-    the requests made."""
-    return _take(ws, store, cfg, source, now, router, _in_window(back_to, None, now), go=True)
+    """Take in a source's first read: hand in what the onboarding window takes, held for one go, price it as one
+    total, and start it at once when the total is not above the amount to confirm and is known (or unpriced runs need
+    no go). Mail is the newest messages inside 14 days, at most 500, counting mail already handed in. A stored reach
+    or `full_read_max_items` does not widen it. Anything that is not mail is taken whole. Returns the requests made."""
+    return _take(ws, store, cfg, source, now, router, _onboarding_accept(store, source, now, back_to), go=True)
 
 
 def _take(
@@ -661,7 +725,7 @@ def _plan(store: Any, cfg: Any, source_id: str, days: int, exact: bool = False) 
     old = back_to_of(store.read(), source_id)
     if old is None:
         raise StoreError("this source was not taken in with a look back, so there is nothing further to look at")
-    if days not in cfg.watch.look_back_choices and not (exact and 1 <= days <= MAIL_IMPORT_MAX_DAYS):
+    if days not in cfg.watch.look_back_choices and not (exact and 1 <= days <= MAIL_HISTORY_MAX_DAYS):
         raise StoreError(f"{days} days is not one of the choices")
     return _plan_from(store, source_id, old - timedelta(days=days))
 
@@ -1414,24 +1478,46 @@ def _answer_ahead(
 
 
 def pause_long_reads(store: Any, cfg: Any, now: datetime | None = None) -> list[str]:
-    """Hold, once, every waiting read of older mail whose window is wider than the import maximum. Nothing is dropped:
-    the read keeps its place and its count, and the person carries it on when they choose (`resume_older_read`)."""
-    held = []
+    """Keep an unfinished onboarding import inside the first-import cap, and clear a width pause on an authorized
+    read. An authorized historical read is not paused for being wider than 14 days. An onboarding import keeps what it
+    already took: its start moves forward to the cap, and what is left is reduced so what was taken plus what is left
+    is at most the message cap. Nothing is deleted. Returns the sources whose waiting read changed."""
+    now = now or datetime.now(UTC)
+    changed: list[str] = []
     for source in cfg.watch.sources:
         waiting_read = older_read_waiting(store.read(), source.id)
         run = intake_run(store.read(), source.id)
-        if waiting_read is None or run is None or waiting_read.get("paused") or waiting_read.get("resumed"):
+        if waiting_read is None or run is None:
             continue
-        span = (date.fromisoformat(waiting_read["before"]) - date.fromisoformat(waiting_read["since"])).days
-        if span <= MAIL_IMPORT_MAX_DAYS:
+        if not waiting_read.get("onboarding"):
+            if waiting_read.get("paused") != "window":
+                continue
+            with store.transaction() as tx:
+                current = tx.get("watch_run", run.id)
+                kept = dict(current.data.get("older_read") or {})
+                kept.pop("paused", None)
+                if not kept.get("gave_up") and not kept.get("at"):
+                    kept["at"] = now.isoformat()
+                tx.update("watch_run", run.id, {"older_read": kept}, _MOVED, read_version=current.version)
+            changed.append(source.id)
+            continue
+        since = date.fromisoformat(waiting_read["since"])
+        cap_day = (now - timedelta(days=MAIL_IMPORT_MAX_DAYS)).date()
+        taken = int(waiting_read.get("taken") or 0)
+        left = int(waiting_read.get("left") or 0)
+        new_since = max(since, cap_day)
+        new_left = min(left, max(0, MAIL_IMPORT_MAX_ITEMS - taken))
+        if new_since == since and new_left == left and not waiting_read.get("paused"):
             continue
         with store.transaction() as tx:
             current = tx.get("watch_run", run.id)
             kept = dict(current.data.get("older_read") or {})
-            kept.update(at=None, paused="window")
-            tx.update("watch_run", run.id, {"older_read": kept}, _PAUSED, read_version=current.version)
-        held.append(source.id)
-    return held
+            kept["since"] = new_since.isoformat()
+            kept["left"] = new_left
+            kept.pop("paused", None)
+            tx.update("watch_run", run.id, {"older_read": kept}, _MOVED, read_version=current.version)
+        changed.append(source.id)
+    return changed
 
 
 def resume_older_read(store: Any, source_id: str, now: datetime | None = None) -> bool:

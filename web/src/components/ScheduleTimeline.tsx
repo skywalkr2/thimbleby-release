@@ -5,7 +5,7 @@
 // lanes, and Enter opens a calendar entry's details or the page of anything else. In a window too narrow for the weeks the same
 // items are a list by week, so nothing scrolls sideways. Shapes are drawn by the styles and every item has its kind, day and
 // state in its name, so nothing is told apart by color or shape alone.
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState, type FocusEvent as ReactFocusEvent } from "react";
 import type { S } from "../lib/api";
 import { addDays, dayOfMonth, day, monthDay, monthDayLong, weekday } from "../lib/dates";
 import { fitsTimeline, GROUP_ROWS, labelMaxFor, LABEL_W, packLane, PITCH_MIN, runsOf, TOUCH, weekStarts, daysBetween } from "../lib/timeline";
@@ -196,6 +196,33 @@ export function Timeline(props: {
   // The pointer shows an item's details by moving over it, not by arriving: a layout change under a still pointer (the
   // details appearing) must not replace what keyboard focus chose.
   const [active, setActive] = useState<{ item: Item; lane: Lane } | null>(null);
+  // A redraw can replace the button that has focus, when the lanes become the list or the list becomes the lanes.
+  // The item is remembered and focus moves to the button that took its place, so Enter still opens it. A move to
+  // another control is left where the person put it.
+  const held = useRef<{ key: string; el: HTMLButtonElement } | null>(null);
+  const holdFocus = (key: string, item: Item, lane: Lane, el: HTMLButtonElement) => {
+    held.current = { key, el };
+    setActive({ item, lane });
+  };
+  const releaseFocus = (event: ReactFocusEvent<HTMLButtonElement>) => {
+    if (event.currentTarget.isConnected) held.current = null;
+    setActive(null);
+  };
+  useLayoutEffect(() => {
+    const heldNow = held.current;
+    if (!heldNow || heldNow.el.isConnected) return;
+    const current = document.activeElement;
+    if (current instanceof Element && current !== document.body) {
+      held.current = null;
+      return;
+    }
+    const root = frame.current;
+    if (!root) return;
+    const next = [...root.querySelectorAll<HTMLButtonElement>("button[data-item-key]")].find((button) => button.dataset.itemKey === heldNow.key);
+    if (!next) return;
+    held.current = { key: heldNow.key, el: next };
+    next.focus();
+  });
   const other = t("schedule.timeline.lane_other");
   const ownersOf = (item: Item) => item.owners.map((o) => o.name).join(", ");
   // A lane with nothing in the range is named in one line under the chart, so no lane is a full row of nothing.
@@ -284,11 +311,12 @@ export function Timeline(props: {
                                 data-bar={point ? undefined : w > TOUCH ? "" : undefined}
                                 data-flip={flip ? "" : undefined}
                                 data-entry-key={item.entry ? key : undefined}
+                                data-item-key={key}
                                 data-color={item.entry && !item.entry.own && item.entry.kind !== "due" ? props.colorOf?.(item.entry) : undefined}
                                 data-selected={props.selected === key ? "" : undefined}
                                 aria-label={itemName(item, t)}
-                                onFocus={() => setActive({ item, lane })}
-                                onBlur={() => setActive(null)}
+                                onFocus={(event) => holdFocus(key, item, lane, event.currentTarget)}
+                                onBlur={(event) => releaseFocus(event)}
                                 onClick={() => open(item, props.onOpen)}
                               >
                                 <Shape item={item} />
@@ -317,11 +345,11 @@ export function Timeline(props: {
         weekLanes.map((lane) => (
           <section key={lane.project ?? "none"} className={styles.grouped} data-lane-by-week="" data-lane={lane.project ?? ""} aria-label={t("schedule.timeline.by_week_of", { lane: laneTitle(lane, other, t) })}>
             <h3 className={styles.byWeekHead}>{t("schedule.timeline.by_week_of", { lane: laneTitle(lane, other, t) })}</h3>
-            <WeekList data={data} lanes={[lane]} other={other} selected={props.selected} onOpen={props.onOpen} colorOf={props.colorOf} onActive={(found) => setActive((now) => (found && now?.item === found.item ? now : found))} showLane={false} />
+            <WeekList data={data} lanes={[lane]} other={other} selected={props.selected} onOpen={props.onOpen} colorOf={props.colorOf} onActive={(found) => setActive((now) => (found && now?.item === found.item ? now : found))} onHold={holdFocus} onRelease={releaseFocus} showLane={false} />
           </section>
         ))}
       {!empty && wide && quiet.length > 0 && <p className={styles.quiet}>{t("schedule.timeline.quiet", { names: quiet.map((l) => l.name || other).join(", ") })}</p>}
-      {!empty && !wide && <WeekList data={data} lanes={props.lanes} other={other} selected={props.selected} onOpen={props.onOpen} colorOf={props.colorOf} />}
+      {!empty && !wide && <WeekList data={data} lanes={props.lanes} other={other} selected={props.selected} onOpen={props.onOpen} colorOf={props.colorOf} onHold={holdFocus} onRelease={releaseFocus} />}
       {wide && !empty && <Details active={active} off={data.off_days} other={other} owners={ownersOf} />}
       {!empty && <Legend colorOf={props.colorOf} nameOf={props.nameOf} lanes={props.lanes} offDays={data.off_days.length > 0 || props.lanes.some((l) => l.days_off.length > 0)} />}
     </div>
@@ -330,7 +358,7 @@ export function Timeline(props: {
 
 /** The same items as a list by week, for a window too narrow for the weeks: a heading for each week that has something, then a
  * row for each item with its shape, its day and its lane. */
-function WeekList(props: { data: TimelineData; lanes: Lane[]; other: string; selected: string | null; onOpen: (entry: Entry, date: string) => void; colorOf?: (entry: Entry) => string | undefined; onActive?: (found: { item: Item; lane: Lane } | null) => void; showLane?: boolean }) {
+function WeekList(props: { data: TimelineData; lanes: Lane[]; other: string; selected: string | null; onOpen: (entry: Entry, date: string) => void; colorOf?: (entry: Entry) => string | undefined; onActive?: (found: { item: Item; lane: Lane } | null) => void; onHold?: (key: string, item: Item, lane: Lane, el: HTMLButtonElement) => void; onRelease?: (event: ReactFocusEvent<HTMLButtonElement>) => void; showLane?: boolean }) {
   const { t } = useWords();
   const { data } = props;
   const all = props.lanes.flatMap((lane) => lane.items.map((item) => ({ item, lane })));
@@ -348,7 +376,7 @@ function WeekList(props: { data: TimelineData; lanes: Lane[]; other: string; sel
               const key = itemKey(lane, item);
               return (
                 <li key={key + item.title}>
-                  <button type="button" className={styles.row} data-kind={item.kind} data-state={item.state} data-color={item.entry && !item.entry.own && item.entry.kind !== "due" ? props.colorOf?.(item.entry) : undefined} data-entry-key={item.entry ? key : undefined} data-selected={props.selected === key ? "" : undefined} onFocus={() => props.onActive?.({ item, lane })} onBlur={() => props.onActive?.(null)} onMouseMove={() => props.onActive?.({ item, lane })} onMouseLeave={() => props.onActive?.(null)} onClick={() => open(item, props.onOpen)}>
+                  <button type="button" className={styles.row} data-kind={item.kind} data-state={item.state} data-color={item.entry && !item.entry.own && item.entry.kind !== "due" ? props.colorOf?.(item.entry) : undefined} data-entry-key={item.entry ? key : undefined} data-item-key={key} data-selected={props.selected === key ? "" : undefined} onFocus={(event) => { props.onActive?.({ item, lane }); props.onHold?.(key, item, lane, event.currentTarget); }} onBlur={(event) => { props.onActive?.(null); props.onRelease?.(event); }} onMouseMove={() => props.onActive?.({ item, lane })} onMouseLeave={() => props.onActive?.(null)} onClick={() => open(item, props.onOpen)}>
                     <Shape item={item} />
                     <span className="sr">{kindWord(item, t)}: </span>
                     <span className={styles.rowTitle}>{item.title}</span>

@@ -31,8 +31,13 @@ class ConfigError(Exception):
     """A config file or value can't be used. The message says which file and key, and why; it is for the terminal.
     `plain` says the same without a file name, key or command, for the screen."""
 
-    def __init__(self, message: str, plain: str | None = None, reason: str | None = None) -> None:
+    def __init__(
+        self, message: str, plain: str | None = None, reason: str | None = None, unknown: list[str] | None = None
+    ) -> None:
         super().__init__(message)
+        #: Dotted keys a file holds that this version doesn't know (a workspace from a different version); empty when
+        #: the problem is anything else. They are refused, never dropped.
+        self.unknown = unknown or []
         self.plain = plain or "a setting has a value that isn't allowed"
         #: For a value a setting refused: what is allowed, as one sentence that names no setting (it is shown beside the
         #: setting's own field); None for any other problem.
@@ -49,6 +54,8 @@ class Config:
     moved: dict[str, Any] = field(default_factory=dict)
     #: Old setting names still in use (a file, an environment variable or a flag), each with the name that replaces it.
     deprecated: dict[str, str] = field(default_factory=dict)
+    #: Keys an earlier version wrote that no longer exist, set aside at load (see `RETIRED_KEYS`), by dotted key.
+    retired: list[str] = field(default_factory=list)
 
     def __getattr__(self, name: str) -> Any:
         files = self.__dict__.get("files", {})
@@ -89,6 +96,27 @@ RENAMED_KEYS = {
     "steward.chase_dated_days": "ui.followups.action_due_within_days",
     "steward.chase_undated_days": "ui.followups.undated_after_days",
 }
+
+
+#: Settings an earlier version wrote that no longer exist and have no replacement: the value is set aside at load, the
+#: key is listed in `Config.retired`, and the file is left as it is. This is the only way a key a file holds is not
+#: validated; any other key the schema doesn't know is refused (`ConfigError.unknown`). Each change that removes a
+#: setting adds it here.
+RETIRED_KEYS: tuple[str, ...] = ()
+
+
+def _retire_keys(raw: dict[str, dict[str, Any]]) -> list[str]:
+    """Set aside each retired key present in the files' contents `raw`; returns the ones found."""
+    found: list[str] = []
+    for key in RETIRED_KEYS:
+        file, *path = key.split(".")
+        holder: Any = raw.get(file)
+        for part in path[:-1]:
+            holder = holder.get(part) if isinstance(holder, dict) else None
+        if isinstance(holder, dict) and path[-1] in holder:
+            holder.pop(path[-1])
+            found.append(key)
+    return found
 
 
 def _rename_keys(raw: dict[str, dict[str, Any]], deprecated: dict[str, str]) -> None:
@@ -149,6 +177,7 @@ def load_config(
 
     deprecated: dict[str, str] = {}
     _rename_keys(raw, deprecated)
+    retired = _retire_keys(raw)
     for old, new in deprecated.items():
         sources.pop(old, None)
         sources[new] = "file"
@@ -172,7 +201,7 @@ def load_config(
             files[name] = model.model_validate(raw[name])
         except ValidationError as err:
             raise _describe(name, err) from None
-    cfg = Config(files=files, sources=sources, moved=moved, deprecated=deprecated)
+    cfg = Config(files=files, sources=sources, moved=moved, deprecated=deprecated, retired=retired)
     from engine.config.stages import validate_declared
 
     validate_declared(cfg, config_dir)
@@ -292,13 +321,17 @@ def refusal_text(model: type[BaseModel], err: ValidationError) -> str:
 
 def _describe(name: str, err: ValidationError) -> ConfigError:
     problems = []
+    unknown = []
     for item in err.errors():
         where = ".".join(str(p) for p in item["loc"]) or "(file)"
         problems.append(f"{name}.{where}: {item['msg']}")
+        if item["type"] == "extra_forbidden":
+            unknown.append(f"{name}.{where}")
     return ConfigError(
         f"{name}.yaml has problems:\n  " + "\n  ".join(problems),
         plain=refusal_text(FILES[name], err),
         reason=refusal_parts(FILES[name], err)[1],
+        unknown=unknown if len(unknown) == len(problems) else [],
     )
 
 

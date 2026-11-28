@@ -132,6 +132,8 @@ desktop.problem.held.text: This computer wouldn't let Thimbleby use the address 
 desktop.problem.ports.title: Thimbleby couldn't start
 desktop.problem.ports.text: Other programs on this computer are using ports {first} to {last}, which Thimbleby needs one of. Close one of them, then try again.
 desktop.port_moved: Port {taken} was in use, so Thimbleby is using port {port}.
+desktop.problem.config.title: Your settings are from a different version
+desktop.problem.config.text: "This workspace has settings this version of Thimbleby doesn't know: {keys}. Your records, approvals and history are untouched and nothing was changed. Open the workspace with the version that wrote it, or install a newer Thimbleby, then choose Try again."
 desktop.problem.other.title: Thimbleby couldn't start
 desktop.problem.other.text: Try again. If it keeps happening, copy the details and send them to the people who look after Thimbleby.
 desktop.try_again: Try again

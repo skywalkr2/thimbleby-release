@@ -17,7 +17,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from engine.due_phrases import DEFAULT_PHRASE_WORDS
 from engine.secrets import SecretHint
 
-MAIL_IMPORT_MAX_DAYS = 14  # the furthest back any mail import may reach
+MAIL_IMPORT_MAX_DAYS = 14  # the furthest back the first onboarding import of mail may reach
+MAIL_IMPORT_MAX_ITEMS = 500  # the most mail messages that first import hands in
+MAIL_HISTORY_MAX_DAYS = 3650  # the furthest a stored reach or an authorized historical read may name
 
 
 class ConfigModel(BaseModel):
@@ -1739,6 +1741,13 @@ class KnowledgeSettings(ConfigModel):
         "items apply with Undo; anything someone was already sent gets a drafted correction that waits for you. When "
         "this is off, nothing follows a move.",
     )
+    apply_guesses: bool = Field(
+        True,
+        description="Whether a new to-do that lands on you, where something you taught is still waiting for your Keep, "
+        "is checked against it in a small step of its own. If the to-do is the kind of thing you taught about, it goes "
+        "to the person you taught, marked as a guess you can take back in one click. When this is off, only the step "
+        "that made the to-do sees what you taught.",
+    )
     follow_on_max_tied: int = Field(
         20,
         ge=1,
@@ -2036,7 +2045,7 @@ def _default_lints() -> dict[str, Severity]:
         "undecided-as-note": "return",
         "owner-asked-after-given": "return",
         "leap-day-without-year": "return",
-        "guess-not-applied": "return",
+        "guess-not-applied": "off",
         "away-span-long": "return",
         "own-note-kept-nothing": "return",
         "promise-left-out": "return",
@@ -3949,9 +3958,11 @@ class WatchSource(ConfigModel):
     first_run_days: int = Field(
         7,
         ge=1,
-        le=MAIL_IMPORT_MAX_DAYS,
-        description="With first_run intake, for mail: how many days back the first read looks. Older mail isn't "
-        "read, and Today says so. Any other kind of source is taken in whole.",
+        le=365,
+        description="With first_run intake, for mail: how many days back the first read looks. The first import "
+        "never looks further than 14 days or hands in more than 500 messages, whatever this says. A stored larger "
+        "reach is kept for an authorized historical read. Older mail isn't read on that first import, and Today says "
+        "so. Any other kind of source is taken in whole.",
     )
     report_removed: bool = Field(
         True,
@@ -4367,10 +4378,10 @@ class WatchFile(FileModel):
 
     @field_validator("look_back_choices", "full_read_choices")
     @classmethod
-    def _reach_within_the_import_limit(cls, v: list[int]) -> list[int]:
+    def _reach_is_a_whole_span(cls, v: list[int]) -> list[int]:
         for days in v:
-            if not 1 <= days <= MAIL_IMPORT_MAX_DAYS:
-                raise ValueError(f"a mail import reaches back at most {MAIL_IMPORT_MAX_DAYS} days, not {days}")
+            if not 1 <= days <= MAIL_HISTORY_MAX_DAYS:
+                raise ValueError(f"a mail reach is at most {MAIL_HISTORY_MAX_DAYS} days, not {days}")
         return v
 
     look_back_max_items: int = Field(
@@ -4429,17 +4440,18 @@ class WatchFile(FileModel):
     first_headers_days: int = Field(
         MAIL_IMPORT_MAX_DAYS,
         ge=0,
-        le=MAIL_IMPORT_MAX_DAYS,
+        le=MAIL_HISTORY_MAX_DAYS,
         description="After a mail account is first signed in, how many days back its message headers (who wrote to "
         "whom, when and where each message ended up, never its text) are read once as ground for the assistant's "
-        "first look at your habits. It costs no assistant work and holds nothing for you to do. 0: not read.",
+        "first look at your habits. A new install reads 14 days. A stored larger reach is used as written. It costs "
+        "no assistant work and holds nothing for you to do. 0: not read.",
     )
     first_headers_max_items: int = Field(
         500,
         ge=1,
         le=50000,
-        description="The most message headers that first read asks a mail source for. A year with more takes the "
-        "newest.",
+        description="The most message headers that first read asks a mail source for. A longer reach with more "
+        "takes the newest. A stored larger number is used as written.",
     )
     first_headers_sample_items: int = Field(
         300,

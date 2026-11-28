@@ -271,6 +271,11 @@ def run(
             if isinstance(err, PortsTaken):
                 text = shell.words.get("desktop.problem.ports.text", "")
                 shell.words = {**shell.words, "desktop.problem.ports.text": text.format(first=err.first, last=err.last)}
+            from engine.config.loader import ConfigError
+
+            if isinstance(err, ConfigError) and err.unknown:
+                text = shell.words.get("desktop.problem.config.text", "")
+                shell.words = {**shell.words, "desktop.problem.config.text": text.format(keys=", ".join(err.unknown))}
             if not shell.problem(classify(err), traceback.format_exc()):
                 return 1
 

@@ -37,7 +37,8 @@ async function openView(page: Page, key: "1" | "2" | "3" | "4" | "5", day: strin
   await expect(page.locator("main [data-skeleton]")).toHaveCount(0, LOAD);
   await page.locator("body").press(key);
   const here = key === "5" ? "main [data-timeline]" : key === "4" ? "main [data-month]" : "main [data-grid]";
-  await expect(page.locator(here).first()).toBeVisible(LOAD);
+  // A week with nothing in it (the current one, on a day off) shows the list, not the grid: the grid is waited for on the week of the day.
+  if (key === "4" || key === "5") await expect(page.locator(here).first()).toBeVisible(LOAD);
   // Forward by the view's unit until the day is on the screen (Day shows one day: go by day).
   for (let n = 0; n < 40 && key !== "5" && (await page.locator(`main [data-day="${day}"]`).count()) === 0; n += 1) {
     await page.locator("body").press("ArrowRight");

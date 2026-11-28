@@ -1875,6 +1875,11 @@ class Request(Record):
         description="For a follow-on run: the later changes to the same records that were folded into it before it "
         "started, oldest first, so one run answers them all; `follows` is the first.",
     )
+    pairs: list[dict[str, str]] = Field(
+        default_factory=list,
+        description="For a check of a guess from what the person taught: each to-do and the waiting lesson or routing "
+        "entry to check it against, as {action, entry}. `follows` is the change that gave the to-do to the person.",
+    )
     sensitivity: Literal["open", "internal", "restricted"] | None = Field(
         None, description="How sensitive the person said what they handed in is; it only ever raises the level."
     )

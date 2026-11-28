@@ -133,6 +133,14 @@ def _no_held_accounts() -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_scripted_stand_in() -> None:
+    """A scripted stand-in answer is kept for the whole process; each test starts with the stand-in's own rules."""
+    from engine.ai.adapters.stub import set_responder
+
+    set_responder(None)
+
+
+@pytest.fixture(autouse=True)
 def _no_temp_folder_notice(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests work in temporary folders on purpose; the command's "this folder is emptied" notice is tested directly."""
     monkeypatch.setattr("engine.cli.system_temp_roots", lambda: ())
@@ -266,6 +274,8 @@ def first_window_held(monkeypatch):
     from engine import source_intake
 
     def held(ws, store, cfg, source, now, router=None, back_to=None):
-        return source_intake._take(ws, store, cfg, source, now, router, source_intake._in_window(back_to, None, now))
+        return source_intake._take(
+            ws, store, cfg, source, now, router, source_intake._onboarding_accept(store, source, now, back_to)
+        )
 
     monkeypatch.setattr(source_intake, "take_in", held)

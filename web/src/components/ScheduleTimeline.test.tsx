@@ -181,6 +181,41 @@ describe("the Timeline", () => {
     await waitFor(() => expect(window.location.hash).toBe("#records/action/ACT-Send%20the%20quote"));
   });
 
+  test("Enter on a to-do still opens its page when the Timeline redraws between focus and the key", async () => {
+    const user = userEvent.setup();
+    const earlier = globalThis.ResizeObserver;
+    const watches: ResizeObserverCallback[] = [];
+    class Watch {
+      constructor(cb: ResizeObserverCallback) {
+        watches.push(cb);
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal("ResizeObserver", Watch);
+    try {
+      room(1400);
+      await open();
+      const send = screen.getByRole("button", { name: /^To-do: Send the quote\./ });
+      expect(document.querySelector("[data-mode='wide']")).not.toBeNull();
+      act(() => send.focus());
+      expect(send).toHaveFocus();
+      // The frame is measured again and no longer fits the weeks, so the lanes are replaced by the list before the key.
+      room(300);
+      act(() => {
+        for (const watch of watches) watch([], {} as ResizeObserver);
+      });
+      expect(document.querySelector("[data-mode='list']")).not.toBeNull();
+      expect(send.isConnected).toBe(false);
+      await user.keyboard("{Enter}");
+      expect(window.location.hash).toBe("#records/action/ACT-Send%20the%20quote");
+    } finally {
+      if (earlier) vi.stubGlobal("ResizeObserver", earlier);
+      else vi.unstubAllGlobals();
+    }
+  });
+
   test("days off are hatched on every lane, and a lane's own days off are named in the details of an item that falls on one", async () => {
     const day = addDays(TODAY, 2);
     await open(
